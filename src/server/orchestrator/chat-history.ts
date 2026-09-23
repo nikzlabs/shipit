@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, SessionMessageProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { retireBackgroundSubagentResult } from "./subagent-completion.js";
@@ -129,6 +129,7 @@ export interface PersistedMessage {
   nonTurnFailure?: NonTurnFailureCard;
   actionChecklist?: ActionChecklistCard;
   repoSessionProposal?: RepoSessionProposalCard;
+  sessionMessageProposal?: SessionMessageProposalCard;
   presentInline?: PresentInlineCard;
   branchAutoReset?: BranchAutoResetCard;
   branchSynced?: BranchSyncedCard;
@@ -205,6 +206,7 @@ interface MessageRow {
   non_turn_failure: string | null;
   action_checklist: string | null;
   repo_session_proposal: string | null;
+  session_message_proposal: string | null;
   present_inline: string | null;
   branch_auto_reset: string | null;
   branch_synced: string | null;
@@ -231,8 +233,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, session_message_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @session_message_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
@@ -242,7 +244,7 @@ const UPDATE_SQL = `
     client_request_id=@client_request_id,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, repo_session_proposal=@repo_session_proposal, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, ssh_host_key=@ssh_host_key, settings_proposal=@settings_proposal, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, repo_session_proposal=@repo_session_proposal, session_message_proposal=@session_message_proposal, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, ssh_host_key=@ssh_host_key, settings_proposal=@settings_proposal, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin
   WHERE id = @id
 `;
@@ -363,6 +365,7 @@ export class ChatHistoryManager {
       non_turn_failure: msg.nonTurnFailure ? JSON.stringify(msg.nonTurnFailure) : null,
       action_checklist: msg.actionChecklist ? JSON.stringify(msg.actionChecklist) : null,
       repo_session_proposal: msg.repoSessionProposal ? JSON.stringify(msg.repoSessionProposal) : null,
+      session_message_proposal: msg.sessionMessageProposal ? JSON.stringify(msg.sessionMessageProposal) : null,
       present_inline: msg.presentInline ? JSON.stringify(msg.presentInline) : null,
       branch_auto_reset: msg.branchAutoReset ? JSON.stringify(msg.branchAutoReset) : null,
       session_renamed: msg.sessionRenamed ? JSON.stringify(msg.sessionRenamed) : null,
@@ -417,6 +420,7 @@ export class ChatHistoryManager {
     if (row.non_turn_failure) msg.nonTurnFailure = JSON.parse(row.non_turn_failure) as NonTurnFailureCard;
     if (row.action_checklist) msg.actionChecklist = JSON.parse(row.action_checklist) as ActionChecklistCard;
     if (row.repo_session_proposal) msg.repoSessionProposal = JSON.parse(row.repo_session_proposal) as RepoSessionProposalCard;
+    if (row.session_message_proposal) msg.sessionMessageProposal = JSON.parse(row.session_message_proposal) as SessionMessageProposalCard;
     if (row.present_inline) msg.presentInline = JSON.parse(row.present_inline) as PresentInlineCard;
     if (row.branch_auto_reset) msg.branchAutoReset = JSON.parse(row.branch_auto_reset) as BranchAutoResetCard;
     if (row.session_renamed) msg.sessionRenamed = JSON.parse(row.session_renamed) as SessionRenamedCard;
@@ -795,6 +799,36 @@ export class ChatHistoryManager {
         if (card.cardId !== cardId) continue;
         const msg = this.fromRow(row);
         msg.repoSessionProposal = { ...card, ...patch };
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  findSessionMessageProposalCard(sessionId: string, cardId: string): SessionMessageProposalCard | null {
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+    for (const row of rows) {
+      if (!row.session_message_proposal) continue;
+      const card = JSON.parse(row.session_message_proposal) as SessionMessageProposalCard;
+      if (card.cardId === cardId) return card;
+    }
+    return null;
+  }
+
+  updateSessionMessageProposalCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<SessionMessageProposalCard>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.session_message_proposal) continue;
+        const card = JSON.parse(row.session_message_proposal) as SessionMessageProposalCard;
+        if (card.cardId !== cardId) continue;
+        const msg = this.fromRow(row);
+        msg.sessionMessageProposal = { ...card, ...patch };
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }

@@ -13,11 +13,6 @@ export interface InFlightTurnInfo {
   runToken?: string;
   deliveryId?: string;
   streaming: boolean;
-  /**
-   * docs/303 req 15 — the marker the worker reports back. Without it a nudge that spanned
-   * an orchestrator restart settles as an ordinary turn and is nudged a second time.
-   */
-  statusNudge?: boolean;
 }
 
 /** Install the agent in the runner before adoption, and wire listeners before SSE replay. */
@@ -81,7 +76,6 @@ export async function adoptInFlightTurn(
     drainNext,
     emit: (m) => runner.emitMessage(m),
     ...(info.streaming ? { useStreaming: true } : {}),
-    ...(info.statusNudge ? { statusNudge: true } : {}),
     emitErrorOnNoResult: true,
     onInterruptedTurn: () => {
       // Finalize partial replay rows so the next turn cannot replace them.

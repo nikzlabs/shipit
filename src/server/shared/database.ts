@@ -977,6 +977,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "session_status");
   },
+
+  // docs/314 — a message proposed for a session the agent cannot address.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "session_message_proposal")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN session_message_proposal TEXT");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

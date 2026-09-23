@@ -16,7 +16,10 @@ import {
   repoId,
   repoUrlToHash,
   syncLocalDefaultBranchToOrigin,
+  pushToOrigin,
+  type PushSkip,
 } from "./git-utils.js";
+import { GitManager } from "../shared/git.js";
 
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ["ignore", "pipe", "ignore"] })
@@ -370,6 +373,55 @@ describe("syncLocalDefaultBranchToOrigin", () => {
     expect(git(workspaceDir, "rev-parse main")).toBe(c1);
   });
 
+  it("leaves the local default branch alone when it holds commits origin does not", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
+    git(workspaceDir, "config user.email test@test");
+    git(workspaceDir, "config user.name test");
+    const localOnly = commitFile(workspaceDir, "local.txt", "reached no remote\n", "local");
+    git(workspaceDir, "checkout -q -b shipit/test");
+
+    commitFile(remoteDir, "README.md", "# c2\n", "c2");
+    git(workspaceDir, "fetch origin");
+
+    await syncLocalDefaultBranchToOrigin(workspaceDir);
+
+    expect(git(workspaceDir, "rev-parse main")).toBe(localOnly);
+  });
+
+  it("measures the branch, not a tag that shares its name", async () => {
+    const c1 = commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
+    git(workspaceDir, "config user.email test@test");
+    git(workspaceDir, "config user.name test");
+    const localOnly = commitFile(workspaceDir, "local.txt", "reached no remote\n", "local");
+    git(workspaceDir, "checkout -q -b shipit/test");
+    // A bare `main` resolves to the tag, so the ahead-count would be measured against
+    // c1 while the write would land on the branch — discarding `localOnly`.
+    git(workspaceDir, `tag main ${c1}`);
+
+    commitFile(remoteDir, "README.md", "# c2\n", "c2");
+    git(workspaceDir, "fetch origin");
+
+    await syncLocalDefaultBranchToOrigin(workspaceDir);
+
+    expect(git(workspaceDir, "rev-parse refs/heads/main")).toBe(localOnly);
+  });
+
+  it("creates the local default branch when the checkout has none", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
+    git(workspaceDir, "checkout -q -b shipit/test");
+    git(workspaceDir, "update-ref -d refs/heads/main");
+
+    const c2 = commitFile(remoteDir, "README.md", "# c2\n", "c2");
+    git(workspaceDir, "fetch origin");
+
+    await syncLocalDefaultBranchToOrigin(workspaceDir);
+
+    expect(git(workspaceDir, "rev-parse refs/heads/main")).toBe(c2);
+  });
+
   it("is a no-op when there is no origin default branch to resolve", async () => {
     commitFile(remoteDir, "README.md", "# c1\n", "c1");
     git(tmpDir, `init "${workspaceDir}"`);
@@ -379,6 +431,94 @@ describe("syncLocalDefaultBranchToOrigin", () => {
     commitFile(workspaceDir, "a.txt", "a\n", "a");
 
     await expect(syncLocalDefaultBranchToOrigin(workspaceDir)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * The auto-push target is whatever is checked out. Such a push cannot rewind — git
+ * declines a non-fast-forward — but it would put a turn's commit on the base under
+ * no pull request (docs/312-base-branch-push-protection req 7).
+ */
+describe("pushToOrigin", () => {
+  let tmpDir: string;
+  let remoteDir: string;
+  let workDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-push-origin-"));
+    remoteDir = path.join(tmpDir, "remote.git");
+    workDir = path.join(tmpDir, "work");
+    fs.mkdirSync(remoteDir, { recursive: true });
+    git(tmpDir, `init --bare -b main "${remoteDir}"`);
+
+    const seed = path.join(tmpDir, "seed");
+    fs.mkdirSync(seed, { recursive: true });
+    git(seed, "init -b main");
+    git(seed, "config user.email test@test");
+    git(seed, "config user.name test");
+    commitFile(seed, "README.md", "# seed\n", "seed");
+    git(seed, `push "${remoteDir}" main:main`);
+
+    git(tmpDir, `clone "${remoteDir}" "${workDir}"`);
+    git(workDir, "config user.email test@test");
+    git(workDir, "config user.name test");
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch { /* ignore */ }
+  });
+
+  it("pushes the session's own branch", async () => {
+    git(workDir, "checkout -q -b shipit/work");
+    commitFile(workDir, "a.txt", "a\n", "a");
+
+    const skips: PushSkip[] = [];
+    const branch = await pushToOrigin(new GitManager(workDir), (s) => skips.push(s));
+
+    expect(branch).toBe("shipit/work");
+    expect(skips).toEqual([]);
+    expect(git(remoteDir, "rev-parse refs/heads/shipit/work")).toBe(git(workDir, "rev-parse HEAD"));
+  });
+
+  /**
+   * A template session starts on a local `main` with no recorded branch, and the
+   * user points it at an empty repository. `getDefaultBranch()` answers "main"
+   * from its own fallback there, so refusing on that guess alone would stop a new
+   * project ever publishing. Nothing on that remote can be lost: nothing is on it.
+   */
+  it("pushes a local `main` when origin has no such branch to be the default", async () => {
+    const emptyRemote = path.join(tmpDir, "empty.git");
+    const fresh = path.join(tmpDir, "fresh");
+    fs.mkdirSync(fresh, { recursive: true });
+    git(tmpDir, `init --bare -b main "${emptyRemote}"`);
+    git(fresh, "init -b main");
+    git(fresh, "config user.email test@test");
+    git(fresh, "config user.name test");
+    git(fresh, `remote add origin "${emptyRemote}"`);
+    commitFile(fresh, "README.md", "# new project\n", "initial");
+
+    const skips: PushSkip[] = [];
+    const branch = await pushToOrigin(new GitManager(fresh), (s) => skips.push(s));
+
+    expect(skips).toEqual([]);
+    expect(branch).toBe("main");
+    expect(git(emptyRemote, "rev-parse refs/heads/main")).toBe(git(fresh, "rev-parse HEAD"));
+  });
+
+  it("refuses the default branch, reports it, and leaves the remote where it was", async () => {
+    const before = git(remoteDir, "rev-parse refs/heads/main");
+    commitFile(workDir, "a.txt", "a\n", "a");
+
+    const skips: PushSkip[] = [];
+    const branch = await pushToOrigin(new GitManager(workDir), (s) => skips.push(s));
+
+    expect(branch).toBeNull();
+    expect(skips).toHaveLength(1);
+    expect(skips[0].reason).toBe("shared-branch");
+    expect(skips[0].message).toContain("default branch");
+    expect(git(remoteDir, "rev-parse refs/heads/main")).toBe(before);
   });
 });
 

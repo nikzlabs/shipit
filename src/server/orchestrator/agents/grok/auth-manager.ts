@@ -5,7 +5,7 @@ import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
-import { killChild } from "../../../shared/kill-child.js";
+import { killProcessTree } from "../../../shared/kill-child.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { ensureConfigDir, firstEpochMs, probeNestedString } from "../agent-auth-base.js";
 import {
@@ -476,7 +476,9 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     this.clearTimeoutHandle();
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    killChild(proc, "SIGTERM");
+    // Nothing holds this handle once it is cleared, so a CLI that ignores the
+    // SIGTERM would survive with no one left to kill it (planning#615).
+    killProcessTree(proc, "SIGTERM", { label: "grok-login" });
     this.clearActiveScope();
   }
 
@@ -542,7 +544,7 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     if (!proc) return;
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    killChild(proc, "SIGTERM");
+    killProcessTree(proc, "SIGTERM", { label: "grok-login" });
   }
 
   // Clear after terminal events: their handlers read the account ID synchronously.

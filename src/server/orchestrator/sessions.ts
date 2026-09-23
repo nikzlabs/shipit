@@ -99,9 +99,14 @@ function parseSessionStatus(json: string): SessionStatus | undefined {
       ...(Array.isArray(card.needsYou) && card.needsYou.length > 0
         ? { needsYou: card.needsYou.filter((item: unknown): item is string => typeof item === "string") }
         : {}),
+      ...(Array.isArray(card.stepSeq)
+        ? { stepSeq: card.stepSeq.map((n: unknown) => (typeof n === "number" ? n : null)) }
+        : {}),
       actions: Array.isArray(card.actions) ? card.actions : [],
       fresh: card.fresh === true,
       writeSeq: typeof card.writeSeq === "number" ? card.writeSeq : 0,
+      turnSeq: typeof card.turnSeq === "number" ? card.turnSeq : 0,
+      ...(card.nudgePending === true ? { nudgePending: true } : {}),
     };
   } catch {
     return undefined;
@@ -423,6 +428,12 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET conversation_replay = ? WHERE id = ?").run(replay, id);
   }
 
+  /**
+   * A take: the replay is spent by the run parameters that carry it into a system prompt.
+   * An attempt that then fails without reaching the agent leaves the session threadless
+   * AND replayless, which is what `reseedConversationForRetry` (`turn-executor.ts`) puts
+   * back before a retry spawns.
+   */
   consumeConversationReplay(id: string): string | undefined {
     let replay: string | undefined;
     this.db.transaction(() => {
@@ -830,6 +841,14 @@ export class SessionManager {
     this.db.prepare(
       "UPDATE sessions SET origin_role_name = ? WHERE id = ? AND origin_role_name IS NULL",
     ).run(originRoleName, id);
+  }
+
+  // The marker is what makes the role's brief a one-shot take; clearing it hands the take
+  // back to a turn that never delivered the brief (planning#609).
+  clearOriginRoleName(id: string, expected: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET origin_role_name = NULL WHERE id = ? AND origin_role_name = ?",
+    ).run(id, expected);
   }
 
   setRoleName(id: string, roleName: string | null): void {

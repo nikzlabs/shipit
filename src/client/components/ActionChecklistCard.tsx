@@ -17,6 +17,7 @@ import {
   useChecklistSelection,
   type ChecklistItem,
 } from "./ActionChecklist.js";
+import { InlineMarkdown } from "./message-markdown.js";
 import { formatProposalMessage, formatCommentSnapshot } from "../utils/action-checklist-message.js";
 
 export interface ActionChecklistCardProps {
@@ -119,9 +120,13 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
             <ListChecksIcon size={ICON_SIZE.SM} />
           )}
         </span>
-        <span className="font-medium text-(--color-text-primary)">
-          {card.title ?? (isSingle ? "Suggested next step" : "Optional follow-ups")}
-        </span>
+        {card.title ? (
+          <InlineMarkdown text={card.title} shipitLinks className="font-medium text-(--color-text-primary)" />
+        ) : (
+          <span className="font-medium text-(--color-text-primary)">
+            {isSingle ? "Suggested next step" : "Optional follow-ups"}
+          </span>
+        )}
         {!isSingle && (
           <span className="text-(--color-text-tertiary)">
             · {card.actions.length} actions
@@ -130,12 +135,20 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
       </div>
 
       {isSingle ? (
+        // req 41 — the same markdown the checklist rows render, so a single
+        // action is not the one place a link the agent wrote comes out as text.
         <div className="pl-0.5">
-          <div className="text-(--color-text-primary) font-medium">{card.actions[0].label}</div>
+          <InlineMarkdown
+            text={card.actions[0].label}
+            shipitLinks
+            className="block text-(--color-text-primary) font-medium"
+          />
           {card.actions[0].description && (
-            <div className="text-(--color-text-secondary) mt-0.5">
-              {card.actions[0].description}
-            </div>
+            <InlineMarkdown
+              text={card.actions[0].description}
+              shipitLinks
+              className="block text-(--color-text-secondary) mt-0.5"
+            />
           )}
         </div>
       ) : (

@@ -52,7 +52,7 @@ describe("selectTools", () => {
 
   it("registers all internal tools", () => {
     expect(Object.keys(TOOL_REGISTRY).sort()).toEqual(
-      ["ask", "bug", "permission", "present", "propose_actions", "propose_repo_session", "session_status", "voice"],
+      ["ask", "bug", "permission", "present", "propose_actions", "propose_repo_session", "propose_session_message", "session_status", "voice"],
     );
   });
 });

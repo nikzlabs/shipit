@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { killChild } from "../shared/kill-child.js";
+import { killProcessTree } from "../shared/kill-child.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 import { lfsDeclarationGrepArgs } from "../shared/git-lfs-push.js";
@@ -70,9 +70,11 @@ export function runGit(
     const append = (buf: string, chunk: Buffer) => (buf + chunk.toString()).slice(-8192);
     proc.stdout.on("data", (c: Buffer) => (stdout = append(stdout, c)));
     proc.stderr.on("data", (c: Buffer) => (stderr = append(stderr, c)));
+    // `close` waits on any descendant still holding these pipes, so killing the `git`
+    // wrapper alone leaves this promise waiting on the runaway `git lfs` (planning#615).
     const timer = setTimeout(() => {
       timedOut = true;
-      killChild(proc, "SIGKILL");
+      killProcessTree(proc, "SIGKILL", { label: "git" });
     }, timeoutMs);
     proc.on("error", (err) => {
       clearTimeout(timer);

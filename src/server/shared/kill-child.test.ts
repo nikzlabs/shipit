@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { collectDescendants, killChild, killProcessTree, type ProcessIdentity } from "./kill-child.js";
+import { collectDescendants, killChild, killDescendantTree, killProcessTree, type ProcessIdentity } from "./kill-child.js";
 
 describe("killChild", () => {
   it("no-ops on null/undefined", () => {
@@ -177,5 +177,36 @@ describe.skipIf(!existsSync("/proc/1/stat"))("killProcessTree", () => {
 
     killProcessTree(proc, "SIGTERM", { graceMs: 200 });
     expect(await until(() => pids.every((pid) => !alive(pid)))).toBe(true);
+  });
+
+  // The browser reclaim reaches a great-grandchild, which no ChildProcess handle names
+  // and `ppid === process.pid` cannot prove. Ownership is the walk down from ourselves.
+  describe("killDescendantTree", () => {
+    it("kills a tree rooted below our own children", async () => {
+      const proc = await spawnTree("sh -c 'sleep 300 & sleep 300' & sleep 300", 3);
+      const root = collectDescendants(proc.pid ?? 0)
+        .find((d) => collectDescendants(d.pid).length >= 1);
+      expect(root).toBeDefined();
+      const below = collectDescendants(root!.pid).map((d) => d.pid);
+
+      expect(killDescendantTree(root!, "SIGTERM", { graceMs: 200 })).toBe(true);
+      expect(await until(() => !alive(root!.pid) && below.every((p) => !alive(p)))).toBe(true);
+    });
+
+    it("refuses a root that is not one of our descendants", async () => {
+      expect(killDescendantTree({ pid: 1, startTime: 0 }, "SIGTERM")).toBe(false);
+      expect(alive(1)).toBe(true);
+    });
+
+    it("refuses a root whose start time no longer matches, so a reused pid is spared", async () => {
+      const proc = await spawnTree("sleep 300 & sleep 300", 2);
+      const root = collectDescendants(proc.pid ?? 0)[0];
+      expect(root).toBeDefined();
+
+      const stale = { pid: root!.pid, startTime: root!.startTime + 1 };
+      expect(killDescendantTree(stale, "SIGTERM", { graceMs: 50 })).toBe(false);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(alive(root!.pid)).toBe(true);
+    });
   });
 });

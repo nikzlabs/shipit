@@ -98,13 +98,28 @@ function createMockDaemon(): MockDaemon {
         const id = containerInspectMatch[1];
         const c = containers.get(id);
         if (!c) { respond(404, { message: "not found" }); return; }
-        respond(200, { Id: id, Config: { Labels: c.labels }, State: { Running: c.running } });
+        respond(200, {
+          Id: id,
+          Config: { Labels: c.labels },
+          State: { Running: c.running },
+          ...(c.hostConfig ? { HostConfig: c.hostConfig } : {}),
+        });
         return;
       }
 
       const containerStartMatch = /\/containers\/([^/]+)\/start/.exec(url);
       if (containerStartMatch && method === "POST") {
         const id = containerStartMatch[1];
+        const c = containers.get(id);
+        if (!c) { respond(404, { message: "not found" }); return; }
+        c.running = true;
+        respond(204, {});
+        return;
+      }
+
+      const containerRestartMatch = /\/containers\/([^/]+)\/restart/.exec(url);
+      if (containerRestartMatch && method === "POST") {
+        const id = containerRestartMatch[1];
         const c = containers.get(id);
         if (!c) { respond(404, { message: "not found" }); return; }
         c.running = true;
@@ -412,6 +427,25 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(403);
       expect((res.body as any).message).toContain("Endpoint not allowed");
     });
+
+    // Below 1.24 the daemon reads HostConfig from a container start, which no route checks. Go
+    // compares the version component by component, so "1.2.3" and "1" are both below 1.24 to the
+    // daemon however many components they carry.
+    it.each(["/v1.23", "/v1.2.3", "/v1", "/v0.99"])("returns 403 for API version %s", async (prefix) => {
+      const res = await makeRequest(proxyUrl, "POST", `${prefix}/containers/mock-container-1/start`, {
+        Privileged: true, Binds: ["/:/host"],
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("minimum v1.24");
+      expect(daemon.containers.get("mock-container-1")?.running).toBeFalsy();
+    });
+
+    it("allows the API versions a current client negotiates", async () => {
+      for (const prefix of ["/v1.24", "/v1.41", "/v1.51", "/v2.0", ""]) {
+        const res = await makeRequest(proxyUrl, "GET", `${prefix}/version`);
+        expect(res.status, prefix).toBe(200);
+      }
+    });
   });
 
   describe("container-topology brackets", () => {
@@ -675,6 +709,83 @@ describe("Docker API proxy", () => {
       expect((res.body as any).message).toContain("outside session workspace");
     });
 
+    it.each([
+      ["Devices", [{ PathOnHost: "/dev/sda", PathInContainer: "/dev/sda" }]],
+      ["DeviceCgroupRules", ["b 8:* rwm"]],
+      ["DeviceRequests", [{ Driver: "nvidia", Count: -1 }]],
+    ])("rejects HostConfig.%s", async (field, value) => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { [field]: value },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Device mappings");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    // Container create is a volume-create surface too, so the DriverOpts rule POST /volumes/create
+    // enforces has to hold here: `local` + `o=bind,device=` is a host bind under another name.
+    it("rejects a volume mount whose DriverConfig binds a host path", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {
+          Mounts: [{
+            Type: "volume",
+            Target: "/data",
+            VolumeOptions: {
+              DriverConfig: { Name: "local", Options: { type: "none", o: "bind", device: "/etc" } },
+            },
+          }],
+        },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("DriverConfig options are not allowed");
+    });
+
+    it("rejects a VolumeOptions alias on a volume mount", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {
+          Mounts: [{
+            Type: "volume",
+            Target: "/host",
+            volumeoptions: { DriverConfig: { Options: { device: "/" } } },
+          }],
+        },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("allows an anonymous volume mount with no driver options", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Mounts: [{ Type: "volume", Target: "/data" }] },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("rejects a volume mount on a non-local driver", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {
+          Mounts: [{ Type: "volume", Target: "/data", VolumeOptions: { DriverConfig: { Name: "nfs" } } }],
+        },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("is not allowed");
+    });
+
+    it("strips VolumeDriver, which picks the driver for the image's own volumes", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { VolumeDriver: "some-plugin" },
+      });
+      expect(res.status).toBe(201);
+      expect(daemon.containers.get((res.body as any).Id)?.hostConfig?.VolumeDriver).toBeUndefined();
+    });
+
     it("strips SecurityOpt and CgroupParent", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
@@ -888,6 +999,164 @@ describe("Docker API proxy", () => {
         Detach: false,
       });
       expect(res.status).toBe(403);
+    });
+
+    it("rejects exec create with Privileged", async () => {
+      const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine", HostConfig: {},
+      });
+      const containerId = (createRes.body as any).Id;
+
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${containerId}/exec`, {
+        Cmd: ["ls"], Privileged: true,
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Privileged");
+      expect(daemon.execs.size).toBe(0);
+    });
+
+    it("rejects exec create with a lowercase Privileged alias", async () => {
+      const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine", HostConfig: {},
+      });
+      const containerId = (createRes.body as any).Id;
+
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${containerId}/exec`, {
+        Cmd: ["ls"], privileged: true,
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.execs.size).toBe(0);
+    });
+  });
+
+  // Docker matches JSON keys to Go struct fields case-insensitively, so a field spelled in any
+  // other casing is honoured by the daemon and invisible to every check here (planning#607).
+  describe("ambiguous field casing", () => {
+    it("control: the checks read exact property names, so a lowercase body reaches none of them", () => {
+      const body = { Image: "alpine", HostConfig: { privileged: true, binds: ["/:/host"] } };
+      const hostConfig = body.HostConfig as Record<string, unknown>;
+
+      expect(hostConfig.Privileged).toBeUndefined();
+      expect(hostConfig.Binds).toBeUndefined();
+    });
+
+    it("rejects a lowercase HostConfig alias on container create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        hostconfig: { Privileged: true },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect((res.body as any).message).toContain("HostConfig");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("rejects the privileged + binds escape the sanitizer could not see", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { privileged: true, binds: ["/:/host"] },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it.each([
+      ["capadd", { capadd: ["SYS_ADMIN"] }],
+      ["CAPADD", { CAPADD: ["SYS_ADMIN"] }],
+      ["devices", { devices: [{ PathOnHost: "/dev/sda" }] }],
+      ["volumesfrom", { volumesfrom: ["other"] }],
+      ["networkmode", { networkmode: "host" }],
+      ["pidmode", { pidmode: "host" }],
+      ["ipcmode", { ipcmode: "host" }],
+      ["usernsmode", { usernsmode: "host" }],
+      ["securityopt", { securityopt: ["seccomp=unconfined"] }],
+      ["runtime", { runtime: "sysbox-runc" }],
+      ["Capdrop", { Capdrop: [] }],
+      ["pidslimit", { pidslimit: -1 }],
+    ])("rejects HostConfig.%s", async (_name, hostConfig) => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: hostConfig,
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("rejects an alias nested in Mounts", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Mounts: [{ Type: "bind", Target: "/w", Source: "/tmp" }, { type: "bind", source: "/" }] },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("HostConfig.Mounts[1].type");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("rejects a Labels alias that would overwrite the ownership label", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+        labels: { [PARENT_SESSION_LABEL]: "other-session" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+    });
+
+    it("accepts a canonical body whose label and sysctl names collide with guarded fields", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        Labels: { type: "web", source: "compose", privileged: "no" },
+        HostConfig: { Sysctls: { binds: "1" }, Mounts: [{ Type: "tmpfs", Target: "/scratch" }] },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("rejects a lowercase driveropts on volume create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
+        Name: "escape-vol",
+        driveropts: { type: "none", o: "bind", device: "/etc" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.volumes.size).toBe(0);
+    });
+
+    it("rejects a lowercase driver on volume create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
+        Name: "nfs-vol",
+        driver: "nfs",
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.volumes.size).toBe(0);
+    });
+
+    it("rejects a lowercase container alias on network connect", async () => {
+      const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "my-net" });
+      const networkId = (createRes.body as any).Id;
+      daemon.containers.set("foreign-c", {
+        labels: { [PARENT_SESSION_LABEL]: "other-session" },
+        running: true,
+      });
+
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/networks/${networkId}/connect`, {
+        container: "foreign-c",
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+    });
+
+    it("rejects a Labels alias on network create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", {
+        Name: "my-net",
+        labels: { [PARENT_SESSION_LABEL]: "evil-session" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.networks.size).toBe(0);
     });
   });
 
@@ -1170,6 +1439,183 @@ describe("Docker API proxy", () => {
       const res = await makeRequest(proxyUrl, "DELETE", "/v1.41/images/alpine:latest");
       expect(res.status).toBe(403);
       expect((res.body as any).message).toContain("shared resources");
+    });
+  });
+
+  // planning#601: the check `realpath`-resolved the requested path and Docker then mounted the
+  // original string, so a symlink swap between the two reached anything on the host — the
+  // group-writable overlay dep base (docs/183) above all. These run against a real workspace on
+  // disk: with a `hostWorkspaceDir` that does not exist, every bind is refused for the wrong reason.
+  describe("bind mount path pinning", () => {
+    let root: string;
+    let workspace: string;
+    /** Stands in for the group-writable overlay base: outside the workspace, on the same host. */
+    let base: string;
+
+    beforeEach(() => {
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "docker-proxy-bind-")));
+      workspace = path.join(root, "workspace");
+      base = path.join(root, "dep-base");
+      fs.mkdirSync(path.join(workspace, "project", "data"), { recursive: true });
+      fs.mkdirSync(path.join(workspace, "other", "data"), { recursive: true });
+      fs.mkdirSync(path.join(base, "data"), { recursive: true });
+      sessionMap.set("127.0.0.1", {
+        sessionId: "session-1",
+        hostWorkspaceDir: workspace,
+        dockerAccess: true,
+      });
+    });
+
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    function create(hostConfig: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+      return makeRequest(proxyUrl, "POST", "/v1.41/containers/create", { Image: "alpine", HostConfig: hostConfig });
+    }
+
+    function storedBinds(id: string): string[] {
+      return (daemon.containers.get(id)?.hostConfig?.Binds ?? []) as string[];
+    }
+
+    it("forwards the resolved path, so Docker mounts what was checked", async () => {
+      fs.symlinkSync(path.join(workspace, "project", "data"), path.join(workspace, "link"));
+
+      const res = await create({ Binds: [`${workspace}/link:/app:rw`] });
+      expect(res.status).toBe(201);
+      expect(storedBinds((res.body as any).Id)).toEqual([`${workspace}/project/data:/app:rw`]);
+    });
+
+    it("pins a Mounts[] bind source the same way", async () => {
+      fs.symlinkSync(path.join(workspace, "project", "data"), path.join(workspace, "link"));
+
+      const res = await create({
+        Mounts: [{ Type: "bind", Source: `${workspace}/link`, Target: "/app" }],
+      });
+      expect(res.status).toBe(201);
+      const mounts = daemon.containers.get((res.body as any).Id)?.hostConfig?.Mounts as any[];
+      expect(mounts[0].Source).toBe(`${workspace}/project/data`);
+    });
+
+    it("leaves an already-canonical bind byte-identical", async () => {
+      const bind = `${workspace}/project/data:/app:ro`;
+      const res = await create({ Binds: [bind] });
+      expect(res.status).toBe(201);
+      expect(storedBinds((res.body as any).Id)).toEqual([bind]);
+    });
+
+    it("mounts the checked target when the symlink is swapped after the check", async () => {
+      const link = path.join(workspace, "link");
+      fs.symlinkSync(path.join(workspace, "project", "data"), link);
+      const res = await create({ Binds: [`${link}:/app:rw`] });
+      expect(res.status).toBe(201);
+      const id = (res.body as any).Id as string;
+
+      fs.unlinkSync(link);
+      fs.symlinkSync(base, link);
+
+      // Control: the string the pre-fix proxy forwarded now names the base, so Docker would have
+      // mounted the base read-write.
+      expect(fs.realpathSync(link)).toBe(base);
+
+      const started = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+      expect(started.status).toBe(204);
+      expect(storedBinds(id)).toEqual([`${workspace}/project/data:/app:rw`]);
+      expect(daemon.containers.get(id)?.running).toBe(true);
+    });
+
+    it("refuses to start when a directory on the checked path became a symlink out of the workspace", async () => {
+      const res = await create({ Binds: [`${workspace}/project/data:/app:rw`] });
+      expect(res.status).toBe(201);
+      const id = (res.body as any).Id as string;
+
+      fs.renameSync(path.join(workspace, "project"), path.join(workspace, "project-moved"));
+      fs.symlinkSync(base, path.join(workspace, "project"));
+
+      // Control: the stored path — which create checked and pinned — now resolves into the base.
+      expect(fs.realpathSync(`${workspace}/project/data`)).toBe(path.join(base, "data"));
+
+      const started = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+      expect(started.status).toBe(403);
+      expect((started.body as any).message).toContain("outside session workspace");
+      expect(daemon.containers.get(id)?.running).toBe(false);
+    });
+
+    it("refuses to start when the checked path resolves elsewhere inside the workspace", async () => {
+      const res = await create({ Binds: [`${workspace}/project/data:/app:rw`] });
+      const id = (res.body as any).Id as string;
+
+      fs.renameSync(path.join(workspace, "project"), path.join(workspace, "project-moved"));
+      fs.symlinkSync(path.join(workspace, "other"), path.join(workspace, "project"));
+
+      const started = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+      expect(started.status).toBe(403);
+      expect((started.body as any).message).toContain("no longer resolves");
+    });
+
+    // A restart mounts only after the stop completes, and a container that traps its stop signal
+    // decides when that is — the check would clear a path the session then has time to swap.
+    it("refuses to restart a container that has a host bind", async () => {
+      const res = await create({
+        Mounts: [{ Type: "bind", Source: `${workspace}/project/data`, Target: "/app" }],
+      });
+      const id = (res.body as any).Id as string;
+      await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+      const restarted = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/restart`);
+      expect(restarted.status).toBe(403);
+      expect((restarted.body as any).message).toContain("stop it and start it instead");
+    });
+
+    it("restarts a container that has no host bind", async () => {
+      const res = await create({});
+      const id = (res.body as any).Id as string;
+      const restarted = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/restart`);
+      expect(restarted.status).toBe(204);
+    });
+
+    // Docker restarts on its own policy, with no request for the proxy to check.
+    it("refuses a restart policy on a container that has a host bind", async () => {
+      const res = await create({
+        Binds: [`${workspace}/project/data:/app:rw`],
+        RestartPolicy: { Name: "always" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("RestartPolicy");
+    });
+
+    it("allows a restart policy when nothing from the host is mounted", async () => {
+      const res = await create({ RestartPolicy: { Name: "unless-stopped" } });
+      expect(res.status).toBe(201);
+    });
+
+    it("refuses a bind whose resolved path contains a colon", async () => {
+      fs.mkdirSync(path.join(workspace, "od:d"));
+      fs.symlinkSync(path.join(workspace, "od:d"), path.join(workspace, "link"));
+      const res = await create({ Binds: [`${workspace}/link:/app:rw`] });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("containing");
+    });
+
+    it("fails closed when the inspect carries no HostConfig", async () => {
+      daemon.containers.set("legacy", { labels: { [PARENT_SESSION_LABEL]: "session-1" }, running: false });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/legacy/start");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("HostConfig");
+    });
+
+    it("still starts a container whose paths are unchanged", async () => {
+      const res = await create({ Binds: [`${workspace}/project/data:/app:rw`] });
+      const id = (res.body as any).Id as string;
+      const started = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+      expect(started.status).toBe(204);
+    });
+
+    it("still refuses a bind that resolves outside the workspace at create", async () => {
+      fs.symlinkSync(base, path.join(workspace, "escape"));
+      const res = await create({ Binds: [`${workspace}/escape:/app:rw`] });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("outside session workspace");
     });
   });
 });

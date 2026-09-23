@@ -197,8 +197,17 @@ skip and the store mount derive from one decision.
     cost.
 - Known caveat (document in shipit-docs): in-place mutation of hardlinked store files
   (patch-package style) — pnpm's own ecosystem answer (copy-on-patch via
-  `pnpm patch`) applies; the store is also integrity-checked by pnpm on link, so
-  corruption is detected, not silently propagated.
+  `pnpm patch`) applies.
+
+  > **Correction (2026-09-17).** This bullet used to say the store is
+  > "integrity-checked by pnpm on link, so corruption is detected, not silently
+  > propagated". That is not a reliable protection. pnpm trusts `v11/index.db`
+  > and re-hashes content only when the manifest does not already vouch for the
+  > entry, so a warm store poisoned in place — or a rewritten manifest — installs
+  > the bad bytes with `verify-store-integrity=true`. And hardlinked store files
+  > change every already-installed `node_modules` file with no import at all.
+  > Measured with `docs/276-shared-package-cache-integrity/verify-h4.sh` on pnpm
+  > 11.22.0 and 12.4.2; that doc carries the fixes.
 
 ## Shelf (explicitly not scheduled): content-addressed multi-base store
 

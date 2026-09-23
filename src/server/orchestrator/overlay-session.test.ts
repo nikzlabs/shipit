@@ -11,10 +11,10 @@ import {
   missingDepDirParents,
   parseUnignoredByNegation,
   supersededSessionOverlayLayers,
-  isPnpmRepo,
   preStampInstallMarker,
-  pnpmStoreHash,
-  pnpmStoreDirForRuntime,
+  sessionPnpmStoreDir,
+  retiredSharedPnpmStoreRoot,
+  PNPM_VERIFIED_NAMESPACE,
   type DepDirOverlaySpec,
   isOverlayEligible,
   isOverlayEnabled,
@@ -190,20 +190,85 @@ describe("liveOverlayScopeHashes", () => {
         ? ["node_modules", "packages/app/node_modules"]
         : ["node_modules"];
     const live = liveOverlayScopeHashes(sessions, resolve, ON);
+    const NS = PNPM_VERIFIED_NAMESPACE;
     expect(live).toEqual(
       new Set([
         overlayScopeHash("https://github.com/acme/one.git", rt, "node_modules"),
         overlayScopeHash("https://github.com/acme/one.git", rt, "packages/app/node_modules"),
         overlayScopeHash("https://github.com/acme/two.git", rt, "node_modules"),
+        overlayScopeHash("https://github.com/acme/one.git", rt, "node_modules", NS),
+        overlayScopeHash("https://github.com/acme/one.git", rt, "packages/app/node_modules", NS),
+        overlayScopeHash("https://github.com/acme/two.git", rt, "node_modules", NS),
       ]),
     );
   });
+
+  /**
+   * Package-manager detection reads the mutable checkout, so "is this a pnpm session right now"
+   * cannot decide whether its verified base is live. Claiming both addresses over-retains a hash
+   * with no directory, which costs nothing; getting it wrong deletes a base a session is on.
+   */
+  it("claims the verified-namespace hash for every session, not only pnpm ones", () => {
+    const rt = overlayRuntimeKey(ON);
+    const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
+    const repo = "https://github.com/acme/repo.git";
+    expect(live).toContain(overlayScopeHash(repo, rt, "node_modules", PNPM_VERIFIED_NAMESPACE));
+  });
+
+  /**
+   * The contract has changed twice — what a base is DECIDED BY (planning#414's local links) and
+   * what it CONTAINS (planning#604's prune) — and a base built under an older one is still on
+   * disk with a live pointer. Nothing invalidates a published pointer per se, so the NAMESPACE is
+   * the version boundary: a session must not be able to address a `v1` (pre-refusal) or `v2`
+   * (whole-tree, link-blind) base, and the janitor then reclaims those scopes because no session
+   * claims them any more. EVERY retired suffix, not just the newest — a base decided under any of
+   * them has to stop being addressed.
+   */
+  it.each(["pnpm-verified-v1", "pnpm-verified-v2"])(
+    "does not address a base published under the %s contract",
+    (retired) => {
+      const rt = overlayRuntimeKey(ON);
+      const repo = "https://github.com/acme/repo.git";
+      const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
+      expect(PNPM_VERIFIED_NAMESPACE).not.toBe(retired);
+      expect(live).not.toContain(overlayScopeHash(repo, rt, "node_modules", retired));
+    },
+  );
 
   it("uses the per-dep-dir hash, not the legacy (repo, runtime) hash", () => {
     const rt = overlayRuntimeKey(ON);
     const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
     expect(live).toContain(overlayScopeHash("https://github.com/acme/repo.git", rt, "node_modules"));
     expect(live).not.toContain(overlayScopeHash("https://github.com/acme/repo.git", rt));
+  });
+
+  /**
+   * Creation keys the scope on runtime key + `overlayPinSegment(workspaceDir)`; this read used the
+   * runtime key alone, so a Node-pinned session's scope was swept despite a current pointer
+   * (docs/276-shared-package-cache-integrity section 5, "Ordering and cleanup"). Both are claimed,
+   * because the pin comes from the mutable checkout and a sweep must never be what decides.
+   */
+  it("claims the PINNED scope a Node-pinned session actually mounts, and the unpinned one too", () => {
+    const pinnedEnv = { ...ON, WORKER_IMAGE_NODE_VERSION: "24.0.0" };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "live-pin-"));
+    try {
+      fs.writeFileSync(path.join(dir, ".nvmrc"), "20.11.0\n");
+      const s = session({ id: "a", workspaceDir: dir });
+      const pinSegment = overlayPinSegment(dir, pinnedEnv);
+      expect(pinSegment).not.toBe("");
+      const rt = overlayRuntimeKey(pinnedEnv);
+      const repo = "https://github.com/acme/repo.git";
+
+      const live = liveOverlayScopeHashes([s], () => ["node_modules"], pinnedEnv);
+
+      expect(live).toContain(overlayScopeHash(repo, rt + pinSegment, "node_modules"));
+      expect(live).toContain(
+        overlayScopeHash(repo, rt + pinSegment, "node_modules", PNPM_VERIFIED_NAMESPACE),
+      );
+      expect(live).toContain(overlayScopeHash(repo, rt, "node_modules"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -746,6 +811,33 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     expect(written.depsHash).toHaveLength(64);
   });
 
+  /**
+   * docs/276-shared-package-cache-integrity section 5: the verified pnpm base is published UNBUILT
+   * and reconciles nothing, so a pre-stamp would make a matching session skip the install that runs
+   * its approved builds and reconciles its own graph. Decided off the SPEC, so the refusal cannot
+   * address a different scope than the mount.
+   */
+  it("refuses to pre-stamp a pnpm session, on inputs that stamp an npm one", async () => {
+    const { dir, head } = await gitWorkspace("pnpm install");
+    const ptr = pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["pnpm install"] });
+    const verified = {
+      ...spec("h1", 3),
+      scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules", namespace: PNPM_VERIFIED_NAMESPACE },
+    };
+
+    // Control: the identical inputs in the un-namespaced scope DO stamp, so this cell fails on the
+    // namespace and not on some unrelated refusal.
+    expect(await preStampInstallMarker({
+      stateDir: "/state", workspaceDir: dir, specs: [spec("h1", 3)], readPointer: () => ptr,
+    })).toBe(true);
+    fs.rmSync(markerPathFor(dir));
+
+    expect(await preStampInstallMarker({
+      stateDir: "/state", workspaceDir: dir, specs: [verified], readPointer: () => ptr,
+    })).toBe(false);
+    expect(fs.existsSync(markerPathFor(dir))).toBe(false);
+  });
+
   it("declines on commit mismatch, generation mismatch, command mismatch, or a pointer without marker", async () => {
     const { dir, head } = await gitWorkspace();
     const cases = [
@@ -924,69 +1016,16 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   });
 });
 
-describe("isPnpmRepo (docs/197 Part 2)", () => {
-  const tmpDirs: string[] = [];
-  afterEach(() => {
-    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-  });
-  function workspace(files: Record<string, string> = {}): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-detect-"));
-    tmpDirs.push(dir);
-    for (const [rel, content] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, rel), content);
-    }
-    return dir;
-  }
-
-  it("returns false for an empty/plain workspace (no signal)", () => {
-    expect(isPnpmRepo(workspace())).toBe(false);
-    expect(isPnpmRepo(workspace({ "package.json": "{}" }))).toBe(false);
+// docs/276 section 5: the store is private per session. The runtime key deliberately plays no
+// part — two sessions of the SAME repo on the SAME runtime must not share a store index.
+describe("pnpm store helpers", () => {
+  it("sessionPnpmStoreDir is keyed by session and lives under the session's directory", () => {
+    const dir = sessionPnpmStoreDir("/state", "sess-1");
+    expect(dir).toBe(path.join("/state", "sessions", "sess-1", "overlay", "pnpm-store"));
+    expect(sessionPnpmStoreDir("/state", "sess-2")).not.toBe(dir);
   });
 
-  it("signal 1: packageManager field is authoritative either way", () => {
-    expect(isPnpmRepo(workspace({ "package.json": JSON.stringify({ packageManager: "pnpm@9.1.0" }) }))).toBe(true);
-    expect(isPnpmRepo(workspace({
-      "package.json": JSON.stringify({ packageManager: "npm@10.0.0" }),
-      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
-    }))).toBe(false);
-    expect(isPnpmRepo(workspace({ "package.json": JSON.stringify({ packageManager: "yarn@4.0.0" }) }))).toBe(false);
-  });
-
-  it("signal 2: a pnpm invocation in agent.install (outranks lockfile)", () => {
-    expect(isPnpmRepo(workspace({ "shipit.yaml": "agent:\n  install:\n    - pnpm install --frozen-lockfile\n" }))).toBe(true);
-    expect(isPnpmRepo(workspace({
-      "shipit.yaml": "agent:\n  install:\n    - npm ci\n",
-      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
-    }))).toBe(false);
-  });
-
-  it("signal 3: pnpm-lock.yaml at the root is the fallback", () => {
-    expect(isPnpmRepo(workspace({ "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" }))).toBe(true);
-  });
-
-  it("packageManager (1) outranks the install command (2)", () => {
-    expect(isPnpmRepo(workspace({
-      "package.json": JSON.stringify({ packageManager: "pnpm@9.1.0" }),
-      "shipit.yaml": "agent:\n  install:\n    - npm ci\n",
-    }))).toBe(true);
-  });
-
-  it("degrades each signal to absent on unreadable inputs", () => {
-    expect(isPnpmRepo(workspace({ "package.json": "{not json", "pnpm-lock.yaml": "x" }))).toBe(true);
-  });
-});
-
-describe("pnpm store helpers (docs/197 Part 2)", () => {
-  it("pnpmStoreHash is a stable 16-hex digest of the runtime key", () => {
-    const h = pnpmStoreHash("img@sha256:abc|x64");
-    expect(h).toMatch(/^[a-f0-9]{16}$/);
-    expect(pnpmStoreHash("img@sha256:abc|x64")).toBe(h);
-    expect(pnpmStoreHash("other|x64")).not.toBe(h);
-  });
-
-  it("pnpmStoreDirForRuntime nests under <stateDir>/pnpm-store/<hash>", () => {
-    const env = { SESSION_WORKER_IMAGE_ID: "img-1" } as NodeJS.ProcessEnv;
-    const dir = pnpmStoreDirForRuntime("/state", env);
-    expect(dir).toBe(path.join("/state", "pnpm-store", pnpmStoreHash(overlayRuntimeKey(env))));
+  it("the retired shared root is the path the janitor ages out", () => {
+    expect(retiredSharedPnpmStoreRoot("/state")).toBe(path.join("/state", "pnpm-store"));
   });
 });

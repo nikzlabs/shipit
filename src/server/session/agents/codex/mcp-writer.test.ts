@@ -86,7 +86,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
     expect(cfg).toContain("mcp-shipit-bridge.js");
     expect(cfg).toMatch(/command = ".+node"/);
     expect(cfg).toContain('env_vars = ["SHIPIT_MCP_TOOLS"]');
-    expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "present,voice,ask,bug,propose_actions,propose_repo_session" });
+    expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "present,voice,ask,bug,propose_actions,propose_repo_session,propose_session_message" });
     expect(cfg).not.toContain("[mcp_servers.shipit-review]");
     expect(cfg).not.toContain("[mcp_servers.shipit-ask]");
   });
@@ -116,7 +116,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
       onServerFailed,
     }).runtimeEnv;
     expect(runtimeEnv?.SHIPIT_MCP_TOOLS)
-      .toBe("present,voice,ask,bug,session_status,propose_repo_session");
+      .toBe("present,voice,ask,bug,session_status,propose_repo_session,propose_session_message");
   });
 
   it("is idempotent — repeat calls do not duplicate the block", () => {

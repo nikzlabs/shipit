@@ -3,7 +3,7 @@ import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 import { revokeOpenCodeAccount } from "./openai-account-delivery.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import path from "node:path";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -59,7 +59,7 @@ import {
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "../shared/types/domain-types/credential-route.js";
-import { buildConversationReplay } from "./services/replay.js";
+import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
 export const MCP_OAUTH_REFRESH_TIMEOUT_MS = 8_000;
@@ -112,17 +112,53 @@ export interface SessionAgentEnvDeps {
   sseBroadcast?: (event: string, data: unknown) => void;
 }
 
-// Run-parameter construction consumes this replay in the same turn.
-function armConversationReplay(deps: SessionAgentEnvDeps, sessionId: string): void {
-  const chatHistory = deps.chatHistoryManager;
-  if (!chatHistory) return;
+type PrepareAgentEnvOpts = NonNullable<Parameters<
+  NonNullable<SystemTurnDeps["prepareAgentEnv"]>
+>[2]>;
+
+/**
+ * The per-turn half of `prepareSessionAgentEnvironment`'s arguments.
+ *
+ * Both wiring sites — `runner-registry-factory.ts` for dispatched turns and
+ * `ws-handlers/agent-execution.ts` for interactive ones — rebuilt this object, and they
+ * drifted: `ownUserText` was added to one and silently dropped by the other, so the fix
+ * reached only half the turns. Add per-turn options here, not at a call site.
+ */
+export function agentEnvTurnArgs(envOpts: PrepareAgentEnvOpts | undefined): {
+  reusingResidentAgent?: boolean;
+  excludeRouteIds?: readonly string[];
+  residentRoute?: { kind: ProviderRouteKind; id: string };
+  requireResidentRoute?: boolean;
+  ownUserText?: string;
+} {
+  return {
+    ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
+    ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
+    ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
+    ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
+    ...(envOpts?.ownUserText !== undefined ? { ownUserText: envOpts.ownUserText } : {}),
+  };
+}
+
+// Run-parameter construction consumes this replay in the same turn; a retry re-arms it.
+function armReplayForClearedThread(
+  deps: SessionAgentEnvDeps,
+  sessionId: string,
+  opts: { ownUserText?: string; workspaceDir?: string },
+): void {
   try {
-    const messages = chatHistory.load(sessionId);
-    const replay = buildConversationReplay(messages);
-    if (!replay) return;
-    deps.sessionManager.setConversationReplay(sessionId, replay);
+    // Only reached from the container path, where scratch is mounted at /persist.
+    const spill = opts.workspaceDir
+      ? { spill: replaySpillDirs(path.dirname(opts.workspaceDir), { containerized: true }) }
+      : {};
+    // No `requireReply` here: an earlier unanswered user message is real history, and
+    // dropping this turn's own row is what keeps the agent from reading it twice.
+    if (!armConversationReplay(deps, sessionId, {
+      ...(opts.ownUserText !== undefined ? { dropTrailingUserText: opts.ownUserText } : {}),
+      ...spill,
+    })) return;
     console.log(
-      `[credentials] armed visible-history replay for ${sessionId} (${messages.length} messages) — the new agent conversation continues the transcript instead of starting empty`,
+      `[credentials] armed visible-history replay for ${sessionId} — the new agent conversation continues the transcript instead of starting empty`,
     );
   } catch (err) {
     console.warn("[credentials] failed to arm conversation replay:", getErrorMessage(err));
@@ -273,6 +309,11 @@ export async function prepareSessionAgentEnvironment(
     requireResidentRoute?: boolean;
     // Subtree repair removes files a live CLI can reread; defer repair until a fresh spawn.
     reusingResidentAgent?: boolean;
+    /**
+     * The message this turn is about to submit. Its row is already in chat history, so a
+     * replay armed here would end with the text that immediately follows it as the prompt.
+     */
+    ownUserText?: string;
   },
 ): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
@@ -480,7 +521,10 @@ export async function prepareSessionAgentEnvironment(
           if (current) {
             console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable conversation found on disk)`);
             clearConversationThread(deps, sessionId);
-            armConversationReplay(deps, sessionId);
+            armReplayForClearedThread(deps, sessionId, {
+              ...(args.ownUserText !== undefined ? { ownUserText: args.ownUserText } : {}),
+              ...(session.workspaceDir ? { workspaceDir: session.workspaceDir } : {}),
+            });
           }
           return;
         }

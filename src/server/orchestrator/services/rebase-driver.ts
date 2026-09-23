@@ -12,6 +12,7 @@ import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { classifyPushFailure, isNonFastForwardError } from "./git.js";
+import { findSharedBranchRefusal } from "./push-target-guard.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -451,8 +452,10 @@ export async function runRebaseFlow(
       // outrun POST_TURN_HOLD_MAX_MS on a large repo.
       hold.take();
       reevaluateSessionAfterRewrite(runner);
-      const forcePushed = await tryForcePush(deps);
+      const pushOutcome = await tryForcePush(deps, baseBranch);
+      const forcePushed = pushOutcome === "pushed";
       published = forcePushed;
+      pushProhibited = pushOutcome === "refused";
       const headAfter = await git.getHeadHash();
       emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
       if (recordSync) {
@@ -527,8 +530,10 @@ export async function runRebaseFlow(
 
     hold.take();
     reevaluateSessionAfterRewrite(runner);
-    const forcePushed = await tryForcePush(deps);
+    const resolvedPushOutcome = await tryForcePush(deps, baseBranch);
+    const forcePushed = resolvedPushOutcome === "pushed";
     published = forcePushed;
+    pushProhibited = resolvedPushOutcome === "refused";
     const headAfterResolve = await git.getHeadHash();
     emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, baseMove, forcePushed });
     if (recordSync) {
@@ -611,21 +616,36 @@ export async function runRebaseFlow(
   }
 }
 
+/**
+ * "refused" is distinct from "not-pushed" on purpose: the caller must consume
+ * the pending auto-push rather than let it fall through. A plain fallback push
+ * of a shared branch is the very thing the refusal exists to prevent, and it
+ * would land the saved commit on that branch with no pull request.
+ */
 async function tryForcePush(
   deps: RebaseDriverDeps,
+  baseBranch: string,
   /** Lease against the verified SHA so a later remote commit cannot be overwritten. */
   expectedRemoteSha?: string,
-): Promise<boolean> {
+): Promise<UpToDatePushOutcome> {
   const { git, githubAuthManager, runner } = deps;
-  if (!githubAuthManager.authenticated) return false;
+  if (!githubAuthManager.authenticated) return "not-pushed";
   try {
     const branch = await git.getCurrentBranch();
+    // Refuse before checking anything else, exactly as `pushIfAheadOfRemote`
+    // does. The base this sync targets is not the only shared branch: rebasing
+    // against `stable` while checked out on `main` would still publish `main`.
+    const shared = await findSharedBranchRefusal(git, branch, baseBranch);
+    if (shared) {
+      console.warn(`[rebase] refusing to force-push '${branch}': ${shared.role}, not a session branch`);
+      return "refused";
+    }
     const message = expectedRemoteSha === undefined
       ? await git.forcePush()
       : await git.forcePushWithLease("origin", branch, expectedRemoteSha);
     runner.emitMessage({ type: "github_push_result", success: true, message, branch });
     notifyPrStatusPollerOfPush(deps);
-    return true;
+    return "pushed";
   } catch (err) {
     const errMsg = getErrorMessage(err);
     const failure = classifyPushFailure(err);
@@ -645,7 +665,7 @@ async function tryForcePush(
       runner.emitMessage({ type: "github_push_result", success: false, message: text });
       runner.emitMessage(agentLogAppend("server", text));
     }
-    return false;
+    return "not-pushed";
   }
 }
 
@@ -666,12 +686,14 @@ async function pushIfAheadOfRemote(
     if (!deps.githubAuthManager.authenticated) return "not-pushed";
     const localHead = await git.getHeadHash();
     if (!localHead) return "not-pushed";
-    // getCurrentBranch() falls back to main on detached HEAD; verify the push target.
+    // getCurrentBranch() reports a placeholder on detached HEAD ("HEAD", or its
+    // own "main" fallback), which names a ref that is not what HEAD points at.
+    // Verify the named ref really is the checked-out commit before pushing it.
     if ((await git.getRefHash(branch)) !== localHead) return "not-pushed";
     const remoteHead = await git.getRefHash(`origin/${branch}`);
     if (!remoteHead || remoteHead === localHead) return "not-pushed";
     if (!(await git.isAncestor(remoteHead, "HEAD"))) return "not-pushed";
-    return (await tryForcePush(deps, remoteHead)) ? "pushed" : "not-pushed";
+    return await tryForcePush(deps, baseBranch, remoteHead);
   } catch (err) {
     console.error("[rebase] up-to-date push check failed:", getErrorMessage(err));
     return "not-pushed";
@@ -741,7 +763,6 @@ function dispatchRebaseResolutionTurn(
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: undefined,
-      statusNudge: undefined,
       onTurnComplete: (outcome) => {
         // Late duplicate callbacks must not re-lock the runner after the flow releases it.
         if (turnSettled) return;

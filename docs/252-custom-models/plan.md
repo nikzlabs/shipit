@@ -171,6 +171,40 @@ Sol stays first because Astra access is still rolling out and catalogue order
 sets the default. The exact 0.153.2 CLI pin has a time-limited dependency-age
 waiver approved for this model launch.
 
+**Catalogue maintenance (2026-09-22): GPT-6 Sol and Luna.** The user asked
+for a Codex update and support for the latest OpenAI models. Both models are
+added to the OpenAI subscription and API-key catalogues. GPT-5.6 Sol remains
+the default; saved selections keep their model. The new rows use Responses
+because Chat Completions permits function calling only without reasoning.
+Their image support, reasoning efforts (`none`, `low`, `medium`, `high`,
+`xhigh`, `max`), and standard token prices come from the official
+[Sol](https://developers.openai.com/api/docs/models/gpt-6-sol) and
+[Luna](https://developers.openai.com/api/docs/models/gpt-6-luna) pages, read
+on this date. [Codex model documentation](https://learn.chatgpt.com/docs/models)
+confirms the CLI IDs and says access depends on the account and rollout.
+The initial context window uses the published 1,050,000-token limit. Codex
+telemetry replaces it when reported; OpenCode uses the catalogue value.
+There is no measured Codex-specific window for these new IDs.
+The Codex CLI pin moves to 0.155.1 with a regenerated platform lockfile.
+The user approved its exact-version dependency-age exception on 2026-09-22;
+it expires on 2026-09-26. The update fulfills the requested CLI refresh and
+is not required for the new model IDs.
+Its unauthenticated app-server handshake, model-list request, and thread
+creation with both new IDs were checked. Its bundled list does not yet include
+Sol or Luna. No authenticated inference against the new models has been verified.
+
+**Catalogue maintenance (2026-09-22): Opus 5.5.** The user also requested
+Opus 5.5. Anthropic's [model overview](https://platform.claude.com/docs/en/models/opus-5-5/overview)
+and [pricing](https://platform.claude.com/docs/en/about-claude/pricing), read on
+this date, confirm `claude-opus-5-5`, image input, a 1M context window, and
+input/output prices of $4/$20 per million tokens. Cache reads cost $0.20 and
+five-minute writes cost $5. The row uses Anthropic Messages and is added under
+both Anthropic billing modes. Existing models and defaults stay unchanged.
+Gateway availability is not inferred from Anthropic's release. The user also
+requested the latest Claude Code CLI and explicitly approved an age exception:
+2.1.280 is pinned with a regenerated lockfile and an exception expiring
+2026-09-30. No live model response has been verified.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither

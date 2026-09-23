@@ -65,7 +65,7 @@ the two direct-curl endpoints advertised in `agent-instructions.ts:318`.
 | `agent/spawn` | POST | `shipit agent run` |
 | `spawn` | POST | `shipit session create` |
 | `children`, `children/:childId` (incl. `?wait`) | GET | `shipit session list/view/wait` |
-| `children/:childId/message`, `children/:childId/archive`, `children/:childId/notify-on-merge` | POST | `shipit session ...` |
+| `children/:childId/message`, `children/:childId/notify-on-merge` | POST | `shipit session ...` | (A `children/:childId/archive` route was here until the agent-facing archive API was removed — see `docs/117-agent-spawned-sessions` → *The parent never archives a child*.)
 | `review-submit`, `voice-note`, `bug-report` | POST | review / voice_note / report_shipit_bug bridges |
 
 > The children/spawn routes are keyed on `:parentId` in the route definition, but the path

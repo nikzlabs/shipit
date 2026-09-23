@@ -1254,6 +1254,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
     /** Compose external-volume references must already exist; creation paths omit this. */
     requireProvisioned?: boolean;
+    /** Pins the selected generations until this operation releases the token; see overlay-base-claims. */
+    claimToken?: string;
   }): Promise<DepDirOverlaySpec[]> {
     return prepareOverlaySpecsFn(this.overlayDeps(), opts);
   }
@@ -1270,6 +1272,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   preparePnpmStore(opts: {
+    sessionId: string;
     workspaceDir: string;
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
   }): string | undefined {

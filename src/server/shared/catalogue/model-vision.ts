@@ -7,6 +7,8 @@ export type VisionSupport = "yes" | "no" | "unverified";
 // Gateway agreement does not prove that every service transports images correctly.
 export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   "claude-opus-5": "yes",
+  // Anthropic Opus 5.5 model page, 2026-09-22.
+  "claude-opus-5.5": "yes",
   "claude-sonnet-5": "yes",
   "claude-haiku-4.5": "yes",
   "claude-fable-5": "yes",
@@ -14,6 +16,9 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
 
   // Verified from OpenAI's model page and Codex 0.153.2 metadata, 2026-09-04.
   "gpt-6-astra": "yes",
+  // OpenAI model pages, 2026-09-22.
+  "gpt-6-sol": "yes",
+  "gpt-6-luna": "yes",
   "gpt-5.6-sol": "yes",
   "gpt-5.6-terra": "yes",
   "gpt-5.6-luna": "yes",

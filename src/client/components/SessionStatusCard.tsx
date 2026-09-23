@@ -1,6 +1,7 @@
-// eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+// eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount, and focus continuity across the collapse toggle
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  CaretUpIcon,
   ChatCircleDotsIcon,
   ClipboardTextIcon,
   ClockCounterClockwiseIcon,
@@ -11,6 +12,10 @@ import {
 } from "@phosphor-icons/react";
 import type { SessionStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import {
+  getSavedStatusCardCollapsed,
+  saveStatusCardCollapsed,
+} from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { Button } from "./ui/button.js";
@@ -144,6 +149,12 @@ function Capped({
 
 export interface SessionStatusCardProps {
   status: SessionStatus;
+  /**
+   * The session the card belongs to, so the collapsed state is that session's
+   * and survives a reload and a switch (req 42). Absent only where there is no
+   * session to key on, and the collapse is then per-mount.
+   */
+  sessionId?: string;
   /** Returns whether the message was accepted for delivery. */
   onSubmit?: (
     text: string,
@@ -151,11 +162,32 @@ export interface SessionStatusCardProps {
   ) => boolean;
 }
 
+/** One count on the collapsed control: what is still outstanding, and its kind. */
+function CollapsedCount({ icon, count }: { icon: ReactNode; count: number }) {
+  return (
+    <span className="inline-flex items-center gap-0.5 font-semibold text-(--color-text-secondary)">
+      <span className="shrink-0 text-(--color-accent)">{icon}</span>
+      {count}
+    </span>
+  );
+}
+
 /**
  * docs/303-session-status-card — the agent's card at the end of the
  * conversation. Not a transcript row: it is read from the session record.
  */
-export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) {
+export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatusCardProps) {
+  /** req 42 — collapsed is the user's own per-session choice, never the card's. */
+  const [collapsed, setCollapsed] = useState(() =>
+    sessionId ? getSavedStatusCardCollapsed(sessionId) : false,
+  );
+  /**
+   * The session every piece of interaction state below belongs to. It is STATE
+   * and not a ref on purpose: the reset is a render-phase update, and a ref
+   * would survive a render React discards while the updates beside it did not,
+   * leaving the card showing one session's ticks under another session's id.
+   */
+  const [owner, setOwner] = useState(sessionId);
   /**
    * req 17 — an offer reads as sent the moment its message goes, without waiting
    * for the server's `takenAt`, which is a round trip behind. It stays tickable:
@@ -164,6 +196,13 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   const [sent, setSent] = useState<ReadonlySet<string>>(() => new Set());
   /** req 29 — manual steps the user has ticked and already told the agent about. */
   const [reportedSteps, setReportedSteps] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * req 44 — of those, the ones that were TICKED when they went, so the card
+   * goes on showing which steps the user reported done. A step sent with a note
+   * alone was answered, not done, and is deliberately absent: the record has to
+   * distinguish the two, which "was it sent" cannot.
+   */
+  const [checkedSteps, setCheckedSteps] = useState<ReadonlySet<string>>(() => new Set());
   /** req 37 — what the user typed against a step, keyed by the step's row key. */
   const [notes, setNotes] = useState<ReadonlyMap<string, string>>(() => new Map());
   /**
@@ -189,7 +228,11 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
         label: offer.label,
         ...(offer.description ? { description: offer.description } : {}),
         ...(offer.defaultChecked ? { defaultChecked: true } : {}),
-        ...(offer.takenAt || sent.has(offer.offerId) ? { taken: true } : {}),
+        // req 44 — an offer can only be sent by ticking it, so every sent offer
+        // carries the record; there is no answer-only path to tell apart.
+        ...(offer.takenAt || sent.has(offer.offerId)
+          ? { taken: true, takenChecked: true }
+          : {}),
       })),
     [status.actions, sent],
   );
@@ -207,12 +250,60 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
         key: row.key,
         label: row.text,
         ...(reportedSteps.has(row.key) ? { taken: true } : {}),
+        ...(checkedSteps.has(row.key) ? { takenChecked: true } : {}),
       })),
-    [stepRows, reportedSteps],
+    [stepRows, reportedSteps, checkedSteps],
   );
   // The selection is derived from the rows, so the ANSWERED mark — which
   // depends on it — is added afterwards rather than inside them.
   const steps = useChecklistSelection(stepBase);
+
+  /**
+   * Handed another session without remounting, the card starts that session's
+   * state from nothing and reads its own collapsed choice (req 42). Everything
+   * below is keyed by a manual step's TEXT, so two sessions with a step worded
+   * the same would otherwise share a SENT grey and an unsent note — and the
+   * collapsed control would then report the second session's step as done.
+   *
+   * The offer selection is deliberately left alone: its keys are server-owned
+   * offer ids, which `useChecklistSelection` already prunes when they leave, and
+   * clearing it here would swallow an arriving offer's `defaultChecked` tick.
+   */
+  if (owner !== sessionId) {
+    setOwner(sessionId);
+    setCollapsed(sessionId ? getSavedStatusCardCollapsed(sessionId) : false);
+    setSent(new Set());
+    setReportedSteps(new Set());
+    setCheckedSteps(new Set());
+    setNotes(new Map());
+    setOpenNotes(new Set());
+    setSendFailed(false);
+    steps.clear();
+  }
+
+  /**
+   * The two collapse controls replace one another across different DOM
+   * subtrees, so the browser drops focus to the body on every press. Keyboard
+   * use then dead-ends at the control the user just operated, and only a press
+   * moves focus: the effect runs on nothing else.
+   */
+  const collapseControl = useRef<HTMLButtonElement | null>(null);
+  const expandControl = useRef<HTMLButtonElement | null>(null);
+  const movedByPress = useRef(false);
+  useLayoutEffect(() => {
+    if (!movedByPress.current) return;
+    movedByPress.current = false;
+    (collapsed ? expandControl : collapseControl).current?.focus();
+  }, [collapsed]);
+
+  const collapse = useCallback(
+    (next: boolean) => {
+      movedByPress.current = true;
+      setCollapsed(next);
+      if (sessionId) saveStatusCardCollapsed(sessionId, next);
+    },
+    [sessionId],
+  );
 
   const stepItems = useMemo<ChecklistItem[]>(
     () =>
@@ -250,6 +341,9 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
     [stepRows, steps.selected, notes],
   );
 
+  /** The step whose note field was just opened by a press, and so wants focus. */
+  const justOpened = useRef<string | null>(null);
+
   const setNote = useCallback((key: string, value: string) => {
     setNotes((prev) => {
       const next = new Map(prev);
@@ -267,6 +361,10 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
    * with an empty note open submitted nothing.
    */
   const toggleNote = useCallback((key: string) => {
+    // Focused by the press that opens it, never by `autoFocus`, which fires on
+    // every mount: reopening a collapsed card would then pull focus into a note
+    // field the user had not asked for.
+    if (!openNotes.has(key)) justOpened.current = key;
     setOpenNotes((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -281,7 +379,7 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       next.delete(key);
       return next;
     });
-  }, []);
+  }, [openNotes]);
 
   const handleSubmit = useCallback(() => {
     // req 17 — a sent offer stays selectable, so a ticked one is re-sent on
@@ -304,10 +402,21 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
     setSent((prev) => new Set([...prev, ...offerIds]));
     // req 29 — a step that was answered has been reported too, so it greys like
     // one reported done; its note is delivered and lives in the transcript now.
-    const reported = stepRows
-      .filter((row) => steps.selected.has(row.key) || notes.get(row.key)?.trim())
-      .map((row) => row.key);
-    setReportedSteps((prev) => new Set([...prev, ...reported]));
+    const reported = stepRows.filter(
+      (row) => steps.selected.has(row.key) || notes.get(row.key)?.trim(),
+    );
+    setReportedSteps((prev) => new Set([...prev, ...reported.map((row) => row.key)]));
+    // req 44 — the record is what the LAST send said about the row, so a step
+    // re-sent as an answer alone loses the tick it earned earlier: the box may
+    // not claim the user reported done something they have since qualified.
+    setCheckedSteps((prev) => {
+      const next = new Set(prev);
+      for (const row of reported) {
+        if (steps.selected.has(row.key)) next.add(row.key);
+        else next.delete(row.key);
+      }
+      return next;
+    });
     setNotes(new Map());
     setOpenNotes(new Set());
     clear();
@@ -335,6 +444,86 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   const needsYou = status.needsYou ?? [];
   const hasNextSteps = hasOffers || needsYou.length > 0;
 
+  /**
+   * req 42 — what the collapsed control has to carry. Collapsing hides the
+   * card's words, never the fact that something is waiting, so a row counts
+   * while anything about it is still unsent: never sent at all, ticked again
+   * after a send, or carrying a note the agent has not been told. Counting only
+   * `!taken` concealed exactly the two cases the user is most likely to be
+   * waiting on — a retry after a crash, and a note typed against a step already
+   * reported.
+   *
+   * Nothing is added when a step or an offer arrives: the count going from none
+   * to one IS the signal, and a "new" mark would need a seen/unseen lifetime of
+   * its own to clear.
+   */
+  const openSteps = stepItems.filter(
+    (item) => !item.taken || steps.selected.has(item.key) || notes.get(item.key)?.trim(),
+  ).length;
+  const openOffers = items.filter(
+    (item) => !item.taken || selected.has(item.key),
+  ).length;
+
+  if (collapsed) {
+    const parts = [
+      openSteps > 0 ? `${openSteps} manual step${openSteps === 1 ? "" : "s"}` : null,
+      openOffers > 0 ? `${openOffers} follow-up${openOffers === 1 ? "" : "s"}` : null,
+      stale ? "may be behind" : null,
+    ].filter((part): part is string => part !== null);
+    const name = `Show session status${parts.length > 0 ? ` — ${parts.join(", ")}` : ""}`;
+    return (
+      // Right-aligned, so the icon appears where the control that collapsed it
+      // was: the same corner, rather than jumping the width of the card.
+      <div data-testid="session-status-card" className="flex justify-end text-xs">
+        {/* req 42 — a single icon, which is all it is when nothing is
+            outstanding. It grows only by what collapsing must not conceal. */}
+        <button
+          type="button"
+          ref={expandControl}
+          data-testid="session-status-collapsed"
+          onClick={() => collapse(false)}
+          aria-expanded={false}
+          title={name}
+          aria-label={name}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-(--color-accent)/45 bg-(--color-accent-subtle) px-2 py-1 text-(--color-accent) hover:bg-(--color-accent)/15"
+        >
+          <GaugeIcon size={ICON_SIZE.SM} />
+          {openSteps > 0 && (
+            <CollapsedCount icon={<ClipboardTextIcon size={ICON_SIZE.XS} />} count={openSteps} />
+          )}
+          {openOffers > 0 && (
+            <CollapsedCount icon={<ListChecksIcon size={ICON_SIZE.XS} />} count={openOffers} />
+          )}
+          {/* req 14 — the card always says whether it is current, collapsed included. */}
+          {stale && <span className="text-[11px] font-semibold">Stale</span>}
+        </button>
+      </div>
+    );
+  }
+
+  /**
+   * req 42 — the control lives at the bottom-right of the LAST card in the
+   * stack, which is the corner nearest the composer and so nearest the user's
+   * hand. Which card that is moves: "Next steps" is absent with nothing to do,
+   * and "Last turn" is absent on a stale card and when the agent had nothing to
+   * say, leaving the status card alone.
+   */
+  const lastCard = hasNextSteps ? "nextSteps" : lastTurn ? "lastTurn" : "status";
+  const collapseButton = (
+    <button
+      type="button"
+      ref={collapseControl}
+      data-testid="session-status-collapse"
+      onClick={() => collapse(true)}
+      aria-expanded
+      title="Collapse session status"
+      aria-label="Collapse session status"
+      className="ml-auto -mr-1 shrink-0 rounded-md p-1 text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+    >
+      <CaretUpIcon size={ICON_SIZE.SM} weight="bold" />
+    </button>
+  );
+
   return (
     <div data-testid="session-status-card" className="flex flex-col gap-2 text-xs">
       {/* req 33 — the session's own state comes first: it is what the user
@@ -343,11 +532,12 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
         icon={<GaugeIcon size={ICON_SIZE.SM} />}
         title="Status"
         tone="soft"
+        testId="session-status-status"
         {...(stale
           ? {
               // req 14 — one mark for the whole stack, on the first cap, since
-              // the stack has no single bottom-right corner any more. Full
-              // strength, never faded: it is the smallest text on the cap.
+              // the stack has no single bottom-right corner. Full strength,
+              // never faded: it is the smallest text on the cap.
               trailing: (
                 <span className="ml-auto text-[11px] font-semibold text-(--color-accent)">
                   Stale
@@ -357,8 +547,9 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
           : {})}
       >
         <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
-          <MarkdownContent text={status.status} />
+          <MarkdownContent text={status.status} shipitLinks />
         </div>
+        {lastCard === "status" && <div className="mt-1 flex">{collapseButton}</div>}
       </Capped>
 
       {/* req 33 — what the last turn did, between the session's state and what
@@ -372,8 +563,9 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
           testId="session-status-last-turn"
         >
           <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
-            <MarkdownContent text={lastTurn} />
+            <MarkdownContent text={lastTurn} shipitLinks />
           </div>
+          {lastCard === "lastTurn" && <div className="mt-1 flex">{collapseButton}</div>}
         </Capped>
       )}
 
@@ -381,7 +573,12 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
           only card that asks something of the user, it carries the one Submit
           (req 29), and last puts it nearest the composer. */}
       {hasNextSteps && (
-        <Capped icon={<StepsIcon size={ICON_SIZE.SM} />} title="Next steps" tone="loud">
+        <Capped
+          icon={<StepsIcon size={ICON_SIZE.SM} />}
+          title="Next steps"
+          tone="loud"
+          testId="session-status-next-steps"
+        >
           {needsYou.length > 0 && (
             <div>
               <Subtitle icon={<ClipboardTextIcon size={ICON_SIZE.SM} />}>Manual steps</Subtitle>
@@ -415,9 +612,12 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
                 renderBelow={(item) =>
                   openNotes.has(item.key) ? (
                     <textarea
-                      // Focused on mount: the field exists only because the
-                      // user pressed the control that opens it.
-                      autoFocus
+                      ref={(el) => {
+                        if (el && justOpened.current === item.key) {
+                          justOpened.current = null;
+                          el.focus();
+                        }
+                      }}
                       rows={2}
                       value={notes.get(item.key) ?? ""}
                       onChange={(e) => setNote(item.key, e.target.value)}
@@ -463,6 +663,7 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
                 <ChatCircleDotsIcon size={ICON_SIZE.SM} />
                 Add comment…
               </Button>
+              {lastCard === "nextSteps" && collapseButton}
             </div>
           </div>
         </Capped>

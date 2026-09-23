@@ -70,6 +70,79 @@ export interface NoticeDelivery {
 }
 
 /**
+ * One-shot state a prompt TOOK at composition, put back when no attempt of the turn ever
+ * submitted that prompt (planning#609).
+ *
+ * The mirror of {@link NoticeDelivery}, and needed for the same reason: a take spent at
+ * composition belongs to the agent that reads it, not to the turn that asked. Where a
+ * notice delivery writes a take off once the agent answered, a repark restores one the
+ * agent was never asked about — and a turn ends that way routinely, because
+ * `prepareAgentEnv` refuses a spent account before the prompt is submitted and the error
+ * tells the user to send the message again.
+ */
+export interface PromptRepark {
+  /** Idempotent: a turn can reach this point from more than one path. */
+  repark(): void;
+}
+
+/**
+ * A repark that runs once and never throws. It is called from a turn's terminal sequence,
+ * where a throw would abandon the steps behind it (CLAUDE.md invariant 3).
+ */
+export function createPromptRepark(label: string, restore: () => void): PromptRepark {
+  let reparked = false;
+  return {
+    repark(): void {
+      if (reparked) return;
+      reparked = true;
+      try {
+        restore();
+      } catch (err) {
+        console.error(`[turn] re-parking ${label} failed:`, err);
+      }
+    },
+  };
+}
+
+/**
+ * The takes a turn's composition has made, and who is answerable for them.
+ *
+ * Composition performs its takes one at a time and only then hands the prompt to
+ * `executeAgentTurn`, so for that whole window nothing else can put them back — and
+ * composition can fail in it, on an image written to disk or on any read of a database
+ * shutdown has closed under it. The ledger is what closes that window: every take is
+ * registered as it is made, the executor becomes answerable at `handOver()`, and until
+ * then a throw anywhere in composition hands all of them back.
+ */
+export interface PromptTakeLedger {
+  readonly reparks: readonly PromptRepark[];
+  /** `undefined` for a take not performed — a prefix entry this turn carries none of. */
+  add(repark: PromptRepark | undefined): void;
+  /** The prompt is the executor's from here; it settles the takes by its own reading. */
+  handOver(): void;
+  reparkIfNotHandedOver(): void;
+}
+
+export function createPromptTakeLedger(): PromptTakeLedger {
+  const reparks: PromptRepark[] = [];
+  let handedOver = false;
+  return {
+    reparks,
+    add(repark): void {
+      if (repark) reparks.push(repark);
+    },
+    handOver(): void {
+      handedOver = true;
+    },
+    reparkIfNotHandedOver(): void {
+      if (handedOver) return;
+      handedOver = true;
+      for (const repark of reparks) repark.repark();
+    },
+  };
+}
+
+/**
  * Whether a turn result is the agent's own work rather than a report that its
  * prompt did not run. No shipped adapter sets `error` on a non-`error` status,
  * so the first clause is a guard against one that does: the cost of being wrong

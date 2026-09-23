@@ -243,7 +243,13 @@ It does not come back either. Long-running work belongs in
 Archiving is the tidy end of a session's life, not a delete. It stops the
 session's container, removes its named volumes, and reclaims its checkout — and
 it takes the session's **children** with it, since archiving a parent is one
-user action.
+user action. (Ops sessions are the exception: their children are independent
+fixes and stay alive.)
+
+**Archiving is the user's, in the UI — the agent cannot do it.** There is no
+agent command for it, deliberately: a parent agent cannot read its children's
+chats, so it cannot tell a child that is finished from one waiting on the user.
+Point the user at the session's row menu, or **All sessions**.
 
 **"Removes its named volumes" includes the project's own.** A volume declared in
 the user's `docker-compose.yml` becomes a Docker volume belonging to this
@@ -278,15 +284,34 @@ of work is split so each part can be reviewed on its own. You create them, and
 coordinate with them, through `shipit session` — see `/shipit-docs/sessions.md`
 for when that is the right shape and when a sub-agent or a consult is better.
 
-Three things users ask about children:
+Four things users ask about children:
 
 - They report **upward only**. A child can raise a blocker to its parent; it
   cannot talk to its siblings.
+- **A parent cannot end a child.** It can wait on one, message one, and be woken
+  when one merges; archiving is the user's, above. A child steered by the user in
+  its own chat is doing exactly that, and the parent has no way to see it.
 - **Being told about a merge** does not need watching. `shipit session
   notify-on-merge` wakes the session when the pull request lands.
 - A child sees the repository as of **main**, not the parent's uncommitted or
   unmerged work. Work it must build on has to be merged first, or carried in
   the prompt.
+
+### A message to a session nobody can address
+
+Those commands reach a session's **own children**, and reporting reaches its
+**own parent** — nothing else, which is what stops one session from starting a
+turn in an unrelated one. So a sibling cannot be reached at all, and neither can
+a session that handed an agent a prompt without spawning it.
+
+For that case the agent posts a **"Message for another session"** card naming
+the target session and showing the whole message. The user reads it and sends
+it; that click is what delivers it, and it starts a turn there just as typing
+it would. Approving one card sends one message — the agent gets no continuing
+access, so a second message means a second card. The receiving session's
+transcript marks the message "From another session, approved by you", with the
+sender's name, and the card stays in the sender's transcript recording that it
+was delivered.
 
 ## Kinds of session
 

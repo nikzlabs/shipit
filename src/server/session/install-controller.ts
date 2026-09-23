@@ -25,10 +25,16 @@ import {
   formatHoistedDepDirsWarning,
   formatInstallFailureMessage,
   formatStaleDepDirsFailureMessage,
+  formatUnreconciledPnpmFailureMessage,
   INSTALL_STDERR_TAIL_BYTES,
 } from "./install-failure.js";
-import { MAX_REPORTED_MISMATCHES, staleDepDirs } from "./dep-tree-staleness.js";
+import {
+  MAX_REPORTED_MISMATCHES,
+  staleDepDirs,
+  unreconciledPnpmDepDirs,
+} from "./dep-tree-staleness.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { isPnpmRepo } from "../shared/pnpm-repo.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
@@ -315,6 +321,16 @@ export class InstallController {
         return;
       }
 
+      // The pnpm counterpart, and it is not a package comparison: a mounted base may be PRUNED,
+      // and a command that guards its own install leaves those packages missing at exit 0.
+      const unreconciled = unreconciledPnpmDepDirs(this.workspaceDir);
+      if (unreconciled.length > 0) {
+        const message = formatUnreconciledPnpmFailureMessage(unreconciled);
+        console.warn(`[install] ${message}`);
+        this.finishInstallFailed(message);
+        return;
+      }
+
       // This warning asserts success, so emit it only after every check passes.
       if (hoistedAway.length > 0) {
         const warning = formatHoistedDepDirsWarning(hoistedAway);
@@ -344,7 +360,10 @@ export class InstallController {
       return false;
     }
     const marker = parseMarker(raw);
-    return marker !== null && markerMatches(marker, stamp);
+    return (
+      marker !== null &&
+      markerMatches(marker, stamp, { requireDepsHash: isPnpmRepo(this.workspaceDir) })
+    );
   }
 
   private computeDepsHash(commands: string[]): string | null {

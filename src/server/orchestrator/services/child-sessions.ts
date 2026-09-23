@@ -1,7 +1,13 @@
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import type { SessionInfo, AgentId, SessionMergeWatch, SpawnTarget } from "../../shared/types.js";
+import type {
+  SessionInfo,
+  AgentId,
+  SessionMergeWatch,
+  SpawnTarget,
+  SessionMessageOrigin,
+} from "../../shared/types.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
 import { selectionExists } from "../../shared/catalogue/index.js";
 import {
@@ -26,6 +32,7 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { isResolvedForGrouping } from "../../shared/session-resolution.js";
+import type { TurnAdmission } from "../turn-settlement.js";
 
 export class ResolvedChildMessageError extends ServiceError {
   constructor(public readonly child: SessionInfo) {
@@ -39,6 +46,49 @@ function hasVisibleDirectChildren(sessionManager: SessionManager, sessionId: str
   );
 }
 
+/**
+ * Does this child still hold a slot against the per-parent cap?
+ *
+ * `isResolvedForGrouping` decides "finished", the same predicate
+ * `sendChildMessage` refuses on, so the word means one thing across the feature.
+ * Two of its inputs are supplied more conservatively here than the sidebar needs:
+ *
+ * - **Busy, not running.** `agentBusy` (plus a non-empty queue) is what the idle
+ *   enforcer refuses to reclaim on, so a child that costs a container and a child
+ *   that costs a slot are the same child. `running` alone misses background tasks,
+ *   brokered consults and post-turn work.
+ * - **A live brood, not a visible one.** `hasVisibleDirectChildren` counts any
+ *   non-archived descendant, which would pin a merged coordinator open forever on
+ *   its own merged grandchildren — the exact permanent-slot shape this cap is
+ *   being fixed for. The walk recurses on liveness instead.
+ *
+ * The descendant query runs only for a child that is otherwise finished: an
+ * unfinished child holds its slot whatever its brood looks like.
+ */
+function isChildLive(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  child: SessionInfo,
+  seen: Set<string>,
+): boolean {
+  if (seen.has(child.id)) return false;
+  seen.add(child.id);
+  const runner = runnerRegistry.get(child.id);
+  const busy = runner?.agentBusy === true || (runner?.queueLength ?? 0) > 0;
+  if (!isResolvedForGrouping(child, { hasVisibleBrood: false, isRunning: busy })) return true;
+  return sessionManager.findChildren(child.id)
+    .some((grandchild) => isChildLive(sessionManager, runnerRegistry, grandchild, seen));
+}
+
+export function countLiveChildren(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  children: readonly SessionInfo[],
+): number {
+  const seen = new Set<string>();
+  return children.filter((child) => isChildLive(sessionManager, runnerRegistry, child, seen)).length;
+}
+
 function readPositiveIntEnv(name: string): number | undefined {
   const raw = process.env[name];
   if (!raw) return undefined;
@@ -50,6 +100,11 @@ function readPositiveIntEnv(name: string): number | undefined {
   return parsed;
 }
 
+// Bounds an ACCIDENTAL spawn loop across turns, which the per-turn cap cannot see.
+// Not host admission control and not a defence against a determined agent: there is
+// no global container ceiling (`app-lifecycle.ts:createContainerForRunner` gates only
+// on the per-session OOM breaker), detached spawns are exempt, a grandchild gets a
+// fresh allowance, and `gh pr close` lets an agent resolve its own children.
 export const DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS =
   readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_PARENT") ?? 16;
 
@@ -217,10 +272,13 @@ export async function spawnChildSession(
   const existingChildren = sessionManager.findChildren(parentSessionId);
   if (!opts.detached) {
     const maxActive = opts.maxActiveSpawnedSessions ?? DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS;
-    if (existingChildren.length >= maxActive) {
+    const liveChildren = countLiveChildren(sessionManager, runnerRegistry, existingChildren);
+    if (liveChildren >= maxActive) {
       throw new ServiceError(
         429,
-        `This session already has ${existingChildren.length} spawned children (max ${maxActive}). Archive one before spawning another.`,
+        `This session already has ${liveChildren} unfinished spawned children (max ${maxActive}). ` +
+          "A child stops counting once its pull request merges or closes. " +
+          "To free a slot sooner, ask the user to archive a finished child from the sidebar.",
       );
     }
   }
@@ -423,7 +481,6 @@ export async function spawnChildSession(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
-    statusNudge: undefined,
   }));
 
   console.log(
@@ -535,6 +592,8 @@ export interface SendChildMessageResult {
   /** One-based when queued behind a running turn; otherwise zero. */
   queuePosition: number;
   enqueued: boolean;
+  /** docs/314 — the dispatch's OWN admission, not a guess from the runner's state. */
+  admitted: TurnAdmission;
 }
 
 // Observe boot failure before acknowledging; timeout still permits dispatch to await readiness itself.
@@ -572,30 +631,71 @@ export async function sendChildMessage(
   })) {
     throw new ResolvedChildMessageError(child);
   }
-  if (!child.workspaceDir) {
-    throw new ServiceError(400, "Child session has no workspace");
-  }
   if (child.archived) {
     throw new ServiceError(400, "Child session is archived");
   }
 
+  return deliverSessionMessage(
+    sessionManager,
+    runnerRegistry,
+    child,
+    trimmed,
+    {
+      sessionId: parentSessionId,
+      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
+      relation: "parent",
+    },
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+  );
+}
+
+/**
+ * The delivery half of `sendChildMessage`, with no admission rule of its own.
+ *
+ * Every caller decides separately who is allowed to reach `target`:
+ * `sendChildMessage` allows a direct child, and docs/314's proposal card allows
+ * anything the user approved by clicking. Sharing the body is what stops a
+ * change to dispatch — a credential refresh, a readiness wait — from applying
+ * to one route and not the other.
+ */
+export async function deliverSessionMessage(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  target: SessionInfo,
+  text: string,
+  origin: SessionMessageOrigin,
+  defaultAgentId: AgentId,
+  credentialsDir: string | undefined,
+  credentialStore: CredentialStore | undefined,
+  providerAccountManager?: ProviderAccountManager,
+  containerManager?: SessionContainerManager | null,
+): Promise<SendChildMessageResult> {
+  if (!target.workspaceDir) {
+    throw new ServiceError(400, "Target session has no workspace");
+  }
+  const targetSessionId = target.id;
+
   // A runner can survive its container. Dispose it so getOrCreate starts a fresh worker.
   if (containerManager) {
-    const stale = runnerRegistry.get(childSessionId);
-    if (stale && !hasLiveContainer(containerManager, childSessionId)) {
-      runnerRegistry.dispose(childSessionId, { force: true });
+    const stale = runnerRegistry.get(targetSessionId);
+    if (stale && !hasLiveContainer(containerManager, targetSessionId)) {
+      runnerRegistry.dispose(targetSessionId, { force: true });
     }
   }
 
-  const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, child.agentId ?? defaultAgentId);
+  const runner = runnerRegistry.getOrCreate(targetSessionId, target.workspaceDir, target.agentId ?? defaultAgentId);
   // getOrCreate ignores the agent argument for an existing runner; reconcile before provisioning.
-  const effectiveAgentId = reconcileRunnerAgent(runner, child.agentId);
+  const effectiveAgentId = reconcileRunnerAgent(runner, target.agentId);
 
   // A queued turn refreshes its own environment when it starts.
   const wasRunning = runner.running;
   if (!wasRunning && credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
-      sessionId: childSessionId,
+      sessionId: targetSessionId,
       agentId: effectiveAgentId,
       deps: {
         credentialsDir,
@@ -618,14 +718,10 @@ export async function sendChildMessage(
     throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
   }
 
-  runner.dispatch(prepareDispatch({
-    text: trimmed,
+  const handle = runner.dispatch(prepareDispatch({
+    text,
     agentInterface: undefined,
-    messageOrigin: {
-      sessionId: parentSessionId,
-      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
-      relation: "parent",
-    },
+    messageOrigin: origin,
     execution: undefined,
     activity: undefined,
     images: undefined,
@@ -640,11 +736,11 @@ export async function sendChildMessage(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
-    statusNudge: undefined,
   }));
   return {
-    queuePosition: wasRunning ? runner.queueLength : 0,
+    queuePosition: handle.admitted === "queued" ? runner.queueLength : 0,
     enqueued: wasRunning,
+    admitted: handle.admitted,
   };
 }
 
@@ -814,23 +910,3 @@ export async function waitForChildIdle(
   });
 }
 
-// The route performs archiveSession to avoid a cycle through session.ts's re-exports.
-export function assertArchivableChild(
-  sessionManager: SessionManager,
-  runnerRegistry: SessionRunnerRegistry,
-  parentSessionId: string,
-  childSessionId: string,
-): SessionInfo {
-  const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  if (child.archived) {
-    throw new ServiceError(400, "Child session is already archived");
-  }
-  const runner = runnerRegistry.get(childSessionId);
-  if (runner?.running) {
-    throw new ServiceError(
-      409,
-      "Cannot archive a running child session. Wait for it to finish (try `shipit session wait`) or interrupt it from the UI.",
-    );
-  }
-  return child;
-}

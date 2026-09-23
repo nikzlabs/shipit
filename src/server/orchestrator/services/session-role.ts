@@ -9,6 +9,7 @@ import type { CredentialStore } from "../credential-store.js";
 import { namesForMessage } from "../../shared/settings-catalogue/projection.js";
 import { renderLine } from "../../shared/settings-catalogue/rendered.js";
 import { checkRolePinnedParams, type RoleValidatorDeps } from "./roles.js";
+import { createPromptRepark, type PromptRepark } from "../turn-settlement.js";
 import { ServiceError } from "./types.js";
 
 export interface UserRoleDeps extends RoleValidatorDeps {
@@ -102,8 +103,18 @@ export function applyRoleToSession(
 }
 
 export interface RoleInstructionsDeps {
-  sessionManager: Pick<SessionManager, "get" | "setOriginRoleName">;
+  sessionManager: Pick<SessionManager, "get" | "setOriginRoleName" | "clearOriginRoleName">;
   credentialStore: Pick<CredentialStore, "getRole">;
+}
+
+export interface RoleStandingInstructions {
+  instructions: string;
+  /**
+   * Present only when this call performed the take, which is not the same as returning
+   * instructions: a role with no prompt still marks its origin, and a turn that dies
+   * before the agent runs must hand that marker back too (planning#609).
+   */
+  repark?: PromptRepark;
 }
 
 // Per-session instructions belong in the task prompt to keep system prompts stable.
@@ -111,14 +122,22 @@ export interface RoleInstructionsDeps {
 export function takeRoleStandingInstructions(
   sessionId: string,
   deps: RoleInstructionsDeps,
-): string {
+): RoleStandingInstructions {
   const session = deps.sessionManager.get(sessionId);
   const roleName = session?.roleName;
-  if (!roleName || session.originRoleName) return "";
+  if (!roleName || session.originRoleName) return { instructions: "" };
   // Record the origin even when the role has no prompt.
   deps.sessionManager.setOriginRoleName(sessionId, roleName);
+  // Scoped to the name this call recorded, so a role applied mid-turn keeps its own take.
+  const repark = createPromptRepark(
+    `the "${roleName}" standing brief for ${sessionId}`,
+    () => { deps.sessionManager.clearOriginRoleName(sessionId, roleName); },
+  );
   const role = deps.credentialStore.getRole(roleName);
   const prompt = role?.prompt?.trim();
-  if (!prompt) return "";
-  return `<role_instructions role="${roleName}">\n${prompt}\n</role_instructions>`;
+  if (!prompt) return { instructions: "", repark };
+  return {
+    instructions: `<role_instructions role="${roleName}">\n${prompt}\n</role_instructions>`,
+    repark,
+  };
 }

@@ -98,7 +98,11 @@ export async function assessMergeAutoPublish(git: GitManager, branch: string): P
  * wrong one lets a hotfix commit notes that the running workflow ignores.
  */
 export async function workflowPublishesAuthoredNotes(git: GitManager, payloadRef: string): Promise<boolean> {
-  const yamlText = await git.showFileAtRef(payloadRef, WORKFLOW_PATH);
+  return yamlPublishesAuthoredNotes(await git.showFileAtRef(payloadRef, WORKFLOW_PATH));
+}
+
+/** The content test itself, so the checkout-side reader (`release-notes-draft.ts`) cannot drift from it. */
+export function yamlPublishesAuthoredNotes(yamlText: string | null): boolean {
   return yamlText?.includes(".release-notes/") ?? false;
 }
 

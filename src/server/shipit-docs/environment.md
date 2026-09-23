@@ -30,9 +30,11 @@ identity — see the "Services share the agent's user" section of
 
 What this means in practice:
 
-- **Writable:** `/workspace`, `/persist`, `/dep-cache`, `/credentials`,
-  and your home `/home/shipit` (including `~/.claude`, `~/.codex`, `~/.grok`, the npm
-  global prefix at `~/.npm-global`, and the npm cache at `~/.npm`).
+- **Writable:** `/workspace`, `/persist`, `/dep-cache`, `/session-state`,
+  `/credentials`, and your home `/home/shipit` (including `~/.claude`, `~/.codex`,
+  `~/.grok` and the npm global prefix at `~/.npm-global`). npm's cache is at
+  `/session-state/npm-cache` for a repo-backed session — see
+  [The npm cache is split](#the-npm-cache-is-split) — and at `~/.npm` otherwise.
 - **Persistent scratch:** `/persist` is a writable, non-git directory that
   **survives container restarts** (like `/workspace`, but never committed). Put
   files here that should outlive the container without entering the repo — see
@@ -61,8 +63,100 @@ What this means in practice:
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Cleared only by a full session reset. |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
-| `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
+| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
+| `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
+| `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
 | `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
+
+### The npm cache is split
+
+`npm_config_cache` is `/session-state/npm-cache`, which only this session can
+reach, and its `_cacache/content-v2` is a symlink to the repo's shared store under
+`/dep-cache`. So npm's **resolution data** (which version and which bytes a name
+resolves to) is yours alone, while downloaded **package content** is still shared
+with the repo's other sessions — content is addressed by the hash of its own bytes
+and re-hashed on every read, so sharing it cannot make you install something else.
+Resolution data has no such property, and a session that could write yours would
+be choosing what your `npm install` runs.
+
+`npm install`, `npm ci`, `npm install <pkg>`, `npm install -g` and
+`npm cache clean --force` all work normally. Three consequences to know:
+
+- **`npm install --offline <pkg>` fails** with `ENOTCACHED` for a package this
+  session has never resolved, even when another session has already downloaded it.
+  Resolution is what is private; the download is not. Drop the flag, or use
+  `--prefer-offline` (which is what ShipIt's own install command uses): it reads
+  the cache first and asks the registry only for what is missing.
+- **`npm cache verify` and `npm doctor` fail** on a split cache, with
+  `Cannot read properties of null (reading 'toString')` — npm's garbage collector
+  walks the content directory and does not expect it to be a link. Neither damages
+  anything: the shared store is byte-identical afterwards. You do not need them —
+  npm treats a bad cache entry as a miss and re-downloads, which is exactly what
+  `cache verify` would repair. If a cache problem really is in the way, use
+  `npm cache clean --force`, or `npm install --cache /tmp/fresh-cache` for a one-off.
+- **`npm cache clean --force` removes the link** along with the rest of your cache
+  (the repo's shared content is left intact). Your next install re-downloads
+  privately; the link is restored the next time the container starts.
+
+`yarn` is unaffected by this and still uses `/dep-cache` directly. `pnpm` has its own
+arrangement — see below.
+
+### The pnpm store is yours alone
+
+In a repo-backed session, `/workspace/.pnpm-store` is **private to this session** — a
+directory under this session's own state, mounted at that path because a `node_modules`
+records the store it was built against and refuses another. No other session can read
+or write it, so nothing another session installs can decide what yours does. It survives
+a container restart and is removed with the session. (Elsewhere pnpm uses its own
+in-container default, which is private too but does not survive a restart.)
+
+Consequences for the commands you run:
+
+- `pnpm install`, `pnpm add` and `pnpm store` all work normally, against your store.
+  `pnpm store prune` and `pnpm store path` affect nothing outside this session.
+- **Downloads are not shared with other sessions.** A cold container installs cold.
+- You can edit a file inside an installed package — a `patch-package`-style fix, or
+  instrumenting a dependency to debug it — and the edit stays in this session.
+- The files under `node_modules` are **copies**, not hardlinks into the store
+  (`stat -c %h <file>` reports 1), and this costs you nothing: your store is mounted
+  separately from your workspace, and Linux refuses a hardlink across two mounts even when
+  they sit on one filesystem, so pnpm copies here whatever it is asked to do. ShipIt sets
+  `package-import-method=copy` explicitly on pnpm 10 and older.
+
+That also answers the obvious worry about an **old `node_modules`**: it is a tree of copies
+too, so nothing in it is shared with another session and there is nothing to rebuild. Edit
+inside it freely.
+
+`verify-store-integrity` is a local check on the store this session reads. It is left
+at pnpm's default and is not a cross-session protection — the private store is.
+
+**A pnpm session may get a shared `node_modules` base**, when ShipIt has built and verified one
+for this repo, runtime and commit: a read-only tree under your own writable layer, so a warm
+session skips most of the download. Your layer is on top, so a write to any file in it copies
+that file up into your session and reaches no one else. A repo with no lockfile, pinned to
+pnpm 10 or older, or with no verified base published gets none and installs privately instead —
+the install works either way, it is just not warm, and there is nothing to configure.
+
+**Everything you would do to `node_modules` still works, whether or not a base is under it.**
+`pnpm install`, `pnpm add`, `pnpm rebuild` and `pnpm install --force` all behave normally, and
+editing a file inside an installed package (a `patch-package`-style fix, or changing a
+dependency to debug it) works and stays in your session. ShipIt pre-copies the base's
+executable files into your own layer at container start precisely so that pnpm's `.bin`
+relinking — which `chmod`s every one of them — operates on files your session owns.
+
+The base is published **unbuilt**: its packages are installed with `--ignore-scripts`, so your
+own `agent.install` runs over it and any install-time build runs here, as you. If a `pnpm`
+command ever fails with `Operation not permitted` on a file under `node_modules`, that is
+ShipIt's layer and not your repo — say so rather than working around it.
+
+**A base deliberately does not carry every package.** Any dependency with an install-time build —
+a `preinstall`/`install`/`postinstall` script, a `binding.gyp`, a `.hooks/` file — is left out of
+it, because a shared read-only tree cannot carry the result of running one. Your own install
+downloads exactly those into this session's private store and **builds them here, as you**, and the
+rest of the tree is the shared base. So expect the first install after a container start to do
+some real work rather than finish instantly, and expect a native package to be compiled or
+downloaded in this session; that is the design, not a cache miss. Nothing about it needs
+configuring, and every `pnpm` command still behaves normally.
 
 ### Write-protected paths
 
@@ -85,7 +179,7 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
   Codex authentication has two modes — they are not interchangeable:
 
   - **ChatGPT subscription** (preferred). The user signs in with `Sign in with ChatGPT` in the UI; the credentials are written to `~/.codex/auth.json` (a symlink onto the credentials volume). Bills against their ChatGPT plan / Codex credits.
-  - **OpenCode with ChatGPT** reuses the same connected OpenAI account and quota. ShipIt currently offers GPT-5.5 on this route. The image keeps the Codex CLI as a login and renewal dependency even when only the OpenCode harness is selected. This does not add Codex to the session picker. It gives OpenCode only an access token, account identity, and expiry; Codex's account machinery owns renewal. Managed OpenCode runs use a private XDG data root under `HOME/.local/share/opencode/shipit-data`. Terminal OpenCode logins do not configure this route. Use ShipIt's account settings and model selection; do not copy auth files. Existing conversation state is migrated automatically.
+  - **OpenCode with ChatGPT** reuses the same connected OpenAI account and quota. The image keeps the Codex CLI as a login and renewal dependency even when only the OpenCode harness is selected. This does not add Codex to the session picker. It gives OpenCode only an access token, account identity, and expiry; Codex's account machinery owns renewal. Managed OpenCode runs use a private XDG data root under `HOME/.local/share/opencode/shipit-data`. Terminal OpenCode logins do not configure this route. Use ShipIt's account settings and model selection; do not copy auth files. Existing conversation state is migrated automatically.
   - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
 - **Playwright** with headless Chrome (available via browser tools)
 - **Android build toolchain** — JDK 17 (`JAVA_HOME=/opt/java`), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk` — `sdkmanager`, `adb`, platforms 34/35, build-tools), and Gradle 8.7. Always present, so any Android/Gradle repo builds, lints, and runs JVM/snapshot tests with no per-repo setup (no `shipit.yaml` Android fields). See [android.md](android.md).
@@ -159,6 +253,16 @@ and when a re-install fails: both post a `[System]` note and add a
 `Dependencies:` line to `shipit service list`. Check that line before treating a
 `Failed to resolve import` as a code fault — the service will still report
 `running`, and restarting it will not help.
+
+**pnpm repos re-validate on content, never on the commit alone.** For every other
+package manager a container start skips `agent.install` when the commit it last ran on
+is unchanged. A pnpm session does not: it skips only when the dependency *content* hash
+matches, and `pnpm-workspace.yaml` is always part of that hash — so changing your build
+approvals (`onlyBuiltDependencies`) re-runs the install that performs the build, even on
+the same commit. The consequence to know about: if your `agent.install` is not
+content-keyable (no `install-inputs`, and a command ShipIt cannot map to dependency
+files), a pnpm session re-runs it on every container start. Declaring `install-inputs` in
+`shipit.yaml` restores the skip.
 
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in

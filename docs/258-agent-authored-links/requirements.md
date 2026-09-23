@@ -56,6 +56,10 @@ one requirement — with no way to make that pointer clickable.
 14. A `shipit-preview://` pointer written **inside a presented artifact** works
     when clicked, exactly as the same pointer in chat does. Reqs 1, 2, 10 and 12
     apply to it unchanged — including that a stopped service is started first.
+15. Equivalent workspace-relative paths and absolute `/workspace/` paths open
+    the same presented artifact, whichever form was used to present it. Session
+    isolation, external paths such as `/persist`, fragments, query parameters,
+    and updates to an existing presentation keep their existing behavior.
 
 ## The page-facing contract
 
@@ -78,6 +82,12 @@ respond to every click is a page that should be a preview service.
 _None._
 
 ## Resolved questions
+
+- **2026-09-20 — Must workspace path forms match?** The requester reported that
+  presenting `design/combat/shared-skills/plan.md` succeeds but a link to
+  `/workspace/design/combat/shared-skills/plan.md` fails. They requested matching
+  in both directions, with the existing boundaries and update behavior kept.
+  Recorded as req 15.
 
 - **2026-09-14 — Must a pointer inside a presented artifact work?** Reported by
   the requester against the shipped feature: *"shipit-preview:// urls need to

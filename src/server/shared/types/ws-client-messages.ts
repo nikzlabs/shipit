@@ -47,6 +47,17 @@ export interface WsAnswerQuestion {
   compactContext?: boolean;
 }
 
+/**
+ * Liveness probe (docs/311). A backgrounded socket reads `OPEN` long after the
+ * OS killed it, so a client returning to the foreground asks rather than
+ * assumes. Protocol pings cannot serve: they are server-initiated and answered
+ * beneath JS.
+ */
+export interface WsPing {
+  type: "ping";
+  id: string;
+}
+
 export interface WsSetAgentMessage {
   type: "set_agent";
   agentId: AgentId;
@@ -168,6 +179,7 @@ export interface WsSettingsProposalDecision {
 }
 
 export type WsClientMessage =
+  | WsPing
   | WsSendMessage
   | WsSubmitBugReport
   | WsDismissBugReport

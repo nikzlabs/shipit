@@ -14,6 +14,7 @@ import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { workerInstall, workerGet } from "./worker-http.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
+import { newOverlayClaimToken, releaseOverlayBaseClaims } from "./overlay-base-claims.js";
 import type { DockerMemoryStats } from "../shared/types.js";
 
 export interface WarmPoolDeps {
@@ -65,6 +66,7 @@ export function createWarmPool(
   const ensureStandbyForWarmSession = async (opts: EnsureStandbyOptions): Promise<void> => {
     const { sessionId, sessionDir, workspaceDir, repoUrl } = opts;
     if (!containerManager) return;
+    const claimToken = newOverlayClaimToken();
     try {
       if (oomBreaker?.isTripped(sessionId)) {
         console.warn(`[warm] Skipping standby for ${sessionId}: OOM circuit breaker tripped`);
@@ -80,8 +82,10 @@ export function createWarmPool(
         sessionId,
         workspaceDir,
         session: { remoteUrl: repoUrl, kind: undefined },
+        claimToken,
       });
       const pnpmStoreDir = containerManager.preparePnpmStore({
+        sessionId,
         workspaceDir,
         session: { remoteUrl: repoUrl, kind: undefined },
       });
@@ -117,6 +121,9 @@ export function createWarmPool(
       await preStartPreview?.({ sessionId, workspaceDir, repoUrl });
     } catch (err) {
       console.error(`[warm] Standby container failed for ${sessionId}:`, getErrorMessage(err));
+    } finally {
+      // The base-generation claim covers select→mount; Docker is the liveness evidence afterwards.
+      releaseOverlayBaseClaims(claimToken);
     }
   };
 

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isGitLfsAvailable } from "./git-lfs.js";
-import { killChild } from "../shared/kill-child.js";
+import { killProcessTree } from "../shared/kill-child.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 import {
@@ -95,7 +95,12 @@ function smudgeLfsObject(
       chunks.push(c);
       bytes += c.length;
     });
-    const timer = setTimeout(() => killChild(proc, "SIGKILL"), smudgeTimeoutMs());
+    // `close` waits on any descendant still holding stdout, so killing the `git` wrapper
+    // alone leaves this promise waiting on the runaway `git lfs` (planning#615).
+    const timer = setTimeout(
+      () => killProcessTree(proc, "SIGKILL", { label: "git lfs smudge" }),
+      smudgeTimeoutMs(),
+    );
     proc.on("error", () => {
       clearTimeout(timer);
       resolve(null);

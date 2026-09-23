@@ -21,7 +21,7 @@ function card(over: Partial<SessionStatus> = {}): SessionStatus {
     status: "Billing service: routes and tests done; PR #212 ready to merge.",
     actions: [],
     fresh: true,
-    writeSeq: 1,
+    writeSeq: 1, turnSeq: 0,
     ...over,
   };
 }
@@ -225,7 +225,7 @@ describe("SessionStatusCard", () => {
     expect(screen.getByText("Stale")).toBeInTheDocument();
   });
 
-  it("renders a taken offer greyed and unticked, and still selectable", () => {
+  it("renders a taken offer greyed and unselected, and still selectable", () => {
     render(
       <SessionStatusCard
         status={card({
@@ -636,6 +636,464 @@ describe("SessionStatusCard", () => {
     it("gives the offers no note control: an offer is the agent's work, not the user's", () => {
       render(<SessionStatusCard status={card({ actions: [offer({ offerId: "o1", label: "Wire it" })] })} />);
       expect(screen.queryByRole("button", { name: /add a note/i })).not.toBeInTheDocument();
+    });
+  });
+
+  // req 44 — a row that WAS ticked when it went keeps a tick, so the card goes
+  // on saying which rows the user ticked rather than only that something went.
+  describe("the record of what was ticked (req 44)", () => {
+    /** The box the user sees, which is not the input: that carries selection. */
+    const boxOf = (input: HTMLElement) =>
+      new Set((input.nextElementSibling as HTMLElement).className.split(/\s+/));
+
+    const stepCard = (steps: string[] = ["Add the Stripe test key."]) =>
+      card({ needsYou: steps });
+
+    function openNoteFor(name: string) {
+      fireEvent.click(screen.getByRole("button", { name: `Add a note: ${name}` }));
+      return screen.getByRole("textbox", { name: `Note: ${name}` });
+    }
+
+    // A collapse is sticky per session id, so leaving one behind opens the next
+    // test's card collapsed and its rows are not in the DOM at all.
+    afterEach(() => localStorage.clear());
+
+    it("keeps a tick on a sent offer without selecting it", () => {
+      render(
+        <SessionStatusCard
+          status={card({
+            actions: [offer({ offerId: "o1", takenAt: "2026-09-14T11:00:00.000Z" })],
+          })}
+        />,
+      );
+      const box = screen.getByRole("checkbox") as HTMLInputElement;
+      expect(box.checked).toBe(false);
+      // Muted, never the accent: the record must not read as a tick waiting
+      // for Submit, and Submit has nothing to send.
+      expect(boxOf(box)).toContain("text-(--color-text-tertiary)");
+      expect(boxOf(box)).not.toContain("bg-(--color-accent)");
+      expect(box).toHaveAccessibleName(expect.stringContaining("(sent as ticked)"));
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeDisabled();
+    });
+
+    it("selects a recorded offer on a second tick, and untick leaves the record", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({ actions: [offer({ offerId: "o1", takenAt: "2026-09-14T11:00:00.000Z" })] })}
+          onSubmit={onSubmit}
+        />,
+      );
+      const box = screen.getByRole("checkbox") as HTMLInputElement;
+
+      fireEvent.click(box);
+      expect(box.checked).toBe(true);
+      // The fresh tick is the loud one and hides the record under it.
+      expect(boxOf(box)).toContain("bg-(--color-accent)");
+      expect(box).toHaveAccessibleName(expect.not.stringContaining("(sent as ticked)"));
+
+      fireEvent.click(box);
+      expect(box.checked).toBe(false);
+      expect(boxOf(box)).toContain("text-(--color-text-tertiary)");
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeDisabled();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    // The risk the record introduces: a box that shows a tick is a box Submit
+    // could be read as covering. A second send must carry the row the user
+    // ticked THIS time and nothing the record remembers.
+    it("sends only what is ticked now, never a row the record still shows", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({
+            needsYou: ["Add the key.", "Merge #212."],
+            actions: [offer({ offerId: "o1" }), offer({ offerId: "o2" })],
+          })}
+          onSubmit={onSubmit}
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: /Add the key/ }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      fireEvent.click(screen.getByRole("checkbox", { name: /Merge #212/ }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o2" }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+      const [text, options] = onSubmit.mock.calls[1] as unknown as [
+        string,
+        { sessionStatusOfferIds: string[] },
+      ];
+      expect(options.sessionStatusOfferIds).toEqual(["o2"]);
+      expect(text).toContain("Merge #212.");
+      expect(text).not.toContain("Add the key.");
+      expect(text).toContain("Do o2");
+      expect(text).not.toContain("Do o1");
+    });
+
+    it("records a step that was ticked when it went, and not one answered alone", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={stepCard(["Add the key.", "Use Postgres."])}
+          onSubmit={onSubmit}
+        />,
+      );
+      fireEvent.click(screen.getAllByRole("checkbox")[0]);
+      fireEvent.change(openNoteFor("Use Postgres."), { target: { value: "no — SQLite." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      const [ticked, answered] = screen.getAllByRole("checkbox") as HTMLInputElement[];
+      expect(ticked.checked).toBe(false);
+      expect(boxOf(ticked)).toContain("text-(--color-text-tertiary)");
+      // Both went, and only one of them was ticked.
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+      expect(boxOf(answered)).toContain("text-transparent");
+    });
+
+    it("drops the record when the step is next sent as an answer alone", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-(--color-text-tertiary)");
+
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "blocked." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      // The box may not go on claiming work the user has since qualified.
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-transparent");
+    });
+
+    it("leaves the collapsed counts alone, because a record is already sent", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({ needsYou: ["Add the key."], actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+          onSubmit={onSubmit}
+        />,
+      );
+      for (const box of screen.getAllByRole("checkbox")) fireEvent.click(box);
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+    });
+
+    it("does not carry one session's record into another", () => {
+      const onSubmit = vi.fn(() => true);
+      const { rerender } = render(
+        <SessionStatusCard status={stepCard()} sessionId="s1" onSubmit={onSubmit} />,
+      );
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-(--color-text-tertiary)");
+
+      rerender(<SessionStatusCard status={stepCard()} sessionId="s2" onSubmit={onSubmit} />);
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-transparent");
+      expect(screen.queryByText("SENT")).not.toBeInTheDocument();
+    });
+  });
+
+  // docs/303-session-status-card req 41
+  describe("markdown", () => {
+    it("renders a manual step and an offer as markdown, not as their source", () => {
+      render(
+        <SessionStatusCard
+          status={card({
+            needsYou: ["Paste the key into [the dashboard](https://example.com/k)"],
+            actions: [
+              offer({
+                offerId: "o1",
+                label: "Fix `parseRepoFileLink`",
+                description: "See **docs/258** for the rule",
+              }),
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByRole("link", { name: "the dashboard" })).toHaveAttribute(
+        "href",
+        "https://example.com/k",
+      );
+      expect(screen.getByText("parseRepoFileLink").tagName).toBe("CODE");
+      expect(screen.getByText("docs/258").tagName).toBe("STRONG");
+    });
+
+    it("renders the last-turn line as markdown too", () => {
+      render(<SessionStatusCard status={card({ lastTurn: "Merged **#212**." })} />);
+      expect(screen.getByText("#212").tagName).toBe("STRONG");
+    });
+  });
+
+  describe("collapsing the card (req 42)", () => {
+    afterEach(() => localStorage.clear());
+
+    const full = () =>
+      card({
+        lastTurn: "Wired the webhook route.",
+        needsYou: ["Add the Stripe test key."],
+        actions: [offer({ offerId: "o1" })],
+      });
+
+    it.each([
+      ["session-status-next-steps", () => full()],
+      ["session-status-last-turn", () => card({ lastTurn: "Wired the webhook route." })],
+      ["session-status-status", () => card()],
+    ])("puts the control in the last card of the stack — %s", (testId, status) => {
+      render(<SessionStatusCard status={status()} sessionId="s1" />);
+      expect(
+        within(screen.getByTestId(testId)).getByTestId("session-status-collapse"),
+      ).toBeInTheDocument();
+      expect(screen.getAllByTestId("session-status-collapse")).toHaveLength(1);
+    });
+
+    it("falls back to the status card when a stale card hides the last-turn line", () => {
+      render(
+        <SessionStatusCard status={card({ lastTurn: "Wired it.", fresh: false })} sessionId="s1" />,
+      );
+      expect(
+        within(screen.getByTestId("session-status-status")).getByTestId("session-status-collapse"),
+      ).toBeInTheDocument();
+    });
+
+    it("opens expanded and collapses to a single control on the user's press", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByText("Next steps")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+
+      expect(screen.queryByText("Next steps")).not.toBeInTheDocument();
+      expect(screen.queryByText(/routes and tests done/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Wired the webhook route.")).not.toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+    });
+
+    // The only thing jsdom can see of an alignment; the rendering was checked in
+    // a browser. Without it a restyle silently undoes something Nik asked for.
+    it("puts the collapsed icon at the right, where the control that collapsed it was", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-card").className).toContain("justify-end");
+    });
+
+    it("reopens from the collapsed control", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      expect(screen.getByText("Next steps")).toBeInTheDocument();
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+
+    it("stays collapsed for that session across a remount, and only that session", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      cleanup();
+
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      cleanup();
+
+      render(<SessionStatusCard status={full()} sessionId="s2" />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+
+    it("reads the new session's own state when handed one without remounting", () => {
+      const { rerender } = render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+
+      rerender(<SessionStatusCard status={full()} sessionId="s2" />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+
+      rerender(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+    });
+
+    it("stays collapsed when a manual step or an offer arrives, and counts it", () => {
+      const { rerender } = render(
+        <SessionStatusCard status={card({ needsYou: ["Add the key."] })} sessionId="s1" />,
+      );
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 manual step",
+      );
+
+      rerender(
+        <SessionStatusCard
+          status={card({ needsYou: ["Add the key.", "Merge #212."], actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+        />,
+      );
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 2 manual steps, 1 follow-up",
+      );
+    });
+
+    it("counts only what is still outstanding", () => {
+      render(
+        <SessionStatusCard
+          status={card({
+            actions: [offer({ offerId: "o1" }), offer({ offerId: "o2", takenAt: "2026-09-21T10:00:00.000Z" })],
+          })}
+          sessionId="s1"
+        />,
+      );
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 follow-up",
+      );
+    });
+
+    it("says nothing is waiting when nothing is", () => {
+      render(<SessionStatusCard status={card()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+    });
+
+    it("still shows the stale mark while collapsed (req 14)", () => {
+      render(<SessionStatusCard status={card({ fresh: false })} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByText("Stale")).toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — may be behind",
+      );
+    });
+
+    it("counts an offer ticked again after it was sent, so a retry is not concealed", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({ actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+          onSubmit={onSubmit}
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      // The name now carries the record of the send (req 44).
+      fireEvent.click(screen.getByRole("checkbox", { name: /^Label o1/ }));
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 follow-up",
+      );
+    });
+
+    it("counts a note written against a step already reported done", () => {
+      const onSubmit = vi.fn(() => true);
+      const status = card({ needsYou: ["Add the key."] });
+      render(<SessionStatusCard status={status} sessionId="s1" onSubmit={onSubmit} />);
+      fireEvent.click(screen.getByRole("checkbox", { name: "I've done this: Add the key." }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Add the key." }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Note: Add the key." }), {
+        target: { value: "I named it billing-prod." },
+      });
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 manual step",
+      );
+    });
+
+    it("keeps ticks and notes through a collapse and a reopen", () => {
+      render(
+        <SessionStatusCard
+          status={card({ needsYou: ["Add the key."], actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Add the key." }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Note: Add the key." }), {
+        target: { value: "done, as billing-prod." },
+      });
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+
+      expect((screen.getByRole("checkbox", { name: "Label o1" }) as HTMLInputElement).checked).toBe(true);
+      expect(screen.getByRole("textbox", { name: "Note: Add the key." })).toHaveValue(
+        "done, as billing-prod.",
+      );
+    });
+
+    it("does not carry one session's reported steps and notes into another", () => {
+      const onSubmit = vi.fn(() => true);
+      const shared = () => card({ needsYou: ["Merge PR #212."] });
+      const { rerender } = render(
+        <SessionStatusCard status={shared()} sessionId="s1" onSubmit={onSubmit} />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: "I've done this: Merge PR #212." }));
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Merge PR #212." }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Note: Merge PR #212." }), {
+        target: { value: "GitHub will not let me." },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(screen.getByText("SENT")).toBeInTheDocument();
+
+      rerender(<SessionStatusCard status={shared()} sessionId="s2" onSubmit={onSubmit} />);
+
+      expect(screen.queryByText("SENT")).not.toBeInTheDocument();
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(
+        (screen.getByRole("checkbox", { name: "I've done this: Merge PR #212." }) as HTMLInputElement)
+          .checked,
+      ).toBe(false);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 manual step",
+      );
+    });
+
+    it("hands focus to the control that replaces the one pressed", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      const collapseBtn = screen.getByTestId("session-status-collapse");
+      collapseBtn.focus();
+      fireEvent.click(collapseBtn);
+      expect(document.activeElement).toBe(screen.getByTestId("session-status-collapsed"));
+
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      expect(document.activeElement).toBe(screen.getByTestId("session-status-collapse"));
+    });
+
+    it("does not pull focus into an open note when the card is reopened", () => {
+      render(<SessionStatusCard status={card({ needsYou: ["Add the key."] })} sessionId="s1" />);
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Add the key." }));
+      expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Note: Add the key." }));
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+
+      expect(document.activeElement).toBe(screen.getByTestId("session-status-collapse"));
+    });
+
+    it("collapses per mount when there is no session to key on", () => {
+      render(<SessionStatusCard status={full()} />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      cleanup();
+
+      render(<SessionStatusCard status={full()} />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
     });
   });
 });

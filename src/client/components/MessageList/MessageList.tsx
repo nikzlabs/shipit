@@ -103,6 +103,7 @@ export function MessageList({
   onSettingsProposalDecision,
   onUndoIssueWrite,
   onStartRepoSession,
+  onDeliverSessionMessage,
   onOpenIssue,
   onResumeSession,
   onReleaseConfirm,
@@ -134,6 +135,7 @@ export function MessageList({
 
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
+  onDeliverSessionMessage?: (cardId: string) => Promise<void>;
 
   onOpenIssue?: (ref: {
     tracker: TrackerId;
@@ -174,6 +176,9 @@ export function MessageList({
   const sessionStatus = useSessionStore((s) =>
     s.sessions.find((session) => session.id === s.sessionId)?.sessionStatus,
   );
+  // The session the card was read from, so its collapsed state (docs/303
+  // req 42) is keyed on the same session and never on a neighbouring id.
+  const statusSessionId = useSessionStore((s) => s.sessionId);
 
   // docs/303 req 30 — the card keeps the place it had when the turn started, so
   // the turn's output renders below it. Frozen on the first render of a turn,
@@ -340,6 +345,7 @@ export function MessageList({
     onSettingsProposalDecision,
     onUndoIssueWrite,
     onStartRepoSession,
+    onDeliverSessionMessage,
     onOpenIssue,
     onResumeSession,
     onReleaseConfirm,
@@ -447,6 +453,7 @@ export function MessageList({
       <SessionStatusCard
         key="session-status-card"
         status={sessionStatus}
+        {...(statusSessionId ? { sessionId: statusSessionId } : {})}
         onSubmit={onSendFollowUp}
       />
     )
@@ -606,7 +613,7 @@ export function MessageList({
       ref={containerRef}
       data-chat-transcript=""
       tabIndex={-1}
-      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 focus:outline-none"
+      className="flex-1 min-h-0 overflow-y-auto flex flex-col px-3 sm:px-6 py-3 sm:py-4 focus:outline-none"
     >
     {/* The messages live in their own element rather than directly in the
         scroll container, so that one ResizeObserver on it reports every change
@@ -621,9 +628,17 @@ export function MessageList({
         both places: within a group for the rows in it, and here for the gap
         between one group and the next. Both are the same value, so a group
         boundary is invisible. */}
+    {/* docs/303-session-status-card req 43 — `mt-auto` inside the flex-column
+        scroller pushes the content to the BOTTOM while it is shorter than the
+        viewport, so the status card sits immediately above the composer on a
+        short conversation and in the loading gap, and does not jump down when
+        the rows land. Once the content overflows there is no free space, the
+        auto margin resolves to 0, and this is an ordinary top-anchored
+        scroller — which is why it is `mt-auto` on the item rather than
+        `justify-end` on the container, whose overflow is unreachable. */}
     <div
       ref={contentRef}
-      className="space-y-3 sm:space-y-2"
+      className="mt-auto space-y-3 sm:space-y-2"
     >
       {/* planning#12 — floating "Reply" button shown when the user highlights text
           inside a message bubble; quotes the passage into the composer. Scoped

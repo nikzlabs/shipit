@@ -120,7 +120,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     const deps: SystemTurnDeps = {
       agentFactory: (agentId) => runner.createAgent(agentId),
       autoCommit: async () => ({
-        commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
+        commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null, hookFailure: null,
       }),
       scheduleAutoPush: (dir) => { pushes.push(dir); },
       commitTurn: async ({ summary, sessionDir }) => {
@@ -284,59 +284,6 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     await new Promise((r) => setTimeout(r, 200));
     expect(runner.accumulatedText).toBe("");
     expect(commits).toHaveLength(0);
-  });
-
-  // docs/303 req 15 — one nudge per missing update, and a restart must not buy a second.
-  describe("the status-card nudge marker across a restart", () => {
-    async function startPreRestartTurnWith(statusNudge: boolean): Promise<void> {
-      const res = await fetch(`${workerUrl}/agent/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agentId: "claude",
-          runToken: "nudge-token",
-          params: { prompt: "[ShipIt] update the status card", cwd: "/workspace", useStreaming: true },
-          ...(statusNudge ? { statusNudge: true } : {}),
-        }),
-      });
-      expect(res.status).toBe(200);
-      await waitFor(() => lastAgent?.runCalled, 2000, "worker started the agent");
-    }
-
-    // Finish the adopted turn without a session_status call: the settlement then decides.
-    async function adoptAndFinish(): Promise<ContainerSessionRunner> {
-      const runner = makeRunner(true);
-      expect(await runner.resumeInFlightTurn()).toBe(true);
-      lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "MIDTURN_TEXT" }] });
-      await waitFor(() => runner.accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
-      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
-      // The post-turn commit, not `running`: a dispatched nudge keeps the runner busy.
-      await waitFor(() => commits.length > 0, 3000, "the adopted turn's post-turn flow ran");
-      return runner;
-    }
-
-    it("nudges an adopted ordinary turn that ended without a status update", async () => {
-      await startPreRestartTurnWith(false);
-      await adoptAndFinish();
-
-      await waitFor(() => allAgents.length === 2, 3000, "the nudge turn started");
-      expect(allAgents[1]?.lastParams?.prompt).toContain("[ShipIt]");
-      // The other half of the carry: the worker now holds the marker, so a restart during
-      // THIS turn would adopt it as the nudge it is.
-      const live = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
-      expect(live.statusNudge).toBe(true);
-    });
-
-    it("does not nudge an adopted turn that was itself the nudge", async () => {
-      await startPreRestartTurnWith(true);
-      const runner = await adoptAndFinish();
-
-      // The terminal sequence holds the post-turn lease across the nudge decision and its
-      // dispatch, so an idle runner is the signal that the decision has been made and gone.
-      await waitFor(() => !runner.agentBusy, 3000, "the post-turn sequence finished");
-      expect(allAgents).toHaveLength(1);
-      expect(runner.running).toBe(false);
-    });
   });
 
   it("does not adopt a turn a live runner already owns (no double-wiring)", async () => {

@@ -140,3 +140,33 @@ describe("install-marker — matching (content-key OR path, docs/197)", () => {
     expect(markerMatches(marker, { ...STAMP, depsHash: "f".repeat(64) })).toBe(true);
   });
 });
+
+/**
+ * docs/276-shared-package-cache-integrity section 5: a pnpm session must run its own install over
+ * the unbuilt verified base, so a same-commit change to its build approvals cannot be allowed to
+ * skip it. The commit path is exactly what cannot see that change.
+ */
+describe("install-marker — requireDepsHash (pnpm, docs/276 section 5)", () => {
+  const marker = makeMarker(STAMP, "t");
+  const pnpm = { requireDepsHash: true };
+
+  it("refuses the same-commit skip the default path grants, when the hash moved", () => {
+    const approvalsChanged = { ...STAMP, depsHash: "f".repeat(64) };
+    expect(markerMatches(marker, approvalsChanged)).toBe(true);
+    expect(markerMatches(marker, approvalsChanged, pnpm)).toBe(false);
+  });
+
+  it("still skips when the content hash itself matches, whatever the commit", () => {
+    expect(markerMatches(marker, { ...STAMP, sourceCommit: "b".repeat(40) }, pnpm)).toBe(true);
+  });
+
+  it("reinstalls rather than skip when either side has no content hash", () => {
+    expect(markerMatches(marker, { ...STAMP, depsHash: null }, pnpm)).toBe(false);
+    expect(markerMatches(makeMarker({ ...STAMP, depsHash: null }, "t"), STAMP, pnpm)).toBe(false);
+  });
+
+  it("does not bypass the runtime-key or command checks", () => {
+    expect(markerMatches(marker, { ...STAMP, runtimeKey: "other" }, pnpm)).toBe(false);
+    expect(markerMatches(marker, { ...STAMP, installCommands: ["pnpm i"] }, pnpm)).toBe(false);
+  });
+});

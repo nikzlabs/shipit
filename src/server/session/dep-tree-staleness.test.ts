@@ -2,7 +2,12 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { bypassesLockfile, npmLockfileMismatches, staleDepDirs } from "./dep-tree-staleness.js";
+import {
+  bypassesLockfile,
+  npmLockfileMismatches,
+  staleDepDirs,
+  unreconciledPnpmDepDirs,
+} from "./dep-tree-staleness.js";
 
 interface Entry {
   version?: string;
@@ -245,5 +250,54 @@ describe("staleDepDirs — which declared dirs get checked at all", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "dep-stale-"));
     roots.push(root);
     expect(staleDepDirs(root, ["npm ci"])).toEqual([]);
+  });
+});
+
+describe("unreconciledPnpmDepDirs — did a pnpm install actually run over this tree", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const r of roots) fs.rmSync(r, { recursive: true, force: true });
+    roots.length = 0;
+  });
+
+  function makePnpmTree(opts: { state: boolean; virtualStore?: boolean }): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-reconcile-"));
+    roots.push(root);
+    fs.writeFileSync(path.join(root, "shipit.yaml"), "agent:\n  dep-dirs:\n    - node_modules\n");
+    const dep = path.join(root, "node_modules");
+    fs.mkdirSync(path.join(dep, ".pnpm"), { recursive: true });
+    if (opts.virtualStore !== false) {
+      fs.writeFileSync(path.join(dep, ".pnpm", "lock.yaml"), "lockfileVersion: '9.0'\n");
+    }
+    if (opts.state) {
+      fs.writeFileSync(
+        path.join(dep, ".pnpm-workspace-state-v1.json"),
+        JSON.stringify({ lastValidatedTimestamp: Date.now() }),
+      );
+    }
+    return root;
+  }
+
+  it("flags a pnpm tree no install reconciled", () => {
+    // The pruned-base route: `test -d node_modules || pnpm install` sees the mounted base and
+    // skips, so the packages the base deliberately leaves out are never installed
+    // (docs/276 section 5). The prune removes the state file; only an install writes it back.
+    expect(unreconciledPnpmDepDirs(makePnpmTree({ state: false }))).toEqual(["node_modules"]);
+  });
+
+  it("accepts a tree an install did reconcile", () => {
+    expect(unreconciledPnpmDepDirs(makePnpmTree({ state: true }))).toEqual([]);
+  });
+
+  it("checks nothing for a dep dir that is not a pnpm tree", () => {
+    // npm and yarn have no such record, and `staleDepDirs` is what covers npm.
+    expect(unreconciledPnpmDepDirs(makePnpmTree({ state: false, virtualStore: false }))).toEqual([]);
+  });
+
+  it("checks nothing when the workspace declares no dep dirs", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-reconcile-"));
+    roots.push(root);
+    expect(unreconciledPnpmDepDirs(root)).toEqual([]);
   });
 });

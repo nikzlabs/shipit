@@ -103,18 +103,20 @@ export async function applyOverlayDepDirsForSession(
     // An empty record is authoritative; an empty fallback must not replace a known set.
     if (pairs.length === 0) {
       if (provisioned) {
-        mgr.setOverlayDepDirs([]);
+        // Clearing a set the services still hold is a change like any other: without reporting it,
+        // a service preserved across the restart keeps mounting an overlay the agent no longer has.
+        const cleared = mgr.setOverlayDepDirs([]);
         console.log(
           `[overlay:${sessionId}] agent container has no dependency overlay — ` +
           `compose services use the plain workspace directories`,
         );
-      } else {
-        warn(
-          `could not tell which dependency overlays the agent container has (no container ` +
-          `record, and re-derivation found none) — compose services may see different ` +
-          `dependency directories than the agent.`,
-        );
+        return cleared;
       }
+      warn(
+        `could not tell which dependency overlays the agent container has (no container ` +
+        `record, and re-derivation found none) — compose services may see different ` +
+        `dependency directories than the agent.`,
+      );
       return false;
     }
 
@@ -581,7 +583,7 @@ export function setupServiceManager(
   if (runner instanceof ContainerSessionRunner) {
     runner.setDepReinstallInputs(
       installCommands,
-      resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs) ?? [],
+      resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs, workspaceDir) ?? [],
     );
     reportContentKeyState(runner.sessionId, workspaceDir, shipitConfig.agent);
   }
@@ -610,6 +612,10 @@ export function setupServiceManager(
     const s = session;
     void (async () => {
       const res = await p;
+      // Read the clock HERE, not after the publish: for pnpm the publish builds a base in its own
+      // container, so charging its minutes to `install_ms` would make the one line req 7 is judged
+      // from report an install that never happened.
+      const installDurationMs = Date.now() - installStartedAt;
       // Unverified completion cannot certify a shared dependency base.
       if (res.unverified) return;
       try {
@@ -624,12 +630,14 @@ export function setupServiceManager(
             sessionId: r.sessionId,
             repoUrl: s.remoteUrl,
             installOk: res.ok,
-            installDurationMs: Date.now() - installStartedAt,
+            installDurationMs,
             outcomes,
           }));
         }
         // Counts keep repo-declared path names out of the ops-readable log.
-        const failed = outcomes.filter((o) => o.outcome === "error").length;
+        const failed = outcomes.filter(
+          (o) => o.outcome === "error" || o.outcome === "build-failed",
+        ).length;
         if (failed > 0) {
           appendAgentLog(
             broadcastLog,
@@ -908,7 +916,7 @@ export function applyShipitConfigChange(
       );
       runner.setDepReinstallInputs(
         nextCommands,
-        resolveDepsHashInputs(nextCommands, shipitConfig.agent.installInputs) ?? [],
+        resolveDepsHashInputs(nextCommands, shipitConfig.agent.installInputs, workspaceDir) ?? [],
       );
       runner.requestDepReinstall();
     }

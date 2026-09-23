@@ -13,6 +13,7 @@ import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
+import { reclaimStillRenderingBrowsers } from "./agents/browser-reclaim.js";
 import {
   formatNodeRuntimeNotice,
   prefixPromptWithNotice,
@@ -55,13 +56,15 @@ export class AgentController {
 
   // docs/303 req 15 — likewise turn-scoped: a restarted orchestrator reads it back from
   // /agent/status, so the adopted turn settles as the nudge it is and is not nudged twice.
-  private turnStatusNudge = false;
 
   private turnActive = false;
   private turnStartSseSeq = 0;
 
   private backgroundTaskCount = 0;
   private selfWakeActive = false;
+
+  private reclaimInFlight = false;
+  private reclaimPending = false;
 
   private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
@@ -80,7 +83,7 @@ export class AgentController {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params, runToken, deliveryId, statusNudge } = request.body;
+      const { agentId, params, runToken, deliveryId } = request.body;
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
@@ -93,7 +96,7 @@ export class AgentController {
 
       try {
         // Capture turn identity and replay position before the adapter emits anything.
-        this.beginTurn(statusNudge === true);
+        this.beginTurn();
         this.turnDeliveryId = deliveryId;
         this.residentSpawn = { runToken, streaming: params.useStreaming === true };
         this.agent = this.deps.agentFactory(agentId);
@@ -225,6 +228,8 @@ export class AgentController {
         } finally {
           this.spawnedAgents.delete(spawnId);
           try { agent.kill(); } catch { /* already exited */ }
+          // This spawn may have been what blocked a reclaim when the primary turn ended.
+          this.reclaimBrowsers();
         }
       },
     );
@@ -336,7 +341,6 @@ export class AgentController {
       installRunning: this.deps.otherWorkerLiveness?.().installRunning ?? false,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
-      ...(this.turnStatusNudge ? { statusNudge: true } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
       ...(this.residentSpawn
         ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
@@ -346,10 +350,9 @@ export class AgentController {
 
   // The marker is set here, not only cleared at the end: a steered turn on a resident
   // process begins without /agent/start, and must not inherit the previous turn's.
-  private beginTurn(statusNudge = false): void {
+  private beginTurn(): void {
     this.turnActive = true;
     this.turnStartSseSeq = this.deps.latestSseSeq();
-    this.turnStatusNudge = statusNudge;
   }
 
   // Clear process state here: late done events fail the identity guard after a kill.
@@ -365,7 +368,46 @@ export class AgentController {
     // Background tasks can outlive a turn; retain their count until the process ends.
     this.selfWakeActive = false;
     this.turnDeliveryId = undefined;
-    this.turnStatusNudge = false;
+    this.reclaimBrowsers();
+  }
+
+  /**
+   * docs/315-browser-cpu-between-turns req 2. Sits here rather than in an adapter so it
+   * holds for every backend (req 6), and covers the crash and error paths, which reach
+   * `endTurn` through `vacateSlot`. Deliberately not awaited: the turn is already
+   * reported finished, and the CPU sample must not delay the next one.
+   */
+  private reclaimBrowsers(): void {
+    // A skipped pass is deferred, never dropped: the browser this turn abandoned would
+    // otherwise render until some later turn happened to end at a quiet moment, which is
+    // the defect itself (docs/315 req 1). Whatever cleared the block calls back here.
+    if (this.reclaimInFlight || !this.browsersAreUnattended()) {
+      this.reclaimPending = true;
+      return;
+    }
+    this.reclaimInFlight = true;
+    this.reclaimPending = false;
+    void reclaimStillRenderingBrowsers({ stillIdle: () => this.browsersAreUnattended() })
+      .catch((err: unknown) => {
+        console.warn(`[browser-reclaim] failed: ${getErrorMessage(err)}`);
+      })
+      .finally(() => {
+        this.reclaimInFlight = false;
+        // A turn that began and ended inside the sample opened a browser this pass never
+        // saw, and its roots were fixed when the pass started.
+        if (this.reclaimPending) this.reclaimBrowsers();
+      });
+  }
+
+  /**
+   * Work that outlives the primary turn drives a browser of its own, so `turnActive`
+   * alone would let a reclaim kill a browser in use — docs/315 req 4. Sub-agent spawns
+   * and background tasks are both such work (see the note at the top of this file, and
+   * `endTurn`'s). A self-wake needs no entry here: `endTurn` clears its flag immediately
+   * before calling us, and the turn it schedules sets `turnActive` before it dispatches.
+   */
+  private browsersAreUnattended(): boolean {
+    return !this.turnActive && this.spawnedAgents.size === 0 && this.backgroundTaskCount === 0;
   }
 
   stop(): void {

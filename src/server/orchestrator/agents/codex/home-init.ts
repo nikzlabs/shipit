@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { killChild } from "../../../shared/kill-child.js";
+import { killProcessTree } from "../../../shared/kill-child.js";
 import { getErrorMessage } from "../../validation.js";
 
 export const CODEX_HOME_INIT_TIMEOUT_MS = 20_000;
@@ -28,7 +28,9 @@ function runWarmup(codexHome: string): Promise<void> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      killChild(child);
+      // `codex` is a Node shim over the native binary, so the work happens in a
+      // child that a pid-only kill would leave to the shim to pass the signal on.
+      killProcessTree(child, "SIGTERM", { label: "codex-home-init" });
       resolve();
     };
 

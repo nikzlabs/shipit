@@ -35,7 +35,6 @@ export interface AgentDispatchInit {
   resetMergedBranch: boolean | undefined;
   compactContext: boolean | undefined;
   silent: boolean | undefined;
-  statusNudge: boolean | undefined;
 }
 
 type AssertNever<T extends never> = T;
@@ -65,7 +64,6 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   resetMergedBranch: true,
   compactContext: true,
   silent: true,
-  statusNudge: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -100,7 +98,6 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     resetMergedBranch: next.resetMergedBranch,
     compactContext: next.compactContext,
     silent: next.silent,
-    statusNudge: next.statusNudge,
   });
 }
 

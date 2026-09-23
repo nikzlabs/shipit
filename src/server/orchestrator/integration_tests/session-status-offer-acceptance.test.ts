@@ -36,7 +36,7 @@ describe("Integration: session status offers are taken on acceptance", () => {
   const card = (): SessionStatus => ({
     status: "Routes done",
     fresh: true,
-    writeSeq: 1,
+    writeSeq: 1, turnSeq: 0,
     actions: [
       { id: "wire", offerId: "o1", label: "Wire it", payload: "Wire it", offeredAt: "2026-09-14T10:00:00.000Z" },
     ],

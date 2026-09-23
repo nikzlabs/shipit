@@ -288,6 +288,7 @@ describe("ProviderAccountManager", () => {
     expect(mgr.list("claude")).toEqual([]);
     expect(mgr.list(accountServiceForHarness("claude")).map((a) => a.id)).toEqual(["acct_1"]);
     expect(accountServiceForHarness("codex")).toBe("openai");
+    expect(accountServiceForHarness("opencode")).toBe("openai");
   });
 
   it("does not create an account when only reserved env auth exists", () => {

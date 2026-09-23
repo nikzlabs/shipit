@@ -7,6 +7,7 @@ import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "..
 import { stripRemoteUrlCredentials } from "../git-utils.js";
 import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 import { ServiceError } from "./types.js";
+import { findSharedBranchRefusal } from "./push-target-guard.js";
 
 // SVG remains text, with a client-side render toggle.
 const DIFF_IMAGE_EXTENSIONS = new Set([
@@ -357,6 +358,14 @@ export async function gitPush(
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
   const r = remote || "origin";
   const b = branch || undefined;
+  // The caller names the branch here, so this endpoint reaches a shared one without
+  // the workspace ever being checked out on it (docs/312-base-branch-push-protection
+  // req 7). `assertPlainBranchName` inside `push` already rejects a refspec.
+  const target = b ?? await git.getCurrentBranch();
+  if (target) {
+    const refusal = await findSharedBranchRefusal(git, target, undefined, { requireVerifiedDefault: true });
+    if (refusal) throw new ServiceError(400, refusal.message);
+  }
   const message = await git.push(r, b);
   const currentBranch = await git.getCurrentBranch();
   return { success: true, message, branch: currentBranch };

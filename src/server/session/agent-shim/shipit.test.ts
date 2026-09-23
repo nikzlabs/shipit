@@ -1003,7 +1003,7 @@ describe("shipit session view", () => {
     expect(JSON.parse(out.stdout)).toEqual({ id: "ses_a", title: "A", status: "idle" });
   });
 
-  it("exits non-zero on 404 with a 'not a descendant' message", async () => {
+  it("exits non-zero on 404, naming the real reach and the way out (docs/314 req 10)", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["session", "view", "ses_other"],
@@ -1012,7 +1012,8 @@ describe("shipit session view", () => {
       },
     );
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("not a descendant of this parent");
+    expect(out.stderr).toContain("not a direct child of this session");
+    expect(out.stderr).toContain("propose_session_message");
   });
 
   it("exits non-zero when the broker responds with child:null on 200", async () => {
@@ -1122,7 +1123,7 @@ describe("shipit session message", () => {
     expect(JSON.parse(json.stdout)).toEqual(response.body);
   });
 
-  it("surfaces a 404 'not a descendant' verbatim", async () => {
+  it("surfaces the 404 refusal verbatim, including the way out", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["session", "message", "ses_other", "-m", "x"],
@@ -1133,7 +1134,8 @@ describe("shipit session message", () => {
       },
     );
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("not a descendant of this parent");
+    expect(out.stderr).toContain("not a direct child of this session");
+    expect(out.stderr).toContain("propose_session_message");
   });
 });
 
@@ -1216,7 +1218,7 @@ describe("shipit session wait", () => {
     expect(JSON.parse(out.stdout)).toMatchObject({ timedOut: true });
   });
 
-  it("surfaces a 404 'not a descendant' verbatim", async () => {
+  it("surfaces the 404 refusal verbatim, including the way out", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["session", "wait", "ses_other"],
@@ -1227,7 +1229,8 @@ describe("shipit session wait", () => {
       },
     );
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("not a descendant of this parent");
+    expect(out.stderr).toContain("not a direct child of this session");
+    expect(out.stderr).toContain("propose_session_message");
   });
 
   it("forwards a bounded segment alongside the overall timeout", async () => {
@@ -1405,90 +1408,13 @@ describe("shipit session wait — resilience (docs/182)", () => {
   });
 });
 
-describe("shipit session archive", () => {
-  it("requires a child session id", async () => {
+describe("shipit session archive (removed — docs/117)", () => {
+  it("refuses, names the UI, and reaches no endpoint", async () => {
     const { run } = makeRunner();
-    const out = await run(["session", "archive"]);
+    const out = await run(["session", "archive", "ses_a"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("child session id is required");
-  });
-
-  it("posts to /agent-ops/session/archive/:childId on success", async () => {
-    const { run } = makeRunner();
-    const out = await run(
-      ["session", "archive", "ses_a"],
-      {
-        "POST /agent-ops/session/archive/ses_a": {
-          status: 200, body: { archived: true },
-        },
-      },
-    );
-    expect(out.exitCode).toBe(0);
-    expect(out.calls[0].method).toBe("POST");
-    expect(out.calls[0].path).toBe("/agent-ops/session/archive/ses_a");
-    expect(out.stdout).toContain("archived:   true");
-  });
-
-  it("reports a checkout the archive kept, so the agent can push that branch", async () => {
-    const { run } = makeRunner();
-    const out = await run(
-      ["session", "archive", "ses_a"],
-      {
-        "POST /agent-ops/session/archive/ses_a": {
-          status: 200,
-          body: {
-            archived: true,
-            checkoutsRetained: [
-              { sessionId: "ses_a", message: "its files were kept: shipit/x has commits that are not on the remote" },
-            ],
-          },
-        },
-      },
-    );
-    expect(out.exitCode).toBe(0);
-    expect(out.stdout).toContain("not on the remote");
-  });
-
-  it("--json prints the broker response verbatim", async () => {
-    const { run } = makeRunner();
-    const out = await run(
-      ["session", "archive", "ses_a", "--json"],
-      {
-        "POST /agent-ops/session/archive/ses_a": {
-          status: 200, body: { archived: true, sessions: [] },
-        },
-      },
-    );
-    expect(out.exitCode).toBe(0);
-    expect(JSON.parse(out.stdout)).toMatchObject({ archived: true });
-  });
-
-  it("surfaces a 409 'session is running' error from the orchestrator", async () => {
-    const { run } = makeRunner();
-    const out = await run(
-      ["session", "archive", "ses_a"],
-      {
-        "POST /agent-ops/session/archive/ses_a": {
-          status: 409, body: { error: "Cannot archive a running child session" },
-        },
-      },
-    );
-    expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("Cannot archive a running child session");
-  });
-
-  it("surfaces a 404 'not a descendant' verbatim", async () => {
-    const { run } = makeRunner();
-    const out = await run(
-      ["session", "archive", "ses_other"],
-      {
-        "POST /agent-ops/session/archive/ses_other": {
-          status: 404, body: { error: "Spawned session not found" },
-        },
-      },
-    );
-    expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("not a descendant of this parent");
+    expect(out.stderr).toContain("the user's action, in the ShipIt UI");
+    expect(out.calls).toEqual([]);
   });
 });
 

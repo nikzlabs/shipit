@@ -648,6 +648,8 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
 
 
 describe("OpenCode ChatGPT account route", () => {
+  beforeEach(() => { vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 }))); });
+  afterEach(() => { vi.unstubAllGlobals(); });
   const routing = { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } as const;
   function provision(home: string) {
     const data = ensureManagedOpenCodeData(home);
@@ -656,6 +658,125 @@ describe("OpenCode ChatGPT account route", () => {
     fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-a" }));
     return data;
   }
+  it("makes no subscription usage request for an API-key route", () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+    const { adapter, child } = makeAdapter();
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: {
+      serviceId: "openai", serviceName: "OpenAI", billingMode: "key", style: "openai-responses",
+      baseUrl: "https://api.openai.com/v1", credentialSourceEnv: "OPENAI_API_KEY",
+      credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+    } });
+    child.close(0);
+    expect(fetch).not.toHaveBeenCalled();
+    adapter.kill();
+  });
+
+  it("does not fetch limits for a locally rejected compaction request", () => {
+    provision(testHome);
+    const { adapter, events } = makeAdapter();
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, compact: true });
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "error" });
+    expect(fetch).not.toHaveBeenCalled();
+    adapter.kill();
+  });
+
+  it("reports limits before compaction settles", async () => {
+    provision(testHome);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => url.includes("/wham/usage")
+      ? Response.json({ rate_limit: { primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_at: 2000000000 } } })
+      : new Response("true")));
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.on("event", (event) => {
+      if (event.type === "agent_result") resolve();
+    }));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, compact: true, sessionId: SESSION });
+    child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:34439\n"));
+    await done;
+    expect(events.at(-2)).toMatchObject({ type: "agent_rate_limits", session: { usedPct: 42 } });
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "success" });
+    adapter.kill();
+  });
+
+  it.each(["interrupt", "kill"] as const)("stops usage reads on %s and still emits done", async (method) => {
+    provision(testHome);
+    const fetchFn = vi.fn().mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetchFn);
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+    adapter[method]();
+    child.close(null, "SIGTERM");
+    await done;
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(events.some((event) => event.type === "agent_rate_limits")).toBe(false);
+    adapter.kill();
+  });
+
+  it("reports account limits before settling the turn, without a Codex session", async () => {
+    provision(testHome);
+    const response = { rate_limit: { primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_at: 2000000000 } } };
+    const fetchFn = vi.fn().mockImplementation(async () => Response.json(response));
+    vi.stubGlobal("fetch", fetchFn);
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+    await vi.waitFor(() => expect(events.some((e) => e.type === "agent_rate_limits")).toBe(true));
+    response.rate_limit.primary_window.used_percent = 43;
+    child.emitStdout(CAPTURED);
+    child.close(0);
+    await done;
+    expect(events.filter((e) => e.type === "agent_rate_limits").at(-1)).toMatchObject({ session: { usedPct: 43 } });
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "success" });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    adapter.kill();
+  });
+
+  it("emits done and permits another turn when a result listener throws", async () => {
+    provision(testHome);
+    const children = [new FakeChild(), new FakeChild()];
+    const spawnFn = vi.fn()
+      .mockReturnValueOnce(children[0] as unknown as ChildProcess)
+      .mockReturnValueOnce(children[1] as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    const errors = vi.fn();
+    adapter.on("error", errors);
+    const brokenListener = (event: AgentEvent) => {
+      if (event.type === "agent_result") throw new Error("Result listener failed");
+    };
+    adapter.on("event", brokenListener);
+    try {
+      const firstDone = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+      children[0].emitStdout(CAPTURED);
+      children[0].close(0);
+      await firstDone;
+      adapter.off("event", brokenListener);
+
+      const secondDone = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+      expect(spawnFn).toHaveBeenCalledTimes(2);
+      children[1].emitStdout(CAPTURED);
+      children[1].close(0);
+      await secondDone;
+      expect(errors).not.toHaveBeenCalled();
+    } finally { adapter.kill(); }
+  });
+
+  it("settles a successful turn even when usage reads fail", async () => {
+    provision(testHome);
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+    child.emitStdout(CAPTURED);
+    child.close(0);
+    await done;
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "success" });
+    expect(events.some((e) => e.type === "agent_rate_limits")).toBe(false);
+    adapter.kill();
+  });
+
   it("uses native routing and a private home, scrubs ambient credentials, and preserves resume", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-account-adapter-"));
     const data = provision(home);

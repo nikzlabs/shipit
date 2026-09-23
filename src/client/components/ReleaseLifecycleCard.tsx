@@ -10,8 +10,11 @@ import {
   ArrowSquareOutIcon,
   GlobeIcon,
   ProhibitIcon,
+  FileTextIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
@@ -85,12 +88,32 @@ function DeploymentRow({ deployments }: { deployments?: GitHubDeploymentStatus[]
   );
 }
 
-function Notes({ notes }: { notes?: string }) {
-  if (!notes?.trim()) return null;
+/*
+  A link, not a copy of the text (docs/309 req 11): confirming the release
+  accepts the notes, so the card has to reach what will actually be published —
+  and the same click is how the user edits them, which a rendered copy would go
+  stale against.
+
+  Opened in the ACTIVE session, never `card.sessionId`: forking at a chat gap
+  copies the card into the child's history with the parent's id
+  (`rollback-handlers.ts` `saveMessages`), and the editor saves to the active
+  session — so trusting the card's id would read one workspace and write
+  another. Confirm already behaves this way.
+*/
+function NotesDraftLink({ draftPath }: { draftPath?: string }) {
+  if (!draftPath) return null;
   return (
-    <div className="mt-2 text-xs text-(--color-text-secondary) whitespace-pre-wrap max-h-40 overflow-y-auto rounded-md bg-(--color-bg-tertiary) p-2">
-      {notes.trim()}
-    </div>
+    <button
+      type="button"
+      onClick={() => {
+        const sessionId = useSessionStore.getState().sessionId;
+        if (sessionId) void useFileStore.getState().openEditor(sessionId, draftPath);
+      }}
+      className="mt-2 flex items-center gap-1.5 text-xs text-(--color-accent) hover:underline"
+    >
+      <FileTextIcon size={ICON_SIZE.SM} />
+      Release notes — open {draftPath} to read or edit
+    </button>
   );
 }
 
@@ -206,7 +229,7 @@ export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifec
         {versionSource ? ` · ${versionSource}` : ""}
       </div>
 
-      <Notes notes={card.notes} />
+      <NotesDraftLink draftPath={card.notesDraftPath} />
       <DeploymentRow deployments={card.deployments} />
 
       <div className="mt-3 flex items-center gap-2">

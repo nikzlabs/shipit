@@ -224,13 +224,8 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     const pending = await countPendingCommits(git, sessionId);
     const startedAt = Date.now();
     try {
-      const branch = await pushToOrigin(git, (reason) => {
-        report(
-          sessionId,
-          reason === "no-origin"
-            ? "Not pushed: this session's workspace has no `origin` remote. The commit stays in local history."
-            : "Not pushed: the workspace has no current branch (detached HEAD). The commit stays in local history.",
-        );
+      const branch = await pushToOrigin(git, (skip) => {
+        report(sessionId, skip.message);
       });
       if (!branch) return;
       notifiedDiverged.delete(sessionId);

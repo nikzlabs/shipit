@@ -65,6 +65,16 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     startedSessionId: "ses_child",
     startedAt: "2026-09-14T00:01:00.000Z",
   },
+  sessionMessageProposal: {
+    cardId: "smp1",
+    targetSessionId: "ses_root",
+    targetTitle: "Orchestrator",
+    message: "docs/314 is implemented; the PR is open.",
+    createdAt: "2026-09-22T00:00:00.000Z",
+    state: "delivered",
+    deliveredAt: "2026-09-22T00:01:00.000Z",
+    queued: false,
+  },
   presentInline: {
     presentId: "pres_0123456789abcdef0123456789abcdef",
     filePath: "/persist/chart.svg",
@@ -225,7 +235,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     prerelease: false,
     bumpType: "minor",
     versionSource: "package.json",
-    notes: "## Features\n- x",
+    notesDraftPath: "RELEASE_NOTES.draft.md",
     commitSha: "abc123",
     checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 },
     release: {

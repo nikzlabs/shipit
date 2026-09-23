@@ -35,6 +35,7 @@ import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
 import {
+  agentEnvTurnArgs,
   finalizeSessionAgentEnvironment,
   prepareSessionAgentEnvironment,
   repushSessionAgentToken,
@@ -270,9 +271,12 @@ export function createRunnerRegistry(
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();
-          const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+          const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable, hookFailure } =
             await git.autoCommit(summary);
-          return { commitHash, parentHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable };
+          return {
+            commitHash, parentHash, conflictedFiles, rebaseInProgress,
+            secretFindings, unreadable, hookFailure,
+          };
         },
         scheduleAutoPush: (sessionDir) => schedulePushGit(createGitManager(sessionDir)),
         listenerDeps,
@@ -325,10 +329,7 @@ export function createRunnerRegistry(
               sessionId,
               agentId,
               enforceAccountRouting: true,
-              ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
-              ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
-              ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
-              ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
+              ...agentEnvTurnArgs(envOpts),
               deps: {
                 credentialsDir, credentialStore, sessionManager, chatHistoryManager, sseBroadcast,
                 ...(providerAccountManager ? { providerAccountManager } : {}),
@@ -450,7 +451,9 @@ export function createRunnerRegistry(
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }
           : {}),
-        restorePendingAgentNotice: (sessionId, notice) => sessionManager.setPendingAgentNotice(sessionId, notice),
+        // Appended, not set: a notice recorded while the failed turn ran describes a LATER
+        // branch move, and this one must not overwrite it (planning#609).
+        restorePendingAgentNotice: (sessionId, notice) => sessionManager.appendPendingAgentNotice(sessionId, notice),
         ...(generateText ? {
           postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
             const prStatusPoller = getPrStatusPoller?.();

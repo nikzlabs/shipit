@@ -27,7 +27,7 @@ const capabilities: AgentCapabilities = {
 };
 
 class FakeAgent extends EventEmitter {
-  readonly agentId = "codex" as const;
+  constructor(readonly agentId: AgentProcess["agentId"] = "codex") { super(); }
   readonly capabilities = capabilities;
   readonly isStreaming = true;
 
@@ -69,8 +69,8 @@ function deps(): AgentListenerDeps {
 }
 
 describe("wireAgentListeners", () => {
-  it("attributes quota telemetry to the credential route captured for the turn", () => {
-    const agent = new FakeAgent();
+  it.each(["codex", "opencode"] as const)("attributes %s quota telemetry to the credential route captured for the turn", (agentId) => {
+    const agent = new FakeAgent(agentId);
     const runner = new SessionRunner({
       sessionId: "session-1",
       sessionDir: "/tmp/session-1",
@@ -97,7 +97,7 @@ describe("wireAgentListeners", () => {
     agent.emit("event", event);
 
     expect(d.recordAgentRateLimits).toHaveBeenCalledWith(
-      "codex",
+      agentId,
       event.session,
       event.weekly,
       "session-1",

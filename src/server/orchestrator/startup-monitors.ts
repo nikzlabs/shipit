@@ -9,7 +9,6 @@ import {
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
-import { isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-liveness-sources.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
@@ -234,8 +233,6 @@ export async function startStartupMonitors(
           // Resolve live mounts at sweep time, not from a boot snapshot.
           liveOverlayScopeHashes: overlayLiveScopeSource(sessionManager),
           livePluginStoreArtifacts: pluginLiveArtifactSource(sessionManager),
-          pnpmStoreRuntimeHash: () =>
-            isOverlayEnabled() ? pnpmStoreHash(overlayRuntimeKey()) : null,
         });
       } catch (err) {
         console.error("[disk-janitor] steady-state reclaim pass failed:", err);

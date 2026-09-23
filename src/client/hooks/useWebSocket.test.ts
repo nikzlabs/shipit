@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
-import { useWebSocket } from "./useWebSocket.js";
+import {
+  useWebSocket,
+  AWAY_LIMIT_MS,
+  PROBE_TIMEOUT_MS,
+  STALLED_HANDSHAKE_MS,
+} from "./useWebSocket.js";
 
 type WsHandler = ((ev: { data: string }) => void) | null;
 
@@ -25,9 +30,13 @@ class FakeWebSocket {
 
   send = vi.fn();
 
+  // A real socket reports the close to its handler. The hook's own teardown
+  // detaches them first; a close it makes deliberately does not, and that is
+  // the path where `onclose` deciding to reconnect has to be suppressed.
   close() {
     this.closed = true;
     this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.();
   }
 
   simulateOpen() {
@@ -62,6 +71,30 @@ function backgroundAndReturn(): void {
   setHidden(true);
   document.dispatchEvent(new Event("visibilitychange"));
   setHidden(false);
+}
+
+function pings(ws: FakeWebSocket): { type: string; id: string }[] {
+  return (ws.send.mock.calls as [string][])
+    .map(([raw]) => JSON.parse(raw) as { type: string; id: string })
+    .filter((msg) => msg.type === "ping");
+}
+
+/** The socket answers the liveness probe it was sent. */
+function answerProbe(ws: FakeWebSocket): void {
+  const ping = pings(ws).at(-1);
+  ws.simulateMessage({ type: "pong", id: ping?.id ?? "unsent" });
+}
+
+/** Let an unanswered probe run out, and let its `.then` run. */
+async function probeGoesUnanswered(): Promise<void> {
+  await act(async () => { await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS); });
+}
+
+/** Hidden for `ms`, then back. */
+async function awayHiddenFor(ms: number): Promise<void> {
+  act(() => { setHidden(true); document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  act(() => { setHidden(false); document.dispatchEvent(new Event("visibilitychange")); });
 }
 
 beforeEach(() => {
@@ -334,7 +367,7 @@ describe("useWebSocket", () => {
     expect(FakeWebSocket.instances.length).toBe(countAfterAll);
   });
 
-  it("foreground visibility forces a fresh socket even when the current socket is still connecting", () => {
+  it("leaves a handshake that is still young alone on a resume, and replaces it once it has stalled", () => {
     renderHook(() => useWebSocket("ws://test"));
 
     const connectingSocket = latestWs();
@@ -345,37 +378,40 @@ describe("useWebSocket", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
 
-    expect(connectingSocket.closed).toBe(true);
+    // Replacing it here restarts the handshake it is waiting for, which on a
+    // slow link is the only thing it ever achieves.
+    expect(connectingSocket.closed).toBe(false);
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
+
+    void act(() => vi.advanceTimersByTime(STALLED_HANDSHAKE_MS));
     expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
   });
 
-  it("coalesces the visibilitychange + focus burst one reactivation fires into a single reconnect", () => {
+  it("coalesces the visibilitychange + focus burst one reactivation fires into a single probe", () => {
     renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
-
-    const countBefore = FakeWebSocket.instances.length;
+    const ws = latestWs();
 
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     act(() => { window.dispatchEvent(new Event("focus")); });
     act(() => { window.dispatchEvent(new Event("pageshow")); });
 
-    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+    expect(pings(ws).length).toBe(1);
+    expect(FakeWebSocket.instances.length).toBe(1);
   });
 
-  it("reconnects again once the coalescing window has passed", () => {
+  it("probes again once the coalescing window has passed", () => {
     renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
+    const ws = latestWs();
 
-    const countBefore = FakeWebSocket.instances.length;
     act(() => { backgroundAndReturn(); window.dispatchEvent(new Event("focus")); });
-    act(() => latestWs().simulateOpen());
-    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+    act(() => answerProbe(ws));
+    expect(pings(ws).length).toBe(1);
 
     void act(() => vi.advanceTimersByTime(5000));
-    act(() => latestWs().simulateOpen());
-    const countAfterRetries = FakeWebSocket.instances.length;
     act(() => { backgroundAndReturn(); window.dispatchEvent(new Event("focus")); });
-    expect(FakeWebSocket.instances.length).toBe(countAfterRetries + 1);
+    expect(pings(ws).length).toBe(2);
   });
 
   it("does not tear down a live socket on an iframe focus steal", () => {
@@ -405,10 +441,11 @@ describe("useWebSocket", () => {
     expect(connectingSocket.closed).toBe(false);
   });
 
-  // this must force a fresh one.
-  it("reconnects when focus returns from another window, even on a live socket", () => {
+  // returning from another window still has to establish that, but by asking.
+  it("probes rather than replaces when focus returns from another window", async () => {
     renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
+    const ws = latestWs();
 
     const countBefore = FakeWebSocket.instances.length;
     act(() => {
@@ -417,31 +454,182 @@ describe("useWebSocket", () => {
       window.dispatchEvent(new Event("focus"));
     });
 
-    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+    expect(pings(ws).length).toBe(1);
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
+
+    act(() => answerProbe(ws));
+    await probeGoesUnanswered();
+    expect(ws.closed).toBe(false);
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
   });
 
-  // a socket the OS already killed, so the resume MUST still force a fresh one.
-  it("still reconnects on focus after the page was actually backgrounded", () => {
-    renderHook(() => useWebSocket("ws://test"));
+  // `readyState` reads OPEN over a socket the OS already killed, so a resume
+  // may keep one only once it has answered.
+  it("keeps a socket that answers the probe after the page was backgrounded", async () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
+    const ws = latestWs();
 
     const countBefore = FakeWebSocket.instances.length;
     act(() => { backgroundAndReturn(); });
     act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => answerProbe(ws));
+    await probeGoesUnanswered();
 
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
+    expect(ws.closed).toBe(false);
+    expect(result.current.status).toBe("open");
+  });
+
+  it("replaces a socket that does not answer the probe", async () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { backgroundAndReturn(); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
+
+    await probeGoesUnanswered();
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+    expect(ws.closed).toBe(true);
+  });
+
+  it("any inbound frame answers the probe, not only a pong", async () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => { backgroundAndReturn(); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => ws.simulateMessage({ type: "git_log", entries: [] }));
+    await probeGoesUnanswered();
+
+    expect(FakeWebSocket.instances.length).toBe(countBefore);
+  });
+
+  it("consumes the pong instead of surfacing it as a message", () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+
+    act(() => { backgroundAndReturn(); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => answerProbe(ws));
+
+    expect(result.current.lastMessage).toBeNull();
+    expect(result.current.drainMessages()).toHaveLength(0);
+  });
+
+  // The page stayed visible throughout, so nothing released the socket; the
+  // away limit is the trust cap here, and past it the socket is not asked.
+  it("replaces an open socket without probing when the window was unfocused past the away limit", async () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => {
+      windowKeptSystemFocus = false;
+      window.dispatchEvent(new Event("blur"));
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(AWAY_LIMIT_MS); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+
+    expect(pings(ws)).toHaveLength(0);
     expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
   });
 
   // never fires it, so it is safe evidence that the resume is real.
-  it("still reconnects on focus after pagehide", () => {
+  it("probes on focus after pagehide", () => {
     renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
+    const ws = latestWs();
 
-    const countBefore = FakeWebSocket.instances.length;
     act(() => { window.dispatchEvent(new Event("pagehide")); });
     act(() => { window.dispatchEvent(new Event("focus")); });
 
-    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+    expect(pings(ws).length).toBe(1);
+  });
+
+  it("releases the socket once the page has been hidden for the away limit", async () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+
+    act(() => { setHidden(true); document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(AWAY_LIMIT_MS - 1); });
+    expect(ws.closed).toBe(false);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(ws.closed).toBe(true);
+    expect(result.current.status).toBe("closed");
+
+    // A socket given up on purpose must not reconnect behind a hidden page.
+    const countAfterRelease = FakeWebSocket.instances.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(FakeWebSocket.instances.length).toBe(countAfterRelease);
+
+    act(() => { setHidden(false); document.dispatchEvent(new Event("visibilitychange")); });
+    expect(FakeWebSocket.instances.length).toBe(countAfterRelease + 1);
+  });
+
+  // A confirmation shown to the user must not outrun the wire, and a socket
+  // mid-probe has not yet shown there is a wire.
+  it("refuses a send while the socket is under a probe, and accepts it once answered", () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+    expect(result.current.send({ type: "send_message" })).toBe(true);
+
+    act(() => { backgroundAndReturn(); });
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(result.current.send({ type: "send_message" })).toBe(false);
+
+    act(() => answerProbe(ws));
+    expect(result.current.send({ type: "send_message" })).toBe(true);
+  });
+
+  // Nothing hid — it was born hidden — so there is no `onAway` to arm it.
+  it("releases a socket opened while the page was already hidden", async () => {
+    setHidden(true);
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(AWAY_LIMIT_MS); });
+    expect(ws.closed).toBe(true);
+  });
+
+  it("re-arms the release for a session switched to while hidden", async () => {
+    setHidden(true);
+    const { rerender } = renderHook(({ url }) => useWebSocket(url), {
+      initialProps: { url: "ws://one" },
+    });
+    act(() => latestWs().simulateOpen());
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+    rerender({ url: "ws://two" });
+    act(() => latestWs().simulateOpen());
+    const second = latestWs();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(AWAY_LIMIT_MS); });
+    expect(second.closed).toBe(true);
+  });
+
+  it("does not release a socket whose page came back before the away limit", async () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+    const ws = latestWs();
+
+    await awayHiddenFor(AWAY_LIMIT_MS - 1000);
+    act(() => answerProbe(ws));
+    await act(async () => { await vi.advanceTimersByTimeAsync(AWAY_LIMIT_MS); });
+
+    expect(ws.closed).toBe(false);
+    expect(FakeWebSocket.instances.length).toBe(1);
   });
 
   it("reconnects on focus when the socket is already closed", () => {
@@ -455,45 +643,48 @@ describe("useWebSocket", () => {
     expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
   });
 
-  it("one backgrounding buys one reconnect, not one per subsequent focus", () => {
+  it("one backgrounding buys one probe, not one per subsequent focus", () => {
     renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
+    const ws = latestWs();
 
-    const countBefore = FakeWebSocket.instances.length;
     act(() => { backgroundAndReturn(); });
     act(() => { window.dispatchEvent(new Event("focus")); });
-    act(() => latestWs().simulateOpen());
-    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+    act(() => answerProbe(ws));
+    expect(pings(ws).length).toBe(1);
 
-    // The iframe storm that follows the resume must not keep reconnecting.
+    // The iframe storm that follows the resume must not keep asking.
     void act(() => vi.advanceTimersByTime(5000));
-    act(() => latestWs().simulateOpen());
-    const countAfterResume = FakeWebSocket.instances.length;
     for (let i = 0; i < 3; i++) {
       act(() => { iframeFocusSteal(); });
       void act(() => vi.advanceTimersByTime(1000));
     }
-    expect(FakeWebSocket.instances.length).toBe(countAfterResume);
+    expect(pings(ws).length).toBe(1);
+    expect(FakeWebSocket.instances.length).toBe(1);
   });
 
-  it("foreground reconnect retries quickly before normal backoff if the socket is not open", () => {
+  it("retries a stalled handshake before backoff would, without restarting a young one", async () => {
     renderHook(() => useWebSocket("ws://test"));
     act(() => latestWs().simulateOpen());
 
     const countBefore = FakeWebSocket.instances.length;
-    act(() => {
-      window.dispatchEvent(new Event("pageshow"));
-    });
+    // Away past the limit, so the resume replaces the socket outright.
+    await awayHiddenFor(AWAY_LIMIT_MS);
     expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
 
-    void act(() => vi.advanceTimersByTime(299));
+    const handshake = latestWs();
+    expect(handshake.readyState).toBe(FakeWebSocket.CONNECTING);
+
+    // The retry that used to fire here killed the handshake in flight.
+    void act(() => vi.advanceTimersByTime(STALLED_HANDSHAKE_MS - 1));
     expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+    expect(handshake.closed).toBe(false);
 
     void act(() => vi.advanceTimersByTime(1));
     expect(FakeWebSocket.instances.length).toBe(countBefore + 2);
 
     act(() => latestWs().simulateOpen());
-    void act(() => vi.advanceTimersByTime(3000));
+    void act(() => vi.advanceTimersByTime(30_000));
     expect(FakeWebSocket.instances.length).toBe(countBefore + 2);
   });
 });

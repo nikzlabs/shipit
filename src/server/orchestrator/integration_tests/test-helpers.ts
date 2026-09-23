@@ -1064,7 +1064,7 @@ export function createTemplateRepoGitFactories(): {
           commitHash: null,
           conflictedFiles: [],
           rebaseInProgress: false,
-          secretFindings: [], unreadable: null,
+          secretFindings: [], unreadable: null, hookFailure: null,
         });
       }
       return gm;

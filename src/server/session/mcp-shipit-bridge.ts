@@ -14,6 +14,7 @@ import { askTool } from "./mcp-tools/ask.js";
 import { proposeActionsTool } from "./mcp-tools/propose-actions.js";
 import { sessionStatusTool } from "./mcp-tools/session-status.js";
 import { proposeRepoSessionTool } from "./mcp-tools/propose-repo-session.js";
+import { proposeSessionMessageTool } from "./mcp-tools/propose-session-message.js";
 import type { ToolDeps, ToolDescriptor } from "./mcp-tools/types.js";
 
 export const TOOL_REGISTRY: Record<string, ToolDescriptor> = {
@@ -25,6 +26,7 @@ export const TOOL_REGISTRY: Record<string, ToolDescriptor> = {
   [proposeActionsTool.id]: proposeActionsTool,
   [sessionStatusTool.id]: sessionStatusTool,
   [proposeRepoSessionTool.id]: proposeRepoSessionTool,
+  [proposeSessionMessageTool.id]: proposeSessionMessageTool,
 };
 
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

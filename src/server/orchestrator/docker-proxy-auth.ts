@@ -63,13 +63,23 @@ export async function getExecParentContainerId(
   }
 }
 
-// Symlinks can change between this check and Docker's mount; this layer cannot close that race.
-export async function isPathUnderWorkspace(hostPath: string, workspaceDir: string): Promise<boolean> {
+/**
+ * The realpath of `hostPath` when it lands inside the session workspace, else undefined.
+ *
+ * Callers MUST forward the returned path rather than what the caller asked for: the two name the
+ * same object only while no symlink on the way in changes, and the session owns every component
+ * under its workspace (planning#601).
+ */
+export async function resolveUnderWorkspace(
+  hostPath: string,
+  workspaceDir: string,
+): Promise<string | undefined> {
   try {
     const resolved = await fs.realpath(hostPath);
     const resolvedWorkspace = await fs.realpath(workspaceDir);
-    return resolved.startsWith(resolvedWorkspace + path.sep) || resolved === resolvedWorkspace;
+    if (resolved === resolvedWorkspace) return resolved;
+    return resolved.startsWith(resolvedWorkspace + path.sep) ? resolved : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }

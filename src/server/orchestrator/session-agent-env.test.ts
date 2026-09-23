@@ -15,6 +15,7 @@ import {
   finalizeSessionAgentEnvironment,
   repushSessionAgentToken,
   selectAgentEnvForPush,
+  agentEnvTurnArgs,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 import { syncAgentTokenIn } from "./session-credentials.js";
@@ -1846,5 +1847,31 @@ describe("local-mode workspace trust (docs/118, planning#61)", () => {
       "/app": { hasTrustDialogAccepted: true },
       "/workspace": { hasTrustDialogAccepted: true },
     });
+  });
+});
+
+describe("agentEnvTurnArgs", () => {
+  it("forwards every per-turn option, so the two wiring sites cannot drift", () => {
+    // planning#610: the interactive site (`ws-handlers/agent-execution.ts`) and the
+    // dispatched one (`runner-registry-factory.ts`) each rebuilt this object, and an
+    // option added to one was dropped by the other — so the fix reached half the turns.
+    const every = {
+      reusingResidentAgent: true,
+      excludeRouteIds: ["r1"],
+      residentRoute: { kind: "account" as const, id: "a1" },
+      requireResidentRoute: true,
+      ownUserText: "the message this turn submits",
+    };
+    expect(agentEnvTurnArgs(every)).toEqual(every);
+    expect(Object.keys(agentEnvTurnArgs(every)).sort()).toEqual(Object.keys(every).sort());
+  });
+
+  it("omits what the caller did not set", () => {
+    expect(agentEnvTurnArgs(undefined)).toEqual({});
+    expect(agentEnvTurnArgs({})).toEqual({});
+  });
+
+  it("forwards an empty own-user-text rather than treating it as absent", () => {
+    expect(agentEnvTurnArgs({ ownUserText: "" })).toEqual({ ownUserText: "" });
   });
 });

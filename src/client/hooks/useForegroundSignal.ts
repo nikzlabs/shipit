@@ -53,11 +53,31 @@ import { useEventListeners } from "./useEventListener.js";
 
 export const FOREGROUND_COALESCE_MS = 1000;
 
+export interface ForegroundResume {
+  /**
+   * How long the page was away, measured from the evidence that it left
+   * (hidden, `pagehide`, `freeze`, or an external `blur`).
+   *
+   * `undefined` when no such evidence was seen — a `pageshow` or an `online`
+   * with nothing before it. The absence is then unbounded as far as this hook
+   * knows, so a consumer that treats duration as a cheap proxy for health must
+   * fall back to asking rather than assume a short one.
+   */
+  awayMs?: number;
+}
+
 export interface ForegroundSignalOptions {
 
   enabled?: boolean;
 
-  onForeground: () => void;
+  onForeground: (resume: ForegroundResume) => void;
+  /**
+   * The page left — hidden, `pagehide` or `freeze`. Fired from the same
+   * evidence that marks it backgrounded so there is one listener set, not two;
+   * a consumer that acts on it later must re-check `document.hidden` then,
+   * because this only says the page went away, not that it stayed away.
+   */
+  onAway?: () => void;
   /**
    * Whether the connection currently exists and is OPEN or still CONNECTING.
    * Consulted only for a `focus` with no preceding `blur` to classify it —
@@ -74,12 +94,15 @@ type BlurKind = "internal" | "external" | "none";
 export function useForegroundSignal({
   enabled = true,
   onForeground,
+  onAway,
   isConnectionLive,
 }: ForegroundSignalOptions): void {
   const lastForegroundRef = useRef(0);
 
   const pendingBackgroundRef = useRef(false);
   const lastBlurRef = useRef<BlurKind>("none");
+  /** 0 = no evidence the page left, so the absence cannot be measured. */
+  const awaySinceRef = useRef(0);
 
   function reconnect(): void {
     if (document.hidden) return;
@@ -87,13 +110,22 @@ export function useForegroundSignal({
     if (now - lastForegroundRef.current < FOREGROUND_COALESCE_MS) return;
     lastForegroundRef.current = now;
     pendingBackgroundRef.current = false;
-    onForeground();
+    const awaySince = awaySinceRef.current;
+    awaySinceRef.current = 0;
+    onForeground(awaySince ? { awayMs: now - awaySince } : {});
+  }
+
+  function markAway(): void {
+    // Keep the earliest: a background that goes hidden and then blurs left once.
+    if (!awaySinceRef.current) awaySinceRef.current = Date.now();
   }
 
   function markBackgrounded(): void {
     pendingBackgroundRef.current = true;
+    markAway();
 
     lastForegroundRef.current = 0;
+    onAway?.();
   }
 
   function handleVisibilityChange(): void {
@@ -107,6 +139,8 @@ export function useForegroundSignal({
   function handleBlur(): void {
 
     lastBlurRef.current = document.hasFocus() ? "internal" : "external";
+    // An internal blur never left the page, so it starts no absence.
+    if (lastBlurRef.current === "external") markAway();
   }
 
   function handleFocus(): void {

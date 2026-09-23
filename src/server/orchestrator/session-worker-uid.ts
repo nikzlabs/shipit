@@ -234,8 +234,10 @@ export function chownToSessionWorker(targetPath: string): void {
 }
 
 // Do not use on git checkouts: object files can be hardlinked into a shared cache.
-export function chownTreeToSessionWorker(targetPath: string): void {
-  const owner = identityForTarget(targetPath);
+export function chownTreeToSessionWorker(
+  targetPath: string,
+  owner: SessionIdentity | null = identityForTarget(targetPath),
+): void {
   if (owner === null) return;
   chownRecursive(targetPath, owner);
 }

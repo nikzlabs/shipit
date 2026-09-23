@@ -62,6 +62,7 @@ export const CARD_MESSAGE_FIELDS = [
   "subAgentConsult",
   "actionChecklist",
   "repoSessionProposal",
+  "sessionMessageProposal",
   "presentInline",
   "branchAutoReset",
   "branchSynced",
