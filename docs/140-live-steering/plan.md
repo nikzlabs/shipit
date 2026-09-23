@@ -604,7 +604,12 @@ edge is simply frequent enough to make them reachable.
    LIVE value, falling back to the snapshot only when `turnIsCurrent()` is false.
    Preferring the snapshot unconditionally would re-break Codex, whose late
    `isStreamCompletion` event exists to replace a one-character final delta as
-   the commit message.
+   the commit message. The release flow had the same defect with
+   `accumulatedText`, and not only on adoption: it runs after the drain, so a
+   queued or re-queued steer's successor also cleared the finished turn's
+   release markers before they were parsed, and no card appeared. It now reads
+   the `resultTurnText` snapshot (taken at `agent_result` and at the drain) on the
+   same live-when-current rule.
 4. **The ownership check is stale by the time the drain runs.** `tryDrain` checks
    `turnIsCurrent()`, then *awaits the queued-turn commit* — real work, on a real
    tree — before calling `drainNext()`. A turn adopted inside that await would

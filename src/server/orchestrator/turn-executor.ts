@@ -198,6 +198,17 @@ function reseedConversationForRetry(
   }
 }
 
+// A turn parked on its PR flow can reach the release flow after a successor already
+// has; its older markers must not overwrite the successor's newer card.
+const releaseFlowEpochs = new WeakMap<object, number>();
+function claimReleaseFlow(runner: object, epoch: number | undefined): boolean {
+  if (epoch === undefined) return true;
+  const latest = releaseFlowEpochs.get(runner);
+  if (latest !== undefined && latest > epoch) return false;
+  releaseFlowEpochs.set(runner, epoch);
+  return true;
+}
+
 export async function executeAgentTurn(
   runner: SessionRunnerInterface | null,
   deps: SystemTurnDeps,
@@ -974,6 +985,16 @@ export async function executeAgentTurn(
   };
 
   let resultTurnSummary: string | null = null;
+  // The release flow runs after the drain, and a drained or adopted successor resets
+  // `accumulatedText`; without this snapshot the finished turn's markers are lost.
+  let resultTurnText: string | null = null;
+  const snapshotTurnText = (): void => {
+    if (runner && resultTurnText === null && turnIsCurrent()) resultTurnText = runner.accumulatedText;
+  };
+  const turnText = (): string => {
+    if (!runner) return "";
+    return turnIsCurrent() ? runner.accumulatedText : (resultTurnText ?? "");
+  };
   let servingAdoptedTurn = false;
   // Adoption already counts while its async handover still awaits the predecessor's teardown.
   const servingCliStartedTurn = (): boolean => servingAdoptedTurn || rearmInFlight !== null;
@@ -985,6 +1006,7 @@ export async function executeAgentTurn(
   const tryDrain = async (): Promise<void> => {
     if (drainFired) return;
     drainFired = true;
+    snapshotTurnText();
     try {
       // Before the successor's prompt is composed, so it carries what this turn settled.
       await statusCardSettled;
@@ -1120,9 +1142,9 @@ export async function executeAgentTurn(
         console.error("[turn] pr re-arm (reset) flow failed:", err);
       }
     }
-    if (runner && deps.postTurnReleaseFlow) {
+    if (runner && deps.postTurnReleaseFlow && claimReleaseFlow(runner, thisTurnEpoch)) {
       try {
-        await deps.postTurnReleaseFlow(sessionId, runner.sessionDir, runner.accumulatedText, emit);
+        await deps.postTurnReleaseFlow(sessionId, runner.sessionDir, turnText(), emit);
       } catch (err) {
         console.error("[turn] release flow failed:", err);
       }
@@ -1171,6 +1193,7 @@ export async function executeAgentTurn(
     commitPromise = null;
     commitAndPrPromise = null;
     resultTurnSummary = null;
+    resultTurnText = null;
     // The adopted turn is a turn of its own: it settles its own facts and is decided afresh.
     turnFacts = null;
     sawOwnResult = false;
@@ -1212,6 +1235,7 @@ export async function executeAgentTurn(
     if (event.type !== "agent_result") return;
     // Capture before an await lets adoption reset the live summary.
     if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
+    snapshotTurnText();
     // Which turn this result ends is decided by the order events arrived in, so
     // it is taken BEFORE yielding: the await below can span a replay or a wake,
     // and a result must not answer a turn that began while it was waiting.
