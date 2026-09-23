@@ -1207,14 +1207,16 @@ export async function executeAgentTurn(
   // Results that arrive during a handover settle one at a time, in arrival order.
   let resultGate: Promise<void> = Promise.resolve();
   let gatedResults = 0;
-  // A CLI turn began after a gated result, so no handover has taken it yet.
-  let adoptionOwed = false;
+  // Newest CLI turn that began while a result was gated. A gated result's handover can end
+  // at a later turn and then step back to its own epoch, so this is owed until reached.
+  let owedEpoch: number | undefined;
+  const adoptionOwed = (): boolean =>
+    owedEpoch !== undefined && thisTurnEpoch !== undefined && owedEpoch > thisTurnEpoch;
   const beginRearm = (reason: string): Promise<void> => {
     if (!useStreaming) return Promise.resolve();
-    if (gatedResults > 0) adoptionOwed = true;
+    if (gatedResults > 0 && runner) owedEpoch = runner.turnEpoch;
     if (rearmInFlight) return rearmInFlight;
     if (!streamingPostTurnFired) return Promise.resolve();
-    adoptionOwed = false;
     const pending = rearmForCliStartedTurn(reason).finally(() => {
       if (rearmInFlight === pending) rearmInFlight = null;
     });
@@ -1227,7 +1229,7 @@ export async function executeAgentTurn(
     for (;;) {
       if (rearmInFlight) await rearmInFlight;
       else if (gatedResults > 0) await resultGate;
-      else if (adoptionOwed && streamingPostTurnFired) await beginRearm("cli-started turn ended without a result");
+      else if (adoptionOwed() && streamingPostTurnFired) await beginRearm("cli-started turn ended without a result");
       else return;
     }
   };

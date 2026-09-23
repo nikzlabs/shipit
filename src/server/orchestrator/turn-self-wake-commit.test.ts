@@ -1909,7 +1909,7 @@ describe("post-turn flow for a self-woken turn", () => {
     h.runner.dispose({ force: true });
   });
 
-  it("settles a CLI-started turn that crashes after another turn ended during the same handover", async () => {
+  it("settles a CLI-started turn that crashes after other turns ended during the same handover", async () => {
     let releasePr: () => void = () => {};
     let signalPrEntered: () => void = () => {};
     const parked = new Promise<void>((r) => { releasePr = r; });
@@ -1940,6 +1940,10 @@ describe("post-turn flow for a self-woken turn", () => {
     h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await flush();
     say("Work C");
+    await flush();
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await flush();
+    say("Work D");
     await flush();
     h.agent.emit("done", 1);
     await flush();

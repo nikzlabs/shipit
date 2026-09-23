@@ -617,9 +617,10 @@ edge is simply frequent enough to make them reachable.
    itself when the previous result's flow has fired; without that, C's result
    found the flow already fired and C got no commit or release flow at all. The
    `done`, `error` and auth-recovery paths wait on the same gate
-   (`settleHandovers`) and re-arm for a turn that started after a gated result
-   (`adoptionOwed`), so a turn that crashes there still drains and clears
-   `running`.
+   (`settleHandovers`) and re-arm for a turn that started while a result was
+   gated (`owedEpoch`, an epoch rather than a flag, because a gated result's
+   re-arm can end at that later turn and then step back to its own epoch), so a
+   turn that crashes there still drains and clears `running`.
 4. **The ownership check is stale by the time the drain runs.** `tryDrain` checks
    `turnIsCurrent()`, then *awaits the queued-turn commit* — real work, on a real
    tree — before calling `drainNext()`. A turn adopted inside that await would
