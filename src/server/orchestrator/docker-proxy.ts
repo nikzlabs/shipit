@@ -5,6 +5,7 @@ import {
   forbidden,
   badRequest,
   readBody,
+  parseJsonObjectBody,
   forwardToDocker,
   pipeToDocker,
   ownershipLabels,
@@ -20,13 +21,20 @@ import {
   volumeBelongsToSession,
   getExecParentContainerId,
 } from "./docker-proxy-auth.js";
-import { sanitizeBuildRequest, sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
+import {
+  sanitizeBuildRequest,
+  sanitizeContainerCreate,
+  sanitizeExecCreate,
+  verifyContainerMountPaths,
+} from "./docker-proxy-sanitize.js";
+import { findAmbiguousFieldCasing } from "./docker-proxy-field-casing.js";
 
 export {
   respond,
   forbidden,
   badRequest,
   readBody,
+  parseJsonObjectBody,
   forwardToDocker,
   pipeToDocker,
   PARENT_SESSION_LABEL,
@@ -45,9 +53,16 @@ export {
   networkBelongsToSession,
   volumeBelongsToSession,
   getExecParentContainerId,
-  isPathUnderWorkspace,
+  resolveUnderWorkspace,
 } from "./docker-proxy-auth.js";
-export { sanitizeBuildRequest, sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
+export {
+  sanitizeBuildRequest,
+  sanitizeContainerCreate,
+  sanitizeExecCreate,
+  pinMountPaths,
+  verifyContainerMountPaths,
+} from "./docker-proxy-sanitize.js";
+export { findAmbiguousFieldCasing } from "./docker-proxy-field-casing.js";
 
 function buildRoutes(): Route[] {
   const routes: Route[] = [];
@@ -59,7 +74,7 @@ function buildRoutes(): Route[] {
   route("POST", /^\/v[\d.]+\/containers\/create(\?.*)?$|^\/containers\/create(\?.*)?$/, async (ctx) => {
     try {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
-      const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
+      const body = parseJsonObjectBody(bodyBuf);
 
       const result = await sanitizeContainerCreate(body, ctx.session, ctx.socketPath);
       if (result.error) {
@@ -105,11 +120,19 @@ function buildRoutes(): Route[] {
   });
 
   // Hold API trust refresh across starts. Creates have no IP; removals leave safe stale denials.
-  const containerLabelOps: { method: string; suffix: string; topologyChanging?: boolean }[] = [
+  // `mounting` ops are the ones where Docker resolves the stored bind sources again (planning#601).
+  const containerLabelOps: {
+    method: string;
+    suffix: string;
+    topologyChanging?: boolean;
+    mounting?: boolean;
+    /** Docker stops the container first, and the session decides how long that takes. */
+    mountsAfterStopping?: boolean;
+  }[] = [
     { method: "GET", suffix: "/json" },
-    { method: "POST", suffix: "/start", topologyChanging: true },
+    { method: "POST", suffix: "/start", topologyChanging: true, mounting: true },
     { method: "POST", suffix: "/stop" },
-    { method: "POST", suffix: "/restart", topologyChanging: true },
+    { method: "POST", suffix: "/restart", topologyChanging: true, mounting: true, mountsAfterStopping: true },
     { method: "POST", suffix: "/kill" },
     { method: "DELETE", suffix: "" },
     { method: "POST", suffix: "/wait" },
@@ -124,6 +147,20 @@ function buildRoutes(): Route[] {
       const containerId = match[1];
       if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
         forbidden(ctx.res, "Container does not belong to this session"); return;
+      }
+      if (op.mounting) {
+        const mountCheck = await verifyContainerMountPaths(ctx.socketPath, containerId, ctx.session);
+        if (mountCheck.error) { forbidden(ctx.res, mountCheck.error); return; }
+        // A restart mounts only once the container has exited, and a container that traps its stop
+        // signal holds that open for as long as it likes — long enough to swap a directory on the
+        // path this check just cleared. Stop and start instead: a start mounts straight away.
+        if (op.mountsAfterStopping && mountCheck.hasHostBind) {
+          forbidden(
+            ctx.res,
+            "Restarting a container with a host bind mount is not supported; stop it and start it instead",
+          );
+          return;
+        }
       }
       const endTopologyChange = op.topologyChanging ? ctx.beginTopologyChange?.() : undefined;
       try {
@@ -156,7 +193,33 @@ function buildRoutes(): Route[] {
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Container does not belong to this session"); return;
     }
-    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+
+    try {
+      const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
+      const body = parseJsonObjectBody(bodyBuf);
+
+      const result = sanitizeExecCreate(body);
+      if (result.error) {
+        forbidden(ctx.res, result.error); return;
+      }
+
+      const dockerResult = await forwardToDocker(
+        ctx.socketPath,
+        "POST",
+        ctx.req.url!,
+        { "content-type": "application/json" },
+        Buffer.from(JSON.stringify(body)),
+      );
+
+      ctx.res.writeHead(dockerResult.statusCode, dockerResult.headers);
+      ctx.res.end(dockerResult.body);
+    } catch (err) {
+      if ((err as Error).message === "Request body too large") {
+        badRequest(ctx.res, "Request body too large (max 10 MB)");
+      } else {
+        badRequest(ctx.res, (err as Error).message);
+      }
+    }
   });
 
   route("POST", /^(?:\/v[\d.]+)?\/exec\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/start(\?.*)?$/, async (ctx, match) => {
@@ -188,7 +251,12 @@ function buildRoutes(): Route[] {
   route("POST", /^(?:\/v[\d.]+)?\/networks\/create(\?.*)?$/, async (ctx) => {
     try {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
-      const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
+      const body = parseJsonObjectBody(bodyBuf);
+
+      const ambiguous = findAmbiguousFieldCasing(body);
+      if (ambiguous) {
+        forbidden(ctx.res, ambiguous); return;
+      }
 
       body.Labels = { ...((body.Labels ?? {}) as Record<string, string>), ...ownershipLabels(ctx) };
 
@@ -250,7 +318,13 @@ function buildRoutes(): Route[] {
 
     try {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
-      const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
+      const body = parseJsonObjectBody(bodyBuf);
+
+      const ambiguous = findAmbiguousFieldCasing(body);
+      if (ambiguous) {
+        forbidden(ctx.res, ambiguous); return;
+      }
+
       const containerId = body.Container as string;
       if (containerId && !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
         forbidden(ctx.res, "Container does not belong to this session"); return;
@@ -265,7 +339,7 @@ function buildRoutes(): Route[] {
           "POST",
           ctx.req.url!,
           { "content-type": "application/json" },
-          bodyBuf,
+          Buffer.from(JSON.stringify(body)),
         );
       } finally {
         endTopologyChange?.();
@@ -286,7 +360,13 @@ function buildRoutes(): Route[] {
 
     try {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
-      const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
+      const body = parseJsonObjectBody(bodyBuf);
+
+      const ambiguous = findAmbiguousFieldCasing(body);
+      if (ambiguous) {
+        forbidden(ctx.res, ambiguous); return;
+      }
+
       const containerId = body.Container as string;
       if (containerId && !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
         forbidden(ctx.res, "Container does not belong to this session"); return;
@@ -297,7 +377,7 @@ function buildRoutes(): Route[] {
         "POST",
         ctx.req.url!,
         { "content-type": "application/json" },
-        bodyBuf,
+        Buffer.from(JSON.stringify(body)),
       );
 
       ctx.res.writeHead(dockerResult.statusCode, dockerResult.headers);
@@ -310,7 +390,12 @@ function buildRoutes(): Route[] {
   route("POST", /^(?:\/v[\d.]+)?\/volumes\/create(\?.*)?$/, async (ctx) => {
     try {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
-      const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
+      const body = parseJsonObjectBody(bodyBuf);
+
+      const ambiguous = findAmbiguousFieldCasing(body);
+      if (ambiguous) {
+        forbidden(ctx.res, ambiguous); return;
+      }
 
       // DriverOpts can bind arbitrary host paths into an otherwise session-owned volume.
       const driverOpts = body.DriverOpts as Record<string, string> | undefined;
@@ -443,6 +528,20 @@ export function createDockerProxy(deps: DockerProxyDeps): http.Server {
 
       const url = req.url ?? "/";
       const method = (req.method ?? "GET").toUpperCase();
+
+      // Below 1.24 the daemon reads a full HostConfig from a container *start*, which no route
+      // here checks. A stock daemon refuses those versions itself; this does not depend on that.
+      // The whole prefix is parsed the way Go's `versions.compare` does — component by component,
+      // a missing or unparseable one as 0 — so `/v1.2.3/` and `/v1/` are read as the sub-1.24
+      // versions the daemon reads them as, rather than skipped for not being two components.
+      const version = /^\/v([\d.]+)(?=\/|$)/.exec(url);
+      if (version) {
+        const [major, minor] = version[1].split(".").map((part) => Number.parseInt(part, 10) || 0);
+        if (major < 1 || (major === 1 && (minor ?? 0) < 24)) {
+          forbidden(res, `Docker API version v${version[1]} is not supported (minimum v1.24)`);
+          return;
+        }
+      }
 
       const ctx: RequestContext = {
         req, res, session, socketPath,

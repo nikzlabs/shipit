@@ -4,12 +4,11 @@ import {
   formatSessionStatusContext,
   MAX_STATUS_CONTEXT_CHARS,
   markAllSessionStatusesStale,
-  markSessionStatusStale,
   recordSessionStatus,
   runStatusExclusive,
   sessionStatusTurnContext,
-  shouldNudgeForStatusCard,
-  statusNudgePrompt,
+  settleSessionStatusCard,
+  shouldCarryStatusNudge,
   takeOfferedActions,
 } from "./session-status.js";
 import type { SessionStatusDeps, TurnStatusFacts } from "./session-status.js";
@@ -68,7 +67,7 @@ describe("recordSessionStatus", () => {
   it("stores the card, marks it current and broadcasts", async () => {
     const { d, card } = await seededCard();
 
-    expect(card).toMatchObject({ status: "Routes done.", fresh: true, writeSeq: 1 });
+    expect(card).toMatchObject({ status: "Routes done.", fresh: true, writeSeq: 1, turnSeq: 0 });
     expect(card.actions).toHaveLength(2);
     expect(card.actions[0]).toMatchObject({ branch: "shipit/x", headSha: "abc12345" });
     expect(card.actions[0].offerId).not.toBe(card.actions[1].offerId);
@@ -129,12 +128,13 @@ describe("recordSessionStatus", () => {
 
   it("makes a bare call on a stale card current, and counts as a write", async () => {
     const { d, card } = await seededCard();
-    await markSessionStatusStale(d, "s1", card.writeSeq);
+    await settleSessionStatusCard(d, "s1", { ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: false });
     d.sseBroadcast.mockClear();
 
     const confirmed = await recordSessionStatus(d, "s1", {});
 
-    expect(confirmed).toMatchObject({ fresh: true, writeSeq: 2 });
+    // The settled turn was counted; the call makes the card current again.
+    expect(confirmed).toMatchObject({ fresh: true, writeSeq: 2, turnSeq: 1 });
     expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
@@ -221,58 +221,18 @@ describe("takeOfferedActions", () => {
     expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("does not move writeSeq: the user acted, the agent did not write", async () => {
+  it("does not move writeSeq: the, turnSeq: 0 user acted, the agent did not write", async () => {
     const { d, card } = await seededCard();
     await takeOfferedActions(d, "s1", [card.actions[0].offerId]);
     expect(d.sessionManager.get("s1")!.sessionStatus!.writeSeq).toBe(card.writeSeq);
   });
 });
 
-describe("markSessionStatusStale", () => {
-  it("marks the card and broadcasts", async () => {
-    const { d, card } = await seededCard();
-    d.sseBroadcast.mockClear();
-
-    await markSessionStatusStale(d, "s1", card.writeSeq);
-
-    expect(d.sessionManager.get("s1")!.sessionStatus!.fresh).toBe(false);
-    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
-  });
-
-  it("is a no-op once a later turn wrote the card", async () => {
-    const { d, card } = await seededCard();
-    await recordSessionStatus(d, "s1", { status: "Ready to merge." });
-    d.sseBroadcast.mockClear();
-
-    await markSessionStatusStale(d, "s1", card.writeSeq);
-
-    expect(d.sessionManager.get("s1")!.sessionStatus!.fresh).toBe(true);
-    expect(d.sseBroadcast).not.toHaveBeenCalled();
-  });
-
-  it("leaves writeSeq alone: a freshness mark is not an agent write", async () => {
-    const { d, card } = await seededCard();
-    await markSessionStatusStale(d, "s1", card.writeSeq);
-    expect(d.sessionManager.get("s1")!.sessionStatus!.writeSeq).toBe(card.writeSeq);
-  });
-
-  it("stays quiet on an already stale card and on a session with none", async () => {
-    const { d, card } = await seededCard();
-    await markSessionStatusStale(d, "s1", card.writeSeq);
-    d.sseBroadcast.mockClear();
-
-    await markSessionStatusStale(d, "s1", card.writeSeq);
-    await markSessionStatusStale(d, "s2", 1);
-
-    expect(d.sseBroadcast).not.toHaveBeenCalled();
-  });
-});
-
 describe("markAllSessionStatusesStale", () => {
   it("marks every stored card once and broadcasts once", async () => {
     const sessions = fakeSessions({
-      s1: { status: "a", actions: [], fresh: true, writeSeq: 3 },
-      s2: { status: "b", actions: [], fresh: false, writeSeq: 1 },
+      s1: { status: "a", actions: [], fresh: true, writeSeq: 3, turnSeq: 0 },
+      s2: { status: "b", actions: [], fresh: false, writeSeq: 1, turnSeq: 0 },
     });
     const d = deps(sessions);
 
@@ -290,8 +250,8 @@ describe("markAllSessionStatusesStale", () => {
   // confirmed and must stay current.
   it("does not mark a card written after the sweep began", async () => {
     const sessions = fakeSessions({
-      s1: { status: "a", actions: [], fresh: true, writeSeq: 1 },
-      s2: { status: "b", actions: [], fresh: true, writeSeq: 1 },
+      s1: { status: "a", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 },
+      s2: { status: "b", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 },
     });
     const d = deps(sessions);
 
@@ -303,14 +263,14 @@ describe("markAllSessionStatusesStale", () => {
     expect(sessions.cards.get("s2")).toMatchObject({
       status: "written during the sweep",
       fresh: true,
-      writeSeq: 2,
+      writeSeq: 2, turnSeq: 0,
     });
   });
 
   it("marks the rest when one session's write fails, and says what failed", async () => {
     const sessions = fakeSessions({
-      s1: { status: "a", actions: [], fresh: true, writeSeq: 1 },
-      s2: { status: "b", actions: [], fresh: true, writeSeq: 1 },
+      s1: { status: "a", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 },
+      s2: { status: "b", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 },
     });
     sessions.setSessionStatus.mockImplementationOnce(() => { throw new Error("disk full"); });
     const d = deps(sessions);
@@ -326,7 +286,7 @@ describe("markAllSessionStatusesStale", () => {
   });
 
   it("broadcasts nothing when every card is already stale", async () => {
-    const d = deps(fakeSessions({ s1: { status: "a", actions: [], fresh: false, writeSeq: 1 } }));
+    const d = deps(fakeSessions({ s1: { status: "a", actions: [], fresh: false, writeSeq: 1, turnSeq: 0 } }));
     await markAllSessionStatusesStale(d);
     expect(d.sseBroadcast).not.toHaveBeenCalled();
   });
@@ -366,7 +326,7 @@ describe("runStatusExclusive", () => {
 
     const pending = [
       recordSessionStatus(d, "s1", { status: "later" }),
-      markSessionStatusStale(d, "s1", card.writeSeq),
+      settleSessionStatusCard(d, "s1", { ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: false }),
       takeOfferedActions(d, "s1", [card.actions[0].offerId]),
     ];
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -389,7 +349,9 @@ describe("runStatusExclusive", () => {
 
     await Promise.all([
       recordSessionStatus(d, "s1", { status: "Ready to merge." }),
-      markSessionStatusStale(d, "s1", card.writeSeq),
+      settleSessionStatusCard(d, "s1", {
+        ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: false,
+      }),
     ]);
 
     // The mark ran second and saw a moved writeSeq, so the new card stays current.
@@ -434,75 +396,258 @@ describe("clearConversationThread", () => {
   });
 });
 
-describe("shouldNudgeForStatusCard (docs/303 req 12–15)", () => {
+describe("shouldCarryStatusNudge (docs/303 req 12–15, 38)", () => {
   const plainTurn = (over: Partial<TurnStatusFacts> = {}): TurnStatusFacts => ({
     statusUpdated: false,
-    wasInterrupted: false,
+    awaitingAnswer: false,
     receivedResult: true,
     harnessCommand: false,
-    statusNudge: false,
-    steered: false,
-    promptQueued: false,
-    postTurn: "commit-push",
+    userStopped: false,
     writeSeq: 3,
     ...over,
   });
 
-  it("nudges a turn that produced a result and did not write the card", () => {
-    expect(shouldNudgeForStatusCard(plainTurn(), { writeSeq: 3 }, false)).toBe(true);
-  });
-
-  it("nudges a session that has no card at all yet (req 22 — the first ordinary turn writes it)", () => {
-    expect(shouldNudgeForStatusCard(plainTurn({ writeSeq: 0 }), undefined, false)).toBe(true);
+  it("asks about a turn that produced a result and did not write the card", () => {
+    expect(shouldCarryStatusNudge(plainTurn())).toBe(true);
   });
 
   const noCases: [string, Partial<TurnStatusFacts>][] = [
     ["the agent wrote or confirmed the card", { statusUpdated: true }],
-    ["the turn was interrupted — a question, a plan approval or a stop", { wasInterrupted: true }],
+    ["the turn ended with a question or a plan to approve", { awaitingAnswer: true }],
     ["no result came back — a crash has its own recovery", { receivedResult: false }],
     ["the harness answered the turn by compacting the conversation", { harnessCommand: true }],
-    ["the turn was itself a nudge (req 15: one attempt)", { statusNudge: true }],
-    ["a driver owns the turn", { postTurn: "none" }],
   ];
   for (const [why, over] of noCases) {
-    it(`does not nudge when ${why}`, () => {
-      expect(shouldNudgeForStatusCard(plainTurn(over), { writeSeq: 3 }, false)).toBe(false);
+    it(`does not ask when ${why}`, () => {
+      expect(shouldCarryStatusNudge(plainTurn(over))).toBe(false);
     });
   }
 
-  it("does not nudge when a later turn already wrote the card", () => {
-    expect(shouldNudgeForStatusCard(plainTurn({ writeSeq: 3 }), { writeSeq: 4 }, false)).toBe(false);
+  /*
+    req 38 — the gates below existed because the nudge spent a turn and retired the
+    resident process. The ask now rides the next turn's prompt, so each of these is a
+    miss that gets asked about instead of one that was dropped.
+  */
+  it("asks about a turn a message reached after it started (req 34's shape)", () => {
+    expect(shouldCarryStatusNudge(plainTurn())).toBe(true);
   });
 
-  it("defers while a successor is running or queued", () => {
-    expect(shouldNudgeForStatusCard(plainTurn(), { writeSeq: 3 }, true)).toBe(false);
+  it("asks about a turn the user stopped, even when it produced no result", () => {
+    // `wasInterrupted` latched on a stop AND on a question; only the second is req 13's,
+    // and a stop that ends the process without a result is not the crash exemption.
+    expect(shouldCarryStatusNudge(plainTurn({ receivedResult: false, userStopped: true })))
+      .toBe(true);
+  });
+
+  it("asks about a driver-owned turn, which does real work (req 38)", () => {
+    // The block does not ride such a turn; the next one that carries a prompt reads the ask.
+    expect(shouldCarryStatusNudge(plainTurn())).toBe(true);
   });
 });
 
-describe("statusNudgePrompt", () => {
-  it("opens with [ShipIt] and asks for one call, bare if nothing changed", () => {
-    const prompt = statusNudgePrompt(undefined);
-    expect(prompt.startsWith("[ShipIt]")).toBe(true);
-    expect(prompt).toContain("session_status");
-    expect(prompt).toContain("no arguments");
+describe("settleSessionStatusCard (docs/303 req 11, 38, 40)", () => {
+  it("marks the card stale, records the ask and counts the turn", async () => {
+    const { d, card } = await seededCard();
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
+    });
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    expect(stored.fresh).toBe(false);
+    expect(stored.nudgePending).toBe(true);
+    expect(stored.turnSeq).toBe(card.turnSeq + 1);
   });
 
-  it("carries the whole card and asks for a reconciliation, not just a call (req 35)", async () => {
-    const { d } = await seededCard();
+  it("counts a turn that DID write the card, and leaves it current", async () => {
+    const { d, card } = await seededCard();
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq - 1, statusUpdated: true, nudgePending: false,
+    });
     const stored = d.sessionManager.get("s1")!.sessionStatus!;
-    await takeOfferedActions(d, "s1", [stored.actions[0]!.offerId]);
+    expect(stored.fresh).toBe(true);
+    expect(stored.turnSeq).toBe(card.turnSeq + 1);
+    expect(stored.nudgePending).toBeUndefined();
+  });
 
-    const prompt = statusNudgePrompt(d.sessionManager.get("s1")!.sessionStatus);
-    expect(prompt).toContain(formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus));
-    expect(prompt).toContain("Routes done.");
-    expect(prompt).toContain("Add the webhook route.");
-    expect(prompt).toContain("ALREADY SENT");
+  it("touches nothing when a successor wrote after the settling turn's snapshot", async () => {
+    const { d, card } = await seededCard();
+    await recordSessionStatus(d, "s1", { status: "Moved on." });
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
+    });
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    expect(stored.fresh).toBe(true);
+    expect(stored.nudgePending).toBeUndefined();
+  });
+
+  /*
+    A turn that wrote settles without the `ifWriteSeq` guard — its own call moved the
+    record — so it must not speak for freshness or the ask either: a successor may have
+    written or missed in between, and this settlement cannot tell which.
+  */
+  it("a late-settling turn that wrote leaves a successor's ask and stale mark alone", async () => {
+    const { d, card } = await seededCard();
+    const wrote = await recordSessionStatus(d, "s1", { status: "Predecessor wrote." });
+    // The successor misses, marking the card stale and recording the ask.
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: wrote!.writeSeq, statusUpdated: false, nudgePending: true,
+    });
+    // ...and only now does the predecessor's terminal path run.
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq, statusUpdated: true, nudgePending: false,
+    });
+
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    expect(stored.fresh).toBe(false);
+    expect(stored.nudgePending).toBe(true);
+  });
+
+  it("clears an outstanding ask on the next accepted call", async () => {
+    const { d, card } = await seededCard();
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
+    });
+    await recordSessionStatus(d, "s1", {});
+    expect(d.sessionManager.get("s1")!.sessionStatus!.nudgePending).toBeUndefined();
+  });
+
+  it("broadcasts only when the freshness the user sees changed", async () => {
+    const { d, card } = await seededCard();
+    d.sseBroadcast.mockClear();
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
+    });
+    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
+    d.sseBroadcast.mockClear();
+    // Already stale: the turn is still counted, but nothing on screen moved.
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
+    });
+    expect(d.sseBroadcast).not.toHaveBeenCalled();
+    expect(d.sessionManager.get("s1")!.sessionStatus!.turnSeq).toBe(card.turnSeq + 2);
   });
 });
 
 describe("formatSessionStatusContext (docs/303 req 35)", () => {
-  it("is empty for a session with no card, so a new session carries nothing", () => {
-    expect(formatSessionStatusContext(undefined)).toBe("");
+  it("asks a session with no card yet for its first one (req 38)", () => {
+    const block = formatSessionStatusContext(undefined);
+    expect(block).toContain("<session_status_card>");
+    expect(block).toContain("no status card yet");
+    expect(block).toContain("session_status");
+  });
+
+  it("closes with the reconciliation instruction, not opens with it (req 39)", async () => {
+    const { d } = await seededCard();
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    const instruction = block.indexOf("Go through the card above line by line");
+    expect(instruction).toBeGreaterThan(block.indexOf("Routes done."));
+    expect(instruction).toBeGreaterThan(block.lastIndexOf("  payload: "));
+    expect(block).toContain("no arguments");
+  });
+
+  it("carries the miss notice only while one is outstanding (req 38)", async () => {
+    const { d, card } = await seededCard();
+    expect(formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus))
+      .not.toContain("ended without a status-card update");
+
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
+    });
+    const nudged = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(nudged).toContain("ended without a status-card update");
+    // Beside the instruction it belongs to, at the end of the block.
+    expect(nudged.indexOf("ended without a status-card update"))
+      .toBeGreaterThan(nudged.indexOf("Follow-ups offered"));
+  });
+
+  it("shows how long each manual step and each offer has been there (req 40)", async () => {
+    const { d, card } = await seededCard();
+    await recordSessionStatus(d, "s1", { needsYou: ["Paste the Stripe key."] });
+    const settle = async (): Promise<void> => {
+      const stored = d.sessionManager.get("s1")!.sessionStatus!;
+      await settleSessionStatusCard(d, "s1", {
+        ifWriteSeq: stored.writeSeq, statusUpdated: false, nudgePending: false,
+      });
+    };
+    await settle();
+    await settle();
+
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block).toContain("- Paste the Stripe key. — added 2 turns ago");
+    expect(block).toContain("- id: webhook — offered 2 turns ago");
+    expect(card.turnSeq).toBe(0);
+  });
+
+  it("dates a sent offer from when the user sent it (req 40)", async () => {
+    const { d } = await seededCard();
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: stored.writeSeq, statusUpdated: false, nudgePending: false,
+    });
+    await takeOfferedActions(d, "s1", [stored.actions[0]!.offerId]);
+    const after = d.sessionManager.get("s1")!.sessionStatus!;
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: after.writeSeq, statusUpdated: false, nudgePending: false,
+    });
+
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block).toContain("offered 2 turns ago, ALREADY SENT to you 1 turn ago");
+  });
+
+  /*
+    A bare confirmation reviews nothing, so it must not turn "we do not know when this
+    step appeared" into "it appeared just now" — which would read as the freshest entry on
+    the card and send the agent to the wrong one first.
+  */
+  it("does not give a legacy manual step an age the next confirmation invents", async () => {
+    const sessions = fakeSessions({
+      s1: {
+        status: "Old card.",
+        needsYou: ["Paste the key."],
+        actions: [],
+        fresh: true,
+        writeSeq: 4,
+        turnSeq: 6,
+      },
+    });
+    const d = deps(sessions);
+    await recordSessionStatus(d, "s1", {});
+
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block).toContain("added at an unrecorded turn");
+  });
+
+  it("keeps an offer's age and its sent turn through a replacement that repeats it", async () => {
+    const { d } = await seededCard();
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    await takeOfferedActions(d, "s1", [stored.actions[0]!.offerId]);
+    const taken = d.sessionManager.get("s1")!.sessionStatus!.actions[0]!;
+
+    await recordSessionStatus(d, "s1", {
+      actions: [{ id: "webhook", label: "Wire the webhook", payload: "Add the webhook route." }],
+      replaceActions: true,
+    });
+
+    const after = d.sessionManager.get("s1")!.sessionStatus!.actions;
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      offerId: taken.offerId,
+      offeredSeq: taken.offeredSeq,
+      takenSeq: taken.takenSeq,
+    });
+  });
+
+  it("says nothing about the age of a card stored before req 40", () => {
+    const legacy: SessionStatus = {
+      status: "Old card.",
+      needsYou: ["Paste the key."],
+      actions: [{ id: "a", label: "Do it", payload: "p", offerId: "o1", offeredAt: "2026-09-01" }],
+      fresh: true,
+      writeSeq: 4,
+      turnSeq: 0,
+    };
+    const block = formatSessionStatusContext(legacy);
+    expect(block).toContain("added at an unrecorded turn");
+    expect(block).toContain("offered at an unrecorded turn");
   });
 
   it("carries the status, the manual steps and every offer with its payload and sent state", async () => {
@@ -515,7 +660,7 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     expect(block).toContain("<session_status_card>");
     expect(block).toContain("Routes done.");
     expect(block).toContain("- Paste the Stripe key.");
-    expect(block).toContain("id: webhook — ALREADY SENT to you");
+    expect(block).toContain("id: webhook — offered this turn, ALREADY SENT to you");
     expect(block).toContain("payload: Add the webhook route.");
     expect(block).toContain("id: readme");
     expect(block).not.toContain("readme — ALREADY SENT");
@@ -568,7 +713,7 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     const { d } = await seededCard();
     const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
     expect(block).not.toContain("not printed this turn");
-    expect(block).not.toContain("replaceActions");
+    expect(block).not.toContain("Do NOT use `replaceActions`");
   });
 });
 
@@ -576,7 +721,7 @@ describe("sessionStatusTurnContext (docs/303 req 21, 35)", () => {
   const sessionManager = {
     get: (id: string) =>
       id === "s1"
-        ? { id, sessionStatus: { status: "Billing service.", actions: [], fresh: true, writeSeq: 1 } }
+        ? { id, sessionStatus: { status: "Billing service.", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 } }
         : undefined,
   } as unknown as SessionManager;
 
@@ -588,12 +733,12 @@ describe("sessionStatusTurnContext (docs/303 req 21, 35)", () => {
     expect(ctx).toBe("");
   });
 
-  it("sends nothing for a session with no stored card", () => {
+  it("asks a session with no stored card for its first one (req 38)", () => {
     const ctx = sessionStatusTurnContext(
       { sessionManager, credentialStore: { getSessionStatusCard: () => true } },
       "other",
     );
-    expect(ctx).toBe("");
+    expect(ctx).toContain("no status card yet");
   });
 
   it("renders the stored card while the setting is on", () => {

@@ -4,13 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
-import { applyShipitConfigChange, emitPluginReposUpdated, joinSessionNetworkEndpoints, setupServiceManager } from "./service-manager-setup.js";
+import { applyOverlayDepDirsForSession, applyShipitConfigChange, emitPluginReposUpdated, joinSessionNetworkEndpoints, setupServiceManager } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { installContentKeyDiagnostic } from "./install-content-key.js";
 import { isOpsSafeLine } from "./services/host-session-logs.js";
 import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import type { SessionInfo } from "../shared/types.js";
 import type { SessionManager } from "./sessions.js";
 import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 
@@ -710,5 +711,46 @@ describe("joinSessionNetworkEndpoints", () => {
 
     warn.mockRestore();
     expect(joined).toEqual([`agent:${NETWORK}`]);
+  });
+});
+
+// A session that had a verified base can become one with no overlay at all — a selection gate
+// stops choosing its scope. That is where clearing the set stopped being reported: a Compose
+// service preserved across the restart kept mounting an overlay the new agent does not have.
+describe("applyOverlayDepDirsForSession — clearing a set the services still hold", () => {
+  function deps(provisioned: { depDir: string; volumeName: string }[] | null) {
+    return {
+      containerManager: {
+        provisionedOverlayDepDirs: () => provisioned,
+        // The re-derivation a missing record falls back to; the pnpm gate returns exactly this.
+        prepareOverlaySpecs: async () => [],
+        dockerClient: {},
+        consumeOverlayVolumesRecreated: () => false,
+      } as unknown as Parameters<typeof applyOverlayDepDirsForSession>[2]["containerManager"],
+      session: { remoteUrl: REMOTE, kind: "repo" } as unknown as SessionInfo,
+      workspaceDir: tmpDir,
+    };
+  }
+
+  it("reports the change so the caller reconciles the services onto the plain directories", async () => {
+    const mgr = { setOverlayDepDirs: vi.fn(() => true) } as unknown as ServiceManager;
+
+    expect(await applyOverlayDepDirsForSession("s1", mgr, deps([]))).toBe(true);
+    expect(mgr.setOverlayDepDirs).toHaveBeenCalledWith([]);
+  });
+
+  it("reports nothing when the services already had no overlay", async () => {
+    const mgr = { setOverlayDepDirs: vi.fn(() => false) } as unknown as ServiceManager;
+
+    expect(await applyOverlayDepDirsForSession("s1", mgr, deps([]))).toBe(false);
+  });
+
+  // An empty re-derivation is not authoritative: with no container record it may simply be the
+  // selection gate answering, and replacing a known set from that would unmount a live overlay.
+  it("never clears the set when there is no container record", async () => {
+    const mgr = { setOverlayDepDirs: vi.fn(() => true) } as unknown as ServiceManager;
+
+    expect(await applyOverlayDepDirsForSession("s1", mgr, deps(null))).toBe(false);
+    expect(mgr.setOverlayDepDirs).not.toHaveBeenCalled();
   });
 });

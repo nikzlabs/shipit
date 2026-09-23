@@ -27,7 +27,7 @@ The flag gates one point per surface. Off is today, byte for byte.
 |---|---|---|
 | Agent tools | `session_status`; no `propose_actions` | `propose_actions`; no `session_status` |
 | Prompt | the "Session status" section | the "Proposing optional follow-up actions" section |
-| Turn settlement | freshness mark and nudge run | both return at once |
+| Turn settlement | freshness mark and the ask run | both return at once |
 | Client | `SessionStatusCard` rendered | not rendered; transcript action cards as today |
 
 **Reaching the agent.** The flag rides the per-turn run params and becomes
@@ -78,11 +78,10 @@ load and picked per turn by the flag — the prompt-cache contract of the
 | Agent tool `session_status` | `propose_actions` (`src/server/session/mcp-tools/propose-actions.ts`), which it stands in for while the flag is on |
 | Session-record column, broadcast with `session_list` | `agent_goal` (docs/154, `services/agent-goal.ts`) |
 | Last element of the scrolling conversation | the trailing rewind point at the end of the `contentRef` element in `src/client/components/MessageList/MessageList.tsx` |
-| ShipIt-started follow-up turn | the dispatch path `wakeSessionWithTurn` uses (`wake-session.ts`, `dispatched-turn.ts`) |
+| Standing text in a turn's prompt | the `agentPrefix` notices (`ws-handlers/agent-execution.ts`, `dispatched-turn.ts`) |
 
-Nothing enters the transcript except the nudge turn itself, so none of the
-persisted-card machinery (`emitChatCard`, `CARD_MESSAGE_FIELDS`, history
-rehydration) is involved.
+Nothing enters the transcript at all, so none of the persisted-card machinery
+(`emitChatCard`, `CARD_MESSAGE_FIELDS`, history rehydration) is involved.
 
 ## The tool (req 4, 5, 16–18)
 
@@ -201,11 +200,14 @@ an orchestrator restart show the same card with no extra request.
 every accepted call — a bare confirmation included — and reset with the
 accumulator at turn start (`session-runner.ts:452`, reached by
 interactive, dispatched and adopted turns: `turn-executor.ts:169`,
-`dispatched-turn.ts:307`, `agent-listeners.ts:145`). A question needs no
-flag: Claude's native `AskUserQuestion` and the MCP `ask` tool both reach the
-interrupt at `agent-listeners.ts:616` (the worker synthesizes the tool_use in
-`session-worker.ts` `registerAskEndpoint`), which sets `runner.wasInterrupted`;
-plan approval sets the same flag.
+`dispatched-turn.ts:307`, `agent-listeners.ts:145`). A question has a flag of its own since req 38,
+`awaitingUserAnswer`, set from the tool blocks themselves — Claude's native
+`AskUserQuestion`, the MCP `ask` tool (the worker synthesizes the tool_use in
+`session-worker.ts` `registerAskEndpoint`) and `ExitPlanMode`. It replaces
+`wasInterrupted` in the settlement, which latches on those AND on the Stop button and a
+`killAgent`: a stopped turn did the session's work, so req 38 asks it for the card. It
+is also read from the blocks rather than from the interrupt because non-streaming
+`ExitPlanMode` ends its turn without one.
 
 **The facts are taken at settlement, after any adoption handover and before the
 drain.** `settleTurnFacts` runs at the head of the terminal sequence, before the
@@ -227,21 +229,69 @@ heal (`turn-executor.ts:223`, `:524`) — before their `drain` step, and
 adoption resets it where it resets the other memoized work
 (`turn-executor.ts:756`). It does two things at once:
 
-1. Copies `{ statusUpdated, wasInterrupted, receivedResult, harnessCommand,
-   statusNudge, postTurn, writeSeq }` into an executor-local snapshot.
-2. If the turn is not a `harnessCommand` (req 36) and `statusUpdated` is false, calls
-   `markSessionStatusStale(sessionId, snapshot.writeSeq)` — immediately, so
-   the card never reads as current between a missing update and the end of
-   the network flow. The guard makes it a no-op if a later turn already
-   wrote.
+1. Copies `{ statusUpdated, awaitingAnswer, receivedResult, harnessCommand, postTurn,
+   writeSeq }` into an executor-local snapshot.
+2. If the turn is not a `harnessCommand` (req 36), calls `settleSessionStatusCard`
+   — immediately, so the card never reads as current between a missing update and the
+   end of the network flow. The guard makes it a no-op if a later turn already wrote.
 
-**The nudge decision** is a memoized step after `idle`, on the snapshot
-alone. It says **no** when: `statusUpdated`; `wasInterrupted` (question,
-plan approval, user stop); no `agent_result` (a crash has its own recovery);
-`harnessCommand` (req 36, below); the turn was itself a nudge; `postTurn: "none"` (a
-driver-owned turn); the record's `writeSeq` moved past the snapshot's; or a
-successor is pending (a deferral, not an exemption — the check repeats when
-that turn ends). Otherwise it dispatches the nudge.
+**The ask decision** (req 38) is made in the same step, from the snapshot alone, and
+written to the card as `nudgePending`. `shouldCarryStatusNudge` says **no** on exactly
+four turns: one that wrote the card; one that ended with a question card or a plan to
+approve (`awaitingAnswer`, req 13); one that crashed; and one the harness answered by
+compacting (`harnessCommand`, req 36).
+
+"Crashed" is `!receivedResult && !userStopped`, not `!receivedResult`. `wasInterrupted`
+latches on the Stop button and on `killAgent` and a crash does not, so it is what
+separates a turn the user ended — which did the session's work — from one that fell over.
+A harness that answers a stop by exiting rather than by a result would otherwise take the
+crash exemption, and a test that stages the stop *with* a result cannot fail on it.
+
+A **driver-owned turn** (`postTurn: "none"`) is deliberately not a fifth exemption. It
+does real work and its card IS marked stale, so its ask is recorded like any other; the
+block simply does not ride such a turn, so the ask waits on the card. Withholding it was
+about not starting a turn inside the git driver's interval, and there is no turn to start.
+
+The record of the ask is on the card, so a turn ShipIt composes no prompt for — a
+driver-owned turn, an adopted CLI-started turn, a verbatim `/goal` command — defers it to
+the next turn that has one rather than losing it. **Only an accepted call clears it**: a
+turn that records no ask of its own leaves an outstanding one standing, or an exempt turn
+arriving next would drop an ask that never reached the agent.
+
+Everything else the old decision weighed is gone with the nudge turn, and this is the
+whole of what req 38 changes in behaviour. Each of those gates existed because a nudge
+**spent a turn and replaced the resident process**: a steer or a queued prompt (req 34)
+would have been destroyed by it, a running or queued successor would have been preempted
+by it, and the nudge turn itself had to be exempt so one miss did not cost two turns.
+A line in the next prompt preempts nothing and destroys nothing, so the misses those
+gates dropped — 52% of them on production — are now asked about.
+
+**Why a card write and not a flag in memory.** The ask has to outlive the turn that
+recorded it and the process that would have delivered it, so it lives where the card
+does. `settleSessionStatusCard` is the one write a settling turn makes: it marks the
+card stale when the turn missed, records `nudgePending`, and bumps `turnSeq` — which is
+req 40's clock. It broadcasts only when the freshness the user reads changed, so the
+per-turn write costs no SSE traffic. A turn that DID write says nothing about freshness or
+the ask — its own call settled both, and a successor may have written or missed in between
+— so it only counts itself; that is also why it cannot use the `ifWriteSeq` guard, which
+its own write moved past.
+
+**The drain waits for that write**, and for nothing else: `tryDrain` awaits the settled
+promise before a queued successor's turn is composed, so "the next turn's prompt" is the
+next turn and not the one after. The promise never rejects — the write catches its own
+errors — so the await cannot abandon the commit behind it (invariant 3).
+
+**What a text-only turn turned out to be** (`drift-measurement.md` finding 2). The
+report could not say which gate swallowed the 46 turns that used no tool and got no
+nudge, and the guess on record — `wasInterrupted` or `successorPending` — was only half
+right. Probed against `main`: a plain text-only turn IS nudged, so no gate reads the
+turn's tool use and the class is not one gate. Three shapes produce it, each reproduced:
+a **steer** (`steered`, req 34 — and note that under the report's own turn definition a
+steer starts a new turn, so a steered turn is split and its first half is text-only by
+construction); a **user stop**, which `wasInterrupted` covered along with req 13's
+question; and a resident agent holding **background work**, where `dispatchStatusNudge`
+returned at `systemTurnBlockedByResidentWork` with no log line at all. Req 38 covers all
+three. A user-typed `/compact` is a fourth text-only shape and stays exempt (req 36).
 
 ### What is checked, and why (req 36)
 
@@ -298,17 +348,17 @@ reading the verbatim predicate, and the settlement reads this one.
 
 **Known limit.** A compaction that spans an orchestrator **restart** is adopted
 with no prompt text and no harness-command identity in the worker's status
-(`turn-adoption.ts`), so it settles as an ordinary turn: marked stale, nudged
-once. This is unchanged from `silent`, which was never carried across adoption
-either; closing it means carrying the property through the worker's run body and
-status the way `statusNudge` is.
+(`turn-adoption.ts`), so it settles as an ordinary turn: marked stale, and asked about
+on the next turn. This is unchanged from `silent`, which was never carried across
+adoption either; closing it means carrying the property through the worker's run body
+and its `/agent/status`.
 
 `harnessCommand` also governs the **stale mark**, which `silent` governed before
 it: a turn that produced no work of the agent's own cannot have left the card
-behind. The driver-owned exemption keeps its existing split and is deliberately
-not folded in — a conflict-remediation turn (`postTurn: "none"`) does real work,
-so the card IS marked stale after it; it is only the *nudge* that is withheld,
-because a git driver owns the interval around it.
+behind. A driver-owned turn is not in the same class — a conflict-remediation turn
+(`postTurn: "none"`) does real work, so the card IS marked stale after it, and since
+req 38 it is asked about too: what was withheld there was a turn, and the ask is no
+longer one.
 
 Every ShipIt-started turn, enumerated from the dispatch sites rather than from
 memory, walked against the rule:
@@ -325,135 +375,42 @@ memory, walked against the rule:
 | A child session's first prompt; a message sent to a child | `services/child-sessions.ts` | **yes** |
 | A headless session's prompt | `services/headless-sessions.ts` | **yes** |
 | A message through the HTTP API | `services/agent.ts` | **yes**, unless its text is itself a harness command |
-| Conflict remediation | `services/rebase-driver.ts` (`postTurn: "none"`) | **no nudge**, driver-owned; still marked stale |
+| Conflict remediation | `services/rebase-driver.ts` (`postTurn: "none"`) | **yes** — marked stale and asked; the ask waits for a turn that carries a prompt |
 | Pre-turn compaction before a post-merge turn | `dispatched-turn.ts`, `runCompactionAhead` | **no** — `harnessCommand` |
 | A compaction wrapped as another session's message | `services/child-sessions.ts` | **yes**, conservatively — see the narrowing above |
-| The status nudge itself | `turn-executor.ts` | **no** — req 15, one attempt per missing update |
 
-**A pending successor is four things, not two** (req 34, planning#589), and the
-last two are read from the turn's own snapshot rather than live. A turn
-`running` and a message queued are the obvious two, and they are properties of
-the session *now* — they say a successor has already taken it. The other two say
-this turn left a message unanswered, which nothing live can see:
+**What a pending successor was for** (req 34, planning#589), and why the concept is
+gone. While the ask was a system turn, it could preempt work: a turn that was `running`
+or had a message queued had already been taken over, and two further shapes left a
+message unanswered that nothing live could see — a **steer**, which goes straight to the
+CLI and is neither running nor queued, and a turn whose **own prompt went in behind a
+turn the CLI had already started**, where every live signal reads idle and the prompt is
+still unread. Nudging either retired the resident process holding the message, which is
+what planning#589 reported. Both were snapshotted in `settleTurnFacts` rather than read
+live, because a successor's `resetRunnerTurnState` clears the steered set.
 
-- **`steered`** — a message went into the turn while it ran. A steer goes
-  straight to the CLI, so it is neither running nor queued. This is the shape
-  the report named: steering an agent that was waiting on background work
-  produced a nudge instead of the message, and not merely a needless question,
-  because the nudge is a system turn that retires the resident process holding
-  it. `recordSteeredMessage` is also how an agent-interface message and a
-  cross-session message arrive, and the nudge would destroy those too, so req 34
-  covers them by name.
-- **`promptQueued`** — this turn's *own* prompt went in behind a turn the CLI
-  had already started, so the `agent_result` that arrives ends the CLI's turn
-  and not ours (`ownTurn`, docs/299-agent-settings-access req 8). Every live
-  signal reads idle and the prompt is still unread. The prompt lifecycle
-  deliberately never moves a queued prompt on — which result answered it is
-  undecidable — so the deferral is spent **once** per executor
-  (`queuedPromptDeferralSpent`); reading the state itself would defer every
-  later turn this resident settles.
+Req 38 removes the whole mechanism rather than refining it: a line in the next turn's
+prompt takes no slot and retires no process, so there is nothing left to defer to. The
+misses those deferrals dropped — a steered turn is the largest shape in the drift
+report's text-only class — are now asked about. What req 34 was protecting is protected
+by the ask no longer being a turn.
 
-**Both are taken in `settleTurnFacts`, with the rest.** Read live at the
-decision they describe whichever turn owns the runner by then, not the one being
-judged: a successor's `resetRunnerTurnState` clears the steered set, and so does
-this executor's own re-arm. That is the same reason `wasInterrupted` and the
-accumulator are snapshotted there. The dispatch re-check therefore re-reads only
-the live pair; re-reading the snapshot's reasons there would reintroduce exactly
-that confusion.
+The narrower rule that was wanted there and could not be expressed is worth keeping on
+record, because it says something about what the orchestrator can know: it cannot tell
+an *answered* steer from a pending one. The only positional information it holds is
+`SteeredMessage.afterGroupIndex` — the transcript-group count when the message was sent
+— and comparing that with the count at settlement is wrong in both directions, since the
+turn's own closing text can land before the CLI acknowledges the steer, and an answer
+appends to the existing group unless a boundary happens to be armed
+(`accumulateAssistantGroups`). `requeueUndeliveredSteers` does not close the gap either:
+it re-queues only steers with no output after them.
 
-**Why the whole turn, rather than only an unanswered message.** The narrower
-rule is the one to want and the orchestrator cannot express it. The only
-positional information it holds is `SteeredMessage.afterGroupIndex` — the
-transcript-group count when the message was **sent** — and comparing that with
-the count at settlement is wrong in both directions: the turn's own closing text
-can land before the CLI acknowledges the steer, which makes a pending steer look
-answered, and an answer appends to the *existing* group unless a boundary
-happens to be armed (`accumulateAssistantGroups`), which makes an answered steer
-look pending. Note this also means `requeueUndeliveredSteers` does **not**
-guarantee that every un-acked steer has become a queued message by settlement —
-it re-queues only those with no output after them — which is a further reason
-not to treat the remaining entries as "acked, therefore taken". The cost of the
-whole-turn rule is one skipped nudge on a turn a message reached and the agent
-then answered without touching the card; the card is still marked stale, which
-is req 14's answer, and req 34 records the trade.
+**The flag.** The settlement reads the setting through `SystemTurnDeps.statusCardEnabled`
+(`credentialStore.getSessionStatusCard()`, wired in `runner-registry-factory.ts` and
+`ws-handlers/agent-execution.ts`). With it off, neither the freshness mark nor the ask
+runs, and `sessionStatusTurnContext` sends nothing, so a session never sees the block.
 
-The deferral cannot outlive its turn: `resetRunnerTurnState` clears the steered
-set at the start of every ordinary turn and of every adopted CLI-started turn
-(`agent-listeners.ts`), and the queued-prompt deferral is one-shot.
-
-**Dispatch.** Not during the post-turn hold: a completed system turn keeps
-`systemTurnInProgress` until `finishTurn` (`turn-executor.ts`), and a
-dispatch made before that queues behind it after the final drain has run
-(`session-runner.ts`). Deciding and dispatching are therefore two steps: the
-step after `idle` records the decision and tries the dispatch, and `finishTurn`
-tries it again once it has cleared the hold. Both are needed — a system turn's
-hold is still on at the first, and an ordinary streaming turn whose CLI stays
-resident never reaches the second, because `finishTurn` runs only when the
-process exits. The dispatch re-checks there that the runner is free, on the same
-three-part successor test — a successor that appeared meanwhile defers the nudge
-rather than queueing behind it, and that turn is checked afresh when it ends —
-and then goes through
-`runner.dispatch`, not an enqueue plus a drain entry: only that path owns
-recovery when turn setup rejects, and without it a user message that queued
-during setup is left with nothing to start it. Two gates are pre-checked
-instead of queueing behind them, since one attempt is all a missing update gets
-(req 15): a runner with no dispatch dependencies, and a resident agent with
-background work a system turn would destroy. The nudge is a dispatched system turn, not
-`silent`: its prompt is echoed as the turn's user row (`system_user_message`),
-the reply follows, the post-turn flow runs as for any turn (req 12). The
-prompt opens with `[ShipIt]`, says the last turn ended without a status
-update, lists the current offers with their taken state, and asks for one
-`session_status` call and nothing else — a bare one if nothing changed. Its
-prose is `prompts/status-card-nudge.md`, loaded once at module load, with only
-the offer list composed in TypeScript.
-
-**And the nudge is a successor like any other.** It starts inside the
-predecessor's post-turn sequence and, being a system turn, replaces the resident
-process — so that process's own late `done` must not clear `runner.running`,
-which by then belongs to the nudge. The streaming `done` branch now carries the
-`turnIsCurrent()` guard `tryDrain` beside it always had; without it the live
-turn read as idle and its runner was reclaimable (invariant 5). Any successor
-drained during a streaming turn's post-turn had the same exposure.
-
-**Identity.** `statusNudge: true` is a typed dispatch option on
-`AgentDispatchOptions`, added to `AgentDispatchInit` and
-`queuedMessageToDispatchOptions` (`prepared-dispatch.ts`, whose type-level
-asserts catch an omission), **and** to `QueuedMessage` and the hand-written
-`toQueuedMessage` (`session-runner.ts`), which compaction uses
-(`dispatched-turn.ts`) and which `queue-drain.test.ts`'s `Required<>`
-round-trip is what actually guards. It reaches `TurnInput`, as does `silent`,
-which was not forwarded before.
-
-**The flag.** The settlement reads it through `SystemTurnDeps.statusCardEnabled`
-(`credentialStore.getSessionStatusCard()`, wired in `runner-registry-factory.ts`
-and `ws-handlers/agent-execution.ts`). With the setting off, neither the
-freshness mark nor the decision runs, so a session that never had a card is
-never asked for one. It is read at each use rather than captured at turn start:
-the setting takes the tool with it, and a nudge decided while it was on must not
-start a turn asking for something the agent can no longer call.
-
-**Bound (req 15).** The step says no for a turn whose snapshot has
-`statusNudge`. An ignored nudge leaves the card stale; the next ordinary turn
-is checked afresh.
-
-**And it survives an orchestrator restart.** `adoptInFlightTurn` rebuilds an
-adopted turn from what the worker reports, so the marker travels with the turn
-rather than with the orchestrator: the spawn carries `statusNudge` in the
-`/agent/start` body (set on the process by `executeAgentTurn`, as `deliveryId`
-is), the worker holds it for the turn's life beside `turnDeliveryId` and reports
-it on `/agent/status`, and `InFlightTurnInfo` hands it back to the adopted turn.
-A nudge that spanned a restart therefore settles as the nudge it is and is not
-nudged a second time (req 15).
-
-**Its own lease spans the dispatch, not just the call.** `dispatch` sets
-`running` synchronously, but the turn epoch — what tells a predecessor its exit
-no longer owns the runner — only advances when the successor enters its
-executor, and setup (`preTurnReset`, attachment resolution) awaits in between. So
-the nudge holds `beginPostTurnWork` until its `TurnHandle` settles. `PostTurnHold`
-expires on its own, so a turn outliving the deadline is covered by `running` and
-the epoch by then.
-
-## Client (req 6–9, 14, 17, 18, 20, 24, 26–30)
+## Client (req 6–9, 14, 17, 18, 20, 24, 26–30, 41)
 
 `SessionStatusCard` (`src/client/components/SessionStatusCard.tsx`), rendered
 as a direct child of the `contentRef` element in
@@ -506,6 +463,33 @@ The rows, the
 badge and the submit button are the existing follow-up action card's, so a
 checkable item reads the same wherever the user meets one, and every offer
 shows its description (req 26).
+
+- **Every field is markdown (req 41).** `status` and `lastTurn` go through
+  `MarkdownContent`; a checklist row's label and description, and the
+  single-action card's two lines, go through `InlineMarkdown`
+  (`message-markdown.tsx`) — the same remark pipeline and the same component
+  map with the paragraph dropped, so the text keeps its own line box instead of
+  gaining block margins. The caller passes the row's colour and weight as
+  `className` and the text lands directly inside that element, because a span in
+  between would take the colour off the element the text is found on. Outside
+  `.prose` there is no anchor rule at all, so link styling is applied there too.
+  ShipIt pointers are enabled on these fields: every one of them is text the
+  agent composed in a tool call, at the trust level of its own transcript prose,
+  which enables them too — nothing ingests a repository, tracker or PR document
+  into a card row, which is what the boundary in `shipitLinkComponents` rules
+  out.
+
+  A checklist row's text sits **outside** the row's `<label>`, with a click
+  handler of its own that ignores anything interactive. This is not tidiness: a
+  repo-file link and a ShipIt pointer are rendered as an anchor with **no
+  `href`** (and the badge and button forms as a `<span>`), which the HTML
+  standard does not count as interactive content, so a `<label>` around one
+  forwards the click to its checkbox — opening a file would also tick the row.
+  `role` and `tabindex` do not help; measured in Chromium, where an href-less
+  anchor and a clickable span both ticked the box and a `<button>` and an anchor
+  with `href` did not. **No test can see this**: jsdom counts any element with
+  `tabindex` as interactive content and never forwards, so the guard asserts the
+  structure instead — the same reason req 37's note control is guarded that way.
 
 - **Three cards, and why (req 33).** The card shipped as one translucent
   surface and read as "one more transcript card" — the complaint that opened
@@ -615,7 +599,19 @@ shows its description (req 26).
   an untaken one carries "RECOMMENDED", and leaves only when the agent removes
   it (req 17). It stays TICKABLE: an agent can crash or ignore the message, and
   re-sending is a second tick rather than a control of its own — `taken` is
-  presentation, not a lock. Untaken
+  presentation, not a lock. A row that WAS ticked when it went keeps a tick in
+  its box as a record (req 44), carried by `ChecklistItem.takenChecked` beside
+  `taken` and drawn in the muted box rather than the accent: the input's own
+  `checked` stays the selection, so Submit sends what is selected and nothing
+  more, a re-tick is the louder of the two states and hides the record under it,
+  and unticking returns to the record rather than erasing it. The record is not
+  the input's state, so it reaches assistive technology as a suffix on the box's
+  accessible name instead. Every sent offer carries it — an offer can only be
+  sent by ticking it — while a manual step needs its own `checkedSteps` set,
+  because a step can be sent carrying a note alone (req 37) and such a row was
+  never ticked. Each send rewrites the record of the rows IT submitted rather
+  than adding to the set, so a step ticked once and later answered without a
+  tick loses its record while the rows that send did not touch keep theirs. Untaken
   offers stay selectable while the card is stale (req 24); an offer whose
   message has been sent reads as taken at once, without waiting for the
   server's `takenAt`. The card keeps the transcript card's submit button,
@@ -727,7 +723,7 @@ by reading the code:
 - **The card's move has its own guard**, `canPreserveAcrossCardMove`, which
   measures the container instead of reading `autoScrollRef`. That flag is
   deliberately sticky — an appended user row arms it and pins — and a
-  *dispatched* turn's user row (a status-card nudge) goes through the same
+  *dispatched* turn's user row goes through the same
   path, so it can read true while the view sits a thousand pixels above the
   bottom. And because the move changes no height, no `ResizeObserver` fires to
   correct it: the reader's row simply drops by the card's height. Near the
@@ -828,6 +824,195 @@ removed on their own and watched fail; the message-count reset and the effect's
 `sessionId` dependency are consistency rather than separately guarded
 behaviour, and the fixture says so.
 
+#### Landing there is not the same as pinning there (planning#595, second report)
+
+The reset above makes the first pin HAPPEN. It does not make it LAND, and the
+report came back: *"I switch to a session, first see the card immediately, and
+then the conversation loads, sometimes scrolling to the top."*
+
+The open is a single pin followed by a chain of **conditional** corrections, and
+the pin itself is wrong when it is made. Measured in the dogfood instance, two
+900-message sessions with a 1,094px card, instrumented per frame:
+
+| Moment | Position / height |
+|---|---|
+| Loading gap, card alone | 501 / 1,126 |
+| Layout effect's pin, rows just committed | 79,714 / 80,339 |
+| After the groups paint | 83,450 / 84,075 |
+
+The pin measures a `content-visibility` **estimate** — every group reports its
+`contain-intrinsic-size` until Chrome renders it — so the effect finishes about
+4,300px above the end, and the corrections arrive 600–760ms later. Everything
+that closes that gap can stand down inside it: the settle loop ends after three
+stable frames or a 1s cap (in several traces `settle-end` is logged *before* the
+correction), the `ResizeObserver` declines for `autoScrollRef`, for a live
+gesture and for a text selection, and a single `scroll` read taken while the
+content is taller than the pin sets `autoScrollRef` false **and** cancels the
+loop. Any one of those firing in that window leaves the reader at the position
+the loading gap left — which, with the whole conversation now rendered beneath
+it, is its top.
+
+So `useMessageScroll` holds an **open**: `openUntilRef`, armed on mount and at
+each displayed-session change, and given a deadline of `OPENING_HOLD_MS` (1.5s,
+over the measured 760ms) at the commit that first puts a conversation on screen.
+It changes exactly two things. `handleScroll` does not record a position the hook
+itself wrote — `pinnedTopRef` — so reading our own pin back against a height that
+has since grown no longer latches auto-follow off and cancels the loop. And the
+`ResizeObserver`, which is the correction that closes the estimate, answers to
+the open rather than to a follow flag describing a conversation that was not on
+screen when it was set.
+
+A deadline rather than "the height stopped moving", because the height stopping
+is what cannot be trusted here: a group sits at its estimate for a few frames and
+then jumps, and an open that ended on that plateau handed the correction straight
+back to the paths it was covering for.
+
+**One rule ends it: the view is at a position the hook did not write.** A
+scrollbar drag, a PageDown, a wheel and a touch drag all reach it through the
+same test, at the moment they take effect — the loading gap included. A gesture
+that moves *nothing* — a momentum tick left over from the conversation just
+left — is not the reader taking the view, which is why the position decides and
+the gesture does not. An earlier cut let a gesture decide the open by a
+different route from the scroll it produced, so the same action decided it
+differently according to delivery order.
+
+**And one rule brings it back: the commit that first renders the conversation.**
+A position taken in the loading gap ends the open like any other, but it does
+not survive the rows arriving — that commit re-arms the open and clears the
+follow flag and gesture state the gap left behind. The third report of this
+defect is what settled it: *"when status cards are long and require scrolling
+themselves, if I scroll before the conversation is loaded, it is scrolled to the
+top."* The cut before this one kept that position deliberately, on the reasoning
+that a card taller than the viewport is worth scrolling and a scroll is a
+scroll. It is not the same act: there was no conversation on screen to hold a
+position **in**, so the gesture cannot be the reader choosing where in it to be.
+Measured in the dogfood instance, Chrome 1440x900, two never-opened sessions
+with a 1,476px card and a 317-message transcript, wheel injected the frame the
+transcript went empty: before, the history arrived ~1.9s later and the view
+finished at 0 of 67,348 — the reported failure exactly; after, the pin landed at
+28,749 of the 29,374 estimate and the corrections closed it to the end of
+45,455, while a scroll made *after* the rows were up held at 12,000 as the
+content grew past 83,000.
+
+**The card scrolling inside itself was the other candidate, and it does not
+exist.** Measured on the rendered element rather than assumed: `overflow-y:
+visible`, `scrollHeight === clientHeight`, its content laid out inline inside the
+transcript's own scroller. A wheel over the card *is* a wheel over the
+transcript, so there is nothing to tell apart, and no signal there to use.
+Elapsed time was ruled out for a different reason: the gap's length is the
+history's length.
+
+What re-arms is the **arrival**, not the absence of rows — the gap is not
+exempted from the scroll rule. That distinction is the bound on the whole thing:
+exempting it would pin an **empty** session's card to its end for as long as the
+session is displayed, since no arrival will ever come to discard the hold, and
+every status update would then yank the reader out of the paragraph they were
+on. `session-open-settle.test.tsx` holds all four sides: the gap scroll
+discarded, the post-arrival scroll kept, the empty session left alone, and a
+clear-and-reload not mistaken for a first arrival. Only the first is red against
+the previous cut; the rest are non-regression guards, each red against a
+particular wrong way of making the change rather than against what shipped.
+
+The latch is set at the arrival **and** wherever a scroll ends the open with
+rows already on screen — that position is the reader choosing where in a
+conversation to be, which is the thing the latch names. Review found the
+arrival alone insufficient: a switch whose commits never leave the transcript
+empty reaches no arrival, so a later clear-and-repopulate in that session read
+as a first arrival and discarded a position taken with the rows in view. The
+client batches the id and the clear into one commit (`session-actions.ts`
+`switchSession`), so that switch shape is not the one it produces today; the
+latch does not depend on it staying that way.
+
+**Hydration is not an append.** `appendedUserMessage` is the strongest exception
+in the hook — it overrides the follow flag *and* clears gesture state — and it
+read the arrival of a whole history whose last row happens to be the user's as
+"they have just sent something". Opening a session that is mid-turn, before its
+first reply, therefore threw a reader who had scrolled the loading card back to
+the end, on the strength of a message they sent before they opened it. It now
+requires a conversation to have been on screen already. The confusion is older
+than this change; the reader promise above is what made it visible.
+
+**A text selection is never suspended and never cleared here.** It stands every
+pinning path down during an open exactly as at any other moment — the settle
+loop included, which never asked, so a loop already running could walk content
+out from under text selected after it started. That is older than this change and
+is fixed with it. Only the session *switch* clears a selection, and only because
+the conversation it was made in has gone; an earlier cut also cleared one at the
+arrival commit, and review caught that the card a selection is usually in is
+content that stays on screen.
+
+**This is not the card's defect.** With the setting off the gap position is 0 and
+the same failure reads the same way; the card is what makes the gap position
+non-zero, which is why it correlates without being the cause.
+
+Guard: `session-open-settle.test.tsx`, which models `scrollHeight` in two stages
+— placeholder until the transcript is painted, laid-out afterwards — because the
+two stages are the defect. Every part of the change is red on its own under some
+case, here or in `useMessageScroll.test.tsx`; nothing is carried as consistency.
+Both files say what they cannot fail on: deadline expiry and the settle cap,
+which the new fixture's frames never deliberately cross; `CompactLayout`'s
+competing writes, which need row rectangles jsdom has none of; scroll anchoring;
+Chrome's own choice of when a group paints. Four things were written and then
+**removed** for being unfalsifiable — two `CompactLayout` guards (the view is
+short of the bottom only between a growth and the resize that corrects it, and
+those are the same frame), the layout effect's own bypass of a stale gesture and
+the settle loop's (the observer reaches both a frame later), and a `pinnedTopRef`
+reset at the switch that the same effect's pin immediately overwrites. Two
+existing cases in `useMessageScroll.test.tsx` advance the clock past the hold for
+a fixture reason rather than a behavioural one: their geometry is installed after
+mount, so the pin records a 0 that their own "scrolled away" position equals by
+accident.
+
+**And `session-open-scroll.test.tsx`'s own claim narrowed, which its preamble now
+says.** When the first fix shipped, removing the follow flag or either gesture
+ref turned one of its cases red. The observer's opening branch now covers for
+those removals a frame later, so only the selection clearing still fails a case
+there on its own. The resets stay because the open's invariant rests on them: it
+holds only while the follow flag is true across a switch.
+
+### Immediately above the composer on a short conversation (req 43)
+
+The card is the last child of the scrolling content, which puts it just above the
+input field only once the content is tall enough to fill the scroller. Below that
+it sits wherever the content ends: high up with empty space beneath it on a short
+session, and — because the card renders from the session record while the
+transcript is empty — at the very TOP of the scroller during the loading gap,
+from where it visibly dropped when the rows arrived.
+
+**Solved in CSS, with no measurement and no effect.** The scroller becomes a flex
+column and the content element takes `mt-auto`: while the content is shorter than
+the viewport the auto margin absorbs the free space and pushes it to the bottom,
+and once it overflows there is no free space, the margin resolves to 0, and the
+scroller is an ordinary top-anchored one. `justify-end` on the container is the
+same idea and is wrong here: with it, overflow above the start edge is
+unreachable, so a long transcript could not be scrolled back to. `mt-auto` on the
+item has no such edge — which is why it, and not the container property, is the
+standard form of this.
+
+The alternative was measuring the content and padding the top of the scroller to
+the difference. It reaches the same place a frame later, needs a ResizeObserver
+of its own beside the one `useMessageScroll` already runs, and its correction
+lands after paint — which is the jump this requirement is about.
+
+Nothing in the scroll path changes. Heights are untouched (a margin is not part
+of a border box), so the observer watching the content element reports growth
+exactly as before, and the content wrapper keeps its automatic content-based
+minimum height, so flex shrinking cannot flatten it to the viewport and hide that
+growth. A short conversation had `scrollHeight === clientHeight` before this
+change as well — what moves is where in that unscrollable box the content sits,
+not whether it scrolls. The turn anchor (req 30) is unaffected: it decides the
+card's place in the keyed list, not where that list sits in the scroller, so a
+running turn's output and a pending answer card are below the card here exactly
+as they are in a long conversation.
+
+**The loading-gap repair (planning#595, PR #2942) is untouched.** A scroll taken
+in the gap is still discarded when the rows first render, and a card taller than
+the viewport still has the same scroll range to take one in. Re-verified by hand
+rather than assumed: traced per frame across a session switch, the card's bottom
+was at the scroller's bottom with no rows and unchanged when 40 rows landed, and
+a scroll to the top made in the gap was discarded, the session opening at the end
+of its conversation.
+
 ### A card that waits for an answer goes last (req 32)
 
 The status card is not moved for this; the **answer card is lifted out of the
@@ -919,6 +1104,77 @@ give is still the last thing below it. Its offers are unaffected — a turn can 
 with a question while the card offers actions, and both are reachable, the
 question last because it is what holds the session up (req 32).
 
+### Collapsed to a single icon (req 42)
+
+A caret at the **bottom-right of the last card in the stack** replaces the whole
+stack with one accent-bordered icon button, right-aligned so it lands in the
+corner the control it replaced sat in; that button restores it. That
+corner is the one nearest the composer, and so nearest the user's hand; which
+card is last moves, because "Next steps" is absent with nothing to do and "Last
+turn" is absent on a stale card and when the agent had nothing to say, so the
+control follows it rather than sitting on a fixed card. On "Next steps" it joins
+the row that already carries Submit and "Add comment…". The "Stale" mark keeps
+its place in the Status cap. Both directions are the user's press: nothing in the
+card's contents collapses or expands it, so a manual step arriving into a
+collapsed card is legible the first time without one.
+
+- **Where the state lives.** `shipit-status-card-collapsed-by-session` in
+  `localStorage` (`getSavedStatusCardCollapsed` / `saveStatusCardCollapsed`),
+  beside the per-session view state the preview target and the changed-docs
+  disclosure already keep there. It is what this browser is showing, not
+  something the agent or a second viewer decides, and it survives a reload and a
+  session switch — which is the point, since the session it quietens is a long
+  one. Only the collapsed ids are stored, so the map does not grow with every
+  session opened. A card with no `sessionId` collapses per mount.
+- **What the icon carries.** A count of the manual steps still outstanding, a
+  count of the outstanding offers, and the "Stale" mark (req 14). Outstanding
+  means anything about the row is unsent — never sent, ticked again after a send,
+  or carrying a note the agent has not been told — not merely `!taken`, which
+  concealed the two cases the user is most likely waiting on: a retry after a
+  crash, and a note written against a step already reported. A recorded tick
+  (req 44) is not one of them: it is the record of a send that happened, so it is
+  counted on the selection and the notes exactly as an empty box is. With nothing
+  outstanding on a current card it is the bare gauge icon of req 42, and it grows
+  only by what collapsing must not conceal. Nothing marks an arrival beyond the
+  count: a "new" dot would need a seen/unseen lifetime of its own to clear.
+- **Session-scoped interaction state.** `owner` holds the session the sent set,
+  reported steps, their recorded ticks (req 44), notes, open notes and step
+  selection belong to, and a
+  render-phase reset starts them from nothing when the card is handed another
+  session without remounting. It is state rather than a ref precisely because the
+  reset is a render-phase update: a ref survives a render React discards while
+  the updates beside it do not. Those keys are a manual step's TEXT, so two
+  sessions with a step worded the same otherwise shared a SENT grey and an unsent
+  note — and the collapsed count then reported the second session's step as done.
+  The offer selection is deliberately not reset: its keys are server-owned offer
+  ids that `useChecklistSelection` already prunes, and clearing it would swallow
+  an arriving offer's `defaultChecked` tick.
+- **Seeing it.** `scripts/seed-inner-status-card.ts` turns
+  `advanced.sessionStatusCard` on in the inner instance, and
+  `seed-inner-transcript.ts` writes `SAMPLE_STATUS` onto the session it already
+  seeds — markdown with a list, a last-turn line, two manual steps and three
+  offers of which one is taken and one recommended, so the whole stack and the
+  collapsed counts are on screen without spending a turn. The setting step runs
+  **before** the transcript step: turning the setting on marks every stored card
+  stale (`onSessionStatusCardEnabled`), so a card seeded first would come up
+  stale with its last-turn line hidden. `DOGFOOD_SEED_STATUS_CARD=0` switches the
+  setting step off; a hand toggle does not survive a reboot, because the stored
+  value reads `false` both when it was never set and when it was turned off.
+
+  The card write is NOT behind the transcript seed's already-present guard.
+  That guard exists so a real turn typed into the seeded session survives, and
+  the card is not a transcript row: every instance seeded before this change has
+  the session and no card, so gating the card on it is how the card fails to
+  appear on the one instance anybody is looking at — which is what happened. A
+  card that IS there is left alone, because an agent driven in that session owns
+  it from then on.
+- **Focus.** The two controls live in different DOM subtrees, so the browser
+  drops focus to the body on each press; a layout effect hands it to whichever
+  control replaced the one pressed, and only a press arms it. A note field is
+  focused by the press that opens it rather than by `autoFocus`, so reopening the
+  card does not pull focus into a note the user did not ask for. Both verified in
+  Chromium, where jsdom cannot see focus ordering.
+
 ## Evolving the action card (req 19, 21)
 
 - With the flag on, `propose_actions` is absent from every tool list, so no
@@ -928,7 +1184,7 @@ question last because it is what holds the session up (req 32).
   With the flag off, tool, route, validator and prompt section are untouched.
   No alias: a callable alias would carry the old tool's own instruction to
   call it and end the turn (`propose-actions.ts:87`, advertised by
-  `mcp-shipit-bridge.ts:50`), producing an extra nudge every time.
+  `mcp-shipit-bridge.ts:50`), which would end every turn a turn early.
 - Old `actionChecklist` rows in history keep rendering and submitting.
 - **Acceptance.** `handleSendMessage`'s `checklistAccepted`
   (`send-message.ts:147`) stamps an old card `submittedAt` on every
@@ -994,8 +1250,8 @@ names:
   retirement machinery under "Setting". The prompt is the one thing such a turn
   does still carry, so the card rides it with no retirement at all.
 
-**Two turns carry no prompt of ShipIt's, and the nudge is what covers them.**
-Found by review, and stated here rather than built around:
+**Two turns carry no prompt of ShipIt's, and the next turn that does is what covers
+them.** Found by review, and stated here rather than built around:
 
 - A **CLI-started turn** — a resident Claude that starts a turn of its own when a
   background task completes — is *adopted* (`turn-executor.ts`,
@@ -1005,11 +1261,11 @@ Found by review, and stated here rather than built around:
   harness reads it as a command only when the prompt is exactly the command.
   Every other prefix entry is excluded there for the same reason.
 
-Both are still checked for a status update, so a turn of either kind that does
-not write the card is nudged — and the nudge carries the card. The agent is
-therefore never asked to reconcile the card without being shown it; on these two
-paths it is shown it one turn later, by the turn that does the asking. That is
-what req 35's last sentence covers, and it needs no mechanism of its own.
+Both are still checked for a status update, and a turn of either kind that does not
+write the card records the ask on the card (req 38), where the next turn with a prompt
+reads it. The agent is therefore never asked to reconcile the card without being shown
+it; on these two paths it is shown it one turn later. That is what req 35's last
+sentence covers, and it needs no mechanism of its own.
 - **Not the system prompt.** It renders once at module load into a frozen
   per-variant constant and the CLI string must stay byte-stable
   (`prompt-architecture`); per-session content there would cost a cache miss
@@ -1020,14 +1276,13 @@ what req 35's last sentence covers, and it needs no mechanism of its own.
   never consumed — which also means no re-parking path (`dispatched-turn.ts`
   keeps one for the notice) and nothing to lose when a dispatch fails setup.
 
-**When nothing is sent.** The block is empty — the prefix is byte-for-byte
-today's — when the setting is off, when the session has no stored card (req 22:
-a new session sends nothing at all), and on the turns the other prefix entries
-already skip: compaction, whose prompt is an instruction to summarise, a
-verbatim goal command, which the harness reads only when the prompt is exactly
-the command, and a `postTurn: "none"` driver-owned turn, which is never checked
-for an update either. **And on the nudge turn**, whose own prompt carries the
-same block; sending both would print the card twice in one prompt.
+**When nothing is sent.** The block is empty — the prefix is byte-for-byte today's —
+when the setting is off, and on the turns the other prefix entries already skip:
+compaction, whose prompt is an instruction to summarise, a verbatim goal command, which
+the harness reads only when the prompt is exactly the command, and a `postTurn: "none"`
+driver-owned turn, which is never checked for an update either. A session with **no
+stored card** used to be in that list; since req 38 it carries a one-paragraph block
+asking for the first card, because the nudge turn was what asked for it before.
 
 **What it contains, and what it costs.** `formatSessionStatusContext`
 (`services/session-status.ts`) renders the status, the manual steps, and every
@@ -1063,14 +1318,27 @@ whole of what req 35 asks the agent to reconcile.
   stays in the history behind it, as every per-turn notice does — which is the
   other reason the cap is on the block rather than on the stored card.
 
-**The nudge asks for a reconciliation, not a call** (`prompts/status-card-nudge.md`).
-It carried the offer labels and asked for "one `session_status` call and nothing
-else" — which is a fair description of the empty confirmation Nik was getting
-back. It now carries the same rendered block through a `{{CARD}}` token and asks
-the agent to go through it line by line: is this manual step still outstanding,
-is this offer still worth offering, has it been done. The turn is still one call
-and nothing else (req 15's budget is unchanged); what changed is what the call is
-asked to contain.
+**The block closes with the reconciliation** (req 39, `prompts/status-card-reconcile.md`).
+It used to open with one sentence — "Reconcile it before the turn ends" — with the card's
+data after it; the measurement is why it moved. The same words are now the last thing in
+the block, ahead of the user's message: go through it line by line, is this manual step
+still outstanding, is this offer still worth offering. `prompts/status-card-missed.md`
+sits immediately above it when an ask is outstanding (req 38), and
+`prompts/status-card-absent.md` is the whole block for a session with no card.
+
+**Each entry carries its age** (req 40). `turnSeq` on the card is the clock: it moves
+once per settled turn, in `settleSessionStatusCard`, which is the only place a turn
+touches the card and therefore the cheapest honest source there is — no counter, no new
+table, one field on a JSON blob that was already being written. An offer records
+`offeredSeq` when it is created (and keeps it through a `replaceActions` that repeats it
+unchanged, alongside `offerId`), `takenSeq` when the user sends it; a manual step is a
+plain string with no identity (the req 37 receipt), so `stepSeq` rides index-aligned
+beside `needsYou` and is matched by text on each write. A card or an entry written before
+req 40 has no seq and prints "at an unrecorded turn" rather than an age of zero — and
+**keeps printing it**: a step already on the card whose turn was never recorded stores
+`null` rather than the current one, so a bare confirmation, which reviews nothing, cannot
+make the oldest step on the card read as the newest. Only introducing a step gives it a
+turn.
 
 **Wiring.** `SystemTurnDeps.sessionStatusContext?: (sessionId) => string` — the
 gate and the read together, so a dispatched turn needs neither the session
@@ -1078,6 +1346,48 @@ manager nor the credential store — is wired at the two sites that already supp
 `statusCardEnabled` (`runner-registry-factory.ts`, `ws-handlers/agent-execution.ts`)
 from the shared `sessionStatusTurnContext` helper, which `runAgentWithMessage`
 calls directly.
+
+### The block belongs to the attempt, not to the turn
+
+A turn is submitted more than once. `executeAgentTurn` is re-entered, with the same
+`TurnInput`, by the quota failover (`retryOnNextAccount`), the auth heal, and the
+lost-conversation recovery (`recoverMissingConversation`) — and the first two can fire
+*after* the attempt has done real work, because the provider refuses on a later request
+in the same turn. The prompt was composed once, at the top of the turn, so the retried
+attempt read the card as it stood before any of that work: the `session_status` write
+whose tool call had answered "The status card above the input field is up to date" was
+gone from the block, and an offer the user's submit had already taken was printed as
+still outstanding, payload and all. Reported from a session where the agent then redid a
+finished investigation and told the user about it twice.
+
+The stored card was never wrong — `sessions.session_status` held the newer write and the
+`takenAt` throughout. Every write that *merges* anything runs inside `runStatusExclusive`
+against a row it reads under the lock, with no await between the read and the write; the
+two writes outside that chain lose nothing — `clearAgentSessionId` reads the row itself to
+flip one flag, and the fork copy writes the **new** session's row. Only what reached the
+agent had rewound. So the durability the tool promises is not a property of the store
+alone: it is a property of what the *next submission* shows, and a frozen prompt breaks it
+without touching a byte of the record.
+
+So the composition site now hands the executor the block it inserted **and the offset it
+put it at** (`TurnInput.statusContext`), and `executeAgentTurn` swaps its own rendering in
+for it on entry — once per attempt, before the closures that capture the prompt, so the
+echo check that identifies a CLI replay still compares what was submitted. Both halves are
+load-bearing, and review found the second. Without the text, a prompt composed **without**
+a block — a compaction, a verbatim command, a driver-owned turn — could be given one.
+Without the offset, a search would rewrite the FIRST copy of that text in the prompt, and
+the prompt can hold more than one: a parked rebase follow-up carries arbitrary agent prose
+ahead of the block (`services/rebase-followup.ts`), and the user's own message follows it.
+The offset comes from `locateStatusContext`, which takes the *last* occurrence in the agent
+prefix — the block is that prefix's last entry, and the prefix heads the prompt — and the
+swap happens only where that text still sits at that offset. An empty current rendering —
+the setting turned off mid-turn — leaves the prompt alone, since with the card off it is
+not ShipIt's to edit (req 21).
+
+Re-delivering the user's own message to a retried attempt is intended and unchanged: the
+attempt that failed produced no result, and that message is the turn. What stops the
+agent redoing finished work is the block, which now says the offer was already sent and
+what the last attempt wrote — so the record and the prompt agree again.
 
 ## Tests
 
@@ -1091,11 +1401,15 @@ built file is named in brackets. Every one of them exists.
 - `services/session-status.test.ts` — reconciliation (unchanged item keeps
   `offerId` and `takenAt`; changed payload → new untaken offer; replace;
   clear); `takeOfferedActions` with an unknown id marks nothing; `writeSeq`
-  moves only on agent writes; `markSessionStatusStale` with an old
-  `writeSeq` is a no-op; writes serialize per session; `lastTurn` rewritten by
-  each write and dropped by one that omits it, the bare confirmation included
-  (req 31); the nudge decision
-  table on a snapshot (each "no" condition; plain turn → nudge).
+  moves only on agent writes; `settleSessionStatusCard` with an old `writeSeq`
+  touches nothing, counts a turn that wrote as well as one that missed,
+  broadcasts only when the freshness the user reads moved, and is cleared by the
+  next call; writes serialize per session; `lastTurn` rewritten by each write and
+  dropped by one that omits it, the bare confirmation included (req 31); the ask
+  decision table on a snapshot (each "no" condition; plain turn → ask); the block
+  closing with the instruction (req 39), carrying the miss notice only while one
+  is outstanding, and printing each step's and each offer's age, with an entry
+  stored before req 40 saying it has none.
 - `api-routes-session-status.test.ts`
   [`integration_tests/session-status-route.test.ts`] — validate → persist → broadcast →
   `statusUpdated`; a bare call with a stored card → current, `writeSeq`
@@ -1106,24 +1420,39 @@ built file is named in brackets. Every one of them exists.
 - `api-routes-propose-actions.test.ts`
   [`integration_tests/propose-actions-route.test.ts`] — 409 under the flag;
   unchanged otherwise.
-- `prepared-dispatch.test.ts`, `queue-drain.test.ts` — `statusNudge` and
-  `silent` survive `toQueuedMessage` → `queuedMessageToDispatchOptions`.
+- `prepared-dispatch.test.ts`, `queue-drain.test.ts` — `silent` survives
+  `toQueuedMessage` → `queuedMessageToDispatchOptions`.
 - `integration_tests/dispatched-turn-race.test.ts` — a dispatched turn retires a
   resident spawned with the other value of the setting.
-- `integration_tests/restart-turn-adoption.test.ts` — through a real worker: an
-  adopted ordinary turn with no update is nudged and the nudge it starts leaves
-  the marker on the worker; an adopted turn that carried the marker is not
-  nudged again.
-- `turn-status-settlement.test.ts` — the settlement and the nudge driven
-  through the real executor: stale at once and one nudge on a plain turn; the
-  nudge turn not nudged again; no nudge and no stale mark after a compaction the
-  user asked for or one ShipIt started, while a wrapped compaction command and a
-  turn the CLI starts after a compaction are both checked (req 36); no nudge
-  after a question, a crash, a `postTurn: "none"` driver turn, or with the
-  setting off; a
-  queued successor deferring with nothing left in the queue; a streaming
-  `agent_result` + `done` giving one nudge; a predecessor's late exit leaving
-  the successor's card current.
+- `integration_tests/restart-turn-adoption.test.ts` — the adoption paths an
+  in-flight turn takes across a restart. The nudge marker it used to carry went
+  with the nudge turn (req 38): the ask now lives on the card, so it survives a
+  restart without travelling through the worker at all.
+- `turn-status-settlement.test.ts` — the settlement driven through the real
+  executor: stale at once and the ask in the NEXT turn's prompt, with no turn of
+  ShipIt's own; no stale mark and no ask after a compaction the user asked for or
+  one ShipIt started, while a wrapped compaction command and a turn the CLI
+  starts after a compaction are both checked (req 36); no ask after a question or
+  a plan (`awaitingUserAnswer`), a crash, a `postTurn: "none"` driver turn, or
+  with the setting off; one ask however many turns miss in a row; a predecessor
+  settling after its successor wrote leaving the card current; a streaming
+  `agent_result` + `done` counting the turn once. And req 38's three recovered
+  shapes, each the reproduction of a gate that used to drop the miss silently: a
+  turn that used **no tool at all**, a **steered** turn, and one whose resident
+  agent holds **background work**.
+- `turn-retry-status-context.test.ts` — the reproduction of the frozen prompt on a
+  dispatched turn: an attempt that takes the user's offer and writes the card, then a
+  quota refusal, and the retried attempt reading the write and the taken offer rather than
+  the card from before them. Beside it, the two shapes the swap must not change — a prompt
+  composed without a block stays without one however often it is retried, and the setting
+  going off mid-turn leaves the prompt byte for byte — and the helper's own unit cases,
+  which cover the same text appearing in a notice BEFORE the block and in the user's
+  message AFTER it, and a prompt whose block has moved.
+- `integration_tests/session-status-retry-prompt.test.ts` — the same guard on the OTHER
+  composition site, through `buildApp`: an ordinary composer message carrying an offer
+  submission, a `session_status` call, a quota refusal, and the retried attempt's prompt.
+  The unit-level guard drives the runner's dispatch and so cannot see this path — found by
+  review, after dropping the interactive site's handoff left it green.
 - `sessions.test.ts` — `lastTurn` through the column and back, and a card
   stored before the field existed read as one with no line (req 31);
   `integration_tests/rewind-fork.test.ts`,
@@ -1135,19 +1464,20 @@ built file is named in brackets. Every one of them exists.
   the sweep itself is `services/session-status.test.ts`
   (`markAllSessionStatusesStale`) and the resident retirement is
   `resident-spawn-guard.test.ts`.
-- Integration (`integration_tests/session-status-nudge.test.ts`, FakeClaude):
+- Integration (`integration_tests/session-status-settlement.test.ts`, FakeClaude):
   the whole path in one tree, asserted as the outcomes a viewer can see — a turn
-  without the call → stale at once, one dispatched follow-up whose user row
-  starts with `[ShipIt]`; the follow-up calls the tool → fresh, nothing after it;
-  a follow-up that skips it → no third turn; a question turn → no follow-up; a
-  queued successor → deferred, with nothing queued behind it, and that turn
-  checked afresh; a streaming `agent_result` + `done` → exactly one follow-up
-  spawned; a predecessor exiting long after a later turn wrote → the card stays
-  current; a resident agent spanning a toggle → retired and respawned with the
-  other prompt and no spawn flag; flag off → no card, no mark, no follow-up, and
-  a card stored before the toggle left untouched. The races underneath those
-  outcomes — the deferral decision, the settlement snapshot, the `writeSeq`
-  guard — are pinned where they are decided, in `turn-status-settlement.test.ts`
+  without the call → stale at once, no turn of ShipIt's own and no `[ShipIt]` row,
+  and the next turn's prompt carrying the miss notice; that turn calls the tool →
+  fresh, ask dropped; a turn that ignores it → no third turn and the ask still
+  outstanding; a session with no card → asked for its first one (req 22, 38); a
+  question turn → no ask; a compaction → neither; a queued successor → runs next
+  with nothing queued behind it; a steered turn → the ask recorded with the
+  resident process untouched (req 34); a resident agent spanning a toggle →
+  retired and respawned with the other prompt and no spawn flag; flag off → no
+  card, no mark, no ask, and a card stored before the toggle left untouched. The
+  races underneath those outcomes — the settlement snapshot, the `writeSeq`
+  guard, a predecessor exiting long after a later turn wrote — are pinned where
+  they are decided, in `turn-status-settlement.test.ts`
   and `services/session-status.test.ts`; this file demonstrates the outcome, not
   the mechanism. The per-harness flag-off tool lists are byte-for-byte in
   `mcp-tool-spec.test.ts` and each adapter's `mcp-writer.test.ts`, which is where
@@ -1212,6 +1542,14 @@ built file is named in brackets. Every one of them exists.
   once, plural headings, and the two boundaries: every line of a multi-line note
   indented, a step's own text folded onto one line, and "Add comment…" composing
   by the same rule.
+- `SessionStatusCard.test.tsx` (req 42) — the collapse and the reopen; the
+  state kept per session across a remount and a rerender into another session;
+  the counts, including an offer ticked again after a send and a note written
+  against a step already reported, which are what a `!taken` count concealed;
+  the stale mark while collapsed; ticks and notes surviving a collapse; no
+  reported step or note carried into another session; and focus handed to the
+  control that replaced the one pressed. Each was reproduced red by mutating the
+  fix it guards.
 - `ActionChecklistCard.test.tsx` — unchanged behavior after the split.
 - `agent-instructions.test.ts` — section present in flag-on variants, absent
   in flag-off ones.
@@ -1219,10 +1557,11 @@ built file is named in brackets. Every one of them exists.
 **What the dogfood instance cannot show.** Local mode has no session worker, so
 `LOCAL_SHIPIT_BRIDGE` is `null` (`local-agent-mcp.ts`) and **no** shipit MCP tool
 reaches an inner agent — `session_status` and `propose_actions` alike. So an
-inner turn can never satisfy the nudge (it answers that the tool is
-unavailable), and every ordinary inner turn is nudged once. Everything around
-the tool is observable there — the mark, the one visible follow-up turn, the
-card, submission, the toggle — and the call itself is the route's own tests.
+inner turn can never satisfy the ask (it answers that the tool is unavailable),
+so an inner session's card stays stale and every inner prompt carries the notice.
+Everything around the tool is observable there — the mark, the block in the
+prompt, the card, submission, the toggle — and the call itself is the route's own
+tests.
 
 ## Key files
 
@@ -1231,20 +1570,20 @@ card, submission, the toggle — and the call itself is the route's own tests.
 - `src/server/session/agents/*/adapter.ts`, `src/server/session/agents/claude/process.ts`, `src/server/session/mcp-config-controller.ts`, `src/server/shared/types/agent-types.ts` — tool lists, allowlists and the flag in the config context and spawn env.
 - `src/server/session/mcp-tool-spec.ts` — `shipitToolSpec`, the one place the offer tool id is chosen, so each harness keeps its own order and the flag-off spec stays byte for byte.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts`, `src/server/orchestrator/dispatched-turn.ts` — resident reuse check against the flag, one helper for both.
-- `src/server/session/agent-controller.ts`, `src/server/orchestrator/turn-adoption.ts`, `src/server/orchestrator/proxy-agent-process.ts` — the nudge marker on the worker's in-flight turn info, and back onto the adopted turn.
 - `src/server/orchestrator/resident-spawn-guard.ts` — `releaseResidentOnStatusCardChange` and the per-process record of the value it was spawned with.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
 - `src/server/orchestrator/api-routes-session-status.ts` — the route; `api-routes-propose-actions.ts` — refuses under the flag.
 - `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope; shared `validateActionItems`.
-- `src/server/orchestrator/services/session-status.ts` — record, stale, take, reconciliation, `shouldNudgeForStatusCard`, `statusNudgePrompt`.
-- `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts`, the memoized decision, dispatch from `finishTurn`; `harnessCommand` and `statusNudge` on `TurnInput`.
-- `src/server/orchestrator/prepared-dispatch.ts`, `src/server/orchestrator/session-runner.ts` (`toQueuedMessage`, `QueuedMessage`), `src/server/shared/types/agent-types.ts` — the dispatch option.
-- `src/server/orchestrator/turn-accumulator.ts` — `statusUpdated`.
+- `src/server/orchestrator/services/session-status.ts` — record, settle, take, the block (`formatSessionStatusContext`), `shouldCarryStatusNudge`, the seq bookkeeping behind req 40.
+- `src/server/orchestrator/prompts/status-card-reconcile.md`, `status-card-missed.md`, `status-card-absent.md` — the block's three pieces of prose.
+- `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts` and the one card write it makes; `harnessCommand` and `statusContext` on `TurnInput`, the latter swapped for the current rendering on every attempt.
+- `src/server/orchestrator/turn-accumulator.ts` — `statusUpdated` and `awaitingUserAnswer`; `ws-handlers/agent-listeners.ts` sets the second from the turn's tool blocks.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — acceptance after admission.
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
 - `src/server/orchestrator/prompts/skeleton.md` (the `{{FOLLOW_UP_ACTIONS}}` slot), `prompts/propose-actions.md`, `prompts/session-status.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
-- `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation.
+- `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx`, `src/client/components/message-markdown.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation, and the markdown every field renders through.
+- `src/client/utils/local-storage.ts` — `getSavedStatusCardCollapsed` / `saveStatusCardCollapsed`, the per-session collapsed state (req 42).
 - `src/client/components/MessageList/pending-answer.ts` — which elements render a card the user answers, and which one the conversation ends with (req 32).
 - `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595).
 
@@ -1257,8 +1596,10 @@ card, submission, the toggle — and the call itself is the route's own tests.
 - **Deriving the card from `runner.turnSummary` or a small-model call** — the
   last message is already on screen; a summarizer is not the agent's own
   knowledge.
-- **A runner-level "nudge pending" flag** — consumed by a compaction turn or
-  a racing user turn; identity travels with the dispatch instead.
+- **A runner-level "nudge pending" flag** — consumed by a compaction turn or a
+  racing user turn, and gone with the process. Req 38's flag is not that one: it
+  is on the stored card, it is read rather than consumed, and only a
+  `session_status` call clears it.
 - **An `idle` listener for the decision** — `idle` fires twice on the
   streaming path and once from worker reconciliation with no turn behind it.
 - **An alias for `propose_actions` under the flag** — see "Evolving".
@@ -1297,6 +1638,6 @@ Each is reversible without touching a numbered requirement.
   card is already held above it by req 30.
 - A `session_status` call whose awaits straddle a turn reset still writes the
   card but does not set `statusUpdated`: the write is right either way, and a
-  successor inheriting the credit would escape the nudge it is owed. The
-  stopped turn is exempt through `wasInterrupted`, so the skipped flag costs
-  nothing.
+  successor inheriting the credit would escape the ask it is owed. Since req 38 a
+  stopped turn is asked rather than exempt, so the cost of the skipped flag is
+  one notice on a card the agent did write — a notice, not a turn.

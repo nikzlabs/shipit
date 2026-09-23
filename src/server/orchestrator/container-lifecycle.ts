@@ -16,10 +16,10 @@ import {
   CONTAINER_WORKSPACE_DIR,
   DEP_CACHE_CONTAINER_PATH,
 } from "../shared/fs-constants.js";
+import { sessionNpmCacheDir } from "../shared/npm-cache.js";
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
-  INSTALL_MARKER_FILE,
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
 } from "./session-state-dir.js";
@@ -35,19 +35,23 @@ import {
 import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
   missingDepDirParents,
+  PNPM_VERIFIED_NAMESPACE,
   preStampInstallMarker,
+  removeInstallMarkerForOverlayReset,
   sortOverlayDepDirs,
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
+import { seedOverlayBinTargetsOnce } from "./overlay-bin-seed.js";
 import {
   chownToSessionWorker,
+  chownTreeToSessionWorker,
   handWorkspaceBackToWorker,
   reconcileDepDirCacheOwnership,
-  sessionWorkerGid,
   shareTreeOnce,
   identityForTarget,
 } from "./session-worker-uid.js";
+import type { SessionIdentity } from "../shared/session-identity.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import { SSH_AGENT_SOCKET_PATH } from "./ssh-provision.js";
 import {
@@ -139,23 +143,34 @@ export const PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
 export const ANDROID_SDK_ROOT = "/opt/android-sdk";
 export const JAVA_HOME = "/opt/java";
 
-// Match pnpm 11's automatic relocation path; keep the store on the workspace filesystem for hardlinks.
+// A base records its storeDir in .modules.yaml and refuses another, so every session maps its own
+// private store to this one container path (docs/276 FINDINGS).
 export const PNPM_STORE_CONTAINER_PATH = "/workspace/.pnpm-store";
 
-/** Verify shared-store ownership before mounting; the worker cannot repair a failed handoff. */
-export function ensurePnpmStoreDir(storeDir: string): boolean {
+/**
+ * Hand the session's PRIVATE pnpm store to its own uid before mounting; the worker cannot repair a
+ * failed handoff. Never group-shared: a store index every session may write is H2/H4 (docs/276).
+ */
+export function ensurePnpmStoreDir(
+  storeDir: string,
+  // Resolved from the store's own path, so each session's store is sealed to THAT session's
+  // identity rather than to one worker uid shared by all of them (docs/270).
+  resolveOwner: (targetPath: string) => SessionIdentity | null = identityForTarget,
+): boolean {
   try {
     fs.mkdirSync(storeDir, { recursive: true });
   } catch (err) {
     console.warn(`[containers] pnpm store mkdir failed for ${storeDir}:`, err);
     return false;
   }
-  const gid = sessionWorkerGid();
-  if (gid === null) return true;
-  // Share contents once per GID; the entrypoint excludes this nested mount from its chown walk.
-  shareTreeOnce(storeDir);
+  const owner = resolveOwner(storeDir);
+  if (owner === null) return true;
   try {
-    return fs.lstatSync(storeDir).gid === gid;
+    // The entrypoint prunes this nested mount from its chown walk, so a uid change must be
+    // repaired here; one stat keeps the normal case off the walk.
+    if (fs.lstatSync(storeDir).uid !== owner.uid) chownTreeToSessionWorker(storeDir, owner);
+    fs.chmodSync(storeDir, 0o700);
+    return fs.lstatSync(storeDir).uid === owner.uid;
   } catch (err) {
     console.warn(`[containers] pnpm store ownership check failed for ${storeDir}:`, err);
     return false;
@@ -364,13 +379,32 @@ export function buildEnv(
   }
 
   if (config.depCacheDir) {
-    env.push(`npm_config_cache=${DEP_CACHE_CONTAINER_PATH}/npm`);
+    // docs/276 H1: npm's resolution index is private per session (the worker links its
+    // `content-v2` back to the shared store), so a packument another session wrote can
+    // never be the one this session installs from.
+    env.push(`npm_config_cache=${sessionNpmCacheDir(CONTAINER_SESSION_STATE_DIR)}`);
     env.push(`YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`);
-    env.push(`PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`);
   }
 
   if (config.pnpmStoreDir) {
+    // Both spellings: pnpm moved its config env prefix at 11 (measured 2026-09-20 with
+    // `pnpm store path` — 12.5.1 reads only PNPM_CONFIG_*, 10.x only npm_config_*). The store
+    // this points at is private to the session, so relocating every version is the fix, not the
+    // hole it would have been while the store was shared (docs/276 section 5).
+    env.push(`PNPM_CONFIG_STORE_DIR=${PNPM_STORE_CONTAINER_PATH}`);
     env.push(`npm_config_store_dir=${PNPM_STORE_CONTAINER_PATH}`);
+    // docs/276 H3: import store files by copy so a store write cannot change an already-installed
+    // file (req 4, req 11). Not `clone` — the strict reflink spelling, ENOTSUP on ext4.
+    env.push("npm_config_package_import_method=copy");
+    // docs/276 section 5 "Scope and store": pnpm >= 11 reads only PNPM_CONFIG_*, and gets copy only
+    // where a verified base is mounted, because the import then crosses into the overlay. In the
+    // standard layout this changes nothing either way — the store is its own mount and `link()`
+    // refuses to cross one — but two non-default layouts CAN still hardlink (measured,
+    // FINDINGS.md), and neither can ever have a base, so gating keeps them off a copy that would
+    // cost ~1.8x the ext4 disk while protecting nothing: their store is already session-private.
+    if (config.overlaySpecs?.some((s) => s.scope.namespace === PNPM_VERIFIED_NAMESPACE)) {
+      env.push("PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy");
+    }
   }
   // Ops must select the read-only proxy even if dockerAccess is also true.
   if (config.opsSession) {
@@ -435,7 +469,7 @@ export function prepareOverlayDirs(
   );
   if (superseded.length > 0) {
     // Invalidate before deleting layers; a populated new base can hide the loss of session-specific deps.
-    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir);
+    if (opts.workspaceDir) removeInstallMarkerForOverlayReset(opts.workspaceDir);
     for (const dir of superseded) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -454,9 +488,21 @@ export function prepareOverlayDirs(
     );
   }
   if (opts.workspaceDir) ensureDepDirMountParents(specs, opts.workspaceDir);
+  const seeded: string[] = [];
   for (const spec of specs) {
     if (!spec.orchDirs) continue;
-    fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
+    // Create ONLY the empty cold base. A published generation's lowerdir is the builder's or the
+    // publisher's to write: recreating a swept one here would hand the session an empty tree that
+    // reads as a base hit, so selection falls back to generation 0 instead (docs/276 section 5).
+    if (spec.generation === 0) fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
+    else if (!fs.existsSync(spec.orchDirs.lowerdir)) {
+      // Selection claimed this generation under the scope lock, so it should be unreachable. Let
+      // the overlay mount refuse the missing lowerdir rather than papering over it here.
+      console.error(
+        `${tag} base generation g${spec.generation} for ${spec.depDir} is missing on disk — ` +
+        "the overlay mount will fail; it is not being recreated empty",
+      );
+    }
     fs.mkdirSync(spec.orchDirs.upperdir, { recursive: true });
     fs.mkdirSync(spec.orchDirs.workdir, { recursive: true });
     // Copy-up preserves ownership and mode. Repair old bases once, with the marker outside the mounted tree.
@@ -466,6 +512,24 @@ export function prepareOverlayDirs(
     chownToSessionWorker(spec.orchDirs.workdir);
     // The upper directory sets the merged root's mode; new directories must allow Compose cache writes.
     reconcileDepDirCacheOwnership(spec.orchDirs.upperdir);
+    // Last, so the copies carry the modes shareTreeOnce just repaired. Seeds a fresh upper only;
+    // its own marker beside the upper is what makes that idempotent (planning#606).
+    if (seedOverlayBinTargetsOnce(spec, { tag }) !== null) seeded.push(spec.depDir);
+  }
+  // A verified pnpm base is published UNBUILT and gets no pre-stamp (`preStampInstallMarker`), so
+  // the session's own install has to run over it — and a marker written over some OTHER tree would
+  // skip it. A seed that ran is exactly the signal: it means this upper had no seed marker, so it
+  // is either brand new or predates the seed, which is the shape a session lands in when it GAINS
+  // this overlay. Flipping a mount gate back on puts every pnpm session there, whether its layers
+  // were discarded meanwhile (new upper) or held by a Compose service (old upper). Rotation drops
+  // the marker above, so this only reports what that did not already cover.
+  if (opts.workspaceDir && superseded.length === 0 && seeded.length > 0) {
+    if (removeInstallMarkerForOverlayReset(opts.workspaceDir)) {
+      console.log(
+        `${tag} dropped the install marker: ${seeded.join(", ")} was seeded over a verified base ` +
+        "this session was not installed over, so agent.install re-validates",
+      );
+    }
   }
 }
 
@@ -491,21 +555,6 @@ export function ensureDepDirMountParents(
       }
       chown(abs);
     }
-  }
-}
-
-function removeInstallMarkerForRotation(workspaceDir: string): void {
-  try {
-    const markerFile = path.join(
-      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
-      INSTALL_MARKER_FILE,
-    );
-    fs.rmSync(markerFile, { force: true });
-  } catch (err) {
-    console.warn(
-      "[overlay] could not drop the install marker after a base-generation rotation:",
-      err instanceof Error ? err.message : String(err),
-    );
   }
 }
 

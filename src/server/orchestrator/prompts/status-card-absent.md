@@ -1,0 +1,1 @@
+This session has no status card yet, so the user has nothing to come back to. Write one before this turn ends: call `session_status` with `status` — what the session is about and how far it got — and add `needsYou` and `actions` if the session has either.

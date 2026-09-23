@@ -21,6 +21,7 @@ import {
   restoreLfsAfterTreeRewrite,
 } from "../git-lfs.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
+import { findSharedBranchRefusal, sharedBranchMessage } from "./push-target-guard.js";
 import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 
 async function readOriginHead(dir: string): Promise<string | null> {
@@ -107,6 +108,32 @@ export async function forkSession(
 
   const activeSession = sessionManager.get(activeSessionId);
 
+  let bareCacheDir: string | null = null;
+  try {
+    bareCacheDir = activeSession?.remoteUrl ? getBareCacheDir(activeSession.remoteUrl) : null;
+  } catch {
+    // An unmappable URL leaves the parent as the fallback source.
+  }
+
+  // A fork is the one path that takes its branch name from the caller, and the
+  // clone has no local copy of the default branch to collide with — so
+  // `checkout -b main` would succeed and leave the session aimed at the base
+  // (docs/312-base-branch-push-protection req 8). Asked before the clone, so a
+  // refusal leaves no workspace behind.
+  //
+  // Resolved through `resolveForkOriginHead`, not `getDefaultBranch()`: an older
+  // parent's own `origin/HEAD` can point at its parent's feature branch, which is
+  // the reason `inheritOriginHead` below prefers the bare cache. Reading the
+  // weaker source here would let a fork named `main` past a guard that the very
+  // next step then corrects.
+  if (activeSession?.remoteUrl) {
+    const originHead = await resolveForkOriginHead(activeSessionDir, bareCacheDir);
+    const defaultBranch = originHead ? /^refs\/remotes\/origin\/(.+)$/.exec(originHead)?.[1] : undefined;
+    if (defaultBranch && trimmed === defaultBranch) {
+      throw new ServiceError(400, sharedBranchMessage(trimmed, "repository-default"));
+    }
+  }
+
   const crypto = await import("node:crypto");
   const newSessionId = crypto.randomUUID();
   const newSessionDir = path.join(sessionsRoot, newSessionId);
@@ -161,12 +188,6 @@ export async function forkSession(
     }
   }
   // Correct origin/HEAD even without a remote or after a failed fetch.
-  let bareCacheDir: string | null = null;
-  try {
-    bareCacheDir = activeSession?.remoteUrl ? getBareCacheDir(activeSession.remoteUrl) : null;
-  } catch {
-    // An unmappable URL leaves the parent as the fallback source.
-  }
   await inheritOriginHead(activeSessionDir, newWorkspaceDir, bareCacheDir);
 
   const branchArgs = ["checkout", "-b", trimmed];
@@ -263,6 +284,15 @@ export async function mergeSession(
 
   if (sourceDir && sourceGit) {
     try {
+      // Refusing here costs nothing: the fallback below fetches the same commits
+      // straight from the source checkout, so the merge still works without
+      // publishing a shared branch (docs/312-base-branch-push-protection req 7).
+      if (sourceSession.branch) {
+        const shared = await findSharedBranchRefusal(
+          sourceGit, sourceSession.branch, undefined, { requireVerifiedDefault: true },
+        );
+        if (shared) throw new ServiceError(400, shared.message);
+      }
       await sourceGit.push("origin", sourceSession.branch);
       const credential = await resolveTreeRemoteCredential(activeSessionDir, "origin", resolveRemoteCredential);
       const originGit = credential ? credentialledGit(activeSessionDir, credential) : sg;

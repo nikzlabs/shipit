@@ -9,6 +9,8 @@ const G_GC = "gemini-generate-content" as const;
 // USD per million tokens. Rates below are estimates; gateway rates can differ from upstream.
 // Anthropic pricing and prompt-caching docs, 2026-08-09; 5-minute cache writes.
 const ANTHROPIC_PRICES = {
+  // Anthropic Opus 5.5 pricing, 2026-09-22; cache reads cost 5% of input.
+  opus55: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
   opus5: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   sonnet5: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   haiku45: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -19,6 +21,9 @@ const ANTHROPIC_PRICES = {
 
 // OpenAI model/pricing docs: 2026-08-09; Astra 2026-09-04.
 const OPENAI_PRICES = {
+  // https://developers.openai.com/api/docs/models/gpt-6-{sol,luna}, 2026-09-22.
+  gpt6sol: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  gpt6luna: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
   gpt6astra: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   sol: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
   terra: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
@@ -150,6 +155,7 @@ export const SERVICES = [
         retired: [{ id: "claude-fable-5", styles: [A_MSG], successors: { [A_MSG]: "claude-fable-5-1" } }],
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
+          { id: "claude-opus-5-5", label: "Opus 5.5", ...MODEL_IDENTITIES.opus55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // The row id is Claude Code's alias; the Messages API takes the vendor id.
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
@@ -164,6 +170,7 @@ export const SERVICES = [
         retired: [{ id: "claude-fable-5", styles: [A_MSG], successors: { [A_MSG]: "claude-fable-5-1" } }],
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
+          { id: "claude-opus-5-5", label: "Opus 5.5", ...MODEL_IDENTITIES.opus55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // The row id is Claude Code's alias; the Messages API takes the vendor id.
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
@@ -189,6 +196,8 @@ export const SERVICES = [
           // Keep Sol first: Astra may be hidden by account entitlement.
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
           { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", ...MODEL_IDENTITIES.gpt53codexSpark, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codexSparkProvisional },
@@ -208,8 +217,10 @@ export const SERVICES = [
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
-          // GPT-6 tool use requires Responses, even though plain chat can use Chat Completions.
+          // GPT-6 reasoning with tools requires Responses.
           { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
           { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },

@@ -66,10 +66,10 @@ taken inside one session, without building an agent that talks to many.
     current when it may be behind.
 12. ShipIt checks at the end of each turn that the agent updated or confirmed
     the card.
-    If it did not, ShipIt sends the agent a further turn that asks for the
-    update, on every harness alike, except in the cases of req 13 and
-    req 15. That turn is visible in the conversation, as a regular turn, for
-    transparency.
+    If it did not, ShipIt asks the agent for the update, on every harness alike,
+    except in the cases of req 13 and req 15. Since req 38 the ask is a line in
+    the next turn's prompt and costs no turn; it was a further turn of ShipIt's
+    own, visible in the conversation for transparency, while it did.
 13. A turn that ended with a question card is complete without a card
     update. The card may lag by a turn there; updating it would waste tokens
     and turns. The card then shows that it may be behind (req 14).
@@ -85,9 +85,11 @@ taken inside one session, without building an agent that talks to many.
     is spent on it: a current card carries no mark at all; a stale one
     carries a small "Stale" label at the right-hand end of the Status cap
     (req 33), which covers the whole stack and is read first.
-15. ShipIt nudges once per missing update. If the agent ignores the nudge,
-    ShipIt does not nudge again for that turn; the card is marked stale
-    (req 14) and the next ordinary turn is checked afresh.
+15. ShipIt asks once per missing update. If the agent ignores the ask, ShipIt
+    does not repeat it for that turn; the card is marked stale (req 14) and the
+    next ordinary turn is checked afresh. Since req 38 the ask is carried by the
+    next turn's prompt, so "once per missing update" is one outstanding ask, not
+    one attempt that can be lost when it cannot be sent.
 16. The follow-up actions the agent offers are part of the status card. They
     are the same thing as the card: what can happen next in this session.
 17. Offered actions persist across turns. A turn does not clear them; only
@@ -146,8 +148,10 @@ taken inside one session, without building an agent that talks to many.
     report by hand what they have done. What they ticked is sent to the agent
     together with the approved actions, in the same message; a step can be
     reported with no action approved. The submit button is labelled "Submit".
-    A reported step behaves as a sent action does: greyed, unticked, and
-    sendable again.
+    A reported step behaves as a sent action does: greyed, unselected, and
+    sendable again. Since req 44 it keeps a tick as a record of what was
+    reported; unselected is about what Submit would send, not about the box
+    being empty.
 
 30. The card is at the bottom only while the agent has stopped. When a turn
     starts, the card keeps the place it already had — the end of the finished
@@ -244,11 +248,188 @@ taken inside one session, without building an agent that talks to many.
     field is not on the row until the user asks for it, so a card nobody
     annotates is the card of req 2.
 
+38. Asking for a missing update costs no turn. When a turn ends without one, ShipIt
+    asks for it in the next turn's prompt, beside the card, rather than by sending a
+    turn of its own. Because the ask is free, it is made after every turn that missed
+    — a turn the user steered, one they stopped, one whose agent is holding background
+    work, one a git driver owns — and not only after the turns a further turn could
+    safely be spent on. Four turns are still not asked: one that updated the card, one
+    that ended with a question or a plan to approve (req 13), one that crashed, and one
+    the harness answered by operating on the conversation (req 36). A turn the user
+    stopped is not one of the four: it did the session's work, whether or not the
+    harness answered the stop with a result. A session with no card yet is asked for its
+    first one the same way. The ask stands until a call answers it — no later turn drops
+    it, not even one that is itself exempt — so a turn ShipIt composes no prompt for
+    defers the ask to the next turn that has one rather than losing it. This supersedes the mechanism of reqs 12 and 15 — the
+    visible further turn, and the one attempt per miss — and leaves what they were for
+    unchanged: every miss is asked about exactly once, and the card meanwhile says it
+    may be behind (req 14).
+
+39. The reconciliation the turn owes closes the card block. The block ends with the
+    instruction, in the words ShipIt used when it spent a turn on it, so that the last
+    thing read before the user's message is what to do about the card.
+
+40. The block shows how long each manual step and each offer has been on the card,
+    counted in turns — "offered 9 turns ago" — and how long ago the user sent an offer
+    they took. Drift the agent has stopped noticing is then something it can see rather
+    than remember. An entry whose turn was never recorded says so, and keeps saying so:
+    nothing but the agent introducing an entry gives it an age.
+
+41. Every part of the card the agent wrote renders as markdown, not the status alone:
+    the last-turn line, each manual step, and each offer's label and description. A link
+    in any of them is a working link — into a file, an issue, or the running app — and
+    clicking it does not tick the row it sits in. The same goes for the transcript
+    action card, whose rows are the same rows.
+
+42. The card can be collapsed into a single icon, so that a long session's
+    growing list of steps, follow-ups and status does not take the screen. The
+    card opens expanded; the user collapses it, and it stays collapsed for that
+    session until they open it again. It never folds itself up: a new manual step
+    is visible the first time, without a press. Collapsing hides the card's words
+    and never the fact that something is waiting — what the collapsed icon shows
+    still says that the user is needed. This is the pinned card at the end of the
+    conversation; the transcript's own follow-up action card is unchanged.
+
+43. The card is immediately above the input field whenever the conversation is
+    shorter than the view — a short session, and the gap before the conversation
+    has loaded — and it does not move when the conversation arrives. Where the
+    conversation fills the view, the card goes on scrolling with it (req 6). What
+    is below the card is unchanged: a running turn's output (req 30) and a card
+    waiting for the user's answer (req 32) sit under it as they do in a long
+    conversation.
+
+44. A row the user ticked and sent keeps a tick in its checkbox, so the card goes
+    on showing which rows they ticked rather than only that something was sent.
+    The tick is a record of what went, and is told apart at a glance from a row
+    ticked now and waiting for Submit. A row sent with a note alone, never
+    ticked, carries no tick: what is remembered is whether the row was ticked
+    when it was sent. A recorded row is ticked and sent again exactly as req 17
+    says, and unticking it before Submit cancels only that re-send and leaves the
+    record. A record never makes the collapsed card (req 42) report outstanding
+    work, and never adds a row to what Submit sends.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-21 — Nik: "when a manual step or a follow-up is 'sent' and was checked
+  (manual steps could be sent with comments only), it should be marked as checked
+  in the checkbox". → req 44. Submitting cleared the selection, so a row came
+  back greyed and tagged SENT with an EMPTY box, and the card no longer said
+  which rows he had ticked. His parenthetical is the other half and is what makes
+  the state per row: a manual step can be sent carrying only a note (req 37's
+  ANSWERED path), and such a row was not ticked, so it must not show a tick.
+
+  Decided here and not by him. **The record is a display state, not a second
+  mechanism**: the checkbox is still the selection, and the record is drawn in
+  the muted box rather than the accent, so a re-tick is louder than what it
+  replaces and Submit sends what is selected and nothing more. That keeps req 17
+  whole — a sent row is still tickable, a tick re-sends it, and unticking it
+  cancels only the re-send — where making the record the input's own checked
+  state would have re-sent every previously ticked row on the next Submit. **A
+  re-send rewrites the record rather than accumulating**, so a step ticked once
+  and later answered with a note alone loses the tick: the box says what the last
+  send said about the row. **An offer needs no separate memory** — an offer can
+  only be sent by ticking it, so every sent offer carries the record, including
+  one the server reports taken from an earlier load.
+
+- 2026-09-21 — Nik: "the cards should be visually right on top of the input if
+  the conversation is short or didn't load yet. Now the cards are shown at the
+  top while conversation is loading, and then they move down". → req 43. Not a
+  question he was asked; the requirement is recorded here because req 6 says the
+  card is the last element of the conversation, which puts it immediately above
+  the input field only once the conversation is tall enough to fill the view.
+
+- 2026-09-21 — Nik: "need a way to collapse the cards into a single icon, in a
+  long session the list of steps/followups/status only grows". → req 42. Two
+  things were put to him and both are in the requirement. **When it collapses**:
+  he chose manual only — the card opens expanded, an icon collapses it, and it
+  stays collapsed for that session until he opens it again; he rejected
+  collapsing itself once long, and rejected collapsed by default, because a new
+  manual step must be visible the first time without a press. **What it covers**:
+  offered the transcript cards as well, he answered that there is only a single
+  set of status cards. That is right for him — the transcript's
+  `ActionChecklistCard` is the older follow-up card from before this feature and
+  he does not see it — so the scope is the pinned card and that component is left
+  alone.
+
+  Decided here and not by him. **The collapsed state lives in this browser**, per
+  session, beside the other per-session view state: it is what this viewer is
+  showing, not something the agent or a second viewer decides, and it survives a
+  reload and a session switch because the point is a long session staying quiet.
+  **The icon carries what is outstanding** — a count of the manual steps not yet
+  reported, a count of the offers not yet sent, and the "Stale" mark — counted on
+  the same `taken` the rows grey themselves on, so the pill cannot disagree with
+  the card underneath it. Without that, collapsing would turn the card into a
+  hiding place the moment it was used. **An arriving step or offer does nothing
+  more than raise its count.** He ruled out expanding, and no separate "new" mark
+  was added beside the count: a mark means unseen, which needs a seen/unseen
+  lifetime of its own to clear, and the count going from none to one already says
+  the same thing in the place the user is looking.
+
+  Same day, on the first drawing, he moved the control: "it needs to be at the
+  bottom right on the bottom card, not in the 'status' necessarily." The first cut
+  had put it in the Status cap because that cap is the one always drawn; the
+  bottom-right of the last card is the corner nearest the composer, and so
+  nearest his hand. Which card is last moves — "Next steps" is absent with
+  nothing to do, and "Last turn" is absent on a stale card and when the agent had
+  nothing to say — so the control follows it rather than sitting on a fixed card.
+  The "Stale" mark stays in the Status cap, where the 2026-09-16 round put it.
+  Requirement 42 is unchanged: it says the card collapses into a single icon and
+  says nothing about where the control that does it lives, which is the design's
+  to settle.
+
+  And once it was in front of him collapsed: "the collapse button is on the
+  right side, but the collapsed card is on the left. Move it to the right, too."
+  So the icon is right-aligned and lands in the corner the control it replaced
+  sat in, rather than jumping the width of the card.
+
+- 2026-09-21 — Nik: "All parts of the cards should be rendered as markdown, not
+  only status. Links etc. are useful." → req 41. Not a question he was asked; the
+  requirement is recorded here because the card's fields were markdown in one
+  place and plain text in three.
+- 2026-09-20 — Nik, on `drift-measurement.md`, which counted 650 production turns:
+  one work turn in four ends with no update, the nudge fires on 48% of the misses,
+  and two calls in five say nothing about the manual steps or the offers. He approved
+  the three changes the report proposes, and ruled out the fourth it names: a call
+  that omits `needsYou` while manual steps are open must not be refused or discounted,
+  because ShipIt shows the card and does nothing more (his 2026-09-16 ruling below).
+  → reqs 38, 39, 40; reqs 12 and 15 superseded in mechanism by req 38.
+
+  What the numbers support, and what they do not: the agent obeys an instruction that
+  arrives in the turn prompt (81 of 81 nudged turns complied) and obeys the same rule
+  in the system prompt about three times in four, while making the card *visible* moved
+  the rate not at all. So the three changes are about where the instruction sits, not
+  about how much data the agent has.
+
+  Decided here and not by him. **Which exemptions survive**: `wasInterrupted` was one
+  gate covering a question card, a plan approval and the Stop button; only the first two
+  are req 13's, so the settlement now reads a narrower fact and a stopped turn is asked
+  like any other. **A cardless session** is asked for its first card by the same block,
+  because the nudge turn used to do that and its removal would otherwise take the only
+  ask such a session gets. **The age is counted in turns settled against the card**, not
+  in wall-clock time and not in card writes: it is the cheapest count that is honest,
+  it needs no subsystem, and an entry stored before this change says "at an unrecorded
+  turn" rather than claiming an age of zero.
+
+  Four defects the independent review found, all fixed before the PR: an exempt turn
+  settling on top of an outstanding ask dropped it; a stop the harness answered by
+  exiting rather than by a result was read as a crash; the first bare confirmation after
+  this change gave every legacy manual step a birthday it had not earned; and a
+  driver-owned turn was left as a fifth exemption, which the review was right to reject —
+  withholding the ask there was about not starting a turn inside the driver's interval,
+  and there is no turn to start.
+
+  On the report's finding 2 — a text-only turn updated the card 0 times in 46 — the
+  0 is definitional: the report defines a text-only turn as one that used no tool at
+  all, and `session_status` is a tool. What is real in that finding is that those 46
+  turns got no ask either, and the code was read and probed rather than guessed at: a
+  plain text-only turn IS nudged on `main`, so no gate keys on tool use. Three gates
+  produce the class instead, each reproduced against `main` — a steer (`steered`,
+  req 34), a user stop (`wasInterrupted`), and a resident agent holding background
+  work, where the dispatch is refused with no log line at all. Req 38 covers all three.
 
 - 2026-09-18 — Nik: "manual steps sometimes require the user to enter something,
   or the user wants to leave a comment per step." Five options were drawn in

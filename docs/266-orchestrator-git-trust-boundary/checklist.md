@@ -103,14 +103,27 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 
 ## Split out of the original scope — the reason each was, and where each ended
 
-Every item here was deferred deliberately rather than missed. **E4 is the only
-one still unshipped**; the rest are kept, checked, because the reason for the
-split is the part worth reading later.
+Every item here was deferred deliberately rather than missed. **All of them
+have now shipped**; they are kept, checked, because the reason for the split is
+the part worth reading later.
 
-- [ ] **E4 — let the project's hooks fire again** (reqs 9, 10). Sequenced last
+- [x] **E4 — let the project's hooks fire again** (reqs 9, 10). Sequenced last
       by `plan.md` §5 because it is the only step that *adds* a way for the
-      commit to fail, and it needs the bounded-attempt-then-`--no-verify`
-      fallback to satisfy req 10.
+      commit to fail, and it needs the bounded attempt plus a fallback to
+      satisfy req 10. **Shipped 2026-09-22**, and narrower than the section
+      title suggests: hooks run on the auto-commit's own `git commit` and
+      nothing else, because req 10's fallback covers the commit and nothing
+      else — a `pre-push` or `post-checkout` hook would have had none. The
+      cheaper, wider option (one conditional inside `safeSimpleGit`, which
+      already knows whether the uid dropped) was available and was declined for
+      that reason; `plan.md` §2 (E4 as built) records the decision, the five
+      measured git behaviours it rests on, and the two rotted line references
+      in the brief that prompted it.
+      Held for weeks behind **planning#414** — a `pre-commit` hook runs binaries
+      from `node_modules/.bin`, so a poisoned shared package cache would have
+      made E4 an execution trigger. That closed 2026-09-22
+      (docs/276-shared-package-cache-integrity), which is why this is only now
+      buildable.
 - [x] **Per-session uids** (req 13). **planning#405**, shipped 2026-08-16 as
       **docs/270-per-session-worker-uids** — `identityForPath`
       (`shared/session-identity.ts:164`), session dirs sealed `0700`,
@@ -501,8 +514,10 @@ remediation, and the release flow. Both are audited in
 [arming-runbook.md](./arming-runbook.md) and both have been exposed on
 production since it was armed on 2026-08-18.
 
-A project's own hooks still do not fire (E4, reqs 9 and 10). Cross-session
-workspace access at the shared uid remains (req 13, planning#405).
+A project's own hooks fire again on the auto-commit as of 2026-09-22 (E4,
+reqs 9 and 10) — and on that operation only; every other orchestrator git call
+still carries the override. Cross-session workspace access at the shared uid
+remains (req 13, planning#405).
 
 **Correction, 2026-08-16.** This section used to end "nothing here has been
 exercised with a real uid drop". That is no longer true, and it was the stale

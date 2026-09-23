@@ -71,7 +71,12 @@ import {
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { isOverlayEligible, isOverlayEnabled } from "./overlay-session.js";
-import { publishDepDirOverlayBases, type DepDirPublishOutcome } from "./overlay-publish.js";
+import {
+  publishDepDirOverlayBases,
+  type DepDirPublishOutcome,
+  type OverlayPublishDeps,
+} from "./overlay-publish.js";
+import { buildVerifiedPnpmBase } from "./pnpm-base-builder.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
@@ -508,6 +513,24 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       );
     };
 
+  // A pnpm repo's base is BUILT here, not pulled from the session (docs/276 section 5). Without a
+  // container manager there is no Docker to build in, so a pnpm session installs privately.
+  const buildPnpmBase: OverlayPublishDeps["buildPnpmBase"] = containerManager
+    ? (req) =>
+        buildVerifiedPnpmBase(
+          {
+            docker: containerManager.dockerClient,
+            image: containerManager.workerImageName,
+            stateDir,
+            stackName: process.env.DOCKER_STACK,
+            ...(containerManager.workspaceVolumeName
+              ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
+              : {}),
+          },
+          req,
+        )
+    : undefined;
+
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
@@ -525,7 +548,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     try {
       return await publishDepDirOverlayBases(
         { session, workerUrl: runner.getWorkerUrl(), installOk, installCommands, signal: controller.signal },
-        { stateDir, createRepoGit, getBareCacheDir },
+        { stateDir, createRepoGit, getBareCacheDir, ...(buildPnpmBase ? { buildPnpmBase } : {}) },
       );
     } finally {
       runner.off("disposed", onDisposed);

@@ -9,6 +9,11 @@ import {
   AGENT_INTERFACE_SDK_MARKER,
   AGENT_INTERFACE_SDK_SCRIPT,
 } from "../shared/agent-interface-sdk/bootstrap.js";
+import {
+  EMBED_RESOLVER_MARKER,
+  EMBED_RESOLVER_SOURCE,
+  buildEmbedResolverScript,
+} from "../shared/preview-embed/bootstrap.js";
 import type { LogSource } from "../shared/types.js";
 import { appendAgentLog } from "./log-emit.js";
 import { markPreviewReachable } from "./preview-timing.js";
@@ -139,10 +144,22 @@ const HMR_WS_PATCH = `<script>(function(){` +
   `}` +
   `})()</script>`;
 
-export function injectPreviewBootstrap(html: string): string {
-  const scripts = html.includes(AGENT_INTERFACE_SDK_MARKER)
+/**
+ * `servicePorts` is the session's declared service→port map, which turns
+ * `shipit-preview://<service>/<path>` into a real URL inside the page
+ * (docs/313-embedded-preview-services). Omitted — or empty — and the resolver is
+ * not injected: with nothing to resolve against it could only warn.
+ */
+export function injectPreviewBootstrap(
+  html: string,
+  servicePorts?: Record<string, number>,
+): string {
+  let scripts = html.includes(AGENT_INTERFACE_SDK_MARKER)
     ? HMR_WS_PATCH
     : HMR_WS_PATCH + AGENT_INTERFACE_SDK_SCRIPT;
+  if (servicePorts && Object.keys(servicePorts).length > 0 && !html.includes(EMBED_RESOLVER_MARKER)) {
+    scripts += buildEmbedResolverScript(servicePorts);
+  }
   const headIdx = html.search(/<head[^>]*>/i);
   if (headIdx === -1) return scripts + html;
   const insertAt = html.indexOf(">", headIdx) + 1;
@@ -153,8 +170,13 @@ function scriptBody(script: string): string {
   return script.replace(/^<script[^>]*>/, "").replace(/<\/script>$/, "");
 }
 
-const INJECTED_SCRIPT_HASHES = [HMR_WS_PATCH, AGENT_INTERFACE_SDK_SCRIPT].map((script) =>
-  `'sha256-${createHash("sha256").update(scriptBody(script)).digest("base64")}'`);
+// The embed resolver's map rides as an attribute, so its BODY is constant and
+// hashes once here — see `buildEmbedResolverScript`.
+const INJECTED_SCRIPT_HASHES = [
+  scriptBody(HMR_WS_PATCH),
+  scriptBody(AGENT_INTERFACE_SDK_SCRIPT),
+  EMBED_RESOLVER_SOURCE,
+].map((body) => `'sha256-${createHash("sha256").update(body).digest("base64")}'`);
 
 export function allowPreviewBootstrapInCsp(csp: string): string {
   return csp.split(",").map((policy) => {
@@ -205,6 +227,7 @@ function proxyHttpAttempt(
   rawReq: http.IncomingMessage,
   rawRes: http.ServerResponse,
   hasBody: boolean,
+  servicePorts: Record<string, number>,
   onUnreachable: (err: NodeJS.ErrnoException) => void,
   onSuccess?: () => void,
 ): http.ClientRequest {
@@ -229,7 +252,7 @@ function proxyHttpAttempt(
         const chunks: Buffer[] = [];
         proxyRes.on("data", (chunk: Buffer) => chunks.push(chunk));
         proxyRes.on("end", () => {
-          const html = injectPreviewBootstrap(Buffer.concat(chunks).toString("utf-8"));
+          const html = injectPreviewBootstrap(Buffer.concat(chunks).toString("utf-8"), servicePorts);
           const outHeaders = { ...proxyRes.headers };
           const csp = outHeaders["content-security-policy"];
           if (typeof csp === "string") {
@@ -494,6 +517,20 @@ export function registerPreviewProxy(
     ...(opts.broadcastLog ? { broadcastLog: opts.broadcastLog } : {}),
   });
 
+  /**
+   * The declared service→port map the embed resolver resolves names against
+   * (docs/313-embedded-preview-services). Declared, not running: a port comes
+   * from the compose file, so a stopped service resolves to the same address it
+   * will answer on once it is started (req 5).
+   */
+  function servicePortsFor(sessionId: string): Record<string, number> {
+    const ports: Record<string, number> = {};
+    for (const svc of serviceManagers.get(sessionId)?.getServices() ?? []) {
+      if (typeof svc.port === "number") ports[svc.name] = svc.port;
+    }
+    return ports;
+  }
+
   function resolveTarget(sessionId: string, port: number): { ip: string; port: number } | null {
     const mgr = serviceManagers.get(sessionId);
     const target = mgr?.resolvePreviewTarget(port);
@@ -540,6 +577,7 @@ export function registerPreviewProxy(
         rawReq,
         rawRes,
         !canRetry,
+        servicePortsFor(sessionId),
         (err) => giveUpOrRetry(err.message, CONNECT_ERROR_CODES.has(err.code ?? "")),
         () => reportError.success(sessionId, originPort),
       );

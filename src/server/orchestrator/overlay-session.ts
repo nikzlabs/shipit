@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { safeSimpleGit } from "../shared/git-hooks-guard.js";
@@ -15,6 +14,10 @@ import { makeMarker, serializeMarker } from "../shared/install-marker.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
+
+// Re-exported because every orchestrator caller of the detection used to live here; the detection
+// itself moved to shared/ so the session worker can reach the same answer.
+export { isPnpmRepo, hasPnpmLockfile } from "../shared/pnpm-repo.js";
 
 export function isOverlayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.OVERLAY_DEP_STORE;
@@ -62,6 +65,30 @@ export function resolveOverlayScope(
   };
 }
 
+/**
+ * Only the orchestrator's verifying builder publishes into this namespace, so a pnpm session can
+ * never be handed a base another session's install produced (docs/276 section 5).
+ *
+ * The suffix is the version of the contract for what a base is DECIDED BY and what it CONTAINS,
+ * and bumping it is what retires every base published under the old one: the scope hash changes,
+ * so no session resolves a `v<N-1>` pointer and the disk janitor reclaims those scopes as
+ * unreferenced. A pointer is never invalidated in place. `v2` retired the bases published before
+ * install-time builds became ineligible — without it the repos planning#604 is about keep mounting
+ * the unbuilt base they already have, and the fix reaches only repos with no base yet.
+ *
+ * `v3` retires two contracts at once, because both changed in the same release.
+ * Such packages are now PRUNED out of a base rather than costing the candidate one
+ * (planning#604), so a `v2` base is a whole tree and a `v3` base deliberately is not — a session
+ * reading one as the other would install over a tree whose holes it was never shown. And local
+ * links were classified (planning#414): admitting in-repo `workspace:`/`link:` also NARROWED the
+ * contract, and a repo whose lockfile sets `excludeLinksFromLockfile` already has a `v2` base
+ * carrying a link edge the decision never saw.
+ */
+export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v3";
+
+// The one dep dir the verified builder can fill: pnpm's install output is a single `node_modules`.
+export const PNPM_BASE_DEP_DIR = "node_modules";
+
 export interface DepDirOverlaySpec extends OverlaySpec {
   depDir: string;
   mountPath: string;
@@ -108,6 +135,33 @@ export function supersededSessionOverlayLayers(
     .map((e) => path.join(sessionScopeDir, e.name));
 }
 
+/**
+ * Drop the install marker so `agent.install` re-validates against whatever the session now has.
+ * Shared by the two paths that discard an overlay layer the session was installed over: a base
+ * generation rotation (`prepareOverlayDirs`) and a session that gains a fresh upper over a base it
+ * was not installed over.
+ *
+ * Returns whether a marker was actually there, so a caller can stay quiet when there was nothing
+ * to invalidate.
+ */
+export function removeInstallMarkerForOverlayReset(workspaceDir: string): boolean {
+  try {
+    const markerFile = path.join(
+      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
+      INSTALL_MARKER_FILE,
+    );
+    const existed = fs.existsSync(markerFile);
+    fs.rmSync(markerFile, { force: true });
+    return existed;
+  } catch (err) {
+    console.warn(
+      "[overlay] could not drop the install marker after discarding an overlay layer:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
 export const CONTAINER_WORKSPACE_PATH = "/workspace";
 
 export function buildOverlaySpecs(args: {
@@ -116,13 +170,15 @@ export function buildOverlaySpecs(args: {
   depDirs: string[];
   volumeMountpoint: string;
   stateRoot?: string;
+  /** Partitions the base by its publisher; see PNPM_VERIFIED_NAMESPACE. */
+  namespace?: string;
   // Generation 0 is the empty cold-start base.
   generationForScope?: (scopeHash: string) => number;
 }): DepDirOverlaySpec[] {
-  const { sessionId, scope, depDirs, volumeMountpoint, stateRoot } = args;
+  const { sessionId, scope, depDirs, volumeMountpoint, stateRoot, namespace } = args;
   const generationForScope = args.generationForScope ?? (() => 0);
   return depDirs.map((depDir) => {
-    const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
+    const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir, namespace);
     const generation = generationForScope(scopeHash);
     const sessionOverlayDir = sessionOverlayGenDir(volumeMountpoint, sessionId, scopeHash, generation);
     const orchSessionOverlayDir = stateRoot
@@ -135,7 +191,12 @@ export function buildOverlaySpecs(args: {
       workdir: path.join(sessionOverlayDir, "work"),
       depDir,
       mountPath: path.posix.join(CONTAINER_WORKSPACE_PATH, depDir),
-      scope: { repoUrl: scope.repoUrl, runtimeKey: scope.runtimeKey, depDir },
+      scope: {
+        repoUrl: scope.repoUrl,
+        runtimeKey: scope.runtimeKey,
+        depDir,
+        ...(namespace !== undefined ? { namespace } : {}),
+      },
       scopeHash,
       generation,
       ...(stateRoot && orchSessionOverlayDir
@@ -186,13 +247,23 @@ export function liveOverlayScopeHashes(
 ): Set<string> {
   const live = new Set<string>();
   if (!isOverlayEnabled(env)) return live;
-  const runtimeKey = overlayRuntimeKey(env);
+  const baseRuntimeKey = overlayRuntimeKey(env);
   for (const s of sessions) {
     if (!s.remoteUrl) continue;
     if (s.kind === "ops") continue;
     if (s.diskTier === "evicted") continue;
+    // Creation keys the scope on `overlayRuntimeKey + overlayPinSegment` (`resolveOverlayScope`),
+    // and the pin comes from the mutable checkout — so liveness claims BOTH: the sweep must never
+    // be what decides a base is reapable, and a stopped session's pinned scope was swept despite a
+    // current pointer while this read the runtime key alone. Naming a hash with no directory is free.
+    const runtimeKeys = new Set([baseRuntimeKey, baseRuntimeKey + overlayPinSegment(s.workspaceDir, env)]);
     for (const depDir of resolveDepDirs(s)) {
-      live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir));
+      for (const runtimeKey of runtimeKeys) {
+        live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir));
+        // Claim the verified namespace unconditionally too: a session that flips to npm mid-life
+        // would otherwise let the sweep reap the verified base it comes back to.
+        live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir, PNPM_VERIFIED_NAMESPACE));
+      }
     }
   }
   return live;
@@ -306,52 +377,20 @@ export function missingDepDirParents(depDir: string, workspaceDir: string): stri
   return depDirAncestors(depDir).filter((a) => !fs.existsSync(path.join(workspaceDir, a)));
 }
 
-// Keep the pnpm store on the workspace filesystem: overlayfs forces hardlinks into copies.
 export const PNPM_STORE_SUBDIR = "pnpm-store";
 
-export function pnpmStoreHash(runtimeKey: string): string {
-  return crypto.createHash("sha256").update(runtimeKey).digest("hex").slice(0, 16);
+// The store is PRIVATE to one session (docs/276 section 5, req 1): a store index every pnpm
+// session could write is H2/H4, and no permission bit fixes that while the writer owns the inode.
+// It sits beside the session's overlay layers so it is dropped with the session's directory, and
+// still mounts at PNPM_STORE_CONTAINER_PATH — pnpm records storeDir in .modules.yaml and refuses
+// a base built against another path.
+export function sessionPnpmStoreDir(root: string, sessionId: string): string {
+  return path.join(root, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, PNPM_STORE_SUBDIR);
 }
 
-export function pnpmStoreDirForRuntime(stateDir: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(stateDir, PNPM_STORE_SUBDIR, pnpmStoreHash(overlayRuntimeKey(env)));
-}
-
-function readPackageManagerField(workspaceDir: string): string | null {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(workspaceDir, "package.json"), "utf-8")) as {
-      packageManager?: unknown;
-    };
-    if (typeof pkg.packageManager === "string" && pkg.packageManager.trim()) {
-      return pkg.packageManager.trim();
-    }
-  } catch {
-    /* No package-manager signal. */
-  }
-  return null;
-}
-
-function pnpmSignalFromInstall(install: string[]): boolean | null {
-  let sawNonPnpm = false;
-  for (const cmd of install) {
-    if (/(?:^|[\s;&|(])pnpm(?:[\s;&|)]|$)/.test(cmd)) return true;
-    if (/(?:^|[\s;&|(])(?:npm|yarn|bun)(?:[\s;&|)]|$)/.test(cmd)) sawNonPnpm = true;
-  }
-  return sawNonPnpm ? false : null;
-}
-
-export function isPnpmRepo(workspaceDir: string): boolean {
-  const pm = readPackageManagerField(workspaceDir);
-  if (pm !== null) return pm.startsWith("pnpm");
-  let install: string[];
-  try {
-    install = resolveShipitConfig(workspaceDir).agent.install;
-  } catch {
-    install = [];
-  }
-  const installSignal = pnpmSignalFromInstall(install);
-  if (installSignal !== null) return installSignal;
-  return fs.existsSync(path.join(workspaceDir, "pnpm-lock.yaml"));
+// <stateDir>/pnpm-store held the retired per-runtime shared store; nothing writes it any more.
+export function retiredSharedPnpmStoreRoot(stateDir: string): string {
+  return path.join(stateDir, PNPM_STORE_SUBDIR);
 }
 
 // Run after container start pins the lower layer, before exposing the worker URL for install.
@@ -364,6 +403,12 @@ export async function preStampInstallMarker(args: {
 }): Promise<boolean> {
   const { stateDir, workspaceDir, specs } = args;
   if (specs.length === 0) return false;
+  // Pre-stamping is CUT for pnpm (docs/276 section 5, "Per-session install — no pnpm pre-stamp"):
+  // the verified base is published UNBUILT, so a session that skips its own install never runs the
+  // builds it approved, and a session whose lockfile merely matches adopts the base's graph. Read
+  // off the specs rather than re-detecting the package manager, so this decision cannot address a
+  // different scope than the one actually mounted.
+  if (specs.some((s) => s.scope.namespace === PNPM_VERIFIED_NAMESPACE)) return false;
   const readPointer = args.readPointer ?? readBasePointerByHash;
   const chown = args.chown ?? chownToSessionWorker;
 

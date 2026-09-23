@@ -9,22 +9,22 @@ const bridge: AgentMcpBridge = { tsxBin: "/usr/bin/tsx", bridgePath: "/opt/bridg
 
 describe("shipitToolSpec (docs/303 req 21)", () => {
   it("returns the spec untouched while the session status card is off", () => {
-    const spec = "present,voice,bug,ask,propose_actions,propose_repo_session";
+    const spec = "present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message";
     expect(shipitToolSpec(spec, {})).toBe(spec);
     expect(shipitToolSpec(spec, { sessionStatusCard: false })).toBe(spec);
   });
 
   it("swaps only the offer tool while it is on, keeping the order", () => {
     expect(
-      shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session", {
+      shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message", {
         sessionStatusCard: true,
       }),
-    ).toBe("present,voice,bug,ask,session_status,propose_repo_session");
+    ).toBe("present,voice,bug,ask,session_status,propose_repo_session,propose_session_message");
   });
 
   it("leaves propose_repo_session alone", () => {
-    const out = shipitToolSpec("propose_actions,propose_repo_session", { sessionStatusCard: true });
-    expect(out).toBe("session_status,propose_repo_session");
+    const out = shipitToolSpec("propose_actions,propose_repo_session,propose_session_message", { sessionStatusCard: true });
+    expect(out).toBe("session_status,propose_repo_session,propose_session_message");
   });
 });
 
@@ -42,9 +42,9 @@ function pendingServers(adapter: unknown): Record<string, unknown> {
 }
 
 describe.each([
-  ["grok", () => new GrokAdapter(), "present,voice,bug,ask,propose_actions,propose_repo_session"],
-  ["antigravity", () => new AntigravityAdapter(), "present,voice,bug,ask,propose_actions,propose_repo_session"],
-  ["opencode", () => new OpencodeAdapter(), "present,voice,bug,ask,propose_actions,propose_repo_session"],
+  ["grok", () => new GrokAdapter(), "present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message"],
+  ["antigravity", () => new AntigravityAdapter(), "present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message"],
+  ["opencode", () => new OpencodeAdapter(), "present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message"],
 ])("%s bridge tool list", (_name, make, offSpec) => {
   it("is byte for byte the pre-card list while the setting is off", () => {
     const adapter = make();

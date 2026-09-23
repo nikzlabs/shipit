@@ -17,6 +17,17 @@ import { renderMessageCard } from "./cards/MessageCards.js";
 import { useRowHandlers } from "./row-context.js";
 
 /**
+ * docs/314 req 6 — `proposed` is a session with no link to this one, so the
+ * title alone leaves the arrival unexplained; the approval IS the explanation.
+ */
+const ORIGIN_LABEL: Record<NonNullable<ChatMessage["messageOrigin"]>["relation"], string> = {
+  parent: "From parent session",
+  child: "From child session",
+  sibling: "From sibling session",
+  proposed: "From another session, approved by you",
+};
+
+/**
  * One row of the transcript, memoized (planning#375).
  *
  * Every prop here is referentially STABLE while the row's content is unchanged
@@ -166,6 +177,7 @@ function TranscriptRowInner({
     onResolvePermission: handlers.onResolvePermission,
     onUndoIssueWrite: handlers.onUndoIssueWrite,
     onStartRepoSession: handlers.onStartRepoSession,
+    onDeliverSessionMessage: handlers.onDeliverSessionMessage,
     onOpenIssue: handlers.onOpenIssue,
     onSendFollowUp: handlers.onSendFollowUp,
     onReleaseConfirm: handlers.onReleaseConfirm,
@@ -223,7 +235,7 @@ function TranscriptRowInner({
         )}
         {msg.messageOrigin && (
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-(--color-accent-text)/75">
-            From {msg.messageOrigin.relation} session · {msg.messageOrigin.sessionTitle}
+            {ORIGIN_LABEL[msg.messageOrigin.relation]} · {msg.messageOrigin.sessionTitle}
           </div>
         )}
         {msg.queued && (

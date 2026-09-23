@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { reclaimRegenerableSessionDirs, reclaimBlockedSessionCaches, REGENERABLE_SESSION_SUBDIRS } from "./disk-utils.js";
+import { sessionPnpmStoreDir } from "./overlay-session.js";
 
 describe("reclaimRegenerableSessionDirs (planning#194)", () => {
   let tmpDir: string;
@@ -32,6 +33,19 @@ describe("reclaimRegenerableSessionDirs (planning#194)", () => {
     ]);
     expect(fs.existsSync(workspaceDir)).toBe(false);
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
+  });
+
+  // docs/276: the private pnpm store lives under overlay/, so the same reclaim that drops the
+  // node_modules upper drops the store that filled it. A store is a cache, not work.
+  it("removes the session's private pnpm store with the overlay it filled", async () => {
+    const store = sessionPnpmStoreDir(tmpDir, "sess-1");
+    fs.mkdirSync(path.join(store, "files", "00"), { recursive: true });
+    fs.writeFileSync(path.join(store, "files", "00", "abc"), "x");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
+    await reclaimRegenerableSessionDirs(workspaceDir);
+
+    expect(fs.existsSync(store)).toBe(false);
   });
 
   it("preserves durable siblings (uploads/) — never a blanket rm of the session root", async () => {

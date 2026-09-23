@@ -215,7 +215,7 @@ describe("Integration: rewind and fork", () => {
       status: "Routes done.",
       actions: [],
       fresh: true,
-      writeSeq: 2,
+      writeSeq: 2, turnSeq: 0,
     });
 
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
@@ -231,7 +231,7 @@ describe("Integration: rewind and fork", () => {
     expect(sessionManager.get(sessionId)?.sessionStatus).toMatchObject({
       status: "Routes done.",
       fresh: false,
-      writeSeq: 2,
+      writeSeq: 2, turnSeq: 0,
     });
 
     client.close();

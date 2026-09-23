@@ -255,10 +255,30 @@ called out rather than folded in.
 
 ## Open questions
 
-*(none — Q1–Q4 are all answered; see below. Implementation is unblocked, subject
-to the independent review this repo's requirements discipline requires.)*
+None.
 
 ## Resolved questions
+
+**2026-09-22 — Q5: should hooks run beyond the auto-commit? → no, the
+auto-commit only.** Requester: *"Autocommit only is fine for now."*
+
+**Requirement 9 is unchanged by this — it is confirmed, not edited.** It already
+said "on ShipIt's auto-commit", and that narrow reading is what E4 shipped.
+`pre-push` and `post-checkout` keep the `core.hooksPath` suppression.
+
+The question existed because Q1's receipt below records a *wider* option than
+requirement 9 states, and E4 declined to build the wider one on its own
+authority. The reason it declined is the reason a future widening is not free:
+**requirement 10's fallback exists only for the commit.** A failing `pre-push`
+would block the auto-push with nothing to fall back to, and a `post-checkout`
+would run inside session provisioning.
+
+**"For now" is load-bearing — read this as a deferral, not a rejection on the
+merits.** The requester did not say the wider behaviour is wrong, only that the
+narrow one is enough today, so nothing here forecloses it. What a widening would
+still have to decide is what requirement 10 becomes for operations that have no
+fallback to inherit; `plan.md` §2, "E4 as built", already contains that analysis
+and should be inherited rather than rediscovered.
 
 **2026-08-16 — Q2: is it good enough to run git as the session's own user
 instead of as root? → (a), yes.** Requester: *"agree"*. Recorded as
@@ -299,7 +319,12 @@ validation cannot see a mode the running service sets at runtime.
 
 **2026-08-16 — Q1: should a project's own git hooks ever run on ShipIt's
 auto-commit? → (c), run them wherever the orchestrator's git runs, once that is
-no longer root.** Requester: *"if 'c' is easy, let's do that"*. Recorded as
+no longer root.** **→ NARROWED by the 2026-09-22 answer to Q5 above: hooks fire
+on the auto-commit only.** The option text below is kept as the record of what
+was chosen at the time, not as a description of what ShipIt does — read it with
+that answer. The rest of this receipt still holds: the "if it's easy" condition,
+and requirement 10, both survive the narrowing unchanged. Requester: *"if 'c' is
+easy, let's do that"*. Recorded as
 **requirement 9**, with the "if it's easy" made testable as a condition: it must
 cost nothing beyond removing the current hook suppression, and if it turns out
 to need more it comes back as a question. Under the recommended option in

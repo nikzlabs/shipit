@@ -613,6 +613,15 @@ export function wireAgentListeners(
         observeVoiceNotes(runner, toolBlocks, deps.deliverVoiceNote);
       }
 
+      // docs/303 req 13 — what ends the turn by asking the user, whether or not the
+      // interrupt below applies: non-streaming `ExitPlanMode` ends the turn on its own,
+      // and `wasInterrupted` also latches on a user stop, which is not this (req 38).
+      if (runner && toolBlocks.some(
+        (t) => isWellFormedAskUserQuestion(t) || t.name === "ExitPlanMode",
+      )) {
+        runner.awaitingUserAnswer = true;
+      }
+
       // Both CLI modes auto-answer. Interrupt only valid questions that the user can answer.
       if (runner && toolBlocks.some(isWellFormedAskUserQuestion)) {
         runner.wasInterrupted = true;

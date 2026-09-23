@@ -5,6 +5,7 @@ import type {
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
   RepoSessionProposalCard as RepoSessionProposalCardData,
+  SessionMessageProposalCard as SessionMessageProposalCardData,
   PresentInlineCard as PresentInlineCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
@@ -297,6 +298,7 @@ export interface ChatMessage {
 
   /** docs/303 — work the agent says belongs in a different repository. */
   repoSessionProposal?: RepoSessionProposalCardData;
+  sessionMessageProposal?: SessionMessageProposalCardData;
 
   presentInline?: PresentInlineCardData;
 

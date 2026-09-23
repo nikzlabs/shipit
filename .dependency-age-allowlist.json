@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "manifest": "docker/agent-cli/package.json",
+    "package": "@openai/codex",
+    "version": "0.155.1",
+    "reason": "User explicitly approved Codex 0.155.1 on 2026-09-22 to complete the requested CLI update. App-server initialization and thread creation were verified; adapter tests pass. This update is not required for the new model IDs.",
+    "expires": "2026-09-26"
+  },
+  {
+    "manifest": "docker/agent-cli/package.json",
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.280",
+    "reason": "User explicitly requested the latest Claude Code CLI with a dependency-age exception on 2026-09-22, alongside Opus 5.5 support.",
+    "expires": "2026-09-30"
+  }
+]

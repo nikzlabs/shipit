@@ -1362,7 +1362,7 @@ describe("setSessionStatus (docs/303 req 10)", () => {
       takenAt: "2026-09-15T00:01:00.000Z",
     }],
     fresh: true,
-    writeSeq: 2,
+    writeSeq: 2, turnSeq: 0,
   };
 
   it("round-trips the whole card through a second manager", () => {

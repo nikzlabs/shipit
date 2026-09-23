@@ -6,7 +6,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { overlayScopeHash } from "./overlay-volume.js";
-import { overlayRuntimeKey } from "./overlay-session.js";
+import { overlayRuntimeKey, PNPM_VERIFIED_NAMESPACE } from "./overlay-session.js";
 import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-liveness-sources.js";
 
 describe("disk liveness sources", () => {
@@ -42,10 +42,14 @@ describe("disk liveness sources", () => {
     fs.mkdirSync(workspaceDir, { recursive: true });
     insertWarmSession(remoteUrl, workspaceDir);
 
+    // Both addresses: the un-namespaced base and the verified-namespace one (docs/276).
     const expected = overlayScopeHash(remoteUrl, overlayRuntimeKey(), "node_modules");
+    const verified = overlayScopeHash(
+      remoteUrl, overlayRuntimeKey(), "node_modules", PNPM_VERIFIED_NAMESPACE,
+    );
 
     expect(sessionManager.listAll()).toHaveLength(0);
-    expect(overlayLiveScopeSource(sessionManager)()).toEqual(new Set([expected]));
+    expect(overlayLiveScopeSource(sessionManager)()).toEqual(new Set([expected, verified]));
   });
 
   it("counts a warm session's declared plugin repositories as live", async () => {

@@ -1,7 +1,9 @@
+import path from "node:path";
+
 import type { SessionInfo } from "./docker-proxy-helpers.js";
-import { PARENT_SESSION_LABEL } from "./docker-proxy-helpers.js";
-import { isPathUnderWorkspace } from "./docker-proxy-auth.js";
-import { volumeBelongsToSession, networkBelongsToSession } from "./docker-proxy-auth.js";
+import { PARENT_SESSION_LABEL, forwardToDocker } from "./docker-proxy-helpers.js";
+import { resolveUnderWorkspace, volumeBelongsToSession, networkBelongsToSession } from "./docker-proxy-auth.js";
+import { findAmbiguousFieldCasing } from "./docker-proxy-field-casing.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 
 const BUILTIN_NETWORK_MODES = new Set(["", "default", "bridge", "host", "none"]);
@@ -11,6 +13,106 @@ function isNamedNetwork(mode: string | undefined): boolean {
   if (BUILTIN_NETWORK_MODES.has(mode)) return false;
   if (mode.startsWith("container:")) return false;
   return true;
+}
+
+/**
+ * Rewrite every bind source in `hostConfig` to its realpath, and reject the ones that resolve
+ * outside the session workspace.
+ *
+ * Rewriting is the point, not a tidy-up: Docker resolves the string it is given when it mounts, so
+ * forwarding the requested one let the session repoint a symlink after the check and have Docker
+ * mount the group-writable overlay base instead (planning#601).
+ *
+ * `changed` reports a source that was not already its own realpath — what a re-check of an
+ * existing container needs, since there the path is stored and can only be refused. `hasHostBind`
+ * reports whether any host path is mounted at all, which is what the restart rules turn on.
+ */
+export async function pinMountPaths(
+  hostConfig: Record<string, unknown>,
+  workspaceDir: string,
+): Promise<{ error?: string; changed: boolean; hasHostBind: boolean }> {
+  let changed = false;
+  let hasHostBind = false;
+
+  if (Array.isArray(hostConfig.Binds)) {
+    const binds = hostConfig.Binds as string[];
+    for (let i = 0; i < binds.length; i++) {
+      const bind = binds[i];
+      const hostPath = bind.split(":")[0];
+      const resolved = await resolveUnderWorkspace(hostPath, workspaceDir);
+      if (!resolved) {
+        return { error: `Bind mount path ${hostPath} is outside session workspace`, changed, hasHostBind };
+      }
+      // A bind with no container path is an anonymous volume: the one segment is a path inside
+      // the container, so there is no host source to pin.
+      if (hostPath.length === bind.length) continue;
+      // The pinned path goes back into a colon-delimited string, so a colon in it would move the
+      // boundary and hand Docker a different source than the one just checked.
+      if (resolved.includes(":")) {
+        return { error: `Bind mount path ${hostPath} resolves to a path containing ":"`, changed, hasHostBind };
+      }
+      hasHostBind = true;
+      if (resolved !== path.resolve(hostPath)) changed = true;
+      binds[i] = resolved + bind.slice(hostPath.length);
+    }
+  }
+
+  if (Array.isArray(hostConfig.Mounts)) {
+    for (const mount of hostConfig.Mounts as Record<string, unknown>[]) {
+      if (mount.Type !== "bind") continue;
+      const source = mount.Source as string;
+      const resolved = await resolveUnderWorkspace(source, workspaceDir);
+      if (!resolved) {
+        return { error: `Bind mount source ${source} is outside session workspace`, changed, hasHostBind };
+      }
+      hasHostBind = true;
+      if (resolved !== path.resolve(source)) changed = true;
+      mount.Source = resolved;
+    }
+  }
+
+  return { changed, hasHostBind };
+}
+
+/**
+ * Re-check a container's stored bind sources before Docker mounts them.
+ *
+ * Create-time pinning fixes the string, not the objects it walks through: the session still owns
+ * every directory under its workspace, and it chooses when to start. Without this, it could create
+ * a container binding a checked path, replace a directory on that path with a symlink, and start
+ * (planning#601). A stored source that is no longer its own realpath is exactly that swap.
+ */
+export async function verifyContainerMountPaths(
+  socketPath: string,
+  containerId: string,
+  session: SessionInfo,
+): Promise<{ error?: string; hasHostBind: boolean }> {
+  let hostConfig: Record<string, unknown>;
+  try {
+    const result = await forwardToDocker(socketPath, "GET", `/containers/${containerId}/json`, {});
+    if (result.statusCode !== 200) {
+      return { error: "Cannot inspect container to verify mount paths", hasHostBind: false };
+    }
+    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
+    // Fail closed: an inspect without a HostConfig is not an inspect we can clear mounts from.
+    if (!info.HostConfig || typeof info.HostConfig !== "object") {
+      return { error: "Container inspect carries no HostConfig to verify", hasHostBind: false };
+    }
+    hostConfig = info.HostConfig as Record<string, unknown>;
+  } catch {
+    return { error: "Cannot inspect container to verify mount paths", hasHostBind: false };
+  }
+
+  // A copy: the rewrite is only a way to ask whether the stored paths still resolve to themselves.
+  const pinned = await pinMountPaths(structuredClone(hostConfig), session.hostWorkspaceDir);
+  if (pinned.error) return { error: pinned.error, hasHostBind: pinned.hasHostBind };
+  if (pinned.changed) {
+    return {
+      error: "A bind mount source no longer resolves to the path that was checked",
+      hasHostBind: pinned.hasHostBind,
+    };
+  }
+  return { hasHostBind: pinned.hasHostBind };
 }
 
 export async function sanitizeBuildRequest(
@@ -42,11 +144,34 @@ export async function sanitizeBuildRequest(
   return {};
 }
 
+/**
+ * An exec joins the container's namespaces but gets its own capability set, so `Privileged` here
+ * re-grants at exec time exactly what `sanitizeContainerCreate` refuses at create time.
+ */
+export function sanitizeExecCreate(body: Record<string, unknown>): { error?: string } {
+  const ambiguous = findAmbiguousFieldCasing(body);
+  if (ambiguous) {
+    return { error: ambiguous };
+  }
+
+  if (body.Privileged) {
+    return { error: "Privileged mode is not allowed" };
+  }
+
+  return {};
+}
+
 export async function sanitizeContainerCreate(
   body: Record<string, unknown>,
   session: SessionInfo,
   socketPath: string,
 ): Promise<{ error?: string }> {
+  // Before any check: a field the daemon reads under a spelling we do not is a check we never ran.
+  const ambiguous = findAmbiguousFieldCasing(body);
+  if (ambiguous) {
+    return { error: ambiguous };
+  }
+
   const hostConfig = (body.HostConfig ?? {}) as Record<string, unknown>;
 
   if (hostConfig.Privileged) {
@@ -102,34 +227,48 @@ export async function sanitizeContainerCreate(
     return { error: "UTSMode host is not allowed" };
   }
 
-  if (Array.isArray(hostConfig.Devices) && hostConfig.Devices.length > 0) {
-    return { error: "Device mappings are not allowed" };
+  // A child keeps Docker's default capability set, which includes CAP_MKNOD, so widening the
+  // device cgroup is a device mapping the container makes for itself.
+  for (const field of ["Devices", "DeviceCgroupRules", "DeviceRequests"]) {
+    const value = hostConfig[field];
+    if (Array.isArray(value) && value.length > 0) {
+      return { error: "Device mappings are not allowed" };
+    }
   }
 
-  if (Array.isArray(hostConfig.Binds)) {
-    for (const bind of hostConfig.Binds as string[]) {
-      const hostPath = bind.split(":")[0];
-      if (!(await isPathUnderWorkspace(hostPath, session.hostWorkspaceDir))) {
-        return { error: `Bind mount path ${hostPath} is outside session workspace` };
-      }
-    }
+  const pinned = await pinMountPaths(hostConfig, session.hostWorkspaceDir);
+  if (pinned.error) return { error: pinned.error };
+
+  // Docker restarts a container itself when the policy says to, without a request the proxy sees —
+  // and it resolves the bind sources again each time. A host bind is only as confined as the check
+  // that precedes its mount, so it cannot be carried by a container Docker restarts on its own.
+  const restartPolicy = (hostConfig.RestartPolicy as { Name?: string } | undefined)?.Name;
+  if (pinned.hasHostBind && restartPolicy && restartPolicy !== "no") {
+    return {
+      error: `RestartPolicy "${restartPolicy}" is not allowed with a host bind mount ` +
+        "(Docker's own restart would remount the path without a check); start the container again instead",
+    };
   }
 
   if (Array.isArray(hostConfig.Mounts)) {
     for (const mount of hostConfig.Mounts as Record<string, unknown>[]) {
-      if (mount.Type === "bind") {
-        const source = mount.Source as string;
-        if (!(await isPathUnderWorkspace(source, session.hostWorkspaceDir))) {
-          return { error: `Bind mount source ${source} is outside session workspace` };
+      if (mount.Type === "volume") {
+        // Container create is a volume-create surface of its own, and a `local` volume with
+        // `o=bind,device=…` is a host bind under another name — the same escape POST /volumes/create
+        // refuses. It also reaches anonymous volumes, which carry no name to check ownership on.
+        const driverConfig = (mount.VolumeOptions as Record<string, unknown> | undefined)
+          ?.DriverConfig as { Name?: string; Options?: Record<string, string> } | undefined;
+        if (driverConfig?.Name && driverConfig.Name !== "local") {
+          return { error: `Volume driver "${driverConfig.Name}" is not allowed` };
         }
-      } else if (mount.Type === "volume") {
+        if (driverConfig?.Options && Object.keys(driverConfig.Options).length > 0) {
+          return { error: "Volume DriverConfig options are not allowed (host-path escape risk)" };
+        }
         const volumeName = mount.Source as string;
         if (volumeName && !(await volumeBelongsToSession(socketPath, volumeName, session.sessionId))) {
           return { error: `Volume ${volumeName} does not belong to this session` };
         }
-      } else if (mount.Type === "tmpfs") {
-        // No host path.
-      } else {
+      } else if (mount.Type !== "bind" && mount.Type !== "tmpfs") {
         return { error: `Mount type "${String(mount.Type)}" is not allowed (only bind, volume, tmpfs)` };
       }
     }
@@ -148,6 +287,8 @@ export async function sanitizeContainerCreate(
   delete hostConfig.ReadonlyPaths;
   delete hostConfig.MaskedPaths;
   delete hostConfig.GroupAdd;
+  // Picks the driver for the image's own VOLUME directives, where no Mounts entry is checked.
+  delete hostConfig.VolumeDriver;
 
   const labels = (body.Labels ?? {}) as Record<string, string>;
   labels[PARENT_SESSION_LABEL] = session.sessionId;

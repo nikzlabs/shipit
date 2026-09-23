@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import {
   CodexAuthManager,
   USER_CODE_PATTERN,
@@ -15,6 +15,11 @@ import {
   type SpawnFn,
 } from "./auth-manager.js";
 import type { AgentAuthLogPayload, AgentAuthProgressPayload } from "../auth-diagnostics.js";
+import {
+  collectDescendants,
+  killProcessTree,
+  type ProcessIdentity,
+} from "../../../shared/kill-child.js";
 
 function fakeJwt(authClaim: Record<string, unknown>): string {
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -322,6 +327,103 @@ describe("CodexAuthManager / cancel + signOut", () => {
     v = true;
     expect(mgr.checkCredentials()).toBe(true);
   });
+});
+
+/**
+ * The `codex` on PATH is a Node shim that runs the native binary as a child, so
+ * cancelling signals a wrapper while the device-auth poll lives one level down.
+ * These drive a shim that deliberately does not forward the signal, which is
+ * what ShipIt's teardown has to hold without (planning#615).
+ */
+describe.skipIf(!fs.existsSync("/proc/1/stat"))("CodexAuthManager tree teardown (planning#615)", () => {
+  let dir: string;
+  let spawned: ChildProcess[];
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-auth-tree-"));
+    spawned = [];
+  });
+
+  afterEach(() => {
+    // An assertion that throws before the kill would otherwise leak `sleep`s
+    // for the rest of the run, including when testing a broken implementation.
+    for (const proc of spawned) killProcessTree(proc, "SIGKILL");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The descendant writes the readiness marker itself, so waiting on it proves
+  // the tree exists rather than only that the root got as far as touching it.
+  // `exec` makes the root pid the foreground `sleep`, so the backgrounded
+  // subshell is the only thing still holding a claim on this tree.
+  function realSpawn(): SpawnFn {
+    const script = [
+      `{ touch ${path.join(dir, "started")}; sleep 30; } &`,
+      "exec sleep 60",
+    ].join("\n");
+    return (_cmd, _args, options) => {
+      const proc = spawn("sh", ["-c", script], { ...options, stdio: ["ignore", "pipe", "pipe"] });
+      spawned.push(proc);
+      return proc;
+    };
+  }
+
+  function alive(pid: number): boolean {
+    try {
+      const raw = fs.readFileSync(`/proc/${String(pid)}/stat`, "utf-8");
+      return raw.slice(raw.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+    } catch {
+      return false;
+    }
+  }
+
+  async function readyRoster(): Promise<ProcessIdentity[]> {
+    for (let i = 0; i < 200; i++) {
+      if (fs.existsSync(path.join(dir, "started"))) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const proc = spawned[0];
+    const roster = proc?.pid === undefined ? [] : collectDescendants(proc.pid);
+    // A vacuous pass otherwise: with no descendants there is nothing to leak.
+    expect(roster.length).toBeGreaterThan(0);
+    return roster;
+  }
+
+  // Bounded well under the fixture's 30s sleep, so an unfixed teardown — which
+  // leaves the descendants running — cannot pass by waiting them out.
+  async function expectAllDead(roster: ProcessIdentity[]): Promise<void> {
+    for (let i = 0; i < 50; i++) {
+      if (!roster.some((p) => alive(p.pid))) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(roster.filter((p) => alive(p.pid))).toEqual([]);
+  }
+
+  it("cancel kills the native binary under the shim, not just the shim", async () => {
+    const mgr = new CodexAuthManager({ spawn: realSpawn(), checkAuthFile: () => false });
+    mgr.startDeviceFlow();
+    const roster = await readyRoster();
+
+    mgr.cancel();
+    await expectAllDead(roster);
+  }, 40_000);
+
+  it("the device-code timeout kills the whole tree", async () => {
+    const mgr = new CodexAuthManager({
+      spawn: realSpawn(),
+      checkAuthFile: () => false,
+      // Comfortably longer than a slow spawn: a deadline that can fire before
+      // the fixture is ready would fail correct code on a loaded box.
+      timeoutMs: 10_000,
+    });
+    const failed = new Promise<CodexAuthFailedEvent>((resolve) => {
+      mgr.once("codex_auth_failed", (ev: CodexAuthFailedEvent) => resolve(ev));
+    });
+    mgr.startDeviceFlow();
+    const roster = await readyRoster();
+
+    expect((await failed).reason).toBe("timeout");
+    await expectAllDead(roster);
+  }, 40_000);
 });
 
 describe("CodexAuthManager / account-scoped (docs/150)", () => {

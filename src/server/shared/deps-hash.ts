@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { isPnpmRepo, PNPM_WORKSPACE_FILE } from "./pnpm-repo.js";
+
 /** Unknown commands return null: a reinstall is safer than reusing stale output. */
 export function depInputsForCommand(command: string): string[] | null {
   const tokens = command.trim().split(/\s+/).filter(Boolean);
@@ -82,11 +84,32 @@ function pipRequirementInputs(args: string[]): string[] | null {
   return files.length > 0 ? files : null;
 }
 
+/**
+ * `workspaceDir` opts into the pnpm rule: `pnpm-workspace.yaml` must always be in the hash for a
+ * pnpm repo, because it carries the build approvals (`allowBuilds`/`onlyBuiltDependencies`) and the
+ * marker now requires the content hash for pnpm (docs/276-shared-package-cache-integrity section 5).
+ * The default input list already includes it; a custom `installInputs` replaces the list wholesale,
+ * so the approval file could otherwise be absent from the hash entirely.
+ */
 export function resolveDepsHashInputs(
   installCommands: string[],
   installInputs: string[] | null,
+  workspaceDir?: string,
 ): string[] | null {
-  if (installInputs !== null) return installInputs;
+  if (installInputs !== null) {
+    if (
+      // An explicit empty list turns content-keying OFF. Adding the approval file to it would
+      // turn it back on with that file as the ONLY input, so a later lockfile change under a
+      // different commit would hash equal and skip an install it needed (review, 2026-09-21).
+      installInputs.length > 0 &&
+      workspaceDir !== undefined &&
+      !installInputs.includes(PNPM_WORKSPACE_FILE) &&
+      isPnpmRepo(workspaceDir)
+    ) {
+      return [...installInputs, PNPM_WORKSPACE_FILE];
+    }
+    return installInputs;
+  }
 
   const files = new Set<string>();
   for (const cmd of installCommands) {
@@ -123,7 +146,7 @@ export function computeInstallDepsHash(
   installCommands: string[],
   installInputs: string[] | null,
 ): string | null {
-  const inputs = resolveDepsHashInputs(installCommands, installInputs);
+  const inputs = resolveDepsHashInputs(installCommands, installInputs, workspaceDir);
   if (inputs === null) return null;
   return computeDepsHash(workspaceDir, inputs);
 }

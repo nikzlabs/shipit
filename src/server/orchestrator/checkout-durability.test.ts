@@ -12,6 +12,8 @@ import { ensureCheckoutDurable, inspectCheckoutBlock } from "./checkout-durabili
 import { GitManager } from "../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 
+const SESSION_BRANCH = "shipit/work";
+
 let tmpDir: string;
 let remoteDir: string;
 let workDir: string;
@@ -36,6 +38,12 @@ beforeEach(() => {
 
   workDir = path.join(tmpDir, "work");
   execSync(`git clone ${remoteDir} work`, { cwd: tmpDir, stdio: "pipe" });
+  // A session works on its own branch, never on the default one — the pushing
+  // paths now refuse that (docs/312-base-branch-push-protection req 7), so a
+  // fixture left on `main` would be testing a shape no session reaches.
+  execSync(`git checkout -b ${SESSION_BRANCH} && git push -u origin ${SESSION_BRANCH}`, {
+    cwd: workDir, stdio: "pipe", shell: "/bin/bash",
+  });
 });
 
 afterEach(() => {
@@ -56,7 +64,7 @@ describe("ensureCheckoutDurable", () => {
     const result = await ensureCheckoutDurable(new GitManager(workDir), "test commit");
 
     expect(result.state).toBe("durable");
-    const remoteFiles = execSync("git ls-tree -r --name-only refs/heads/main", { cwd: remoteDir }).toString();
+    const remoteFiles = execSync(`git ls-tree -r --name-only refs/heads/${SESSION_BRANCH}`, { cwd: remoteDir }).toString();
     expect(remoteFiles).toContain("new.txt");
   });
 
@@ -68,6 +76,23 @@ describe("ensureCheckoutDurable", () => {
     const result = await ensureCheckoutDurable(new GitManager(workDir), "test");
 
     expect(result).toMatchObject({ state: "blocked-by-push", cause: "push-failed" });
+  });
+
+  /**
+   * Refusing keeps the checkout instead of deleting it, so the commits survive
+   * locally. Publishing them would put them on the base under no pull request,
+   * and on a stale clone that push is the incident this feature exists for.
+   */
+  it("refuses to make a checkout durable by pushing the default branch", async () => {
+    execSync("git checkout main", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "new.txt"), "work");
+    execSync("git add -A && git commit -m local", { cwd: workDir, stdio: "pipe" });
+    const remoteMain = execSync("git rev-parse refs/heads/main", { cwd: remoteDir }).toString();
+
+    const result = await ensureCheckoutDurable(new GitManager(workDir), "test");
+
+    expect(result).toMatchObject({ state: "blocked-by-push", cause: "shared-branch" });
+    expect(execSync("git rev-parse refs/heads/main", { cwd: remoteDir }).toString()).toBe(remoteMain);
   });
 
   it("reports blocked-by-push for a detached HEAD, whose commits belong to no branch", async () => {
@@ -83,9 +108,9 @@ describe("ensureCheckoutDurable", () => {
     execSync("git checkout -b side", { cwd: workDir, stdio: "pipe" });
     fs.writeFileSync(path.join(workDir, "README.md"), "side");
     execSync("git commit -am side", { cwd: workDir, stdio: "pipe" });
-    execSync("git checkout main", { cwd: workDir, stdio: "pipe" });
-    fs.writeFileSync(path.join(workDir, "README.md"), "main");
-    execSync("git commit -am main", { cwd: workDir, stdio: "pipe" });
+    execSync(`git checkout ${SESSION_BRANCH}`, { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "README.md"), "session");
+    execSync("git commit -am session", { cwd: workDir, stdio: "pipe" });
     execSync("git merge side || true", { cwd: workDir, stdio: "pipe", shell: "/bin/bash" });
 
     const result = await ensureCheckoutDurable(new GitManager(workDir), "test");
@@ -113,9 +138,9 @@ describe("inspectCheckoutBlock", () => {
     execSync("git checkout -b side", { cwd: workDir, stdio: "pipe" });
     fs.writeFileSync(path.join(workDir, "README.md"), "side");
     execSync("git commit -am side", { cwd: workDir, stdio: "pipe" });
-    execSync("git checkout main", { cwd: workDir, stdio: "pipe" });
-    fs.writeFileSync(path.join(workDir, "README.md"), "main");
-    execSync("git commit -am main", { cwd: workDir, stdio: "pipe" });
+    execSync(`git checkout ${SESSION_BRANCH}`, { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "README.md"), "session");
+    execSync("git commit -am session", { cwd: workDir, stdio: "pipe" });
     execSync("git rebase side || true", { cwd: workDir, stdio: "pipe", shell: "/bin/bash" });
 
     expect(await inspectCheckoutBlock(new GitManager(workDir))).toMatchObject({
@@ -128,9 +153,9 @@ describe("inspectCheckoutBlock", () => {
     execSync("git checkout -b side", { cwd: workDir, stdio: "pipe" });
     fs.writeFileSync(path.join(workDir, "README.md"), "side");
     execSync("git commit -am side", { cwd: workDir, stdio: "pipe" });
-    execSync("git checkout main", { cwd: workDir, stdio: "pipe" });
-    fs.writeFileSync(path.join(workDir, "README.md"), "main");
-    execSync("git commit -am main", { cwd: workDir, stdio: "pipe" });
+    execSync(`git checkout ${SESSION_BRANCH}`, { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "README.md"), "session");
+    execSync("git commit -am session", { cwd: workDir, stdio: "pipe" });
     execSync("git merge side || true", { cwd: workDir, stdio: "pipe", shell: "/bin/bash" });
 
     expect(await inspectCheckoutBlock(new GitManager(workDir))).toEqual({

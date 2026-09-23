@@ -1943,7 +1943,7 @@ describe("session status card slot", () => {
     status: "Billing routes done; PR #212 ready to merge.",
     actions: [],
     fresh: true,
-    writeSeq: 1,
+    writeSeq: 1, turnSeq: 0,
   };
 
   function seed(sessionStatus?: SessionStatus): void {
@@ -1982,6 +1982,32 @@ describe("session status card slot", () => {
     expect(card.parentElement).toBe(content);
     expect(content.lastElementChild).toBe(card);
     expect(content.contains(screen.getByText("done"))).toBe(true);
+  });
+
+  // docs/303 req 43 — the stack sits immediately above the composer while the
+  // conversation is shorter than the scroller, and does not move when the rows
+  // land. This is pure layout and jsdom computes none of it: the guard asserts
+  // the two declarations that produce it, and CANNOT fail on the card actually
+  // being at the bottom, on the auto margin collapsing to 0 once the content
+  // overflows, or on the jump the requirement is about. Those were checked by
+  // hand in a real browser; see plan.md → "Immediately above the composer".
+  it("pushes the content to the bottom of a scroller it does not fill", () => {
+    seed(status);
+    const { container } = render(
+      <MessageList messages={[msg("assistant", "done")]} isLoading={false} />,
+    );
+    const scroller = container.querySelector<HTMLElement>("[data-chat-transcript]")!;
+    const content = scroller.lastElementChild as HTMLElement;
+    // Tokens rather than substrings, so reordering the class list is not a
+    // failure. The auto margin only absorbs free space in a flex formatting
+    // context, so the two travel together: either one alone is a no-op.
+    const scrollerClasses = new Set(scroller.className.split(/\s+/));
+    expect(scrollerClasses).toContain("flex");
+    expect(scrollerClasses).toContain("flex-col");
+    expect(new Set(content.className.split(/\s+/))).toContain("mt-auto");
+    // `justify-end` would reach the same place and make the overflow above the
+    // start edge unreachable on a long transcript.
+    expect(scrollerClasses).not.toContain("justify-end");
   });
 
   it("renders nothing for a session with no stored card", () => {

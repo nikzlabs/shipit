@@ -9,7 +9,16 @@ const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("the seed step order", () => {
   it("seeds credentials, then roles, then the transcript, then repos", () => {
-    expect(SEED_STEPS.map((s) => s.name)).toEqual(["credentials", "roles", "transcript", "repos"]);
+    expect(SEED_STEPS.map((s) => s.name)).toEqual([
+      "credentials", "roles", "status-card", "transcript", "repos",
+    ]);
+  });
+
+  // Turning the setting on marks every stored card stale (docs/303 req 14), so
+  // a card seeded first would come up stale and hide its last-turn line.
+  it("turns the status card on before seeding the card itself", () => {
+    const names = SEED_STEPS.map((s) => s.name);
+    expect(names.indexOf("status-card")).toBeLessThan(names.indexOf("transcript"));
   });
 });
 

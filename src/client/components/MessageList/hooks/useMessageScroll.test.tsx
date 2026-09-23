@@ -43,6 +43,22 @@ function user(text: string): ChatMessage {
   return { role: "user", text };
 }
 
+/**
+ * Put the clock past the hold a session gets while it is OPENING (planning#595,
+ * `OPENING_HOLD_MS`), so that what follows is an ESTABLISHED reader.
+ *
+ * Only the position stand-down needs this, and only because of the fixture: the
+ * fake geometry is installed after mount, so the mount pin records a 0 that the
+ * test's own "scrolled away" position then equals by accident. A real container
+ * CAN pin at 0 — one whose content does not overflow — but then there is nowhere
+ * to have scrolled away to, which is what makes the coincidence an artefact of
+ * replacing the geometry afterwards. A SELECTION needs no such move: the open
+ * never suspends one.
+ */
+function advancePastOpen(): void {
+  clock += 5000;
+}
+
 function Harness({ messages }: { messages: ChatMessage[] }) {
   const { containerRef, contentRef } = useMessageScroll(messages, false, undefined, "s1");
   return (
@@ -250,11 +266,13 @@ describe("useMessageScroll", () => {
       },
     });
 
+    advancePastOpen();
+
     act(() => {
-      div.dispatchEvent(new Event("scroll"));                                            
+      div.dispatchEvent(new Event("scroll"));
     });
 
-    height = 2600;                               
+    height = 2600;
     growContent();
 
     expect(scrollTop).toBe(0);
@@ -476,6 +494,8 @@ describe("useMessageScroll", () => {
       },
     });
 
+    advancePastOpen();
+
     act(() => {
       div.dispatchEvent(new Event("scroll"));
     });
@@ -487,6 +507,100 @@ describe("useMessageScroll", () => {
     flushFrame();
 
     expect(scrollTop).toBe(0);
+  });
+
+  it("holds the end through a scroll reported while a session is still opening", () => {
+    // planning#595 — the open's own state, asserted where the hold is defined
+    // and not only through the list. The pin lands on a `content-visibility`
+    // ESTIMATE, the real height arrives frames later, and the browser then
+    // reports our own pinned position back: read as the reader scrolling away
+    // it latches auto-follow off, and nothing corrects the estimate after that.
+    let height = 2000;
+    let scrollTop = 0;
+
+    const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v; },
+    });
+
+    act(() => {
+      height = 2000;
+      view.rerender(<Harness messages={[{ role: "assistant", text: "hi" }, { role: "assistant", text: "more" }]} />);
+    });
+    expect(scrollTop).toBe(2000);
+
+    // The groups paint: the content is taller than the position we pinned, and
+    // the browser reports that position back.
+    height = 2600;
+    act(() => { div.dispatchEvent(new Event("scroll")); });
+    growContent();
+
+    expect(scrollTop).toBe(2600);
+  });
+
+  it("stops an already-running settle loop when text is selected under it", () => {
+    // The loop re-pins across frames while a tall row paints, and it never
+    // asked about a selection — so text selected AFTER it started was walked
+    // out from under the cursor while every other pinning path stood down.
+    // Found in review of planning#595; older than that change.
+    let height = 1000;
+    let scrollTop = 0;
+
+    const view = render(<Harness messages={[]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v; },
+    });
+
+    act(() => { view.rerender(<Harness messages={[user("a very long message")]} />); });
+    height = 1500;
+    flushFrame();
+    expect(scrollTop).toBe(1500);
+
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      anchorNode: view.getByTestId("content"),
+    } as unknown as Selection);
+
+    height = 2100;
+    flushFrame();
+
+    expect(scrollTop).toBe(1500);
+  });
+
+  it("gives the scroll back the moment the reader moves it, still inside the open", () => {
+    // The other half: the hold must never outrank the reader. A position we did
+    // not write is theirs, and it ends the open there and then.
+    let height = 2000;
+    let scrollTop = 0;
+
+    const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v; },
+    });
+
+    act(() => {
+      view.rerender(<Harness messages={[{ role: "assistant", text: "hi" }, { role: "assistant", text: "more" }]} />);
+    });
+    expect(scrollTop).toBe(2000);
+
+    act(() => {
+      scrollTop = 300;
+      div.dispatchEvent(new Event("scroll"));
+    });
+
+    height = 2600;
+    growContent();
+
+    expect(scrollTop).toBe(300);
   });
 });
 

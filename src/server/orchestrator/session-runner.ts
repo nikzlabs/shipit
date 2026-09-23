@@ -10,8 +10,9 @@ import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
-import type { UnreadableWorkspace } from "../shared/git.js";
+import type { UnreadableWorkspace, CommitHookFailure } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -128,7 +129,6 @@ export interface QueuedMessage {
   resetMergedBranch?: boolean;
   compactContext?: boolean;
   silent?: boolean;
-  statusNudge?: boolean;
 }
 
 export interface AgentDispatchOptions {
@@ -155,7 +155,6 @@ export interface AgentDispatchOptions {
   /** Suppress the user bubble and row for a ShipIt-initiated compaction turn. */
   silent?: boolean;
   /** docs/303 — ShipIt's own follow-up asking for the status update the last turn skipped. */
-  statusNudge?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -338,7 +337,6 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
   if (opts.silent !== undefined) queued.silent = opts.silent;
-  if (opts.statusNudge !== undefined) queued.statusNudge = opts.statusNudge;
   return queued;
 }
 
@@ -355,6 +353,7 @@ export interface SystemTurnDeps {
     rebaseInProgress: boolean;
     secretFindings: SecretFinding[];
     unreadable: UnreadableWorkspace | null;
+    hookFailure: CommitHookFailure | null;
   }>;
   /** Pass sessionId so a push can be scheduled after the viewer disconnects. */
   scheduleAutoPush: (sessionDir: string, sessionId?: string) => void;
@@ -412,8 +411,11 @@ export interface SystemTurnDeps {
    * prompt assembly. `null` when nothing is owed.
    */
   settingsOutcomeNotice?: (sessionId: string) => SettingsOutcomeNotice | null;
-  /** Consumes the role's first-turn instructions; subsequent calls return an empty string. */
-  takeRoleInstructions?: (sessionId: string) => string;
+  /**
+   * Consumes the role's first-turn instructions; subsequent calls return an empty string.
+   * The returned `repark` hands the take back when the turn never reaches an agent.
+   */
+  takeRoleInstructions?: (sessionId: string) => RoleStandingInstructions;
   finalizeAgentEnv?: (
     sessionId: string,
     agentId: AgentId,
@@ -429,6 +431,8 @@ export interface SystemTurnDeps {
       excludeRouteIds?: readonly string[];
       residentRoute?: { kind: ProviderRouteKind; id: string };
       requireResidentRoute?: boolean;
+      /** This turn's own user text, already persisted; a replay armed here must not carry it. */
+      ownUserText?: string;
     },
   ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
@@ -491,6 +495,7 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.steeredMessages = [];
   runner.recordedCards = [];
   runner.statusUpdated = false;
+  runner.awaitingUserAnswer = false;
   runner.wasInterrupted = false;
   runner.pendingCommitLink = null;
   clearCommittedBodyIds(runner.committedBodyIds);
@@ -575,6 +580,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   recordedCards: RecordedChatCard[];
   /** docs/303 — the agent wrote or confirmed the status card during this turn. */
   statusUpdated: boolean;
+  /** docs/303 req 13 — the turn ended with a question card or a plan to approve. */
+  awaitingUserAnswer: boolean;
   agentId: AgentId;
   /** Defer linking until final chat rows exist; an early agent_result can precede final text. */
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null;
@@ -684,6 +691,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _steeredMessages: SteeredMessage[] = [];
   private _recordedCards: RecordedChatCard[] = [];
   private _statusUpdated = false;
+  private _awaitingUserAnswer = false;
   private _messageQueue: QueuedMessage[] = [];
   activeDeliveryId: string | undefined;
   private _terminal: TerminalProcess | null = null;
@@ -793,6 +801,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set recordedCards(m: RecordedChatCard[]) { this._recordedCards = m; }
   get statusUpdated(): boolean { return this._statusUpdated; }
   set statusUpdated(v: boolean) { this._statusUpdated = v; }
+  get awaitingUserAnswer(): boolean { return this._awaitingUserAnswer; }
+  set awaitingUserAnswer(v: boolean) { this._awaitingUserAnswer = v; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }

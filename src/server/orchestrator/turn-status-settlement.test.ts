@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { SessionRunner } from "./session-runner.js";
 import type { SystemTurnDeps } from "./session-runner.js";
 import type { AgentId, SessionStatus } from "../shared/types.js";
-import { recordSessionStatus } from "./services/session-status.js";
+import { formatSessionStatusContext, recordSessionStatus } from "./services/session-status.js";
 import type { SessionStatusDeps } from "./services/session-status.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 
@@ -97,6 +97,7 @@ function harness(opts: {
       rebaseInProgress: false,
       secretFindings: [],
       unreadable: null,
+      hookFailure: null,
     }),
     // The real post-turn commit, which the executor prefers over `autoCommit`.
     commitTurn: async () => {
@@ -121,6 +122,8 @@ function harness(opts: {
       (typeof opts.statusCardEnabled === "function"
         ? opts.statusCardEnabled()
         : opts.statusCardEnabled) ?? true,
+    // req 38 — the ask rides this, so the prompts below are what the agent actually reads.
+    sessionStatusContext: () => formatSessionStatusContext(cards.get("s1")),
     ...(opts.streaming ? { steerInputs: () => ({ liveSteering: true, steeringCapable: true }) } : {}),
     listenerDeps: {
       sessionManager: sessionManager as never,
@@ -168,76 +171,166 @@ function harness(opts: {
     parkedOn: (index: number) => state.entered.includes(index) && state.commits === index,
     releaseCommit: (index = 0) => gateFor(index).release(),
     card: () => cards.get("s1"),
-    nudges: () => prompts.filter((p) => p.includes("[ShipIt] The last turn ended without a status-card update")),
+    /** Prompts that carried the miss notice (req 38); no turn of ShipIt's own carries it. */
+    asks: () => prompts.filter((p) => p.includes("ended without a status-card update")),
     agentWritesCard,
   };
 }
 
-const seeded: SessionStatus = { status: "Routes done.", actions: [], fresh: true, writeSeq: 1 };
+const seeded: SessionStatus = { status: "Routes done.", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 };
 
 function finishTurn(agent: FakeAgent): void {
   agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
   agent.emit("done", 0);
 }
 
-describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () => {
+
+/** An ordinary turn: prose, no tool call — the shape the drift report counts as text-only. */
+function textOnlyTurn(agent: FakeAgent): void {
+  agent.emit("event", {
+    type: "agent_assistant",
+    content: [{ type: "text", text: "Everything is good." }],
+  });
+  finishTurn(agent);
+}
+
+describe("settleTurnFacts and the status-card ask (docs/303 req 11–15, 38)", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("marks the card stale and dispatches one visible nudge when the turn did not update it", async () => {
+  it("marks the card stale and puts the ask in the NEXT turn's prompt, spending no turn", async () => {
     const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "do the thing" }));
     await waitFor(() => h.agents.length === 1, "turn started");
     finishTurn(h.agents[0]!);
+    await waitFor(() => !h.card()!.fresh, "the card went stale");
+    await flush();
 
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
-    expect(h.card()!.fresh).toBe(false);
-    // Not silent: the nudge's prompt is echoed as its own user row.
-    expect(h.nudges()).toHaveLength(1);
-    expect(h.runner.messageQueue).toHaveLength(0);
+    // No turn of ShipIt's own, and nothing echoed into the conversation.
+    expect(h.agents).toHaveLength(1);
+    expect(h.asks()).toHaveLength(0);
+    expect(h.rows.some((r) => r.text.startsWith("[ShipIt] The last turn ended"))).toBe(false);
+    expect(h.card()!.nudgePending).toBe(true);
+
+    h.runner.dispatch(testDispatch({ text: "and now this" }));
+    await waitFor(() => h.agents.length === 2, "the next ordinary turn started");
+    expect(h.asks()).toHaveLength(1);
+    expect(h.prompts[1]).toContain("and now this");
 
     finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    await waitFor(() => !h.runner.running, "turn 2 finished");
     h.runner.dispose({ force: true });
   });
 
-  it("marks the card stale even when it cannot nudge — the mark is immediate, not the nudge's job", async () => {
+  /*
+    The drift report's "text-only" class: a turn the agent answers in prose with no tool
+    call at all. Nothing in the settlement reads the turn's tool use, so this turn is
+    asked exactly as a working one is — which is why the class cannot be one gate.
+  */
+  it("asks a turn that used no tool at all (the report's text-only shape)", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({ text: "is it done?" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    textOnlyTurn(h.agents[0]!);
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    expect(h.card()!.fresh).toBe(false);
+    h.runner.dispose({ force: true });
+  });
+
+  /*
+    req 38 — the gate that swallowed a steered turn (req 34) was there because the nudge
+    was a system turn that would retire the resident process holding the unread message.
+    The ask is a line in a prompt, so it preempts nothing and the miss is not dropped.
+  */
+  it("asks a turn a message reached after it started, and starts nothing (req 34, 38)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "first" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    h.runner.steeredMessages = [{ text: "actually, do this instead" } as never];
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    expect(h.agents).toHaveLength(1);
+    expect(h.agents[0]!.kill).not.toHaveBeenCalled();
+    h.runner.dispose({ force: true });
+  });
+
+  /*
+    The other gate that dropped a miss silently: a system turn is refused outright while
+    the resident CLI has background work, and the refusal logged nothing.
+  */
+  it("asks a turn whose resident agent has background work in flight (req 38)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "kick off the build" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    h.runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" } as never]);
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    expect(h.agents).toHaveLength(1);
+    h.runner.dispose({ force: true });
+  });
+
+  /*
+    A stop is not a crash: the turn did the session's work. Staged the way a stop really
+    ends — the process exits with no `agent_result` — because a test that emits one is
+    passing on the ordinary path and would not fail if the stop were read as a crash.
+  */
+  it("asks a turn the user stopped, which produces no result of its own (req 38)", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    // What the Stop button and `killAgent` set.
+    h.runner.wasInterrupted = true;
+    h.agents[0]!.emit("done", 0);
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    h.runner.dispose({ force: true });
+  });
+
+  it("does not ask a turn that ended with a question or a plan to approve (req 13)", async () => {
     const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "ask a question" }));
     await waitFor(() => h.agents.length === 1, "turn started");
-    // A question, a plan approval or a user stop (req 13).
+    h.runner.awaitingUserAnswer = true;
     h.runner.wasInterrupted = true;
     finishTurn(h.agents[0]!);
     await waitFor(() => !h.runner.running, "turn finished");
     await flush();
 
+    // The card still says it may be behind (req 14); it is only the ask that is withheld.
     expect(h.card()!.fresh).toBe(false);
-    expect(h.nudges()).toHaveLength(0);
-    expect(h.agents).toHaveLength(1);
+    expect(h.card()!.nudgePending).toBeUndefined();
     h.runner.dispose({ force: true });
   });
 
-  it("nudges once per missing update: the nudge turn is not itself nudged (req 15)", async () => {
+  it("carries one ask, however many turns miss in a row", async () => {
     const h = harness({ card: { ...seeded } });
 
-    h.runner.dispatch(testDispatch({ text: "do the thing" }));
-    await waitFor(() => h.agents.length === 1, "turn started");
+    h.runner.dispatch(testDispatch({ text: "first" }));
+    await waitFor(() => h.agents.length === 1, "turn 1 started");
     finishTurn(h.agents[0]!);
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    await waitFor(() => h.card()!.nudgePending === true, "the first ask");
 
-    // The agent ignores the nudge too.
+    h.runner.dispatch(testDispatch({ text: "second" }));
+    await waitFor(() => h.agents.length === 2, "turn 2 started");
     finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    await waitFor(() => !h.runner.running, "turn 2 finished");
     await flush();
 
+    expect(h.asks()).toHaveLength(1);
+    expect(h.card()!.nudgePending).toBe(true);
     expect(h.agents).toHaveLength(2);
-    expect(h.nudges()).toHaveLength(1);
-    expect(h.card()!.fresh).toBe(false);
     h.runner.dispose({ force: true });
   });
 
-  it("does not nudge a turn that wrote the card, and leaves it current", async () => {
+  it("does not ask a turn that wrote the card, and leaves it current", async () => {
     const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "do the thing" }));
@@ -248,36 +341,14 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     await flush();
 
     expect(h.agents).toHaveLength(1);
-    expect(h.nudges()).toHaveLength(0);
     expect(h.card()).toMatchObject({ status: "Ready to merge.", fresh: true });
+    expect(h.card()!.nudgePending).toBeUndefined();
+    // req 40 — the turn is counted even though it wrote, so the ages stay in turns.
+    expect(h.card()!.turnSeq).toBe(1);
     h.runner.dispose({ force: true });
   });
 
-  it("defers to a queued successor and checks that turn afresh when it ends", async () => {
-    const h = harness({ card: { ...seeded } });
-
-    h.runner.dispatch(testDispatch({ text: "first" }));
-    await waitFor(() => h.agents.length === 1, "turn 1 started");
-    h.runner.dispatch(testDispatch({ text: "second" }));
-    expect(h.runner.queueLength).toBe(1);
-
-    finishTurn(h.agents[0]!);
-    await waitFor(() => h.agents.length === 2, "turn 2 started");
-    // The predecessor asked for nothing — not even behind the successor in the queue.
-    expect(h.nudges()).toHaveLength(0);
-    expect(h.runner.queueLength).toBe(0);
-    expect(h.prompts[1]).toContain("second");
-
-    finishTurn(h.agents[1]!);
-    await waitFor(() => h.agents.length === 3, "the nudge turn started");
-    expect(h.nudges()).toHaveLength(1);
-
-    finishTurn(h.agents[2]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
-    h.runner.dispose({ force: true });
-  });
-
-  it("a predecessor settling after its successor wrote leaves the card current and nudges nothing", async () => {
+  it("a predecessor settling after its successor wrote leaves the card current", async () => {
     const h = harness({ card: { ...seeded }, streaming: true });
 
     h.runner.dispatch(testDispatch({ text: "first" }));
@@ -285,7 +356,6 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.runner.dispatch(testDispatch({ text: "second", systemTurn: true }));
     expect(h.runner.queueLength).toBe(1);
 
-    // Streaming: the post-turn flow runs off agent_result, and `done` can come much later.
     h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => h.agents.length === 2, "turn 2 started");
 
@@ -293,139 +363,38 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     finishTurn(h.agents[1]!);
     await waitFor(() => !h.runner.running, "turn 2 finished");
 
-    // A third turn clears the runner's own `statusUpdated`, so the only thing that can
-    // still tell the predecessor's state from the record's is the snapshot it took.
     h.runner.dispatch(testDispatch({ text: "third" }));
     await waitFor(() => h.agents.length === 3, "turn 3 started");
 
-    // The predecessor's late exit must not re-settle against the successor's card.
     h.agents[0]!.emit("done", 0);
     await flush();
     await flush();
 
     expect(h.card()).toMatchObject({ status: "Ready to merge.", fresh: true });
-    expect(h.nudges()).toHaveLength(0);
+    expect(h.card()!.nudgePending).toBeUndefined();
 
     finishTurn(h.agents[2]!);
     await waitFor(() => !h.runner.running, "turn 3 finished");
     h.runner.dispose({ force: true });
   });
 
-  it("a streaming turn's agent_result and done give ONE decision, so one nudge", async () => {
+  it("a streaming turn's agent_result and done settle ONCE, so the turn is counted once", async () => {
     const h = harness({ card: { ...seeded }, streaming: true });
 
     h.runner.dispatch(testDispatch({ text: "do the thing" }));
     await waitFor(() => h.agents.length === 1, "turn started");
 
     h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
     h.agents[0]!.emit("done", 0);
     await flush();
     await flush();
 
-    expect(h.nudges()).toHaveLength(1);
-    finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    expect(h.card()!.turnSeq).toBe(1);
     h.runner.dispose({ force: true });
   });
 
-  /*
-    req 34 (planning#589) — the other way a user message reaches a resident CLI and is
-    not answered by the turn that ends next: it is submitted while a turn of the CLI's
-    own is already pending, so the prompt lifecycle records it as `queued`. The result
-    that arrives ends the WOKEN turn, and every live signal reads idle — no running
-    turn, an empty queue, no steer. Nudging there retires the process holding the
-    prompt, so the message is never answered.
-  */
-  it("does not nudge past a prompt the CLI put behind a turn of its own (req 34)", async () => {
-    const h = harness({ card: { ...seeded }, streaming: true });
-
-    h.runner.dispatch(testDispatch({ text: "first" }));
-    await waitFor(() => h.agents.length === 1, "turn 1 started");
-    await h.agentWritesCard("Routes done.");
-    // A result with no exit: the process stays resident for the next turn.
-    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => !h.runner.running, "turn 1 settled with the process resident");
-    expect(h.nudges()).toHaveLength(0);
-
-    // The next message is dispatched, and parks in env preparation before submission.
-    let releasePrep = (): void => {};
-    const prepEntered = { yes: false };
-    // One-shot: a later turn must run its preparation through, or a nudge would park
-    // here and the assertions below could not tell it apart from one never sent.
-    h.setPrepareEnv(async () => {
-      if (prepEntered.yes) return;
-      prepEntered.yes = true;
-      await new Promise<void>((resolve) => { releasePrep = resolve; });
-    });
-    h.runner.dispatch(testDispatch({ text: "and now the webhook" }));
-    await waitFor(() => prepEntered.yes, "the turn reached its pre-turn hook");
-
-    // Background work finishes inside that window and the CLI resumes on its own turn.
-    h.agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
-    releasePrep();
-    await waitFor(
-      () => h.agents[0]!.sendUserMessage.mock.calls.length > 0,
-      "the prompt reached the resident CLI",
-    );
-
-    // This result ends the woken turn; the prompt has been submitted but not read.
-    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    // Settle far enough that a nudge would have recorded its prompt, not just spawned
-    // its process — otherwise the first assertion below passes on a timing gap.
-    await waitFor(() => h.nudges().length > 0, "a nudge, if one is coming", 300)
-      .catch(() => undefined);
-
-    expect(h.nudges()).toHaveLength(0);
-    // The process holding the unread prompt was not replaced by a system turn.
-    expect(h.agents).toHaveLength(1);
-    expect(h.agents[0]!.kill).not.toHaveBeenCalled();
-    expect(h.card()?.fresh).toBe(false);
-
-    h.runner.dispose({ force: true });
-  });
-
-  /**
-   * req 36 — the same shape as the test above, with `/compact` as the prompt. The result
-   * that arrives ends the CLI's OWN turn, so it is real work and the card is behind;
-   * granting the compaction's exemption to it would leave the card reading current.
-   */
-  it("does not exempt a result that ended the CLI's own turn ahead of a compaction (req 36)", async () => {
-    const h = harness({ card: { ...seeded }, streaming: true });
-
-    h.runner.dispatch(testDispatch({ text: "first" }));
-    await waitFor(() => h.agents.length === 1, "turn 1 started");
-    await h.agentWritesCard("Routes done.");
-    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => !h.runner.running, "turn 1 settled with the process resident");
-    expect(h.card()!.fresh).toBe(true);
-
-    let releasePrep = (): void => {};
-    const prepEntered = { yes: false };
-    h.setPrepareEnv(async () => {
-      if (prepEntered.yes) return;
-      prepEntered.yes = true;
-      await new Promise<void>((resolve) => { releasePrep = resolve; });
-    });
-    h.runner.dispatch(testDispatch({ text: "/compact" }));
-    await waitFor(() => prepEntered.yes, "the compaction reached its pre-turn hook");
-
-    h.agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
-    releasePrep();
-    await waitFor(
-      () => h.agents[0]!.sendUserMessage.mock.calls.length > 0,
-      "the command reached the resident CLI",
-    );
-
-    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => !h.card()!.fresh, "the CLI's own turn marked the card stale");
-    // The nudge is deferred, not sent, because the command is still unread (req 34).
-    expect(h.nudges()).toHaveLength(0);
-
-    h.runner.dispose({ force: true });
-  });
-
-  it("with the setting off, nothing is marked and nothing is dispatched", async () => {
+  it("with the setting off, nothing is marked and nothing is asked", async () => {
     const h = harness({ statusCardEnabled: false, card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "do the thing" }));
@@ -435,16 +404,14 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     await flush();
 
     expect(h.agents).toHaveLength(1);
-    expect(h.nudges()).toHaveLength(0);
     expect(h.card()!.fresh).toBe(true);
-    h.runner.dispose({ force: true });
+    expect(h.card()!.nudgePending).toBeUndefined();
+    expect(h.card()!.turnSeq).toBe(0);
   });
 
   /**
-   * req 36 — the settlement reads what the turn DID, not who started it. ShipIt's own
-   * pre-turn compaction and a compaction the user asked for are the same turn as far as
-   * the card is concerned, and the second one is planning#594: it carries no `silent`,
-   * because the user's own row is in the transcript, so the kind-based exemption missed it.
+   * req 36 — the settlement reads what the turn DID, not who started it. A compaction is
+   * left out entirely: not marked, not counted, not asked about.
    */
   for (const [label, extra] of [
     ["ShipIt's own, before a post-merge turn", { systemTurn: true, silent: true }],
@@ -460,18 +427,12 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
       await flush();
 
       expect(h.agents).toHaveLength(1);
-      expect(h.nudges()).toHaveLength(0);
-      expect(h.card()!.fresh).toBe(true);
+      expect(h.card()).toMatchObject({ fresh: true, turnSeq: 0 });
+      expect(h.card()!.nudgePending).toBeUndefined();
       h.runner.dispose({ force: true });
     });
   }
 
-  /**
-   * req 36 — the exemption is withheld when provenance wraps the text, because the
-   * harnesses disagree about what happens then (Claude reads prose and works; Codex and
-   * OpenCode still compact). Checking costs a needless nudge on two of them; exempting
-   * would hide a real stale card on the third, which is the failure req 15 forbids.
-   */
   it("checks a compaction command that arrives wrapped as another session's message (req 36)", async () => {
     const h = harness({ card: { ...seeded } });
 
@@ -481,22 +442,12 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     }));
     await waitFor(() => h.agents.length === 1, "the message turn started");
     finishTurn(h.agents[0]!);
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
 
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
-    expect(h.nudges()).toHaveLength(1);
     expect(h.card()!.fresh).toBe(false);
-
-    finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
     h.runner.dispose({ force: true });
   });
 
-  /**
-   * The other half of req 36, and the one that keeps the exemption from becoming a
-   * suppression: a turn ShipIt starts of its own that is NOT a harness command — a
-   * merged-PR wake, a delivered result, a child's report all take this shape — leads to
-   * work the user wants on the card, so it is checked exactly as a typed turn is.
-   */
   it("still checks a ShipIt-started turn that is not a harness command (req 36)", async () => {
     const h = harness({ card: { ...seeded } });
 
@@ -506,78 +457,51 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     }));
     await waitFor(() => h.agents.length === 1, "the wake started");
     finishTurn(h.agents[0]!);
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
 
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
-    expect(h.nudges()).toHaveLength(1);
     expect(h.card()!.fresh).toBe(false);
-
-    finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
     h.runner.dispose({ force: true });
   });
 
-  // The setting takes the tool with it, so a nudge decided while it was on must not start
-  // a turn asking for something the agent can no longer call (req 21).
-  it("does not start the nudge when the setting is turned off mid-turn", async () => {
-    const enabled = { value: true };
-    const h = harness({ card: { ...seeded }, statusCardEnabled: () => enabled.value });
-
-    h.runner.dispatch(testDispatch({ text: "do the thing" }));
-    await waitFor(() => h.agents.length === 1, "turn started");
-    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    enabled.value = false;
-    h.agents[0]!.emit("done", 0);
-    await waitFor(() => !h.runner.running, "turn finished");
-    await flush();
-
-    expect(h.agents).toHaveLength(1);
-    expect(h.nudges()).toHaveLength(0);
-  });
-
-  // Invariant 5, in the window `turnIsCurrent()` cannot cover: `dispatch` sets `running`
-  // synchronously, but the turn epoch only advances when the nudge enters its executor, so
-  // a predecessor exiting during the setup in between still reads as current.
-  it("keeps the runner busy while the nudge's own setup is still running", async () => {
-    let releaseSetup = (): void => {};
-    const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve; });
-    const h = harness({ card: { ...seeded }, streaming: true });
-    // preTurnReset runs inside the dispatched turn's setup, before its executor is entered.
-    // Park the nudge's, not the first turn's.
-    h.setPreTurnReset(async (call) => {
-      if (call === 2) await setupGate;
-      return { agentPrefix: "" };
-    });
-
-    h.runner.dispatch(testDispatch({ text: "do the thing" }));
-    await waitFor(() => h.agents.length === 1, "turn started");
-    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => h.state.preTurnResets === 2, "the nudge's setup started");
-
-    h.agents[0]!.emit("done", 0);
-    await flush();
-    await flush();
-    expect(h.runner.agentBusy, "the runner is not reclaimable mid-setup").toBe(true);
-    h.runner.dispose();
-    expect(h.runner.disposed, "an unforced dispose declines").toBe(false);
-
-    releaseSetup();
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
-    finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
-    h.runner.dispose({ force: true });
-  });
-
-  it("does not nudge a driver-owned turn (postTurn: none)", async () => {
+  /*
+    A driver-owned turn does real work and its card is marked stale, so req 38 records its
+    ask like any other. The block does not ride such a turn, which is why the ask waits on
+    the card for the next turn that carries a prompt — the same path an adopted turn takes.
+  */
+  it("asks a driver-owned turn (postTurn: none), whose ask waits for a turn with a prompt", async () => {
     const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "rebase step", systemTurn: true, postTurn: "none" }));
     await waitFor(() => h.agents.length === 1, "turn started");
     finishTurn(h.agents[0]!);
-    await waitFor(() => !h.runner.running, "turn finished");
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    expect(h.card()!.fresh).toBe(false);
+    expect(h.asks()).toHaveLength(0);
+    h.runner.dispose({ force: true });
+  });
+
+  /*
+    req 38 — an ask stands until a CALL answers it. The turn after a miss can be one that
+    is exempt from asking (a question, a crash); recording nothing of its own must not
+    drop the ask the earlier turn earned, which would never then reach the agent.
+  */
+  it("keeps an outstanding ask across a turn that is itself exempt", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn 1 started");
+    finishTurn(h.agents[0]!);
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    h.runner.dispatch(testDispatch({ text: "and now a question" }));
+    await waitFor(() => h.agents.length === 2, "turn 2 started");
+    h.runner.awaitingUserAnswer = true;
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "turn 2 finished");
     await flush();
 
-    expect(h.agents).toHaveLength(1);
-    expect(h.nudges()).toHaveLength(0);
+    expect(h.card()!.nudgePending).toBe(true);
     h.runner.dispose({ force: true });
   });
 
@@ -596,8 +520,8 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     expect(h.state.commits).toBe(1);
   });
 
-  // The mark is immediate, not a by-product of the nudge: the card must never read as
-  // current while the rest of the terminal sequence is still running.
+  // The mark is immediate: the card must never read as current while the rest of the
+  // terminal sequence is still running.
   it("marks the card stale before the commit that follows in the same sequence", async () => {
     const h = harness({ card: { ...seeded }, holdCommits: [0] });
 
@@ -610,36 +534,13 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
 
     h.releaseCommit();
     await waitFor(() => h.state.commits === 1, "commit ran");
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
-    finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
-    h.runner.dispose({ force: true });
-  });
-
-  it("echoes the nudge as a visible user row, so the follow-up turn is not invisible (req 12)", async () => {
-    const h = harness({ card: { ...seeded } });
-
-    h.runner.dispatch(testDispatch({ text: "do the thing" }));
-    await waitFor(() => h.agents.length === 1, "turn started");
-    finishTurn(h.agents[0]!);
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
-
-    expect(h.emitted.some(
-      (m) => m.type === "system_user_message" && m.text?.startsWith("[ShipIt] The last turn ended"),
-    )).toBe(true);
-    // And persisted, so a reload still shows why the follow-up turn happened.
-    expect(h.rows.some(
-      (r) => r.role === "user" && r.text.startsWith("[ShipIt] The last turn ended"),
-    )).toBe(true);
-
-    finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    await waitFor(() => !h.runner.running, "turn finished");
     h.runner.dispose({ force: true });
   });
 
   // Adoption keeps the predecessor's `receivedResult` for its own recovery semantics, so
   // the settlement cannot read it: a crashed adopted turn produced no result to judge.
-  it("does not nudge an adopted turn that crashed without a result of its own", async () => {
+  it("does not ask an adopted turn that crashed without a result of its own", async () => {
     const h = harness({ card: { ...seeded }, streaming: true });
 
     h.runner.dispatch(testDispatch({ text: "do the thing" }));
@@ -648,24 +549,22 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => !h.runner.running, "the first turn settled");
 
-    // The CLI starts a turn of its own on the resident process, and then falls over.
     h.agents[0]!.emit("event", { type: "agent_self_wake" });
     await flush();
     h.agents[0]!.emit("done", 1);
     await flush();
     await flush();
 
-    expect(h.nudges()).toHaveLength(0);
     // The adopted turn produced nothing, so the card no longer speaks for the session.
     expect(h.card()!.fresh).toBe(false);
+    expect(h.card()!.nudgePending).toBeUndefined();
     h.runner.dispose({ force: true });
   });
 
   /**
-   * req 36 — the exemption belongs to the turn being settled, not to the executor. A
-   * compaction leaves the CLI resident, and a turn the CLI then starts of its own is real
-   * work: inheriting the compaction's exemption would leave the card reading current when
-   * it is not, which is the suppression req 15 forbids.
+   * req 36 — the exemption belongs to the turn being settled, not to the executor. A turn
+   * the CLI starts after a compaction is real work, and it is the turn that carries no
+   * prompt of ShipIt's, so the ask it records is read by the next turn that has one.
    */
   it("does not carry a compaction's exemption into a turn the CLI starts next (req 36)", async () => {
     const h = harness({ card: { ...seeded }, streaming: true });
@@ -676,16 +575,13 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     await waitFor(() => !h.runner.running, "the compaction settled");
     expect(h.card()!.fresh).toBe(true);
 
-    // The CLI starts a turn of its own on the resident process and produces a result of
-    // its own, touching nothing on the card.
     h.agents[0]!.emit("event", { type: "agent_self_wake" });
     await flush();
     h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => !h.card()!.fresh, "the adopted turn marked the card stale");
-    await waitFor(() => h.nudges().length === 1, "the adopted turn was nudged");
+    expect(h.card()!.nudgePending).toBe(true);
+    expect(h.agents).toHaveLength(1);
 
-    finishTurn(h.agents[1]!);
-    await waitFor(() => !h.runner.running, "the nudge turn finished");
     h.runner.dispose({ force: true });
   });
 
@@ -698,14 +594,11 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     await waitFor(() => h.agents.length === 1, "turn started");
     await h.agentWritesCard("Routes done.");
 
-    // The predecessor's post-turn flow parks on its commit…
     h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => h.parkedOn(0), "the predecessor parked on its commit");
 
-    // …the CLI starts a turn of its own, so the handover waits on that parked flow…
     h.agents[0]!.emit("event", { type: "agent_self_wake" });
     await flush();
-    // …and the adopted turn falls over while the handover is still in flight.
     h.agents[0]!.emit("done", 1);
     await flush();
     h.releaseCommit(0);
@@ -718,40 +611,19 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.runner.dispose({ force: true });
   });
 
-  // Invariant 5: the nudge starts inside the predecessor's post-turn sequence and replaces
-  // the resident process, so that process's own late exit must not report the live turn idle.
-  it("a predecessor's late exit does not disown the live nudge turn", async () => {
-    const h = harness({ card: { ...seeded }, streaming: true });
-
-    h.runner.dispatch(testDispatch({ text: "do the thing" }));
-    await waitFor(() => h.agents.length === 1, "turn started");
-    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => h.agents.length === 2, "the nudge turn started");
-    expect(h.runner.running).toBe(true);
-
-    h.agents[0]!.emit("done", 0);
-    await flush();
-    await flush();
-
-    expect(h.runner.running, "the nudge still owns the runner").toBe(true);
-    expect(h.runner.agentBusy, "the runner is not reclaimable").toBe(true);
-    h.runner.dispose({ force: true });
-  });
-
-  it("a crash with no result marks the card stale but starts no nudge", async () => {
+  it("a crash with no result marks the card stale but records no ask", async () => {
     const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "do the thing" }));
     await waitFor(() => h.agents.length === 1, "turn started");
     h.agents[0]!.emit("done", 1);
-    // A no-result exit retries once; the second exit is terminal.
     await waitFor(() => h.agents.length === 2, "the retry started");
     h.agents[1]!.emit("done", 1);
     await waitFor(() => !h.runner.running, "turn finished");
     await flush();
 
     expect(h.card()!.fresh).toBe(false);
-    expect(h.nudges()).toHaveLength(0);
+    expect(h.card()!.nudgePending).toBeUndefined();
     h.runner.dispose({ force: true });
   });
 });

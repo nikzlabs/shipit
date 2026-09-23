@@ -274,7 +274,6 @@ export async function createHeadlessSession(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
-    statusNudge: undefined,
   }));
 
   graduateSession(graduationDeps, {

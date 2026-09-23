@@ -317,6 +317,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get statusUpdated(): boolean { return this.turn.statusUpdated; }
   set statusUpdated(v: boolean) { this.turn.statusUpdated = v; }
+  get awaitingUserAnswer(): boolean { return this.turn.awaitingUserAnswer; }
+  set awaitingUserAnswer(v: boolean) { this.turn.awaitingUserAnswer = v; }
 
   /** Stable reference, mutable contents. */
   get committedBodyIds(): CommittedBodyIds { return this.turn.committedBodyIds; }
@@ -697,7 +699,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     agentId: AgentId,
     params: AgentRunParams,
     runToken?: string,
-    turn?: { deliveryId?: string; statusNudge?: boolean },
+    turn?: { deliveryId?: string },
   ): Promise<void> {
     const prev = this._startInFlight;
     let release: () => void = () => {};
@@ -714,7 +716,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     agentId: AgentId,
     params: AgentRunParams,
     runToken?: string,
-    turn?: { deliveryId?: string; statusNudge?: boolean },
+    turn?: { deliveryId?: string },
   ): Promise<void> {
     await this._workerReady;
     this.assertWorkerReachable("/agent/start");
@@ -731,7 +733,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       params,
       ...(runToken !== undefined ? { runToken } : {}),
       ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
-      ...(turn?.statusNudge ? { statusNudge: true } : {}),
     };
 
     try {
@@ -827,7 +828,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       agentId,
       ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
       ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
-      ...(status.statusNudge ? { statusNudge: true } : {}),
       streaming: status.streaming === true,
     });
     this.emitMessage({

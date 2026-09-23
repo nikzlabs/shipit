@@ -18,6 +18,8 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
+const SESSION_BRANCH = "shipit/auto-push";
+
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
 let client: TestClient;
@@ -82,27 +84,28 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   return { sessionId, sessionDir };
 }
 
+/**
+ * A session works on its own branch, never on the repository's default one — and the
+ * push paths now refuse the default branch (docs/312-base-branch-push-protection
+ * req 7). The `/api/_test/sessions` workspace arrives on `main`, so move it off
+ * before wiring the remote, or the fixture tests a shape no session reaches.
+ */
 function createBareRemote(sessionDir: string): string {
   const bareDir = path.join(tmpDir, "bare-remote.git");
+  const env = { ...process.env, HOME: tmpDir };
   fs.mkdirSync(bareDir, { recursive: true });
-  execSync("git init --bare -b main", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
+  execSync("git init --bare -b main", { cwd: bareDir, env });
 
-  execSync(`git remote add origin ${bareDir}`, {
-    cwd: sessionDir,
-    env: { ...process.env, HOME: tmpDir },
-  });
+  execSync(`git remote add origin ${bareDir}`, { cwd: sessionDir, env });
 
-  const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-    cwd: sessionDir,
-    env: { ...process.env, HOME: tmpDir },
-  })
+  const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: sessionDir, env })
     .toString()
     .trim();
 
-  execSync(`git push -u origin ${branch}`, {
-    cwd: sessionDir,
-    env: { ...process.env, HOME: tmpDir },
-  });
+  // Publish the default branch first, so `getDefaultBranch()` resolves to it.
+  execSync(`git push origin ${branch}:main`, { cwd: sessionDir, env });
+  execSync(`git checkout -b ${SESSION_BRANCH}`, { cwd: sessionDir, env });
+  execSync(`git push -u origin ${SESSION_BRANCH}`, { cwd: sessionDir, env });
 
   return bareDir;
 }
@@ -152,7 +155,7 @@ describe("auto-push: success and failure", () => {
     app.runnerRegistry.dispose(sessionId, { force: true });
 
     const remoteHas = async (): Promise<boolean> => {
-      const files = execSync("git ls-tree -r --name-only --full-tree HEAD || true", {
+      const files = execSync(`git ls-tree -r --name-only --full-tree refs/heads/${SESSION_BRANCH} || true`, {
         cwd: bareDir,
         env: { ...process.env, HOME: tmpDir },
       }).toString();
@@ -244,6 +247,9 @@ describe("auto-push: success and failure", () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
 
+    // Its own branch, so the push is attempted and fails on the bad remote — a
+    // session left on `main` would be refused before reaching git at all.
+    execSync(`git checkout -b ${SESSION_BRANCH}`, { cwd: sessionDir, env: { ...process.env, HOME: tmpDir } });
     execSync("git remote add origin /nonexistent/path.git", {
       cwd: sessionDir,
       env: { ...process.env, HOME: tmpDir },
@@ -273,7 +279,7 @@ describe("auto-push: success and failure", () => {
 
 describe("auto-push: a branch left ahead converges without another turn", () => {
   const remoteHas = (bareDir: string, file: string): boolean =>
-    execSync("git ls-tree -r --name-only --full-tree HEAD || true", {
+    execSync(`git ls-tree -r --name-only --full-tree refs/heads/${SESSION_BRANCH} || true`, {
       cwd: bareDir,
       env: { ...process.env, HOME: tmpDir },
     }).toString().includes(file);

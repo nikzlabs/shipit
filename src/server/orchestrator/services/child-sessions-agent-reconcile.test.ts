@@ -3,6 +3,7 @@ import { ResolvedChildMessageError, sendChildMessage } from "./child-sessions.js
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { AgentId, SessionInfo } from "../../shared/types.js";
+import { TURN_COMPLETED, type TurnAdmission } from "../turn-settlement.js";
 
 function stubSessionManager(child: Partial<SessionInfo>): SessionManager {
   return {
@@ -11,13 +12,15 @@ function stubSessionManager(child: Partial<SessionInfo>): SessionManager {
   } as unknown as SessionManager;
 }
 
-function stubRunner(agentId: AgentId, running = false) {
+// `dispatch` returns a TurnHandle and the caller reads its admission; a bare
+// vi.fn() would make every delivery look "started".
+function stubRunner(agentId: AgentId, running = false, admitted: TurnAdmission = "started") {
   return {
     agentId,
     running,
     disposed: false,
     sessionId: "child-1",
-    dispatch: vi.fn(),
+    dispatch: vi.fn(() => ({ admitted, settled: Promise.resolve(TURN_COMPLETED) })),
   };
 }
 

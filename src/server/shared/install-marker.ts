@@ -45,9 +45,26 @@ export function parseMarker(raw: string): InstallMarker | null {
   };
 }
 
-export function markerMatches(marker: InstallMarker, current: InstallMarkerStamp): boolean {
+export interface MarkerMatchOptions {
+  /**
+   * Requires the dependency content hash to match, rather than accepting a same-commit marker.
+   * Set for pnpm: the verified base is published UNBUILT and every session runs its own install to
+   * build what it approves, so a same-commit change to the approval file (`pnpm-workspace.yaml`)
+   * must reinstall rather than skip — commit alone cannot see it
+   * (docs/276-shared-package-cache-integrity section 5). A repo whose install commands yield no
+   * content hash therefore reinstalls on every start, which is the safe direction.
+   */
+  requireDepsHash?: boolean;
+}
+
+export function markerMatches(
+  marker: InstallMarker,
+  current: InstallMarkerStamp,
+  opts: MarkerMatchOptions = {},
+): boolean {
   if (marker.runtimeKey !== current.runtimeKey) return false;
   if (!sameCommands(marker.installCommands, current.installCommands)) return false;
+  if (opts.requireDepsHash) return depsHashMatches(marker.depsHash, current.depsHash);
   return (
     marker.sourceCommit === current.sourceCommit ||
     depsHashMatches(marker.depsHash, current.depsHash)

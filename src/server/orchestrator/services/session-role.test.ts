@@ -212,11 +212,15 @@ describe("takeRoleStandingInstructions is a one-shot latched on originRoleName (
     const setOriginRoleName = vi.fn((_id: string, name: string) => {
       row.originRoleName = name;
     });
+    const clearOriginRoleName = vi.fn((_id: string, expected: string) => {
+      if (row.originRoleName === expected) delete row.originRoleName;
+    });
     return {
       row,
       setOriginRoleName,
+      clearOriginRoleName,
       deps: {
-        sessionManager: { get: () => row, setOriginRoleName } as never,
+        sessionManager: { get: () => row, setOriginRoleName, clearOriginRoleName } as never,
         credentialStore: { getRole: () => role } as never,
       },
     };
@@ -225,7 +229,7 @@ describe("takeRoleStandingInstructions is a one-shot latched on originRoleName (
   it("delivers the block on the first turn and writes the provenance (req 6)", async () => {
     const { takeRoleStandingInstructions } = await import("./session-role.js");
     const f = instructionDeps({ roleName: "deep dive" });
-    const block = takeRoleStandingInstructions("s1", f.deps);
+    const block = takeRoleStandingInstructions("s1", f.deps).instructions;
     expect(block).toContain("Read the whole subsystem");
     expect(block).toContain('role="deep dive"');
     expect(f.setOriginRoleName).toHaveBeenCalledWith("s1", "deep dive");
@@ -235,28 +239,55 @@ describe("takeRoleStandingInstructions is a one-shot latched on originRoleName (
     const { takeRoleStandingInstructions } = await import("./session-role.js");
     const f = instructionDeps({ roleName: "deep dive" });
     takeRoleStandingInstructions("s1", f.deps);
-    expect(takeRoleStandingInstructions("s1", f.deps)).toBe("");
+    expect(takeRoleStandingInstructions("s1", f.deps).instructions).toBe("");
   });
 
   it("closes the latch even for a role with no standing instructions", async () => {
     const { takeRoleStandingInstructions } = await import("./session-role.js");
     const promptless: AgentRole = { name: "deep dive", params: DEEP_DIVE.params };
     const f = instructionDeps({ roleName: "deep dive" }, promptless);
-    expect(takeRoleStandingInstructions("s1", f.deps)).toBe("");
+    expect(takeRoleStandingInstructions("s1", f.deps).instructions).toBe("");
     expect(f.setOriginRoleName).toHaveBeenCalledWith("s1", "deep dive");
+  });
+
+  it("hands the brief back when the turn that took it never reached an agent (planning#609)", async () => {
+    const { takeRoleStandingInstructions } = await import("./session-role.js");
+    const f = instructionDeps({ roleName: "deep dive" });
+    const taken = takeRoleStandingInstructions("s1", f.deps);
+    expect(taken.instructions).toContain("Read the whole subsystem");
+
+    taken.repark!.repark();
+    expect(f.clearOriginRoleName).toHaveBeenCalledWith("s1", "deep dive");
+    // The latch is open again, so the session's next turn carries the brief after all.
+    expect(takeRoleStandingInstructions("s1", f.deps).instructions).toContain("Read the whole subsystem");
+  });
+
+  it("hands back a promptless role's marker too, since the take still closed the latch", async () => {
+    const { takeRoleStandingInstructions } = await import("./session-role.js");
+    const promptless: AgentRole = { name: "deep dive", params: DEEP_DIVE.params };
+    const f = instructionDeps({ roleName: "deep dive" }, promptless);
+    takeRoleStandingInstructions("s1", f.deps).repark!.repark();
+    expect(f.clearOriginRoleName).toHaveBeenCalledWith("s1", "deep dive");
+  });
+
+  it("offers no repark where it performed no take", async () => {
+    const { takeRoleStandingInstructions } = await import("./session-role.js");
+    expect(takeRoleStandingInstructions("s1", instructionDeps({}).deps).repark).toBeUndefined();
+    const child = instructionDeps({ roleName: "deep dive", originRoleName: "deep dive" });
+    expect(takeRoleStandingInstructions("s1", child.deps).repark).toBeUndefined();
   });
 
   it("skips an agent-spawned child, whose prompt was already joined at creation", async () => {
     const { takeRoleStandingInstructions } = await import("./session-role.js");
     const f = instructionDeps({ roleName: "deep dive", originRoleName: "deep dive" });
-    expect(takeRoleStandingInstructions("s1", f.deps)).toBe("");
+    expect(takeRoleStandingInstructions("s1", f.deps).instructions).toBe("");
     expect(f.setOriginRoleName).not.toHaveBeenCalled();
   });
 
   it("does nothing at all for a session with no role in force", async () => {
     const { takeRoleStandingInstructions } = await import("./session-role.js");
     const f = instructionDeps({});
-    expect(takeRoleStandingInstructions("s1", f.deps)).toBe("");
+    expect(takeRoleStandingInstructions("s1", f.deps).instructions).toBe("");
     expect(f.setOriginRoleName).not.toHaveBeenCalled();
   });
 });

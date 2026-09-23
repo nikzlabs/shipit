@@ -192,7 +192,6 @@ export async function dispatchAgentMessage(
     resetMergedBranch: input.resetMergedBranch,
     compactContext: input.compactContext,
     silent: undefined,
-    statusNudge: undefined,
   }));
 
   return { ok: true, queued: wasRunning };

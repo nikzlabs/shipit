@@ -20,6 +20,7 @@ import {
   resolveNodeCacheDir,
   startNodeRuntimeProvisioning,
 } from "./node-runtime.js";
+import { linkSessionNpmCache } from "../shared/npm-cache.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
@@ -628,6 +629,11 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
 
   // Provision outside the constructor to keep tests offline; spawn paths await readiness.
   const nodeStateDir = process.env.SHIPIT_SESSION_STATE_DIR ?? CONTAINER_SESSION_STATE_DIR;
+
+  // docs/276 H1 — before the listener opens, so no install, terminal or service can
+  // reach npm while the private index still lacks its link to the shared content store.
+  linkSessionNpmCache(nodeStateDir);
+
   startNodeRuntimeProvisioning({
     workspaceDir,
     stateDir: nodeStateDir,

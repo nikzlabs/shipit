@@ -13,7 +13,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo } from "../../shared/types.js";
 import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import { generateBranchPrefix } from "../git-utils.js";
+import { generateBranchPrefix, syncLocalDefaultBranchToOrigin } from "../git-utils.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { materializeLfsWithWarning } from "../git-lfs.js";
 import { reclaimRegenerableSessionDirs, reclaimBlockedSessionCaches } from "../disk-utils.js";
@@ -37,9 +37,9 @@ export {
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
+  deliverSessionMessage,
   ResolvedChildMessageError,
   waitForChildIdle,
-  assertArchivableChild,
   registerMergeWatch,
 } from "./child-sessions.js";
 export type {
@@ -185,7 +185,8 @@ async function checkoutIsReplaceable(
 }
 
 /**
- * Restore onto the checkout that is already there, and touch nothing in git.
+ * Restore onto the checkout that is already there, and touch no git state the session
+ * could still be using.
  *
  * The reason this path exists is that the repository holds state nothing else does, so
  * "helpfully" starting a new branch here is the one move guaranteed to damage it:
@@ -202,6 +203,10 @@ async function restoreInPlace(
   if (githubAuthManager.authenticated) {
     githubAuthManager.configureGitCredentials(workspaceDir);
   }
+  // Safe here despite the rule above: this moves a branch ref that is not checked out,
+  // which leaves MERGE_HEAD, the index and the working tree alone. See
+  // restoreSessionWorkspaceImpl for why an inherited checkout is the thing to heal.
+  await syncLocalDefaultBranchToOrigin(workspaceDir);
   await materializeLfsAndChown(workspaceDir, remoteUrl);
 }
 
@@ -360,9 +365,16 @@ async function restoreSessionWorkspaceImpl(
   // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom (matches the rest of this codebase)
   const workspacePresent = await fs.stat(gitDir).then((s) => s.isDirectory(), () => false);
 
-  if (workspacePresent && !evicted) return false;
-  if (workspacePresent && evicted) {
-    sessionManager.setDiskTier(sessionId, "hot");
+  if (workspacePresent) {
+    // `git fetch` advances `refs/remotes/origin/*` and never a local branch, so an
+    // existing clone's local `main` is frozen at clone time — and publishing that ref
+    // is what rewound a user's base branch (docs/312-base-branch-push-protection).
+    // This is the point at which such a checkout is handed back to a session, so it is
+    // where the drift gets healed. The clone below needs no equivalent: it comes from a
+    // bare cache that was just fetched, so its local default already IS
+    // `origin/<default>`.
+    await syncLocalDefaultBranchToOrigin(session.workspaceDir);
+    if (evicted) sessionManager.setDiskTier(sessionId, "hot");
     return false;
   }
 

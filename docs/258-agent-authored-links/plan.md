@@ -263,8 +263,12 @@ correlated request/result protocol req 10 explicitly declines.
 ### Present (req 3)
 
 1. `parseShipitLink` resolves the href to `{ filePath, fragment }`.
-2. The artifact with that path is focused. No such artifact → req 10 toast
-   naming the path.
+2. `present-store.ts:focusByPath` prefers an exact path match, then compares both
+   paths with the `/workspace/` prefix and a leading `./` removed (req 15).
+   Exact matches preserve selection when legacy registrations have separate
+   IDs for non-canonical absolute paths. Other absolute paths remain
+   distinct. The lookup uses only the active session's presented entries. No
+   such artifact → req 10 toast naming the path.
 3. The fragment is honoured — by a different mechanism per artifact kind, below.
 
 Focusing has to do more than move the carousel index, because three pane states
@@ -635,9 +639,12 @@ crossing into a frame, so the parser is a gate, not a formatter:
   lowercases and canonicalises — that would quietly conflict with "exact
   declared service name" for any service whose compose name has uppercase.
   Matched exactly against the declared list; no prefix or fuzzy matching.
-- A Present path is percent-decoded once and compared to the artifact's verbatim
-  `filePath` (modulo a leading `./`). Matching only ever selects an
-  **already-presented** entry; a pointer never causes a read of an arbitrary
+- A Present path is percent-decoded once and compared to the artifact's
+  `filePath` with the workspace prefix and leading `./` normalized on both
+  sides by `focusByPath`. Registration already derives the ID from the session
+  and resolved path (`session-worker.ts:registerPresentEndpoints`), so changing
+  between relative and absolute workspace forms still updates one entry.
+  Matching only ever selects an **already-presented** entry; a pointer never causes a read of an arbitrary
   path from disk.
 - Repeated query keys are **last-wins**, matching `URLSearchParams` iteration, so
   the parse has no case the agent can author that behaves unpredictably. A

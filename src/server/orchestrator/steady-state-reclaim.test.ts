@@ -8,12 +8,13 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runSteadyStateReclaim } from "./steady-state-reclaim.js";
 import { repoUrlToHash } from "./git-utils.js";
-import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { liveOverlayScopeHashes, overlayRuntimeKey, sessionPnpmStoreDir } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
+import { withScopeLock } from "./overlay-base.js";
 import {
   claimOverlayBaseGeneration,
   clearOverlayBaseClaims,
-  OVERLAY_BASE_CLAIM_MS,
+  releaseOverlayBaseClaims,
 } from "./overlay-base-claims.js";
 
 function liveMountDocker(genLowerdirs: string[]): (args: string[]) => Promise<string> {
@@ -231,25 +232,9 @@ describe("runSteadyStateReclaim", () => {
     expect(result.overlayBasesRemoved).toBe(2);
   });
 
-  it("pnpm-store sweep is skipped when pnpmStoreRuntimeHash is not provided", async () => {
-    setup();
-    const repoStore = new RepoStore(dbManager!);
-
-    const storeDir = path.join(tmpDir, "pnpm-store", "0123456789abcdef");
-    fs.mkdirSync(storeDir, { recursive: true });
-    const old = Date.now() / 1000 - 99 * 86_400;
-    fs.utimesSync(storeDir, old, old);
-
-    const result = await runSteadyStateReclaim({
-      repoStore, stateDir: tmpDir,
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(fs.existsSync(storeDir)).toBe(true);
-    expect(result.pnpmStoresRemoved).toBe(0);
-  });
-
-  it("pnpm-store sweep keeps the live store, reaps a stale-runtime store, keeps a young one", async () => {
+  // docs/276 section 5: the per-runtime shared store is retired, so EVERY tree under
+  // <stateDir>/pnpm-store is dead — no hash is exempt any more.
+  it("pnpm-store sweep reaps every aged-out retired store, exempting no hash", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);
 
@@ -257,13 +242,15 @@ describe("runSteadyStateReclaim", () => {
     fs.mkdirSync(root, { recursive: true });
     const mk = (hash: string, ageDays: number) => {
       const d = path.join(root, hash);
-      fs.mkdirSync(d, { recursive: true });
+      const files = path.join(d, "v11", "files", "ab");
+      fs.mkdirSync(files, { recursive: true });
       const t = Date.now() / 1000 - ageDays * 86_400;
-      fs.utimesSync(d, t, t);
+      for (const p of [files, path.join(d, "v11", "files"), path.join(d, "v11"), d]) {
+        fs.utimesSync(p, t, t);
+      }
       return d;
     };
-    const liveHash = pnpmStoreHash(overlayRuntimeKey());
-    const liveStore = mk(liveHash, 99);
+    const formerlyLive = mk("aaaaaaaaaaaaaaaa", 99);
     const staleStore = mk("bbbbbbbbbbbbbbbb", 99);
     const youngStore = mk("cccccccccccccccc", 1);
     fs.writeFileSync(path.join(root, "stray.txt"), "x");
@@ -271,38 +258,64 @@ describe("runSteadyStateReclaim", () => {
     const result = await runSteadyStateReclaim({
       repoStore, stateDir: tmpDir,
       cacheDays: 30,
-      pnpmStoreRuntimeHash: () => liveHash,
       runDocker: () => Promise.resolve(""),
     });
 
-    expect(fs.existsSync(liveStore)).toBe(true);
+    expect(fs.existsSync(formerlyLive)).toBe(false);
     expect(fs.existsSync(staleStore)).toBe(false);
+    // A container created before the upgrade may still mount a recently-touched store.
     expect(fs.existsSync(youngStore)).toBe(true);
     expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
-    expect(result.pnpmStoresRemoved).toBe(1);
+    expect(result.pnpmStoresRemoved).toBe(2);
   });
 
-  it("pnpm-store sweep reaps ALL stale stores when the feature is off (null live hash)", async () => {
+  /**
+   * The store root's mtime is not an activity signal — pnpm writes under `v11/files/<xx>/`, which
+   * never touches the ancestor. Ageing on the root alone would reap the store of a surviving
+   * pre-upgrade container that is still filling it.
+   */
+  it("keeps a retired store whose deep contents were written recently", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);
 
     const root = path.join(tmpDir, "pnpm-store");
-    fs.mkdirSync(root, { recursive: true });
+    const store = path.join(root, "aaaaaaaaaaaaaaaa");
+    const files = path.join(store, "v11", "files", "ab");
+    fs.mkdirSync(files, { recursive: true });
+    fs.writeFileSync(path.join(files, "cdef"), "x");
+    // Every ancestor looks long dead; only the leaf directory is fresh.
     const old = Date.now() / 1000 - 99 * 86_400;
-    for (const h of ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]) {
-      const d = path.join(root, h);
-      fs.mkdirSync(d, { recursive: true });
+    for (const d of [root, store, path.join(store, "v11"), path.join(store, "v11", "files")]) {
       fs.utimesSync(d, old, old);
     }
 
     const result = await runSteadyStateReclaim({
       repoStore, stateDir: tmpDir,
       cacheDays: 30,
-      pnpmStoreRuntimeHash: () => null,
       runDocker: () => Promise.resolve(""),
     });
 
-    expect(result.pnpmStoresRemoved).toBe(2);
+    expect(fs.existsSync(store)).toBe(true);
+    expect(result.pnpmStoresRemoved).toBe(0);
+  });
+
+  it("leaves a session's own private pnpm store alone", async () => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+
+    const store = sessionPnpmStoreDir(tmpDir, "sess-1");
+    fs.mkdirSync(store, { recursive: true });
+    const old = Date.now() / 1000 - 99 * 86_400;
+    fs.utimesSync(store, old, old);
+
+    const result = await runSteadyStateReclaim({
+      repoStore, stateDir: tmpDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(store)).toBe(true);
+    expect(result.pnpmStoresRemoved).toBe(0);
   });
 
   it("reaps superseded generations inside a LIVE scope via the live-mount check, keeping g0 + current + pinned", async () => {
@@ -514,6 +527,8 @@ describe("runSteadyStateReclaim", () => {
   });
 
   describe("in-flight base-generation claims (planning#440)", () => {
+    const CREATING = "claim-token-of-one-create-attempt";
+
     function creatingFixture() {
       const hash = "1f2e3d4c5b6a7988";
       const mkGen = (gen: number) => {
@@ -542,7 +557,7 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -562,7 +577,7 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -577,14 +592,13 @@ describe("runSteadyStateReclaim", () => {
       expect(result.overlayBasesRemoved).toBe(1);
     });
 
-    it("stops protecting once the claim expires, so a dead create cannot pin a base forever", async () => {
+    it("stops protecting once the session releases, so a finished create cannot pin a base forever", async () => {
       setup();
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
-      const realNow = Date.now();
-      vi.spyOn(Date, "now").mockReturnValue(realNow + OVERLAY_BASE_CLAIM_MS + 1);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
+      releaseOverlayBaseClaims(CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -604,7 +618,7 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -618,6 +632,76 @@ describe("runSteadyStateReclaim", () => {
 
       expect(result.overlayBasesRemoved).toBe(0);
       expect(fs.existsSync(fx.superseded)).toBe(true);
+    });
+
+    /**
+     * A claim's WHOLE lifetime can fall between the pass-wide Docker sample and the per-scope claim
+     * read: claim, mount, release. Neither reading holds it, and the generation a running container
+     * is on is deleted underneath it. The cover is a Docker re-check taken AFTER the per-scope claim
+     * read — under the scope lock nothing more can be claimed, so a generation not claimed there had
+     * a visible container before its release, and the re-check sees it
+     * (docs/276-shared-package-cache-integrity section 5; review, 2026-09-21).
+     */
+    it("re-checks Docker after the per-scope claim read, covering a claim released mid-pass", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
+
+      // The claim's whole lifetime happens between the two readings, and — as in production — the
+      // release comes only after the container is visible.
+      let visible = false;
+      const withMount = liveMountDocker([fx.claimed]);
+      const withoutMount = liveMountDocker([]);
+      const runDocker = (args: string[]): Promise<string> => {
+        const out = visible ? withMount(args) : withoutMount(args);
+        if (args[0] === "ps" && !visible) {
+          visible = true;
+          releaseOverlayBaseClaims(CREATING);
+        }
+        return out;
+      };
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker,
+      });
+
+      expect(fs.existsSync(fx.claimed)).toBe(true);
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(result.overlayBasesRemoved).toBe(1);
+    });
+
+    it("runs the sweep under the scope's own lock, so a publish cannot interleave", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const lockTaken = withScopeLock(fx.hash, () => held);
+      await Promise.resolve();
+
+      const sweep = runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: () => Promise.resolve(""),
+      });
+      // Real timers, not microtasks: the sweep paces its deletes through setTimeout, so a
+      // microtask drain would never reach one and the cell would pass with no lock at all.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fs.existsSync(fx.superseded)).toBe(true);
+
+      release();
+      await lockTaken;
+      // Nothing claims here, so both non-current generations go — once the lock is free.
+      expect((await sweep).overlayBasesRemoved).toBe(2);
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(fs.existsSync(fx.current)).toBe(true);
     });
   });
 

@@ -4,8 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import { buildPlanProposeInput, planRelease, prepareRelease } from "./release-prepare.js";
-import type { ReleasePlan } from "./release-prepare.js";
+import { planRelease, prepareRelease } from "./release-prepare.js";
 
 const { agentCreatePrMock, findBranchPullRequestMock } = vi.hoisted(() => ({
   agentCreatePrMock: vi.fn(),
@@ -495,38 +494,48 @@ describe("release-branch version anchor (docs/214 bugfix)", () => {
   });
 });
 
-describe("buildPlanProposeInput (docs/214 — plan-route propose options)", () => {
-  const basePlan: ReleasePlan = {
-    currentVersion: "0.2.2",
-    version: "0.2.3",
-    tag: "v0.2.3",
-    bumpType: "patch",
-    versionSource: "package.json",
-    versionSourcePath: "/repo/package.json",
-    prerelease: false,
-  };
+describe("planRelease — missing-notes warning (docs/309 req 10)", () => {
+  function writeWorkflow(body: string): void {
+    fs.mkdirSync(path.join(dir, ".github", "workflows"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".github", "workflows", "release.yml"), body);
+  }
 
-  it("carries the mechanism for a release-branch repo", () => {
-    const input = buildPlanProposeInput(basePlan, "release-branch");
-    expect(input).toMatchObject({
-      version: "0.2.3",
-      tag: "v0.2.3",
-      prerelease: false,
-      bumpType: "patch",
-      versionSource: "package.json",
-      mechanism: "release-branch",
-    });
+  it("warns when the repo publishes authored notes and the draft is missing", async () => {
+    writeWorkflow(NOTES_AWARE_WORKFLOW);
+    fs.rmSync(path.join(dir, "RELEASE_NOTES.draft.md"));
+    const { git } = makeGit();
+    const plan = await planRelease(git, { dir, bump: "patch" });
+    expect(plan.warning).toMatch(/RELEASE_NOTES\.draft\.md/);
+    expect(plan.warning).toMatch(/v0\.2\.1/);
   });
 
-  it("omits the mechanism when none is configured (card defaults to tag-triggered)", () => {
-    const input = buildPlanProposeInput(basePlan, undefined);
-    expect(input).not.toHaveProperty("mechanism");
+  it("treats a blank draft as missing, matching CI's content test", async () => {
+    writeWorkflow(NOTES_AWARE_WORKFLOW);
+    fs.writeFileSync(path.join(dir, "RELEASE_NOTES.draft.md"), "   \n\n");
+    const { git } = makeGit();
+    expect((await planRelease(git, { dir, bump: "patch" })).warning).toMatch(/no release notes yet/i);
   });
 
-  it("omits bumpType for an explicit version", () => {
-    const input = buildPlanProposeInput({ ...basePlan, bumpType: "explicit" }, "release-branch");
-    expect(input).not.toHaveProperty("bumpType");
-    expect(input.mechanism).toBe("release-branch");
+  it("stays silent once the draft is there", async () => {
+    writeWorkflow(NOTES_AWARE_WORKFLOW);
+    const { git } = makeGit();
+    expect(await planRelease(git, { dir, bump: "patch" })).not.toHaveProperty("warning");
+  });
+
+  it("stays silent for a repo whose workflow ignores authored notes (req 9)", async () => {
+    writeWorkflow(LEGACY_WORKFLOW);
+    fs.rmSync(path.join(dir, "RELEASE_NOTES.draft.md"));
+    const { git } = makeGit();
+    expect(await planRelease(git, { dir, bump: "patch" })).not.toHaveProperty("warning");
+  });
+
+  it("stays silent for a prerelease, which cannot carry a notes file (req 6a)", async () => {
+    writeWorkflow(NOTES_AWARE_WORKFLOW);
+    fs.rmSync(path.join(dir, "RELEASE_NOTES.draft.md"));
+    const { git } = makeGit();
+    const plan = await planRelease(git, { dir, bump: "patch", prerelease: true });
+    expect(plan.prerelease).toBe(true);
+    expect(plan).not.toHaveProperty("warning");
   });
 });
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
-import { killChild } from "../../../shared/kill-child.js";
+import { killProcessTree } from "../../../shared/kill-child.js";
 import {
   ensureConfigDir,
   firstEpochMs,
@@ -523,7 +523,9 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     this.clearTimeoutHandle();
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    killChild(proc, "SIGTERM");
+    // `codex` is a Node shim over the native binary that holds the device-auth
+    // poll, so a pid-only kill would leave ending the flow to the shim.
+    killProcessTree(proc, "SIGTERM", { label: "codex-login" });
     this.clearActiveScope();
   }
 
@@ -594,7 +596,7 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     if (!proc) return;
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
-    killChild(proc, "SIGTERM");
+    killProcessTree(proc, "SIGTERM", { label: "codex-login" });
   }
 
   // Clear after terminal events: their handlers read the account ID synchronously.

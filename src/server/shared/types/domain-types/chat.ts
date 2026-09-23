@@ -4,7 +4,8 @@ import type { BillingMode } from "../../catalogue/types.js";
 export interface SessionMessageOrigin {
   sessionId: string;
   sessionTitle: string;
-  relation: "parent" | "child" | "sibling";
+  /** docs/314 — `proposed` is a session with no link to this one, delivered because the user approved a card. */
+  relation: "parent" | "child" | "sibling" | "proposed";
 }
 
 export interface CompactionCard {
@@ -311,6 +312,27 @@ export interface RepoSessionProposalCard {
   state?: "starting" | "started" | "failed";
   startedSessionId?: string;
   startedAt?: string;
+  errorMessage?: string;
+}
+
+/**
+ * docs/314 — a message the agent wants delivered to a session it cannot
+ * address. `shipit session message` reaches direct children only, so every
+ * other target needs the user's approval; until it is given, nothing is sent.
+ */
+export interface SessionMessageProposalCard {
+  cardId: string;
+  /** The session the message would reach. */
+  targetSessionId: string;
+  /** Its title when the card was written, for display. */
+  targetTitle: string;
+  message: string;
+  createdAt: string;
+  /** Absent until the user approves. */
+  state?: "delivering" | "delivered" | "failed";
+  deliveredAt?: string;
+  /** The target was mid-turn, so the message waits behind it. */
+  queued?: boolean;
   errorMessage?: string;
 }
 

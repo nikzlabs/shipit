@@ -72,6 +72,22 @@ requirement is a candidate: it can be struck without argument.
      The guard is written for the detection once that is fixed.
 9. *[stated]* ShipIt's own `release-branch` flow is the scope. Other repos and
    the `tag-triggered` mechanism keep today's generated notes.
+10. *[stated]* The confirmation card appears only once the release it offers is
+    ready to confirm. Computing a version is not proposing a release: the card
+    appears when the agent proposes one, not when it works out what the next
+    version would be. Where notes will be published (req 6), a release whose
+    notes have not been drafted raises no card.
+    - 10a. *[stated]* A release that will publish no notes is ready to confirm
+      without them, so it still raises a card: a prerelease (req 6a), and a repo
+      outside this feature's scope (req 9).
+    - 10b. *[agent]* The same holds for a repo whose release workflow does not
+      read `.release-notes/`. This inherits req 6b's provenance rather than
+      acquiring its own — the user has not endorsed that exemption, and striking
+      6b strikes this with it.
+11. *[stated]* The card points at the notes that would be published: it links to
+    the draft, which opens in ShipIt's own viewer. It carries no copy of the
+    text and never a summary written separately from the draft, and where no
+    notes will be published it offers no link rather than a stand-in.
 
 ## Open questions
 
@@ -79,6 +95,12 @@ requirement is a candidate: it can be struck without argument.
 
 ## Resolved questions
 
+- 2026-09-18 — **The user edits the draft after the card is up: must the card
+  track the file, or is the draft as proposed enough?** Neither — *"the card
+  could just have a link to the draft, opening it in the ShipIt viewer, instead
+  of inlined content."* A link cannot go stale, so the question it was asked
+  about does not arise, and the same click is how the user edits the notes
+  anyway. → req 11.
 - 2026-09-18 — **Review surface?** A file the user opens in ShipIt's Monaco
   editor, not an editable chat card. Reason given: simplicity. → req 7.
 - 2026-09-18 — **Replace GitHub's generated list, or sit above it?** Replace

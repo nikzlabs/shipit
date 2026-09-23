@@ -23,12 +23,12 @@ import {
 } from "./test-helpers.js";
 
 /**
- * docs/303 req 11–15, 21 — the whole path in one tree: a turn settles, the card is
- * marked stale at once, ShipIt sends the visible follow-up turn, and the tool call
- * that turn makes takes the card back to current. Each slice tested its own files;
- * this is what none of them could see.
+ * docs/303 req 11–15, 21, 38 — the whole path in one tree: a turn settles, the card is
+ * marked stale at once, the ask rides the NEXT turn's prompt, and the tool call that
+ * turn makes takes the card back to current. Each slice tested its own files; this is
+ * what none of them could see.
  */
-describe("Integration: the status-card settlement and its follow-up turn (docs/303)", () => {
+describe("Integration: the status-card settlement and its ask (docs/303)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -98,9 +98,16 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     return { seen, stop: () => { state.running = false; } };
   }
 
-  /** The dispatched turn's identity, not its prose: an edit to the prompt must not move this. */
+  /**
+   * req 38 — ShipIt spends no turn on the card any more, so this is a guard that it
+   * spawned none, not a count of nudges.
+   */
   const followUps = (): FakeClaudeProcess[] =>
     agents.filter((a) => a.lastPrompt.startsWith("[ShipIt]"));
+
+  /** The miss notice, as the agent reads it in the next turn's prompt. */
+  const asksInPrompt = (agent: FakeClaudeProcess): boolean =>
+    agent.lastPrompt.includes("ended without a status-card update");
 
   const runnerFor = (sessionId: string) => app.runnerRegistry.get(sessionId);
 
@@ -113,9 +120,9 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
   const SLOW_CI_MS = 20_000;
 
   /**
-   * The boundary a negative assertion needs: `running` alone clears at the drain, with the
-   * commit, the nudge decision and the dispatch still to come. `agentBusy` covers the whole
-   * post-turn sequence, because the nudge takes the same lease as the work around it.
+   * The boundary a negative assertion needs: `running` alone clears at the drain, with
+   * the commit and the settlement still to come. `agentBusy` covers the whole post-turn
+   * sequence.
    */
   async function postTurnSettled(sessionId: string): Promise<void> {
     await waitFor(() => {
@@ -137,7 +144,7 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     expect(card(client.sessionId)?.fresh).toBe(true);
   }
 
-  it("marks the card stale at once and sends ONE visible [ShipIt] follow-up (req 11, 12)", async () => {
+  it("marks the card stale at once and asks in the NEXT turn's prompt (req 11, 12, 38)", async () => {
     const client = await TestClient.connect(port);
     const { seen, stop } = pump(client);
 
@@ -152,23 +159,24 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     await waitFor(() => card(client.sessionId)?.fresh === false, "card marked stale");
     // The words the user wrote survive the mark: only the freshness moved (req 14).
     expect(card(client.sessionId)?.status).toContain("Billing routes done");
+    await postTurnSettled(client.sessionId);
 
-    const nudge = await waitForClaude(() => lastClaude, skipper);
-    // It asks for the one tool; the rest of its wording is the prompt file's business.
-    expect(nudge.lastPrompt).toContain("session_status");
+    // No turn of ShipIt's own, and nothing added to the conversation (req 38).
+    expect(followUps()).toHaveLength(0);
+    expect(agents).toHaveLength(2);
+    expect(seen.some((m) => m.type === "system_user_message" && m.text.startsWith("[ShipIt]")))
+      .toBe(false);
 
-    // req 12 — visible in the conversation as a regular turn, not a silent one.
-    await waitFor(
-      () => seen.some((m) => m.type === "system_user_message" && m.text.startsWith("[ShipIt]")),
-      "the follow-up's user row is echoed",
-    );
-    expect(followUps()).toHaveLength(1);
+    client.send({ type: "send_message", text: "And the README" });
+    const next = await waitForClaude(() => lastClaude, skipper);
+    expect(asksInPrompt(next)).toBe(true);
+    expect(next.lastPrompt).toContain("And the README");
 
     stop();
     client.close();
   });
 
-  it("takes the card back to current when the follow-up calls the tool, and stops there", async () => {
+  it("takes the card back to current when the asked turn calls the tool, and drops the ask", async () => {
     const client = await TestClient.connect(port);
     const { stop } = pump(client);
 
@@ -179,23 +187,27 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     const skipper = await waitForClaude(() => lastClaude, writer);
     skipper.initSession("skipping-turn");
     skipper.finish("skipping-turn");
+    await waitFor(() => card(client.sessionId)?.nudgePending === true, "the ask was recorded");
 
-    const nudge = await waitForClaude(() => lastClaude, skipper);
-    nudge.initSession("nudge-turn");
+    client.send({ type: "send_message", text: "And the README" });
+    const next = await waitForClaude(() => lastClaude, skipper);
+    next.initSession("next-turn");
+    expect(asksInPrompt(next)).toBe(true);
     // A bare call is the agent confirming the card exactly as it stands (req 14).
     expect((await callTool(client.sessionId, {})).statusCode).toBe(200);
-    nudge.finish("nudge-turn");
+    next.finish("next-turn");
 
     await postTurnSettled(client.sessionId);
     expect(card(client.sessionId)?.fresh).toBe(true);
-    expect(followUps()).toHaveLength(1);
+    expect(card(client.sessionId)?.nudgePending).toBeUndefined();
+    expect(followUps()).toHaveLength(0);
     expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
 
     stop();
     client.close();
   });
 
-  it("nudges once per missing update: an ignored follow-up gets no second one (req 15)", async () => {
+  it("keeps ONE outstanding ask however many turns ignore it, and spends no turn (req 15, 38)", async () => {
     const client = await TestClient.connect(port);
     const { stop } = pump(client);
 
@@ -206,15 +218,19 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     const skipper = await waitForClaude(() => lastClaude, writer);
     skipper.initSession("skipping-turn");
     skipper.finish("skipping-turn");
+    await waitFor(() => card(client.sessionId)?.nudgePending === true, "the ask was recorded");
 
-    const nudge = await waitForClaude(() => lastClaude, skipper);
-    nudge.initSession("nudge-turn");
-    nudge.finish("nudge-turn");
+    client.send({ type: "send_message", text: "And the README" });
+    const ignorer = await waitForClaude(() => lastClaude, skipper);
+    ignorer.initSession("ignoring-turn");
+    expect(asksInPrompt(ignorer)).toBe(true);
+    ignorer.finish("ignoring-turn");
 
     await postTurnSettled(client.sessionId);
-    expect(followUps()).toHaveLength(1);
+    expect(followUps()).toHaveLength(0);
     expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
     expect(card(client.sessionId)?.fresh).toBe(false);
+    expect(card(client.sessionId)?.nudgePending).toBe(true);
 
     stop();
     client.close();
@@ -227,7 +243,7 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
    * and the card was both marked stale and asked about, beside the "Context compacted"
    * card. req 36 replaces that exemption with what the turn did.
    */
-  it("neither nudges nor marks stale after a compaction the user asked for (req 36)", async () => {
+  it("neither asks nor marks stale after a compaction the user asked for (req 36)", async () => {
     const client = await TestClient.connect(port);
     const { stop } = pump(client);
 
@@ -241,6 +257,7 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
 
     await postTurnSettled(client.sessionId);
     expect(followUps()).toHaveLength(0);
+    expect(card(client.sessionId)?.nudgePending).toBeUndefined();
     expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
     // The card is untouched, not merely un-asked-about: a compaction changed nothing
     // about the session, so presenting the card as current is honest (req 14, 36).
@@ -251,7 +268,7 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     client.close();
   }, SLOW_CI_MS);
 
-  it("does not follow up a turn that ended with a question (req 13)", async () => {
+  it("does not ask about a turn that ended with a question (req 13)", async () => {
     const client = await TestClient.connect(port);
     const { stop } = pump(client);
 
@@ -290,13 +307,14 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     await waitFor(() => card(client.sessionId)?.fresh === false, "card marked stale");
     await postTurnSettled(client.sessionId);
     expect(followUps()).toHaveLength(0);
+    expect(card(client.sessionId)?.nudgePending).toBeUndefined();
     expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
 
     stop();
     client.close();
   });
 
-  it("defers to a queued successor, leaving nothing queued behind it", async () => {
+  it("lets a queued successor run next, with nothing queued behind it", async () => {
     const client = await TestClient.connect(port);
     const { stop } = pump(client);
 
@@ -313,8 +331,7 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     );
     first.finish("first-turn");
 
-    // The queued user turn runs next, and the deferral leaves nothing behind it:
-    // counting spawned follow-ups alone would miss a nudge waiting in the queue.
+    // The queued user turn runs next, with nothing of ShipIt's behind it.
     const second = await waitForClaude(() => lastClaude, first);
     expect(second.lastPrompt).toContain("Second");
     expect(followUps()).toHaveLength(0);
@@ -339,7 +356,7 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
       credentialStore.setLiveSteering(true);
     });
 
-    it("spawns exactly one follow-up for agent_result and done together", async () => {
+    it("settles once for agent_result and done together", async () => {
       const client = await TestClient.connect(port);
       const { stop } = pump(client);
 
@@ -352,76 +369,33 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
       expect(skipper.lastUseStreaming).toBe(true);
 
       skipper.emit("event", { type: "result", subtype: "success", session_id: "skipping-turn" });
-      const nudge = await waitForClaude(() => lastClaude, skipper);
-      nudge.initSession("nudge-turn");
+      await waitFor(() => card(client.sessionId)?.nudgePending === true, "the ask was recorded");
 
-      // The process's own exit lands after the follow-up turn already owns the runner.
+      // The process's own exit lands later and must not settle the turn a second time.
       skipper.emit("done", 0);
-      nudge.finish("nudge-turn");
       await postTurnSettled(client.sessionId);
 
-      expect(followUps()).toHaveLength(1);
+      expect(followUps()).toHaveLength(0);
+      expect(card(client.sessionId)?.turnSeq).toBe(2);
       expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
 
       stop();
       client.close();
     });
 
-    it("leaves the card current when a predecessor exits long after a later turn wrote", async () => {
-      const client = await TestClient.connect(port);
-      const { stop } = pump(client);
-
-      await turnThatWritesTheCard(client, "Do the billing routes");
-      const writer = lastClaude;
-
-      client.send({ type: "send_message", text: "Now the webhook" });
-      const skipper = await waitForClaude(() => lastClaude, writer);
-      skipper.initSession("skipping-turn");
-      skipper.emit("event", { type: "result", subtype: "success", session_id: "skipping-turn" });
-
-      // The follow-up writes and finishes...
-      const nudge = await waitForClaude(() => lastClaude, skipper);
-      nudge.initSession("nudge-turn");
-      expect((await callTool(client.sessionId, {})).statusCode).toBe(200);
-      nudge.finish("nudge-turn");
-      await waitFor(() => card(client.sessionId)?.fresh === true, "the follow-up made it current");
-
-      // ...and a further turn is under way, which resets `statusUpdated` — so nothing
-      // but the predecessor's own snapshot stands between its late exit and a stale
-      // mark on a card two turns newer than anything it saw.
-      client.send({ type: "send_message", text: "And now something else" });
-      const later = await waitForClaude(() => lastClaude, nudge);
-      later.initSession("later-turn");
-      await waitFor(
-        () => runnerFor(client.sessionId)?.statusUpdated === false,
-        "the later turn reset the update flag",
-      );
-
-      skipper.emit("done", 0);
-      await new Promise((r) => setTimeout(r, 100));
-      expect(card(client.sessionId)?.fresh).toBe(true);
-
-      later.finish("later-turn");
-      stop();
-      client.close();
-    });
-
     /**
-     * req 34 / planning#589 — Nik steered an agent that was waiting on background work and
-     * got a nudge turn instead of his message. A steer goes straight to the CLI, so it is
-     * neither running nor queued at settlement. Nudging there does not merely ask
-     * needlessly: the nudge is a system turn, so it retires the resident process and the
-     * message the user just sent is never answered.
-     *
-     * Both orderings, because a rule that reads the transcript to tell an answered steer
-     * from a pending one passes the first and fails the second — the turn's own closing
-     * text lands before the CLI acknowledges the message.
+     * req 34 / planning#589, and req 38's half of it. Nik steered an agent that was
+     * waiting on background work and got a nudge turn instead of his message, because the
+     * nudge was a system turn that retires the resident process holding it. The ask is now
+     * a line in the next prompt, so what req 34 protected is protected by the ask not
+     * being a turn — and the miss it used to drop, which is the drift report's largest
+     * text-only shape, is recorded instead of lost.
      */
     for (const closingText of [false, true]) {
       const label = closingText
-        ? "even when the turn's own last text lands before the acknowledgement"
-        : "when nothing in the turn follows the steer";
-      it(`does not nudge a turn the user steered into, ${label} (req 34)`, async () => {
+        ? "with the turn's own last text landing before the acknowledgement"
+        : "with nothing in the turn following the steer";
+      it(`records the ask without touching a steered turn's process, ${label} (req 34, 38)`, async () => {
         const client = await TestClient.connect(port);
         const { seen, stop } = pump(client);
 
@@ -483,13 +457,11 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
         resident.emit("event", { type: "result", subtype: "success", session_id: "resident-turn" });
 
         await waitFor(() => card(client.sessionId)?.fresh === false, "card marked stale");
-        // Not `postTurnSettled`: a nudge that DOES go out keeps the runner busy, and the
-        // failure this guards must be the follow-up below, not a timeout on the barrier.
-        await waitFor(() => {
-          const runner = runnerFor(client.sessionId);
-          return followUps().length > 0
-            || (runner !== undefined && !runner.running && !runner.agentBusy);
-        }, "the settlement finished, or spawned a follow-up turn");
+        await waitFor(
+          () => card(client.sessionId)?.nudgePending === true,
+          "the ask was recorded rather than dropped",
+        );
+        await postTurnSettled(client.sessionId);
 
         expect(followUps()).toHaveLength(0);
         expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
@@ -611,13 +583,14 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
    * harness alike receive. Without it the agent is asked to reconcile state it cannot read.
    */
   describe("the card reaches the turn (req 35)", () => {
-    it("carries nothing on the first turn, when no card is stored yet (req 22)", async () => {
+    it("asks for the first card when none is stored yet (req 22, 38)", async () => {
       const client = await TestClient.connect(port);
       const { stop } = pump(client);
 
       client.send({ type: "send_message", text: "Do the billing routes" });
       const agent = await waitForClaude(() => lastClaude);
-      expect(agent.lastPrompt).not.toContain("<session_status_card>");
+      // The nudge turn used to be what asked for the first card; this block replaces it.
+      expect(agent.lastPrompt).toContain("no status card yet");
       expect(agent.lastPrompt).toContain("Do the billing routes");
 
       stop();
@@ -682,25 +655,5 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
       client.close();
     });
 
-    it("prints the card exactly once on the nudge turn, whose own prompt carries it", async () => {
-      const client = await TestClient.connect(port);
-      const { stop } = pump(client);
-
-      await turnThatWritesTheCard(client, "Do the billing routes");
-      const writer = lastClaude;
-
-      client.send({ type: "send_message", text: "Now the webhook" });
-      const skipper = await waitForClaude(() => lastClaude, writer);
-      skipper.initSession("skipping-turn");
-      skipper.finish("skipping-turn");
-
-      const nudge = await waitForClaude(() => lastClaude, skipper);
-      const printed = nudge.lastPrompt.split("<session_status_card>").length - 1;
-      expect(printed).toBe(1);
-      expect(nudge.lastPrompt).toContain("Billing routes done");
-
-      stop();
-      client.close();
-    });
   });
 });

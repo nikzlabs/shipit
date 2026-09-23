@@ -28,6 +28,20 @@ export function formatEmptyDepDirsFailureMessage(depDirs: string[]): string {
   );
 }
 
+export function formatUnreconciledPnpmFailureMessage(depDirs: string[]): string {
+  const list = depDirs.join(", ");
+  const plural = depDirs.length === 1 ? "" : "s";
+  return (
+    `agent.install exited 0 but no pnpm install ran over declared dep dir${plural}: ${list}. ` +
+    `Treating the install as failed: ShipIt may mount a shared dependency base that ` +
+    `deliberately leaves out every package with an install-time build, and your own install ` +
+    `is what puts those back — so a command that decides for itself whether to install ` +
+    `(a "test -d node_modules || pnpm install"-style guard) sees the base, skips, and leaves ` +
+    `the tree short of exactly those packages. Make agent.install run pnpm unconditionally; ` +
+    `pnpm skips the work itself when the tree is already up to date.`
+  );
+}
+
 // Emit only after all install checks pass; hoisting does not invalidate a dep-dir declaration.
 export function formatHoistedDepDirsWarning(depDirs: string[]): string {
   const list = depDirs.join(", ");

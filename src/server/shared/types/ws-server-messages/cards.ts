@@ -6,6 +6,7 @@ import type {
   SubAgentConsultCard,
   ActionChecklistCard,
   RepoSessionProposalCard,
+  SessionMessageProposalCard,
   PresentInlineCard,
   BranchAutoResetCard,
   BranchSyncedCard,
@@ -178,6 +179,24 @@ export interface WsRepoSessionProposalUpdate {
   state: "starting" | "started" | "failed";
   startedSessionId?: string;
   startedAt?: string;
+  errorMessage?: string;
+}
+
+/** docs/314 — a message the agent wants delivered to a session it cannot address. */
+export interface WsSessionMessageProposalCard {
+  type: "session_message_proposal_card";
+  sessionId: string;
+  card: SessionMessageProposalCard;
+}
+
+/** docs/314 — the user approved it: delivering → delivered, or failed. */
+export interface WsSessionMessageProposalUpdate {
+  type: "session_message_proposal_update";
+  sessionId: string;
+  cardId: string;
+  state: "delivering" | "delivered" | "failed";
+  deliveredAt?: string;
+  queued?: boolean;
   errorMessage?: string;
 }
 

@@ -5,7 +5,7 @@
  * test whose own pattern matches the command it is written in.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 // Sandbox sessions own their branches (docs/211). That exemption is about
 // branch ownership and nothing else, so it scopes the git checks below rather
@@ -27,6 +27,12 @@ if (typeof command !== "string" || !command.trim()) process.exit(0);
 /** Split a shell line into candidate commands. */
 function segments(line) {
   return line.split(/\|\||&&|[;\n|]/);
+}
+
+/** Strip one layer of matching shell quotes, which `parseGit` does not remove. */
+function unquote(token) {
+  const m = /^(['"])(.*)\1$/s.exec(token);
+  return m ? m[2] : token;
 }
 
 /** Parse a direct git invocation, or return null. */
@@ -58,6 +64,34 @@ function offends(seg) {
   if (sub === "checkout") {
     if (rest.includes("-b") || rest.includes("-B")) {
       return "`git checkout -b` creates a new branch";
+    }
+    // `git checkout main` moves off the session branch exactly as `git switch
+    // main` does, and used to pass while `switch` was refused. It matters more
+    // than the asymmetry suggests: a workspace left on the base branch aims
+    // ShipIt's own pull-request force-push at that branch, and a session
+    // clone's copy of it is frozen at clone time.
+    //
+    // Only the unambiguous branch form is judged. A pathspec restore — `git
+    // checkout .`, `-- <path>`, `-p`, or any operand that could name a file —
+    // is ordinary work, and refusing it would cost more than this catches.
+    // `-p` does not switch branches at all, whatever operand follows it.
+    if (
+      !rest.includes("--")
+      && !rest.some((t) => t === "-p" || t === "--patch")
+      && positionals.length === 1
+    ) {
+      // `parseGit` splits on whitespace, so a quoted operand still carries its
+      // quotes; judging those characters as "not a path" refused `git checkout
+      // "LICENSE"` while the bare spelling passed.
+      const name = unquote(positionals[0]);
+      // A name carrying a path character, or one that IS a path here, may be a
+      // restore. git itself treats that collision as ambiguous; so does this.
+      if (name && !/[./\\]/.test(name) && !existsSync(name)) {
+        return (
+          "`git checkout <branch>` moves off the session branch. (To restore a file of that "
+          + "name instead, write the pathspec form: `git checkout -- <path>`)"
+        );
+      }
     }
     return null;
   }
@@ -103,7 +137,7 @@ function offends(seg) {
 function offendsDestructive(seg) {
   const parsed = parseGit(seg);
   if (!parsed) return null;
-  const { sub, rest } = parsed;
+  const { sub, rest, positionals } = parsed;
 
   if (sub === "reset" && rest.includes("--hard")) {
     return "`git reset --hard` discards this branch's state";
@@ -145,6 +179,11 @@ function offendsDestructive(seg) {
     )
   ) {
     return "`git push --force` rewrites the remote branch";
+  }
+  // A leading `+` on the refspec is a force, with no flag to find: `git push
+  // origin +main` does everything `--force` does and read as an ordinary push.
+  if (sub === "push" && positionals.some((t) => unquote(t).startsWith("+"))) {
+    return "`git push origin +<ref>` is a forced refspec and rewrites the remote branch";
   }
   return null;
 }

@@ -19,7 +19,11 @@ what makes six parallel agents safe.
 Three consequences worth stating when they come up:
 
 - **The pane shows one service at a time.** A stack can declare many; the
-  toolbar's first control picks which one is on screen.
+  toolbar's first control picks which one is on screen. One service's *page*
+  can still hold another service inline — a style guide with a live component in
+  it — by naming that service in an iframe; build it for them with
+  `/shipit-docs/chat-links.md` → "Embedding a service instead of linking to it",
+  and a service a page embeds is started when the reader scrolls to it.
 - **Each preview is served at an origin of its own** — `{session}--{port}` as a
   subdomain of the host ShipIt is reached on — so the app sits at the root of
   that origin and absolute paths like `/assets/app.js` resolve normally. This is

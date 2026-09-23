@@ -93,6 +93,52 @@ export function npmLockfileMismatches(
   return mismatches;
 }
 
+/** pnpm's virtual store, and its own record that it reconciled the tree beside it. */
+export const PNPM_VIRTUAL_STORE = ".pnpm";
+export const PNPM_INSTALL_STATE_PREFIX = ".pnpm-workspace-state";
+
+/**
+ * Declared dep dirs that hold a pnpm tree pnpm never reconciled — `agent.install` exited 0 without
+ * a pnpm install having run over this tree at all.
+ *
+ * It matters because a verified pnpm base can be **pruned**: packages carrying an install-time
+ * build are left out of it deliberately, and the session's own install is what puts them back
+ * (`orchestrator/pnpm-base-prune.ts`, docs/276 section 5). A repo-authored command that decides for
+ * itself whether to install — `test -d node_modules || pnpm install` is the shape — sees the
+ * mounted base, skips, and leaves a tree that is silently short of exactly those packages. The
+ * command is the repo's to write; what ShipIt owes it is a loud failure rather than a working
+ * directory that quietly is not.
+ *
+ * The signal is pnpm's own `.pnpm-workspace-state-v1.json`, which the prune removes from the base
+ * and which every install writes back (measured 2026-09-21 on pnpm 11.22.0, 12.4.1 and 12.5.1, the
+ * whole range a verified base is mounted for). It is the one signal that survives an install that
+ * legitimately installs LESS than the lockfile: `--prod` and a filtered install both write it,
+ * while comparing package sets reports either as a failure.
+ */
+export function unreconciledPnpmDepDirs(workspaceRoot: string): string[] {
+  let depDirs: string[];
+  try {
+    depDirs = resolveShipitConfig(workspaceRoot).agent.depDirs;
+  } catch {
+    return [];
+  }
+
+  const out: string[] = [];
+  for (const depDir of depDirs) {
+    const root = path.join(workspaceRoot, depDir);
+    // Only a pnpm tree is in scope; anything else has no state file to be missing.
+    if (!fs.existsSync(path.join(root, PNPM_VIRTUAL_STORE, "lock.yaml"))) continue;
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    if (!entries.some((name) => name.startsWith(PNPM_INSTALL_STATE_PREFIX))) out.push(depDir);
+  }
+  return out;
+}
+
 export function staleDepDirs(workspaceRoot: string, installCommands: string[]): StaleDepDir[] {
   if (bypassesLockfile(installCommands)) return [];
 

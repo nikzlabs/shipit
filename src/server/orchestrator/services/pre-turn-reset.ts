@@ -3,6 +3,7 @@ import type { GitManager } from "../../shared/git.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import type { WsServerMessage } from "../../shared/types/ws-server-messages.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { findSharedBranchRefusal } from "./push-target-guard.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import {
   emitNoticeInTurn,
@@ -405,8 +406,10 @@ export async function autoResetMergedBranchOnContinue(
     const lfsWarning = lfs.usesLfs && lfs.status !== "materialized" ? buildLfsStubWarning() : "";
 
     // Match the remote to the reset branch so later plain pushes can fast-forward.
+    // The rewind is the point: the reset dropped commits above the base, and
+    // `checkResetPreconditions` has verified this is the session's own branch.
     try {
-      await git.forcePush("origin");
+      await git.forcePush("origin", undefined, { allowRewind: true });
     } catch (err) {
       console.warn(
         `[pre-turn-reset] remote heal force-push failed for ${sessionId} ` +
@@ -572,6 +575,23 @@ export async function checkResetPreconditions(
       detail: `HEAD is on '${branch}', not the session branch '${session.branch}'`,
     };
   }
+  /*
+    Matching `session.branch` is not proof of ownership, and neither is the
+    absence of a recorded branch a reason to assume it: the check above passed
+    on ANY branch when `session.branch` was falsy, and a headless session takes
+    an explicit branch name while a fork takes a caller-supplied one. What the
+    reset actually needs to know is narrower — it ends in a force-push that is
+    allowed to REWIND, so the one branch it must never resolve to is a shared
+    one. Ask that directly rather than inferring it from the recorded name.
+  */
+  if (await findSharedBranchRefusal(git, branch)) {
+    return {
+      clause: "wrong-branch",
+      detail:
+        `HEAD is on '${branch}', the repository's default branch — a shared branch ShipIt will `
+        + "not reset or republish, rather than a branch belonging to this session",
+    };
+  }
   if (await git.isRebaseInProgress()) {
     return {
       clause: "rebase-in-progress",
@@ -703,8 +723,9 @@ export async function resetBranchToBaseExplicit(
     );
 
     // Explicit callers must see push failure before continuing work on a diverged branch.
+    // Rewind allowed for the same reason as the automatic heal above.
     try {
-      await git.forcePush("origin");
+      await git.forcePush("origin", undefined, { allowRewind: true });
     } catch (err) {
       return refuse(
         sessionId,

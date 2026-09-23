@@ -322,11 +322,14 @@ function namesAWorkingDirectory(site: LauncherSite): boolean {
   return site.options !== undefined && /\bcwd\b|\bGIT_DIR\b|\bGIT_WORK_TREE\b/.test(site.options);
 }
 
+const PROJECT_HOOKS = "gitArgsWithProjectHooks";
+
 describe("git spawn coverage: hooks guard", () => {
   it("every orchestrator-side `git` process spawn goes through gitArgsWithHooksDisabled", () => {
     const sites = gitSpawnSites();
     const unguarded = sites
       .filter((s) => !(s.resolvedArgv ?? "").includes("gitArgsWithHooksDisabled"))
+      .filter((s) => !(s.resolvedArgv ?? "").includes(PROJECT_HOOKS))
       .map((s) => `${s.file}:${s.line} — ${s.text}`);
 
     expect(sites.length).toBeGreaterThan(5);
@@ -336,7 +339,61 @@ describe("git spawn coverage: hooks guard", () => {
       "The orchestrator is root and mounts the credential store and the Docker socket,",
       "and a session workspace is writable by untrusted plugin containers (planning#384).",
       "Wrap the argument list: execFileSync(\"git\", gitArgsWithHooksDisabled([...])).",
+      "",
+      `The ONE exception is ${PROJECT_HOOKS}, which is censused below and`,
+      "may only be used by a git that has already dropped root (docs/266 E4, req 9).",
     ].join("\n")).toEqual([]);
+  });
+});
+
+// E4 re-enables a project's hooks on ONE operation. Everything else keeps the override.
+describe("git spawn coverage: hooks-enabled sites are a census (docs/266-orchestrator-git-trust-boundary E4)", () => {
+  const HOOKS_ENABLED: Record<string, { count: number; why: string }> = {
+    "server/shared/git.ts": {
+      count: 1,
+      why: "`GitManager.commitWithProjectHooks` — the auto-commit's `git commit`, and the only "
+        + "operation req 9 names. It refuses to spawn at all unless this git will run without "
+        + "root authority (we are not root, or `gitSpawnOverridesForTree` resolved a uid to drop "
+        + "to), so a hook executes only at an authority its own author already holds (req 11). "
+        + "It is bounded by COMMIT_HOOK_TIMEOUT_MS and every non-zero exit retries through the "
+        + "ordinary hooks-disabled commit, so a hook can never cost the turn its work (req 10).",
+    },
+  };
+
+  it("every hooks-enabled site states why hooks are safe there", () => {
+    for (const [file, entry] of Object.entries(HOOKS_ENABLED)) {
+      expect(entry.why.length, `${file}: why may repo-controlled code run here?`).toBeGreaterThan(120);
+    }
+  });
+
+  // Where the helper is declared, not a site that uses it.
+  const DECLARING_FILE = path.join("shared", "git-hooks-args.ts");
+
+  it("nothing enables project hooks outside the census", () => {
+    const found = new Map<string, number>();
+    for (const file of ROOTS.flatMap(sourceFiles)) {
+      if (file.endsWith(DECLARING_FILE)) continue;
+      const src = stripComments(fs.readFileSync(file, "utf-8"));
+      const count = [...src.matchAll(new RegExp(`\\b${PROJECT_HOOKS}\\s*\\(`, "g"))].length;
+      if (count > 0) found.set(path.relative(REPO_SRC, file).split(path.sep).join("/"), count);
+    }
+
+    const expected = Object.fromEntries(
+      Object.entries(HOOKS_ENABLED).map(([file, { count }]) => [file, count]),
+    );
+
+    expect(Object.fromEntries([...found].sort()), [
+      `\`${PROJECT_HOOKS}\` runs code the REPOSITORY controls — a \`pre-commit\` hook,`,
+      "or whatever `core.hooksPath` in the repository's own config points at.",
+      "docs/266-orchestrator-git-trust-boundary req 9 asks for that on ShipIt's",
+      "auto-commit and nowhere else, and req 10 forbids it costing the turn its work.",
+      "",
+      "So a new site owes three answers, here, in `why`:",
+      "  - why this git cannot be running as root when it reaches the hook;",
+      "  - what bounds the hook (a hanging one must not hold the operation forever);",
+      "  - what happens when the hook fails — req 10's fallback covers the COMMIT only,",
+      "    so a `pre-push` or `post-checkout` site has no fallback to inherit.",
+    ].join("\n")).toEqual(expected);
   });
 });
 

@@ -5,6 +5,7 @@ import type Docker from "dockerode";
 import { reapOrphanEgressSidecars } from "./egress-orphan-reaper.js";
 import { stackLabelFilters } from "./stack-label.js";
 import { reapOrphanPluginInstalls } from "./plugin-install.js";
+import { reapOrphanPnpmBaseBuilds } from "./pnpm-base-builder.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -52,6 +53,7 @@ export interface DiskJanitorResult {
   logDirsRemoved: number;
   orphanEgressSidecarsRemoved: number;
   orphanPluginInstallsRemoved: number;
+  orphanPnpmBaseBuildsRemoved: number;
   sharedTreeNodesReclaimed: number;
 }
 
@@ -68,6 +70,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     logDirsRemoved: 0,
     orphanEgressSidecarsRemoved: 0,
     orphanPluginInstallsRemoved: 0,
+    orphanPnpmBaseBuildsRemoved: 0,
     sharedTreeNodesReclaimed: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
@@ -82,6 +85,13 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
       );
     } catch (err) {
       console.warn("[disk-janitor] orphan plugin-install sweep failed:", getMessage(err));
+    }
+    try {
+      result.orphanPnpmBaseBuildsRemoved = await reapOrphanPnpmBaseBuilds(
+        deps.docker, deps.stateDir, { stackName: deps.stackName },
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan pnpm-base-build sweep failed:", getMessage(err));
     }
   }
 

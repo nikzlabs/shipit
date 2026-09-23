@@ -100,6 +100,5 @@ function dispatchRemediationTurn(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
-    statusNudge: undefined,
   }));
 }

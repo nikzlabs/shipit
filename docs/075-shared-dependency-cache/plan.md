@@ -17,10 +17,10 @@ Mount a **per-repo dependency cache directory** into every session container. Pa
 
 | Package manager | Env var | Value |
 |-----------------|---------|-------|
-| npm | `npm_config_cache` | `/dep-cache/npm` |
+| npm | `npm_config_cache` | `/session-state/npm-cache` — per session, with `_cacache/content-v2` symlinked to `/dep-cache/npm/_cacache/content-v2` (`docs/276-shared-package-cache-integrity` section 1). Sharing the resolution index was install-time RCE between sessions of one repo. |
 | yarn (v1) | `YARN_CACHE_FOLDER` | `/dep-cache/yarn` |
 | yarn (berry) | `YARN_CACHE_FOLDER` | `/dep-cache/yarn` |
-| pnpm | `PNPM_STORE_DIR` | `/dep-cache/pnpm` |
+| pnpm | — | Nothing. `PNPM_STORE_DIR=/dep-cache/pnpm` was set until 2026-09-20 and never took effect — it is not a pnpm config env (measured on 12.5.1 with `pnpm store path`) — so `/dep-cache/pnpm` was only ever an empty directory. pnpm now has a store private to each session, mounted at `/workspace/.pnpm-store` (`docs/276-shared-package-cache-integrity` section 5); a directory every session of the repo could write is what H2/H4 attack. |
 
 ### Key files
 

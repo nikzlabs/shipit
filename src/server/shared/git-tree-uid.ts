@@ -68,3 +68,22 @@ export function gitSpawnOverridesForTree(
   if (treeUid === null) return {};
   return { uid: treeUid.uid, gid: treeUid.gid };
 }
+
+/**
+ * docs/266-orchestrator-git-trust-boundary E4 — may this git run the
+ * repository's own hooks? Only where it will not carry root authority: either
+ * this process is not root, or it is dropping to a non-root owner. Reads the
+ * overrides the spawn will actually use rather than resolving ownership a
+ * second time, so the answer cannot disagree with the process.
+ *
+ * `uid: 0` is a DROP that arrives at root, not an absent one:
+ * `SHIPIT_SESSION_WORKER_UID=0` is accepted (`session-worker-uid.ts`) and
+ * becomes the fallback identity for a root-owned legacy session directory.
+ */
+export function projectHooksAllowed(
+  spawnOverrides: { uid?: number },
+  getuid: () => number | undefined = () => process.getuid?.(),
+): boolean {
+  if (spawnOverrides.uid === 0) return false;
+  return (getuid() ?? 0) !== 0 || spawnOverrides.uid !== undefined;
+}

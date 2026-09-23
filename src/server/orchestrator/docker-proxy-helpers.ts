@@ -90,6 +90,21 @@ export async function readBody(req: http.IncomingMessage, maxSize: number): Prom
   });
 }
 
+/**
+ * A body the proxy inspects field by field, so a non-object is a request no check can read. Every
+ * route that reads a body forwards this object re-serialized rather than the received bytes, so
+ * the daemon decodes what the checks read.
+ */
+export function parseJsonObjectBody(buf: Buffer): Record<string, unknown> {
+  const text = buf.toString().trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Request body must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export async function forwardToDocker(
   socketPath: string,
   method: string,

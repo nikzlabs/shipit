@@ -10,6 +10,8 @@ export interface OverlayScope {
   repoUrl: string;
   runtimeKey: string;
   depDir?: string;
+  /** Partitions the base by publisher; see PNPM_VERIFIED_NAMESPACE (docs/276 section 5). */
+  namespace?: string;
 }
 
 export interface BasePointer {
@@ -42,6 +44,8 @@ export type PublishOutcome =
   | "lineage-advanced"
   | "flattened"
   | "reset"
+  // Same commit as the pointer, but its generation directory is gone: materialize it again.
+  | "repaired"
   | "skipped-equal"
   | "skipped-not-forward"
   | "skipped-ineligible";
@@ -92,35 +96,45 @@ function writeBasePointer(stateDir: string, pointer: BasePointer): void {
 }
 
 function scopeHashOf(scope: OverlayScope): string {
-  return overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir);
+  return overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir, scope.namespace);
 }
 
-// One orchestrator owns all publishes; serialize each scope through materialization and pointer swap.
+/**
+ * One orchestrator owns every operation on a scope, so ONE lock per scope serializes all three:
+ * materialization + pointer swap (publish), pointer read + claim (selection) and the sweep
+ * (docs/276-shared-package-cache-integrity section 5). Pointer-last ordering is necessary but not
+ * sufficient — a sweep that samples claims and the pointer separately, then awaits before deleting,
+ * can delete the generation a selection just chose.
+ */
 const scopeLocks = new Map<string, Promise<void>>();
 
-async function withScopeLock<T>(scopeHash: string, fn: () => Promise<T>): Promise<T> {
+export async function withScopeLock<T>(scopeHash: string, fn: () => Promise<T>): Promise<T> {
   const prev = scopeLocks.get(scopeHash) ?? Promise.resolve();
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
-  scopeLocks.set(scopeHash, (async () => {
+  // `entry` is THIS invocation's queue link, captured synchronously. Reading it back off the map
+  // after `await prev` was a real defect: two callers that enqueue in the same tick both resume
+  // holding the *second* one's link, so the first deletes it on exit and a third caller finds an
+  // empty map and enters while the second is still running (measured 2026-09-21).
+  const entry = (async () => {
     try {
       await prev;
     } catch {
       /* A prior holder's failure must not poison the queue. */
     }
     await gate;
-  })());
+  })();
+  scopeLocks.set(scopeHash, entry);
   try {
     await prev;
   } catch {
     // A prior holder's failure must not block this publish.
   }
-  const tail = scopeLocks.get(scopeHash);
   try {
     return await fn();
   } finally {
     release();
-    if (scopeLocks.get(scopeHash) === tail) scopeLocks.delete(scopeHash);
+    if (scopeLocks.get(scopeHash) === entry) scopeLocks.delete(scopeHash);
   }
 }
 
@@ -310,7 +324,21 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
     }
 
     if (current.commit === candidate.commit) {
-      return { outcome: "skipped-equal", pointer: current };
+      // …unless the generation the pointer names is gone. The whole-scope sweep removes a scope's
+      // base directory and leaves its pointer, which lives outside the swept tree
+      // (`steady-state-reclaim.ts`, `wholeScopeCandidate`) — so without this the scope never gets a
+      // base again until the default branch moves, while `selectGeneration` keeps falling back to
+      // the empty generation 0. `plugin-dep-store.ts` hit the same thing and works around it by
+      // deleting the pointer first, which still runs and still wins there.
+      if (fsSync.existsSync(current.baseDir)) {
+        return { outcome: "skipped-equal", pointer: current };
+      }
+      // Depth 1, as for every other whole-tree materialization: nothing was layered on.
+      return finalize(stateDir, materialize, chownBaseDir, candidate, scopeHash, {
+        outcome: "repaired",
+        depth: 1,
+        generation: current.generation + 1,
+      });
     }
 
     if (await isAncestor(current.commit, candidate.commit)) {

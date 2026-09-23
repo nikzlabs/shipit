@@ -206,4 +206,85 @@ describe("ActionChecklist", () => {
     render(<Harness items={[item({ key: "a" })]} />);
     expect(screen.queryByText("ANSWERED")).not.toBeInTheDocument();
   });
+
+  // docs/303-session-status-card req 41
+  describe("markdown", () => {
+    it("renders a label and a description as markdown, not as their source", () => {
+      render(
+        <Harness
+          items={[
+            item({
+              key: "a",
+              label: "Merge the **billing** branch",
+              description: "Runs `npm test` first",
+            }),
+          ]}
+        />,
+      );
+      expect(screen.getByText("billing").tagName).toBe("STRONG");
+      expect(screen.getByText("npm test").tagName).toBe("CODE");
+      expect(screen.queryByText(/\*\*billing\*\*/)).not.toBeInTheDocument();
+    });
+
+    it("renders an external link with its href intact", () => {
+      render(
+        <Harness items={[item({ key: "a", label: "Read [the plan](https://example.com/p)" })]} />,
+      );
+      expect(screen.getByRole("link", { name: "the plan" })).toHaveAttribute(
+        "href",
+        "https://example.com/p",
+      );
+    });
+
+    // A repo-file link and a ShipIt pointer are anchors with NO href, and the
+    // spec does not count those as interactive content, so a <label> around one
+    // forwards the click to its checkbox: opening a file would tick the row.
+    // Measured in Chromium — `role` and `tabindex` do not help — and jsdom
+    // counts tabindex, so it never forwards and cannot fail this. The DOM is
+    // therefore where the browser's rule is asserted from, as for the note
+    // control in SessionStatusCard.test.tsx.
+    it("keeps the row's markdown text out of the label, so a link in it cannot tick the row", () => {
+      render(<Harness items={[item({ key: "a", label: "Read [the plan](docs/303/plan.md)" })]} />);
+      const link = screen.getByRole("button", { name: "the plan" });
+      expect(link).not.toHaveAttribute("href");
+      expect(link.closest("label")).toBeNull();
+
+      fireEvent.click(link);
+      expect(screen.getByTestId("selected")).toBeEmptyDOMElement();
+      expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+    });
+
+    it("still ticks the row when the words beside the link are clicked", () => {
+      render(
+        <Harness items={[item({ key: "a", label: "Read [the plan](https://example.com/p) today" })]} />,
+      );
+      fireEvent.click(screen.getByText(/today/));
+      expect(screen.getByTestId("selected")).toHaveTextContent(/^a$/);
+    });
+
+    it("leaves a link in a description clickable too, and outside the label", () => {
+      render(
+        <Harness
+          items={[item({ key: "a", description: "See [the doc](https://example.com/d)" })]}
+        />,
+      );
+      const link = screen.getByRole("link", { name: "the doc" });
+      expect(link).toHaveAttribute("href", "https://example.com/d");
+      expect(link.closest("label")).toBeNull();
+
+      fireEvent.click(link);
+      expect(screen.getByTestId("selected")).toBeEmptyDOMElement();
+    });
+
+    // Without `shipitLinks` the scheme is dropped and only the words survive,
+    // so this is what says the rows opted in (docs/258).
+    it("renders an agent-authored ShipIt pointer as a pointer, not as its words", () => {
+      render(
+        <Harness
+          items={[item({ key: "a", label: "[Open settings](shipit-preview://web/settings)" })]}
+        />,
+      );
+      expect(screen.getByRole("button", { name: "Open settings" })).toBeInTheDocument();
+    });
+  });
 });

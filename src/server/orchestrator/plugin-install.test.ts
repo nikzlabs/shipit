@@ -7,9 +7,11 @@ import {
   createPluginInstallRunner,
   installCommands,
   installStampPath,
+  pluginInstallCommand,
   reapOrphanPluginInstalls,
   PLUGIN_INSTALL_DIR,
   PLUGIN_INSTALL_NETWORK,
+  PLUGIN_NPM_CACHE_DIR,
 } from "./plugin-install.js";
 import {
   PLUGIN_BROWSERS_DIR,
@@ -21,6 +23,7 @@ import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-c
 import { handPluginCheckoutToWorker, chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { readInstallRecord } from "./plugin-install-record.js";
 import { pluginWorkDir } from "./plugin-overlay.js";
+import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
 import type { PluginInstallJob } from "./plugin-generations.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
 import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
@@ -226,6 +229,28 @@ describe("installCommands", () => {
   it("keeps only exports that declare a non-empty install", () => {
     expect(installCommands([exportWith("a", "npm ci"), exportWith("b"), exportWith("c", "  ")]))
       .toEqual([{ plugin: "a", command: "npm ci" }]);
+  });
+});
+
+describe("pluginInstallCommand", () => {
+  it("leaves npm alone when there is no shared download cache", () => {
+    // Without one there is nothing to share, and npm's own default under HOME=/tmp is
+    // already private to this container.
+    expect(pluginInstallCommand("npm ci", false)).toBe(
+      `umask 002; mkdir -p ${PLUGIN_BROWSERS_DIR} ${PLUGIN_NPM_PREFIX_DIR}; npm ci`,
+    );
+  });
+
+  it("splits the cache before the plugin's own command can run (planning#603)", () => {
+    const cmd = pluginInstallCommand("npm ci", true);
+    const link = cmd.indexOf("ln -sfn");
+    const prune = cmd.indexOf("rm -rf /dep-cache/npm/_cacache/index-v5");
+    expect(link).toBeGreaterThan(-1);
+    expect(prune).toBeGreaterThan(-1);
+    expect(cmd.indexOf("npm ci")).toBeGreaterThan(Math.max(link, prune));
+    // A symlink, never a mount: `npm cache clean --force` rm -rf's the cache root.
+    expect(cmd).not.toContain("mount");
+    expect(cmd.endsWith("; npm ci")).toBe(true);
   });
 });
 
@@ -834,12 +859,73 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
       Mounts?: { Source: string; Target: string; ReadOnly?: boolean }[];
     };
     expect(host.Binds).toHaveLength(1);
-    expect(host.Mounts).toHaveLength(1);
-    expect(host.Mounts![0]!.Target).toBe("/dep-cache");
-    expect(host.Mounts![0]!.Source).toContain(path.join(stateDir, "dep-cache"));
-    expect(host.Mounts![0]!.ReadOnly).toBe(false);
+    // The shared download cache and this job's private npm cache — and nothing else.
+    expect(host.Mounts!.map((m) => m.Target).sort())
+      .toEqual([DEP_CACHE_CONTAINER_PATH, PLUGIN_NPM_CACHE_DIR].sort());
+    const shared = host.Mounts!.find((m) => m.Target === DEP_CACHE_CONTAINER_PATH)!;
+    expect(shared.Source).toContain(path.join(stateDir, "dep-cache"));
+    expect(shared.ReadOnly).toBe(false);
+    for (const mount of host.Mounts!) {
+      expect(mount.Source).not.toContain(path.join(stateDir, "dep-store"));
+    }
     const env = (containers[0]!.opts as { Env: string[] }).Env;
-    expect(env).toContain("npm_config_cache=/dep-cache/npm");
+    expect(env).toContain(`npm_config_cache=${PLUGIN_NPM_CACHE_DIR}`);
+    expect(env).toContain("YARN_CACHE_FOLDER=/dep-cache/yarn");
+  });
+
+  // planning#603 — a plugin's install scripts can forge a packument in a shared
+  // `index-v5` and get their postinstall run by the next install of that plugin.
+  it("keeps npm's resolution index out of the shared download cache (planning#603)", async () => {
+    const { docker, containers } = fakeDocker({ onStart: installs() });
+    await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    const opts = containers[0]!.opts as {
+      Env: string[];
+      Cmd: string[];
+      HostConfig: { Tmpfs: Record<string, string>; Mounts?: { Target: string }[] };
+    };
+    expect(opts.Env).toContain(`npm_config_cache=${PLUGIN_NPM_CACHE_DIR}`);
+    expect(opts.Env.join("\n")).not.toContain("npm_config_cache=/dep-cache");
+    expect(opts.HostConfig.Mounts?.map((m) => m.Target)).toContain(PLUGIN_NPM_CACHE_DIR);
+    expect(opts.Cmd[0]).toContain("rm -rf /dep-cache/npm/_cacache/index-v5");
+    // Content stays shared — cacache re-hashes it on every read.
+    expect(opts.Cmd[0]).toContain(
+      `ln -sfn /dep-cache/npm/_cacache/content-v2 ${PLUGIN_NPM_CACHE_DIR}/_cacache/content-v2`,
+    );
+    // NOT a tmpfs. npm puts `_npx` trees and git-dependency checkouts under its cache
+    // root, and Docker mounts a tmpfs `noexec` — running an `npx`-installed tool would
+    // fail, and the tmpfs size would cap a dependency tree against container memory.
+    expect(opts.HostConfig.Tmpfs[PLUGIN_NPM_CACHE_DIR]).toBeUndefined();
+  });
+
+  it("gives each install job an npm cache with no trace of the last one (planning#603)", async () => {
+    const runner = {
+      image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    };
+    const first = fakeDocker({ onStart: installs() });
+    await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
+
+    const source = (first.containers[0]!.opts.HostConfig as {
+      Mounts: { Source: string; Target: string; VolumeOptions?: { Subpath?: string } }[];
+    }).Mounts.find((m) => m.Target === PLUGIN_NPM_CACHE_DIR)!;
+    const host = path.join(pluginWorkDir(stateDir, "tools", COMMIT), "npm-cache");
+    expect(source.Source === host || source.VolumeOptions?.Subpath?.includes("npm-cache"))
+      .toBeTruthy();
+
+    // A forged packument left by this install must not survive into the next one.
+    fs.mkdirSync(path.join(host, "_cacache", "index-v5"), { recursive: true });
+    fs.writeFileSync(path.join(host, "_cacache", "index-v5", "forged"), "packument");
+
+    // `force`, so this re-runs the install rather than adopting the shared base — the one
+    // path that reaches this directory a second time. Any other job has its own.
+    const second = fakeDocker({ onStart: installs() });
+    await createPluginInstallRunner({ ...runner, docker: second.docker })(
+      { ...job([npmExport()]), force: true },
+    );
+
+    expect(fs.existsSync(path.join(host, "_cacache", "index-v5", "forged"))).toBe(false);
   });
 
   it("keeps the download cache in this repository's own subtree (req 15)", async () => {
