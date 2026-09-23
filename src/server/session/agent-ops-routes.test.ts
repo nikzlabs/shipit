@@ -675,7 +675,7 @@ describe("agent-ops routes", () => {
   it("GET /agent-ops/session/cohort forwards to /cohort with no agent-supplied target", async () => {
     client.setResponse("GET", "/cohort", {
       ok: true, status: 200,
-      body: { self: { id: "ses_me" }, siblings: [], children: [] },
+      body: { self: { id: "ses_me" }, children: [] },
     });
     const res = await app.inject({ method: "GET", url: "/agent-ops/session/cohort" });
     expect(res.statusCode).toBe(200);

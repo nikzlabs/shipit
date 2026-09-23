@@ -232,20 +232,35 @@ describe("resolveSessionCohort (docs/233 — `shipit session whoami`)", () => {
     ctx = makeCohort();
   });
 
-  it("resolves self, parent, and live siblings for a spawned session", () => {
+  it("resolves self and parent for a spawned session, and never its siblings", () => {
     const view = resolveSessionCohort(ctx.sessionManager, ctx.registry, "elementalist");
 
     expect(view.self).toMatchObject({ id: "elementalist", title: "Elementalist catalog", branch: "shipit/elementalist" });
     expect(view.parent).toMatchObject({ id: "parent", title: "Spell catalogs" });
-    expect(view.siblings.map((s) => s.id).sort()).toEqual(["druid", "necromancer"]);
+    expect(view).not.toHaveProperty("siblings");
+    expect(JSON.stringify(view)).not.toMatch(/druid|necromancer/);
     expect(view.children).toEqual([]);
+  });
+
+  it("projects transcript and PR onto self and children, but not onto the parent", () => {
+    const projections = {
+      chatHistoryManager: { loadLatestAssistantText: (id: string) => `latest from ${id}` },
+      prStatusPoller: { getStatus: (id: string) => ({ prUrl: `https://example.test/${id}` }) },
+    };
+
+    const child = resolveSessionCohort(ctx.sessionManager, ctx.registry, "elementalist", projections);
+    expect(child.self.latestAssistantMessage).toBe("latest from elementalist");
+    expect(child.parent).not.toHaveProperty("latestAssistantMessage");
+    expect(child.parent).not.toHaveProperty("prUrl");
+
+    const parent = resolveSessionCohort(ctx.sessionManager, ctx.registry, "parent", projections);
+    expect(parent.children.every((c) => c.latestAssistantMessage === `latest from ${c.id}`)).toBe(true);
   });
 
   it("resolves children for a parent, and reports no parent for a top-level session", () => {
     const view = resolveSessionCohort(ctx.sessionManager, ctx.registry, "parent");
 
     expect(view.parent).toBeUndefined();
-    expect(view.siblings).toEqual([]);
     expect(view.children.map((c) => c.id).sort()).toEqual(["druid", "elementalist", "necromancer"]);
   });
 
