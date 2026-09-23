@@ -34,7 +34,7 @@
     "measure-pr-poll-cost": "tsx scripts/measure-pr-poll-cost.ts"
   },
   "dependencies": {
-    "@fastify/multipart": "10.0.0",
+    "@fastify/multipart": "10.1.1",
     "@fastify/static": "10.1.2",
     "@fastify/websocket": "11.2.0",
     "@formkit/auto-animate": "0.10.0",
