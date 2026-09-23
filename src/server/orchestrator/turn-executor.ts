@@ -198,6 +198,17 @@ function reseedConversationForRetry(
   }
 }
 
+// A turn parked on its PR flow can reach the release flow after a successor already
+// has; its older markers must not overwrite the successor's newer card.
+const releaseFlowEpochs = new WeakMap<object, number>();
+function claimReleaseFlow(runner: object, epoch: number | undefined): boolean {
+  if (epoch === undefined) return true;
+  const latest = releaseFlowEpochs.get(runner);
+  if (latest !== undefined && latest > epoch) return false;
+  releaseFlowEpochs.set(runner, epoch);
+  return true;
+}
+
 export async function executeAgentTurn(
   runner: SessionRunnerInterface | null,
   deps: SystemTurnDeps,
@@ -1131,7 +1142,7 @@ export async function executeAgentTurn(
         console.error("[turn] pr re-arm (reset) flow failed:", err);
       }
     }
-    if (runner && deps.postTurnReleaseFlow) {
+    if (runner && deps.postTurnReleaseFlow && claimReleaseFlow(runner, thisTurnEpoch)) {
       try {
         await deps.postTurnReleaseFlow(sessionId, runner.sessionDir, turnText(), emit);
       } catch (err) {
