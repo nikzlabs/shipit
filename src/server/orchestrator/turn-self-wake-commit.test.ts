@@ -1851,7 +1851,7 @@ describe("post-turn flow for a self-woken turn", () => {
     h.runner.dispose({ force: true });
   });
 
-  it("gives each of two CLI-started turns its own text and summary when both start during one handover", async () => {
+  it("gives each of three CLI-started turns its own text and summary when all start during one handover", async () => {
     let releasePr: () => void = () => {};
     let signalPrEntered: () => void = () => {};
     const parked = new Promise<void>((r) => { releasePr = r; });
@@ -1870,8 +1870,9 @@ describe("post-turn flow for a self-woken turn", () => {
         }),
         postTurnReleaseFlow: vi.fn(async (_sid: string, _dir: string, text: string) => {
           releaseTexts.push(text);
-          // C's edit lands after B's commit, so C has a commit of its own.
+          // Each edit lands after the previous commit, so every turn has a commit of its own.
           if (text === "Work B") fs.writeFileSync(path.join(repoDir, "c.txt"), "work C\n");
+          if (text === "Work C") fs.writeFileSync(path.join(repoDir, "d.txt"), "work D\n");
         }),
       },
     });
@@ -1893,13 +1894,59 @@ describe("post-turn flow for a self-woken turn", () => {
     await flush();
     result();
     await flush();
+    say("Work D");
+    await flush();
+    result();
+    await flush();
 
     releasePr();
-    await waitFor(() => releaseTexts.length === 3, "all three release flows ran");
+    await waitFor(() => releaseTexts.length === 4, "all four release flows ran");
 
-    expect(releaseTexts).toEqual(["Work A", "Work B", "Work C"]);
-    expect(commitSubjects().slice(0, 3)).toEqual(["Work C", "Work B", "Work A"]);
+    expect(releaseTexts).toEqual(["Work A", "Work B", "Work C", "Work D"]);
+    expect(commitSubjects().slice(0, 4)).toEqual(["Work D", "Work C", "Work B", "Work A"]);
     expect(gitOut("status", "--porcelain")).toBe("");
+
+    h.runner.dispose({ force: true });
+  });
+
+  it("settles a CLI-started turn that crashes after another turn ended during the same handover", async () => {
+    let releasePr: () => void = () => {};
+    let signalPrEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePr = r; });
+    const prEntered = new Promise<void>((r) => { signalPrEntered = r; });
+    let prCalls = 0;
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(path.join(repoDir, "file.txt"), "work A\n"),
+      extraDeps: {
+        postTurnPrFlow: vi.fn(async () => {
+          prCalls += 1;
+          if (prCalls === 1) {
+            signalPrEntered();
+            await parked;
+          }
+        }),
+      },
+    });
+    const say = (text: string) =>
+      h.agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text }] });
+
+    say("Work A");
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await prEntered;
+    expect(h.drainNext).toHaveBeenCalledTimes(1);
+
+    say("Work B");
+    await flush();
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await flush();
+    say("Work C");
+    await flush();
+    h.agent.emit("done", 1);
+    await flush();
+
+    releasePr();
+    await waitFor(() => h.drainNext.mock.calls.length === 2, "crashed turn drained for itself");
+    await waitFor(() => !h.runner.running, "crashed turn cleared running");
 
     h.runner.dispose({ force: true });
   });

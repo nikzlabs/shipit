@@ -487,7 +487,7 @@ export async function executeAgentTurn(
   };
   // Recovery owns teardown after done stands down. Adoption must finish handing over its guards.
   const settleTurnWithoutRedispatch = async (): Promise<void> => {
-    if (rearmInFlight) await rearmInFlight;
+    await settleHandovers();
     settleTurnFacts();
     holdPostTurn();
     try {
@@ -557,7 +557,7 @@ export async function executeAgentTurn(
       return false;
     }
     // An adopted turn does not own input.prompt. Heal it, but never rerun its predecessor.
-    if (rearmInFlight) await rearmInFlight;
+    await settleHandovers();
     if (servingAdoptedTurn) {
       console.log(
         `[turn] auth healed for ${sessionId}; adopted turn ends without re-dispatch (docs/140)`,
@@ -915,7 +915,7 @@ export async function executeAgentTurn(
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
       agentErrored = true;
-      if (rearmInFlight) await rearmInFlight;
+      await settleHandovers();
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -997,7 +997,8 @@ export async function executeAgentTurn(
   };
   let servingAdoptedTurn = false;
   // Adoption already counts while its async handover still awaits the predecessor's teardown.
-  const servingCliStartedTurn = (): boolean => servingAdoptedTurn || rearmInFlight !== null;
+  const servingCliStartedTurn = (): boolean =>
+    servingAdoptedTurn || rearmInFlight !== null || gatedResults > 0;
 
   let drainFired = false;
   // Fired vs. settled: the flag is set before the commit this awaits, so only `drainSettled`
@@ -1203,22 +1204,32 @@ export async function executeAgentTurn(
 
   // An adopted turn can finish before handover; every terminal path must wait for this promise.
   let rearmInFlight: Promise<void> | null = null;
-  // A turn that starts after the adopted turn has already ended needs a handover of its own.
-  let adoptedTurnEndedDuringRearm = false;
-  let deferredRearmReason: string | null = null;
+  // Results that arrive during a handover settle one at a time, in arrival order.
+  let resultGate: Promise<void> = Promise.resolve();
+  let gatedResults = 0;
+  // A CLI turn began after a gated result, so no handover has taken it yet.
+  let adoptionOwed = false;
   const beginRearm = (reason: string): Promise<void> => {
     if (!useStreaming) return Promise.resolve();
-    if (rearmInFlight) {
-      if (adoptedTurnEndedDuringRearm) deferredRearmReason ??= reason;
-      return rearmInFlight;
-    }
+    if (gatedResults > 0) adoptionOwed = true;
+    if (rearmInFlight) return rearmInFlight;
     if (!streamingPostTurnFired) return Promise.resolve();
-    adoptedTurnEndedDuringRearm = false;
+    adoptionOwed = false;
     const pending = rearmForCliStartedTurn(reason).finally(() => {
       if (rearmInFlight === pending) rearmInFlight = null;
     });
     rearmInFlight = pending;
     return pending;
+  };
+
+  // Terminal paths run as the newest turn, so every earlier handover and result must settle first.
+  const settleHandovers = async (): Promise<void> => {
+    for (;;) {
+      if (rearmInFlight) await rearmInFlight;
+      else if (gatedResults > 0) await resultGate;
+      else if (adoptionOwed && streamingPostTurnFired) await beginRearm("cli-started turn ended without a result");
+      else return;
+    }
   };
 
   agent.on("event", async (event: AgentEvent) => {
@@ -1240,28 +1251,45 @@ export async function executeAgentTurn(
       return;
     }
     if (event.type !== "agent_result") return;
-    // Capture before an await lets adoption reset the live summary.
-    if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
-    snapshotTurnText();
     // Which turn this result ends is decided by the order events arrived in, so
     // it is taken BEFORE yielding: the await below can span a replay or a wake,
     // and a result must not answer a turn that began while it was waiting.
     resultsObserved += 1;
     const answersThisPrompt = takeResultAttribution();
-    if (rearmInFlight) {
-      // The handover ends at whatever turn is current then, which may already be the next one.
-      const endedEpoch = runner?.turnEpoch;
-      const endedSummary = runner?.turnSummary ?? "";
-      const endedText = runner?.accumulatedText ?? "";
-      // A deferred handover can start while this one settles, so wait until none is pending.
-      for (let pending = rearmInFlight; pending !== null; pending = rearmInFlight) {
-        adoptedTurnEndedDuringRearm = true;
-        await pending;
-      }
+    if (rearmInFlight === null && gatedResults === 0) {
+      // Capture before an await lets adoption reset the live summary.
+      if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
+      snapshotTurnText();
+      await handleResult(event, answersThisPrompt);
+      return;
+    }
+    // A handover ends at whatever turn is current then, which may already be a later one.
+    const endedEpoch = runner?.turnEpoch;
+    const endedSummary = runner?.turnSummary ?? "";
+    const endedText = runner?.accumulatedText ?? "";
+    const previous = resultGate;
+    let openGate = (): void => {};
+    resultGate = new Promise<void>((resolve) => { openGate = resolve; });
+    gatedResults += 1;
+    try {
+      await previous;
+      for (let pending = rearmInFlight; pending !== null; pending = rearmInFlight) await pending;
+      // The previous result's flow already fired, so this turn needs a handover of its own.
+      if (streamingPostTurnFired) await beginRearm("cli-started turn ended during a handover");
       thisTurnEpoch = endedEpoch;
       resultTurnSummary ??= endedSummary;
       resultTurnText ??= endedText;
+      await handleResult(event, answersThisPrompt);
+    } finally {
+      gatedResults -= 1;
+      openGate();
     }
+  });
+
+  const handleResult = async (
+    event: Extract<AgentEvent, { type: "agent_result" }>,
+    answersThisPrompt: boolean,
+  ): Promise<void> => {
     receivedResult = true;
     sawOwnResult = true;
     runner?.emit("turn_result", { compact: input.compact === true });
@@ -1332,11 +1360,6 @@ export async function executeAgentTurn(
           releasePostTurn();
         }
       })();
-      if (deferredRearmReason !== null) {
-        const reason = deferredRearmReason;
-        deferredRearmReason = null;
-        void beginRearm(reason);
-      }
       await streamingPostTurn;
     } else {
       // One-shot teardown spans result and done; done releases this hold.
@@ -1344,7 +1367,7 @@ export async function executeAgentTurn(
       await postTurnStep("token-sync", trySyncToken);
       await postTurnStep("drain", tryDrain);
     }
-  });
+  };
 
   agent.on("done", async (code: number | null) => {
     console.log("[turn] agent exited with code", code);
@@ -1354,7 +1377,8 @@ export async function executeAgentTurn(
     if (quotaRetryInProgress) return;
     // After the handover, never before it: a turn adopted here owns this terminal path,
     // and the predecessor's snapshot would be discarded by the re-arm anyway.
-    if (rearmInFlight) await rearmInFlight;
+    await settleHandovers();
+    if (automaticRecoveryInProgress || quotaRetryInProgress) return;
     settleTurnFacts();
     holdPostTurn();
     try {
