@@ -1792,4 +1792,62 @@ describe("post-turn flow for a self-woken turn", () => {
 
     runner.dispose({ force: true });
   });
+
+  // The release flow reads the turn's text after the drain; an adopted turn must not
+  // lend its markers to the turn before it, nor lose its own.
+  it("hands each turn's release flow its own text when the CLI starts a turn mid-flow", async () => {
+    let releasePr: () => void = () => {};
+    let signalPrEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePr = r; });
+    const prEntered = new Promise<void>((r) => { signalPrEntered = r; });
+    let prCalls = 0;
+    const releaseTexts: string[] = [];
+    const h = await runFirstStreamingTurn({
+      // The PR flow runs only after a commit, so the turn must change something.
+      onRun: () => fs.writeFileSync(path.join(repoDir, "file.txt"), "draft\n"),
+      extraDeps: {
+        postTurnPrFlow: vi.fn(async () => {
+          prCalls += 1;
+          if (prCalls === 1) {
+            signalPrEntered();
+            await parked;
+          }
+        }),
+        postTurnReleaseFlow: vi.fn(async (_sid: string, _dir: string, text: string) => {
+          releaseTexts.push(text);
+        }),
+      },
+    });
+
+    h.agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Draft written" }] });
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await prEntered;
+
+    const marker = '<!--shipit:release {"action":"propose","version":"0.5.1","tag":"v0.5.1"}-->';
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [
+        { type: "text", text: marker },
+        { type: "tool_use", id: "status-1", name: "mcp__shipit__session_status", input: {} },
+      ],
+    });
+    await flush();
+    expect(h.runner.running).toBe(true);
+    releasePr();
+    await waitFor(() => releaseTexts.length === 1, "first turn's release flow ran");
+
+    h.agent.emit("event", {
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "status-1", content: "ok" }],
+    });
+    h.agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Confirm on the card." }] });
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => releaseTexts.length === 2, "adopted turn's release flow ran");
+
+    expect(releaseTexts[0]).toBe("Draft written");
+    expect(releaseTexts[1]).toContain(marker);
+    expect(releaseTexts[1]).toContain("Confirm on the card.");
+
+    h.runner.dispose({ force: true });
+  });
 });
