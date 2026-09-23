@@ -1850,4 +1850,57 @@ describe("post-turn flow for a self-woken turn", () => {
 
     h.runner.dispose({ force: true });
   });
+
+  it("gives each of two CLI-started turns its own text and summary when both start during one handover", async () => {
+    let releasePr: () => void = () => {};
+    let signalPrEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePr = r; });
+    const prEntered = new Promise<void>((r) => { signalPrEntered = r; });
+    let prCalls = 0;
+    const releaseTexts: string[] = [];
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(path.join(repoDir, "file.txt"), "work A\n"),
+      extraDeps: {
+        postTurnPrFlow: vi.fn(async () => {
+          prCalls += 1;
+          if (prCalls === 1) {
+            signalPrEntered();
+            await parked;
+          }
+        }),
+        postTurnReleaseFlow: vi.fn(async (_sid: string, _dir: string, text: string) => {
+          releaseTexts.push(text);
+          // C's edit lands after B's commit, so C has a commit of its own.
+          if (text === "Work B") fs.writeFileSync(path.join(repoDir, "c.txt"), "work C\n");
+        }),
+      },
+    });
+    const say = (text: string) =>
+      h.agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text }] });
+    const result = () =>
+      h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+
+    say("Work A");
+    result();
+    await prEntered;
+
+    fs.writeFileSync(path.join(repoDir, "b.txt"), "work B\n");
+    say("Work B");
+    await flush();
+    result();
+    await flush();
+    say("Work C");
+    await flush();
+    result();
+    await flush();
+
+    releasePr();
+    await waitFor(() => releaseTexts.length === 3, "all three release flows ran");
+
+    expect(releaseTexts).toEqual(["Work A", "Work B", "Work C"]);
+    expect(commitSubjects().slice(0, 3)).toEqual(["Work C", "Work B", "Work A"]);
+    expect(gitOut("status", "--porcelain")).toBe("");
+
+    h.runner.dispose({ force: true });
+  });
 });

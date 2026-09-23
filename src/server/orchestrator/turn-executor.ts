@@ -1203,10 +1203,17 @@ export async function executeAgentTurn(
 
   // An adopted turn can finish before handover; every terminal path must wait for this promise.
   let rearmInFlight: Promise<void> | null = null;
+  // A turn that starts after the adopted turn has already ended needs a handover of its own.
+  let adoptedTurnEndedDuringRearm = false;
+  let deferredRearmReason: string | null = null;
   const beginRearm = (reason: string): Promise<void> => {
     if (!useStreaming) return Promise.resolve();
-    if (rearmInFlight) return rearmInFlight;
+    if (rearmInFlight) {
+      if (adoptedTurnEndedDuringRearm) deferredRearmReason ??= reason;
+      return rearmInFlight;
+    }
     if (!streamingPostTurnFired) return Promise.resolve();
+    adoptedTurnEndedDuringRearm = false;
     const pending = rearmForCliStartedTurn(reason).finally(() => {
       if (rearmInFlight === pending) rearmInFlight = null;
     });
@@ -1241,7 +1248,20 @@ export async function executeAgentTurn(
     // and a result must not answer a turn that began while it was waiting.
     resultsObserved += 1;
     const answersThisPrompt = takeResultAttribution();
-    if (rearmInFlight) await rearmInFlight;
+    if (rearmInFlight) {
+      // The handover ends at whatever turn is current then, which may already be the next one.
+      const endedEpoch = runner?.turnEpoch;
+      const endedSummary = runner?.turnSummary ?? "";
+      const endedText = runner?.accumulatedText ?? "";
+      // A deferred handover can start while this one settles, so wait until none is pending.
+      for (let pending = rearmInFlight; pending !== null; pending = rearmInFlight) {
+        adoptedTurnEndedDuringRearm = true;
+        await pending;
+      }
+      thisTurnEpoch = endedEpoch;
+      resultTurnSummary ??= endedSummary;
+      resultTurnText ??= endedText;
+    }
     receivedResult = true;
     sawOwnResult = true;
     runner?.emit("turn_result", { compact: input.compact === true });
@@ -1312,6 +1332,11 @@ export async function executeAgentTurn(
           releasePostTurn();
         }
       })();
+      if (deferredRearmReason !== null) {
+        const reason = deferredRearmReason;
+        deferredRearmReason = null;
+        void beginRearm(reason);
+      }
       await streamingPostTurn;
     } else {
       // One-shot teardown spans result and done; done releases this hold.
