@@ -85,9 +85,10 @@ function currentRevision(sessionId: string): number {
 }
 
 /**
- * Writes in flight per session, across every hook instance. The composer's Send
- * barrier must also hold for a write made in the Session settings dialog, whose
- * rebuild of a new session's container can take seconds.
+ * Session-settings writes in flight per session, across every surface: this
+ * hook's network writes and the dialog's SSH grant writes. The composer's Send
+ * barrier holds while any is open, because a first turn sent before the write
+ * lands runs without it — and a new session's network rebuild can take seconds.
  */
 const inFlight = new Map<string, number>();
 const inFlightListeners = new Set<() => void>();
@@ -97,6 +98,17 @@ function changeInFlight(sessionId: string, delta: number): void {
   if (next > 0) inFlight.set(sessionId, next);
   else inFlight.delete(sessionId);
   for (const listener of inFlightListeners) listener();
+}
+
+/** Marks a session-settings write as in flight; call the returned function when it settles. */
+export function beginSessionSettingWrite(sessionId: string): () => void {
+  changeInFlight(sessionId, 1);
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    changeInFlight(sessionId, -1);
+  };
 }
 
 function subscribeInFlight(listener: () => void): () => void {
@@ -249,10 +261,11 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           const settings = (await res.json()) as EgressSessionSettings;
 
           if (currentRevision(sessionId) !== revision) return;
+          // Notify even if this hook has moved on: the dialog closes mid-write, and
+          // the composer must still re-read the value.
+          notifySessionNetworkModeChanged(sessionId, listenerRef.current);
           if (mountedSession.current !== sessionId) return;
           applySettings(settings);
-
-          notifySessionNetworkModeChanged(sessionId, listenerRef.current);
         } catch (err) {
           console.error("[session-network-mode] failed to write the session's mode:", err);
 

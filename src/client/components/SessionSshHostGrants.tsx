@@ -16,6 +16,7 @@ import { useEffect, useState } from "react";
 import { CheckSquareIcon, SquareIcon, TerminalWindowIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { beginSessionSettingWrite } from "../hooks/useSessionNetworkMode.js";
 import type { SessionSshHostsView } from "../../server/shared/types.js";
 
 /**
@@ -62,6 +63,7 @@ export function SessionSshHostGrants({ sessionId, open }: { sessionId: string; o
     const previous = view;
     setView({ ...view, granted });
     setSaving(true);
+    const endWrite = beginSessionSettingWrite(sessionId);
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/ssh-hosts`, {
         method: "PUT",
@@ -75,6 +77,7 @@ export function SessionSshHostGrants({ sessionId, open }: { sessionId: string; o
       useUiStore.getState().setToast({ message: "Failed to update this session's SSH destinations" });
       console.error("[ssh-hosts] failed to write grants:", err);
     } finally {
+      endWrite();
       setSaving(false);
     }
   };
