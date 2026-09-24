@@ -185,26 +185,21 @@ export function filterVisibleInSidebar(
     group.sort((a, b) => (Date.parse(resolvedAt(b) ?? "") || 0) - (Date.parse(resolvedAt(a) ?? "") || 0));
     for (const s of group.slice(0, maxMerged)) topResolvedIds.add(s.id);
   }
-  // Root ancestry protects the whole spawn tree; roots must not self-reference.
-  const liveIds = new Set<string>();
-  const liveRoots = new Set<string>();
-  for (const s of sessions) {
-    if (s.userArchived) continue;
-    liveIds.add(s.id);
-    if (s.rootSessionId) liveRoots.add(s.rootSessionId);
-  }
-  const exemptFromCap = (s: SessionInfo): boolean =>
-    liveRoots.has(s.id) ||
-    (s.rootSessionId !== undefined && liveIds.has(s.rootSessionId));
   // docs/316-done-sessions-return-memory req 2 — the cap hides only done
   // sessions, so a hidden session is always one the idle enforcer may stop.
+  // A root with unfinished work below it is not done, so it stays; a done
+  // member stays with its root so the spawn tree is not torn apart.
   const isDone = doneSessionTest(sessions);
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const shownOnItsOwn = (s: SessionInfo | undefined): boolean =>
+    !!s && !s.userArchived && (!isDone(s) || topResolvedIds.has(s.id));
   return sessions.filter(
     (s) =>
-      !s.userArchived &&
-      (!isDone(s)
-        || topResolvedIds.has(s.id)
-        || exemptFromCap(s)),
+      shownOnItsOwn(s)
+      || (!s.userArchived
+        && s.rootSessionId !== undefined
+        && s.rootSessionId !== s.id
+        && shownOnItsOwn(byId.get(s.rootSessionId))),
   );
 }
 

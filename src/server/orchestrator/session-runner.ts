@@ -1033,17 +1033,23 @@ export class SessionRunnerRegistry {
   private _depCacheDirResolver?: (sessionId: string) => string | undefined;
   private _onRunnerIdle?: (sessionId: string) => void;
   private _onRunnerCreated?: (runner: SessionRunnerInterface) => void;
+  private _onViewersOrphaned?: (sessionId: string, incarnation: number) => void;
+  // Sessions whose runner was disposed while viewers were still attached to it.
+  private orphanedViewers = new Set<string>();
 
   constructor(opts?: {
     runnerFactory?: SessionRunnerFactory;
     depCacheDirResolver?: (sessionId: string) => string | undefined;
     onRunnerIdle?: (sessionId: string) => void;
     onRunnerCreated?: (runner: SessionRunnerInterface) => void;
+    // Viewers left on a disposed runner get no events from its replacement.
+    onViewersOrphaned?: (sessionId: string, incarnation: number) => void;
   }) {
     this._runnerFactory = opts?.runnerFactory ?? ((o) => new SessionRunner(o));
     this._depCacheDirResolver = opts?.depCacheDirResolver;
     this._onRunnerIdle = opts?.onRunnerIdle;
     this._onRunnerCreated = opts?.onRunnerCreated;
+    this._onViewersOrphaned = opts?.onViewersOrphaned;
   }
 
   getOrCreate(sessionId: string, sessionDir: string, defaultAgentId: AgentId): SessionRunnerInterface {
@@ -1059,13 +1065,20 @@ export class SessionRunnerRegistry {
       depCacheDir: this._depCacheDirResolver?.(sessionId),
     });
     this.incarnations.set(sessionId, (this.incarnations.get(sessionId) ?? 0) + 1);
-    runner.on("disposed", () => this.runners.delete(sessionId));
+    const created = runner;
+    created.on("disposed", () => {
+      if (created.viewerCount > 0) this.orphanedViewers.add(sessionId);
+      this.runners.delete(sessionId);
+    });
     if (this._onRunnerIdle) {
       const cb = this._onRunnerIdle;
       runner.on("idle", () => cb(sessionId));
     }
     this._onRunnerCreated?.(runner);
     this.runners.set(sessionId, runner);
+    if (this.orphanedViewers.delete(sessionId)) {
+      this._onViewersOrphaned?.(sessionId, this.incarnation(sessionId));
+    }
     return runner;
   }
 

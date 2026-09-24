@@ -108,36 +108,25 @@ describe("docs/316-done-sessions-return-memory — done sessions return their me
     expect(stopServices).not.toHaveBeenCalled();
   });
 
-  it("leaves a done session the user has open, and stops it a wait after they leave (req 8)", () => {
+  it("stops a done session the user has open, 10 minutes after it became done (req 8)", () => {
     const runner = { viewerCount: 1, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
-    const { enforce, destroy } = harness([session()], runner);
-    afterWait(enforce);
-    expect(destroy).not.toHaveBeenCalled();
-
-    runner.viewerCount = 0;
-    runner.lastViewerDetachAt = Date.now();
-    enforce();
-    expect(destroy).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(WAIT);
-    enforce();
-    expect(destroy).toHaveBeenCalledWith(ID);
-  });
-
-  it("keeps the wait after the viewer leaves when the runner is gone before it ends (req 8)", () => {
-    const runner = { viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
-    let current: typeof runner | undefined = runner;
-    const { enforce, destroy } = harness([session()], () => current);
+    const { enforce, destroy, dispose } = harness([session()], runner);
     enforce();
     vi.advanceTimersByTime(WAIT - 60_000);
     runner.lastViewerDetachAt = Date.now();
     enforce();
-    current = undefined;
-    vi.advanceTimersByTime(120_000);
-    enforce();
     expect(destroy).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(WAIT);
+    vi.advanceTimersByTime(60_000);
     enforce();
+    expect(dispose).toHaveBeenCalledWith(ID);
     expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("leaves an open session with memory below the budget when it is not done", () => {
+    const runner = { viewerCount: 1, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    const { enforce, destroy } = harness([session({ mergedAt: undefined })], runner);
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
   });
 
   it("leaves a done session whose agent is busy", () => {
@@ -147,10 +136,17 @@ describe("docs/316-done-sessions-return-memory — done sessions return their me
     expect(destroy).not.toHaveBeenCalled();
   });
 
-  it("leaves a merged parent with a live child", () => {
-    const child = session({ id: "child", parentSessionId: ID, mergedAt: undefined });
+  it("leaves a merged parent with an unfinished child", () => {
+    const child = session({ id: "child", parentSessionId: ID, rootSessionId: ID, mergedAt: undefined });
     const { enforce, destroy } = harness([session(), child]);
     afterWait(enforce);
     expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("stops a merged parent whose children are all merged", () => {
+    const child = session({ id: "child", parentSessionId: ID, rootSessionId: ID });
+    const { enforce, destroy } = harness([session(), child]);
+    afterWait(enforce);
+    expect(destroy).toHaveBeenCalledWith(ID);
   });
 });

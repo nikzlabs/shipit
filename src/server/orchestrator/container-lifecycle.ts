@@ -1111,7 +1111,7 @@ export async function destroyContainer(
   }
 
   sc.status = "stopped";
-  deps.containers.delete(sessionId);
+  if (deps.containers.get(sessionId) === sc) deps.containers.delete(sessionId);
   // Keep preview documents through replacement; reporting them gone drops their iframe state.
   deps.emitter.emit(
     "container_destroyed",

@@ -18,18 +18,28 @@ the idle enforcer did not ask at all.
 
 Now `src/server/shared/session-resolution.ts` owns it:
 
-- `isSessionDone(session, { hasLiveChild })` — PR resolved and not
+- `isSessionDone(session, { hasUnfinishedDescendant })` — PR resolved and not
   used since, not pinned, no workspace block, no **Keep preview running**
-  reservation (req 7), no live child.
-- `doneSessionTest(sessions)` — builds the child context from the session list
-  itself (a non-archived session whose `parentSessionId` is this one). Every
-  list-level caller uses it, so no caller can supply a different context:
-  `useSessionGrouping.ts` and `SessionGroup.tsx` in the browser,
-  `filterVisibleInSidebar` and the idle enforcer on the server.
+  reservation (req 7), and no unfinished descendant.
+- `doneSessionTest(sessions)` — builds the descendant context from the session
+  list itself. Only a non-archived descendant whose own work is not finished
+  counts: it marks its root (`rootSessionId`) and each non-archived ancestor up
+  its `parentSessionId` chain, and the walk stops at an archived ancestor. So a
+  spawn tree whose every session is merged is done.
+- The server list holds rows the browser never gets: archived rows and done
+  rows the cap hides. None of them can mark another session, so the browser
+  and the server give the same answer for every row the browser gets (req 1).
+- The browser builds the test **once, from the whole session list**, in
+  `SessionSidebar.tsx`, and passes it to `computeRepoGroups` and each
+  `RepoGroup`. A test built from one repo's rows, or from the repos not
+  hidden, did not see a child in another repo, and put a parent the server
+  kept visible under **Recently resolved**.
 
-`filterVisibleInSidebar` hides a session only when `doneSessionTest` says done
-and it is outside the top five and outside a live spawn tree, so a hidden
-session is always done (req 2). The ranking of the top five is unchanged.
+`filterVisibleInSidebar` shows a session when it is not done, or it is in the
+top five, or it is a member whose root is shown for one of those reasons. So a
+hidden session is always done (req 2), and a done root outside the top five no
+longer stays visible only because it has spawned sessions. The ranking of the
+top five is unchanged.
 
 `child-sessions.ts` calls `isSessionDone` directly, because its "finished"
 walks live descendants; it checks "agent busy" beside the test, not inside it.
@@ -43,18 +53,28 @@ below the budget too (req 6). A session is stopped when:
 
 - it is done, per `doneSessionTest(sessionManager.listAll())`;
 - `DONE_SESSION_RECLAIM_AFTER_MS` (10 min, fixed — reqs 4, 9) has passed since
-  `doneWaitFrom`: the pass that first saw it done, moved later by the runner's
-  `lastViewerDetachAt` and by any pass that sees a viewer. It is not
-  `mergedAt`, because a session can become done long after its PR resolved (a
-  pin removed, a reservation cleared). The enforcer keeps it in its own map
-  rather than reading the runner each time, because memory pressure can dispose
-  the runner while the preview still runs, and a dropped WebSocket also detaches
-  the viewer (req 8);
-- it passes `isReclaimable` — no viewer (req 8), agent not busy, not ShipIt's
-  own cleanup session.
+  `doneWaitFrom`, the pass that first saw it done. It is not `mergedAt`,
+  because a session can become done long after its PR resolved (a pin removed,
+  a reservation cleared);
+- it passes `isReclaimable` with `ignoreViewers` — an open session is stopped
+  too (req 8) — agent not busy, not ShipIt's own cleanup session. The
+  memory-budget tiers still skip a session with a viewer.
 
 It disposes the runner (without `preserveComposeOnDispose`), stops the Compose
-services, and destroys the container (req 3). A declined dispose skips the
+services, and destroys the container (req 3).
+
+Because an open session is stopped too (req 8), the user can send a message
+while that teardown still runs. Two mechanisms make this safe:
+
+- `SessionContainerManager` runs one teardown at a time for each session. The
+  restart's own destroy waits for the reclaim teardown, so the old teardown
+  cannot remove the new container's record, overlay volumes or child
+  resources. `destroyContainer` also deletes the record only when it is still
+  the one it tore down.
+- `SessionRunnerRegistry` remembers a session whose runner was disposed with
+  viewers attached. When a new runner for it is created, it sends the
+  `runner_replaced` SSE event (the one `restartContainer` sends), so every open
+  tab reconnects to the new runner, not only the tab that sent the message. A declined dispose skips the
 session. The user is told through the existing `session_status` /
 `broadcastLog` surfaces, with a done-specific log line.
 
@@ -72,5 +92,7 @@ no longer done (req 5) and the next turn starts a fresh container.
 
 - `src/server/shared/session-resolution.ts`
 - `src/server/orchestrator/idle-enforcer.ts` (+ `idle-enforcer.test.ts`)
+- `src/server/orchestrator/session-container.ts` — `serializeTeardown`
+- `src/server/orchestrator/session-runner.ts` — `onViewersOrphaned`, wired in `runner-registry-factory.ts`
 - `src/server/orchestrator/sessions.ts` — `filterVisibleInSidebar`
 - `src/client/components/SessionSidebar/useSessionGrouping.ts`, `SessionGroup.tsx`

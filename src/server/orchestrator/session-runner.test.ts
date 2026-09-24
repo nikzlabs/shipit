@@ -983,6 +983,22 @@ describe("SessionRunnerRegistry", () => {
     expect(registry.size).toBe(0);
   });
 
+  it("reports a replacement only when the disposed runner still had viewers", () => {
+    const orphaned = vi.fn();
+    const registry = new SessionRunnerRegistry({ onViewersOrphaned: orphaned });
+    const watched = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
+    watched.attachViewer();
+    registry.dispose("s1");
+    const replacement = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
+    expect(orphaned).toHaveBeenCalledWith("s1", 2);
+
+    orphaned.mockClear();
+    registry.dispose("s1");
+    registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId).dispose();
+    expect(replacement.disposed).toBe(true);
+    expect(orphaned).not.toHaveBeenCalled();
+  });
+
   it("calls onRunnerIdle when runner emits idle", () => {
     const idleSpy = vi.fn();
     const registry = new SessionRunnerRegistry({ onRunnerIdle: idleSpy });

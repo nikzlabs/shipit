@@ -1,8 +1,12 @@
 
 
 import { describe, it, expect } from "vitest";
-import { computeRepoGroups } from "./useSessionGrouping.js";
+import { computeRepoGroups as computeWith } from "./useSessionGrouping.js";
+import { doneSessionTest } from "../../../server/shared/session-resolution.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
+
+const computeRepoGroups = (repos: RepoInfo[], sessions: SessionInfo[]) =>
+  computeWith(repos, sessions, doneSessionTest(sessions));
 
 function session(over: Partial<SessionInfo>): SessionInfo {
   return {

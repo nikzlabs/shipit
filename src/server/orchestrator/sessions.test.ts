@@ -1120,6 +1120,30 @@ describe("SessionManager", () => {
         const visible = filterVisibleInSidebar(sessions, 2).map((s) => s.id).sort();
         expect(visible).toEqual(["other"]);
       });
+
+      it("docs/316-done-sessions-return-memory: caps a spawn tree whose every session is merged", () => {
+        const sessions = [
+          merged("root", "2024-01-01 09:00:00"),
+          merged("other", "2024-01-05 09:00:00"),
+          { ...merged("child", "2024-01-02 09:00:00"), parentSessionId: "root", rootSessionId: "root" },
+        ];
+        expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id)).toEqual(["other"]);
+      });
+
+      it("docs/316-done-sessions-return-memory: the browser's done test agrees with the server's for every row it gets", () => {
+        const sessions = [
+          merged("root", "2024-01-01 09:00:00"),
+          merged("other", "2024-01-05 09:00:00"),
+          { ...merged("mid", "2024-01-02 09:00:00"), parentSessionId: "root", rootSessionId: "root", userArchived: true },
+          { ...active("low"), parentSessionId: "mid", rootSessionId: "root" },
+        ];
+        const visible = filterVisibleInSidebar(sessions, 1);
+        const onServer = doneSessionTest(sessions);
+        const inBrowser = doneSessionTest(visible);
+        expect(visible.map((s) => s.id).sort()).toEqual(["low", "other", "root"]);
+        expect(inBrowser(sessions[0])).toBe(false);
+        for (const s of visible) expect(inBrowser(s)).toBe(onServer(s));
+      });
     });
   });
 

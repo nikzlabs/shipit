@@ -75,7 +75,7 @@ function isChildLive(
   seen.add(child.id);
   const runner = runnerRegistry.get(child.id);
   const busy = runner?.agentBusy === true || (runner?.queueLength ?? 0) > 0;
-  if (busy || !isSessionDone(child, { hasLiveChild: false })) return true;
+  if (busy || !isSessionDone(child, { hasUnfinishedDescendant: false })) return true;
   return sessionManager.findChildren(child.id)
     .some((grandchild) => isChildLive(sessionManager, runnerRegistry, grandchild, seen));
 }
@@ -627,7 +627,7 @@ export async function sendChildMessage(
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
   if (
     runnerRegistry.get(child.id)?.running !== true
-    && isSessionDone(child, { hasLiveChild: hasVisibleDirectChildren(sessionManager, child.id) })
+    && isSessionDone(child, { hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id) })
   ) {
     throw new ResolvedChildMessageError(child);
   }

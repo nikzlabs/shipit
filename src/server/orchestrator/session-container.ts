@@ -307,6 +307,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private standbySessionIds = new Set<string>();
   // Create and destroy must share this map across rebuilt dependency bundles.
   private destroyEpochs = new Map<string, number>();
+  // One teardown at a time per session: a restart's destroy that overlapped an
+  // earlier one let that earlier one remove the replacement's volumes and record.
+  private teardowns = new Map<string, Promise<void>>();
   private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
   private lastCreateErrors = new Map<string, { error: string; at: number }>();
@@ -840,12 +843,40 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.lastCreateErrors.delete(sessionId);
     // Docker reuses subnets; remove ranges only when the session's networks are removed.
     this.sessionNetworkRanges.delete(sessionId);
-    return destroyContainer(this.lifecycleDeps(), sessionId, opts);
+    return this.serializeTeardown(sessionId, () => destroyContainer(this.lifecycleDeps(), sessionId, opts));
   }
 
   async destroyAgentContainer(sessionId: string): Promise<void> {
     this.lastCreateErrors.delete(sessionId);
-    return destroyContainer(this.lifecycleDeps(), sessionId, { preserveChildResources: true });
+    return this.serializeTeardown(
+      sessionId,
+      () => destroyContainer(this.lifecycleDeps(), sessionId, { preserveChildResources: true }),
+    );
+  }
+
+  private serializeTeardown(sessionId: string, run: () => Promise<void>): Promise<void> {
+    // Cancel an in-progress create now, not after the earlier teardown ends.
+    this.destroyEpochs.set(sessionId, (this.destroyEpochs.get(sessionId) ?? 0) + 1);
+    const previous = this.teardowns.get(sessionId);
+    const next = (async () => {
+      try {
+        await previous;
+      } catch {
+        // The earlier teardown reported its own failure.
+      }
+      await run();
+    })();
+    this.teardowns.set(sessionId, next);
+    void (async () => {
+      try {
+        await next;
+      } catch {
+        // The caller of this teardown handles its failure.
+      } finally {
+        if (this.teardowns.get(sessionId) === next) this.teardowns.delete(sessionId);
+      }
+    })();
+    return next;
   }
 
   async reapOrphans(sessionId: string): Promise<void> {

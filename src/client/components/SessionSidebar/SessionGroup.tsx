@@ -9,7 +9,6 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { SessionItem } from "./SessionItem.js";
 import { repoColorVar } from "../../../server/shared/repo-colors.js";
-import { doneSessionTest } from "../../../server/shared/session-resolution.js";
 
 /**
  * docs/254 — the per-group identity edge. A 3px colored line on the LEFT of the
@@ -251,6 +250,7 @@ export function OrphanSessionGroup({
 export function RepoGroup({
   repo,
   sessions,
+  isDone,
   currentSessionId,
   isNewSessionSelected,
   isCollapsed,
@@ -283,6 +283,8 @@ export function RepoGroup({
 }: {
   repo: RepoInfo;
   sessions: SessionInfo[];
+  // From the whole session list, never from this repo's sessions only.
+  isDone: (s: SessionInfo) => boolean;
   currentSessionId: string | undefined;
   isNewSessionSelected: boolean;
   isCollapsed: boolean;
@@ -522,7 +524,7 @@ export function RepoGroup({
                 list.push(s);
                 broodByRoot.set(s.rootSessionId, list);
               }
-              const isRecentlyResolvedForGroup = doneSessionTest(sessions);
+              const isRecentlyResolvedForGroup = isDone;
 
               // work is never automatically moved under "Recently resolved". The
 
