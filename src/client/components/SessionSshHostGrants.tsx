@@ -16,7 +16,7 @@ import { useEffect, useState } from "react";
 import { CheckSquareIcon, SquareIcon, TerminalWindowIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { beginSessionSettingWrite } from "../hooks/useSessionNetworkMode.js";
+import { beginSessionSettingWrite } from "../utils/session-setting-writes.js";
 import type { SessionSshHostsView } from "../../server/shared/types.js";
 
 /**

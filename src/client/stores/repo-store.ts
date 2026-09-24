@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
+import { allSessionSettingWritesSettled } from "../utils/session-setting-writes.js";
 import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedExpandedResolvedChildren, saveExpandedResolvedChildren, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
 
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -400,6 +401,8 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   claimSession: async (url, signal) => {
     const { usePreviewStore } = await import("./preview-store.js");
     try {
+      // A draft's settings must reach the server before a claim can decide whether to reuse it (docs/285 req 8).
+      await allSessionSettingWritesSettled();
 
       usePreviewStore.getState().initStartupSteps();
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}/claim-session`, {

@@ -4,8 +4,8 @@ import {
   useSessionNetworkMode,
   notifySessionNetworkModeChanged,
   _resetSessionNetworkModeClock,
-  beginSessionSettingWrite,
 } from "./useSessionNetworkMode.js";
+import { beginSessionSettingWrite } from "../utils/session-setting-writes.js";
 import type { EgressSessionSettings } from "../../server/shared/types.js";
 
 function settings(over: Partial<EgressSessionSettings> = {}): EgressSessionSettings {

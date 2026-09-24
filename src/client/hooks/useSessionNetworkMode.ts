@@ -1,6 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: hydrate a session's network mode from the server and follow invalidations (external system sync)
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useEgressStore } from "../stores/egress-store.js";
+import {
+  _resetSessionSettingWrites,
+  beginSessionSettingWrite,
+  sessionSettingWritesInFlight,
+  subscribeSessionSettingWrites,
+} from "../utils/session-setting-writes.js";
 import type {
   EgressEnforcementStatus,
   EgressSessionSettings,
@@ -84,40 +90,6 @@ function currentRevision(sessionId: string): number {
   return revisions.get(sessionId) ?? 0;
 }
 
-/**
- * Session-settings writes in flight per session, across every surface: this
- * hook's network writes and the dialog's SSH grant writes. The composer's Send
- * barrier holds while any is open, because a first turn sent before the write
- * lands runs without it — and a new session's network rebuild can take seconds.
- */
-const inFlight = new Map<string, number>();
-const inFlightListeners = new Set<() => void>();
-
-function changeInFlight(sessionId: string, delta: number): void {
-  const next = (inFlight.get(sessionId) ?? 0) + delta;
-  if (next > 0) inFlight.set(sessionId, next);
-  else inFlight.delete(sessionId);
-  for (const listener of inFlightListeners) listener();
-}
-
-/** Marks a session-settings write as in flight; call the returned function when it settles. */
-export function beginSessionSettingWrite(sessionId: string): () => void {
-  changeInFlight(sessionId, 1);
-  let ended = false;
-  return () => {
-    if (ended) return;
-    ended = true;
-    changeInFlight(sessionId, -1);
-  };
-}
-
-function subscribeInFlight(listener: () => void): () => void {
-  inFlightListeners.add(listener);
-  return () => {
-    inFlightListeners.delete(listener);
-  };
-}
-
 export function notifySessionNetworkModeChanged(
   sessionId: string,
 
@@ -133,8 +105,7 @@ export function notifySessionNetworkModeChanged(
 export function _resetSessionNetworkModeClock(): void {
   revisions.clear();
   listeners.clear();
-  inFlight.clear();
-  inFlightListeners.clear();
+  _resetSessionSettingWrites();
 }
 
 export interface SessionNetworkModeState {
@@ -160,8 +131,8 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const sharedWrites = useSyncExternalStore(
-    subscribeInFlight,
-    () => (sessionId ? (inFlight.get(sessionId) ?? 0) : 0),
+    subscribeSessionSettingWrites,
+    () => (sessionId ? sessionSettingWritesInFlight(sessionId) : 0),
   );
 
   const mountedSession = useRef<string | null>(sessionId);
@@ -248,7 +219,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
       setModeState(next);
       setSaving(true);
       writesInFlight.current += 1;
-      changeInFlight(sessionId, 1);
+      const endWrite = beginSessionSettingWrite(sessionId);
       const revision = bumpRevision(sessionId);
       void (async () => {
         try {
@@ -278,7 +249,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           }
         } finally {
           writesInFlight.current -= 1;
-          changeInFlight(sessionId, -1);
+          endWrite();
 
           // Both halves are load-bearing, and each replaced a wrong rule. Asking
 
