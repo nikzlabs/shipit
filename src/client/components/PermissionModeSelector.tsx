@@ -5,6 +5,7 @@ import {
   CheckIcon,
   GlobeIcon,
   GlobeXIcon,
+  SlidersHorizontalIcon,
   WarningIcon,
 } from "@phosphor-icons/react";
 import { INSET_FOCUS_RING, ICON_SIZE } from "../design-tokens.js";
@@ -141,6 +142,13 @@ export interface NetworkSectionProps {
   beforeFirstTurn: boolean;
 
   loaded: boolean;
+  /**
+   * req 12 — when set, the section opens the full Session settings dialog
+   * instead of offering the modes inline, so SSH destinations can be granted
+   * before the first message too. `disabled` while `/new` has no session yet.
+   * Quick Capture omits it: it has no session for the dialog to edit.
+   */
+  sessionSettings?: { open: () => void; disabled: boolean };
 }
 
 export function PermissionModeSelector({
@@ -269,7 +277,28 @@ export function PermissionModeSelector({
         {network && (
           <>
             <SectionHeader>Network access</SectionHeader>
-            {(["inherit", "contained", "open"] as const).map((m) => {
+            {network.sessionSettings ? (
+              <DropdownMenuItem
+                disabled={network.sessionSettings.disabled}
+                onSelect={() => network.sessionSettings?.open()}
+                className="flex items-start gap-2 px-3 py-2"
+                data-testid="network-open-session-settings"
+              >
+                <SlidersHorizontalIcon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium">Session settings…</span>
+                  <p className="text-xs text-(--color-text-tertiary) mt-0.5">
+                    {network.sessionSettings.disabled
+                      ? "Available when the session is ready."
+                      : `${NETWORK_MODE_LABEL[network.mode]}${
+                        network.mode === "inherit" && network.loaded
+                          ? ` — currently ${network.globalEnabled ? "Contained" : "Open"}`
+                          : ""
+                      }. Change it, and grant SSH destinations, here.`}
+                  </p>
+                </div>
+              </DropdownMenuItem>
+            ) : (["inherit", "contained", "open"] as const).map((m) => {
               const isCurrent = m === network.mode;
               const Icon = m === "open" ? GlobeIcon : m === "contained" ? GlobeXIcon : GlobeIcon;
               return (

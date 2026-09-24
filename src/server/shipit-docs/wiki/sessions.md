@@ -84,12 +84,16 @@ Every row has an overflow menu. In order:
 - **Download chat** — the conversation as a file.
 - **Investigate in Ops session** — opens ShipIt's own operations session pointed
   at this one. On any row except an Ops session's own.
-- **Session settings** — currently the per-session network choice, three ways:
-  **Inherit** (follow the workspace setting, changed in Settings → Network),
-  **Contained** (default-deny: only the allowlist — the LLM API, GitHub, package
-  registries, and hosts the user has added — is reachable, with an inline prompt
-  when something new is wanted), or **Open** (unrestricted outbound, no
-  allowlist, no prompts). Changing it restarts the session's container to apply.
+- **Session settings** — the session's network access and its SSH destination
+  grants. Network access is three ways: **Inherit** (follow the workspace setting,
+  changed in Settings → Network), **Contained** (default-deny: only the allowlist
+  — the LLM API, GitHub, package registries, and hosts the user has added — is
+  reachable, with an inline prompt when something new is wanted), or **Open**
+  (unrestricted outbound, no allowlist, no prompts). Changing it restarts the
+  session's container to apply. The same dialog also opens from the composer's
+  permission-mode control, **including on a new session before its first
+  message**, so the user can pick the network mode and grant SSH destinations in
+  advance.
 
 **Recover recent rewind**, **Download chat** and **Session settings** are on the
 **open** session's row only, not on every row in the list. An archived row

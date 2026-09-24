@@ -413,11 +413,7 @@ export default function App() {
     reconnect,
   });
 
-  const composerNetworkState = useComposerNetworkMode(
-    wsSessionId ?? null,
-    isNewSessionRoute,
-    newSessionRepoSlug ?? null,
-  );
+  const composerNetworkState = useComposerNetworkMode(wsSessionId ?? null);
   const composerNetwork = useMemo(
     () => ({
       mode: composerNetworkState.mode,
@@ -428,8 +424,12 @@ export default function App() {
       loaded: composerNetworkState.loaded,
       saving: composerNetworkState.saving,
       beforeFirstTurn: !currentSession,
+      sessionSettings: {
+        open: () => useUiStore.getState().setSessionSettingsDialogOpen(true),
+        disabled: !wsSessionId,
+      },
     }),
-    [composerNetworkState, currentSession],
+    [composerNetworkState, currentSession, wsSessionId],
   );
 
   const staleRunnerNonce = useSessionStore((s) => s.staleRunnerNonce);

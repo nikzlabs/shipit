@@ -195,3 +195,12 @@ a `dispatch` test on a runner with no system-turn deps enqueues for that reason
 alone; a second one reused a runner whose control turn was still in flight; and
 the overlapping-write test reverted through a path the bug did not take. Each
 guard is now individually proven red without its fix.
+
+## Session settings from the composer (req 12)
+
+- [x] Chat composer's Network section opens Session settings; Quick Capture keeps inline options
+- [x] Entry disabled until `/new` has a session; pre-claim draft removed
+- [x] Send barrier holds for writes made in the dialog; per-instance read counter
+- [x] A `/new` draft with SSH grants is not recycled by the next claim
+- [x] A new-session claim waits for in-flight settings writes
+- [x] Wiki: sessions, chat, settings-and-accounts

@@ -189,6 +189,8 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           reusable?.workspaceDir &&
           !excluded.has(reusable.id) &&
           carriedOverride === null &&
+          // SSH grants picked in Session settings before the first message must not carry over either.
+          !(reusable.sshHosts?.length) &&
           existsSync(path.join(reusable.workspaceDir, ".git"))
         ) {
           claimPath = "reuse";

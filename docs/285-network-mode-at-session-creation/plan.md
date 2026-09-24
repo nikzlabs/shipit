@@ -55,6 +55,35 @@ anchor opens the **role list directly** (req 9).
 
 **`SessionSettingsDialog` keeps its network section.** Req 7 is one authoritative *value*.
 
+### The chat composer opens Session settings (req 12)
+
+In the chat composer the Network section is one row, **Session settings…**, that names the
+current mode and opens `SessionSettingsDialog` — for `/new` before the first message and for
+running sessions alike. That makes SSH destination grants settable before the first turn as
+well. Quick Capture keeps the three inline options, because it has no session until Send.
+`NetworkSectionProps.sessionSettings` selects between the two shapes.
+
+- **No pre-claim pick.** The row is disabled until `/new`'s claim lands, because the dialog
+  needs a session id. That deleted the composer's claim-scoped draft (below, "Mechanism");
+  `useComposerNetworkMode` now only falls back to the workspace default while no session exists.
+- **The Send barrier spans surfaces.** A pre-first-turn mode change rebuilds the container
+  inside the PUT, which can take seconds, and it is now made in the dialog. The count of
+  writes in flight is module-level per session, so the composer's `saving` holds while the
+  dialog's write is open — SSH grant writes included (`utils/session-setting-writes.ts`), since a
+  first turn sent before a grant lands runs without it. The READ counter is per hook
+  instance: shared, the dialog's own re-read discarded the composer's re-read and left the
+  composer showing the old mode. A settled write notifies the other surfaces even when the
+  dialog has already closed.
+- **A claim waits for settings writes.** The server refuses to recycle a draft that carries
+  settings, but only once they have landed: a grant (or network) PUT still in flight when
+  the user starts another new session in the same repo would reach a draft the claim had
+  just reused. So `claimSession` first waits for every session-settings write this browser
+  has in flight (`utils/session-setting-writes.ts`, the same registry the Send barrier
+  reads). A write from another tab is not covered; that needs two tabs racing one request.
+- **Grants do not carry over (req 8).** An abandoned `/new` draft with SSH grants is not
+  recycled by the next claim, for the same reason as a draft with a network override
+  (`claim-session.ts`).
+
 ### Keeping the two surfaces honest
 
 The dialog fetches on open and consumes its `PUT` response; no store, no SSE
@@ -90,6 +119,8 @@ Egress is plumbed when the container is *created* (`container-lifecycle.ts`); a 
 container cannot be re-plumbed. `/new` claims a session on arrival
 (`useSessionActivation.ts` ~96), which opens the WS and materializes a runner.
 
+*(Superseded by req 12: the chat composer now edits the mode only through Session settings,
+which is disabled until the claim lands, so the draft below was deleted.)*
 **But the claim is asynchronous, and the control works before it lands.** `disabled` blocks
 Send without making the selector inert (`App.tsx` ~2222, `MessageInput.tsx` ~1338), so a mode
 can be picked with no session id to write it to. An earlier draft of this plan assumed a

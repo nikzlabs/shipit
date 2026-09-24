@@ -281,8 +281,9 @@ signature, ShipIt signs, and only for a connection that really reached the serve
 whose host key it recorded, as that destination's configured user.
 
 Adding a destination grants nothing. **The grant is per session**, in that
-session's own settings (the session menu → Session settings → SSH destinations),
-and any session kind can hold one — repo-backed, sandbox or ops. Granting one
+session's own settings (the session menu → Session settings → SSH destinations,
+or the composer's permission-mode control → Session settings…, which also works
+on a new session before its first message), and any session kind can hold one — repo-backed, sandbox or ops. Granting one
 writes `~/.ssh/config` for that session and opens its egress to that address;
 revoking removes both, though a connection already authenticated runs until it
 closes.

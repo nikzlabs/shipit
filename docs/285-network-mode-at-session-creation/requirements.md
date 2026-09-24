@@ -41,12 +41,23 @@ description: Fold network containment into the composer's existing permission-mo
     workspace default is Open, a trusted repository's `agent.install` may already have run
     in the warm container before the mode was picked; the guarantee is the first **turn**,
     and the UI says so rather than leaving it implied.
+12. In the chat composer — for a new session before its first message, and for a running
+    session — the combined control opens the session's **full Session settings dialog**
+    rather than offering the network options inline. So everything the dialog holds,
+    including SSH destination grants, can be set before the first message. Quick Capture,
+    which has no session until Send, keeps the inline network options (req 2).
 
 ## Open questions
 
 - (none)
 
 ## Resolved questions
+
+- 2026-09-24 — *The composer lets me set network access before a new session starts.
+  Should it instead open the full Session settings dialog, so SSH hosts can be granted in
+  advance too?* Yes. The composer's network section becomes an entry into Session settings
+  (req 12); reqs 1 and 6 are now met through that dialog. Quick Capture keeps its inline
+  pick because there is no session for the dialog to edit before Send.
 
 - 2026-08-31 — **SUPERSEDES the 2026-08-29 decision below.** *The first-Send
   reconciliation went through five review rounds; each found a race and each was

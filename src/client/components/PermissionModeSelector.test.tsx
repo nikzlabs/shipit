@@ -225,4 +225,30 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     await user.click(screen.getByTestId("network-mode-option-open"));
     expect(onChange).toHaveBeenCalledWith("open");
   });
+
+  it("opens Session settings instead of inline modes when the caller offers it (req 12)", async () => {
+    const user = userEvent.setup();
+    const open = vi.fn();
+    renderWith(network({ globalEnabled: false, sessionSettings: { open, disabled: false } }));
+    await user.click(screen.getByTestId("permission-mode-selector"));
+
+    expect(screen.queryByTestId("network-mode-option-open")).not.toBeInTheDocument();
+    const entry = screen.getByTestId("network-open-session-settings");
+    expect(entry).toHaveTextContent(/Inherit workspace — currently Open/);
+    expect(entry).toHaveTextContent(/SSH destinations/);
+    await user.click(entry);
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the Session settings entry inert until the session exists", async () => {
+    const user = userEvent.setup();
+    const open = vi.fn();
+    renderWith(network({ sessionSettings: { open, disabled: true } }));
+    await user.click(screen.getByTestId("permission-mode-selector"));
+
+    const entry = screen.getByTestId("network-open-session-settings");
+    expect(entry).toHaveAttribute("aria-disabled", "true");
+    await user.click(entry);
+    expect(open).not.toHaveBeenCalled();
+  });
 });

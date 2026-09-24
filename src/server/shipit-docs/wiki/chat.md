@@ -17,7 +17,7 @@ One box, with a row of controls under it:
 | Control | Does |
 |---|---|
 | **+** | Opens a file picker. Also the drop target: files dragged anywhere onto the composer are attached |
-| **Permission mode** | Plan / Guarded / Auto, below. The same control carries the session's **network access** — see [sessions.md](sessions.md) — except in a sandbox session, where egress is one of the capability grants instead |
+| **Permission mode** | Plan / Guarded / Auto, below. The same control shows the session's **network access** and opens **Session settings** to change it or grant SSH destinations, before the first message too — see [sessions.md](sessions.md). Quick Capture offers the network choices inline instead — except in a sandbox session, where egress is one of the capability grants instead |
 | **Harness · model · reasoning**, or a **role** in their place | What this session runs on. `shipit agent params` and `shipit agent roles` for what this install offers |
 | **The ring** | The context dial — how full the conversation is, and what it has spent. Below |
 | **Mic** | Dictation. Present only when the user has turned voice input on |
