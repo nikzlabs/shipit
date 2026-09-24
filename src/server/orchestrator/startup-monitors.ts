@@ -21,6 +21,7 @@ import { sweepWorkspaceBlocksAtStartup } from "./services/workspace-block.js";
 import { stopWarmPreview } from "./warm-preview.js";
 import { runUpdateCheckIfDue, versionAnchor, UPDATE_CHECK_TICK_MS } from "./services/update-notice.js";
 import type { UpdateNotice } from "../shared/types.js";
+import { startEventLoopLagMonitor } from "./event-loop-lag.js";
 
 export interface StartupMonitors {
   kickDiskEscalation: (excludeSessionId?: string) => void;
@@ -281,6 +282,8 @@ export async function startStartupMonitors(
   if (updateCheckInterval?.unref) updateCheckInterval.unref();
   if (!isTestMode) void runUpdateCheckIfDue(updateNoticeDeps);
 
+  const stopEventLoopLagMonitor = isTestMode ? null : startEventLoopLagMonitor();
+
   if (containerManager) {
     const keepPreviewSupervisor = createKeepPreviewRestartSupervisor({
       sessionManager,
@@ -337,6 +340,7 @@ export async function startStartupMonitors(
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);
     if (warmSweepInterval) clearInterval(warmSweepInterval);
     if (updateCheckInterval) clearInterval(updateCheckInterval);
+    stopEventLoopLagMonitor?.();
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
