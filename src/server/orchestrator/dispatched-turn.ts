@@ -368,6 +368,7 @@ async function runDispatchedTurnInner(
       agentId,
       sessionId: runner.sessionId,
       prompt,
+      ...(attempt > 0 ? { continuesTurn: true } : {}),
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText: text,
       ...(activity !== undefined ? { activity } : {}),

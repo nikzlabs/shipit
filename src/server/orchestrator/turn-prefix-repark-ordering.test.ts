@@ -57,6 +57,7 @@ function makeDeps(): SystemTurnDeps {
         setLastTurnErrored: vi.fn(),
         get: vi.fn(),
         track: vi.fn(),
+        touchUnlessResolved: vi.fn(),
         setMuted: vi.fn(),
         list: vi.fn().mockReturnValue([]),
       } as never,

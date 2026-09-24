@@ -150,6 +150,8 @@ export function wireAgentListeners(
     // The CLI is already generating, so a Stop must reach its process.
     noteTurnSubmitted(runner);
     const turnSessionId = opts.capturedSessionId;
+    // A turn the CLI starts on its own is new use (docs/316 req 5).
+    if (turnSessionId && startsTurn) deps.sessionManager.track(turnSessionId);
     if (turnSessionId) {
       emitToViewers({
         type: "session_status",
@@ -683,7 +685,8 @@ export function wireAgentListeners(
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
         }
-        deps.sessionManager.track(turnSessionId);
+        // A PR that merged during this turn resolves the session (docs/316 req 5).
+        deps.sessionManager.touchUnlessResolved(turnSessionId);
         deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
 

@@ -88,6 +88,31 @@ path has.
 A message after the merge sets `lastUsedAt` after `mergedAt`, so the session is
 no longer done (req 5) and the next turn starts a fresh container.
 
+## Only a new turn reopens a merged session (req 10)
+
+`lastUsedAt` is "used after the merge" only when a turn **starts** after it:
+
+- The start of a new turn calls `SessionManager.track`, which always records
+  use: a user message (`agent-execution.ts`, before the turn's async setup), a
+  dispatched or system turn's first attempt (`executeAgentTurn`), and a turn
+  the CLI starts on its own (`adoptCliStartedTurn` in `agent-listeners.ts`).
+- Work inside a turn calls `touchUnlessResolved`, which records use only when
+  the session is not resolved: the end of the turn (`agent_result`), and every
+  later entry into `executeAgentTurn` for the same turn — the interactive
+  path's own call (it already recorded use), the executor's retries, the
+  dispatched turn's no-result retry, and startup adoption. These pass
+  `continuesTurn`. So a PR that merges during a turn resolves the session at
+  once, and the rest of that turn does not undo it.
+- `markMerged` / `markClosed` store the time with milliseconds
+  (`strftime('%Y-%m-%dT%H:%M:%fZ')`), so a turn that starts in the same second
+  as the merge is ordered correctly. Older rows keep the SQLite
+  `YYYY-MM-DD HH:MM:SS` form; both parse as UTC, and in a string sort a new
+  row still sorts after an old row of the same day.
+
+Known limit: the disk ladder reads `last_used_at` as idle age. A turn that ran
+more than 24 hours and saw its PR merge keeps its start time, so the ladder can
+stop its container soon after it ends, before the 10-minute wait.
+
 ## Key files
 
 - `src/server/shared/session-resolution.ts`

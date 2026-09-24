@@ -219,8 +219,9 @@ its pull request merged or closed, ShipIt stops its agent container and its
 whole Compose stack, whatever the memory budget says — also while the user has
 it open, but never while its agent is working. A pin, **Keep preview running**,
 a broken workspace or a spawned session that is not done makes a session not
-done. A message sent after the merge makes it active again, and the next
-message restarts it.
+done. A merged session moves under **Recently resolved** at once, also when
+the merge happens during one of its turns. A message sent after the merge makes
+it active again, and the next message restarts it.
 
 **Disk.** Independently of memory, a session that has been idle long enough
 descends a disk ladder. This happens even when memory is plentiful.

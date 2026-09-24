@@ -740,6 +740,8 @@ async function composeAndRunAgentTurn(
       agentId,
       sessionId,
       prompt,
+      // Use was recorded when the turn started, before its async setup.
+      continuesTurn: true,
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),

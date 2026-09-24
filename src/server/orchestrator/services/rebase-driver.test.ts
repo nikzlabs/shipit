@@ -166,6 +166,7 @@ function makeStubSessionManager(notices: string[] = []): SessionManager {
     setLastTurnErrored: () => {},
     setPendingAgentNotice: (_id: string, notice: string) => { notices.push(notice); },
     track: () => {},
+    touchUnlessResolved: () => {},
     setMuted: () => null,
     list: () => [],
   } as unknown as SessionManager;
