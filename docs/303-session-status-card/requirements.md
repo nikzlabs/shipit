@@ -308,12 +308,20 @@ taken inside one session, without building an agent that talks to many.
     record. A record never makes the collapsed card (req 42) report outstanding
     work, and never adds a row to what Submit sends.
 
+45. A manual step and a follow-up's description are markdown, so each has room
+    for a long link: up to 1000 characters each.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
 
+- 2026-09-24 — Nik: "240/280 should be increased since they are markdown. Often
+  the agent gives a long links, and they fail." Asked whether to count only the
+  visible text of a link or to raise the raw limit, he chose "Raise to 1000
+  each". Asked about "the total", he said the 8000-character limit on the card
+  text sent to the agent each turn is fine as it is. → req 45.
 - 2026-09-21 — Nik: "when a manual step or a follow-up is 'sent' and was checked
   (manual steps could be sent with comments only), it should be marked as checked
   in the checkbox". → req 44. Submitting cleared the selection, so a row came

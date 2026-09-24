@@ -15,7 +15,8 @@ export const MAX_STATUS_LEN = 1200;
  * second status.
  */
 export const MAX_LAST_TURN_LEN = 400;
-export const MAX_NEEDS_YOU_LEN = 240;
+/** req 45 — markdown, so a step has room for a long link. */
+export const MAX_NEEDS_YOU_LEN = 1000;
 export const MAX_NEEDS_YOU_ITEMS = 10;
 
 /**
