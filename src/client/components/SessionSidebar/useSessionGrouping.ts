@@ -15,7 +15,13 @@ import { doneSessionTest, resolvedAt } from "../../../server/shared/session-reso
  * also break the optimistic UI update (which mutates the list order before
  * the server response).
  */
-export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
+// `isDone` must come from the whole session list (docs/316-done-sessions-return-memory
+// req 1), not from the repos shown, or a hidden repo's child changes the answer.
+export function computeRepoGroups(
+  repos: RepoInfo[],
+  sessions: SessionInfo[],
+  isDone: (s: SessionInfo) => boolean = doneSessionTest(sessions),
+) {
   const grouped = new Map<string, SessionInfo[]>();
 
   const opsSessions = sessions.filter((s) => s.kind === "ops");
@@ -36,7 +42,7 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
   // `archived` is the PRIMARY key so a hidden/archived session never sits
   // above a live one. Because children are bucketed under their parent in this
 
-  const isRecentlyResolvedForGroup = doneSessionTest(sessions);
+  const isRecentlyResolvedForGroup = isDone;
   for (const [, group] of grouped) {
     group.sort((a, b) => {
       const aArchived = a.archived || a.userArchived ? 1 : 0;

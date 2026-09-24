@@ -28,8 +28,8 @@ expects a finished session to use no memory.
    **not** done. It does not protect a done session.
 7. A session that has **Keep preview running** set is not done. It is not under
    **Recently resolved**, and ShipIt does not stop it because of this feature.
-8. ShipIt does not stop a done session that the user has open. It stops the
-   session after the user leaves it, when the wait is also complete.
+8. ShipIt stops a done session when the wait is complete, also when the user
+   has it open. Having a session open does not stop it from being done.
 9. The wait is a fixed 10 minutes. It is not a setting.
 
 ## Open questions
@@ -41,8 +41,12 @@ expects a finished session to use no memory.
 - 2026-09-24 — *A done session has Keep preview running set: reclaimed after the
   wait, or not done?* The user chose "not done". Carried by req 7.
 - 2026-09-24 — *The wait ends while the user has the session open: reclaim, or
-  wait until they leave?* The user chose to wait until they leave. Carried by
-  req 8.
+  wait until they leave?* The user chose to wait until they leave. Superseded
+  by the next receipt.
+- 2026-09-24 — After shipping: "When I merge a session, I always have it
+  active, so it never gets done. I guess we need to remove the feature of
+  'active session is not marked as done'." Req 8 now stops an open done session
+  when the wait is complete.
 - 2026-09-24 — *Fixed 10 minutes, or a setting?* The user chose fixed. Carried by
   req 9.
 

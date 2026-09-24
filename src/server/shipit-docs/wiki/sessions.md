@@ -216,10 +216,11 @@ pinning does not.
 **Done sessions.** A session under **Recently resolved**, or one the sidebar
 hides because of the resolved-session cap, is *done*. About 10 minutes after
 its pull request merged or closed, ShipIt stops its agent container and its
-whole Compose stack, whatever the memory budget says — but never while the user
-has it open or its agent is working. A pin, **Keep preview running**, a broken
-workspace or a live child session makes a session not done. A message sent
-after the merge makes it active again, and the next message restarts it.
+whole Compose stack, whatever the memory budget says — also while the user has
+it open, but never while its agent is working. A pin, **Keep preview running**,
+a broken workspace or a spawned session that is not done makes a session not
+done. A message sent after the merge makes it active again, and the next
+message restarts it.
 
 **Disk.** Independently of memory, a session that has been idle long enough
 descends a disk ladder. This happens even when memory is plentiful.

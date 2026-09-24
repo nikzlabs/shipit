@@ -44,14 +44,17 @@ export function createIdleEnforcer(
   } = enforceDeps;
 
   const tier1At = new Map<string, number>();
-  // Start of each done session's wait. Kept here, not read from the runner,
-  // because memory pressure can dispose the runner while the preview runs on.
+  // The first pass that saw each session done.
   const doneWaitFrom = new Map<string, number>();
   // Do not reclaim twice against the same snapshot or memory still being returned.
   let actedOn: DockerMemoryStats | null = null;
   let teardownsInFlight = 0;
 
-  function isReclaimable(sessionId: string, runner: SessionRunnerInterface | undefined): boolean {
+  function isReclaimable(
+    sessionId: string,
+    runner: SessionRunnerInterface | undefined,
+    opts: { ignoreViewers?: boolean } = {},
+  ): boolean {
     // docs/299 req 8: the cleanup container is never stopped. It has no runner
     // and no viewer, so without this it sorts first on every pass — and every
     // first dictation after a quiet period would pay a container start.
@@ -60,7 +63,7 @@ export function createIdleEnforcer(
     if (!runner) return true;
     // agentBusy includes autonomous turns and pending background work.
     if (runner.agentBusy) return false;
-    if (runner.viewerCount > 0) return false;
+    if (runner.viewerCount > 0 && !opts.ignoreViewers) return false;
     return true;
   }
 
@@ -78,25 +81,21 @@ export function createIdleEnforcer(
       if (!isDone(session)) continue;
       stillDone.add(session.id);
       const runner = runnerRegistry.get(session.id);
-      // A dropped WebSocket also detaches the viewer, so the wait restarts from it.
-      const doneSince = Math.max(
-        doneWaitFrom.get(session.id) ?? now,
-        runner?.lastViewerDetachAt ?? 0,
-        (runner?.viewerCount ?? 0) > 0 ? now : 0,
-      );
+      const doneSince = doneWaitFrom.get(session.id) ?? now;
       doneWaitFrom.set(session.id, doneSince);
       const hasContainer = !!containerManager.get(session.id) && !containerManager.isStandby(session.id);
       const hasServices = !!services?.has(session.id);
       if (!hasContainer && !hasServices) continue;
       if (now - doneSince < DONE_SESSION_RECLAIM_AFTER_MS) continue;
-      if (!isReclaimable(session.id, runner)) continue;
+      // docs/316-done-sessions-return-memory req 8 — an open session is stopped too.
+      if (!isReclaimable(session.id, runner, { ignoreViewers: true })) continue;
 
       runnerRegistry.dispose(session.id);
       if (runner && !runner.disposed) continue;
       tier1At.delete(session.id);
       console.log(
         `[idle-cleanup] Stopping done session ${session.id}`
-        + ` (done for ${Math.round((now - doneSince) / 60_000)} min, nobody using it)`,
+        + ` (done for ${Math.round((now - doneSince) / 60_000)} min, agent idle)`,
       );
       announce(session.id, "memory-pressure", undefined, runner?.queueLength ?? 0,
         "Session container and preview services stopped because this session is done (workspace preserved). "
