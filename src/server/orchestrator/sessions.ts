@@ -1,6 +1,8 @@
 import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
-import { isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
+import { doneSessionTest, isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
+
+export { holdsActiveReservation } from "../shared/session-resolution.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentGoal, AgentId } from "../shared/types/agent-types.js";
@@ -162,11 +164,6 @@ export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
   }
 }
 
-// Legacy archived rows can retain the flag without owning a reservation.
-export function holdsActiveReservation(session: SessionInfo | undefined | null): boolean {
-  return !!session?.keepPreviewRunning && !session.userArchived && !session.archived && !session.warm;
-}
-
 export function filterVisibleInSidebar(
   sessions: SessionInfo[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
@@ -199,15 +196,13 @@ export function filterVisibleInSidebar(
   const exemptFromCap = (s: SessionInfo): boolean =>
     liveRoots.has(s.id) ||
     (s.rootSessionId !== undefined && liveIds.has(s.rootSessionId));
+  // docs/316-done-sessions-return-memory req 2 — the cap hides only done
+  // sessions, so a hidden session is always one the idle enforcer may stop.
+  const isDone = doneSessionTest(sessions);
   return sessions.filter(
     (s) =>
       !s.userArchived &&
-      // docs/298-broken-workspace-visibility req 1 — a broken workspace needs
-      // the user, and a session the cap hid is one they cannot reach at all.
-      (!!s.pinnedAt
-        || !!s.workspaceBlock
-        || holdsActiveReservation(s)
-        || !isTerminalPrResolved(s)
+      (!isDone(s)
         || topResolvedIds.has(s.id)
         || exemptFromCap(s)),
   );

@@ -6,6 +6,7 @@ import { bytesOverBudget } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
 import { holdsActiveReservation } from "./sessions.js";
+import { doneSessionTest } from "../shared/session-resolution.js";
 import { isShipItOwnSession } from "./shipit-own-sessions.js";
 
 export interface IdleServiceHooks {
@@ -24,6 +25,9 @@ export interface IdleEnforcementDeps {
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
 }
 
+// docs/316-done-sessions-return-memory req 4 — time to continue work first.
+export const DONE_SESSION_RECLAIM_AFTER_MS = 10 * 60 * 1000;
+
 interface Candidate {
   sessionId: string;
   runner: SessionRunnerInterface | undefined;
@@ -40,6 +44,9 @@ export function createIdleEnforcer(
   } = enforceDeps;
 
   const tier1At = new Map<string, number>();
+  // Start of each done session's wait. Kept here, not read from the runner,
+  // because memory pressure can dispose the runner while the preview runs on.
+  const doneWaitFrom = new Map<string, number>();
   // Do not reclaim twice against the same snapshot or memory still being returned.
   let actedOn: DockerMemoryStats | null = null;
   let teardownsInFlight = 0;
@@ -61,8 +68,49 @@ export function createIdleEnforcer(
     return a.idleSince - b.idleSince;
   }
 
+  // docs/316-done-sessions-return-memory: a done session stops whatever the budget says.
+  function reclaimDoneSessions(now: number): void {
+    if (!containerManager || !sessionManager) return;
+    const sessions = sessionManager.listAll();
+    const isDone = doneSessionTest(sessions);
+    const stillDone = new Set<string>();
+    for (const session of sessions) {
+      if (!isDone(session)) continue;
+      stillDone.add(session.id);
+      const runner = runnerRegistry.get(session.id);
+      // A dropped WebSocket also detaches the viewer, so the wait restarts from it.
+      const doneSince = Math.max(
+        doneWaitFrom.get(session.id) ?? now,
+        runner?.lastViewerDetachAt ?? 0,
+        (runner?.viewerCount ?? 0) > 0 ? now : 0,
+      );
+      doneWaitFrom.set(session.id, doneSince);
+      const hasContainer = !!containerManager.get(session.id) && !containerManager.isStandby(session.id);
+      const hasServices = !!services?.has(session.id);
+      if (!hasContainer && !hasServices) continue;
+      if (now - doneSince < DONE_SESSION_RECLAIM_AFTER_MS) continue;
+      if (!isReclaimable(session.id, runner)) continue;
+
+      runnerRegistry.dispose(session.id);
+      if (runner && !runner.disposed) continue;
+      tier1At.delete(session.id);
+      console.log(
+        `[idle-cleanup] Stopping done session ${session.id}`
+        + ` (done for ${Math.round((now - doneSince) / 60_000)} min, nobody using it)`,
+      );
+      announce(session.id, "memory-pressure", undefined, runner?.queueLength ?? 0,
+        "Session container and preview services stopped because this session is done (workspace preserved). "
+        + "Send a message to resume — a fresh container starts automatically.");
+      if (hasServices) services?.stop(session.id);
+      if (hasContainer) trackTeardown(containerManager.destroy(session.id), session.id);
+    }
+    for (const id of doneWaitFrom.keys()) if (!stillDone.has(id)) doneWaitFrom.delete(id);
+  }
+
   return () => {
     if (!containerManager) return;
+
+    if (teardownsInFlight === 0) reclaimDoneSessions(Date.now());
 
     const stats = getMemoryStats?.() ?? null;
     let need = bytesOverBudget(stats);
@@ -192,6 +240,7 @@ export function createIdleEnforcer(
     reason: "agent-reclaimed" | "memory-pressure",
     idleMs: number | undefined,
     queueLength: number,
+    message?: string,
   ): void {
     if (sseBroadcast) {
       sseBroadcast("session_status", {
@@ -204,11 +253,11 @@ export function createIdleEnforcer(
       });
     }
     if (broadcastLog) {
-      const human = reason === "agent-reclaimed"
+      const human = message ?? (reason === "agent-reclaimed"
         ? `Agent container stopped to stay inside ShipIt's memory budget (workspace preserved). `
           + `The preview is still running. Send a message to resume — a fresh container starts automatically.`
         : `Session container and preview services stopped to reclaim memory (workspace preserved). `
-          + `Send a message to resume — a fresh container starts automatically.`;
+          + `Send a message to resume — a fresh container starts automatically.`);
       broadcastLog(sessionId, "server", human);
     }
   }

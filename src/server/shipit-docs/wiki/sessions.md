@@ -209,6 +209,14 @@ The exemption here is **Keep preview running** on the session menu, which
 reserves that session against the memory reclaim. Nothing else exempts it —
 pinning does not.
 
+**Done sessions.** A session under **Recently resolved**, or one the sidebar
+hides because of the resolved-session cap, is *done*. About 10 minutes after
+its pull request merged or closed, ShipIt stops its agent container and its
+whole Compose stack, whatever the memory budget says — but never while the user
+has it open or its agent is working. A pin, **Keep preview running**, a broken
+workspace or a live child session makes a session not done. A message sent
+after the merge makes it active again, and the next message restarts it.
+
 **Disk.** Independently of memory, a session that has been idle long enough
 descends a disk ladder. This happens even when memory is plentiful.
 
