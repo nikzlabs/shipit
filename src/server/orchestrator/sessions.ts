@@ -548,7 +548,7 @@ export class SessionManager {
 
   markMerged(id: string): boolean {
     const result = this.db.prepare(
-      "UPDATE sessions SET merged_at = datetime('now') WHERE id = ? AND merged_at IS NULL",
+      "UPDATE sessions SET merged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND merged_at IS NULL",
     ).run(id);
     return result.changes > 0;
   }
@@ -590,7 +590,7 @@ export class SessionManager {
 
   markClosed(id: string): boolean {
     const result = this.db.prepare(
-      "UPDATE sessions SET closed_at = datetime('now') WHERE id = ? AND closed_at IS NULL AND merged_at IS NULL",
+      "UPDATE sessions SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND closed_at IS NULL AND merged_at IS NULL",
     ).run(id);
     return result.changes > 0;
   }

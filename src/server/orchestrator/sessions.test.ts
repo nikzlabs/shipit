@@ -47,6 +47,14 @@ describe("SessionManager", () => {
       expect(mgr.get("sess-1")!.lastUsedAt > "2020-01-02").toBe(true);
     });
 
+    it("records the merge to the millisecond, so a turn in the same second is ordered right", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1");
+      mgr.markMerged("sess-1");
+      expect(mgr.get("sess-1")!.mergedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+      expect(isTerminalPrResolved(mgr.get("sess-1")!)).toBe(true);
+    });
+
     it("a new turn after the merge still reopens it", () => {
       const mgr = new SessionManager(dbManager);
       mergedEarlier(mgr);

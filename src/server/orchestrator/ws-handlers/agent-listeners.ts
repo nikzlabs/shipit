@@ -150,6 +150,8 @@ export function wireAgentListeners(
     // The CLI is already generating, so a Stop must reach its process.
     noteTurnSubmitted(runner);
     const turnSessionId = opts.capturedSessionId;
+    // A turn the CLI starts on its own is new use (docs/316 req 5).
+    if (turnSessionId && startsTurn) deps.sessionManager.track(turnSessionId);
     if (turnSessionId) {
       emitToViewers({
         type: "session_status",

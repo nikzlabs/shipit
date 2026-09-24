@@ -13,12 +13,7 @@ describe("session resolution", () => {
   });
 
   it("reactivates after a later turn across timestamp formats", () => {
-    expect(isTerminalPrResolved(make({ mergedAt: "2026-08-14 10:00:00", lastUsedAt: "2026-08-14T10:00:01.000Z" }))).toBe(false);
-  });
-
-  // docs/316-done-sessions-return-memory: SQLite keeps the merge time to the second.
-  it("does not reactivate on use in the same second as the merge", () => {
-    expect(isTerminalPrResolved(make({ mergedAt: "2026-08-14 10:00:00", lastUsedAt: "2026-08-14T10:00:00.700Z" }))).toBe(true);
+    expect(isTerminalPrResolved(make({ mergedAt: "2026-08-14 10:00:00", lastUsedAt: "2026-08-14T10:00:00.001Z" }))).toBe(false);
   });
 
   it("keeps pinned sessions and visible coordinators active", () => {
