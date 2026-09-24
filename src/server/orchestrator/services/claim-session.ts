@@ -58,6 +58,8 @@ export interface ClaimSessionOptions {
   excludeSessionIds?: string[];
   /** Required for background claims: warm drafts may still have an attached user. */
   skipReuse?: boolean;
+  /** The claiming browser tab; only the draft this tab was last given is ever reused. */
+  tabId?: string;
 }
 
 export class ClaimAbortedError extends Error {
@@ -74,6 +76,9 @@ export interface ClaimSessionService {
 // Share one instance across callers so claims for the same repository serialize.
 export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionService {
   const claimChains = new Map<string, Promise<unknown>>();
+  // One entry per tab and repository; a tab id lives for one page load, so the oldest entries are dropped.
+  const draftByTab = new Map<string, string>();
+  const MAX_TAB_DRAFTS = 1000;
   async function serializeClaim<T>(repoUrl: string, fn: () => Promise<T>): Promise<T> {
     const prev = claimChains.get(repoUrl) ?? Promise.resolve();
     // eslint-disable-next-line no-restricted-syntax -- intentional two-arg .then for promise chaining
@@ -170,29 +175,32 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       const forceFetch = opts?.forceFetch === true;
       const skipReuse = opts?.skipReuse === true;
       const excluded = new Set(opts?.excludeSessionIds ?? []);
+      const tabKey = opts?.tabId && !skipReuse ? `${opts.tabId}\n${url}` : undefined;
 
-      const result = await serializeClaim(url, async () => {
+      const claimLocked = async (): Promise<Omit<ClaimSessionResult, "claimPath">> => {
         const inFlightWarming = deps.waitForWarmSession?.(url);
         if (inFlightWarming) await inFlightWarming;
 
         // Warming can change the pool pointer during the await.
         const repoAfterWarm = deps.repoStore.get(url) ?? repo;
 
-        const reusable = skipReuse
-          ? undefined
-          : deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
-        // Clearing a network override would leave its old container topology running.
-        const carriedOverride = reusable
-          ? deps.egressAllowlistStore?.getSessionOverride(reusable.id) ?? null
-          : null;
-        if (
-          reusable?.workspaceDir &&
-          !excluded.has(reusable.id) &&
-          carriedOverride === null &&
+        // Only this tab's own draft: another tab's draft may still be on screen (docs/285 req 13).
+        const draftId = tabKey ? draftByTab.get(tabKey) : undefined;
+        const draft = draftId ? deps.sessionManager.get(draftId) : undefined;
+        const reusable = draft &&
+          draft.warm &&
+          draft.remoteUrl === url &&
+          draft.id !== repoAfterWarm.warmSessionId &&
+          !excluded.has(draft.id) &&
+          // Clearing a network override would leave its old container topology running.
+          (deps.egressAllowlistStore?.getSessionOverride(draft.id) ?? null) === null &&
           // SSH grants picked in Session settings before the first message must not carry over either.
-          !(reusable.sshHosts?.length) &&
-          existsSync(path.join(reusable.workspaceDir, ".git"))
-        ) {
+          !(draft.sshHosts?.length) &&
+          draft.workspaceDir &&
+          existsSync(path.join(draft.workspaceDir, ".git"))
+          ? draft
+          : undefined;
+        if (reusable?.workspaceDir) {
           claimPath = "reuse";
           const fetchDurationMs = await refreshClaimedSession(url, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
@@ -289,6 +297,17 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         rewarmPool(url);
 
         return { sessionId: appSessionId, workspaceDir, fetchDurationMs };
+      };
+
+      const result = await serializeClaim(url, async () => {
+        const claimed = await claimLocked();
+        // Inside the lock, so a second claim from the same tab sees it.
+        if (tabKey) {
+          draftByTab.delete(tabKey);
+          draftByTab.set(tabKey, claimed.sessionId);
+          if (draftByTab.size > MAX_TAB_DRAFTS) draftByTab.delete(draftByTab.keys().next().value!);
+        }
+        return claimed;
       });
 
       // Exclude clone-time file writes from the docs viewer's session-modified group.

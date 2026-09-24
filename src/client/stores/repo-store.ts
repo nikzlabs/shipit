@@ -1,7 +1,11 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
 import { allSessionSettingWritesSettled } from "../utils/session-setting-writes.js";
+import { randomId } from "../utils/random-id.js";
 import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedExpandedResolvedChildren, saveExpandedResolvedChildren, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
+
+// Per page load, so a duplicated or second tab never gets this tab's `/new` draft (docs/285 req 13).
+const TAB_ID = randomId();
 
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
 
@@ -407,7 +411,8 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       usePreviewStore.getState().initStartupSteps();
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}/claim-session`, {
         method: "POST",
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ tabId: TAB_ID }),
         signal,
       });
       if (!res.ok) {

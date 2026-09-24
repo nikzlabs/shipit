@@ -203,4 +203,5 @@ guard is now individually proven red without its fix.
 - [x] Send barrier holds for writes made in the dialog; per-instance read counter
 - [x] A `/new` draft with SSH grants is not recycled by the next claim
 - [x] A new-session claim waits for in-flight settings writes
+- [x] A new-session claim reuses only the draft it gave the same tab (req 13)
 - [x] Wiki: sessions, chat, settings-and-accounts

@@ -281,7 +281,6 @@ describe("Integration: warm session lifecycle", () => {
     }, 25000);
 
     it("rapid back-to-back claims each yield a usable session (docs/144 fix #1)", async () => {
-      // Claims can reuse an ungraduated draft, so IDs need not be unique here.
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -320,6 +319,7 @@ describe("Integration: warm session lifecycle", () => {
       const first = (await app.inject({
         method: "POST",
         url: `/api/repos/${encodedUrl}/claim-session`,
+        payload: { tabId: "tab-a" },
       })).json();
       await app.inject({
         method: "PUT",
@@ -327,9 +327,11 @@ describe("Integration: warm session lifecycle", () => {
         payload: { override: false },
       });
 
+      // The same tab claims again, so only the carried setting refuses the draft.
       const second = (await app.inject({
         method: "POST",
         url: `/api/repos/${encodedUrl}/claim-session`,
+        payload: { tabId: "tab-a" },
       })).json();
       expect(second.sessionId).not.toBe(first.sessionId);
 
@@ -361,6 +363,7 @@ describe("Integration: warm session lifecycle", () => {
       const first = (await app.inject({
         method: "POST",
         url: `/api/repos/${encodedUrl}/claim-session`,
+        payload: { tabId: "tab-a" },
       })).json();
       const grant = await app.inject({
         method: "PUT",
@@ -369,9 +372,11 @@ describe("Integration: warm session lifecycle", () => {
       });
       expect(grant.statusCode).toBe(200);
 
+      // The same tab claims again, so only the carried setting refuses the draft.
       const second = (await app.inject({
         method: "POST",
         url: `/api/repos/${encodedUrl}/claim-session`,
+        payload: { tabId: "tab-a" },
       })).json();
       expect(second.sessionId).not.toBe(first.sessionId);
       const fresh = (await app.inject({
@@ -379,6 +384,28 @@ describe("Integration: warm session lifecycle", () => {
         url: `/api/sessions/${second.sessionId}/ssh-hosts`,
       })).json();
       expect(fresh.granted).toEqual([]);
+    }, 30000);
+
+    it("reuses a draft only for the tab it was given to (docs/285 req 13)", async () => {
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "first warm session",
+      );
+      const encodedUrl = encodeURIComponent(REPO_URL);
+      const claim = async (tabId: string): Promise<string> =>
+        (await app.inject({
+          method: "POST",
+          url: `/api/repos/${encodedUrl}/claim-session`,
+          payload: { tabId },
+        })).json().sessionId;
+
+      const [a1, a2] = await Promise.all([claim("tab-a"), claim("tab-a")]);
+      expect(a2).toBe(a1);
+
+      const b = await claim("tab-b");
+      expect(b).not.toBe(a1);
+      expect(await claim("tab-a")).toBe(a1);
     }, 30000);
 
     it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {

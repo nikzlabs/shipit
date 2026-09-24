@@ -41,3 +41,23 @@ describe("claimSession waits for session-settings writes", () => {
     expect(fetchStub).toHaveBeenCalledOnce();
   });
 });
+
+describe("claimSession names this tab (docs/285 req 13)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the same tab id on every claim", async () => {
+    const bodies: { tabId?: string }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string) as { tabId?: string });
+      return { ok: true, json: async () => ({ sessionId: "s1", sessionDir: "/x" }) } as Response;
+    }));
+
+    await useRepoStore.getState().claimSession("https://github.com/o/r.git");
+    await useRepoStore.getState().claimSession("https://github.com/o/r.git");
+
+    expect(bodies[0].tabId).toBeTruthy();
+    expect(bodies[1].tabId).toBe(bodies[0].tabId);
+  });
+});
