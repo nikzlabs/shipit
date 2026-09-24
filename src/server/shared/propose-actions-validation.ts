@@ -4,7 +4,8 @@ export const MAX_ACTIONS = 5;
 export const MIN_ACTIONS = 1;
 export const MAX_ID_LEN = 64;
 export const MAX_LABEL_LEN = 120;
-export const MAX_DESC_LEN = 280;
+/** docs/303-session-status-card req 45 — markdown, so a description has room for a long link. */
+export const MAX_DESC_LEN = 1000;
 export const MAX_PAYLOAD_LEN = 4000;
 export const MAX_TITLE_LEN = 120;
 
