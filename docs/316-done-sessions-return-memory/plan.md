@@ -61,7 +61,20 @@ below the budget too (req 6). A session is stopped when:
   memory-budget tiers still skip a session with a viewer.
 
 It disposes the runner (without `preserveComposeOnDispose`), stops the Compose
-services, and destroys the container (req 3). A declined dispose skips the
+services, and destroys the container (req 3).
+
+Because an open session is stopped too (req 8), the user can send a message
+while that teardown still runs. Two mechanisms make this safe:
+
+- `SessionContainerManager` runs one teardown at a time for each session. The
+  restart's own destroy waits for the reclaim teardown, so the old teardown
+  cannot remove the new container's record, overlay volumes or child
+  resources. `destroyContainer` also deletes the record only when it is still
+  the one it tore down.
+- `SessionRunnerRegistry` remembers a session whose runner was disposed with
+  viewers attached. When a new runner for it is created, it sends the
+  `runner_replaced` SSE event (the one `restartContainer` sends), so every open
+  tab reconnects to the new runner, not only the tab that sent the message. A declined dispose skips the
 session. The user is told through the existing `session_status` /
 `broadcastLog` surfaces, with a done-specific log line.
 
@@ -79,5 +92,7 @@ no longer done (req 5) and the next turn starts a fresh container.
 
 - `src/server/shared/session-resolution.ts`
 - `src/server/orchestrator/idle-enforcer.ts` (+ `idle-enforcer.test.ts`)
+- `src/server/orchestrator/session-container.ts` — `serializeTeardown`
+- `src/server/orchestrator/session-runner.ts` — `onViewersOrphaned`, wired in `runner-registry-factory.ts`
 - `src/server/orchestrator/sessions.ts` — `filterVisibleInSidebar`
 - `src/client/components/SessionSidebar/useSessionGrouping.ts`, `SessionGroup.tsx`

@@ -1317,6 +1317,35 @@ describe("SessionContainerManager", () => {
     it("is a no-op for unknown session IDs", async () => {
       await manager.destroy("nonexistent");
     });
+
+    // docs/316-done-sessions-return-memory: a message to a session whose done
+    // teardown is still running starts a restart, which destroys again first.
+    it("runs a second teardown only after the first, so the replacement survives", async () => {
+      await manager.create(buildConfig());
+      const realList = mockDocker.listContainers;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      mockDocker.listContainers = vi.fn(async (...args: unknown[]) => {
+        mockDocker.listContainers = realList;
+        await gate;
+        return realList(...(args as Parameters<typeof realList>));
+      }) as typeof realList;
+
+      const first = manager.destroy("test-session-1");
+      let secondDone = false;
+      const replacement = (async () => {
+        await manager.destroy("test-session-1", { replacementFollows: true });
+        secondDone = true;
+        return manager.create(buildConfig());
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(secondDone).toBe(false);
+
+      release();
+      await first;
+      const sc = await replacement;
+      expect(manager.get("test-session-1")).toBe(sc);
+    });
   });
 
   describe("markContainerGone", () => {

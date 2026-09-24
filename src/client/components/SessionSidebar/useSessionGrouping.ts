@@ -1,5 +1,5 @@
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
-import { doneSessionTest, resolvedAt } from "../../../server/shared/session-resolution.js";
+import { resolvedAt } from "../../../server/shared/session-resolution.js";
 
 /**
  * Group sessions by repo URL with a STABLE sort within each group.
@@ -20,7 +20,7 @@ import { doneSessionTest, resolvedAt } from "../../../server/shared/session-reso
 export function computeRepoGroups(
   repos: RepoInfo[],
   sessions: SessionInfo[],
-  isDone: (s: SessionInfo) => boolean = doneSessionTest(sessions),
+  isDone: (s: SessionInfo) => boolean,
 ) {
   const grouped = new Map<string, SessionInfo[]>();
 

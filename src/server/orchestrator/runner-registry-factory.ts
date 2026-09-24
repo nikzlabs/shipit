@@ -181,6 +181,10 @@ export function createRunnerRegistry(
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
       reconcileAgentMergeClaimsFor?.(sessionId);
     },
+    // Same event restartContainer sends: it tells an open tab to reconnect.
+    onViewersOrphaned: (sessionId, incarnation) => {
+      sseBroadcast("runner_replaced", { sessionId, incarnation });
+    },
     onRunnerCreated: (runner) => {
       // A merge can start before this runner exists; seed both dispatch and disposal holds.
       if (isAgentMergeInFlight?.(runner.sessionId)) {
