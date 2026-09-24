@@ -692,6 +692,8 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastSessionStatusCard: boolean | undefined;
   public lastServiceRouting: { serviceId: string; billingMode: string; baseUrl: string } | undefined;
   public killed = false;
+  /** A real process exits on kill; tests of abort paths rely on the old silent kill. */
+  public doneOnKill = false;
   public interrupted = false;
   public stdinData: string[] = [];
   public lastCompact: boolean | undefined;
@@ -753,8 +755,7 @@ export class FakeClaudeProcess extends EventEmitter {
 
   kill() {
     this.killed = true;
-    if (this.streamingInterrupt) return;
-    setTimeout(() => super.emit("done", 143), 10);
+    if (this.doneOnKill) setTimeout(() => super.emit("done", 143), 10);
   }
 
   interrupt() {

@@ -198,6 +198,7 @@ describe("Integration: live-steering resilience (docs/140 Phase 5)", () => {
     client.send({ type: "send_message", text: "Start steered turn" });
     const claude = await waitForClaude(() => lastClaude);
     expect(claude.lastUseStreaming).toBe(true);
+    claude.doneOnKill = true;
     claude.initSession("steer-interrupt-session");
 
     client.send({ type: "interrupt_agent" });

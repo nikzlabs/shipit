@@ -96,6 +96,7 @@ describe("Integration: Interrupt and Redirect", () => {
     const sessionId = client.sessionId;
     client.send({ type: "send_message", text: "run the tests in the background" });
     const claude = await waitForClaude(() => lastClaude);
+    claude.doneOnKill = true;
     claude.initSession("stop-background");
     await client.receiveType("session_started");
     // Model a resident process; this fixture disables live steering.

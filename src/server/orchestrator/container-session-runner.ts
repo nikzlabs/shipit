@@ -28,6 +28,7 @@ import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
+import { beginTurnSetup } from "./turn-stop-request.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
   dependencyGapNotice,
@@ -227,7 +228,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   get running(): boolean { return this._isRunning; }
-  set running(v: boolean) { this._isRunning = v; }
+  set running(v: boolean) {
+    if (v && !this._isRunning) beginTurnSetup(this);
+    this._isRunning = v;
+  }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) {
     // Every acquisition is a new hold, including one taken while the flag is already set.
