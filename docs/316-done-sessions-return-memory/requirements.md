@@ -26,17 +26,25 @@ expects a finished session to use no memory.
 6. The docs/284-idle-preview-survives-agent-stop rule that an idle session keeps
    its preview while memory is below the budget applies to sessions that are
    **not** done. It does not protect a done session.
+7. A session that has **Keep preview running** set is not done. It is not under
+   **Recently resolved**, and ShipIt does not stop it because of this feature.
+8. ShipIt does not stop a done session that the user has open. It stops the
+   session after the user leaves it, when the wait is also complete.
+9. The wait is a fixed 10 minutes. It is not a setting.
 
 ## Open questions
 
-- A done session that has **Keep preview running** set: is it reclaimed after
-  the wait, or is the reservation a reason for the session to be not done (so it
-  leaves **Recently resolved**)?
-- A done session that the user has **open** when the wait ends: is it reclaimed,
-  or does ShipIt wait until the user leaves it?
-- Is the wait a fixed 10 minutes, or a setting the user can change?
+- (none)
 
 ## Resolved questions
+
+- 2026-09-24 — *A done session has Keep preview running set: reclaimed after the
+  wait, or not done?* The user chose "not done". Carried by req 7.
+- 2026-09-24 — *The wait ends while the user has the session open: reclaim, or
+  wait until they leave?* The user chose to wait until they leave. Carried by
+  req 8.
+- 2026-09-24 — *Fixed 10 minutes, or a setting?* The user chose fixed. Carried by
+  req 9.
 
 - 2026-09-24 — *When a done session is reclaimed, does ShipIt stop only the agent
   container or the preview too?* The user asked that done sessions "not use

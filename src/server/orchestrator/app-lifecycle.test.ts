@@ -114,6 +114,7 @@ describe("createIdleEnforcer", () => {
       containerManager: cm,
       runnerRegistry: registry,
       sessionManager: {
+        listAll: () => [],
         get: (id: string) => id === "reserved" ? { keepPreviewRunning: true } : undefined,
       } as any,
       getMemoryStats: () => ({ usedBytes: 95, totalBytes: 100 }),
@@ -134,6 +135,7 @@ describe("createIdleEnforcer", () => {
       containerManager: cm,
       runnerRegistry: registry,
       sessionManager: {
+        listAll: () => [],
         get: () => ({ keepPreviewRunning: true, userArchived: true, archived: true }),
       } as any,
       getMemoryStats: () => ({ usedBytes: 95, totalBytes: 100 }),
@@ -587,7 +589,7 @@ describe("createIdleEnforcer", () => {
       createIdleEnforcer({
         containerManager: cm,
         runnerRegistry: registry,
-        sessionManager: { get: () => ({ keepPreviewRunning: true }) } as never,
+        sessionManager: { listAll: () => [], get: () => ({ keepPreviewRunning: true }) } as never,
         getMemoryStats: overBudget,
         services: services.hooks,
       })();
@@ -916,7 +918,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
         deps: {},
         containerManager: null,
         credentialsDir: TEST_CREDENTIALS_DIR,
-        sessionManager: { get: (id: string) => sessions[id] } as unknown as SessionManager,
+        sessionManager: { listAll: () => [], get: (id: string) => sessions[id] } as unknown as SessionManager,
         runtimeMode: "local",
         localAgentFactory,
       });
@@ -975,7 +977,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
         deps: {},
         containerManager: null,
         credentialsDir: TEST_CREDENTIALS_DIR,
-        sessionManager: { get: () => undefined } as unknown as SessionManager,
+        sessionManager: { listAll: () => [], get: () => undefined } as unknown as SessionManager,
         runtimeMode: "local",
         localAgentFactory,
         ...(opts.credentialStore ? { credentialStore: opts.credentialStore } : {}),
@@ -1646,7 +1648,7 @@ describe("buildRunnerFactory — teardown during the create preflight", () => {
         containerManager,
         credentialsDir: TEST_CREDENTIALS_DIR,
         // Overlay preflight requires a known session.
-        sessionManager: { get: () => ({ id: SESSION }) } as unknown as SessionManager,
+        sessionManager: { listAll: () => [], get: () => ({ id: SESSION }) } as unknown as SessionManager,
         runtimeMode: "containerized",
       });
       const runner = factory!({

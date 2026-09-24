@@ -6,7 +6,7 @@ import {
   holdsActiveReservation,
   MAX_MERGED_SESSIONS_PER_REPO,
 } from "./sessions.js";
-import { isTerminalPrResolved } from "../shared/session-resolution.js";
+import { doneSessionTest, isTerminalPrResolved } from "../shared/session-resolution.js";
 import type { SessionInfo } from "../shared/types.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
@@ -935,6 +935,23 @@ describe("SessionManager", () => {
     it("always keeps active (never-merged) sessions", () => {
       const sessions = [active("a"), active("b")];
       expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toEqual(["a", "b"]);
+    });
+
+    it("docs/316-done-sessions-return-memory req 2: hides only done sessions", () => {
+      const sessions: SessionInfo[] = [
+        merged("new", "2024-01-05 09:00:00"),
+        merged("plain", "2024-01-01 09:00:00"),
+        { ...merged("pinned", "2024-01-01 08:00:00"), pinnedAt: "2024-01-02 00:00:00" },
+        { ...merged("blocked", "2024-01-01 07:00:00"), workspaceBlock: "conflict" },
+        { ...merged("reserved", "2024-01-01 06:00:00"), keepPreviewRunning: true },
+        closed("closed", "2024-01-01 05:00:00"),
+        merged("reused", "2024-01-01 04:00:00", "2024-01-03 00:00:00"),
+      ];
+      const visible = new Set(filterVisibleInSidebar(sessions, 1).map((s) => s.id));
+      const isDone = doneSessionTest(sessions);
+      const hidden = sessions.filter((s) => !visible.has(s.id));
+      expect(hidden.map((s) => s.id).sort()).toEqual(["closed", "plain"]);
+      for (const s of hidden) expect(isDone(s)).toBe(true);
     });
 
     it("docs/241: keeps a reserved session visible through the merged cap", () => {
