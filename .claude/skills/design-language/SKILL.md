@@ -86,7 +86,7 @@ An illustration under this exception must still: use only semantic colour tokens
 
 **The other exception — a mark you quote, not one you draw.** A **vendor logo** is an inline `<svg>` too, because Phosphor is a set of generic UI symbols and ships no brand marks. Nothing about a logo is a design decision: the shape belongs to its owner, so it is copied verbatim (Simple Icons is CC0 and is where ours come from) rather than approximated with a glyph. A logo must carry `aria-hidden="true"` — the vendor's **name** is invariably beside it, and a mark that announces itself makes a screen reader say the name twice.
 
-Colour is the one judgement left, and it is decided by the brand, not by taste. A mark the vendor publishes in **black** (Anthropic, OpenAI, Vercel, Z.ai) is drawn in `currentColor`, because a hardcoded `#000` disappears on a dark background — this is not a compromise, it is what the mark looks like in each theme. A brand whose colour IS the mark keeps it as a literal hex, checked for legibility on light *and* dark: `SettingsIntegrations.tsx`'s `LinearLogo` (`#5e6ad2`) is the standing example. And where a set of marks is drawn as a column, keep the set consistent rather than colouring one row of it — `ServiceLogo.tsx` draws all six service marks in `currentColor` for that reason, since only DeepSeek's is coloured and one blue tile among five grey ones reads as a rendering bug.
+Colour is the one judgement left, and it is decided by the brand, not by taste. A mark the vendor publishes in **black** (Anthropic, OpenAI, Vercel, Z.ai) is drawn in `currentColor`, because a hardcoded `#000` disappears on a dark background — this is not a compromise, it is what the mark looks like in each theme. A brand whose colour IS the mark keeps it as a literal hex, checked for legibility on light *and* dark: `Settings/components/LinearCredential.tsx`'s `LinearLogo` (`#5e6ad2`) is the standing example. And where a set of marks is drawn as a column, keep the set consistent rather than colouring one row of it — `ServiceLogo.tsx` draws all six service marks in `currentColor` for that reason, since only DeepSeek's is coloured and one blue tile among five grey ones reads as a rendering bug.
 
 This exception is for logos only — it does not license a hand-drawn icon for anything ShipIt owns.
 
@@ -132,9 +132,12 @@ Shared components in `src/client/components/ui/` using [CVA](https://cva.style) 
 | `Badge` | `badge.tsx` | `variant`: default, success, error, warning, info |
 | `StatusDot` | `status-dot.tsx` | `status`: success, error, warning, info |
 | `Banner` | `banner.tsx` | `variant`: error, warning, info, success |
-| `Panel` | `panel.tsx` | Base surface with border |
-| `Card` | `card.tsx` | Elevated surface with shadow |
-| `Modal` | `modal.tsx` | Dialog overlay with backdrop |
+| `Dialog` | `dialog.tsx` | Modal overlay with backdrop |
+| `Tooltip` / `Popover` / `DropdownMenu` / `OverflowMenu` | `tooltip.tsx`, `popover.tsx`, `dropdown-menu.tsx`, `overflow-menu.tsx` | Floating surfaces |
+| `Tabs` / `Tab` | `tabs.tsx`, `tab.tsx` | Tab strips |
+| `Avatar`, `CopyButton` | `avatar.tsx`, `copy-button.tsx` | — |
+
+`ls src/client/components/ui/` is authoritative if this table lags.
 
 Example usage:
 

@@ -3,12 +3,14 @@ import type { ToolDescriptor } from "./types.js";
 import { normalizeAskQuestions } from "../ask-question.js";
 
 const TOOL_DESCRIPTION = [
-  "Ask the user one or more multiple-choice questions and pause until they",
-  "answer. Use this when you need a decision you can't safely make yourself —",
+  "Ask the user one or more multiple-choice questions. Calling it ends your",
+  "turn: the call returns no result and the user's answers arrive as your next",
+  "message, so make it the last call of the turn, after any text the user should",
+  "read first. Use this when you need a decision you can't safely make yourself —",
   "picking between approaches, confirming a destructive action, resolving an",
   "ambiguous requirement. Each question renders as a card with selectable",
-  "options (plus a free-text 'Other'); the user's selection comes back as your",
-  "next message. Prefer this over asking in prose: the structured card is",
+  "options (plus a free-text 'Other'). Prefer this over asking in prose: the",
+  "structured card is",
   "clearer and the answer is delivered reliably. Provide 2-4 concrete options",
   "per question with short descriptions. This works in any mode.",
 ].join(" ");

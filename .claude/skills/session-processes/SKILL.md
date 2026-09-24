@@ -55,20 +55,9 @@ Note: Preview/dev servers are now managed by Docker Compose via `ServiceManager`
 
 ### Spawning
 
-Uses `node-pty` to create a real PTY (avoids stdin pipe hangs):
-```
-claude --output-format stream-json
-       --verbose
-       --model <model>
-       --permission-mode <mode>
-       --allowedTools <tool-list>
-       --max-turns 200
-```
-
-The tool list varies by permission mode:
-- **auto**: Write, Read, Edit, Bash, Glob, Grep, WebFetch, WebSearch, AskUserQuestion
-- **plan**: Read, Glob, Grep, WebFetch, WebSearch (read-only)
-- **normal**: Read, Glob, Grep, WebFetch, WebSearch, AskUserQuestion (supervised)
+Spawned with `child_process.spawn("claude", args)` using `--output-format stream-json`, `--permission-mode`
+(`plan` or `auto`) and `--allowedTools`. The tool list comes from `AUTO_TOOL_SPEC` / `PLAN_TOOL_SPEC` plus
+`mcp__<server>__*` globs for user MCP servers (plan mode excludes third-party MCP tools); read `process.ts` for the current args.
 
 ### NDJSON Parsing
 

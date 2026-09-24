@@ -126,14 +126,10 @@ The credentials directory is mounted read-only into session containers, so worke
 
 ## Auto-Commit Flow
 
-After each agent turn completes (Claude or Codex — the flow is backend-agnostic):
-
-1. `handleSendMessage` in the WS handler calls `onAgentFinished()`
-2. The handler generates a commit summary from the turn
-3. `GitManager.autoCommit(summary)` stages all changes and commits
-4. Commit info is broadcast to the client via `git_committed` WS message
-5. `scheduleAutoPush()` starts a debounced timer (5 seconds)
-6. If no new commits within 5s, auto-push fires (if remote is configured)
+After each agent turn (backend-agnostic), `turn-executor.ts` runs `postTurnCommit()` → `GitManager.autoCommit(summary)`,
+broadcasts `git_committed`, runs the PR lifecycle card flow, and arms the auto-push LAST via
+`services/auto-push-scheduler.ts` (debounce `autoPushDebounceMs`, default 0). Ordering and invariants:
+CLAUDE.md → *Post-turn flow*.
 
 ## Session Clone Lifecycle
 

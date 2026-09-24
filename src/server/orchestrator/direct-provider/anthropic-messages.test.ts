@@ -196,4 +196,22 @@ describe("createAnthropicMessagesCall", () => {
 
     expect(fetchImpl.mock.calls[0][1].headers["anthropic-version"]).toBe("9999-01-01");
   });
+
+  it("sends output_config.effort only when the request carries one", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => messagesResponse("ok"));
+    const call = createAnthropicMessagesCall(fetchImpl as unknown as typeof fetch);
+    const req = {
+      baseUrl: base.target.baseUrl,
+      apiModelId: base.target.apiModelId,
+      apiKey: "k",
+      prompt: "p",
+      signal: new AbortController().signal,
+    };
+
+    await call(req);
+    await call({ ...req, effort: "low" });
+
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).not.toHaveProperty("output_config");
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).output_config).toEqual({ effort: "low" });
+  });
 });

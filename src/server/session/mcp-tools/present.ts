@@ -2,11 +2,12 @@
 import type { ToolDescriptor } from "./types.js";
 
 const TOOL_DESCRIPTION = [
-  "Show the user one or more visual artifacts — diagrams, charts, graphs, mockups,",
-  "wireframes, rendered markdown docs, comparison views, or HTML/SVG prototypes —",
-  "rendered in ShipIt's dedicated Present tab, with no dev server. Reach for this",
-  "proactively whenever you produce something visual for the user to look at,",
-  "instead of only describing it in chat or writing a file you never surface.",
+  "Show the user a visual artifact — a diagram, chart, graph, mockup, wireframe,",
+  "rendered markdown doc, comparison view, or HTML/SVG prototype — rendered from",
+  "a file in ShipIt's Present tab, with no dev server. Use it when you have made",
+  "something visual for the user to look at, instead of only describing it in",
+  "chat or writing a file you never surface. Not for the user's running app:",
+  "changes to the app itself are seen in the live preview.",
   "Multiple presentations coexist in the Present tab. Each call presents one file,",
   "so to show several artifacts at once (e.g. three design variants) write each",
   "file and call `present` once per file — they all stay visible together. Don't",

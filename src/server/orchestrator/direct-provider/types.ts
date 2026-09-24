@@ -12,6 +12,8 @@ export interface DirectCallRequest {
   headers?: Record<string, string>;
   prompt: string;
   signal: AbortSignal;
+  /** Sent only where the catalogue says the model accepts it. */
+  effort?: string;
 }
 
 /**

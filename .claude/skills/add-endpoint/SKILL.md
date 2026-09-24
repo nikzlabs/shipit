@@ -35,7 +35,7 @@ See `docs/001-websocket-protocol/plan.md` for the full endpoint and message refe
 **Prefer HTTP** for new endpoints unless the operation requires per-connection state or real-time streaming (see decision framework above).
 
 1. Add the service function in the appropriate `src/server/orchestrator/services/*.ts` file — pure function that accepts explicit parameters (session ID, managers) and returns data or throws `ServiceError`
-2. Add the Fastify route in `src/server/orchestrator/api-routes.ts` — call the service function, handle errors, return JSON
+2. Add the Fastify route in the matching `src/server/orchestrator/api-routes-*.ts` file — call the service function, handle errors, return JSON
 3. On the client, call the endpoint via `useApi` hook (`apiGet()` / `apiPost()` / etc.) from `src/client/hooks/useApi.ts`
 4. Add integration tests using `app.inject()` in `src/server/orchestrator/integration_tests/`
 
@@ -43,8 +43,8 @@ See `docs/001-websocket-protocol/plan.md` for the full endpoint and message refe
 
 1. Add the interface to `src/server/shared/types/ws-client-messages.ts` (and/or `ws-server-messages.ts` for server-to-client)
 2. Add the handler in the appropriate `src/server/orchestrator/ws-handlers/*-handlers.ts` file
-3. Add a `case` to the `switch (msg.type)` dispatcher in `src/server/orchestrator/index.ts`
-4. Add the client-side handler in `src/client/hooks/useMessageHandler.ts`
+3. Add a `case` to the `switch (msg.type)` dispatcher in `src/server/orchestrator/route-registry.ts`
+4. Add the client-side handler as a file in `src/client/hooks/message-handlers/` and register it in that directory's `index.ts`
 5. Add integration tests in `src/server/orchestrator/integration_tests/`
 
 **Key conventions:**

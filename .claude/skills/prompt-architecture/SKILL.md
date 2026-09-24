@@ -48,4 +48,4 @@ Every `(agentId, mode)` variant renders **once at module load** into `PRECOMPUTE
 
 Provider and integration tests reference the **imported constant** (`toContain(CLEANUP_INSTRUCTIONS)`), never a pasted copy.
 
-See `voice/providers/*-cleanup.test.ts` and `integration_tests/system-prompt.test.ts`.
+See `voice/cleanup.test.ts` and `integration_tests/system-prompt.test.ts`.

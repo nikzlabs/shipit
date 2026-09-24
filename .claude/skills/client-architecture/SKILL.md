@@ -15,13 +15,11 @@ The client is a React 19 SPA built with Vite and Tailwind CSS v4. State manageme
 - `/session/:sessionId` — session view
 - `*` — catch-all (home screen, `/{slug}/new` for new repo sessions)
 
-`src/client/App.tsx` (~800 lines) is the main component. It wires together all hooks, stores, and UI components. Layout is a three-panel design: sidebar (sessions), center (chat), right (preview/files/git/terminal).
+`src/client/App.tsx` is the main component. It wires together all hooks, stores, and UI components. Layout is a three-panel design: sidebar (sessions), center (chat), right (preview/files/git/terminal).
 
 ## State Management (Zustand)
 
-11 domain-specific stores in `src/client/stores/`:
-
-The main stores (partial — `ls src/client/stores/` for the full set, currently ~21):
+The main stores (partial — `ls src/client/stores/` for the full set):
 
 | Store | File | Key State |
 |-------|------|-----------|
@@ -112,12 +110,9 @@ one: `useWebSocket`, `useServerEvents`, `useConnectionSync`.
 
 ### `useMessageHandler`
 
-`src/client/hooks/useMessageHandler.ts` — processes per-session WebSocket messages.
-
-- Listens to `lastMessage` from `useSessionWebSocket`
-- Parses `WsServerMessage` and routes to appropriate store updates
-- Handles 20+ message types: `agent_event`, `preview_status`, `file_tree`, `git_log`, `chat_history`, `terminal_output`, etc.
-- Discards stale messages (e.g., `preview_status` from a previous session)
+`src/client/hooks/useMessageHandler.ts` — listens to `lastMessage` and hands each `WsServerMessage` to
+`dispatchMessage` in `hooks/message-handlers/index.ts`, which routes to one handler file per type and drops
+foreign-session messages (`TRANSCRIPT_SCOPED_MESSAGES`). It holds agent events back until `historyLoaded`.
 
 ### `useConnectionSync`
 
@@ -135,7 +130,7 @@ one: `useWebSocket`, `useServerEvents`, `useConnectionSync`.
 | `useAutoFix` | `useAutoFix.ts` | Monitors preview errors, auto-sends fix requests to Claude (3 retries, 5s cooldown) |
 | `useKeyboardShortcuts` | `useKeyboardShortcuts.ts` | Ctrl+F (search), ? (shortcuts overlay), Esc (interrupt) |
 | `useNotification` | `useNotification.ts` | Tab visibility tracking, browser notifications on agent finish |
-| `useTheme` | `useTheme.ts` | Dark/light mode toggle (localStorage) |
+| `useTheme` | `useTheme.ts` | Theme selection from `THEME_DEFS` (localStorage) |
 | `useSearch` | `useSearch.ts` | Case-insensitive message search |
 | `useResizablePanel` | `useResizablePanel.ts` | Drag-to-resize split panels |
 | `usePreviewErrors` | `usePreviewErrors.ts` | Captures errors from preview iframe |
@@ -143,7 +138,7 @@ one: `useWebSocket`, `useServerEvents`, `useConnectionSync`.
 
 ## Components
 
-~260 components in `src/client/components/` — far more than are listed here. This is a partial orientation map, not an inventory; `ls src/client/components/` for the real set.
+Far more components live in `src/client/components/` than are listed here. This is a partial orientation map, not an inventory; `ls src/client/components/` for the real set.
 
 ### Layout
 - **`SessionSidebar`** — session list with rename/archive, repo grouping
@@ -211,7 +206,7 @@ useMessageHandler receives WS responses:
 
 | Key | Purpose |
 |-----|---------|
-| `shipit-theme` | Dark/light mode |
+| `shipit-theme` | Selected theme |
 | `vibe-permission-mode` | Auto/plan/normal permission mode |
 | `vibe-sidebar-collapsed` | Sidebar collapsed state |
 | `vibe-agent-id` | Preferred agent (claude/codex) |
