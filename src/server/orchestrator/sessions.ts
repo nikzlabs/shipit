@@ -339,13 +339,6 @@ export class SessionManager {
     return rows.map((r) => r.id);
   }
 
-  findUngraduatedWarm(repoUrl: string, excludeId?: string): SessionInfo | undefined {
-    const row = this.db.prepare(
-      "SELECT * FROM sessions WHERE warm = 1 AND remote_url = ? AND id != ?",
-    ).get(repoUrl, excludeId ?? "") as SessionRow | undefined;
-    return row ? this.fromRow(row) : undefined;
-  }
-
   get(id: string): SessionInfo | undefined {
     const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined;
     return row ? this.fromRow(row) : undefined;

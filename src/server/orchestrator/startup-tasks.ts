@@ -276,7 +276,7 @@ export function scheduleStartupTasks(
         if (repo.warmSessionId) activeWarmIds.add(repo.warmSessionId);
       }
 
-      // Remove abandoned drafts so findUngraduatedWarm cannot offer them for reuse.
+      // Remove abandoned drafts: after a restart no tab can claim them back.
       let zombieCount = 0;
       for (const id of sessionManager.allIds()) {
         if (activeWarmIds.has(id)) continue;

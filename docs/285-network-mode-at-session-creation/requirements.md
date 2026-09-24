@@ -46,12 +46,19 @@ description: Fold network containment into the composer's existing permission-mo
     rather than offering the network options inline. So everything the dialog holds,
     including SSH destination grants, can be set before the first message. Quick Capture,
     which has no session until Send, keeps the inline network options (req 2).
+13. Two browser tabs that each start a new session in the same repository get two
+    different sessions. A setting chosen in one tab never lands on the other tab's session.
 
 ## Open questions
 
 - (none)
 
 ## Resolved questions
+
+- 2026-09-24 — *Can two tabs that start a new session at the same time still race — can a
+  grant from one tab land on the other tab's session?* Yes, it could: both tabs could be
+  given the same `/new` draft. The user approved the fix: a new-session claim does not reuse
+  a draft that another tab has open. → req 13.
 
 - 2026-09-24 — *The composer lets me set network access before a new session starts.
   Should it instead open the full Session settings dialog, so SSH hosts can be granted in

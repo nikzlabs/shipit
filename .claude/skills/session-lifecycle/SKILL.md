@@ -57,14 +57,14 @@ Client                          Server
 
 ### Path B: Warm Session (repo, pool hit)
 
-The claim endpoint first checks for a **reusable** session: a previously-claimed warm session for this repo that was never graduated (user navigated away without sending a message). If found, it returns that session — reusing the existing container instead of creating a new one. Otherwise, it claims from the warm pool.
+The claim endpoint first checks for a **reusable** session: the never-graduated draft the server last gave to the same browser tab (the client sends a per-page-load `tabId`; `claim-session.ts` keeps a tab → draft map). If that draft is still warm and carries no settings, it returns it — reusing the existing container instead of creating a new one. No other draft is reused, so two tabs never share one (docs/285-network-mode-at-session-creation req 13). Otherwise, it claims from the warm pool.
 
 ```
 Client                          Server
   |                               |
   |  navigate(/{owner}/{repo}/new)|
   +- POST /api/repos/:url/claim-session ->
-  |                               |  1. reusable ungraduated warm session?
+  |                               |  1. this tab's own draft, still reusable?
   |                               |     YES -> return it (no new claim)
   |                               |  2. repo.warmSessionId exists?
   |                               |     YES -> clear warmSessionId

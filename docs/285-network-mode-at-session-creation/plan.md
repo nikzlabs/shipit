@@ -79,7 +79,20 @@ well. Quick Capture keeps the three inline options, because it has no session un
   the user starts another new session in the same repo would reach a draft the claim had
   just reused. So `claimSession` first waits for every session-settings write this browser
   has in flight (`utils/session-setting-writes.ts`, the same registry the Send barrier
-  reads). A write from another tab is not covered; that needs two tabs racing one request.
+  reads).
+- **A claim reuses only the draft it gave the same tab (req 13).** A `/new` draft stays
+  ungraduated until its first message, and the claim used to reuse any such draft in the
+  repository — so two tabs could be given the same session, and one tab's settings writes
+  landed on the other's. Now each page load makes a random tab id (`stores/repo-store.ts`)
+  and sends it with every claim; `services/claim-session.ts` remembers, inside the per-repo
+  claim lock, which draft it gave each tab, and reuses only that one, while it is still warm
+  and carries no settings. A claim that names no tab (spawns, Quick Capture) never reuses.
+  "New session" sends two claims (the click handler and the `/new` route effect); both come
+  from one tab, so both get the same draft. Two designs were rejected. An attached-viewer
+  check: the WebSocket opens only after the claim returns, so two claims at once still got
+  the same draft, and a network drop made a draft on screen look free. A per-tab
+  `sessionStorage` id: "Duplicate tab" copies it. Cost: after a reload or a closed tab, the
+  old draft is not reused; the startup janitor removes it.
 - **Grants do not carry over (req 8).** An abandoned `/new` draft with SSH grants is not
   recycled by the next claim, for the same reason as a draft with a network override
   (`claim-session.ts`).

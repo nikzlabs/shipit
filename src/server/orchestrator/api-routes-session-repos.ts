@@ -311,13 +311,15 @@ export async function registerSessionReposRoutes(
     },
   );
 
-  app.post<{ Params: { url: string } }>(
+  app.post<{ Params: { url: string }; Body: { tabId?: unknown } | undefined }>(
     "/api/repos/:url/claim-session",
     async (request, reply) => {
       const url = decodeURIComponent(request.params.url);
+      const tabId = request.body?.tabId;
       try {
         const result = await claimSessionService.claim(url, {
           isCancelled: () => request.raw.destroyed,
+          ...(typeof tabId === "string" && tabId.length > 0 && tabId.length <= 64 ? { tabId } : {}),
         });
         return {
           sessionId: result.sessionId,

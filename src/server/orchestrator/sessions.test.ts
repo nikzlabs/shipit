@@ -215,36 +215,7 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("findUngraduatedWarm", () => {
-    it("finds a warm session by remote URL", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("warm-1", "Warm session");
-      mgr.setWarm("warm-1", true);
-      mgr.setRemoteUrl("warm-1", "https://github.com/user/repo.git");
-
-      const found = mgr.findUngraduatedWarm("https://github.com/user/repo.git");
-      expect(found).toBeDefined();
-      expect(found!.id).toBe("warm-1");
-      expect(found!.warm).toBe(true);
-    });
-
-    it("returns undefined when no warm session matches", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("normal-1", "Normal");
-      mgr.setRemoteUrl("normal-1", "https://github.com/user/repo.git");
-
-      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git")).toBeUndefined();
-    });
-
-    it("excludes the specified session ID", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("warm-1", "Warm 1");
-      mgr.setWarm("warm-1", true);
-      mgr.setRemoteUrl("warm-1", "https://github.com/user/repo.git");
-
-      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git", "warm-1")).toBeUndefined();
-    });
-
+  describe("setRemoteUrl", () => {
     it("stores a remote URL without the credential someone embedded in it", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "S");
@@ -254,15 +225,6 @@ describe("SessionManager", () => {
       expect(
         dbManager.db.prepare("SELECT remote_url FROM sessions WHERE id = ?").get("sess-1"),
       ).toEqual({ remote_url: "https://github.com/user/repo.git" });
-    });
-
-    it("does not match warm sessions for a different repo", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("warm-1", "Warm 1");
-      mgr.setWarm("warm-1", true);
-      mgr.setRemoteUrl("warm-1", "https://github.com/user/other.git");
-
-      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git")).toBeUndefined();
     });
   });
 
