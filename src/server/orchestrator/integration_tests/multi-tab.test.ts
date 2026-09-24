@@ -176,7 +176,7 @@ describe("Integration: multi-tab scenarios", () => {
     expect(tab1Interrupt).toBeTruthy();
     expect(tab2Interrupt).toBeTruthy();
 
-    expect(claude.killed).toBe(true);
+    expect(claude.interrupted).toBe(true);
 
     claude.finish("test-int");
     tab1.close();

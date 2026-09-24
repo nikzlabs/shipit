@@ -84,8 +84,7 @@ describe("Integration: Interrupt and Redirect", () => {
     const interrupted = await client.receiveType("agent_interrupted");
     expect(interrupted).toMatchObject({ type: "agent_interrupted" });
 
-    expect(lastClaude.killed).toBe(true);
-    expect(lastClaude.interrupted).toBe(false);
+    expect(lastClaude.interrupted).toBe(true);
 
     client.close();
   });
@@ -99,6 +98,8 @@ describe("Integration: Interrupt and Redirect", () => {
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("stop-background");
     await client.receiveType("session_started");
+    // Model a resident process; this fixture disables live steering.
+    app.runnerRegistry.get(sessionId)!.isStreamingActive = true;
     claude.emit("event", {
       type: "agent_background_tasks",
       tasks: [{ id: "bg-1", type: "local_bash", description: "npm test" }],
@@ -236,6 +237,7 @@ describe("Integration: Interrupt and Redirect", () => {
     claude.emit("event", { type: "system", subtype: "init", session_id: "streaming-interrupt" });
     await client.receiveType("session_started");
 
+    app.runnerRegistry.get(client.sessionId)!.isStreamingActive = true;
     // Emit neither done nor result, leaving only the deferred commit fallback.
     claude.streamingInterrupt = true;
 

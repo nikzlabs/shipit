@@ -37,9 +37,10 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
   }
 
   runner.wasInterrupted = true;
-  // Kill, not interrupt: a resident CLI outlives an interrupt, and a background task
-  // it still runs wakes it into a turn the user just stopped.
-  agent.kill();
+  // A resident streaming CLI outlives an interrupt, and a background task it still runs
+  // wakes it into a turn the user just stopped. A one-shot CLI's interrupt ends it already.
+  if (runner.isStreamingActive) agent.kill();
+  else agent.interrupt();
   ctx.broadcastLog("server", "Agent process stopped by user");
   runner.emitMessage({ type: "agent_interrupted" });
 
