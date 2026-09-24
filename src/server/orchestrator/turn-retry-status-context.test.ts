@@ -91,6 +91,7 @@ function harness(opts: { card?: SessionStatus; statusCardEnabled?: () => boolean
     setLastTurnErrored: vi.fn(),
     get: (id: string) => ({ id, sessionStatus: cards.get(id) }),
     track: vi.fn(),
+    touchUnlessResolved: vi.fn(),
     setMuted: vi.fn(),
     list: () => [],
     setSessionStatus: (id: string, status: SessionStatus | null) => {
@@ -163,6 +164,7 @@ function harness(opts: { card?: SessionStatus; statusCardEnabled?: () => boolean
     runner,
     agents,
     prompts,
+    sessionManager,
     card: () => cards.get("s1"),
     /** What accepting the user's submit does: the offer is taken as the message lands. */
     userSubmitsTheOffer: () => takeOfferedActions(statusDeps, "s1", ["o1"]),
@@ -213,6 +215,30 @@ describe("a retried attempt reads the card as it stands (docs/303 req 35)", () =
     h.agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     h.agents[1]!.emit("done", 0);
     await waitFor(() => !h.runner.running, "the turn finished");
+    h.runner.dispose({ force: true });
+  });
+
+  // docs/316-done-sessions-return-memory req 5: a PR that merged during the turn
+  // must still resolve the session, so a retry is not new use of it.
+  it("records use once at the turn's start, not again for the retry or its end", async () => {
+    const h = harness({ card: seededCard() });
+
+    h.runner.dispatch(testDispatch({ text: "do the work" }));
+    await waitFor(
+      () => h.agents.length === 1 && h.agents[0]!.run.mock.calls.length === 1,
+      "the first attempt",
+    );
+    h.agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(
+      () => h.agents.length === 2 && h.agents[1]!.run.mock.calls.length === 1,
+      "the retried attempt",
+    );
+    h.agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    h.agents[1]!.emit("done", 0);
+    await waitFor(() => !h.runner.running, "the turn finished");
+
+    expect(h.sessionManager.track).toHaveBeenCalledTimes(1);
+    expect(h.sessionManager.touchUnlessResolved).toHaveBeenCalled();
     h.runner.dispose({ force: true });
   });
 

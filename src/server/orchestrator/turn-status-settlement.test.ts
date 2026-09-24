@@ -65,6 +65,7 @@ function harness(opts: {
       return { id, sessionStatus: cards.get(id) };
     },
     track: vi.fn(),
+    touchUnlessResolved: vi.fn(),
     setMuted: vi.fn(),
     list: () => [],
     setSessionStatus: (id: string, status: SessionStatus | null) => {

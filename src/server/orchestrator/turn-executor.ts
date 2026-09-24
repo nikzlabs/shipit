@@ -93,6 +93,9 @@ export interface TurnInput {
   isNewSession: boolean;
   isAuthRetry?: boolean;
   recoveryRetryUsed?: boolean;
+  // A retry or adoption of a turn that already started: it does not count as
+  // new use of a merged session (docs/316-done-sessions-return-memory req 5).
+  continuesTurn?: boolean;
   // Retries exclude every recorded route; use only actual provider refusals.
   attemptLedger?: readonly RefusedAttempt[];
   persistGuard?: { done: boolean };
@@ -225,7 +228,8 @@ export async function executeAgentTurn(
     input.statusContext,
     readStatusContext(deps, sessionId),
   );
-  deps.listenerDeps.sessionManager.track(sessionId);
+  if (input.continuesTurn) deps.listenerDeps.sessionManager.touchUnlessResolved(sessionId);
+  else deps.listenerDeps.sessionManager.track(sessionId);
   if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
     deps.listenerDeps.sseBroadcast("session_list", {
       sessions: deps.listenerDeps.sessionManager.list(),
@@ -590,6 +594,7 @@ export async function executeAgentTurn(
       recoveryRetryUsed: true,
       reuseExistingAgent: false,
       emitUserEcho: false,
+      continuesTurn: true,
       persistGuard,
     });
     return true;
@@ -631,6 +636,7 @@ export async function executeAgentTurn(
       recoveryRetryUsed: true,
       reuseExistingAgent: false,
       emitUserEcho: false,
+      continuesTurn: true,
       persistGuard,
     });
     return true;
@@ -678,6 +684,7 @@ export async function executeAgentTurn(
       ...(consumeRecoveryBudget ? { recoveryRetryUsed: true } : {}),
       reuseExistingAgent: false,
       emitUserEcho: false,
+      continuesTurn: true,
       persistGuard,
     });
   };

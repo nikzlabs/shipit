@@ -88,6 +88,21 @@ path has.
 A message after the merge sets `lastUsedAt` after `mergedAt`, so the session is
 no longer done (req 5) and the next turn starts a fresh container.
 
+## Only a new turn reopens a merged session (req 10)
+
+`lastUsedAt` is "used after the merge" only when a turn **starts** after it:
+
+- The start of a new turn calls `SessionManager.track` (`agent-execution.ts`,
+  and `executeAgentTurn` for system turns), which always records use.
+- Work inside a turn calls `touchUnlessResolved`, which records use only when
+  the session is not resolved: the end of the turn (`agent_result` in
+  `agent-listeners.ts`), and each retry or startup adoption of a turn, which
+  pass `continuesTurn` to `executeAgentTurn`. So a PR that merges during a
+  turn resolves the session at once, and the end of that turn does not undo it.
+- SQLite writes `merged_at` / `closed_at` to the second, so
+  `isTerminalPrResolved` compares whole seconds: a turn that started earlier
+  in the same second as the merge does not count as use after it.
+
 ## Key files
 
 - `src/server/shared/session-resolution.ts`

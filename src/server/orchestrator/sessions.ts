@@ -339,6 +339,14 @@ export class SessionManager {
     return row ? this.fromRow(row) : undefined;
   }
 
+  // docs/316-done-sessions-return-memory req 5: only a turn that starts after
+  // the merge reopens a session, so work inside an earlier turn must not.
+  touchUnlessResolved(id: string): void {
+    const session = this.get(id);
+    if (!session || isTerminalPrResolved(session)) return;
+    this.db.prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+  }
+
   track(id: string, title?: string, workspaceDir?: string): SessionInfo {
     const now = new Date().toISOString();
     const existing = this.get(id);

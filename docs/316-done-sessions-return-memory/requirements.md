@@ -31,6 +31,10 @@ expects a finished session to use no memory.
 8. ShipIt stops a done session when the wait is complete, also when the user
    has it open. Having a session open does not stop it from being done.
 9. The wait is a fixed 10 minutes. It is not a setting.
+10. When a session's pull request merges, the session moves under **Recently
+    resolved** immediately, also when the user has it open. A merge during
+    one of the session's turns does this too: work inside a turn that started
+    before the merge is not "continuing work" for requirement 5.
 
 ## Open questions
 
@@ -47,6 +51,9 @@ expects a finished session to use no memory.
   active, so it never gets done. I guess we need to remove the feature of
   'active session is not marked as done'." Req 8 now stops an open done session
   when the wait is complete.
+- 2026-09-24 — The user: "I want it immediately to visibly move to 'recently
+  resolved'/'resolved'." They then approved the offered fix: only a turn that
+  starts after the merge makes the session active again. Carried by req 10.
 - 2026-09-24 — *Fixed 10 minutes, or a setting?* The user chose fixed. Carried by
   req 9.
 

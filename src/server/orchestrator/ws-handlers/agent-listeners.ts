@@ -683,7 +683,8 @@ export function wireAgentListeners(
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
         }
-        deps.sessionManager.track(turnSessionId);
+        // A PR that merged during this turn resolves the session (docs/316 req 5).
+        deps.sessionManager.touchUnlessResolved(turnSessionId);
         deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
 

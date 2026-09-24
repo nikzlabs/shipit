@@ -5,14 +5,16 @@ export function resolvedAt(session: SessionInfo): string | undefined {
   return session.mergedAt ?? session.closedAt;
 }
 
-// SQLite and ISO timestamps must be compared as UTC instants.
+// SQLite and ISO timestamps must be compared as UTC instants. SQLite's
+// datetime('now') drops the milliseconds, so compare whole seconds: a turn that
+// started earlier in the same second as the merge is not use after it.
 export function isTerminalPrResolved(session: SessionInfo): boolean {
   const terminalAt = resolvedAt(session);
   if (!terminalAt) return false;
   const terminalMs = parseTimestampMs(terminalAt);
   const lastUsedMs = parseTimestampMs(session.lastUsedAt);
   if (Number.isNaN(terminalMs) || Number.isNaN(lastUsedMs)) return true;
-  return lastUsedMs <= terminalMs;
+  return Math.floor(lastUsedMs / 1000) <= Math.floor(terminalMs / 1000);
 }
 
 // Legacy archived rows can retain the flag without owning a reservation.

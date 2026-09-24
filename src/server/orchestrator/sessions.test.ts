@@ -24,6 +24,37 @@ describe("SessionManager", () => {
     dbManager.close();
   });
 
+  describe("docs/316-done-sessions-return-memory req 5: touchUnlessResolved", () => {
+    function mergedEarlier(mgr: SessionManager): void {
+      mgr.track("sess-1");
+      dbManager.db.prepare(
+        "UPDATE sessions SET last_used_at = '2020-01-01T00:00:00.000Z', merged_at = '2020-01-01 00:00:05' WHERE id = ?",
+      ).run("sess-1");
+    }
+
+    it("does not reopen a session whose PR merged during the turn", () => {
+      const mgr = new SessionManager(dbManager);
+      mergedEarlier(mgr);
+      mgr.touchUnlessResolved("sess-1");
+      expect(isTerminalPrResolved(mgr.get("sess-1")!)).toBe(true);
+    });
+
+    it("still records use of a session that is not resolved", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1");
+      dbManager.db.prepare("UPDATE sessions SET last_used_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run("sess-1");
+      mgr.touchUnlessResolved("sess-1");
+      expect(mgr.get("sess-1")!.lastUsedAt > "2020-01-02").toBe(true);
+    });
+
+    it("a new turn after the merge still reopens it", () => {
+      const mgr = new SessionManager(dbManager);
+      mergedEarlier(mgr);
+      mgr.track("sess-1");
+      expect(isTerminalPrResolved(mgr.get("sess-1")!)).toBe(false);
+    });
+  });
+
   describe("originRoleName (docs/264-agent-roles req 14)", () => {
     it("records the role a session was created from, and reads it back", () => {
       const mgr = new SessionManager(dbManager);
