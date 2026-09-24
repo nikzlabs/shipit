@@ -2,7 +2,7 @@ import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import { costFromRates, resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
 import { noteTurnSubmitted } from "../turn-stop-request.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
@@ -33,6 +33,7 @@ import {
   attachSubagentToolResults,
   attachToolResultsToGroup,
   requeueUndeliveredSteers,
+  steerToQueuedMessage,
 } from "./agent-message-builder.js";
 import { observeVoiceNotes } from "./agent-voice-handler.js";
 import { retireFinishedBackgroundSubagent } from "./subagent-retire.js";
@@ -239,25 +240,25 @@ export function wireAgentListeners(
       const turnSessionId = opts.capturedSessionId;
       if (runner) {
         const pending = runner.steeredMessages;
-        const dropped = pending[0];
-        if (dropped) {
-          runner.steeredMessages = pending.slice(1);
+        const rejectedText = event.text.trim();
+        const droppedIdx = pending.findIndex((s) => !s.delivered && s.assembledPrompt?.trim() === rejectedText);
+        // No match: an errored turn already re-queued it, so enqueueing again would run it twice.
+        if (droppedIdx >= 0) {
+          const dropped = pending[droppedIdx];
+          runner.steeredMessages = pending.filter((_, i) => i !== droppedIdx);
           if (turnSessionId) {
             persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
           }
+          const position = runner.enqueue(steerToQueuedMessage(dropped));
+          emitToViewers({ type: "message_queued", text: dropped.text, position });
+          deps.broadcastLog(
+            "server",
+            `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
+          );
         }
-        const requeueText = dropped?.text ?? event.text;
-        const queued: QueuedMessage = { text: requeueText, execution: "interactive" };
-        if (dropped?.images && dropped.images.length > 0) queued.images = dropped.images;
-        if (dropped?.files && dropped.files.length > 0) {
-          queued.files = dropped.files.map((f) => ({ path: f.path }));
-        }
-        const position = runner.enqueue(queued);
-        emitToViewers({ type: "message_queued", text: requeueText, position });
-        deps.broadcastLog(
-          "server",
-          `Live steer rejected by ${agent.agentId} (turn not steerable) — re-queued for the next turn.`,
-        );
+        // A worker with no agent at all would otherwise hold the turn, and the re-queued
+        // message, until a viewer's reconciler noticed.
+        void runner.verifyRunningState();
       }
       return;
     }
@@ -930,10 +931,12 @@ export function wireAgentListeners(
     deps.broadcastLog("server", display);
     emitToViewers({ type: "error", message: display });
     const turnSessionId = opts.capturedSessionId;
+    // A steer the CLI never acked was reported to its sender as delivered; the drain runs it.
+    if (runner) requeueUndeliveredSteers(runner, emitToViewers);
     if (turnSessionId) {
       const partialMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],
-        [],
+        runner?.steeredMessages ?? [],
         runner?.recordedCards ?? [],
         { inProgress: false },
       );

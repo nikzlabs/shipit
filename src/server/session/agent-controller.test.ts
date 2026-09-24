@@ -17,8 +17,12 @@ import type { AgentProcess, AgentRunParams } from "../shared/types.js";
 class FakeAgent extends EventEmitter {
   readonly agentId = "claude" as const;
   lastParams: AgentRunParams | null = null;
+  messages: string[] = [];
   run(params: AgentRunParams): void {
     this.lastParams = params;
+  }
+  sendUserMessage(text: string): void {
+    this.messages.push(text);
   }
   writeStdin(): void {}
   kill(): void {}
@@ -95,6 +99,95 @@ describe("AgentController — Node pin notice on the first turn", () => {
       },
     });
   }
+
+  it("holds a message sent during the runtime wait until the agent exists, instead of 400ing it", async () => {
+    fs.writeFileSync(path.join(workspace, ".nvmrc"), "22\n");
+    let releaseRuntime!: () => void;
+    const runtimeGate = new Promise<never>((_resolve, reject) => {
+      releaseRuntime = () => reject(new Error("offline"));
+    });
+    startNodeRuntimeProvisioning({
+      workspaceDir: workspace,
+      cacheDir,
+      deps: { currentVersion: () => "v24.15.0", listRemoteVersions: () => runtimeGate },
+    });
+
+    const start = app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "first prompt", cwd: workspace } },
+    });
+    let running = false;
+    for (let i = 0; i < 50 && !running; i++) {
+      await new Promise((r) => setImmediate(r));
+      running = (await app.inject({ method: "GET", url: "/agent/status" })).json().running === true;
+    }
+    expect(running).toBe(true);
+    expect(agents).toHaveLength(0);
+    const secondStart = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "duplicate", cwd: workspace } },
+    });
+    expect(secondStart.statusCode).toBe(409);
+
+    const message = app.inject({ method: "POST", url: "/agent/message", payload: { text: "change of scope" } });
+    releaseRuntime();
+
+    const [startRes, messageRes] = await Promise.all([start, message]);
+    expect(startRes.statusCode, startRes.body).toBe(200);
+    expect(messageRes.statusCode, messageRes.body).toBe(200);
+    expect(agents).toHaveLength(1);
+    expect(agents[0].lastParams?.prompt).toContain("first prompt");
+    expect(agents[0].messages).toEqual(["change of scope"]);
+  });
+
+  it("refuses a message once the start outlasts the wait, and never applies it later", async () => {
+    let releaseRuntime!: () => void;
+    const runtimeGate = new Promise<never>((_resolve, reject) => {
+      releaseRuntime = () => reject(new Error("offline"));
+    });
+    fs.writeFileSync(path.join(workspace, ".nvmrc"), "22\n");
+    startNodeRuntimeProvisioning({
+      workspaceDir: workspace,
+      cacheDir,
+      deps: { currentVersion: () => "v24.15.0", listRemoteVersions: () => runtimeGate },
+    });
+    const shortApp = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const a = new FakeAgent();
+        agents.push(a);
+        return a as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+      messageStartWaitMs: 10,
+    }).registerRoutes(shortApp);
+    await shortApp.ready();
+    try {
+      const start = shortApp.inject({
+        method: "POST",
+        url: "/agent/start",
+        payload: { agentId: "claude", params: { prompt: "first prompt", cwd: workspace } },
+      });
+      for (let i = 0; i < 50; i++) {
+        await new Promise((r) => setImmediate(r));
+        if ((await shortApp.inject({ method: "GET", url: "/agent/status" })).json().running === true) break;
+      }
+      const message = await shortApp.inject({ method: "POST", url: "/agent/message", payload: { text: "late" } });
+      expect(message.statusCode).toBe(409);
+
+      releaseRuntime();
+      expect((await start).statusCode).toBe(200);
+      expect(agents[0].messages).toEqual([]);
+    } finally {
+      await shortApp.close();
+    }
+  });
 
   it("stays completely silent when the repo pins nothing", async () => {
     const prompt = await startTurn("fix the build");
