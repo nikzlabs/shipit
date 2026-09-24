@@ -12,7 +12,7 @@ This skill covers session creation, warm-up, activation, switching, and graduati
 
 | Component | Location | Role |
 |-----------|----------|------|
-| `SessionManager` | `orchestrator/sessions.ts` | Persists session metadata (title, workspace dir, remote URL, warm flag) to JSON |
+| `SessionManager` | `orchestrator/sessions.ts` | Persists session metadata (title, workspace dir, remote URL, warm flag) in the SQLite `sessions` table |
 | `SessionRunnerRegistry` | `orchestrator/session-runner.ts` | App-level map of session ID -> runner. Fires `onRunnerIdle` callback for container cleanup |
 | `SessionRunnerInterface` | `orchestrator/session-runner.ts` | Abstract contract: agent state, message queue, viewer count, preview |
 | `RepoStore` | `orchestrator/repo-store.ts` | Tracks imported repos, clone status, warm session IDs |
@@ -35,7 +35,6 @@ Client                          Server
   |                               |   git init
   |                               |   configure credentials
   |                               |   sessionManager.track()
-  |                               |   threadManager.init()
   |<- {sessionId, sessionDir} -----
   |                               |
   |  store pendingWsMessage       |
@@ -275,7 +274,6 @@ Server-side effects:
 Old WS close:
   -> socket.on("close") fires
   -> detachFromRunner() -- decrements viewer count on old runner
-  -> enforceIdleContainerLimit() -- may clean up excess idle containers
 
 New WS open:
   -> activateSession(newSessionId)

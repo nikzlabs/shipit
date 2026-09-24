@@ -73,7 +73,7 @@ Singleton managers created in `buildApp()`. Shared across all connections.
 
 - `SessionManager` — session metadata (title, workspace dir, remote URL, warm flag)
 - `RepoStore` — imported repos, clone status, warm session IDs
-- `SessionRunnerRegistry` — active runners (max 10 concurrent)
+- `SessionRunnerRegistry` — active runners (no count cap; reclaim is memory-budget driven, docs/284)
 - `SessionContainerManager` — Docker containers
 - `CredentialStore` — git identity, GitHub token, agent auth (one encrypted file)
 - `AuthManager` / `GitHubAuthManager` — authentication state
@@ -87,7 +87,6 @@ State bound to a single browser tab's WebSocket connection, tracked in closure v
 - Active agent ID
 - Attached runner reference
 - Log buffer
-- Auto-push timer
 
 ### Per-Session (runner lifetime)
 
@@ -99,56 +98,12 @@ State on the `SessionRunnerInterface`, shared across all connections viewing the
 - Terminal process
 - Preview status
 - Viewer count
-- Idle timer
 
-## HTTP API (`api-routes.ts`)
+## HTTP API (`api-routes*.ts`)
 
-Routes are registered via `registerApiRoutes()`. All routes are prefixed with `/api`.
-
-### Reads (GET)
-
-| Endpoint | Service Function | Purpose |
-|----------|-----------------|---------|
-| `/api/bootstrap` | `getBootstrapData` | Sessions, repos, agents, settings, templates |
-| `/api/sessions/:id/files` | `getFileTree` | Workspace file tree |
-| `/api/sessions/:id/files/*` | `getFileContent` | Individual file content |
-| `/api/sessions/:id/docs` | `listDocs` | Markdown files in workspace |
-| `/api/sessions/:id/docs/*` | `getDocContent` | Individual doc content |
-| `/api/sessions/:id/git/log` | `getGitLog` | Commit history |
-| `/api/sessions/:id/git/diff` | `getTurnDiff` | Diff for a commit range |
-| `/api/sessions/:id/git/remotes` | `getGitRemotes` | Git remotes |
-| `/api/sessions/:id/git/branches` | `getGitBranches` | Remote branches |
-| `/api/sessions/:id/status` | `getSessionStatus` | Agent running, queue, preview |
-| `/api/sessions/:id/preview-status` | — | Preview state (runner query) |
-| `/api/sessions/:id/history` | `getChatHistory` | Messages, commits, threads |
-| `/api/sessions/:id/usage` | `getUsageStats` | Cost/token stats |
-| `/api/sessions/:id/deploy/history` | `getDeployHistory` | Deploy records |
-| `/api/sessions/:id/deploy/setup` | `getDeploySetup` | Deploy targets + config |
-| `/api/sessions/:id/pr/status` | `getPrStatus` | PR state from GitHub |
-| `/api/sessions/:id/threads` | `listThreads` | Conversation threads |
-| `/api/sessions/:id/worktrees` | `listWorktrees` | Sibling sessions on the same repo |
-| `/api/sessions/:id/features` | `listFeatures` | Feature docs status |
-| `/api/github/repos` | `searchGitHubRepos` | Search GitHub repos |
-| `/api/settings/*` | various | Git identity, agent config |
-
-### Mutations (POST/PATCH/DELETE)
-
-| Endpoint | Service Function | Purpose |
-|----------|-----------------|---------|
-| `POST /api/sessions` | `createSessionDir` | Create standalone session |
-| `PATCH /api/sessions/:id` | `renameSession` | Rename session |
-| `DELETE /api/sessions/:id` | `archiveSession` | Archive session |
-| `POST /api/sessions/:id/git/rollback` | `gitRollback` | Reset to commit |
-| `POST /api/sessions/:id/git/reject` | `rejectChanges` | Reject Claude's changes |
-| `POST /api/sessions/:id/git/push` | `gitPush` | Push to remote |
-| `POST /api/sessions/:id/git/pull` | `gitPull` | Pull from remote |
-| `POST /api/sessions/:id/pr/create` | `createPullRequest` | Create GitHub PR |
-| `POST /api/sessions/:id/pr/merge` | `mergePullRequest` | Merge GitHub PR |
-| `POST /api/sessions/:id/deploy/config` | `saveDeployConfig` | Save deploy config |
-| `POST /api/sessions/:id/threads/checkpoint` | `createCheckpoint` | Create thread checkpoint |
-| `POST /api/repos` | `addRepo` | Import a GitHub repo |
-| `POST /api/repos/:url/claim-session` | — | Claim warm session |
-| `POST /api/settings/*` | various | Save settings |
+Routes are registered via `registerApiRoutes()` (`api-routes.ts`, called from `route-registry.ts`) and split by
+domain across `api-routes-*.ts`. All are prefixed `/api`. For the live set, grep the route files
+(`grep -n "app\.\(get\|post\|patch\|put\|delete\)" src/server/orchestrator/api-routes*.ts`) rather than trusting a copied table.
 
 ### Error Handling
 
@@ -162,19 +117,8 @@ Service functions throw `ServiceError(statusCode, message)`. A Fastify `onError`
 
 Business logic lives in `src/server/orchestrator/services/` as pure exported functions. Each function accepts explicit parameters (manager references, IDs) and returns data or throws `ServiceError`.
 
-| File | Domain |
-|------|--------|
-| `session.ts` | Session CRUD, fork, merge, sibling-session listing |
-| `git.ts` | Log, diff, remotes, branches, rollback, push, pull |
-| `github.ts` | GitHub search, PR operations, auth |
-| `deploy.ts` | Deploy config, history, target operations |
-| `files.ts` | File tree, content, binary detection |
-| `settings.ts` | Git identity, agent config, API keys, system prompt |
-| `threads.ts` | Thread list, checkpoint, fork/switch |
-| `repos.ts` | Repo list, add, remove, templates |
-| `templates.ts` | Project scaffolding |
-| `misc.ts` | Bootstrap, features, usage, full reset |
-| `types.ts` | `ServiceError`, `BootstrapData`, `AgentInfo`, `GlobalSettings` |
+`ls src/server/orchestrator/services/` for the current set; `types.ts` holds `ServiceError` and the
+bootstrap/settings shapes.
 
 Services are consumed by both HTTP routes and WebSocket handlers. This keeps business logic testable independently of transport.
 
@@ -191,20 +135,8 @@ The client connects to `ws[s]://host/ws/sessions/{sessionId}?agent=claude`. On c
 
 ### Message Dispatch
 
-```typescript
-socket.on("message", async (raw: Buffer) => {
-  const msg = JSON.parse(raw.toString()) as WsClientMessage;
-  switch (msg.type) {
-    case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
-    case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
-    case "terminal_start": return terminalHandlers.handleTerminalStart(ctx);
-    case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
-    case "initiate_deploy": return deployHandlers.handleInitiateDeploy(ctx, msg);
-    case "fork_thread": return threadHandlers.handleForkThread(ctx, msg);
-    // ... more cases
-  }
-});
-```
+The `switch (msg.type)` dispatcher lives in `route-registry.ts` (not `index.ts`) and narrows
+`WsClientMessage` (`shared/types/ws-client-messages.ts`) to per-file handlers in `ws-handlers/`.
 
 ### Handler Context
 
@@ -229,13 +161,7 @@ Handlers receive a `ctx` object combining three interfaces (see `ws-handlers/typ
 
 ### Handler Files
 
-| File | Messages Handled |
-|------|-----------------|
-| `send-message.ts` | `send_message`, `answer_question`, `home_send_with_repo` |
-| `terminal-handlers.ts` | `terminal_start`, `terminal_input`, `terminal_resize` |
-| `deploy-handlers.ts` | `initiate_deploy`, `cancel_deploy` |
-| `thread-handlers.ts` | `fork_thread`, `switch_thread` |
-| `misc-handlers.ts` | `interrupt_claude`, `set_agent`, `cancel_queued_message`, `init_preview_config`, `diff_comment`, `clear_logs` |
+One file per domain in `ws-handlers/` (`send-message.ts`, `terminal-handlers.ts`, `misc-handlers.ts`, …); `ls` it and read the `route-registry.ts` switch for the message→handler map.
 
 ### Critical rule: WebSocket lifecycle MUST NOT affect server behavior
 
@@ -270,7 +196,7 @@ All types live in `src/server/shared/types/`:
 | File | Contents |
 |------|----------|
 | `index.ts` | Barrel re-export |
-| `ws-client-messages.ts` | `WsClientMessage` union (13 types) |
+| `ws-client-messages.ts` | `WsClientMessage` union |
 | `ws-server-messages.ts` | `WsServerMessage` union (50+ types) |
 | `domain-types.ts` | `SessionInfo`, `RepoInfo`, `ProjectTemplate` |
 | `claude-types.ts` | `ClaudeEvent`, NDJSON message types |
@@ -308,7 +234,8 @@ Deploy status is **not** persisted locally — it is read from the GitHub Deploy
 
 | File | Role |
 |------|------|
-| `src/server/orchestrator/index.ts` | `buildApp()` — app factory, DI setup, WS dispatcher |
+| `src/server/orchestrator/index.ts` | `buildApp()` — app factory, DI setup |
+| `src/server/orchestrator/route-registry.ts` | Route registration, WS connection + dispatch switch |
 | `src/server/orchestrator/api-routes.ts` | HTTP REST API routes |
 | `src/server/orchestrator/services/*.ts` | Business logic (pure functions) |
 | `src/server/orchestrator/ws-handlers/*.ts` | WebSocket message handlers |

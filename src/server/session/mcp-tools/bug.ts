@@ -12,11 +12,11 @@ const TOOL_DESCRIPTION = [
   "project's repo URL or name, secrets, tokens, or workspace file contents — only",
   "the redacted interaction with ShipIt matters, and the issue is PUBLIC and filed",
   "under the user's own GitHub identity. After this returns, tell the user a review",
-  "card has been posted for them to confirm. You WILL be told what they decide: a",
+  "card has been posted for them to confirm. ShipIt tells you what they decide: a",
   "short [ShipIt] line rides in front of their next message, once, carrying the",
-  "issue number and URL on a confirmation or a decline on a cancellation. So never",
-  "ask the user how a card was resolved, and treat a report you have heard nothing",
-  "about as genuinely still pending.",
+  "issue number and URL on a confirmation or a decline on a cancellation. So don't",
+  "ask the user how a card was resolved. Delivery is best-effort: treat a report",
+  "you have heard nothing about as probably, not certainly, still pending.",
 ].join(" ");
 
 const inputSchema = {

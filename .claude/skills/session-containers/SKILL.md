@@ -28,7 +28,7 @@ This skill covers Docker container management, session runners, idle disposal, a
   3. Register `"disposed"` listener for auto-cleanup from map
   4. Wire `runner.on("idle")` -> `onRunnerIdle(sessionId)` callback
 - **`get(sessionId)`**: Returns runner if exists and not disposed
-- Max 10 concurrent runners; evicts oldest idle runner if at capacity
+- No runner-count cap; reclaim is memory-budget driven (see *Idle Container Cleanup*)
 - `disposeAll(opts?)` for graceful shutdown and full reset. Forced — it kills running agents unless the caller passes `{ preserveAgent: true }`, which shutdown does and full reset does not
 
 ### Runner Factory (Production)
@@ -382,12 +382,6 @@ Because `serviceManagers` is process-local, a tier-1-preserved stack cannot be
 routed to or reclaimed by the *next* orchestrator — so the shutdown hook stops
 every runner-less manager, and the user reopening the session rebuilds it.
 
-## Idle Timer
-
-Both runner implementations have an idle timer (default 10 minutes). After timeout with no running agent, no queue, and no viewers -> `dispose()`.
-
-Special case: `ContainerSessionRunner` tracks `_hasBeenUsed`. If a viewer detaches and the runner was never used (no agent started), the idle timer resets to 10 seconds instead of 10 minutes. This cleans up containers from briefly-visited sessions.
-
 ## Reconnection
 
 When a user returns to a session whose runner was disposed:
@@ -446,13 +440,11 @@ The session's **Compose stack** is the exception: it is still `compose down`-ed 
 | Container memory | Derived from host capacity (docs/229) — half the usable budget per session, floor 4096 MB, ceiling 49152 MB, last-resort minimum 1536 MB. Override at the **deployment** with `DEFAULT_SESSION_MEMORY_MB` / `MAX_SESSION_MEMORY_MB`. | `container-config-builder.ts` |
 | Container CPU | Sized from host cores; no per-repo limit | `container-config-builder.ts` |
 | Container PIDs | Fixed ceiling | `container-config-builder.ts` |
-
-**`agent.memory` / `agent.cpu` / `agent.pids` in `shipit.yaml` are removed keys** (docs/229). They are warned-and-ignored by `shipit-config.ts`, not honored — a repo that still sets them is getting host-derived sizing regardless.
-| Concurrent runners | 10 | `SessionRunnerRegistry` |
 | Container reclaim (steady state) | Only when over the memory budget (docs/284) | `idle-enforcer.ts` |
 | Container reclaim (on update) | Every stale idle worker, once per boot, regardless of the budget (docs/242) | `restart-turn-reattach.ts` |
-| Unused runner idle | 10 sec | `ContainerSessionRunner` |
 | Container stop timeout | 5 s | `session-container.ts` |
 | Health check interval | 500 ms | `session-container.ts` |
 | Health check timeout | 30 s | `session-container.ts` |
 | SSE reconnect backoff | 1s -> 10s | `container-session-runner.ts` |
+
+**`agent.memory` / `agent.cpu` / `agent.pids` in `shipit.yaml` are removed keys** (docs/229). They are warned-and-ignored by `shipit-config.ts`, not honored — a repo that still sets them is getting host-derived sizing regardless.

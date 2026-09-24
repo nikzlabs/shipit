@@ -9,7 +9,7 @@ user-invocable: true
 ## Progressive Testing
 
 During development, use `npm run test:dev` instead of `npm test`. This runs:
-1. **Affected tests** — tests co-located with files you've changed (uncommitted + staged)
+1. **Affected tests** — tests co-located with files you've changed (uncommitted, staged, and untracked)
 2. **Smoke tests** — a small set of critical-path tests that always run
 
 The full suite (`npm test`) runs in CI on every PR. Only run it locally if you suspect wide-reaching breakage.
@@ -26,8 +26,9 @@ Smoke tests are defined in `scripts/test-dev.ts` (the `SMOKE_TESTS` array). Keep
 
 ## Test Configuration
 
-Tests use Vitest with two project configs in `vitest.config.ts`:
+Tests use Vitest with three project configs in `vitest.config.ts`:
 - **Server tests** (`src/server/**/*.test.ts`) — Node environment
+- **Tooling tests** (`scripts/**/*.test.ts`) — Node environment
 - **Client tests** (`src/client/**/*.test.{ts,tsx}`) — jsdom environment with React Testing Library
 
 ## Server Tests

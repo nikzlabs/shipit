@@ -30,8 +30,8 @@ const inputSchema = {
       type: "string",
       maxLength: MAX_REPO_LEN,
       description:
-        "The target repository as `owner/repo` (a clone URL also works). It must be a repository "
-        + "the user's connected GitHub account can write to, and it must not be the repository you are in.",
+        "The target repository as `owner/repo` (a github.com clone URL also works). It must be a repository "
+        + "the user's connected GitHub account can see — read-only access is accepted — and it must not be the repository you are in.",
     },
     title: {
       type: "string",
@@ -108,7 +108,7 @@ export const proposeRepoSessionTool: ToolDescriptor = {
             text:
               `Posted a card proposing a session on ${repo}.${newRepoNote} `
               + "The user starts it with one click, and it runs independently of this session — "
-              + "you will not hear back from it. Do not repeat the proposal in prose; end your turn.",
+              + "you will not hear back from it. Do not repeat the proposal in prose.",
           },
         ],
       };
