@@ -108,17 +108,19 @@ export class ProxyAgentProcess extends EventEmitter<{
     );
     const accepted = this.runner.sendAgentMessage(text);
     this.lastSubmission = accepted;
-    void this._logSubmission(accepted);
+    void this._logSubmission(accepted, text);
   }
 
-  private async _logSubmission(accepted: Promise<unknown>): Promise<void> {
+  // A failed steer re-queues the message; an error here would end a turn the worker may
+  // still be running, orphaning its output (verifyRunningState ends a truly dead one).
+  private async _logSubmission(accepted: Promise<unknown>, text: string): Promise<void> {
     try {
       await accepted;
       console.log(`[steer-proxy] /agent/message accepted (agentId=${this.agentId})`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[steer-proxy] /agent/message FAILED (agentId=${this.agentId}): ${msg}`);
-      this.emit("error", describeWorkerError(err, "stdin"));
+      console.warn(`[steer-proxy] /agent/message FAILED (agentId=${this.agentId}): ${msg} — re-queueing`);
+      this.emit("event", { type: "agent_steer_rejected", text });
     }
   }
 

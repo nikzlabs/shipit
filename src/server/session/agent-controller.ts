@@ -44,10 +44,19 @@ export interface AgentControllerDeps {
   oldestSseSeq?: () => number;
   /** Include other work in the status snapshot used for container reclamation. */
   otherWorkerLiveness?: () => { terminalActive: boolean; installRunning: boolean };
+  messageStartWaitMs?: number;
 }
+
+// Below the orchestrator's 10 s request timeout: a message refused here is re-queued
+// there, and one applied after the caller gave up would run twice.
+const MESSAGE_START_WAIT_MS = 5_000;
 
 export class AgentController {
   private agent: AgentProcess | null = null;
+
+  // Set across /agent/start's runtime wait, so a message sent in that gap reaches the
+  // agent instead of failing the turn with "No agent running".
+  private pendingStart: Promise<void> | null = null;
 
   private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
 
@@ -79,7 +88,7 @@ export class AgentController {
 
   registerRoutes(app: FastifyInstance): void {
     app.post<{ Body: WorkerAgentStartBody }>("/agent/start", async (request, reply) => {
-      if (this.agent) {
+      if (this.agent || this.pendingStart) {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
@@ -88,13 +97,15 @@ export class AgentController {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
 
-      const nodeRuntime = await whenNodeRuntimeReady();
-
-      // Add the notice to the turn prompt so the cached system prompt stays byte-stable.
-      const nodeNotice = this.nodeNoticeDelivered ? null : formatNodeRuntimeNotice(nodeRuntime);
-      if (nodeNotice) this.nodeNoticeDelivered = true;
-
+      let startSettled!: () => void;
+      this.pendingStart = new Promise<void>((resolve) => { startSettled = resolve; });
       try {
+        const nodeRuntime = await whenNodeRuntimeReady();
+
+        // Add the notice to the turn prompt so the cached system prompt stays byte-stable.
+        const nodeNotice = this.nodeNoticeDelivered ? null : formatNodeRuntimeNotice(nodeRuntime);
+        if (nodeNotice) this.nodeNoticeDelivered = true;
+
         // Capture turn identity and replay position before the adapter emits anything.
         this.beginTurn();
         this.turnDeliveryId = deliveryId;
@@ -121,11 +132,15 @@ export class AgentController {
       } catch (err) {
         this.agent = null;
         this.endTurn();
-        return reply.code(500).send({ error: getErrorMessage(err) });
+        return await reply.code(500).send({ error: getErrorMessage(err) });
+      } finally {
+        this.pendingStart = null;
+        startSettled();
       }
     });
 
     app.post("/agent/interrupt", async (_request, reply) => {
+      await this.pendingStart;
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -134,6 +149,7 @@ export class AgentController {
     });
 
     app.post<{ Body: WorkerAgentKillBody | null }>("/agent/kill", async (request, reply) => {
+      await this.pendingStart;
       // A delayed kill must not target a replacement process. Missing tokens retain legacy behavior.
       const victimRunToken = request.body?.runToken;
       if (typeof victimRunToken === "string" && this.residentSpawn?.runToken !== victimRunToken) {
@@ -235,6 +251,7 @@ export class AgentController {
     );
 
     app.post<{ Body: { data: string } }>("/agent/stdin", async (request, reply) => {
+      await this.pendingStart;
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -250,6 +267,7 @@ export class AgentController {
     app.post<{ Body: { mode: string | null } }>(
       "/agent/permission-mode",
       async (request, reply) => {
+        await this.pendingStart;
         if (!this.agent) {
           return reply.code(404).send({ error: "No agent running" });
         }
@@ -273,6 +291,10 @@ export class AgentController {
     app.post<{ Body: { text: string } }>(
       "/agent/message",
       async (request, reply) => {
+        if (!(await this.startSettledWithin(this.deps.messageStartWaitMs ?? MESSAGE_START_WAIT_MS))) {
+          console.warn("[steer-worker] /agent/message rejected: agent is still starting");
+          return reply.code(409).send({ error: "Agent is still starting" });
+        }
         const text = request.body?.text;
         const snippet = typeof text === "string" ? JSON.stringify(text.slice(0, 80)) : "<non-string>";
         if (!this.agent) {
@@ -294,6 +316,7 @@ export class AgentController {
     );
 
     app.post<{ Body: { instructions?: string } }>("/agent/compact", async (request, reply) => {
+      await this.pendingStart;
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -330,7 +353,7 @@ export class AgentController {
     });
 
     app.get("/agent/status", async (): Promise<WorkerAgentStatus> => ({
-      running: this.agent !== null,
+      running: this.agent !== null || this.pendingStart !== null,
       latestSseSeq: this.deps.latestSseSeq(),
       oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
       turnActive: this.turnActive,
@@ -346,6 +369,18 @@ export class AgentController {
         ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
         : {}),
     }));
+  }
+
+  private async startSettledWithin(ms: number): Promise<boolean> {
+    const start = this.pendingStart;
+    if (!start) return true;
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), ms); });
+    try {
+      return (await Promise.race([start, timedOut])) !== "timeout";
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // The marker is set here, not only cleared at the end: a steered turn on a resident

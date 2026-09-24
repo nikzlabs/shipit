@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ProxyAgentProcess, type ProxyAgentRunner } from "./proxy-agent-process.js";
 import { WorkerTimeoutError } from "./worker-http.js";
-import type { PermissionMode } from "../shared/types.js";
+import type { AgentEvent, PermissionMode } from "../shared/types.js";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -91,16 +91,19 @@ describe("ProxyAgentProcess live-steering delegation (docs/140)", () => {
     expect(sent).toEqual(["steer this"]);
   });
 
-  it("sendUserMessage failure surfaces via the error event (not a thrown rejection)", async () => {
+  it("sendUserMessage failure re-queues the steer instead of failing the running turn", async () => {
     const runner = makeRunner({
-      sendAgentMessage: () => Promise.reject(new WorkerTimeoutError("/agent/message", 10_000)),
+      sendAgentMessage: () => Promise.reject(new Error("No agent running")),
     });
     const proxy = new ProxyAgentProcess("claude", runner);
-    const errorPromise = once<Error>(proxy, "error");
+    const errors: Error[] = [];
+    const events: AgentEvent[] = [];
+    proxy.on("error", (e) => errors.push(e));
+    proxy.on("event", (e) => events.push(e));
     proxy.sendUserMessage("steer this");
-    const err = await errorPromise;
-    expect(err.message).toContain("Failed to send input");
-    expect(err.cause).toBeInstanceOf(WorkerTimeoutError);
+    await flush();
+    expect(errors).toEqual([]);
+    expect(events).toEqual([{ type: "agent_steer_rejected", text: "steer this" }]);
   });
 
   it("setPermissionMode delegates to the runner's setAgentPermissionModeOnWorker", async () => {

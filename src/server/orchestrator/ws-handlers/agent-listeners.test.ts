@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { SessionRunner } from "../session-runner.js";
-import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { wireAgentListeners, buildTurnMessages, recordSteeredMessage, type AgentListenerDeps } from "./agent-listeners.js";
 import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
@@ -600,6 +600,84 @@ describe("wireAgentListeners", () => {
         expect(errorTexts(d)).toEqual([errorRow.text]);
         runner.dispose({ force: true });
       });
+    });
+  });
+
+  describe("a steer that never reached the CLI is re-queued with its origin", () => {
+    const origin = { sessionId: "parent-1", sessionTitle: "Parent", relation: "parent" as const };
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    function wireWithSteers() {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      runner.running = true;
+      runner.setAgent(agent as unknown as AgentProcess);
+      recordSteeredMessage(runner, "earlier", { assembledPrompt: "[earlier]" });
+      recordSteeredMessage(runner, "change of scope", {
+        assembledPrompt: "[from parent] change of scope",
+        messageOrigin: origin,
+      });
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, d };
+    }
+
+    it("a rejected steer re-queues the exact message and leaves the turn running", () => {
+      const { agent, runner } = wireWithSteers();
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+
+      expect(runner.running).toBe(true);
+      expect(runner.getAgent()).toBe(agent);
+      expect(runner.steeredMessages.map((m) => m.text)).toEqual(["earlier"]);
+      expect(runner.dequeue()).toMatchObject({ text: "change of scope", messageOrigin: origin });
+      runner.dispose({ force: true });
+    });
+
+    it("a rejection that arrives after the turn errored does not queue the message twice", async () => {
+      const { agent, runner } = wireWithSteers();
+
+      agent.emit("error", new Error("No agent running"));
+      await tick();
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+
+      expect(runner.queueLength).toBe(2);
+      expect(runner.dequeue()?.text).toBe("earlier");
+      expect(runner.dequeue()).toMatchObject({ text: "change of scope", messageOrigin: origin });
+      expect(runner.queueLength).toBe(0);
+      runner.dispose({ force: true });
+    });
+
+    it("a rejection asks the worker whether the turn is still alive", () => {
+      const { agent, runner } = wireWithSteers();
+      const verify = vi.spyOn(runner, "verifyRunningState");
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+
+      expect(verify).toHaveBeenCalledOnce();
+      runner.dispose({ force: true });
+    });
+
+    it("a turn that errors re-queues its unacked steer and keeps the acked one's row", async () => {
+      const { agent, runner, d } = wireWithSteers();
+      agent.emit("event", { type: "agent_user_replay", text: "[earlier]" });
+
+      agent.emit("error", new Error("spawn ENOENT"));
+      await tick();
+
+      expect(runner.dequeue()).toMatchObject({ text: "change of scope", messageOrigin: origin });
+      const rows = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls
+        .flatMap((c) => c[1] as { role: string; text: string }[]);
+      expect(rows.filter((m) => m.role === "user").map((m) => m.text)).toEqual(["earlier"]);
+      runner.dispose({ force: true });
     });
   });
 

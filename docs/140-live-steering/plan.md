@@ -162,6 +162,16 @@ that's fine, but it means Codex needs no lifecycle rework for this feature.
 - `ProxyAgentProcess` (`proxy-agent-process.ts`) +
   `container-session-runner.ts` proxy these over HTTP, mirroring the existing
   `writeAgentStdin` plumbing.
+- **A failed `/agent/message` re-queues the steer; it never fails the turn.**
+  `ProxyAgentProcess` turns the rejection into `agent_steer_rejected`, and the
+  listener re-queues that exact steer (matched on `assembledPrompt`, keeping its
+  `messageOrigin`; no match means an errored turn already re-queued it). Ending
+  the turn instead orphaned a CLI the worker was about to start, and dropped a
+  message its sender was told was delivered (2026-09-24). Each rejection runs
+  `verifyRunningState`, so a worker that truly has no agent still ends the turn.
+  The worker's `/agent/start` holds a `pendingStart` across its runtime wait; the
+  control routes await it, and `/agent/message` waits at most 5 s (below the 10 s
+  request timeout) so a refused message is never also applied late.
 - **Steering eligibility is resolved via the shared agent registry, NOT
   `ProxyAgentProcess.capabilities`.** In production every container session runs
   through the proxy, whose `capabilities` are hardcoded conservative defaults
