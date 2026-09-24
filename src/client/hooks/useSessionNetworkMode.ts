@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: hydrate a session's network mode from the server and follow invalidations (external system sync)
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useEgressStore } from "../stores/egress-store.js";
 import type {
   EgressEnforcementStatus,
@@ -85,20 +85,25 @@ function currentRevision(sessionId: string): number {
 }
 
 /**
- * Monotonic READ counter, separate from the write revision above.
- *
- * The write clock orders writes against reads, and cannot order reads against
- * each other: two GETs issued at the same revision — the mount hydration and a
- * refetch triggered by another tab's change — both pass its check, so whichever
- * response arrives LAST wins regardless of which was asked last. The older one
- * winning is permanent, and shows a value the server has already replaced.
+ * Writes in flight per session, across every hook instance. The composer's Send
+ * barrier must also hold for a write made in the Session settings dialog, whose
+ * rebuild of a new session's container can take seconds.
  */
-const reads = new Map<string, number>();
+const inFlight = new Map<string, number>();
+const inFlightListeners = new Set<() => void>();
 
-function nextRead(sessionId: string): number {
-  const next = (reads.get(sessionId) ?? 0) + 1;
-  reads.set(sessionId, next);
-  return next;
+function changeInFlight(sessionId: string, delta: number): void {
+  const next = (inFlight.get(sessionId) ?? 0) + delta;
+  if (next > 0) inFlight.set(sessionId, next);
+  else inFlight.delete(sessionId);
+  for (const listener of inFlightListeners) listener();
+}
+
+function subscribeInFlight(listener: () => void): () => void {
+  inFlightListeners.add(listener);
+  return () => {
+    inFlightListeners.delete(listener);
+  };
 }
 
 export function notifySessionNetworkModeChanged(
@@ -115,8 +120,9 @@ export function notifySessionNetworkModeChanged(
 /** Test-only: drop the shared clock so one case cannot leak into the next. */
 export function _resetSessionNetworkModeClock(): void {
   revisions.clear();
-  reads.clear();
   listeners.clear();
+  inFlight.clear();
+  inFlightListeners.clear();
 }
 
 export interface SessionNetworkModeState {
@@ -141,6 +147,10 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const [pendingRestart, setPendingRestart] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+  const sharedWrites = useSyncExternalStore(
+    subscribeInFlight,
+    () => (sessionId ? (inFlight.get(sessionId) ?? 0) : 0),
+  );
 
   const mountedSession = useRef<string | null>(sessionId);
   mountedSession.current = sessionId;
@@ -148,6 +158,14 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const listenerRef = useRef<((changed: string) => void) | null>(null);
 
   const writesInFlight = useRef(0);
+  /**
+   * Monotonic READ counter, separate from the write revision. The write clock
+   * cannot order two reads issued at the same revision — the mount hydration
+   * and a refetch after another surface's change — so without this the older
+   * response could land last and show a replaced value. Per instance: a shared
+   * counter lets the dialog's own re-read discard the composer's.
+   */
+  const readSeq = useRef(0);
 
   const displayedFromServer = useRef(false);
 
@@ -163,14 +181,14 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const refresh = useCallback(
     async (id: string): Promise<boolean> => {
       const issuedAt = currentRevision(id);
-      const readAt = nextRead(id);
+      const readAt = ++readSeq.current;
       try {
         const res = await fetch(`/api/egress/session/${encodeURIComponent(id)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const settings = (await res.json()) as EgressSessionSettings;
 
         if (currentRevision(id) !== issuedAt) return false;
-        if ((reads.get(id) ?? 0) !== readAt) return false;
+        if (readSeq.current !== readAt) return false;
         if (mountedSession.current !== id) return false;
         applySettings(settings);
 
@@ -218,6 +236,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
       setModeState(next);
       setSaving(true);
       writesInFlight.current += 1;
+      changeInFlight(sessionId, 1);
       const revision = bumpRevision(sessionId);
       void (async () => {
         try {
@@ -246,6 +265,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           }
         } finally {
           writesInFlight.current -= 1;
+          changeInFlight(sessionId, -1);
 
           // Both halves are load-bearing, and each replaced a wrong rule. Asking
 
@@ -267,44 +287,25 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
     [sessionId, applySettings, refresh],
   );
 
-  return { mode, globalEnabled, enforcementStatus, pendingRestart, loaded, saving, setMode };
+  return {
+    mode,
+    globalEnabled,
+    enforcementStatus,
+    pendingRestart,
+    loaded,
+    saving: saving || sharedWrites > 0,
+    setMode,
+  };
 }
 
 /**
- * docs/285 — the composer's view of the same value, with the one thing the
- * session-scoped hook above cannot have: **a pick made before there is a session
- * to write it to.**
- *
- * `/new` claims its session on arrival, but the claim is asynchronous and the
- * control is live throughout — `disabled` blocks Send without making the
- * selector inert, so a mode can be chosen with no id yet. Disabling the section
- * until the claim lands would be simpler and worse: the moment the user is most
- * likely to set this is while the page is still settling.
- *
- * So a pick made then is held as a **draft, scoped to the claim it is waiting
- * for**, written the instant an id arrives, with Send barred until that write
- * succeeds — the same barrier the ordinary path uses, extended over the claim.
- *
- * req 8 — the draft is dropped whenever the session identity changes, so
- * abandoning `/new` and starting another one begins at Inherit. (The server
- * closes the other half of that: an interactive claim REFUSES to recycle an
- * abandoned draft that carries an override, because its container still runs
- * that draft's topology.)
+ * docs/285 — the composer's view of the same value. Before `/new`'s claim lands
+ * there is no session to read, so it shows Inherit and names the workspace
+ * default from the egress store. The composer changes the mode only through the
+ * Session settings dialog (req 12), which needs a session, so no pick can be
+ * made before the claim.
  */
-export function useComposerNetworkMode(
-  sessionId: string | null,
-  /**
-   * Whether a claim for THIS composer is expected to produce `sessionId`.
-   *
-   * The hook cannot tell "the `/new` claim landed" from "the user navigated to
-   * an existing session" by watching the id alone — both are `null` → some id —
-   * and writing a draft on the second would apply a pick to a session the user
-   * never made it for. The caller knows which route it is on, so it says.
-   */
-  expectingClaim: boolean,
-
-  claimScope: string | null,
-): SessionNetworkModeState {
+export function useComposerNetworkMode(sessionId: string | null): SessionNetworkModeState {
   const server = useSessionNetworkMode(sessionId);
 
   const storeGlobalEnabled = useEgressStore((s) => s.globalEnabled);
@@ -316,58 +317,11 @@ export function useComposerNetworkMode(
     if (!sessionId) void loadGlobal();
   }, [sessionId, loadGlobal]);
 
-  // "is it still valid" question cannot be answered by two values that disagree.
-  const [draft, setDraft] = useState<NetworkMode | null>(null);
-
-  const pending = useRef<NetworkMode | null>(null);
-
-  // eslint-disable-next-line no-restricted-syntax -- external system sync: drop a draft whose claim the user navigated away from
-  useEffect(() => {
-    return () => {
-      pending.current = null;
-      setDraft(null);
-    };
-  }, [claimScope]);
-
-  // eslint-disable-next-line no-restricted-syntax -- external system sync: write a pre-claim pick once the claim resolves
-  useEffect(() => {
-    if (!sessionId) return;
-    const held = pending.current;
-    if (held === null) return;
-    pending.current = null;
-    setDraft(null);
-
-    if (!expectingClaim) return;
-    server.setMode(held);
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, expectingClaim]);
-
-  const setMode = useCallback(
-    (next: NetworkMode) => {
-      if (sessionId) {
-        server.setMode(next);
-        return;
-      }
-      pending.current = next;
-      setDraft(next);
-    },
-    [sessionId, server],
-  );
-
+  if (sessionId) return server;
   return {
     ...server,
-
-    globalEnabled: sessionId ? server.globalEnabled : storeGlobalEnabled,
-    enforcementStatus: sessionId ? server.enforcementStatus : storeEnforcement,
-
-    // never flashes a warning, which makes it exactly the wrong thing to print
-
-    loaded: sessionId ? server.loaded : storeGlobalLoaded,
-
-    mode: sessionId ? server.mode : (draft ?? "inherit"),
-
-    saving: server.saving || draft !== null,
-    setMode,
+    globalEnabled: storeGlobalEnabled,
+    enforcementStatus: storeEnforcement,
+    loaded: storeGlobalLoaded,
   };
 }

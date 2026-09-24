@@ -218,7 +218,7 @@ export function SessionSettingsDialog({
             <DialogDescription className="text-xs">
               {isSandbox
                 ? "What the agent in this sandbox may use. GitHub access applies at once; Docker and Network apply the next time its container starts."
-                : "Network access for this session only. Applies the next time its container starts."}
+                : "Network access and SSH destinations for this session only."}
             </DialogDescription>
           </div>
         </div>

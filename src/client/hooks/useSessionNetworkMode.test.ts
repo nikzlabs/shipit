@@ -241,6 +241,41 @@ describe("useSessionNetworkMode (docs/285)", () => {
   });
 });
 
+describe("useSessionNetworkMode — writes from another surface (docs/285 req 12)", () => {
+  beforeEach(() => {
+    _resetSessionNetworkModeClock();
+    vi.restoreAllMocks();
+  });
+
+  it("bars the composer's Send while the Session settings dialog's write is in flight", async () => {
+    let stored: boolean | null = null;
+    let releasePut: ((v: Response) => void) | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        stored = (JSON.parse(init.body as string) as { override: boolean | null }).override;
+        return new Promise<Response>((r) => { releasePut = r; });
+      }
+      return { ok: true, status: 200, json: async () => settings({ override: stored }) } as Response;
+    }));
+
+    // The dialog opens after the composer has loaded, as in the app.
+    const composer = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(composer.result.current.loaded).toBe(true));
+    const dialog = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(dialog.result.current.loaded).toBe(true));
+
+    act(() => { dialog.result.current.setMode("contained"); });
+    expect(composer.result.current.saving).toBe(true);
+
+    await act(async () => {
+      releasePut?.({ ok: true, status: 200, json: async () => settings({ override: true }) } as Response);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(composer.result.current.saving).toBe(false));
+    await waitFor(() => expect(composer.result.current.mode).toBe("contained"));
+  });
+});
+
 describe("useSessionNetworkMode — the barrier only opens on a known value (docs/285)", () => {
   beforeEach(() => {
     _resetSessionNetworkModeClock();

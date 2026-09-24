@@ -345,6 +345,42 @@ describe("Integration: warm session lifecycle", () => {
       expect(abandoned.override).toBe(false);
     }, 30000);
 
+    it("does not recycle an abandoned draft that carries SSH grants (docs/285 req 12)", async () => {
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "first warm session",
+      );
+      const encodedUrl = encodeURIComponent(REPO_URL);
+
+      const host = (await app.inject({
+        method: "POST",
+        url: "/api/ssh-hosts",
+        payload: { label: "prod", address: "10.0.0.5", user: "deploy", port: 22 },
+      })).json().host;
+      const first = (await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      })).json();
+      const grant = await app.inject({
+        method: "PUT",
+        url: `/api/sessions/${first.sessionId}/ssh-hosts`,
+        payload: { granted: [host.id] },
+      });
+      expect(grant.statusCode).toBe(200);
+
+      const second = (await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      })).json();
+      expect(second.sessionId).not.toBe(first.sessionId);
+      const fresh = (await app.inject({
+        method: "GET",
+        url: `/api/sessions/${second.sessionId}/ssh-hosts`,
+      })).json();
+      expect(fresh.granted).toEqual([]);
+    }, 30000);
+
     it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
