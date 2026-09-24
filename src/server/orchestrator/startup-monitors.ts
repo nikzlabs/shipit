@@ -14,6 +14,7 @@ import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThreshold
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
 import { downComposeStackByProject, reapSurvivingComposeStacks } from "./compose-stack-reaper.js";
+import { reapParentlessEgressSidecars } from "./egress-orphan-reaper.js";
 import { liveWorkAfterRestart, unprobedAfterRestart } from "./restart-turn-reattach.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
@@ -199,6 +200,8 @@ export async function startStartupMonitors(
     escalationInFlight = true;
     void (async () => {
       try {
+        // Backstop for sidecars whose parent was removed while no destroy event reached us.
+        await reapParentlessEgressSidecars(containerManager.dockerClient, { paceMs: escalationPaceMs });
         await escalateDiskTiers(
           {
             sessionManager,
@@ -315,6 +318,8 @@ export async function startStartupMonitors(
         if (reaped > 0) {
           console.log(`[compose-reap] Took down ${reaped} compose stack(s) left by a previous orchestrator`);
         }
+        // The boot janitor's sidecar sweep runs before this reap has removed their parents.
+        await reapParentlessEgressSidecars(containerManager.dockerClient, { paceMs: 500 });
       })();
     }
     setupContainerHealthMonitoring(

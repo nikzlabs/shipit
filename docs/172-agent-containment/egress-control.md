@@ -794,6 +794,19 @@ Three cleanup paths, one per way the parent can die:
    (it died mid-cleanup, the Docker daemon restarted, the agent was `docker rm`'d
    out-of-band). Boot-only, per CLAUDE.md's disk-cleanup rule: this leak grows on
    the crash clock, not the wall clock.
+4. **Compose service sidecars follow their service's removal** —
+   `reapParentlessEgressSidecars`. A service's sidecars carry
+   `shipit-egress-parent=<service id>` but not the service's Compose project, so
+   `compose down` and `downComposeStackByProject` (idle escalation, the boot
+   stack reap) remove the service and leave the sidecars running. On prod, 68
+   such sidecars outlived a deploy: the boot sweep in (3) ran while their
+   services still existed, and the boot stack reap removed the services after
+   it. The reap runs on the service's Docker `destroy` event, at the end of
+   `downComposeStackByProject`, after the boot stack reap, and at the start of
+   every disk-escalation pass (startup, activation, hourly) as the backstop.
+   It is stricter than (3): only a parent that inspects **404** releases its
+   sidecars, and the sidecar must be joined to that parent's netns. A stopped
+   service keeps them, because Compose can start it again.
 
 **The netns parent's liveness — never the session label, and never the event — is
 the key** for every path above. That's the load-bearing invariant, and two

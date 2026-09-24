@@ -5,7 +5,7 @@ import type {
   SessionContainerManagerEvents,
 } from "./session-container.js";
 import { CONTAINER_SESSION_ID_LABEL } from "./session-container.js";
-import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
+import { reapParentlessEgressSidecars, reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
 import { COMPOSE_EGRESS_SIDECAR_LABEL } from "./compose-service-egress.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
@@ -80,7 +80,7 @@ export async function startHealthMonitor(
     state.eventStream = await deps.docker.getEvents({
       filters: {
         type: ["container"],
-        event: ["die", "oom", "start"],
+        event: ["die", "oom", "start", "destroy"],
       },
     });
 
@@ -108,8 +108,16 @@ export async function startHealthMonitor(
         if (action === "start" && attrs[COMPOSE_PARENT_SESSION_LABEL]) {
           deps.onLabelledContainerStarted?.();
         }
-        if (action !== "die" && action !== "oom") return;
         const containerId = event.Actor?.ID ?? "";
+        // Compose down removes a service without its egress sidecars, which are not in its project.
+        if (action === "destroy") {
+          if (containerId && (attrs[COMPOSE_PARENT_SESSION_LABEL] || attrs[CONTAINER_SESSION_ID_LABEL])
+            && !attrs[EGRESS_RESOLVER_LABEL] && !attrs[EGRESS_PROXY_LABEL]) {
+            void reapParentlessEgressSidecars(deps.docker, { parentIds: [containerId] });
+          }
+          return;
+        }
+        if (action !== "die" && action !== "oom") return;
 
         const sessionId = attrs[CONTAINER_SESSION_ID_LABEL];
         if (sessionId) {
