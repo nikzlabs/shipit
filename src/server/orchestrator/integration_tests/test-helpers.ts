@@ -753,6 +753,8 @@ export class FakeClaudeProcess extends EventEmitter {
 
   kill() {
     this.killed = true;
+    if (this.streamingInterrupt) return;
+    setTimeout(() => super.emit("done", 143), 10);
   }
 
   interrupt() {

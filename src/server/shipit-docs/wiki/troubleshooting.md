@@ -59,7 +59,7 @@ Separate three states before doing anything, because the fix differs:
 
 - **A turn is genuinely running.** The session row shows a pulsing green dot.
   The user's control is the **stop button in the composer** ("Stop the agent"),
-  which interrupts the turn.
+  which ends the turn and the agent's background tasks.
 - **A turn is running and more messages are waiting.** The composer shows *"N
   messages queued"* with a cancel on each and on all. Nothing is wrong; the
   queue drains in order.

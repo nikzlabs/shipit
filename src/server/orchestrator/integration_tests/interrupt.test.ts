@@ -84,7 +84,35 @@ describe("Integration: Interrupt and Redirect", () => {
     const interrupted = await client.receiveType("agent_interrupted");
     expect(interrupted).toMatchObject({ type: "agent_interrupted" });
 
-    expect(lastClaude.interrupted).toBe(true);
+    expect(lastClaude.killed).toBe(true);
+    expect(lastClaude.interrupted).toBe(false);
+
+    client.close();
+  });
+
+  it("ends the process that runs a background task, so the task cannot wake a stopped agent", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    const sessionId = client.sessionId;
+    client.send({ type: "send_message", text: "run the tests in the background" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("stop-background");
+    await client.receiveType("session_started");
+    claude.emit("event", {
+      type: "agent_background_tasks",
+      tasks: [{ id: "bg-1", type: "local_bash", description: "npm test" }],
+    });
+
+    client.send({ type: "interrupt_agent" });
+    await client.receiveType("agent_interrupted");
+    expect(claude.killed).toBe(true);
+    await new Promise((r) => setTimeout(r, 250));
+
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/${sessionId}/history`);
+    const body = await res.json() as { agentRunning: boolean; backgroundTasks: string[] };
+    expect(body.agentRunning).toBe(false);
+    expect(body.backgroundTasks).toEqual([]);
 
     client.close();
   });
@@ -196,7 +224,7 @@ describe("Integration: Interrupt and Redirect", () => {
     client.close();
   });
 
-  it("commits partial work when a STREAMING interrupt leaves the process resident", async () => {
+  it("commits partial work when a stopped STREAMING process reports neither done nor result", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -218,7 +246,7 @@ describe("Integration: Interrupt and Redirect", () => {
 
     const committed = await client.receiveType("git_committed", 8000);
     expect((committed as { hash?: string }).hash).toBeTruthy();
-    expect(claude.killed).toBe(false);
+    expect(claude.killed).toBe(true);
     expect(
       fs.readFileSync(path.join(sessionDir, "partial-work.txt"), "utf8"),
     ).toBe("in progress");

@@ -84,17 +84,6 @@ describe("Integration: live-steering resilience (docs/140 Phase 5)", () => {
     return null;
   }
 
-  async function waitForStdin(claude: FakeClaudeProcess, needle: string, timeoutMs = 2000): Promise<void> {
-    const start = Date.now();
-    while (true) {
-      if (claude.stdinData.some((d) => d.includes(needle))) return;
-      if (Date.now() - start > timeoutMs) {
-        throw new Error(`sendUserMessage carrying ${JSON.stringify(needle)} never landed`);
-      }
-      await new Promise((r) => setTimeout(r, 10));
-    }
-  }
-
   const settle = (ms = 80) => new Promise((r) => setTimeout(r, ms));
 
   it("replays a mid-turn steer from the turn-event buffer on reconnect, running survives, no double-render", async () => {
@@ -202,7 +191,7 @@ describe("Integration: live-steering resilience (docs/140 Phase 5)", () => {
     clientB.close();
   });
 
-  it("interrupt during a steered turn does not kill the persistent process; the next message reuses it", async () => {
+  it("a stop during a steered turn ends the persistent process; the next message spawns a new one", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -211,30 +200,20 @@ describe("Integration: live-steering resilience (docs/140 Phase 5)", () => {
     expect(claude.lastUseStreaming).toBe(true);
     claude.initSession("steer-interrupt-session");
 
-    claude.streamingInterrupt = true;
-
     client.send({ type: "interrupt_agent" });
     const interrupted = await drainUntil(client, (m) => m.type === "agent_interrupted");
     expect(interrupted).toBeTruthy();
-    expect(claude.interrupted).toBe(true);
-    expect(claude.killed).toBe(false);
-
-    claude.emit("event", {
-      type: "result",
-      subtype: "error_during_execution",
-      session_id: "steer-interrupt-session",
-    });
-    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+    expect(claude.killed).toBe(true);
+    await new Promise((r) => setTimeout(r, 250));
 
     const runner = (app as AnyMsg).runnerRegistry.get(client.sessionId);
-    expect(runner.getAgent()).toBe(claude);
-    expect(runner.isStreamingActive).toBe(true);
-    expect(claude.killed).toBe(false);
+    expect(runner.running).toBe(false);
+    expect(runner.getAgent()).toBeNull();
 
     client.send({ type: "send_message", text: "Continue after interrupt" });
-    await waitForStdin(claude, "Continue after interrupt");
-    expect(lastClaude).toBe(claude);
-    expect(claude.killed).toBe(false);
+    const next = await waitForClaude(() => lastClaude, claude);
+    expect(next).not.toBe(claude);
+    expect(next.lastPrompt).toContain("Continue after interrupt");
 
     client.close();
   });
