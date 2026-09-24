@@ -26,10 +26,16 @@ function session(overrides: Partial<SessionInfo> = {}): SessionInfo {
 // Below budget: nothing here is reclaimed for memory.
 const underBudget: DockerMemoryStats = { usedBytes: 10, totalBytes: 100, budgetBytes: 100, bySession: {} };
 
-function harness(sessions: SessionInfo[], runner?: Partial<SessionRunnerInterface>) {
+type FakeRunner = Partial<SessionRunnerInterface>;
+
+function harness(sessions: SessionInfo[], runner?: FakeRunner | (() => FakeRunner | undefined)) {
+  const current = () => (typeof runner === "function" ? runner() : runner);
   const destroy = vi.fn().mockResolvedValue(undefined);
   const stopServices = vi.fn();
-  const dispose = vi.fn(() => { if (runner) (runner as { disposed: boolean }).disposed = true; });
+  const dispose = vi.fn(() => {
+    const r = current();
+    if (r) (r as { disposed: boolean }).disposed = true;
+  });
   const containerManager = {
     get: (id: string) => (id === ID ? { sessionId: ID } : undefined),
     getAll: () => [{ sessionId: ID }],
@@ -43,7 +49,7 @@ function harness(sessions: SessionInfo[], runner?: Partial<SessionRunnerInterfac
     get: (id: string) => sessions.find((s) => s.id === id),
   } as unknown as SessionManager;
   const runnerRegistry = {
-    get: (id: string) => (id === ID ? runner : undefined),
+    get: (id: string) => (id === ID ? current() : undefined),
     dispose,
   } as unknown as SessionRunnerRegistry;
   const enforce = createIdleEnforcer({
@@ -110,6 +116,23 @@ describe("docs/316-done-sessions-return-memory — done sessions return their me
 
     runner.viewerCount = 0;
     runner.lastViewerDetachAt = Date.now();
+    enforce();
+    expect(destroy).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(WAIT);
+    enforce();
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("keeps the wait after the viewer leaves when the runner is gone before it ends (req 8)", () => {
+    const runner = { viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    let current: typeof runner | undefined = runner;
+    const { enforce, destroy } = harness([session()], () => current);
+    enforce();
+    vi.advanceTimersByTime(WAIT - 60_000);
+    runner.lastViewerDetachAt = Date.now();
+    enforce();
+    current = undefined;
+    vi.advanceTimersByTime(120_000);
     enforce();
     expect(destroy).not.toHaveBeenCalled();
     vi.advanceTimersByTime(WAIT);

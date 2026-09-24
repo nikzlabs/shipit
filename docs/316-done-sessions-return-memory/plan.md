@@ -43,11 +43,13 @@ below the budget too (req 6). A session is stopped when:
 
 - it is done, per `doneSessionTest(sessionManager.listAll())`;
 - `DONE_SESSION_RECLAIM_AFTER_MS` (10 min, fixed — reqs 4, 9) has passed since
-  the **later** of: the pass that first saw it done (`doneSeenAt`), and the
-  runner's `lastViewerDetachAt`. The first clock is not `mergedAt`, because a
-  session can become done long after its PR resolved (a pin removed, a
-  reservation cleared). The second restarts the wait when the user leaves, and
-  after a dropped WebSocket, which also detaches the viewer (req 8);
+  `doneWaitFrom`: the pass that first saw it done, moved later by the runner's
+  `lastViewerDetachAt` and by any pass that sees a viewer. It is not
+  `mergedAt`, because a session can become done long after its PR resolved (a
+  pin removed, a reservation cleared). The enforcer keeps it in its own map
+  rather than reading the runner each time, because memory pressure can dispose
+  the runner while the preview still runs, and a dropped WebSocket also detaches
+  the viewer (req 8);
 - it passes `isReclaimable` — no viewer (req 8), agent not busy, not ShipIt's
   own cleanup session.
 
@@ -56,7 +58,9 @@ services, and destroys the container (req 3). A declined dispose skips the
 session. The user is told through the existing `session_status` /
 `broadcastLog` surfaces, with a done-specific log line.
 
-`doneSeenAt` is in memory, so an orchestrator restart starts the wait again.
+`doneWaitFrom` is in memory, so an orchestrator restart starts the wait again,
+and a session that stops being done and becomes done again between two passes
+(30 s) keeps its earlier start.
 If `compose down` fails for a session with no agent container, `ServiceManager`
 suppresses the error and nothing retries — the same limit the docs/284 tier-2
 path has.

@@ -44,8 +44,9 @@ export function createIdleEnforcer(
   } = enforceDeps;
 
   const tier1At = new Map<string, number>();
-  // When each session was first seen done: it can become done long after its PR resolved.
-  const doneSeenAt = new Map<string, number>();
+  // Start of each done session's wait. Kept here, not read from the runner,
+  // because memory pressure can dispose the runner while the preview runs on.
+  const doneWaitFrom = new Map<string, number>();
   // Do not reclaim twice against the same snapshot or memory still being returned.
   let actedOn: DockerMemoryStats | null = null;
   let teardownsInFlight = 0;
@@ -76,13 +77,17 @@ export function createIdleEnforcer(
     for (const session of sessions) {
       if (!isDone(session)) continue;
       stillDone.add(session.id);
-      if (!doneSeenAt.has(session.id)) doneSeenAt.set(session.id, now);
+      const runner = runnerRegistry.get(session.id);
+      // A dropped WebSocket also detaches the viewer, so the wait restarts from it.
+      const doneSince = Math.max(
+        doneWaitFrom.get(session.id) ?? now,
+        runner?.lastViewerDetachAt ?? 0,
+        (runner?.viewerCount ?? 0) > 0 ? now : 0,
+      );
+      doneWaitFrom.set(session.id, doneSince);
       const hasContainer = !!containerManager.get(session.id) && !containerManager.isStandby(session.id);
       const hasServices = !!services?.has(session.id);
       if (!hasContainer && !hasServices) continue;
-      const runner = runnerRegistry.get(session.id);
-      // A dropped WebSocket also detaches the viewer, so the wait restarts from it.
-      const doneSince = Math.max(doneSeenAt.get(session.id) ?? now, runner?.lastViewerDetachAt ?? 0);
       if (now - doneSince < DONE_SESSION_RECLAIM_AFTER_MS) continue;
       if (!isReclaimable(session.id, runner)) continue;
 
@@ -99,7 +104,7 @@ export function createIdleEnforcer(
       if (hasServices) services?.stop(session.id);
       if (hasContainer) trackTeardown(containerManager.destroy(session.id), session.id);
     }
-    for (const id of doneSeenAt.keys()) if (!stillDone.has(id)) doneSeenAt.delete(id);
+    for (const id of doneWaitFrom.keys()) if (!stillDone.has(id)) doneWaitFrom.delete(id);
   }
 
   return () => {
