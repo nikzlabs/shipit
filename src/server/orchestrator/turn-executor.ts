@@ -38,6 +38,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
+import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup } from "./turn-stop-request.js";
 import path from "node:path";
 import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import type { ReplaySpillTarget } from "./services/replay.js";
@@ -286,6 +287,7 @@ export async function executeAgentTurn(
   };
 
   const noteSubmitted = (): void => {
+    if (runner) noteTurnSubmitted(runner);
     const settled = agent.submissionSettled?.();
     // A synchronous submission has landed when the call returns; a proxied one
     // has not, and a resident CLI can finish a turn of its own in that window.
@@ -1523,6 +1525,7 @@ export async function executeAgentTurn(
 
   // Restart adoption attaches listeners to a surviving process; do not send another prompt.
   if (input.adopt) {
+    if (runner) noteTurnSubmitted(runner);
     const resident = runner?.residentRoute;
     capturedCredentialRoute = resident
       ? { providerRouteKind: resident.kind, providerRouteId: resident.id }
@@ -1530,6 +1533,7 @@ export async function executeAgentTurn(
     return;
   }
 
+  if (runner) reopenTurnSetup(runner);
   try {
     // Prepare before reading run parameters: credential repair can change the resume ID.
     const envBegan = Date.now();
@@ -1578,7 +1582,18 @@ export async function executeAgentTurn(
       }
     }
 
+    // A Stop during setup was only recorded (turn-stop-request.ts); end the turn through the
+    // listeners wired above instead of submitting. A killed resident sends its own done.
+    const stoppedDuringSetup = (): boolean => {
+      if (!runner || !consumeSetupStop(runner)) return false;
+      runner.wasInterrupted = true;
+      if (input.reuseExistingAgent) agent.kill();
+      else agent.emit("done", 0);
+      return true;
+    };
+
     if (input.reuseExistingAgent) {
+      if (stoppedDuringSetup()) return;
       // undefined also matters: it restores the CLI's default permission mode.
       if (runner && runner.appliedPermissionMode !== input.permissionMode && agent.setPermissionMode) {
         agent.setPermissionMode(input.permissionMode);
@@ -1599,6 +1614,7 @@ export async function executeAgentTurn(
         input.compact ? { compact: true } : undefined,
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
+      if (stoppedDuringSetup()) return;
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       noteSubmitted();
       if (runner) runner.appliedPermissionMode = input.permissionMode;

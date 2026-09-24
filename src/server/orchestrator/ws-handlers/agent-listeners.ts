@@ -4,6 +4,7 @@ import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
+import { noteTurnSubmitted } from "../turn-stop-request.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
 import { quotaRefusalCanFailOver } from "../credential-failure-policy.js";
@@ -146,6 +147,8 @@ export function wireAgentListeners(
       wiredTurnEpoch = runner.turnEpoch;
     }
     runner.running = true;
+    // The CLI is already generating, so a Stop must reach its process.
+    noteTurnSubmitted(runner);
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
       emitToViewers({

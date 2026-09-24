@@ -146,7 +146,11 @@ can also send:
   queue while a turn runs** — they wait, or they stop the turn.
 
 **Stop** interrupts you where you are — and in an ordinary session ShipIt still
-commits whatever the turn had already written, so nothing is lost by stopping. A
+commits whatever the turn had already written, so nothing is lost by stopping.
+Stop ends the agent process too, with the background tasks running inside it (a
+background shell, a background subagent), so none of them can wake it into a
+new turn; the next message resumes the conversation. A brokered
+`shipit agent run` is not inside it and keeps running. A
 stop that does not take is what **Force-kill the agent** on the Terminal tab's
 health strip is for ([sessions.md](sessions.md)).
 

@@ -50,6 +50,7 @@ import {
   type TurnOutcome,
 } from "./turn-settlement.js";
 import { PostTurnHold } from "./post-turn-hold.js";
+import { beginTurnSetup } from "./turn-stop-request.js";
 export {
   prepareDispatch,
   queuedMessageToDispatchOptions,
@@ -725,7 +726,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
 
   get running(): boolean { return this._isRunning; }
-  set running(v: boolean) { this._isRunning = v; }
+  set running(v: boolean) {
+    if (v && !this._isRunning) beginTurnSetup(this);
+    this._isRunning = v;
+  }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) {
     // Every acquisition is a new hold, including one taken while the flag is already set.
