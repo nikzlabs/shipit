@@ -116,8 +116,9 @@ export function FilePreviewModal({
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
       <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
         <div className="border-b border-(--color-border-secondary) shrink-0">
-          {/* pr-14 clears the dialog's corner close button so the controls don't sit under it */}
-          <div className="flex items-center justify-between px-6 py-4 pr-14">
+          {/* pr-14 clears the dialog's corner close button; min-h-13 (52px) centres the
+              row on that button's default 0.75rem inset so both line up */}
+          <div className="flex items-center justify-between min-h-13 px-6 py-2.5 pr-14">
             <div className="min-w-0 flex items-baseline gap-2">
               <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
                 {filePath}
