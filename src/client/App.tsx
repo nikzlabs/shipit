@@ -232,6 +232,7 @@ export default function App() {
   const skills = useFileStore((s) => s.skills);
   const previewFile = useFileStore((s) => s.previewFile);
   const previewContent = useFileStore((s) => s.previewContent);
+  const previewSize = useFileStore((s) => s.previewSize);
   const previewType = useFileStore((s) => s.previewType);
   const previewActions = useFileStore((s) => s.previewActions);
   const previewOnDisk = useFileStore((s) => s.previewOnDisk);
@@ -1762,6 +1763,7 @@ export default function App() {
           <FilePreviewModal
             filePath={previewFile}
             content={previewContent}
+            sizeBytes={previewSize}
             fileType={previewType}
             line={previewLine}
             actions={previewActions}

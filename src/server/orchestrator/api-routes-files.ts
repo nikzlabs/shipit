@@ -143,6 +143,7 @@ export async function registerFileRoutes(
         const response: Record<string, unknown> = {
           path: filePath,
           content: result.content,
+          size: result.size,
           isBinary: result.isBinary,
           isImage: result.isImage,
         };
