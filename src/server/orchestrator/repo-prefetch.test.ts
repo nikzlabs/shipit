@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { RepoGit } from "./repo-git.js";
-import { createRepoPrefetcher, CLAIM_SKIP_WINDOW_MS } from "./repo-prefetch.js";
+import { createRepoPrefetcher, CLAIM_SKIP_WINDOW_MS, PREFETCH_INTERVAL_MS } from "./repo-prefetch.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { RepoInfo } from "../shared/types.js";
@@ -158,6 +158,52 @@ describe("createRepoPrefetcher", () => {
     const healed = await waitUntil(() => fs.existsSync(path.join(cacheDir, "HEAD")));
     expect(healed).toBe(true);
     expect(await waitUntil(() => pf.coveredRecently(remoteUrl))).toBe(true);
+  });
+
+  describe("periodic sweep", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function startSweep(cacheDir: string) {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const pf = createRepoPrefetcher({
+        repoStore: fakeRepoStore([{ url: remoteUrl, status: "ready" } as RepoInfo]),
+        getBareCacheDir: () => cacheDir,
+        createRepoGit,
+        githubAuthManager: fakeAuth,
+      });
+      pf.start();
+      vi.advanceTimersByTime(PREFETCH_INTERVAL_MS);
+      return pf;
+    }
+
+    it("does not re-clone a cache the janitor reclaimed", async () => {
+      const cacheDir = path.join(tmpDir, "cache-reclaimed");
+      const pf = startSweep(cacheDir);
+
+      await new Promise((r) => setTimeout(r, 300));
+      pf.stop();
+      expect(fs.existsSync(cacheDir)).toBe(false);
+    });
+
+    it("still fetches a cache that exists", async () => {
+      const cacheDir = path.join(tmpDir, "cache-present");
+      execSync(`git clone --bare ${remoteDir} ${cacheDir}`, { stdio: "ignore" });
+      const pf = startSweep(cacheDir);
+
+      expect(await waitUntil(() => fs.existsSync(path.join(cacheDir, ".shipit-last-fetch")))).toBe(true);
+      pf.stop();
+    });
+
+    it("still repairs a cache directory that exists but is corrupt", async () => {
+      const cacheDir = path.join(tmpDir, "cache-corrupt");
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const pf = startSweep(cacheDir);
+
+      expect(await waitUntil(() => fs.existsSync(path.join(cacheDir, "HEAD")))).toBe(true);
+      pf.stop();
+    });
   });
 
   it("start() schedules a sweep and stop() is idempotent", () => {
