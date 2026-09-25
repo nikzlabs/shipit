@@ -42,7 +42,7 @@ taken inside one session, without building an agent that talks to many.
    Below them it carries the agent's offered follow-up actions (req 16).
 5. The agent writes the card at the end of its turn, or confirms it when
    nothing changed (req 14), except a turn that ends with a question card
-   (req 13).
+   (req 13) and a turn that only answers the user's question (req 46).
 6. The card sits at the bottom of the conversation, just above the input
    field: the place where the user already reads the agent's last sentences.
    While the agent is idle it is the last element of the conversation, unless
@@ -115,8 +115,8 @@ taken inside one session, without building an agent that talks to many.
     from today: no card, no nudge, and the follow-up action card as it is
     now.
 22. Before the first status write — a new session, or one whose first turn
-    ended with a question — there is no card. The first ordinary turn
-    produces it.
+    ended with a question or only answered one (req 46) — there is no card.
+    The first ordinary turn produces it.
 23. When the setting is turned off and later on again, the card shows the
     earlier status and its offered actions, marked stale. The next turn
     refreshes it.
@@ -163,7 +163,9 @@ taken inside one session, without building an agent that talks to many.
     reading.
 
 31. The card carries one or two sentences saying what the agent did in the
-    last turn, or the direct answer when the user asked something. It is a
+    last turn, or the direct answer when the user asked something. A turn that
+    only answers a question writes no card (req 46), so this line is for a turn
+    that also did the session's work. It is a
     field of its own, written by the agent, and a section of its own — since
     req 33 the second of the three cards, between the status and the next
     steps — never a convention inside the status
@@ -311,6 +313,13 @@ taken inside one session, without building an agent that talks to many.
 45. A manual step and a follow-up's description are markdown, so each has room
     for a long link: up to 1000 characters each.
 
+46. A turn that only answers the user's question — it looks something up,
+    computes something, or explains something, and does not change the
+    session's work — is complete without a card update. The answer is written
+    in the conversation, where the user reads it. The card then shows that it
+    may be behind (req 14), and the next turn's prompt asks for the update, as
+    after any other missed update (req 38).
+
 ## Open questions
 
 - None.
@@ -322,6 +331,13 @@ taken inside one session, without building an agent that talks to many.
   visible text of a link or to raise the raw limit, he chose "Raise to 1000
   each". Asked about "the total", he said the 8000-character limit on the card
   text sent to the agent each turn is fine as it is. → req 45.
+- 2026-09-25 — A benchmark (planning#617) showed opus-5-5 sending a question turn
+  straight to the `session_status` call and never writing the answer, so the user
+  saw it nowhere. Nik chose the fix "the prompt would say that answering a question
+  doesn't require status card update". Asked how ShipIt should then treat such a
+  turn, he chose to accept the Stale mark (like req 13) rather than exempt the turn
+  or keep the call. → req 46; reqs 5, 22 and 31 point to it. Reqs 14 and 38 are unchanged: the
+  turn is marked stale and asked about.
 - 2026-09-21 — Nik: "when a manual step or a follow-up is 'sent' and was checked
   (manual steps could be sent with comments only), it should be marked as checked
   in the checkbox". → req 44. Submitting cleared the selection, so a row came
