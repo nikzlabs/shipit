@@ -32,7 +32,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  // A sweep's git child can still be writing into tmpDir after the test returns (ENOTEMPTY).
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 function createRepoGit(dir: string): RepoGit {
@@ -202,6 +203,7 @@ describe("createRepoPrefetcher", () => {
       const pf = startSweep(cacheDir);
 
       expect(await waitUntil(() => fs.existsSync(path.join(cacheDir, "HEAD")))).toBe(true);
+      expect(await waitUntil(() => pf.coveredRecently(remoteUrl))).toBe(true);
       pf.stop();
     });
   });
