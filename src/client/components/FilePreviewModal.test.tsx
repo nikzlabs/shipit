@@ -67,6 +67,20 @@ describe("FilePreviewModal", () => {
     expect(screen.getByText("src/index.ts")).toBeInTheDocument();
   });
 
+  it("shows the file size in the header when it is known", () => {
+    render(
+      <FilePreviewModal filePath="src/index.ts" content="x" sizeBytes={2048} fileType="code" onClose={() => {}} />
+    );
+    expect(screen.getByTestId("file-preview-size")).toHaveTextContent("2.0 KB");
+  });
+
+  it("omits the file size when it is unknown", () => {
+    render(
+      <FilePreviewModal filePath="src/index.ts" content="x" fileType="code" onClose={() => {}} />
+    );
+    expect(screen.queryByTestId("file-preview-size")).toBeNull();
+  });
+
   it("renders a close button", () => {
     const onClose = vi.fn();
     render(

@@ -14,6 +14,7 @@ import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromPreviewType, supportsSourceToggle } from "../utils/file-content-kind.js";
 import { isEditableFilePath, type FilePreviewType } from "../utils/file-preview-type.js";
 import { WithTooltip } from "./ui/tooltip.js";
+import { formatBytes } from "../utils/format-bytes.js";
 
 export interface SendCommentsPayload {
   prompt: string;
@@ -35,6 +36,7 @@ export interface FilePreviewSibling {
 export interface FilePreviewModalProps {
   filePath: string;
   content: string | null;
+  sizeBytes?: number | null;
   fileType: FilePreviewType;
   line?: number | null;
   actions?: FilePreviewAction[];
@@ -56,6 +58,7 @@ function fileDownloadHref(sessionId: string, filePath: string): string {
 export function FilePreviewModal({
   filePath,
   content,
+  sizeBytes,
   fileType,
   line,
   actions,
@@ -113,12 +116,18 @@ export function FilePreviewModal({
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
       <DialogContent className="w-[90vw] max-w-4xl h-[85vh] flex flex-col">
         <div className="border-b border-(--color-border-secondary) shrink-0">
-          {/* pr-14 clears the dialog's corner close button so the controls don't sit under it */}
-          <div className="flex items-center justify-between px-6 py-4 pr-14">
-            <div className="min-w-0">
+          {/* pr-14 clears the dialog's corner close button; min-h-13 (52px) centres the
+              row on that button's default 0.75rem inset so both line up */}
+          <div className="flex items-center justify-between min-h-13 px-6 py-2.5 pr-14">
+            <div className="min-w-0 flex items-baseline gap-2">
               <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
                 {filePath}
               </DialogTitle>
+              {sizeBytes !== undefined && sizeBytes !== null && (
+                <span className="shrink-0 text-xs text-(--color-text-tertiary)" data-testid="file-preview-size">
+                  {formatBytes(sizeBytes)}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2 shrink-0 ml-4">
               {showToggle && <SourceToggle value={viewMode} onChange={setViewMode} />}

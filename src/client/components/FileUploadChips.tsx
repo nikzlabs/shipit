@@ -4,12 +4,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
+import { formatBytes as formatSize } from "../utils/format-bytes.js";
 
 export interface FileUploadChipsProps {
   uploads: UploadItem[];
