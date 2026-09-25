@@ -42,7 +42,7 @@ taken inside one session, without building an agent that talks to many.
    Below them it carries the agent's offered follow-up actions (req 16).
 5. The agent writes the card at the end of its turn, or confirms it when
    nothing changed (req 14), except a turn that ends with a question card
-   (req 13).
+   (req 13) and a turn that only answers the user's question (req 46).
 6. The card sits at the bottom of the conversation, just above the input
    field: the place where the user already reads the agent's last sentences.
    While the agent is idle it is the last element of the conversation, unless
@@ -311,6 +311,13 @@ taken inside one session, without building an agent that talks to many.
 45. A manual step and a follow-up's description are markdown, so each has room
     for a long link: up to 1000 characters each.
 
+46. A turn that only answers the user's question — it looks something up,
+    computes something, or explains something, and does not change the
+    session's work — is complete without a card update. The answer is written
+    in the conversation, where the user reads it. The card then shows that it
+    may be behind (req 14), and the next turn's prompt asks for the update, as
+    after any other missed update (req 38).
+
 ## Open questions
 
 - None.
@@ -322,6 +329,13 @@ taken inside one session, without building an agent that talks to many.
   visible text of a link or to raise the raw limit, he chose "Raise to 1000
   each". Asked about "the total", he said the 8000-character limit on the card
   text sent to the agent each turn is fine as it is. → req 45.
+- 2026-09-25 — A benchmark (planning#617) showed opus-5-5 sending a question turn
+  straight to the `session_status` call and never writing the answer, so the user
+  saw it nowhere. Nik chose the fix "the prompt would say that answering a question
+  doesn't require status card update". Asked how ShipIt should then treat such a
+  turn, he chose to accept the Stale mark (like req 13) rather than exempt the turn
+  or keep the call. → req 46; req 5 points to it. Reqs 14 and 38 are unchanged: the
+  turn is marked stale and asked about.
 - 2026-09-21 — Nik: "when a manual step or a follow-up is 'sent' and was checked
   (manual steps could be sent with comments only), it should be marked as checked
   in the checkbox". → req 44. Submitting cleared the selection, so a row came

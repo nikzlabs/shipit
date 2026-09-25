@@ -5,3 +5,5 @@ Go through the card above line by line and make it true again, then call `sessio
 - Is each follow-up still worth offering? Drop one that is finished, was already sent and acted on, or no longer fits; use `replaceActions` with the list you want to keep, repeating each kept offer exactly as it is printed above — unless the card says its listing is incomplete, in which case add rather than replace.
 
 Pass only the fields that change; call it with no arguments only when every line above still holds. If this turn did something worth saying, pass `lastTurn` as well — it is cleared by any call that omits it.
+
+A turn that only answers the user's question — it looks something up, computes something, or explains something, and does not change the session's work — does not need a `session_status` call: write the answer in the chat and end the turn.

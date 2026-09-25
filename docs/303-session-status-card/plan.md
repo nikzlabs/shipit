@@ -241,6 +241,12 @@ four turns: one that wrote the card; one that ended with a question card or a pl
 approve (`awaitingAnswer`, req 13); one that crashed; and one the harness answered by
 compacting (`harnessCommand`, req 36).
 
+A turn that only answers a question (req 46) is none of the four, on purpose: it is
+told in the prompt that it needs no call (`prompts/session-status.md` and both card
+texts), and it settles as a miss — stale, and asked about next turn. No code detects
+it. The prompt text is what fixes the answer that opus-5-5 otherwise never wrote
+(planning#617).
+
 "Crashed" is `!receivedResult && !userStopped`, not `!receivedResult`. `wasInterrupted`
 latches on the Stop button and on `killAgent` and a crash does not, so it is what
 separates a turn the user ended — which did the session's work — from one that fell over.
