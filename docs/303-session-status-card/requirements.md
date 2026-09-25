@@ -115,8 +115,8 @@ taken inside one session, without building an agent that talks to many.
     from today: no card, no nudge, and the follow-up action card as it is
     now.
 22. Before the first status write — a new session, or one whose first turn
-    ended with a question — there is no card. The first ordinary turn
-    produces it.
+    ended with a question or only answered one (req 46) — there is no card.
+    The first ordinary turn produces it.
 23. When the setting is turned off and later on again, the card shows the
     earlier status and its offered actions, marked stale. The next turn
     refreshes it.
@@ -163,7 +163,9 @@ taken inside one session, without building an agent that talks to many.
     reading.
 
 31. The card carries one or two sentences saying what the agent did in the
-    last turn, or the direct answer when the user asked something. It is a
+    last turn, or the direct answer when the user asked something. A turn that
+    only answers a question writes no card (req 46), so this line is for a turn
+    that also did the session's work. It is a
     field of its own, written by the agent, and a section of its own — since
     req 33 the second of the three cards, between the status and the next
     steps — never a convention inside the status
@@ -334,7 +336,7 @@ taken inside one session, without building an agent that talks to many.
   saw it nowhere. Nik chose the fix "the prompt would say that answering a question
   doesn't require status card update". Asked how ShipIt should then treat such a
   turn, he chose to accept the Stale mark (like req 13) rather than exempt the turn
-  or keep the call. → req 46; req 5 points to it. Reqs 14 and 38 are unchanged: the
+  or keep the call. → req 46; reqs 5, 22 and 31 point to it. Reqs 14 and 38 are unchanged: the
   turn is marked stale and asked about.
 - 2026-09-21 — Nik: "when a manual step or a follow-up is 'sent' and was checked
   (manual steps could be sent with comments only), it should be marked as checked

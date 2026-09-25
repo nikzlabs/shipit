@@ -245,7 +245,10 @@ A turn that only answers a question (req 46) is none of the four, on purpose: it
 told in the prompt that it needs no call (`prompts/session-status.md` and both card
 texts), and it settles as a miss — stale, and asked about next turn. No code detects
 it. The prompt text is what fixes the answer that opus-5-5 otherwise never wrote
-(planning#617).
+(planning#617). The sentence is the last line of `status-card-reconcile.md`, the exact
+position that was benchmarked: it is part of what to do about the card, so the block
+still closes on that instruction (req 39). The `session_status` tool description names
+the same exception, so the tool does not contradict the prompt.
 
 "Crashed" is `!receivedResult && !userStopped`, not `!receivedResult`. `wasInterrupted`
 latches on the Stop button and on `killAgent` and a crash does not, so it is what
