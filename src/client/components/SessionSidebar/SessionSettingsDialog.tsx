@@ -28,6 +28,7 @@ import { DEFAULT_SANDBOX_CAPABILITIES } from "../../../server/shared/types.js";
 import {
   NETWORK_MODE_LABEL,
   enforcementWarning,
+  notifySessionNetworkModeChanged,
   useSessionNetworkMode,
 } from "../../hooks/useSessionNetworkMode.js";
 import type {
@@ -183,6 +184,9 @@ export function SessionSettingsDialog({
 
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
 
+      // The network half's pending flag lives in the shared hook, so it only
+      // clears when that hook re-reads what the new container started with.
+      notifySessionNetworkModeChanged(sessionId);
       setCapabilityPendingRestart(false);
       useUiStore.getState().setToast({
         message: isSandbox
