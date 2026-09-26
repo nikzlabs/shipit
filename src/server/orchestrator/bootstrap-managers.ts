@@ -70,6 +70,7 @@ import {
 } from "./background-harness-run.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
+import { announceEgressOnContainerStart } from "./egress-container-start.js";
 import { isOverlayEligible, isOverlayEnabled } from "./overlay-session.js";
 import {
   publishDepDirOverlayBases,
@@ -217,6 +218,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   containerManager?.on("container_destroyed", (sessionId, previewsStopped) => {
     if (previewsStopped) announcePreviewsStopped(sessionId);
   });
+  if (containerManager) announceEgressOnContainerStart(containerManager, sseBroadcast);
 
   const latestMemoryStats: { value: DockerMemoryStats | null } = { value: null };
 
