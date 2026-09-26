@@ -66,6 +66,8 @@ describe("git-config: initGlobalGitConfig", () => {
       else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
     });
 
+    // An empty repo reads no attributes, which is how the attributes warning
+    // outlived the excludes fix: stage and inspect a real file.
     function gitStderrUnderSealedHome(): string {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-home-"));
       fs.mkdirSync(path.join(home, ".config", "git"), { recursive: true });
@@ -73,31 +75,57 @@ describe("git-config: initGlobalGitConfig", () => {
       opened.push(path.join(home, ".config"));
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-repo-"));
       execSync("git init -q .", { cwd: repo });
-      const run = spawnSync("git", ["status", "--porcelain"], {
-        cwd: repo,
-        encoding: "utf-8",
-        env: {
-          PATH: process.env.PATH ?? "",
-          HOME: home,
-          XDG_CONFIG_HOME: path.join(home, ".config"),
-          GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? "",
-        },
-      });
+      fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
+      const env = {
+        PATH: process.env.PATH ?? "",
+        HOME: home,
+        XDG_CONFIG_HOME: path.join(home, ".config"),
+        GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? "",
+      };
+      let stderr = "";
+      for (const args of [["add", "-A"], ["status", "--porcelain"], ["check-attr", "-a", "a.txt"]]) {
+        stderr += spawnSync("git", args, { cwd: repo, encoding: "utf-8", env }).stderr;
+      }
       fs.rmSync(repo, { recursive: true, force: true });
-      return run.stderr;
+      return stderr;
     }
 
-    it("silences the /root/.config/git/ignore warning that buried the real error", () => {
+    it("silences the /root/.config/git warnings that buried the real error", () => {
       if (process.getuid?.() === 0) return; // Root can read mode 0000.
       process.env.SHIPIT_SESSION_WORKER_UID = "1000";
 
       process.env.GIT_CONFIG_GLOBAL = path.join(tmpDir, "empty.gitconfig");
       fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, "");
-      expect(gitStderrUnderSealedHome()).toMatch(/unable to access .*git\/ignore/);
+      const before = gitStderrUnderSealedHome();
+      expect(before).toMatch(/unable to access .*git\/ignore/);
+      expect(before).toMatch(/unable to access .*git\/attributes/);
 
       initGlobalGitConfig(tmpDir);
 
       expect(gitStderrUnderSealedHome()).not.toMatch(/unable to access/);
+    });
+
+    it("points core.attributesFile at a file every uid can read", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      initGlobalGitConfig(tmpDir);
+
+      const target = execSync("git config --global core.attributesFile", { encoding: "utf-8" }).trim();
+      expect(target).toBe(path.join(tmpDir, "gitattributes-global"));
+      expect(fs.statSync(target).mode & 0o777).toBe(0o644);
+    });
+
+    it("leaves an operator's own core.attributesFile exactly where it points", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      const theirs = path.join(tmpDir, "operator-attributes");
+      fs.writeFileSync(theirs, "*.bin binary\n");
+      process.env.GIT_CONFIG_GLOBAL = path.join(tmpDir, ".gitconfig");
+      execSync(`git config --global core.attributesFile ${theirs}`);
+
+      initGlobalGitConfig(tmpDir);
+
+      expect(execSync("git config --global core.attributesFile", { encoding: "utf-8" }).trim())
+        .toBe(theirs);
+      expect(fs.existsSync(path.join(tmpDir, "gitattributes-global"))).toBe(false);
     });
 
     it("points the key at a file every uid can reach, and keeps an operator's patterns", () => {
@@ -132,9 +160,10 @@ describe("git-config: initGlobalGitConfig", () => {
       initGlobalGitConfig(tmpDir);
 
       expect(fs.existsSync(path.join(tmpDir, "gitignore-global"))).toBe(false);
-      expect(
-        spawnSync("git", ["config", "--global", "core.excludesFile"], { encoding: "utf-8" }).status,
-      ).not.toBe(0);
+      expect(fs.existsSync(path.join(tmpDir, "gitattributes-global"))).toBe(false);
+      for (const key of ["core.excludesFile", "core.attributesFile"]) {
+        expect(spawnSync("git", ["config", "--global", key], { encoding: "utf-8" }).status).not.toBe(0);
+      }
     });
   });
 

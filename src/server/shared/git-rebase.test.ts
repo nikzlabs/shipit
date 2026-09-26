@@ -232,6 +232,15 @@ describe("GitManager: rebase operations", () => {
     expect(await git.isRebaseInProgress()).toBe(false);
   });
 
+  it("rebaseInProgressState says unknown, not \"no\", when git cannot read the repository", async () => {
+    const notARepo = path.join(tmpDir, "not-a-repo");
+    fs.mkdirSync(notARepo);
+    const git = new GitManager(notARepo);
+
+    expect(await git.rebaseInProgressState()).toBeNull();
+    expect(await git.isRebaseInProgress()).toBe(false);
+  });
+
   it("force push with lease succeeds after rebase", async () => {
     const { git, workDir, bareDir } = await setupRepoWithRemote(tmpDir);
     await createDivergence(bareDir, workDir);

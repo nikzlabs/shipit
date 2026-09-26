@@ -8,6 +8,7 @@ import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { gitRemoteCredentialResolver } from "./services/github.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import type { GitManager } from "../shared/git.js";
 
 import {
   getGitLog,
@@ -26,6 +27,9 @@ import {
   syncFailureAlreadyExplained,
   repoDefaultBranch,
   ServiceError,
+  buildSyncFailureNotice,
+  rebaseLeftoverText,
+  summarizeGitError,
 } from "./services/index.js";
 import { deliverRebaseFollowup } from "./services/rebase-followup.js";
 import { detectAndReArmResetSession } from "./services/pr-rearm.js";
@@ -140,6 +144,40 @@ export async function presentExplicitResetSuccess(
     { role: "assistant", text: "", branchAutoReset: card },
     { chatHistoryManager: deps.chatHistoryManager, sessionId: deps.sessionId },
   );
+}
+
+export async function reportSyncFailure(deps: {
+  runner: Pick<SessionRunnerInterface, "emitMessage">;
+  chatHistoryManager: ChatHistoryManager;
+  git: Pick<GitManager, "rebaseInProgressState">;
+  sessionId: string;
+  baseBranch: string;
+  err: unknown;
+}): Promise<void> {
+  const message = getErrorMessage(deps.err);
+  // The abort after a failed rebase swallows its own failure, so check what it left.
+  const rebaseInProgress = await deps.git.rebaseInProgressState().catch(() => null);
+  // The banner drops its Abort button on this event, so it has to carry the recovery itself.
+  const leftover = rebaseLeftoverText(rebaseInProgress);
+  const summary = summarizeGitError(message);
+  deps.runner.emitMessage({
+    type: "rebase_aborted",
+    sessionId: deps.sessionId,
+    reason: leftover ? `${summary} ${leftover}` : summary,
+  });
+  // Persist failures not already recorded by the driver; WS events do not survive reload.
+  if (syncFailureAlreadyExplained(deps.err)) return;
+  try {
+    emitNoticePostTurn(
+      (msg) => deps.runner.emitMessage(msg),
+      deps.chatHistoryManager,
+      deps.sessionId,
+      buildSyncFailureNotice(deps.baseBranch, message, rebaseInProgress),
+      "warn",
+    );
+  } catch (noticeErr) {
+    console.error("[rebase] sync-failure notice failed:", getErrorMessage(noticeErr));
+  }
 }
 
 export async function registerGitRoutes(
@@ -466,21 +504,14 @@ export async function registerGitRoutes(
             }
           } catch (err: unknown) {
             console.error(`[rebase] flow failed for session ${sessionId}:`, err);
-            runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId, reason: getErrorMessage(err) });
-            // Persist failures not already recorded by the driver; WS events do not survive reload.
-            if (syncFailureAlreadyExplained(err)) return;
-            try {
-              emitNoticePostTurn(
-                (msg) => runner.emitMessage(msg),
-                deps.chatHistoryManager,
-                sessionId,
-                `Sync with \`${baseBranch}\` failed: ${getErrorMessage(err)}. Your branch was not `
-                + "changed by ShipIt; check the workspace state and try again.",
-                "warn",
-              );
-            } catch (noticeErr) {
-              console.error("[rebase] sync-failure notice failed:", getErrorMessage(noticeErr));
-            }
+            await reportSyncFailure({
+              runner,
+              chatHistoryManager: deps.chatHistoryManager,
+              git,
+              sessionId,
+              baseBranch,
+              err,
+            });
           }
         })();
 
