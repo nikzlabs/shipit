@@ -1,0 +1,45 @@
+# demo-proxy beside the demo instance (docs/296 plan §2, §9). Its own Compose
+# project: the local install's lib.sh only ever adds the fixed tailnet overlay,
+# so a sibling cannot be an overlay of `shipit-prod`. The service joins the
+# instance's network by name; session containers reach it as `demo-proxy`.
+#
+# Host layout (services:~/shipit-demo/): this file, proxy.mjs,
+# demo-proxy-entrypoint.sh, cassettes/, and a `.env` holding the DEMO_PROXY_*
+# knobs below. Record mode forwards the session's own x-api-key, so no key is
+# needed here; /root/shipit-demo-proxy.env (root, 0600) is an optional
+# DEMO_PROXY_ANTHROPIC_API_KEY override, normally absent. Every compose
+# invocation runs under sudo so that file is readable when it does exist:
+#   sudo docker compose -f ~/shipit-demo/demo-proxy.compose.yml up -d --force-recreate demo-proxy
+name: shipit-demo
+
+services:
+  demo-proxy:
+    # Same digest as docker/Dockerfile.prod and the session-worker image.
+    image: node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+    init: true
+    user: "${DEMO_PROXY_UID:-1000}:${DEMO_PROXY_GID:-1000}"
+    entrypoint: ["/bin/sh", "/app/demo-proxy-entrypoint.sh"]
+    environment:
+      DEMO_PROXY_MODE: ${DEMO_PROXY_MODE:-replay}
+      DEMO_PROXY_CASSETTE: ${DEMO_PROXY_CASSETTE:-/cassettes/dogfood-smoke}
+      DEMO_PROXY_UPSTREAM: ${DEMO_PROXY_UPSTREAM:-https://api.anthropic.com}
+      DEMO_PROXY_PACE: ${DEMO_PROXY_PACE:-120}
+    env_file:
+      - path: /root/shipit-demo-proxy.env
+        required: false
+    volumes:
+      - ./proxy.mjs:/app/proxy.mjs:ro
+      - ./demo-proxy-entrypoint.sh:/app/demo-proxy-entrypoint.sh:ro
+      - ./cassettes:/cassettes
+    # The driver's replay-mode check (`HEAD /api/hello`) runs from the driver
+    # host, not from the instance's network, so the port is also published on
+    # the tailnet address — the demo box contains nothing (plan §2).
+    ports:
+      - "${DEMO_PROXY_PUBLISH:-100.81.125.94}:8787:8787"
+    networks:
+      - shipit-prod
+    restart: unless-stopped
+
+networks:
+  shipit-prod:
+    external: true
