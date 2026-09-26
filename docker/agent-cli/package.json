@@ -6,8 +6,8 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.280",
     "@openai/codex": "0.155.1",
-    "opencode-ai": "1.18.30",
-    "@xai-official/grok": "1.0.29",
-    "@playwright/mcp": "0.0.80"
+    "opencode-ai": "1.18.31",
+    "@xai-official/grok": "1.0.38",
+    "@playwright/mcp": "0.0.82"
   }
 }
