@@ -838,6 +838,20 @@ function dispatchRebaseResolutionTurn(
 
 export const AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS = 10 * 60 * 1000;
 
+// A deferred failure retries every minute, so log each distinct raw error once per runner.
+const lastLoggedAutoResolveFailure = new WeakMap<SessionRunnerInterface, string>();
+
+/** `lastError` reaches the PR card, so it carries git's summary; the console keeps the raw text. */
+function autoResolveFailureText(runner: SessionRunnerInterface, stage: string, err: unknown): string {
+  const summary = summarizeGitError(getErrorMessage(err));
+  const key = `${stage}:${summary}`;
+  if (lastLoggedAutoResolveFailure.get(runner) !== key) {
+    lastLoggedAutoResolveFailure.set(runner, key);
+    console.error(`[auto-resolve] ${stage} failed for session ${runner.sessionId}:`, err);
+  }
+  return summary;
+}
+
 export async function runAutoResolveAttempt(
   deps: RebaseDriverDeps & {
     timeoutMs?: number;
@@ -863,7 +877,11 @@ export async function runAutoResolveAttempt(
       return { outcome: "deferred", lastError: "dirty_tree", didWork: false };
     }
   } catch (err) {
-    return { outcome: "deferred", lastError: `is_clean_failed: ${getErrorMessage(err)}`, didWork: false };
+    return {
+      outcome: "deferred",
+      lastError: `is_clean_failed: ${autoResolveFailureText(runner, "is_clean", err)}`,
+      didWork: false,
+    };
   }
 
   try {
@@ -873,7 +891,11 @@ export async function runAutoResolveAttempt(
       return { outcome: "deferred", lastError: "stale_rebase", didWork: false };
     }
   } catch (err) {
-    return { outcome: "deferred", lastError: `is_rebase_in_progress_failed: ${getErrorMessage(err)}`, didWork: false };
+    return {
+      outcome: "deferred",
+      lastError: `is_rebase_in_progress_failed: ${autoResolveFailureText(runner, "is_rebase_in_progress", err)}`,
+      didWork: false,
+    };
   }
 
   let didSpawn = false;
@@ -946,10 +968,10 @@ export async function runAutoResolveAttempt(
           : { outcome: "deferred", didWork: false };
       }
       if (!didSpawn) {
-        return { outcome: "deferred", lastError: getErrorMessage(err), didWork: false };
+        return { outcome: "deferred", lastError: autoResolveFailureText(runner, "rebase flow", err), didWork: false };
       }
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      return { outcome: "error", lastError: getErrorMessage(err), didWork: true };
+      return { outcome: "error", lastError: autoResolveFailureText(runner, "rebase flow", err), didWork: true };
     }
   })();
 

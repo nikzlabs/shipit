@@ -3460,6 +3460,40 @@ describe("rebase-driver: a sync blocked by untracked files at paths a replayed c
     expect(notice).toContain("squash this branch");
     expect(notice).not.toMatch(/warning:|hint:|Rebasing \(/);
   });
+
+  it("the automatic path stores git's summary for the PR card, and logs the raw error once per failure", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    commitThenIgnoreCache(bareDir, workDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const deps = {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+    wireSystemTurnDeps(deps);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await runAutoResolveAttempt(deps, "main");
+    const second = await runAutoResolveAttempt(deps, "main");
+
+    const logged = consoleError.mock.calls.filter(([line]) => String(line).startsWith("[auto-resolve]"));
+    consoleError.mockRestore();
+    expect(first).toEqual({
+      outcome: "deferred",
+      lastError: "error: The following untracked working tree files would be overwritten by merge: "
+        + "`cache/a.js`, `cache/b.js`, `cache/c.js` and 2 more",
+      didWork: false,
+    });
+    expect(second).toEqual(first);
+    expect(logged).toHaveLength(1);
+    expect((logged[0]?.[1] as Error).message).toContain("hint:");
+    expect(await git.isRebaseInProgress()).toBe(false);
+  });
 });
 
 describe("rebase-driver: buildSyncFailureNotice", () => {
