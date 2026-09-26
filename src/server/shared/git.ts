@@ -1051,6 +1051,11 @@ export class GitManager {
   }
 
   async isRebaseInProgress(): Promise<boolean> {
+    return (await this.rebaseInProgressState()) ?? false;
+  }
+
+  // null when git cannot say: a claim that the branch is unchanged must not read that as "no".
+  async rebaseInProgressState(): Promise<boolean | null> {
     try {
       const gitDir = (await this.git.revparse(["--absolute-git-dir"])).trim();
       return (
@@ -1058,7 +1063,7 @@ export class GitManager {
         fs.existsSync(path.join(gitDir, "rebase-apply"))
       );
     } catch {
-      return false;
+      return null;
     }
   }
 

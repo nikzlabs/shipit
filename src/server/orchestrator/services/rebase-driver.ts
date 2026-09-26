@@ -11,7 +11,13 @@ import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
-import { classifyPushFailure, isNonFastForwardError } from "./git.js";
+import {
+  classifyPushFailure,
+  formatPathList,
+  isNonFastForwardError,
+  summarizeGitError,
+  untrackedOverwritePaths,
+} from "./git.js";
 import { findSharedBranchRefusal } from "./push-target-guard.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
@@ -180,6 +186,39 @@ export function buildBranchSyncAgentNotice(opts: {
     + `editing it rather than relying on an earlier read, and do not try to undo the `
     + `sync or re-apply anything it brought in.`
   );
+}
+
+const MID_REBASE_TEXT =
+  "Aborting the rebase FAILED — the workspace is still mid-rebase; run `git rebase --abort` to recover.";
+
+/** What a failed sync left behind, when that is not a clean abort; `null` means git could not say. */
+export function rebaseLeftoverText(rebaseInProgress: boolean | null): string | null {
+  if (rebaseInProgress === false) return null;
+  return rebaseInProgress
+    ? MID_REBASE_TEXT
+    : "ShipIt could not check whether the rebase was aborted; run `git status` in the terminal, and "
+      + "`git rebase --abort` if a rebase is still in progress.";
+}
+
+/** The chat notice for a manual sync failure the flow did not explain itself. */
+export function buildSyncFailureNotice(
+  baseBranch: string,
+  errorMessage: string,
+  rebaseInProgress: boolean | null,
+): string {
+  const leftover = rebaseLeftoverText(rebaseInProgress);
+  const paths = untrackedOverwritePaths(errorMessage);
+  if (paths && paths.length > 0) {
+    return `Sync with \`${baseBranch}\` failed: a commit being replayed adds files at paths where this `
+      + "workspace already has untracked files, and git will not overwrite them. These are usually files "
+      + `this branch ignores but \`${baseBranch}\` does not, such as build caches: ${formatPathList(paths)}. `
+      + `${leftover ?? "Your branch was not changed by ShipIt."} To sync, delete those `
+      + "files if they can be regenerated, squash this branch so the commit that adds them and the later one "
+      + `that stops tracking them cancel out, or add the ignore rule to \`${baseBranch}\` first.`;
+  }
+  const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
+  const state = leftover ?? "Your branch was not changed by ShipIt; check the workspace state and try again.";
+  return `Sync with \`${baseBranch}\` failed: ${summary}. ${state}`;
 }
 
 // The container's file watcher may miss a rewrite from the orchestrator.
@@ -506,7 +545,7 @@ export async function runRebaseFlow(
           }
         }
         const outcomeText = stillInProgress
-          ? "Aborting the rebase FAILED — the workspace is still mid-rebase; run `git rebase --abort` to recover."
+          ? MID_REBASE_TEXT
           : "The rebase was aborted — the branch is unchanged.";
         abortNoticeReached = true;
         const explained = persistAbortNotice(
@@ -799,6 +838,20 @@ function dispatchRebaseResolutionTurn(
 
 export const AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS = 10 * 60 * 1000;
 
+// A deferred failure retries every minute, so log each distinct raw error once per runner.
+const lastLoggedAutoResolveFailure = new WeakMap<SessionRunnerInterface, string>();
+
+/** `lastError` reaches the PR card, so it carries git's summary; the console keeps the raw text. */
+function autoResolveFailureText(runner: SessionRunnerInterface, stage: string, err: unknown): string {
+  const summary = summarizeGitError(getErrorMessage(err));
+  const key = `${stage}:${summary}`;
+  if (lastLoggedAutoResolveFailure.get(runner) !== key) {
+    lastLoggedAutoResolveFailure.set(runner, key);
+    console.error(`[auto-resolve] ${stage} failed for session ${runner.sessionId}:`, err);
+  }
+  return summary;
+}
+
 export async function runAutoResolveAttempt(
   deps: RebaseDriverDeps & {
     timeoutMs?: number;
@@ -824,7 +877,11 @@ export async function runAutoResolveAttempt(
       return { outcome: "deferred", lastError: "dirty_tree", didWork: false };
     }
   } catch (err) {
-    return { outcome: "deferred", lastError: `is_clean_failed: ${getErrorMessage(err)}`, didWork: false };
+    return {
+      outcome: "deferred",
+      lastError: `is_clean_failed: ${autoResolveFailureText(runner, "is_clean", err)}`,
+      didWork: false,
+    };
   }
 
   try {
@@ -834,7 +891,11 @@ export async function runAutoResolveAttempt(
       return { outcome: "deferred", lastError: "stale_rebase", didWork: false };
     }
   } catch (err) {
-    return { outcome: "deferred", lastError: `is_rebase_in_progress_failed: ${getErrorMessage(err)}`, didWork: false };
+    return {
+      outcome: "deferred",
+      lastError: `is_rebase_in_progress_failed: ${autoResolveFailureText(runner, "is_rebase_in_progress", err)}`,
+      didWork: false,
+    };
   }
 
   let didSpawn = false;
@@ -907,10 +968,10 @@ export async function runAutoResolveAttempt(
           : { outcome: "deferred", didWork: false };
       }
       if (!didSpawn) {
-        return { outcome: "deferred", lastError: getErrorMessage(err), didWork: false };
+        return { outcome: "deferred", lastError: autoResolveFailureText(runner, "rebase flow", err), didWork: false };
       }
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      return { outcome: "error", lastError: getErrorMessage(err), didWork: true };
+      return { outcome: "error", lastError: autoResolveFailureText(runner, "rebase flow", err), didWork: true };
     }
   })();
 

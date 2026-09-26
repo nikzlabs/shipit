@@ -86,7 +86,7 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     }
   }
 
-  pinGlobalExcludesFile(credentialsDir);
+  pinHomeDefaultFiles(credentialsDir);
   shareGlobalGitConfigWithWorker(credentialsDir);
 
   if (!process.env.GIT_EDITOR) {
@@ -121,35 +121,46 @@ function reshareGlobalGitConfig(): void {
   shareGlobalGitConfigWithWorker(path.dirname(configPath));
 }
 
-const GLOBAL_EXCLUDES_FILENAME = "gitignore-global";
+// With GIT_CONFIG_GLOBAL set, these two defaults are the only files git reads
+// under $HOME. Dropped-UID git cannot reach /root, and each EACCES warning led
+// the stderr of a real failure, so a rebase notice read as a permissions problem.
+const HOME_DEFAULT_FILES = [
+  ["core.excludesFile", "gitignore-global"],
+  ["core.attributesFile", "gitattributes-global"],
+] as const;
 
-// Avoid EACCES noise from dropped-UID git probing /root/.config/git/ignore.
-function pinGlobalExcludesFile(credentialsDir: string): void {
+function pinHomeDefaultFiles(credentialsDir: string): void {
   if (sessionWorkerUid() === null) return;
+  for (const [key, filename] of HOME_DEFAULT_FILES) pinGlobalFile(credentialsDir, key, filename);
+}
+
+function pinGlobalFile(credentialsDir: string, key: string, filename: string): void {
   try {
     const existing = execFileSync(
       "git",
-      gitArgsWithHooksDisabled(["config", "--global", "core.excludesFile"]),
+      gitArgsWithHooksDisabled(["config", "--global", key]),
       { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
     if (existing) return;
   } catch {
     // Unset key.
   }
-  const target = path.join(credentialsDir, GLOBAL_EXCLUDES_FILENAME);
+  const target = path.join(credentialsDir, filename);
   try {
-    // Preserve operator patterns across restarts.
+    // Preserve operator entries across restarts.
     if (!fs.existsSync(target)) fs.writeFileSync(target, "", { mode: 0o644 });
     tightenMode(target, 0o644);
+    // Root-side git reads it too, so the worker must not be able to edit it.
+    restoreRootOwnership(target);
   } catch (err) {
     console.warn(
-      `[git-config] could not create the global excludes file at ${target}:`,
+      `[git-config] could not create the ${key} file at ${target}:`,
       err instanceof Error ? err.message : String(err),
     );
     return;
   }
   try {
-    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "core.excludesFile", target]));
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", key, target]));
   } catch {
     // git may not be installed yet.
   }

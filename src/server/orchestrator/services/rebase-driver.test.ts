@@ -17,6 +17,7 @@ import {
   runAutoResolveAttempt,
   buildRebaseConflictPrompt,
   buildBranchSyncAgentNotice,
+  buildSyncFailureNotice,
   MAX_REBASE_ITERATIONS,
   syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
@@ -3383,5 +3384,147 @@ describe("rebase-driver: the flow releases its own hold, not whatever the flag h
     // Its owner may be mid-rebase itself; handing it a queued turn is what docs/304 stopped.
     expect(runner.systemTurnInProgress).toBe(true);
     expect(runner.queueLength).toBe(1);
+  });
+});
+
+describe("rebase-driver: a sync blocked by untracked files at paths a replayed commit adds", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-untracked-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // The branch committed a build cache, then ignored it; the files stay on disk,
+  // untracked, and replaying the first commit onto main must write over them.
+  function commitThenIgnoreCache(bareDir: string, workDir: string): void {
+    createCleanDivergence(bareDir, workDir);
+    const cache = path.join(workDir, "cache");
+    fs.mkdirSync(cache);
+    for (const name of ["a.js", "b.js", "c.js", "d.js", "e.js"]) fs.writeFileSync(path.join(cache, name), "x\n");
+    execSync("git add -A && git commit -m 'Add build cache'", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, ".gitignore"), "cache/\n");
+    execSync("git rm -r -q --cached cache && git add .gitignore && git commit -m 'Ignore build cache'", {
+      cwd: workDir,
+      stdio: "pipe",
+    });
+  }
+
+  it("leaves the branch as it was, and the notice explains the cause instead of dumping stderr", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    commitThenIgnoreCache(bareDir, workDir);
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    let err: unknown = null;
+    try {
+      await runFlow({
+        git,
+        githubAuthManager: makeStubAuth(false),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+        recordSyncCard: true,
+      }, "main");
+    } catch (e) {
+      err = e;
+    }
+
+    expect(err).toBeInstanceOf(Error);
+    // Left for the route to report, which is where the notice below is built.
+    expect(syncFailureAlreadyExplained(err)).toBe(false);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+
+    const notice = buildSyncFailureNotice("main", (err as Error).message, false);
+    expect(notice).toMatch(/^Sync with `main` failed: a commit being replayed adds files/);
+    expect(notice).toContain("`cache/a.js`, `cache/b.js`, `cache/c.js` and 2 more");
+    expect(notice).toContain("Your branch was not changed by ShipIt.");
+    expect(notice).toContain("squash this branch");
+    expect(notice).not.toMatch(/warning:|hint:|Rebasing \(/);
+  });
+
+  it("the automatic path stores git's summary for the PR card, and logs the raw error once per failure", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    commitThenIgnoreCache(bareDir, workDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const deps = {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+    wireSystemTurnDeps(deps);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await runAutoResolveAttempt(deps, "main");
+    const second = await runAutoResolveAttempt(deps, "main");
+
+    const logged = consoleError.mock.calls.filter(([line]) => String(line).startsWith("[auto-resolve]"));
+    consoleError.mockRestore();
+    expect(first).toEqual({
+      outcome: "deferred",
+      lastError: "error: The following untracked working tree files would be overwritten by merge: "
+        + "`cache/a.js`, `cache/b.js`, `cache/c.js` and 2 more",
+      didWork: false,
+    });
+    expect(second).toEqual(first);
+    expect(logged).toHaveLength(1);
+    expect((logged[0]?.[1] as Error).message).toContain("hint:");
+    expect(await git.isRebaseInProgress()).toBe(false);
+  });
+});
+
+describe("rebase-driver: buildSyncFailureNotice", () => {
+  const untracked = "error: The following untracked working tree files would be overwritten by merge:\n\ta\n\tb\nAborting\n";
+
+  it("never claims an unchanged branch while the rebase is still in progress", () => {
+    for (const message of [untracked, "fatal: could not read HEAD\n"]) {
+      const notice = buildSyncFailureNotice("main", message, true);
+      expect(notice).toContain("still mid-rebase");
+      expect(notice).toContain("git rebase --abort");
+      expect(notice).not.toContain("was not changed");
+    }
+  });
+
+  it("claims neither outcome when git could not say whether the rebase is still in progress", () => {
+    for (const message of [untracked, "fatal: could not read HEAD\n"]) {
+      const notice = buildSyncFailureNotice("main", message, null);
+      expect(notice).toContain("could not check whether the rebase was aborted");
+      expect(notice).not.toContain("was not changed");
+      expect(notice).not.toContain("FAILED");
+    }
+  });
+
+  it("leads an unclassified failure with git's error line, without doubling its full stop", () => {
+    expect(buildSyncFailureNotice("main", "warning: noise\nfatal: invalid upstream 'origin/main'.\n", false)).toBe(
+      "Sync with `main` failed: fatal: invalid upstream 'origin/main'. Your branch was not changed by ShipIt; "
+      + "check the workspace state and try again.",
+    );
+  });
+
+  it("names every path when there are only a few", () => {
+    expect(buildSyncFailureNotice("main", untracked, false)).toContain("such as build caches: `a`, `b`.");
   });
 });

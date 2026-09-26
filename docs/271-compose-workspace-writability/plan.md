@@ -378,10 +378,12 @@ decides what the test means.
 - `docker/session-worker/entrypoint.sh` — `chown_workspace`'s mode passes and
   its default-ACL pass, plus the `HANDOFF_SCHEME` that reaches already-claimed
   trees.
-- `src/server/orchestrator/git-config.ts` — `pinGlobalExcludesFile`, unrelated to
+- `src/server/orchestrator/git-config.ts` — `pinHomeDefaultFiles`, unrelated to
   the residual but found beside it: the dropped-uid git's
   `/root/.config/git/ignore` warning was the first line of the stderr that
   reported the §3 failure, so the rebase banner named a `/root` permission
-  problem instead of the untracked files that actually aborted it.
+  problem instead of the untracked files that actually aborted it. The first fix
+  pinned only `core.excludesFile`; `/root/.config/git/attributes` kept producing
+  the same warning until `core.attributesFile` was pinned the same way.
 - `src/server/shipit-docs/compose.md` — the agent-facing contract, no longer
   self-contradictory.

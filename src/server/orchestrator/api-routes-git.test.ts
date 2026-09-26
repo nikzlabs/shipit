@@ -3,11 +3,19 @@ import type { PrStatusSummary } from "../shared/types.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 
-const { emitChatCard } = vi.hoisted(() => ({ emitChatCard: vi.fn() }));
+const { emitChatCard, emitNoticePostTurn } = vi.hoisted(() => ({
+  emitChatCard: vi.fn(),
+  emitNoticePostTurn: vi.fn(),
+}));
 
-vi.mock("./chat-card-persistence.js", () => ({ emitChatCard }));
+vi.mock("./chat-card-persistence.js", () => ({ emitChatCard, emitNoticePostTurn }));
 
-import { presentExplicitResetSuccess, recordManualResetAgentNotice } from "./api-routes-git.js";
+import {
+  presentExplicitResetSuccess,
+  recordManualResetAgentNotice,
+  reportSyncFailure,
+} from "./api-routes-git.js";
+import { markSyncFailureExplained } from "./services/rebase-driver.js";
 
 const prStatus: PrStatusSummary = {
   sessionId: "session-1",
@@ -148,5 +156,73 @@ describe("recordManualResetAgentNotice", () => {
       sessionId: "session-1",
       outcome: resetOutcome,
     })).not.toThrow();
+  });
+});
+
+describe("reportSyncFailure", () => {
+  beforeEach(() => emitNoticePostTurn.mockClear());
+
+  const gitStderr = [
+    "warning: unable to access '/root/.config/git/attributes': Permission denied",
+    "Rebasing (1/8)\rerror: The following untracked working tree files would be overwritten by merge:",
+    "\tapp/.vite/deps/a.js",
+    "\tapp/.vite/deps/b.js",
+    "\tapp/.vite/deps/c.js",
+    "\tapp/.vite/deps/d.js",
+    "Please move or remove them before you merge.",
+    "Aborting",
+    "hint: Could not execute the todo command",
+  ].join("\n");
+
+  async function report(err: unknown, rebaseInProgress: boolean | null) {
+    const emitMessage = vi.fn();
+    await reportSyncFailure({
+      runner: { emitMessage } as unknown as SessionRunnerInterface,
+      chatHistoryManager: {} as ChatHistoryManager,
+      git: { rebaseInProgressState: async () => rebaseInProgress },
+      sessionId: "session-1",
+      baseBranch: "main",
+      err,
+    });
+    const notice = emitNoticePostTurn.mock.calls[0]?.[3] as string | undefined;
+    return { emitMessage, notice };
+  }
+
+  it("clears the banner with git's error line rather than its raw stderr", async () => {
+    const { emitMessage } = await report(new Error(gitStderr), false);
+    expect(emitMessage).toHaveBeenCalledWith({
+      type: "rebase_aborted",
+      sessionId: "session-1",
+      reason: "error: The following untracked working tree files would be overwritten by merge: "
+        + "`app/.vite/deps/a.js`, `app/.vite/deps/b.js`, `app/.vite/deps/c.js` and 1 more",
+    });
+  });
+
+  it("explains an untracked-overwrite failure and says the branch is unchanged", async () => {
+    const { notice } = await report(new Error(gitStderr), false);
+    expect(notice).toMatch(/^Sync with `main` failed: a commit being replayed adds files/);
+    expect(notice).toContain("Your branch was not changed by ShipIt.");
+    expect(notice).not.toContain("Permission denied");
+  });
+
+  it("says the workspace is still mid-rebase when the abort did not take, in the notice and the banner", async () => {
+    const { emitMessage, notice } = await report(new Error(gitStderr), true);
+    expect(notice).toContain("still mid-rebase");
+    expect(notice).not.toContain("was not changed");
+    const banner = emitMessage.mock.calls.find(([m]) => (m as { type: string }).type === "rebase_aborted")?.[0] as
+      { reason: string } | undefined;
+    expect(banner?.reason).toContain("still mid-rebase");
+  });
+
+  it("does not call the branch unchanged when git cannot say whether a rebase is in progress", async () => {
+    const { notice } = await report(new Error(gitStderr), null);
+    expect(notice).toContain("could not check whether the rebase was aborted");
+    expect(notice).not.toContain("was not changed");
+  });
+
+  it("adds no second notice for a failure the driver already explained", async () => {
+    const { emitMessage, notice } = await report(markSyncFailureExplained(new Error("interrupted")), false);
+    expect(notice).toBeUndefined();
+    expect(emitMessage).toHaveBeenCalledWith({ type: "rebase_aborted", sessionId: "session-1", reason: "interrupted" });
   });
 });

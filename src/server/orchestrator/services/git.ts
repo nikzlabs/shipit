@@ -435,3 +435,59 @@ export function isRewriteWindowPushFailure(err: unknown): boolean {
   const cls = classifyPushFailure(err);
   return cls === "non-fast-forward" || cls === "invalid-refspec";
 }
+
+const MAX_LISTED_PATHS = 3;
+const GIT_ERROR_LINE = /^(?:error|fatal):/;
+const GIT_NOISE_LINE = /^(?:warning|hint):|^Rebasing \(\d+\/\d+\)$/;
+const UNTRACKED_OVERWRITE_LINE = /^error: The following untracked working tree files would be overwritten by \w+:$/;
+
+// Git ends a progress line with \r, so "Rebasing (1/8)\rerror: ..." is two lines.
+function gitOutputLines(message: string): string[] {
+  return message.split(/\r\n|\r|\n/).map((line) => line.trimEnd());
+}
+
+export function formatPathList(paths: readonly string[]): string {
+  const shown = paths.slice(0, MAX_LISTED_PATHS).map((p) => `\`${p}\``).join(", ");
+  const rest = paths.length - MAX_LISTED_PATHS;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
+/**
+ * One line for a person: git's own `error:`/`fatal:` lines with the path list
+ * under each capped, and no warnings, hints, or progress. Log the raw message.
+ */
+export function summarizeGitError(message: string): string {
+  const lines = gitOutputLines(message);
+  const errors: { line: string; paths: string[] }[] = [];
+  let current: { line: string; paths: string[] } | null = null;
+  for (const line of lines) {
+    if (GIT_ERROR_LINE.test(line)) {
+      current = { line: line.trim(), paths: [] };
+      errors.push(current);
+    } else if (current && line.startsWith("\t")) {
+      current.paths.push(line.trim());
+    } else {
+      current = null;
+    }
+  }
+  if (errors.length > 0) {
+    return errors
+      .map((e) => (e.paths.length > 0 ? `${e.line} ${formatPathList(e.paths)}` : e.line))
+      .join(" ");
+  }
+  const kept = lines.map((l) => l.trim()).filter((l) => l !== "" && !GIT_NOISE_LINE.test(l));
+  return kept.length > 0 ? kept.join(" ") : message.trim();
+}
+
+/** The paths git refused to overwrite, or null when the failure is anything else. */
+export function untrackedOverwritePaths(message: string): string[] | null {
+  const lines = gitOutputLines(message);
+  const at = lines.findIndex((line) => UNTRACKED_OVERWRITE_LINE.test(line));
+  if (at < 0) return null;
+  const paths: string[] = [];
+  for (const line of lines.slice(at + 1)) {
+    if (!line.startsWith("\t")) break;
+    paths.push(line.trim());
+  }
+  return paths;
+}
