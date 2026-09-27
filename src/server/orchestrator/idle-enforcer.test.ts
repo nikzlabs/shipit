@@ -31,17 +31,17 @@ type FakeRunner = Partial<SessionRunnerInterface>;
 function harness(
   sessions: SessionInfo[],
   runner?: FakeRunner | (() => FakeRunner | undefined),
-  opts: { poolWarm?: string[]; standby?: boolean } = {},
+  opts: { poolWarm?: string[]; standby?: boolean; declineDispose?: boolean; noContainer?: boolean } = {},
 ) {
   const current = () => (typeof runner === "function" ? runner() : runner);
   const destroy = vi.fn().mockResolvedValue(undefined);
   const stopServices = vi.fn();
   const dispose = vi.fn(() => {
     const r = current();
-    if (r) (r as { disposed: boolean }).disposed = true;
+    if (r && !opts.declineDispose) (r as { disposed: boolean }).disposed = true;
   });
   const containerManager = {
-    get: (id: string) => (id === ID ? { sessionId: ID } : undefined),
+    get: (id: string) => (id === ID && !opts.noContainer ? { sessionId: ID } : undefined),
     getAll: () => [{ sessionId: ID }],
     isStandby: () => opts.standby ?? false,
     destroy,
@@ -225,6 +225,21 @@ describe("abandoned warm drafts return their memory", () => {
   it("leaves a draft whose agent is busy", () => {
     const { enforce, destroy } = harness([draft()], { ...unviewed(), agentBusy: true });
     afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves the container and stack of a draft whose runner declines disposal", () => {
+    const { enforce, dispose, destroy, stopServices } = harness([draft()], unviewed(), { declineDispose: true });
+    afterWait(enforce);
+    expect(dispose).toHaveBeenCalledWith(ID);
+    expect(destroy).not.toHaveBeenCalled();
+    expect(stopServices).not.toHaveBeenCalled();
+  });
+
+  it("stops the stack of a draft whose agent container is already gone", () => {
+    const { enforce, destroy, stopServices } = harness([draft()], undefined, { noContainer: true });
+    afterWait(enforce);
+    expect(stopServices).toHaveBeenCalledWith(ID);
     expect(destroy).not.toHaveBeenCalled();
   });
 
