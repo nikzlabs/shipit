@@ -59,6 +59,8 @@ export interface ComposeOverrideOptions {
   composeConfig: ComposeConfig;
   workspaceVolume?: string;
   workspaceSubpath?: string;
+  /** Daemon-side path of this session's workspace; required once a mount names a subdirectory of it. */
+  workspaceDevice?: string;
   stackName?: string;
   containEgress?: boolean;
   containDns?: boolean;
@@ -91,7 +93,13 @@ export const OVERRIDE_SENTINELS: readonly string[] = [
   "__RESET_DNS__",
 ];
 
-const WORKSPACE_VOLUME_ALIAS = "shipit-workspace";
+/** The shared workspace volume: its root holds every session, not only this one. */
+export const WORKSPACE_VOLUME_ALIAS = "shipit-workspace";
+
+/** Rooted at this session's workspace, so Docker confines each subpath to that directory. */
+export const SESSION_WORKSPACE_VOLUME_ALIAS = "shipit-session-workspace";
+
+const RESERVED_VOLUME_NAMES: readonly string[] = [WORKSPACE_VOLUME_ALIAS, SESSION_WORKSPACE_VOLUME_ALIAS];
 
 export type ComposeValidationKind = "malformed" | "refused";
 
@@ -525,6 +533,11 @@ function meansFalse(value: unknown): boolean {
 function validateTopLevelVolumes(block: unknown): void {
   if (!block || typeof block !== "object" || Array.isArray(block)) return;
   for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+    if (RESERVED_VOLUME_NAMES.includes(name)) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: the name is reserved for ShipIt's own workspace mounts. Rename the volume.`,
+      );
+    }
     if (entry === null || entry === undefined) continue;
     if (typeof entry !== "object" || Array.isArray(entry)) {
       throw new ComposeValidationError(
@@ -798,10 +811,18 @@ export function validateServiceSecurity(
         source = vol.split(":")[0];
       } else if (vol && typeof vol === "object") {
         const obj = vol as Record<string, unknown>;
-        if (obj.type === "volume") continue;
         if (typeof obj.source === "string") source = obj.source;
       }
       if (!source) continue;
+
+      // ShipIt declares these in the override; the shared one would mount every session's files.
+      if (RESERVED_VOLUME_NAMES.includes(source)) {
+        throw new ComposeValidationError(
+          `Service \`${name}\`: volume \`${source}\` is reserved for ShipIt. `
+          + "Mount the workspace with a relative path such as `.:/app` or `./packages/web:/app`.",
+        );
+      }
+      if (vol && typeof vol === "object" && (vol as Record<string, unknown>).type === "volume") continue;
 
       const isSocket = source === "/var/run/docker.sock";
       const socketReadOnly = typeof vol === "string"
@@ -839,6 +860,13 @@ export function validateServiceSecurity(
         throw new ComposeValidationError(
           `Service \`${name}\`: Path traversal \`${source}\` is not allowed. ` +
           `Bind mounts must stay within the workspace.`,
+        );
+      }
+      // Compose expands `~` to its own $HOME, and the daemon mounts that path from the host.
+      if (source.startsWith("~")) {
+        throw new ComposeValidationError(
+          `Service \`${name}\`: home-relative bind mount path \`${source}\` is not allowed. ` +
+          `Use relative paths within the workspace.`,
         );
       }
     }
@@ -885,16 +913,34 @@ function resolvePreviewMode(svc: ComposeService): "auto" | "manual" {
 }
 
 function isRelativeWorkspacePath(source: string): string | null {
-  if (source === "." || source === "./") return "";
-  if (!source.startsWith("./")) return null;
-  return source.slice(2).replace(/\/+$/, "");
+  if (source !== "." && !source.startsWith("./")) return null;
+  const relPath = path.posix.normalize(source).replace(/\/+$/, "");
+  return relPath === "." ? "" : relPath;
 }
 
-function joinSubpath(workspaceSubpath: string | undefined, relPath: string): string | undefined {
-  if (workspaceSubpath && relPath) return `${workspaceSubpath}/${relPath}`;
-  if (workspaceSubpath) return workspaceSubpath;
-  if (relPath) return relPath;
-  return undefined;
+export interface WorkspaceVolumeMount {
+  type: "volume";
+  source: string;
+  volume: { subpath: string };
+}
+
+/**
+ * Docker follows a subpath's symlinks and checks only that the result stays inside the volume
+ * root. The workspace directory itself cannot be replaced from a container, because its parent is
+ * never mounted, so it stays a subpath of the shared volume. Anything below it can be a symlink,
+ * so it is a subpath of the session's own volume instead.
+ */
+export function workspaceVolumeMount(
+  relPath: string,
+  workspaceSubpath: string | undefined,
+): WorkspaceVolumeMount {
+  if (relPath) {
+    return { type: "volume", source: SESSION_WORKSPACE_VOLUME_ALIAS, volume: { subpath: relPath } };
+  }
+  if (!workspaceSubpath) {
+    throw new Error("ShipIt could not locate this session inside the workspace volume.");
+  }
+  return { type: "volume", source: WORKSPACE_VOLUME_ALIAS, volume: { subpath: workspaceSubpath } };
 }
 
 function rewritePersistMount(vol: unknown, subpath: string): unknown {
@@ -939,15 +985,7 @@ function rewriteVolumes(
         const target = parts[1];
         if (!target) return vol;
         const mode = parts[2];
-        const subpath = joinSubpath(opts.workspaceSubpath, relPath);
-        const entry: Record<string, unknown> = {
-          type: "volume",
-          source: "shipit-workspace",
-          target,
-        };
-        if (subpath) {
-          entry.volume = { subpath };
-        }
+        const entry: Record<string, unknown> = { ...workspaceVolumeMount(relPath, opts.workspaceSubpath), target };
         if (mode === "ro") entry.read_only = true;
         return entry;
       }
@@ -958,21 +996,18 @@ function rewriteVolumes(
       if (typeof obj.source === "string") {
         const relPath = isRelativeWorkspacePath(obj.source);
         if (relPath !== null) {
-          const subpath = joinSubpath(opts.workspaceSubpath, relPath);
-          const entry: Record<string, unknown> = {
-            ...obj,
-            type: "volume",
-            source: "shipit-workspace",
-          };
-          if (subpath) {
-            entry.volume = { subpath };
-          }
-          return entry;
+          return { ...obj, ...workspaceVolumeMount(relPath, opts.workspaceSubpath) };
         }
       }
     }
     return vol;
   });
+}
+
+function mountsSessionWorkspace(volumes: unknown): boolean {
+  return Array.isArray(volumes) && volumes.some((vol) =>
+    Boolean(vol && typeof vol === "object"
+      && (vol as Record<string, unknown>).source === SESSION_WORKSPACE_VOLUME_ALIAS));
 }
 
 function volumeSourceTarget(vol: unknown): { source: string | null; target: string | null } {
@@ -1040,7 +1075,7 @@ function overlayMountsForPluginService(
   for (const vol of rawVolumes) {
     if (!vol || typeof vol !== "object") continue;
     const obj = vol as Record<string, unknown>;
-    if (obj.source !== WORKSPACE_VOLUME_ALIAS || typeof obj.target !== "string") continue;
+    if (typeof obj.target !== "string") continue;
     const mountSubdir = workspaceSubdirOfMount(workspaceSubpath, obj);
     if (mountSubdir === null) continue;
     for (const { depDir, volumeName } of overlayDepDirs) {
@@ -1062,8 +1097,8 @@ function workspaceSubdirOfMount(workspaceSubpath: string, entry: Record<string, 
     ? (volume as Record<string, unknown>).subpath
     : undefined;
   if (typeof subpath !== "string") return null;
-  if (subpath === workspaceSubpath) return "";
-  if (subpath.startsWith(`${workspaceSubpath}/`)) return subpath.slice(workspaceSubpath.length + 1);
+  if (entry.source === SESSION_WORKSPACE_VOLUME_ALIAS) return subpath;
+  if (entry.source === WORKSPACE_VOLUME_ALIAS && subpath === workspaceSubpath) return "";
   return null;
 }
 
@@ -1245,7 +1280,7 @@ export function generateComposeOverride(
 
   const volumeOverlay: Record<string, Record<string, unknown>> = {};
   if (opts.workspaceVolume) {
-    volumeOverlay["shipit-workspace"] = {
+    volumeOverlay[WORKSPACE_VOLUME_ALIAS] = {
       name: opts.workspaceVolume,
       external: true,
     };
@@ -1281,6 +1316,23 @@ export function generateComposeOverride(
         },
       };
     }
+  }
+  if (Object.values(overrideServices).some((entry) => mountsSessionWorkspace(entry.volumes))) {
+    if (!opts.workspaceDevice) {
+      throw new Error(
+        "ShipIt could not locate this session's workspace on the Docker host, so it cannot mount "
+        + "a subdirectory of it. Mounting the whole workspace (`.:/app`) still works.",
+      );
+    }
+    volumeOverlay[SESSION_WORKSPACE_VOLUME_ALIAS] = {
+      driver: "local",
+      driver_opts: { type: "none", o: "bind", device: opts.workspaceDevice },
+      labels: {
+        "shipit-managed": "true",
+        "shipit-session": opts.sessionId,
+        ...stackLabel(opts.stackName),
+      },
+    };
   }
   for (const name of referencedOverlayVolumes) {
     volumeOverlay[name] = { name, external: true };

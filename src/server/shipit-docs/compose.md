@@ -65,6 +65,14 @@ volumes:
   - ./packages/frontend:/app
 ```
 
+A subdirectory mount must stay inside this session's workspace after symlinks are
+resolved. If `packages/frontend` is a symlink to a place inside the workspace, the
+mount follows it. If it points outside the workspace, Docker refuses the mount
+and the service does not start. Mount the real directory instead.
+
+The volume names `shipit-workspace` and `shipit-session-workspace` are reserved.
+ShipIt rejects a compose file that declares either one or mounts it in a service.
+
 ### Data a service must keep: the `persist` volume
 
 A service has two obvious places to write, and neither lasts. A named volume can
@@ -610,9 +618,10 @@ services:
   (Android emulator; see above). Every other device is rejected.
 - **Don't use `build:`** — use pre-built public images. If you need custom
   setup, run commands in the `command` field or use multi-step entrypoints.
-- **Don't use absolute volume paths** — a bind source must be relative to the
-  workspace root. For `/persist`, mount the `persist` volume (see "Data a service
-  must keep" above).
+- **Don't use absolute or `~` volume paths** — a bind source must be relative to
+  the workspace root. Compose expands `~` to a directory on the Docker host, so
+  ShipIt rejects it. For `/persist`, mount the `persist` volume (see "Data a
+  service must keep" above).
 - **Keep top-level `volumes:` and `networks:` plain.** A named volume must be an
   ordinary Compose-managed one (`pgdata:` with nothing under it, or just
   `labels:`), and a network an ordinary `bridge`. ShipIt rejects the whole file

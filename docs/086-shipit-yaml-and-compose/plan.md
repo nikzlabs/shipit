@@ -386,9 +386,15 @@ adds ShipIt's labels, network, and volume rewrites.
 **Volume rewriting:** Bind mounts in the user's compose file are rewritten in the
 override to use the workspace named volume with the correct subpath. The orchestrator
 rewrites any bind mount whose source is `.` or `./` (the workspace root). Subdirectory
-mounts (e.g., `./src:/code`) are rewritten to use the corresponding subpath within
-the workspace volume. Mounts with absolute source paths or paths outside the workspace
-(e.g., `../`) are rejected with a validation error.
+mounts (e.g., `./src:/code`) are **not** subpaths of the shared workspace volume: Docker
+follows a subpath's symlinks and checks only that the result stays inside the volume
+root, and the shared root holds every session, so a symlinked `src` could name another
+session's files. They are subpaths of `shipit-session-workspace` instead, a bind-backed
+local volume whose root is this session's workspace (device = the workspace volume's
+`Mountpoint` + the session's subpath), so Docker's own check confines them to it
+(`workspaceVolumeMount` in `compose-generator.ts`, planning#619). Mounts with absolute or
+`~` source paths, paths outside the workspace (e.g., `../`), and either reserved volume
+name are rejected with a validation error.
 
 **Manual services via profiles:** Services with `x-shipit-preview: manual` (or
 defaulting to manual) are assigned to the `shipit-manual` profile in the override.

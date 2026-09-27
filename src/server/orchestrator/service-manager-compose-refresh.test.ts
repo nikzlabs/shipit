@@ -27,7 +27,9 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
     tmpDir = undefined;
   });
 
-  function makeManager() {
+  function makeManager(
+    resolveDevice: () => Promise<string> = async () => "/var/lib/docker/volumes/shipit-ws/_data/sessions/test-session/workspace",
+  ) {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-refresh-"));
     const workspaceDir = path.join(tmpDir, "workspace");
     fs.mkdirSync(workspaceDir, { recursive: true });
@@ -41,6 +43,8 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
       serviceEnvDir: path.join(tmpDir, "service-env"),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       workspaceVolume: "shipit-ws",
+      workspaceSubpath: "sessions/test-session/workspace",
+      resolveWorkspaceDevice: resolveDevice,
       composeRunner: async (args: string[]) => {
         if (args.includes("up")) ups.push(args);
       },
@@ -140,6 +144,40 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
 
     expect(ups).toEqual([]);
     expect(fs.readFileSync(overridePath, "utf-8")).toBe(before);
+    await mgr.stop();
+  });
+
+  it("roots a subdirectory mount's volume at the resolved daemon path of this workspace", async () => {
+    const { mgr, composePath, overridePath } = makeManager(async () => "/daemon/sessions/test-session/workspace");
+    fs.writeFileSync(composePath, MANUAL_WEB.replace("'.:/app'", "'./game:/srv'"));
+    await mgr.start();
+
+    const doc = parseYaml(fs.readFileSync(overridePath, "utf-8")) as {
+      services: Record<string, { volumes: unknown[] }>;
+      volumes: Record<string, { driver_opts?: Record<string, string> }>;
+    };
+    expect(doc.services.web.volumes).toEqual([
+      { type: "volume", source: "shipit-session-workspace", volume: { subpath: "game" }, target: "/srv" },
+    ]);
+    expect(doc.volumes["shipit-session-workspace"].driver_opts).toEqual({
+      type: "none",
+      o: "bind",
+      device: "/daemon/sessions/test-session/workspace",
+    });
+    await mgr.stop();
+  });
+
+  it("refuses a subdirectory mount, and only that, when the workspace's daemon path is unknown", async () => {
+    const { mgr, composePath, ups } = makeManager(async () => {
+      throw new Error("volume inspect failed");
+    });
+    await mgr.start();
+    ups.length = 0;
+
+    fs.writeFileSync(composePath, MANUAL_WEB.replace("'.:/app'", "'./game:/srv'"));
+    await expect(mgr.restartService("web")).rejects.toThrow(/could not locate this session's workspace/);
+
+    expect(ups).toEqual([]);
     await mgr.stop();
   });
 });

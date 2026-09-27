@@ -178,6 +178,8 @@ export interface ServiceManagerOptions {
   gateWatchdogSettleMs?: number;
   workspaceVolume?: string;
   workspaceSubpath?: string;
+  /** Daemon-side path of the workspace, which roots the volume its subdirectory mounts use. */
+  resolveWorkspaceDevice?: () => Promise<string>;
   stackName?: string;
   /** No project compose file is declared; missing declared files still fail. */
   noProjectCompose?: boolean;
@@ -229,6 +231,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly compose: ComposeCli;
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
+  private readonly resolveWorkspaceDevice?: () => Promise<string>;
   private overlayDepDirs: OverlayDepDirVolume[];
   private pluginServices: PluginComposeService[] = [];
   private _overrideProjectServices: string | null = null;
@@ -322,6 +325,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     });
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
+    this.resolveWorkspaceDevice = opts.resolveWorkspaceDevice;
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
@@ -1189,7 +1193,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (dockerSecretsBuild || this.pluginServices.length > 0) {
       const overrideContent = generateComposeOverride(
         [...parsedServices, ...this.pluginServices.map(toComposeService)],
-        this.buildOverrideOptions(await this.preparePersist(parsedServices)),
+        this.buildOverrideOptions(await this.preparePersist(parsedServices), await this.workspaceDevice()),
       );
       writeComposeOverride(this.overrideDir, overrideContent);
       // Record only the project parse: this path uses all plugins, not the admitted set.
@@ -1234,8 +1238,25 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     return scratchDir === undefined ? undefined : { device: await this.persistDevicePath(scratchDir) };
   }
 
+  // A failure matters only to a stack that mounts a workspace subdirectory, so the generator decides.
+  private async workspaceDevice(): Promise<string | undefined> {
+    if (!this.resolveWorkspaceDevice) return undefined;
+    try {
+      return await this.resolveWorkspaceDevice();
+    } catch (err) {
+      console.warn(
+        `[compose:${this.sessionId}] could not resolve the workspace's path on the Docker host:`,
+        (err as Error).message,
+      );
+      return undefined;
+    }
+  }
+
   // Share every override option across writers; resolver reads are not an atomic snapshot.
-  private buildOverrideOptions(persist: PersistVolume | undefined): ComposeOverrideOptions {
+  private buildOverrideOptions(
+    persist: PersistVolume | undefined,
+    workspaceDevice: string | undefined,
+  ): ComposeOverrideOptions {
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
     const serviceEnvFiles = this.secrets.getServiceEnvFiles();
@@ -1245,6 +1266,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       composeConfig: this.composeConfig,
       workspaceVolume: this.workspaceVolume,
       workspaceSubpath: this.workspaceSubpath,
+      ...(workspaceDevice ? { workspaceDevice } : {}),
       stackName: this.stackName,
       userNamedVolumes: parseUserNamedVolumes(composePath),
       ...(persist ? { persist } : {}),
@@ -1285,7 +1307,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const persist = await this.preparePersist(projectServices);
     writeComposeOverride(
       this.overrideDir,
-      generateComposeOverride(overrideServices, this.buildOverrideOptions(persist)),
+      generateComposeOverride(overrideServices, this.buildOverrideOptions(persist, await this.workspaceDevice())),
     );
     this._overrideProjectServices = JSON.stringify(projectServices);
     this._overrideAdmittedPlugins = admittedPlugins;

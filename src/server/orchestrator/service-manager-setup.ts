@@ -400,6 +400,9 @@ export function buildServiceManager(args: {
 
   const wsVolume = process.env.WORKSPACE_VOLUME;
   const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
+  const daemonPath = wsVolume && containerManager
+    ? workspaceVolumeDaemonPath(containerManager.getDockerClient(), wsVolume)
+    : undefined;
 
   const accountAgentEnvLoader = credentialStore
     ? () => collectAccountAgentEnv(credentialStore)
@@ -412,8 +415,8 @@ export function buildServiceManager(args: {
     ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
-    ...(wsVolume && containerManager
-      ? { persistDevicePath: workspaceVolumeDaemonPath(containerManager.getDockerClient(), wsVolume) }
+    ...(daemonPath
+      ? { persistDevicePath: daemonPath, resolveWorkspaceDevice: () => daemonPath(workspaceDir) }
       : {}),
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",

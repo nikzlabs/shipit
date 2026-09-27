@@ -35,6 +35,8 @@ import {
   escapeDollars,
   OVERRIDE_SENTINELS,
   validateServiceSecurity,
+  WORKSPACE_VOLUME_ALIAS,
+  workspaceVolumeMount,
   type ComposeService,
 } from "./compose-generator.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
@@ -519,8 +521,6 @@ export interface PluginMountOptions {
   pluginVolumes: ReadonlyMap<string, string>;
 }
 
-const WORKSPACE_VOLUME_ALIAS = "shipit-workspace";
-
 interface SessionVolume {
   workspaceSubpath: string;
   sessionSubpath: string;
@@ -633,10 +633,8 @@ function rewriteFragmentVolume(
   }
   if (volume) {
     return {
-      type: "volume",
-      source: WORKSPACE_VOLUME_ALIAS,
+      ...workspaceVolumeMount(withinRepo, volume.workspaceSubpath),
       target,
-      volume: { subpath: joinPosix(volume.workspaceSubpath, withinRepo) },
       ...(readOnly ? { read_only: true } : {}),
     };
   }
@@ -656,14 +654,7 @@ function pluginTreeMount(
   if (volumeName) {
     return { type: "volume", source: volumeName, target: CONTAINER_PLUGIN_DIR, read_only: true };
   }
-  if (volume) {
-    return {
-      type: "volume",
-      source: WORKSPACE_VOLUME_ALIAS,
-      target: CONTAINER_PLUGIN_DIR,
-      volume: { subpath: volume.workspaceSubpath },
-    };
-  }
+  if (volume) return { ...workspaceVolumeMount("", volume.workspaceSubpath), target: CONTAINER_PLUGIN_DIR };
   return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PLUGIN_DIR };
 }
 
@@ -671,14 +662,7 @@ function projectMount(
   opts: PluginMountOptions,
   volume: SessionVolume | undefined,
 ): Record<string, unknown> {
-  if (volume) {
-    return {
-      type: "volume",
-      source: WORKSPACE_VOLUME_ALIAS,
-      target: CONTAINER_PROJECT_DIR,
-      volume: { subpath: volume.workspaceSubpath },
-    };
-  }
+  if (volume) return { ...workspaceVolumeMount("", volume.workspaceSubpath), target: CONTAINER_PROJECT_DIR };
   return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PROJECT_DIR };
 }
 

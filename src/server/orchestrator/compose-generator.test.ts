@@ -814,6 +814,38 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
   });
 
+  it("rejects a home-relative bind source: Compose expands `~` on the host that runs it", () => {
+    const dir = setup();
+    for (const volume of ["~/.ssh:/keys", "~:/home", "{ type: bind, source: ~/.docker, target: /d }"]) {
+      const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    volumes:\n      - ${volume}\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), volume).toThrow("home-relative");
+    }
+  });
+
+  it("rejects a service that names ShipIt's workspace volumes, in every form", () => {
+    const dir = setup();
+    const forms = [
+      "shipit-workspace:/everything",
+      "shipit-session-workspace:/app",
+      "{ type: volume, source: shipit-workspace, target: /b, volume: { subpath: sessions/other/workspace } }",
+      "{ type: volume, source: shipit-session-workspace, target: /c }",
+    ];
+    for (const volume of forms) {
+      const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    volumes:\n      - ${volume}\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), volume).toThrow("reserved for ShipIt");
+      expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }), volume)
+        .toThrow("reserved for ShipIt");
+    }
+  });
+
+  it("rejects a top-level declaration of ShipIt's workspace volume names", () => {
+    const dir = setup();
+    for (const name of ["shipit-workspace", "shipit-session-workspace"]) {
+      const p = writeCompose(dir, `services:\n  web:\n    image: node:20\nvolumes:\n  ${name}: {}\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), name).toThrow("reserved for ShipIt");
+    }
+  });
+
   it("rejects a host bind encoded in a top-level volume's driver_opts (planning#386)", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -1459,19 +1491,65 @@ describe("generateComposeOverride", () => {
     expect(override).toContain("external: true");
   });
 
-  it("rewrites subdirectory volumes with combined subpath", () => {
-    const override = generateComposeOverride(
-      [{ name: "api", volumes: ["./backend:/app"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
-    );
-    expect(override).toContain("subpath: sessions/abc/workspace/backend");
-    expect(override).toContain("target: /app");
+  describe("workspace subdirectory mounts", () => {
+    const DEVICE = "/var/lib/docker/volumes/shipit-ws-vol/_data/sessions/abc/workspace";
+    const volumeOpts = {
+      ...baseOpts,
+      workspaceVolume: "shipit-ws-vol",
+      workspaceSubpath: "sessions/abc/workspace",
+      workspaceDevice: DEVICE,
+    };
+    interface Doc {
+      services: Record<string, { volumes: Record<string, unknown>[] }>;
+      volumes: Record<string, Record<string, unknown>>;
+    }
+    const render = (volumes: unknown[], opts: Parameters<typeof generateComposeOverride>[1] = volumeOpts): Doc =>
+      parseYaml(generateComposeOverride([{ name: "api", volumes }], opts)) as Doc;
+
+    it("mounts a subdirectory from a volume rooted at this session's workspace, not the shared one", () => {
+      const doc = render(["./backend:/app:ro", { type: "bind", source: "./frontend", target: "/web" }]);
+      expect(doc.services.api.volumes).toEqual([
+        { type: "volume", source: "shipit-session-workspace", volume: { subpath: "backend" }, target: "/app", read_only: true },
+        { type: "volume", source: "shipit-session-workspace", volume: { subpath: "frontend" }, target: "/web" },
+      ]);
+      expect(doc.volumes["shipit-session-workspace"]).toEqual({
+        driver: "local",
+        driver_opts: { type: "none", o: "bind", device: DEVICE },
+        labels: { "shipit-managed": "true", "shipit-session": "test-session-123" },
+      });
+    });
+
+    // Docker confines a subpath only to its volume's root, and the shared root holds every session.
+    it("never emits a shared-volume subpath below the workspace directory itself", () => {
+      const doc = render([".:/a", "./:/b", "./.:/c", "./x:/d", "./x/./y/:/e", "./x//y:/f"]);
+      const shared = doc.services.api.volumes.filter((v) => v.source === "shipit-workspace");
+      expect(shared.map((v) => v.target)).toEqual(["/a", "/b", "/c"]);
+      for (const mount of shared) expect(mount.volume).toEqual({ subpath: "sessions/abc/workspace" });
+      expect(doc.services.api.volumes.filter((v) => v.source === "shipit-session-workspace").map((v) => v.volume))
+        .toEqual([{ subpath: "x" }, { subpath: "x/y" }, { subpath: "x/y" }]);
+    });
+
+    it("declares no session volume for a stack that only mounts the whole workspace", () => {
+      const doc = render([".:/app"], { ...volumeOpts, workspaceDevice: undefined });
+      expect(doc.volumes["shipit-session-workspace"]).toBeUndefined();
+      expect(doc.volumes["shipit-workspace"]).toEqual({ name: "shipit-ws-vol", external: true });
+    });
+
+    it("refuses a subdirectory mount when the workspace's daemon path is unknown", () => {
+      expect(() => render(["./backend:/app"], { ...volumeOpts, workspaceDevice: undefined }))
+        .toThrow("could not locate this session's workspace on the Docker host");
+    });
+
+    it("refuses to mount the workspace when its place in the shared volume is unknown", () => {
+      expect(() => render([".:/app"], { ...volumeOpts, workspaceSubpath: undefined }))
+        .toThrow("could not locate this session inside the workspace volume");
+    });
   });
 
   it("preserves read-only mode on rewritten volumes", () => {
     const override = generateComposeOverride(
       [{ name: "web", volumes: [".:/app:ro"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol" },
+      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
     );
     expect(override).toContain("read_only: true");
   });
@@ -2211,6 +2289,8 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     sessionId: "sess123abcdef",
     composeConfig: { file: "docker-compose.yml", dockerSocket: false },
     workspaceVolume: "shipit-ws",
+    workspaceSubpath: "sessions/abc/workspace",
+    workspaceDevice: "/var/lib/docker/volumes/shipit-ws/_data/sessions/abc/workspace",
   };
 
   type Vol =
@@ -2352,7 +2432,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     const vols = overrideDoc(override).services.game.volumes ?? [];
     expect(vols).toContainEqual({ type: "volume", source: "vol-game", target: "/app/node_modules" });
     expect(vols).toContainEqual(
-      expect.objectContaining({ target: "/app", volume: { subpath: "s/w/game" } }),
+      expect.objectContaining({ source: "shipit-session-workspace", target: "/app", volume: { subpath: "game" } }),
     );
   });
 
@@ -2414,20 +2494,23 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     it("maps a fragment's own subdirectory mount and skips dep dirs outside it", () => {
       const fragmentMount = {
         type: "volume",
-        source: "shipit-workspace",
+        source: "shipit-session-workspace",
         target: "/app",
-        volume: { subpath: `${WS}/packages/api` },
+        volume: { subpath: "packages/api" },
       };
-      const vols = overrideDoc(generateComposeOverride(
+      const doc = overrideDoc(generateComposeOverride(
         [pluginService([fragmentMount])],
         {
           ...baseOpts,
           workspaceSubpath: WS,
           overlayDepDirs: [NM, { depDir: "packages/api/node_modules", volumeName: "vol-api" }],
         },
-      )).services.probe.volumes ?? [];
+      ));
+      const vols = doc.services.probe.volumes ?? [];
       expect(vols).toContainEqual({ type: "volume", source: "vol-api", target: "/app/node_modules" });
       expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
+      // A plugin's reference alone must declare the session volume.
+      expect(doc.volumes?.["shipit-session-workspace"]).toBeDefined();
     });
   });
 });
