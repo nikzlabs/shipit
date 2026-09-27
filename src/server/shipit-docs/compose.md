@@ -65,6 +65,43 @@ volumes:
   - ./packages/frontend:/app
 ```
 
+### Data a service must keep: the `persist` volume
+
+A service has two obvious places to write, and neither lasts. A named volume can
+be removed when the session is archived or sits idle for a day. A gitignored
+folder in the workspace is lost when ShipIt reclaims the checkout and clones it
+again. For data the service must keep — generated media, uploads, a SQLite
+file — mount the session's own `/persist`:
+
+```yaml
+services:
+  api:
+    image: node:24-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - persist/api:/data   # you see the same files at /persist/api
+```
+
+- `persist:/data` mounts all of `/persist`, and `persist/<dir>:/data` mounts one
+  subdirectory. Add `:ro` for read-only. The long form also works: `type: volume`,
+  `source: persist`, and `volume: { subpath: <dir> }`.
+- It is always this session's own `/persist`: the directory you read and write.
+  It has the lifecycle of `/persist` (environment.md, "What survives what"), and
+  a backup of the workspace volume includes it.
+- ShipIt creates the directory before the service starts. It belongs to the
+  session user and is group-writable, so a service with no `user:` and you can
+  both write the same files. Docker does not copy the image's own files into it.
+- A subdirectory must stay inside `/persist`. ShipIt refuses `..` and variable
+  interpolation, and Docker refuses a symlink that leads out of it.
+- Give each service its own subdirectory, so that it does not see your other
+  files in `/persist`.
+- To run the same file outside ShipIt, also declare `volumes: { persist: {} }`
+  at the top level. ShipIt replaces that volume with the session's directory.
+  The `persist/<dir>:` shorthand works only in ShipIt; the long form with
+  `volume.subpath` is standard Compose.
+- Plugin fragments cannot mount it. A plugin keeps its state in `/plugin-state`.
+
 ### Services share the agent's user
 
 ShipIt runs your compose services as the **same user as the agent and terminal**,
@@ -573,8 +610,9 @@ services:
   (Android emulator; see above). Every other device is rejected.
 - **Don't use `build:`** — use pre-built public images. If you need custom
   setup, run commands in the `command` field or use multi-step entrypoints.
-- **Don't use absolute volume paths** — all paths must be relative to the
-  workspace root.
+- **Don't use absolute volume paths** — a bind source must be relative to the
+  workspace root. For `/persist`, mount the `persist` volume (see "Data a service
+  must keep" above).
 - **Keep top-level `volumes:` and `networks:` plain.** A named volume must be an
   ordinary Compose-managed one (`pgdata:` with nothing under it, or just
   `labels:`), and a network an ordinary `bridge`. ShipIt rejects the whole file

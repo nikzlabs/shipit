@@ -290,6 +290,14 @@ in 2000000–2999999, not a fixed 1000 — so a service that declares some other
 `user:` can still be refused by the filesystem. Declare no `user:` and ShipIt
 supplies that identity; a fragment cannot name it, since no fragment can know it.
 
+**`/plugin-state` is per import, per session.** Every session that uses your
+plugin gets its own directory, and a project that imports the plugin under two
+aliases gets two. Your services and your CLI runs in one session share it. No
+other session sees it, so it cannot be a cache that later sessions reuse. It
+survives container restarts and archive, and only a Full reset deletes it. A
+fragment cannot mount the consuming project's `persist` volume (the session's
+`/persist`); keep plugin state in `/plugin-state`.
+
 Relocating one tool's writes is the weaker fix — the tool's next release writes
 somewhere new. The recipe below removes the need.
 

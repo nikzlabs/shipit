@@ -472,8 +472,8 @@ function requireRelativeSource(name: string, source: string): void {
   if (source === "." || source === "./" || source.startsWith("./")) return;
   throw new PluginFragmentError(
     `its compose service \`${name}\`: \`${source}\` is not a path inside the plugin. A plugin may `
-    + "mount its own files (`./…`) and anonymous volumes; named volumes and host paths are not "
-    + "available, and session-scoped state belongs in `/plugin-state`.",
+    + "mount its own files (`./…`) and anonymous volumes; named volumes (the project's `persist` "
+    + "included) and host paths are not available, and session-scoped state belongs in `/plugin-state`.",
   );
 }
 

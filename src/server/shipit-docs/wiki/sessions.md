@@ -278,6 +278,11 @@ development database, an upload directory, a cache built up over weeks of work.
 That data was never durable and no backup covers it. If it matters to the user,
 say so *before* they archive, and get it out first.
 
+**The session's `/persist` stays.** Archive, restore, checkout reclaim and idle
+reclaim all keep it; only **Full reset** deletes it. That includes what a service
+writes through a `persist` mount, so move data a service must keep to one
+(`/shipit-docs/compose.md`, "Data a service must keep").
+
 **"If I archive this, do I lose my work?"** is the question users actually ask,
 and the answer is no, for a reason worth giving them: before ShipIt reclaims a
 checkout it commits anything outstanding and **verifies the branch is on the

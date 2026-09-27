@@ -2504,3 +2504,189 @@ describe("container ports (#2325)", () => {
     expect(extractContainerPort("nonsense")).toBeUndefined();
   });
 });
+
+describe("the `persist` volume (docs/317)", () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  function parse(content: string, opts: { containEgress?: boolean } = {}) {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-persist-"));
+    const file = path.join(tmpDir, "docker-compose.yml");
+    fs.writeFileSync(file, content);
+    return parseComposeFile(file, { dockerSocket: false, ...opts });
+  }
+
+  const baseOpts = {
+    sessionId: "0123456789abcdef-session",
+    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+    persist: { device: "/var/lib/docker/volumes/ws/_data/sessions/s1/scratch" },
+  };
+
+  interface PersistDoc {
+    services: Record<string, { volumes?: unknown[] }>;
+    volumes?: Record<string, {
+      name?: string;
+      driver?: string;
+      driver_opts?: Record<string, string>;
+      labels?: Record<string, string>;
+    }>;
+  }
+
+  function override(services: ReturnType<typeof parse>, extra: Record<string, unknown> = {}): PersistDoc {
+    return parseYaml(generateComposeOverride(services, { ...baseOpts, ...extra })) as PersistDoc;
+  }
+
+  it("records which part of /persist each service mounts, in every declaration form", () => {
+    const [api, other] = parse(`
+services:
+  api:
+    image: node:24-slim
+    volumes:
+      - persist:/data
+      - persist/verseshot:/renders:ro
+      - persist/./media//clips/:/clips
+      - type: volume
+        source: persist
+        target: /cache
+        volume:
+          subpath: cache/fal
+  other:
+    image: node:24-slim
+    volumes: [".:/app"]
+`);
+    expect(api.persistSubpaths).toEqual(["", "verseshot", "media/clips", "cache/fal"]);
+    expect(other).not.toHaveProperty("persistSubpaths");
+  });
+
+  it.each([
+    ["persist/../other-session:/data"],
+    ["persist/a/../../b:/data"],
+  ])("refuses a short-form subpath that leaves /persist: %s", (entry) => {
+    expect(() => parse(`services:\n  api:\n    image: x\n    volumes: ["${entry}"]\n`))
+      .toThrow(/leaves \/persist|Path traversal/);
+  });
+
+  it("refuses a long-form subpath that leaves /persist", () => {
+    expect(() => parse(`
+services:
+  api:
+    image: x
+    volumes:
+      - type: volume
+        source: persist
+        target: /data
+        volume: { subpath: ../../other }
+`)).toThrow(ComposeValidationError);
+  });
+
+  it("refuses interpolation in a persist subpath, which Compose would expand after validation", () => {
+    expect(() => parse(`services:\n  api:\n    image: x\n    volumes: ["persist/\${DIR}:/data"]\n`))
+      .toThrow(/interpolation is not allowed in a `persist` subpath/);
+  });
+
+  it("does not treat a bind of a workspace folder named persist as the session's /persist", () => {
+    const [api] = parse(`
+services:
+  api:
+    image: x
+    volumes:
+      - ./persist:/app/persist
+      - type: bind
+        source: ./persist
+        target: /other
+`);
+    expect(api).not.toHaveProperty("persistSubpaths");
+  });
+
+  it("mounts /persist through a bind-backed volume of the session's own scratch directory", () => {
+    const doc = override(parse(`
+services:
+  api:
+    image: x
+    volumes: ["persist/verseshot:/data"]
+`), { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace", stackName: "shipit-a" });
+
+    expect(doc.volumes?.persist).toEqual({
+      name: "shipit-0123456789ab_shipit-persist",
+      driver: "local",
+      driver_opts: { type: "none", o: "bind", device: baseOpts.persist.device },
+      labels: { "shipit-managed": "true", "shipit-session": baseOpts.sessionId, "shipit-stack": "shipit-a" },
+    });
+    // A subpath of the shared workspace volume is confined only to that volume, which holds
+    // every session; the subpath must be resolved against the scratch directory instead.
+    expect(doc.services.api.volumes).toEqual([
+      { type: "volume", source: "persist", target: "/data", volume: { nocopy: true, subpath: "verseshot" } },
+    ]);
+  });
+
+  it("rewrites every form, keeping read-only and long-form options", () => {
+    const doc = override(parse(`
+services:
+  api:
+    image: x
+    volumes:
+      - persist:/data:ro
+      - .:/app
+      - type: volume
+        source: persist
+        target: /cache
+        read_only: false
+        volume:
+          subpath: cache
+          nocopy: false
+`), { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace" });
+
+    expect(doc.services.api.volumes).toEqual([
+      { type: "volume", source: "persist", target: "/data", read_only: true, volume: { nocopy: true } },
+      { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "sessions/s1/workspace" } },
+      {
+        type: "volume", source: "persist", target: "/cache", read_only: false,
+        volume: { nocopy: true, subpath: "cache" },
+      },
+    ]);
+  });
+
+  it("rewrites persist mounts when the workspace is a bind mount too", () => {
+    const doc = override(parse(`
+services:
+  api:
+    image: x
+    volumes: [".:/app", "persist/verseshot:/data"]
+`));
+    expect(doc.services.api.volumes).toEqual([
+      ".:/app",
+      { type: "volume", source: "persist", target: "/data", volume: { nocopy: true, subpath: "verseshot" } },
+    ]);
+    expect(doc.volumes?.persist?.driver_opts?.device).toBe(baseOpts.persist.device);
+  });
+
+  it("replaces a declared top-level `persist` volume even when no service mounts it", () => {
+    const doc = override(parse(`
+services:
+  api:
+    image: x
+volumes:
+  persist:
+  pgdata:
+`), { userNamedVolumes: [{ name: "persist" }, { name: "pgdata" }] });
+    expect(doc.volumes?.persist?.driver_opts?.o).toBe("bind");
+    expect(doc.volumes?.pgdata).toEqual({
+      labels: { "shipit-managed": "true", "shipit-session": baseOpts.sessionId },
+    });
+  });
+
+  it("declares nothing when no service uses /persist", () => {
+    const doc = override(parse(`services:\n  api:\n    image: x\n    volumes: [".:/app"]\n`));
+    expect(doc.volumes?.persist).toBeUndefined();
+  });
+
+  it("fails rather than emit a mount it has no directory for", () => {
+    const services = parse(`services:\n  api:\n    image: x\n    volumes: ["persist:/data"]\n`);
+    expect(() => generateComposeOverride(services, { ...baseOpts, persist: undefined }))
+      .toThrow(/could not be located/);
+  });
+});

@@ -20,6 +20,7 @@ import { sessionNpmCacheDir } from "../shared/npm-cache.js";
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
+  SESSION_SCRATCH_SUBDIR,
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
 } from "./session-state-dir.js";
@@ -1149,7 +1150,7 @@ export function buildContainerConfig(
     depCacheDir: opts.depCacheDir,
     pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
-    scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, "scratch"),
+    scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, SESSION_SCRATCH_SUBDIR),
     // Match the install-marker writer's derived path; an override would mount a different directory.
     sessionStateDir: sessionStateDirForWorkspace(opts.workspaceDir),
     imageName: deps.imageName,

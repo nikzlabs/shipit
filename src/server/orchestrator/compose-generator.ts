@@ -11,6 +11,7 @@ import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { stackLabel } from "./stack-label.js";
+import { composeProjectName } from "./compose-stack-reaper.js";
 
 export interface ComposeServiceOrigin {
   kind: "plugin";
@@ -41,6 +42,16 @@ export interface ComposeService {
   /** Label digest forces recreation when only the settings file changes. */
   settingsFingerprint?: string;
   user?: string;
+  /** Subdirectories of /persist the service mounts; "" is /persist itself. */
+  persistSubpaths?: string[];
+}
+
+/** Reserved volume name: a service mounting it gets the session's own /persist (docs/317). */
+export const PERSIST_VOLUME = "persist";
+
+export interface PersistVolume {
+  /** Daemon-side path of the session's scratch directory, the one the agent sees at /persist. */
+  device: string;
 }
 
 export interface ComposeOverrideOptions {
@@ -64,6 +75,8 @@ export interface ComposeOverrideOptions {
   /** Escaped environment values take precedence over fragment credentials. */
   pluginServiceEnv?: Record<string, Record<string, string>>;
   overlayDepDirs?: OverlayDepDirVolume[];
+  /** Required when a project service mounts, or the file declares, the `persist` volume. */
+  persist?: PersistVolume;
 }
 
 export interface OverlayDepDirVolume {
@@ -285,6 +298,9 @@ export function parseComposeFile(
     const stopGracePeriodMs = parseStopGracePeriodMs(svc.stop_grace_period);
 
     const volumes = Array.isArray(svc.volumes) ? (svc.volumes as unknown[]) : undefined;
+    const persistSubpaths = (volumes ?? [])
+      .map((vol) => persistSubpathOf(name, vol))
+      .filter((subpath): subpath is string => subpath !== null);
 
     const requirements = parseSecretEntries(name, svc["x-shipit-secrets"]);
     const secrets = requirements?.map((r) => r.name);
@@ -306,10 +322,57 @@ export function parseComposeFile(
       secrets,
       secretRequirements: requirements,
       user,
+      ...(persistSubpaths.length > 0 ? { persistSubpaths } : {}),
     });
   }
 
   return result;
+}
+
+/**
+ * The /persist subdirectory a volume entry mounts ("" for /persist itself), or null when the entry
+ * does not mount `persist`. Accepts `persist:/t`, `persist/sub:/t`, and the long form with
+ * `source: persist` and an optional `volume.subpath`.
+ */
+export function persistSubpathOf(serviceName: string, vol: unknown): string | null {
+  if (typeof vol === "string") {
+    if (!vol.includes(":")) return null;
+    const source = vol.split(":")[0];
+    if (source === PERSIST_VOLUME) return "";
+    if (!source.startsWith(`${PERSIST_VOLUME}/`)) return null;
+    return normalizePersistSubpath(serviceName, source.slice(PERSIST_VOLUME.length + 1));
+  }
+  if (!vol || typeof vol !== "object") return null;
+  const obj = vol as Record<string, unknown>;
+  if (obj.source !== PERSIST_VOLUME || (obj.type !== undefined && obj.type !== "volume")) return null;
+  const options = obj.volume && typeof obj.volume === "object"
+    ? (obj.volume as Record<string, unknown>)
+    : {};
+  if (options.subpath === undefined) return "";
+  if (typeof options.subpath !== "string") {
+    throw new ComposeValidationError(
+      `Service \`${serviceName}\`: the \`persist\` volume's \`volume.subpath\` must be a string.`,
+    );
+  }
+  return normalizePersistSubpath(serviceName, options.subpath);
+}
+
+// Docker confines the subpath to the volume root on its own; these checks give a readable refusal.
+function normalizePersistSubpath(serviceName: string, raw: string): string {
+  if (raw.includes("$")) {
+    throw new ComposeValidationError(
+      `Service \`${serviceName}\`: variable interpolation is not allowed in a \`persist\` subpath `
+      + `(\`${raw}\`). Name the directory literally.`,
+    );
+  }
+  const parts = raw.split("/").filter((part) => part !== "" && part !== ".");
+  if (parts.includes("..")) {
+    throw new ComposeValidationError(
+      `Service \`${serviceName}\`: the \`persist\` subpath \`${raw}\` leaves /persist. `
+      + "Name a directory inside /persist, without `..`.",
+    );
+  }
+  return parts.join("/");
 }
 
 function parseSecretEntries(
@@ -727,6 +790,7 @@ export function validateServiceSecurity(
 
   if (Array.isArray(svc.volumes)) {
     for (const vol of svc.volumes) {
+      if (persistSubpathOf(name, vol) !== null) continue;
       let source: string | undefined;
       if (typeof vol === "string") {
         // A bare path is an anonymous-volume target, not a host source.
@@ -833,11 +897,40 @@ function joinSubpath(workspaceSubpath: string | undefined, relPath: string): str
   return undefined;
 }
 
+function rewritePersistMount(vol: unknown, subpath: string): unknown {
+  if (typeof vol === "string") {
+    const [, target, mode] = vol.split(":");
+    if (!target) return vol;
+    return {
+      type: "volume",
+      source: PERSIST_VOLUME,
+      target,
+      ...(mode?.split(",").includes("ro") ? { read_only: true } : {}),
+      volume: persistVolumeOptions(undefined, subpath),
+    };
+  }
+  const obj = vol as Record<string, unknown>;
+  return { ...obj, type: "volume", source: PERSIST_VOLUME, volume: persistVolumeOptions(obj.volume, subpath) };
+}
+
+// nocopy: an empty target would otherwise take the image directory's files, owner and mode.
+function persistVolumeOptions(existing: unknown, subpath: string): Record<string, unknown> {
+  const options = existing && typeof existing === "object"
+    ? { ...(existing as Record<string, unknown>) }
+    : {};
+  delete options.subpath;
+  return { ...options, nocopy: true, ...(subpath ? { subpath } : {}) };
+}
+
 function rewriteVolumes(
+  serviceName: string,
   volumes: unknown[],
   opts: ComposeOverrideOptions,
 ): unknown[] {
   return volumes.map((vol) => {
+    const persistSubpath = persistSubpathOf(serviceName, vol);
+    if (persistSubpath !== null) return rewritePersistMount(vol, persistSubpath);
+    if (!opts.workspaceVolume) return vol;
     if (typeof vol === "string") {
       const parts = vol.split(":");
       const source = parts[0];
@@ -1063,8 +1156,8 @@ export function generateComposeOverride(
       entry.ports = "__RESET_PORTS__";
     }
 
-    if (svc.volumes && opts.workspaceVolume) {
-      entry.volumes = rewriteVolumes(svc.volumes, opts);
+    if (svc.volumes && (opts.workspaceVolume || svc.persistSubpaths)) {
+      entry.volumes = rewriteVolumes(svc.name, svc.volumes, opts);
     }
 
     const ds = opts.dockerSecrets;
@@ -1157,8 +1250,29 @@ export function generateComposeOverride(
       external: true,
     };
   }
+  const persistWanted = services.some((svc) => svc.persistSubpaths && svc.origin?.kind !== "plugin")
+    || (opts.userNamedVolumes ?? []).some((v) => v.name === PERSIST_VOLUME);
+  if (persistWanted) {
+    if (!opts.persist) {
+      throw new Error("The `persist` volume is declared, but this session's /persist could not be located.");
+    }
+    // A bind-backed volume makes Docker confine every subpath to /persist; a subpath of the
+    // shared workspace volume is confined only to that volume, which holds every session.
+    volumeOverlay[PERSIST_VOLUME] = {
+      // Distinct from `<project>_persist`, a plain volume an earlier file may already have created.
+      name: `${composeProjectName(opts.sessionId)}_shipit-persist`,
+      driver: "local",
+      driver_opts: { type: "none", o: "bind", device: opts.persist.device },
+      labels: {
+        "shipit-managed": "true",
+        "shipit-session": opts.sessionId,
+        ...stackLabel(opts.stackName),
+      },
+    };
+  }
   if (opts.userNamedVolumes && opts.userNamedVolumes.length > 0) {
     for (const v of opts.userNamedVolumes) {
+      if (v.name === PERSIST_VOLUME) continue;
       volumeOverlay[v.name] = {
         labels: {
           "shipit-managed": "true",

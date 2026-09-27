@@ -16,15 +16,22 @@ import {
   parseUserNamedVolumes,
   generateComposeOverride,
   writeComposeOverride,
+  PERSIST_VOLUME,
   type ComposeFailure,
   type ComposeOverrideOptions,
   type ComposeService,
   type ComposeServiceOrigin,
   type OverlayDepDirVolume,
+  type PersistVolume,
 } from "./compose-generator.js";
+import { preparePersistDir } from "./compose-persist.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
-import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
+import {
+  COMPOSE_OVERRIDE_FILE,
+  sessionScratchDirForWorkspace,
+  sessionStateDirForWorkspace,
+} from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
   type SecretsStatusInternalSnapshot,
@@ -192,6 +199,8 @@ export interface ServiceManagerOptions {
   serviceEnvDir: string;
   overlayDepDirs?: OverlayDepDirVolume[];
   logStore?: LogStore;
+  /** Maps the session's /persist directory to the daemon's path for it; identity when absent. */
+  persistDevicePath?: (hostPath: string) => Promise<string>;
 }
 
 export interface ServiceManagerEvents {
@@ -243,6 +252,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly serviceEnvDir: string;
   private readonly overrideDir: string;
   private readonly secretsInternalDir?: string;
+  private readonly persistDevicePath: (hostPath: string) => Promise<string>;
 
   private readonly secrets: ServiceSecretsResolver;
   private readonly poller: ServicePoller;
@@ -325,6 +335,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.prepareContainedStartFn = opts.prepareContainedStartFn;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
+    this.persistDevicePath = opts.persistDevicePath ?? ((hostPath) => Promise.resolve(hostPath));
     this.logStore = opts.logStore;
     this.gateWatchdogSettleMs = opts.gateWatchdogSettleMs ?? GATE_WATCHDOG_SETTLE_MS;
 
@@ -1178,7 +1189,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (dockerSecretsBuild || this.pluginServices.length > 0) {
       const overrideContent = generateComposeOverride(
         [...parsedServices, ...this.pluginServices.map(toComposeService)],
-        this.buildOverrideOptions(),
+        this.buildOverrideOptions(await this.preparePersist(parsedServices)),
       );
       writeComposeOverride(this.overrideDir, overrideContent);
       // Record only the project parse: this path uses all plugins, not the admitted set.
@@ -1206,8 +1217,25 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     }
   }
 
+  // Before every up: a volume subpath must exist when mounted, and the agent can delete one.
+  private preparePersistDirs(projectServices: ComposeService[]): string | undefined {
+    const subpaths = projectServices.flatMap((svc) => svc.persistSubpaths ?? []);
+    const declared = !this.noProjectCompose && parseUserNamedVolumes(
+      path.join(this.workspaceDir, this.composeConfig.file),
+    ).some((v) => v.name === PERSIST_VOLUME);
+    if (subpaths.length === 0 && !declared) return undefined;
+    const scratchDir = sessionScratchDirForWorkspace(this.workspaceDir);
+    preparePersistDir(scratchDir, subpaths);
+    return scratchDir;
+  }
+
+  private async preparePersist(projectServices: ComposeService[]): Promise<PersistVolume | undefined> {
+    const scratchDir = this.preparePersistDirs(projectServices);
+    return scratchDir === undefined ? undefined : { device: await this.persistDevicePath(scratchDir) };
+  }
+
   // Share every override option across writers; resolver reads are not an atomic snapshot.
-  private buildOverrideOptions(): ComposeOverrideOptions {
+  private buildOverrideOptions(persist: PersistVolume | undefined): ComposeOverrideOptions {
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
     const serviceEnvFiles = this.secrets.getServiceEnvFiles();
@@ -1219,6 +1247,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       workspaceSubpath: this.workspaceSubpath,
       stackName: this.stackName,
       userNamedVolumes: parseUserNamedVolumes(composePath),
+      ...(persist ? { persist } : {}),
       ...(this.containServicesFn ? { containEgress: true } : {}),
       ...(this.containServiceDns ? { containDns: true } : {}),
       ...(this.containServiceProxy ? { containProxy: true } : {}),
@@ -1253,9 +1282,10 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   ): Promise<void> {
     await this.secrets.sync(projectServices, admittedPlugins);
     const overrideServices = [...projectServices, ...admittedPlugins.map(toComposeService)];
+    const persist = await this.preparePersist(projectServices);
     writeComposeOverride(
       this.overrideDir,
-      generateComposeOverride(overrideServices, this.buildOverrideOptions()),
+      generateComposeOverride(overrideServices, this.buildOverrideOptions(persist)),
     );
     this._overrideProjectServices = JSON.stringify(projectServices);
     this._overrideAdmittedPlugins = admittedPlugins;
@@ -1290,6 +1320,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
           `[compose:${this.sessionId}] compose file changed since the override was generated — regenerating`,
         );
         await this.writeOverrideFor(staleParse, this._overrideAdmittedPlugins);
+      } else if (parsed) {
+        this.preparePersistDirs(parsed);
       }
       const call = fn();
       // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form
