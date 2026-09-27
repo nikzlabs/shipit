@@ -101,6 +101,12 @@ doesn't weaken it:
   than contained ones only, since an included file's blocks are never validated.
   **Still open:** service `extends:` is refused only in contained sessions, so an
   Open session's effective service definition can arrive from an unvalidated file.
+  planning#619 closed three more: a service could mount the shared `shipit-workspace`
+  volume by name (every session, and `.shipit.db` at its root); a `./sub` mount was a
+  subpath of that volume, which Docker confines only to the volume root, so a symlinked
+  `sub` reached the same places; and a `~` source mounted the Docker host's `$HOME`. The
+  names are now reserved, `~` is refused, and `./sub` is a subpath of a per-session
+  bind-backed volume rooted at the workspace (docs/086-shipit-yaml-and-compose).
 - **Chat history / usage / session metadata are NOT agent-writable.** They live in the
   orchestrator-host SQLite DB (`.shipit.db`), which is never mounted into the container
   (`app-di.ts:136`). The agent cannot corrupt them from inside — this already realizes

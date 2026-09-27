@@ -661,7 +661,8 @@ describe("buildPluginComposeServices", () => {
     });
   });
 
-  it("uses the workspace volume with a subpath when the orchestrator is containerized", () => {
+  // The fragment directory is the agent's to replace with a symlink; the shared volume holds every session.
+  it("mounts a self fragment's directory from the session's own workspace volume when containerized", () => {
     const { services } = collect(SELF_USE);
     const built = build(services, {
       workspaceVolume: "shipit_workspace",
@@ -671,11 +672,19 @@ describe("buildPluginComposeServices", () => {
     const volumes = built.services[0].definition.volumes as Record<string, unknown>[];
     expect(volumes[0]).toEqual({
       type: "volume",
-      source: "shipit-workspace",
+      source: "shipit-session-workspace",
       target: "/app",
-      volume: { subpath: "sessions/abc/workspace/tools/probe" },
+      volume: { subpath: "tools/probe" },
       read_only: true,
     });
+    for (const target of ["/plugin", "/project"]) {
+      expect(volumes).toContainEqual({
+        type: "volume",
+        source: "shipit-workspace",
+        target,
+        volume: { subpath: "sessions/abc/workspace" },
+      });
+    }
   });
 
   it("mounts the plugin's own tree at /plugin, read-write for a self import", () => {
@@ -971,6 +980,7 @@ describe("override emission", () => {
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       workspaceVolume: "shipit-ws",
       workspaceSubpath: "sessions/s1/workspace",
+      workspaceDevice: "/var/lib/docker/volumes/shipit-ws/_data/sessions/s1/workspace",
       overlayDepDirs: [{ depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" }],
     });
     const doc = parseYaml(yaml) as {
