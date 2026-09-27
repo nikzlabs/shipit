@@ -23,10 +23,14 @@ export interface IdleEnforcementDeps {
   services?: IdleServiceHooks;
   sseBroadcast?: (event: string, data: unknown) => void;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+  /** Each repo's current pool warm session; without it, drafts cannot be told apart and are left alone. */
+  poolWarmSessionIds?: () => ReadonlySet<string>;
 }
 
 // docs/316-done-sessions-return-memory req 4 — time to continue work first.
 export const DONE_SESSION_RECLAIM_AFTER_MS = 10 * 60 * 1000;
+
+export const ABANDONED_DRAFT_RECLAIM_AFTER_MS = 10 * 60 * 1000;
 
 interface Candidate {
   sessionId: string;
@@ -40,12 +44,14 @@ export function createIdleEnforcer(
 ): () => void {
   const {
     containerManager, runnerRegistry, sessionManager, getMemoryStats,
-    services, sseBroadcast, broadcastLog,
+    services, sseBroadcast, broadcastLog, poolWarmSessionIds,
   } = enforceDeps;
 
   const tier1At = new Map<string, number>();
   // The first pass that saw each session done.
   const doneWaitFrom = new Map<string, number>();
+  // The first pass that saw each draft without a viewer.
+  const draftWaitFrom = new Map<string, number>();
   // Do not reclaim twice against the same snapshot or memory still being returned.
   let actedOn: DockerMemoryStats | null = null;
   let teardownsInFlight = 0;
@@ -106,10 +112,51 @@ export function createIdleEnforcer(
     for (const id of doneWaitFrom.keys()) if (!stillDone.has(id)) doneWaitFrom.delete(id);
   }
 
+  // A draft is a claimed warm session before its first message. Only its own tab can
+  // reuse it, and nothing tells us when that tab is gone, so without this a draft keeps
+  // its container and preview until memory runs out or the orchestrator restarts.
+  // Stop, don't delete: a tab still showing the draft must keep working.
+  function reclaimAbandonedDrafts(now: number): void {
+    if (!containerManager || !sessionManager || !poolWarmSessionIds) return;
+    const poolIds = poolWarmSessionIds();
+    const stillWaiting = new Set<string>();
+    for (const session of sessionManager.listWarm()) {
+      if (session.archived || session.userArchived) continue;
+      if (poolIds.has(session.id)) continue;
+      const hasContainer = !!containerManager.get(session.id);
+      const hasServices = !!services?.has(session.id);
+      if (!hasContainer && !hasServices) continue;
+      const runner = runnerRegistry.get(session.id);
+      if (!isReclaimable(session.id, runner)) continue;
+      stillWaiting.add(session.id);
+      const firstSeen = draftWaitFrom.get(session.id) ?? now;
+      draftWaitFrom.set(session.id, firstSeen);
+      // A visit between two passes restarts the wait too.
+      const unviewedSince = Math.max(firstSeen, runner?.lastViewerDetachAt ?? 0);
+      if (now - unviewedSince < ABANDONED_DRAFT_RECLAIM_AFTER_MS) continue;
+
+      runnerRegistry.dispose(session.id);
+      if (runner && !runner.disposed) continue;
+      tier1At.delete(session.id);
+      draftWaitFrom.delete(session.id);
+      console.log(
+        `[idle-cleanup] Stopping abandoned draft ${session.id}`
+        + ` (no viewer for ${Math.round((now - unviewedSince) / 60_000)} min, no first message)`,
+      );
+      announce(session.id, "memory-pressure", undefined, runner?.queueLength ?? 0,
+        "Session container and preview services stopped because this new session was left "
+        + "without a first message (workspace preserved). Send a message to start — a fresh container starts automatically.");
+      if (hasServices) services?.stop(session.id);
+      if (hasContainer) trackTeardown(containerManager.destroy(session.id), session.id);
+    }
+    for (const id of draftWaitFrom.keys()) if (!stillWaiting.has(id)) draftWaitFrom.delete(id);
+  }
+
   return () => {
     if (!containerManager) return;
 
     if (teardownsInFlight === 0) reclaimDoneSessions(Date.now());
+    if (teardownsInFlight === 0) reclaimAbandonedDrafts(Date.now());
 
     const stats = getMemoryStats?.() ?? null;
     let need = bytesOverBudget(stats);

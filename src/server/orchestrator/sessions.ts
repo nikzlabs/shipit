@@ -624,6 +624,12 @@ export class SessionManager {
     return rows.map((r) => this.fromRow(r));
   }
 
+  // What listAll() leaves out: pool standbys and drafts claimed before their first message.
+  listWarm(): SessionInfo[] {
+    const rows = this.db.prepare("SELECT * FROM sessions WHERE warm = 1").all() as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
   // Disk-reclaim callers need warm rows too: their containers mount live artifacts.
   listAllIncludingWarm(): SessionInfo[] {
     const rows = this.db.prepare(

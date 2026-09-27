@@ -223,6 +223,12 @@ done. A merged session moves under **Recently resolved** at once, also when
 the merge happens during one of its turns. A message sent after the merge makes
 it active again, and the next message restarts it.
 
+**New sessions nobody used.** Picking a repository for a new session hands the
+user a ready session before they type anything. If it has no first message and
+nobody has looked at it for about 10 minutes, ShipIt stops its agent container
+and its whole Compose stack, whatever the memory budget says. Its files stay;
+opening it again starts a fresh container.
+
 **Disk.** Independently of memory, a session that has been idle long enough
 descends a disk ladder. This happens even when memory is plentiful.
 
