@@ -16,7 +16,7 @@ export interface PersistPrepDeps {
 
 const defaultDeps: PersistPrepDeps = {
   identity: identityForTarget,
-  mkdirAs: mkdirAsSession,
+  mkdirAs: (dir, owner) => mkdirAsSession(dir, owner),
   defaultAcl: (dirs) => applyDefaultGroupAcl(dirs),
   handsOff: () => sessionWorkerGid() !== null,
 };
@@ -55,14 +55,40 @@ export function preparePersistDir(
   }
 }
 
-// Everything below the root is the session's to rearrange, so create it with the session's own
+export type RunAs = (command: string, args: string[], owner: SessionIdentity) => void;
+
+export interface MkdirAsDeps {
+  isRoot: () => boolean;
+  run: RunAs;
+}
+
+const mkdirAsDefaults: MkdirAsDeps = {
+  isRoot: () => process.getuid?.() === 0,
+  run: (command, args, owner) => {
+    execFileSync(command, args, { uid: owner.uid, gid: owner.gid, stdio: "pipe" });
+  },
+};
+
+// Everything below the root is the session's to rearrange, so work on it with the session's own
 // rights: a planted symlink then reaches nothing the session could not already write.
-function mkdirAsSession(dir: string, owner: SessionIdentity | null): void {
-  if (owner === null || process.getuid?.() !== 0) {
+export function mkdirAsSession(
+  dir: string,
+  owner: SessionIdentity | null,
+  deps: MkdirAsDeps = mkdirAsDefaults,
+): void {
+  if (owner === null || !deps.isRoot()) {
     fs.mkdirSync(dir, { recursive: true });
     return;
   }
-  execFileSync("mkdir", ["-p", "--", dir], { uid: owner.uid, gid: owner.gid, stdio: "pipe" });
+  deps.run("mkdir", ["-p", "--", dir], owner);
+  // A directory the agent made earlier keeps its own mode; a service with its own `user:` writes
+  // through the session group, as in the root.
+  try {
+    deps.run("chmod", ["g+rwxs", "--", dir], owner);
+    deps.run("setfacl", ["-d", "-m", "g::rwx", "--", dir], owner);
+  } catch (err) {
+    console.warn(`[compose-persist] could not give the session group write access to ${dir}:`, message(err));
+  }
 }
 
 /**

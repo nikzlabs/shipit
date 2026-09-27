@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import type Docker from "dockerode";
 import type { SessionIdentity } from "../shared/session-identity.js";
-import { preparePersistDir, workspaceVolumeDaemonPath, type PersistPrepDeps } from "./compose-persist.js";
+import {
+  mkdirAsSession,
+  preparePersistDir,
+  workspaceVolumeDaemonPath,
+  type PersistPrepDeps,
+  type RunAs,
+} from "./compose-persist.js";
 
 describe("preparePersistDir (docs/317)", () => {
   let tmpDir: string | undefined;
@@ -82,6 +88,52 @@ describe("preparePersistDir (docs/317)", () => {
     fs.writeFileSync(path.join(dir, "verseshot"), "a file, not a directory");
     expect(() => preparePersistDir(dir, ["verseshot/renders"], deps()))
       .toThrow(/Could not create \/persist\/verseshot\/renders/);
+  });
+});
+
+describe("mkdirAsSession (docs/317)", () => {
+  const owner: SessionIdentity = { uid: 2000042, gid: 1000 };
+
+  function recorder(fail: Record<string, Error> = {}) {
+    const calls: { command: string; args: string[]; owner: SessionIdentity }[] = [];
+    const run: RunAs = (command, args, as) => {
+      calls.push({ command, args, owner: as });
+      if (fail[command]) throw fail[command];
+    };
+    return { calls, run };
+  }
+
+  it("as root, creates the directory and grants the session group write, all as the session", () => {
+    const { calls, run } = recorder();
+    mkdirAsSession("/s/scratch/verseshot", owner, { isRoot: () => true, run });
+    expect(calls).toEqual([
+      { command: "mkdir", args: ["-p", "--", "/s/scratch/verseshot"], owner },
+      { command: "chmod", args: ["g+rwxs", "--", "/s/scratch/verseshot"], owner },
+      { command: "setfacl", args: ["-d", "-m", "g::rwx", "--", "/s/scratch/verseshot"], owner },
+    ]);
+  });
+
+  it("still mounts when only the group grant fails", () => {
+    const { calls, run } = recorder({ setfacl: new Error("setfacl: not found") });
+    expect(() => mkdirAsSession("/s/scratch/a", owner, { isRoot: () => true, run })).not.toThrow();
+    expect(calls.map((c) => c.command)).toEqual(["mkdir", "chmod", "setfacl"]);
+  });
+
+  it("fails when the directory cannot be created", () => {
+    const { run } = recorder({ mkdir: new Error("Not a directory") });
+    expect(() => mkdirAsSession("/s/scratch/a", owner, { isRoot: () => true, run })).toThrow("Not a directory");
+  });
+
+  it("creates the directory directly when ShipIt cannot switch identity", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "persist-mkdir-"));
+    try {
+      const { calls, run } = recorder();
+      mkdirAsSession(path.join(tmp, "a", "b"), owner, { isRoot: () => false, run });
+      expect(fs.statSync(path.join(tmp, "a", "b")).isDirectory()).toBe(true);
+      expect(calls).toEqual([]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

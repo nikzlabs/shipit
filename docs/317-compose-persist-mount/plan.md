@@ -61,8 +61,8 @@ The volume's device path is ShipIt's alone: the scratch directory's parent, the 
 
 ### Ownership (req 5)
 
-- The scratch root is handed to the session identity with setgid, group `rwx`, and a default ACL `g::rwx` (`preparePersistDir`), the same treatment the workspace gets (docs/271). Files created from then on are writable by the session UID and by the session group — so by the agent, by a service with no `user:` (which runs as the session UID), and by a service with its own `user:` (which gets the group through `group_add`). A file the agent created before the root got its ACL keeps its mode.
-- Missing subdirectories are created **as the session's UID** (`mkdir -p` with `uid`/`gid`), never as ShipIt's root. A symlink planted inside `/persist` can then only reach what that UID could already write; another session's directory is behind its 0700 seal.
+- The scratch root is handed to the session identity with setgid, group `rwx`, and a default ACL `g::rwx` (`preparePersistDir`), the same treatment the workspace gets (docs/271). Files created from then on are writable by the session UID and by the session group — so by the agent, by a service with no `user:` (which runs as the session UID), and by a service with its own `user:` (which gets the group through `group_add`).
+- Each mounted subdirectory is created, and given the same setgid, group `rwx` and default ACL, **as the session's UID** (`mkdirAsSession`: `mkdir -p`, `chmod g+rwxs`, `setfacl -d -m g::rwx`, each with `uid`/`gid`), never as ShipIt's root. That also repairs a subdirectory the agent made earlier with a `0755` mode. A symlink planted inside `/persist` can then only reach what that UID could already write; another session's directory is behind its 0700 seal. A file that already existed before its directory got the ACL keeps its own mode.
 - `nocopy: true` stops Docker from copying an image directory's files, owner and mode into an empty mount. Without it, mounting at a path the image already has (the `/var/tmp` case in the request) would change the owner of `/persist` or of the subdirectory.
 
 ## Plugins (req 7)
