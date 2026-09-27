@@ -68,8 +68,18 @@ paths.
 
 ## Open questions
 
-*(none — Q1, Q2 and Q3 answered 2026-09-27. Implementation is unblocked, subject
-to the independent review this repo's requirements discipline requires.)*
+- **Q5: may a narrow window remain for the two inputs Compose reads by path
+  itself?** A build context directory and an `extends` `file:` target are read
+  by the Compose CLI, not handed over as a copy (plan.md *Residual*). ShipIt
+  checks their physical paths first, and the session uid seal blocks every
+  sealed tree, but a directory changed between that check and Compose's read
+  can still reach a *world-readable* path outside the session. Requirement 1
+  says "MUST NOT" without this exception. Options: **(a, recommended)** accept
+  this bounded window now and track full confinement as a follow-up on
+  planning#620; **(b)** close it in this work by running Compose's `config` and
+  build steps in a throwaway container that mounts only this session's
+  workspace volume and the Docker socket — a new mechanism, and a larger
+  change.
 
 ## Resolved questions
 
@@ -101,6 +111,15 @@ before Compose reads it, rejected for its TOCTOU window. This is a design-level
 choice recorded here because it carries a real tradeoff (a new identity for the
 Compose subprocess); the observable behaviour is the same either way.
 
+**2026-09-27 — Q4: after the independent review of the plan, which findings
+apply, and does the design change shape? → all six findings apply; resolve the
+model once.** ShipIt writes Compose's resolved model into its state directory,
+validates that file (all existing security checks, bind and named-volume
+sources, the physical path of every file reference), rewrites its mounts, and
+starts `up` from exactly that file. The existing raw-text guards stay. No
+numbered requirement changed; this is a design choice recorded because the
+requester made it.
+
 ## What is already true (verified in this repository, 2026-09-27)
 
 - `validateReadablePath` (`compose-generator.ts`) checks the declared string for
@@ -122,3 +141,5 @@ Compose subprocess); the observable behaviour is the same either way.
   `isRelativeWorkspacePath` (only `.` and `./…`).
 - Cross-session isolation is an established hard invariant: docs/270 requirement
   1, realized by per-session uids and the 0700 session seal.
+- Compose `include:` is refused in every mode (`parseComposeFile`), so an
+  included file is not a read path.
