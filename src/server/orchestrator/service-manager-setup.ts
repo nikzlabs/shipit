@@ -23,6 +23,7 @@ import { clearActivationState } from "./services/plugin-activation.js";
 import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
+import { workspaceVolumeDaemonPath } from "./compose-persist.js";
 
 /**
  * Compose creates the session network with the first service, so a project whose services are all
@@ -411,6 +412,9 @@ export function buildServiceManager(args: {
     ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
+    ...(wsVolume && containerManager
+      ? { persistDevicePath: workspaceVolumeDaemonPath(containerManager.getDockerClient(), wsVolume) }
+      : {}),
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
     secretsLoader: createSecretsLoader(sessionId, deps),

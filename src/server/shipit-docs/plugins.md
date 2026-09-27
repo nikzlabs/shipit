@@ -132,6 +132,13 @@ repository is running. The one writer is the plugin's `install`, which runs
 before a commit goes live. A plugin's writable surfaces are its state directory
 and this project's workspace, never its own source.
 
+**A plugin's state directory (`/plugin-state` in its containers) belongs to one
+import in one session.** Each alias under `plugins.uses` gets its own directory
+in each session. That import's services and CLI runs in this session share it; no
+other session and no other alias sees it. It survives container restarts and
+archive, removing the import keeps it, and only Full reset deletes it. It is not
+this session's `/persist`, and a plugin cannot mount `/persist`.
+
 ## Plugin code does not run in your container
 
 Everything a plugin *ships* — its `install`, its CLIs, its services — runs in a

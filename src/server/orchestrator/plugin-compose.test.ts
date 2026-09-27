@@ -469,6 +469,21 @@ services:
 `)).toContain("/plugin-state");
   });
 
+  // docs/317 req 7: `persist` is the project's mount of the session's /persist, not a plugin's.
+  it.each([
+    ["short form", "      - persist:/data"],
+    ["short form with a subpath", "      - persist/cache:/data"],
+    ["long form", "      - type: volume\n        source: persist\n        target: /data"],
+  ])("refuses the session's `persist` volume (%s)", (_form, entry) => {
+    expect(reject(`
+services:
+  probe:
+    image: node:22-alpine
+    volumes:
+${entry}
+`)).toMatch(/`persist`|type: volume/);
+  });
+
   it("refuses an absolute bind source", () => {
     expect(reject(`
 services:

@@ -60,7 +60,7 @@ What this means in practice:
 | Path | Description |
 |------|-------------|
 | `/workspace` | Project root. This is the git repo. Your working directory. |
-| `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Cleared only by a full session reset. |
+| `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts, checkout reclaim and archive, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Deleted only by **Full reset** (Settings → Advanced), which deletes all ShipIt data — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
 | `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
@@ -413,6 +413,27 @@ no durability guarantee and belong in `docker-compose.yml`.
   minutes later if the machine fills up. A ShipIt update can take it at any
   moment, and 24 hours idle takes it regardless. **Do not rely on any of it** —
   the cushion is incidental, not a guarantee.
+
+### What survives what
+
+`/persist` is the session's `scratch` directory on the host. A Compose service
+that mounts the `persist` volume sees the same directory, so it has the same
+lifecycle. A project's own named volumes are different:
+
+| Event | `/persist`, and `persist` mounts in services | The project's named Compose volumes |
+|---|---|---|
+| Container restart (idle reclaim, a ShipIt update, Rescue session, Restart agent) | Kept | Kept |
+| Idle reclaim that also stops the preview stack | Kept | Kept |
+| 24 hours idle | Kept | Can be deleted |
+| Checkout reclaim, then a fresh clone | Kept | Kept |
+| Archive | Kept | Can be deleted |
+| Restore from the archive | Kept, as it was | Empty, if they were deleted |
+| Delete — there is no separate session delete; removing a repository archives its sessions | Kept | Can be deleted |
+| **Full reset** (Settings → Advanced) | **Deleted** | Deleted |
+
+So data that must last goes in `/persist`, and a service that must keep data
+mounts `persist` instead of declaring a named volume. There is no per-session
+reset: only Full reset, which deletes every session's data, clears `/persist`.
 
 **If something needs to keep running or run on every (re)start, declare it —
 don't start it at runtime:**

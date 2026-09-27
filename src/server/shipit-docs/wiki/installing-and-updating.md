@@ -205,6 +205,7 @@ directory is not one of them.
 |---|---|---|
 | Chat history, the session list, rewind snapshots, usage, the repository list, per-project secrets | **workspace** | `.shipit.db` |
 | Every session's checkout and its branch | **workspace** | `sessions/<session-id>/workspace` |
+| Every session's `/persist`, including what its services keep through a `persist` mount | **workspace** | `sessions/<session-id>/scratch` |
 | Bare repository caches and dependency caches — rebuildable, just slow | **workspace** | `repo-cache/`, `dep-cache/` |
 | Which provider accounts exist, the GitHub token, agent roles, most settings | **credentials** | `shipit-credentials.json` |
 | The sign-ins themselves — each harness's own auth files, per account | **credentials** | `provider-accounts/<harness>/<account-id>/` |
@@ -232,10 +233,12 @@ key wherever the operator put it, and a restore needs it too.)
 **A project's own Compose volumes are not in either one.** If the user's
 `docker-compose.yml` declares a named volume — a database's data directory,
 typically — ShipIt creates it as a separate Docker volume labelled to that
-session, and **archiving the session removes it**. So that data was never
-durable and a backup does not change it. If the user needs their development
-database to survive, the answer is a seed or migration script in the repository,
-not a volume copy.
+session, and **archiving the session, or a day of idling, can remove it**. So
+that data was never durable and a backup does not change it. If the user needs
+their development database to survive, the answer is a seed or migration script
+in the repository, not a volume copy. For files a service must keep, mount the
+`persist` volume instead (`/shipit-docs/compose.md`): the files then live in the
+session's `/persist`, inside the workspace volume, and a backup copies them.
 
 **The install directory — `~/.shipit` locally, `/opt/shipit` on a server — is a
 plain git clone of ShipIt.** The installer recreates it, so it does not need
@@ -262,7 +265,7 @@ branch tip is on the remote.
 | Their sessions | **Only in the workspace volume.** The conversation, the rewind points, and the session's own history are not on any remote. |
 | Their provider sign-ins | **Only in the credentials volume.** Lost with it — the user signs in again in Settings → Model providers. |
 | Their settings and stored secrets | **Only in the volumes.** Not recoverable, and the secrets need both. |
-| Their project's database contents | In that project's own Compose volumes, which are per-session and which ShipIt deletes when the session is archived. Never durable, backup or no backup. |
+| Their project's database contents | In that project's own Compose volumes, which are per-session and which ShipIt can delete when the session is archived or idles for a day. Never durable, backup or no backup. Files a service keeps through a `persist` mount are in the workspace volume instead. |
 
 **The push is not guaranteed, so do not promise it as one.** Auto-push does
 nothing at all when GitHub is not connected, and a push that fails leaves the
