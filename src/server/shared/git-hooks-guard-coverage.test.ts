@@ -635,6 +635,8 @@ describe("git spawn coverage: every clone states both owners (planning#428)", ()
 
 describe("git spawn coverage: what counts as a git spawn (planning#409)", () => {
   const BINARY_NOT_READABLE = [
+    // `RunAs` types the command as `mkdir`, `chmod` or `setfacl`.
+    "server/orchestrator/compose-persist.ts — execFileSync(command)",
     // `cliInvocation(agentId, …)` — an agent CLI, `claude` or `codex`.
     "server/orchestrator/services/redaction.ts — execFile(binary)",
     // The resolved agent harness binary, from the agent registry.

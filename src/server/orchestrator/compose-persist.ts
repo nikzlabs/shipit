@@ -55,7 +55,7 @@ export function preparePersistDir(
   }
 }
 
-export type RunAs = (command: string, args: string[], owner: SessionIdentity) => void;
+export type RunAs = (command: "mkdir" | "chmod" | "setfacl", args: string[], owner: SessionIdentity) => void;
 
 export interface MkdirAsDeps {
   isRoot: () => boolean;
