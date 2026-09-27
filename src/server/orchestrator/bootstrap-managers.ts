@@ -247,6 +247,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       },
       sseBroadcast,
       broadcastLog,
+      poolWarmSessionIds: () => new Set(
+        repoStore.list().flatMap((repo) => (repo.warmSessionId ? [repo.warmSessionId] : [])),
+      ),
     });
     idleEnforcer();
   };

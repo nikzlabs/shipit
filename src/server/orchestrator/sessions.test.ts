@@ -837,6 +837,16 @@ describe("SessionManager", () => {
       expect(mgr.list().map((s) => s.id)).toEqual(["active"]);
     });
 
+    it("listWarm() returns exactly the warm rows that listAll() leaves out", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("graduated", "Graduated");
+      mgr.track("draft", "Warm session");
+      mgr.setWarm("draft", true);
+
+      expect(mgr.listWarm().map((s) => s.id)).toEqual(["draft"]);
+      expect(mgr.listAll().map((s) => s.id)).toEqual(["graduated"]);
+    });
+
     // The boot sweep passes this set: an archived session in it is a container spared and
     // re-adopted at every deploy, since nothing else ever reclaims one.
     it("unarchivedIds() drops archived sessions that allIds() still reports", () => {
