@@ -4,28 +4,21 @@
 - [x] Write requirements.md; resolve open questions with the requester
 - [x] Write plan.md
 - [x] Sync tracker (comment on planning#620)
-- [x] Independent review of the plan; requester accepted all six findings (requirements Q4)
-- [x] Revise plan.md to "resolve once" and the six findings
-- [x] Resolve requirements Q5 (the build-context / `extends` `file:` window)
-- [x] Second independent review; requester accepted all findings (requirements Q6); plan.md revised
-- [x] Third, fresh review; requester accepted all findings (requirements Q7); plan.md revised
-- [x] Review loop rounds 4–5; findings applied (plan.md review record)
-- [ ] Resolve requirements Q8 (round 6: Q5 window reaches the database; requirement 6 conflicts)
+- [x] Review rounds 1–6; findings applied or escalated (plan.md *Design history*)
+- [x] Resolve requirements Q8: redesign around the confined Compose container
+- [ ] Review the confined-container design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
-- [ ] Mechanism 1: one Compose spawn helper with the root-gated uid/gid drop; `streamLogs` and `snapshotLogs` use it; refuse when root and no identity
-- [ ] Mechanism 1: hand the per-session service-env and docker-secret directories and files, the override, and the snapshot to the session identity (root-gated)
-- [ ] Mechanism 1: map a permission-denied Compose read to a `ComposeValidationError` naming the path and the fix
-- [ ] Mechanism 2: split `parseComposeFile` checks into a syntax set (raw file only) and a security set (resolved model only)
-- [ ] Mechanism 2: read the project file once; `config` reads ShipIt's copy with `--project-directory` set to the project file's directory
-- [ ] Mechanism 2: `extends`-chain check (literal paths only, physical path inside the workspace, recursive) before `config`; `label_file` in the project file → checked copy; in `extends` files → refused
-- [ ] Mechanism 2: Dockerfile read as in Mechanism 3 and given as `dockerfile_inline`
-- [ ] Mechanism 2: `config` step (every profile enabled, env-file resolution off, `--env-file` copy) awaited before the in-flight count in `withUpInFlight`, and in reconcile
-- [ ] Mechanism 2: security set on the resolved model (accept only Compose's own normalization); bind rule with today's socket allowance, named-volume, `volumes_from` (service-only, all modes), and build-path rules; refuse `build.ssh` and `local` cache entries in all modes; refuse anything unresolved
-- [ ] Mechanism 2: move `rewriteVolumes` onto the resolved model's absolute sources; declare ShipIt volumes beside the mounts that use them; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
-- [ ] Mechanism 2: write one snapshot per start (never changed after writing); `up` starts from it; service map from the resolved model
-- [ ] Mechanism 3: reader (open non-blocking, regular file only, confirm through `/proc/self/fd`, copy from the same descriptor) for `env_file`, `secrets`/`configs` `file:`, `.env`; secret/config copies named by the Docker host's path; absent `required: false` env files left out
-- [ ] Tests: spawn options incl. both log paths, ownership, `extends` chain, resolved-model validation over recorded `config` output (plain `./sub` stack gets its volume declaration; ops socket mount passes; `volumes_from: container:…`, `build.ssh`, `local` cache refused in Open mode), rewrite, Mechanism 3 reader and copy paths, fail-closed paths
+- [ ] Mechanism 1: run `config`, `up`, and `build` in the confined container (mounts at orchestrator paths, no socket for `config`, `--network none`, read-only root, session identity plus socket group, `composeSpawnEnv` only)
+- [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
+- [ ] Mechanism 1: resolve the helper image (the orchestrator's own) at startup; refuse the start with a clear message when the container cannot start
+- [ ] Mechanism 1: move the override into `<state>/compose/`; hand `compose/` and the per-session service-env directory and files to the session identity (root-gated)
+- [ ] Mechanism 2: split `parseComposeFile` checks into a syntax set (raw file) and a security set (resolved model)
+- [ ] Mechanism 2: confined `config` with every profile enabled, awaited before the in-flight count in `withUpInFlight`, and in reconcile
+- [ ] Mechanism 2: security set on the resolved model (accept only Compose's own normalization); bind rule with today's socket allowance; named-volume, `volumes_from` (service-only, every mode), and `secrets`/`configs` `file:` rules; refuse anything unresolved
+- [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; remove inlined `env_file`/`label_file` keys; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
+- [ ] Mechanism 2: one snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; `up` starts from it; service map from the resolved model
+- [ ] Tests: `docker run` arguments and cleanup, ownership, resolved-model validation over recorded `config` output, rewrite and file-key removal, fail-closed paths
 - [ ] Docs: `shipit-docs/compose.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
 - [ ] `npm run lint:dev`, `npm run typecheck`, affected `npx vitest run`
 - [ ] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement
-- [ ] PR test plan lists the deployment checks (installed Compose version and flags, socket after drop, plain stack unchanged)
+- [ ] PR test plan lists the deployment checks from plan.md

@@ -27,12 +27,8 @@ paths.
    `validateBuildSecurity`), and the Compose CLI reads them as the orchestrator's
    user, following workspace symlinks.
 
-   One exception is accepted for now: a build context directory and an
-   `extends` `file:` target, which the Compose CLI reads by path itself, may
-   still reach a file that every user on the host can read, during the short
-   window between ShipIt's check and Compose's read. Another session's files and
-   ShipIt's private files stay unreachable. Closing this window is a tracked
-   follow-up. *(Resolved 2026-09-28 — see Resolved questions Q5.)*
+   This holds with no exception. *(The short-window exception accepted in Q5
+   was withdrawn the same day — see Resolved questions Q8.)*
 
 2. A compose file MUST NOT mount or read another session's files, the shared
    workspace volume's root, the orchestrator's own files, or an arbitrary host
@@ -75,27 +71,8 @@ paths.
 
 ## Open questions
 
-- **Q8: review round 6 (2026-09-28, run `95167b07-e363-4746-8ab3-5629a99b8153`)
-  undercut the Q5 decision and found two conflicts with requirement 6. How do
-  we go on?** (1) The Q5 exception assumed the short window reaches only
-  harmless world-readable files. But ShipIt's database is at
-  `/workspace/.shipit.db` on the shared volume root, opened with no mode
-  restriction (`shared/database.ts`, `DatabaseManager`), so it is probably
-  world-readable and inside the window. (2) Refusing an interpolated
-  `extends.file`, or a `label_file` inside an extended file, breaks Open-session
-  stacks that work today. (3) Giving the Dockerfile inline drops a
-  Dockerfile-specific `.dockerignore`, which can break a build. Options:
-  **(a, recommended)** run Compose's `config` and `up`/build in a throwaway
-  container that sees only this session's workspace, ShipIt's own files for
-  this stack, and the Docker socket (Q5 option b). The kernel then confines
-  every file Compose reads, so the copies, the Dockerfile inlining, the special
-  `extends` / `label_file` / `.env` handling, and the Q5 window all go away;
-  the resolved-model validation of mounts and security settings stays. This
-  replaces the Q3 choice (session uid). **(b)** keep the current design, make
-  ShipIt's database and other private files unreadable to session users, and
-  record the three stack breaks as exceptions to requirement 6. **(c)** keep
-  the current design and add more special handling (stage `extends` files,
-  keep Dockerfile ignore files) — more parts, and more for review to find.
+*(none — Q1–Q8 answered. Implementation is unblocked once the new design has
+been reviewed.)*
 
 ## Resolved questions
 
@@ -164,6 +141,25 @@ the resolved-model bind rule; run the security checks once, on the resolved
 model only. No numbered requirement changed. The requester also asked that
 future reviews' reasonable findings be applied without asking.
 
+**2026-09-28 — Q8: review round 6 (run
+`95167b07-e363-4746-8ab3-5629a99b8153`) showed that the Q5 window was not
+bounded as assumed, and that earlier fixes broke working stacks. How do we go
+on? → run Compose in a confined container.** The Q5 window could reach ShipIt's
+database (`/workspace/.shipit.db`, on the shared volume root, opened with no
+file-mode restriction), and refusing an interpolated `extends.file`, a
+`label_file` in an extended file, or a Dockerfile-specific `.dockerignore`
+broke stacks that work today (requirement 6). ShipIt now runs every Compose
+command that reads project files (`config`, `up`, `build`) in a throwaway
+container that sees only this session's workspace, ShipIt's own files for this
+stack, and the Docker socket, so the kernel confines every file Compose reads.
+This **replaces** the Q3 mechanism (session uid on the orchestrator) and
+**withdraws** the Q5 exception from requirement 1. The file copies, the
+Dockerfile inlining, and the special `extends` / `label_file` / `.env` handling
+of Q4–Q7 are dropped; the resolved-model validation of mounts and security
+settings stays. The alternatives were (b) keeping the design, making ShipIt's
+private files unreadable to session users, and recording the stack breaks as
+exceptions to requirement 6, and (c) adding more special handling.
+
 ## What is already true (verified in this repository, 2026-09-27)
 
 - `validateReadablePath` (`compose-generator.ts`) checks the declared string for
@@ -187,3 +183,8 @@ future reviews' reasonable findings be applied without asking.
   1, realized by per-session uids and the 0700 session seal.
 - Compose `include:` is refused in every mode (`parseComposeFile`), so an
   included file is not a read path.
+- ShipIt's database is `/workspace/.shipit.db` on the shared volume root,
+  opened with no file-mode restriction (`DatabaseManager`,
+  `shared/database.ts`). Verified 2026-09-28.
+- ShipIt polls each session's stack with `docker compose ps` every 5 seconds
+  (`ServicePoller`, `service-poller.ts`). Verified 2026-09-28.
