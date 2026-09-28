@@ -83,6 +83,7 @@ The findings that still shape this design:
 | 24 (run `5b8e7c49-e04b-424b-9632-ab940de2612f`) | `pid: host` / `pid: container:` is not checked; the socket exception is a prefix match | Mechanism 2 step 3 — a `pid` rule in every mode; the socket source must match exactly |
 | 25 (run `b14655ea-4487-42b8-98ba-aecef07994ab`) | `ipc: container:` shares another container's `/dev/shm` files | Mechanism 2 step 3 — one shared-namespace rule for `pid`, `ipc`, `network_mode`, `uts`, `cgroup`, `userns_mode` |
 | 26 (run `8563719a-febe-497c-ae73-8ed1f91804c9`) | The orchestrator's Docker login is not at a Docker-host path; reconcile starts services | Mechanism 1 — a root-only copy of the login in the workspace volume; *Where this runs* — reconcile's start uses the full sequence |
+| 27 (run `c22e92cb-fcd8-40ca-91dd-babf6f04a434`) | External secrets/configs are not refused; `DOCKER_CONFIG` must name a directory; a symlink could reach the ShipIt files mounted into `config` and `build` | Mechanism 2 step 3 — `external`/`name` refused; Mechanism 1 — a login directory; ShipIt input to `config` and `build` on stdin, so no ShipIt file is mounted there and none needs a new owner |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -96,80 +97,79 @@ container, and each sees only what it needs. Today these commands are spawned
 by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 `docker compose …`; they become `docker run … <image> docker compose …`.
 
-| Command | Workspace | Snapshot | Project secret/config copies | Override + service-env files | Docker client config | Docker socket |
-|---|---|---|---|---|---|---|
-| `config` (Mechanism 2 step 1) | read-only | the plugin stubs file only | — | — | — | no |
-| reading the project file alone (reconcile; a reader with no run yet) | read-only | — | — | — | — | no |
-| reading a project `secrets`/`configs` file (step 4) | read-only | — | — | — | — | no |
-| `build` | read-write | its snapshot and the plugin stubs file only | read-only | — | — | yes |
-| `up --no-build` | — | yes | — | yes | read-only | yes |
+**No container that reads project paths mounts a ShipIt file.** Whatever ShipIt
+must give such a container — the plugin stubs, the build model — arrives on
+standard input (`-f -`), so no symlink in the project can name it
+(requirement 1 as reworded in Q10).
 
+| Command | Workspace | ShipIt input | Override + service-env files | Docker client config | Docker socket |
+|---|---|---|---|---|---|
+| `config` (Mechanism 2 step 1) | read-only | the plugin stubs, on stdin | — | — | no |
+| reading the project file alone (a reader's fresh read) | read-only | — | — | — | no |
+| reading a project `secrets`/`configs` file (step 4) | read-only | — | — | — | no |
+| `build` | read-write | the build model, on stdin | — | — | yes |
+| `up --no-build` | — | the snapshot and `compose/`, mounted | yes | read-only | yes |
+
+- **The build model** is the snapshot with the plugin stubs added, and with
+  each project secret or config that `build.secrets` uses named by its path in
+  the workspace, not by ShipIt's copy (step 4). The build reads those files
+  itself, inside its own container, where only this session's workspace is.
+  So `build` needs no ShipIt file, and a build can still read the project's
+  own secret files.
+- **ShipIt's service-env files never share a container with project reads.**
+  They hold values for this session's services. A build reads the context and
+  Dockerfile the project names, so a build that could also see those files
+  could put them into an image. The same holds for the override, which carries
+  plugin credential values inline (`mergePluginCredentialEnv`,
+  `compose-generator.ts`). So `build` runs first, in its own container, and
+  `up` then runs with `--no-build`. Today `up` and `upService` always pass
+  `--build` (`compose-cli.ts`), so `build` runs every time, for the services
+  that `up` starts; an edited Dockerfile or context is picked up as it is
+  today.
+- **`up` does not see the workspace.** After step 4 the snapshot names no file
+  `up` reads, so nothing needs it. `up` reads no project path, so it may mount
+  ShipIt's files: the snapshot and the override (in a new `compose/`
+  subdirectory of `<sessionDir>/state`; the rest of the state directory, which
+  holds orchestrator-only files such as `.env.agent`, is not mounted), and this
+  session's service-env files.
 - **Registry credentials reach `up` only.** Today Compose inherits
   `DOCKER_CONFIG` / `HOME` (`COMPOSE_ENV_PASSTHROUGH`, `compose-cli.ts`), so it
   uses whatever registry login the orchestrator has when it pulls an image.
-  That configuration is an orchestrator file, so only `up --no-build`, which
-  reads no project path, mounts it: read-only, at a fixed path, with
-  `DOCKER_CONFIG` set to that path (so `HOME` does not matter), and readable
-  because `up` runs as root (*How each container runs*). The Docker host cannot
-  see the orchestrator's own copy (for example `/root/.docker` inside the
-  orchestrator container, `deployment/vps/docker-compose.yml`), so before each
-  `up` ShipIt copies that client configuration file, if there is one, to a
-  single root-only file in the workspace volume outside every session
-  directory, and mounts that through the workspace-volume translation. Private
-  service images keep pulling. `config` and `build` read project paths, so they do not
-  get it. **One behaviour
-  change** (the requirement 6 exception, requirements Q9): a build whose base
-  image needs the orchestrator's registry login now fails, with a message that
-  says why and to name a pullable image or publish the image instead (req 5). Giving those credentials to a container
-  that reads project paths would let a project copy them into an image.
-
-- **A build can read the project's own secret files.** `build.secrets` makes
-  the build read a project secret file, and step 4 points the snapshot at
-  ShipIt's copy of it. So `build` mounts those copies, read-only, at the
-  Docker-host path the snapshot names. They are the project's own content, kept
-  in `<sessionDir>/state/compose/secrets/`, apart from ShipIt's secret files for
-  `x-shipit-secrets`, which no confined container mounts.
-
-- **ShipIt's service-env files never share a container with project reads.**
-  They hold values for this session's services. A build reads the context and
-  Dockerfile the project names, so a build that could also see those files could
-  put them into an image. The same holds for the override, which carries plugin
-  credential values inline (`mergePluginCredentialEnv`, `compose-generator.ts`).
-  So `build` runs first, in its own container, with its snapshot file and the
-  plugin stubs file, which holds only a name and image per plugin service
-  (Mechanism 2 step 1), and `up` then runs with `--no-build`. Today `up` and `upService` always pass `--build`
-  (`compose-cli.ts`), so `build` runs every time, for the services that `up`
-  starts; an edited Dockerfile or context is picked up as it is today.
-- **`up` does not see the workspace.** After step 4 the snapshot names no file
-  `up` reads, so nothing needs it.
+  The Docker host cannot see that configuration where it is (for example
+  `/root/.docker` inside the orchestrator container,
+  `deployment/vps/docker-compose.yml`). So before each `up`, ShipIt copies the
+  client configuration file, if there is one, as `config.json` into one
+  root-only directory in the workspace volume, outside every session
+  directory, and mounts that directory read-only, with `DOCKER_CONFIG` set to
+  it (Docker reads `config.json` from the directory `DOCKER_CONFIG` names). A
+  credential helper named in that file works only if the helper image has it;
+  the orchestrator image has none today, so only a login stored in the file
+  works, as today. Private service images keep pulling. `config` and `build`
+  read project paths, so they do not get it. **One behaviour change** (the
+  requirement 6 exception, requirements Q9): a build whose base image needs
+  the orchestrator's registry login now fails, with a message that says why
+  and to name a pullable image or publish the image instead (req 5).
 - The workspace comes from the shared workspace volume at this session's exact
   subpath — the same confined mount `.` uses (`workspaceVolumeMount`,
-  planning#619). Every mount appears at the path the orchestrator uses, so the
-  absolute paths in the snapshot mean the same thing inside and outside.
-- The snapshot and the override live in a new `compose/` subdirectory of
-  `<sessionDir>/state`, and only that subdirectory is mounted, read-only. The
-  rest of the state directory holds orchestrator-only files such as
-  `.env.agent`. The service-env files are mounted read-only from this session's
-  directory under `SHIPIT_SERVICE_ENV_DIR`, from its Docker-host location.
+  planning#619). It appears at the path the orchestrator uses, so the absolute
+  paths in the models mean the same thing inside and outside.
 - **Mount sources are Docker-host paths.** The daemon resolves a bind source on
   its own host, where the orchestrator's `/workspace/...` path is not the file
   (the shipped deployments mount `/workspace` as a named volume). So every
-  ShipIt file mounted into a helper — the snapshot, the plugin stubs file, the
-  override and `compose/`, the project secret copies, the service-env files —
-  is bind-mounted from its Docker-host path. Paths in the workspace volume are
-  translated as `workspaceVolumeDaemonPath` (`compose-persist.ts`) already does.
-  That covers the service-env directory by default, which is
-  `<stateDir>/service-env` inside that volume (`bootstrap-managers.ts`); no
-  translation exists for it today. The project secret copies live in the
-  session's state directory, inside that volume too, so the same translation
-  covers them in every deployment (`dockerSecretsConfig`, with its own host
-  path, exists only when `SHIPIT_SECRETS_INTERNAL_DIR` is set). A
-  `SHIPIT_SERVICE_ENV_DIR` set outside the workspace volume needs its
-  Docker-host path supplied; without
-  it, a start that needs service-env files is refused with a message that
-  names the setting (req 6). The agent can write none of these paths, so the
-  daemon's resolution of them on the host cannot be steered. The workspace
-  itself stays a volume-subpath mount.
+  ShipIt file mounted into `up` — `compose/`, the service-env files, the
+  registry-login directory — is bind-mounted from its Docker-host path, and so
+  is each project secret copy the daemon binds into a service. Paths in the
+  workspace volume are translated as `workspaceVolumeDaemonPath`
+  (`compose-persist.ts`) already does. That covers the service-env directory
+  by default, which is `<stateDir>/service-env` inside that volume
+  (`bootstrap-managers.ts`); no translation exists for it today. The project
+  secret copies live in the session's state directory, inside that volume too
+  (`dockerSecretsConfig`, with its own host path, exists only when
+  `SHIPIT_SECRETS_INTERNAL_DIR` is set). A `SHIPIT_SERVICE_ENV_DIR` set outside
+  the workspace volume needs its Docker-host path supplied; without it, a
+  start that needs service-env files is refused with a message that names the
+  setting (req 6). The agent can write none of these paths, so the daemon's
+  resolution of them on the host cannot be steered.
 - Nothing else is mounted: not another session, not the shared volume root
   (which holds `.shipit.db`), and no orchestrator file. The image is a minimal
   helper image, not the orchestrator's (see *How each container runs*).
@@ -271,23 +271,16 @@ env-file resolution off, stripped of file keys, and validated the same way.
   publish the image and name it instead (req 5, the requirement 6 exception).
   The output stream to the service log is unchanged.
 
-### Which ShipIt files the session identity must read
+### ShipIt's own files keep their owner
 
-Only the containers that run as the session identity need a handoff, and they
-read only project-derived files: `config` reads the plugin stubs file, and
-`build` reads its snapshot, the plugin stubs file, and the project's
-secret/config copies. ShipIt makes those files, and the per-session directory
-of copies, readable by the session identity (root-gated, as the git drop in
-`git-tree-uid.ts` is). Each is mounted by itself, so the daemon, not the
-container, traverses the directories above it. They hold nothing but the
-project's own content and plugin names, and none is inside the workspace or
-mounted into the agent container.
-
-The override, the service-env files (`writeServiceEnvFilesToRoot`), and the
-Docker client configuration stay root-only, as today, because only `up`, which
-runs as root, and the orchestrator read them. So the service-env hygiene is
-unchanged: the agent does not *accidentally* read a service-only key. (That was
-never a boundary against a rogue agent, which can already expose any value its
+No container that runs as the session identity reads a ShipIt file: `config`
+and `build` get their ShipIt input on standard input. So no ShipIt file needs a
+new owner or mode. The override, the service-env files
+(`writeServiceEnvFilesToRoot`), the snapshots, the project secret copies, and
+the registry-login copy stay root-only, and only `up`, which runs as root, the
+daemon, and the orchestrator read them. The service-env hygiene is unchanged:
+the agent does not *accidentally* read a service-only key. (That was never a
+boundary against a rogue agent, which can already expose any value its
 services receive — render it in a page and snapshot it, log it.)
 `assertServiceEnvRootOutsideWorkspace` stays.
 
@@ -336,12 +329,12 @@ snapshot.
 
 ### The before-`up` sequence
 
-1. **Resolve.** ShipIt first writes a **plugin stubs file**: for each admitted
+1. **Resolve.** ShipIt first makes the **plugin stubs**: for each admitted
    plugin service, its name and image and nothing else — no mount, no
    environment, no credential. Then, in a confined container (workspace
    read-only, no socket), it runs `docker compose -p <project> -f <project
-   file> -f <plugin stubs> config --no-consistency <the project services this
-   start names>`. Naming a service enables that service, wherever its profile
+   file> -f - config --no-consistency <the project services this start
+   names>`, with the stubs on standard input, so no ShipIt file is mounted. Naming a service enables that service, wherever its profile
    comes from (also through `extends`), and not the other services in its
    profile, as `up <names>` does; Compose includes the named services'
    dependencies. So a service this start does not need is not resolved, and
@@ -403,8 +396,11 @@ snapshot.
    - **`volumes_from`.** Only a service of this project, whose own mounts are
      checked here. The `container:<name>` form is refused (req 2a); today it is
      refused in contained sessions only.
-   - **Top-level `secrets`/`configs` `file:`.** Must resolve inside the
-     workspace (step 4 replaces it).
+   - **Top-level `secrets`/`configs`.** A `file:` must resolve inside the
+     workspace (step 4 replaces it). `external` and `name` are refused in every
+     mode, as they are for volumes and networks today, because they attach an
+     object this session did not create (req 2a); today only `file:` is
+     checked (`validateTopLevelFileRefs`).
    - **Anything left unresolved** — a `$` in a path field, a source Compose did
      not make absolute, a mount field ShipIt does not recognise — is refused
      (req 6).
@@ -444,10 +440,11 @@ snapshot.
    service this start builds. Today `up --build` pulls and then builds, so the
    local build wins even under `pull_policy: always`; a separate `up` after
    `build` would otherwise pull the registry image over it. Image-only
-   services keep their pull policy. Then `build` runs with `-f <snapshot> -f <plugin
-   stubs>` (step 1), so that a project service's `depends_on` on a plugin
-   service resolves during the build, and `up --no-build` with `-f <snapshot>
-   -f <override>`, each in its confined container (Mechanism 1). On the
+   services keep their pull policy. Then `build` runs with `-f -` and the
+   build model on standard input (Mechanism 1: the snapshot plus the plugin
+   stubs, so that a `depends_on` on a plugin service resolves, with
+   `build.secrets` files named by their workspace paths), and `up --no-build`
+   with `-f <snapshot> -f <override>`, each in its confined container (Mechanism 1). On the
    orchestrator, `stop` loads this pair and the other commands use no model
    file (Mechanism 1).
 
@@ -524,7 +521,7 @@ refused value names the field, the resolved value, and what to use instead
   (the plain `docker rm`/`inspect` calls unchanged);
   the fix added to path-read failures.
 - `service-manager.ts` — resolve-validate-rewrite in `withUpInFlight` before the
-  in-flight count; plugin stubs file; per-start override; orphan removal by
+  in-flight count; plugin stubs and build model on stdin; per-start override; orphan removal by
   name before `up`; `build` before `up`; one snapshot per start; service map
   from the raw bytes of the confined run; override-only path kept; both log
   paths with `-p` and no model file.
@@ -538,8 +535,8 @@ refused value names the field, the resolved value, and what to use instead
   the mounts; the override no longer rewrites volumes and moves into
   `compose/`.
 - `secret-resolver.ts` / `service-manager.ts` — write project secret/config
-  copies into `<sessionDir>/state/compose/secrets/`, readable by the session
-  identity (root-gated); the service-env files are unchanged. On volume
+  copies into `<sessionDir>/state/compose/secrets/`, root-only; the
+  service-env files are unchanged; the registry-login copy for `up`. On volume
   teardown, remove the volumes labelled with this project, by name.
 - `services/plugin-services.ts`, `api-routes-plugin-repos.ts` — read project
   service names from the confined run's raw bytes, not the file.
@@ -572,7 +569,7 @@ These need a check on a deployment, listed in the PR test plan:
   on it: `config <names>`
   enables each named service (also with a profile from `extends`) and includes
   its dependencies; `--no-consistency` accepts a dependency on a plugin
-  service through the plugin stubs file; `config` inlines `env_file` and
+  service through the plugin stubs; `-f -` works beside a file `-f`; `config` inlines `env_file` and
   `label_file` values; whether `config` escapes `$`; `up --no-build` loads a
   snapshot whose build contexts are not mounted, and leaves running services
   that are not in the snapshot alone; `config --no-consistency` keeps a

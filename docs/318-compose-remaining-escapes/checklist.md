@@ -32,6 +32,7 @@
 - [x] Review round 24; findings applied
 - [x] Review round 25; finding applied (as one rule for every shared namespace)
 - [x] Review round 26; findings applied
+- [x] Review round 27; findings applied (ShipIt input on stdin; no ownership handoff)
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -40,11 +41,13 @@
 - [ ] Mechanism 1: `config` keeps today's environment (incl. `HOME`); `build` gets `HOME`, `DOCKER_CONFIG`, `BUILDX_CONFIG` on the tmpfs `/tmp`; `up` gets `DOCKER_CONFIG` = the mounted login
 - [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
 - [ ] Mechanism 1: resolve the helper image at startup; refuse the start with a clear message when it is missing or a container cannot start
-- [ ] Mechanism 1: move the override into `<state>/compose/`; make the snapshot, the plugin stubs file, and the project secret copies readable by the session identity (root-gated); override and service-env files stay root-only
-- [ ] Mechanism 1: `up` runs as root with the Docker client config mounted read-only at a fixed path and `DOCKER_CONFIG` set to it — copied before each `up` to one root-only file in the workspace volume, outside every session directory; `config`, file reads, and `build` run as the session identity
+- [ ] Mechanism 1: move the override into `<state>/compose/`; `config` and `build` get their ShipIt input on stdin (`-f -`), so no ShipIt file is mounted into a container that reads project paths and every ShipIt file stays root-only
+- [ ] Mechanism 1: registry login copied as `config.json` into one root-only directory in the workspace volume (outside session dirs) before each `up`; `DOCKER_CONFIG` = that directory
+- [ ] Mechanism 1: `up` runs as root; `config`, file reads, and `build` run as the session identity
 - [ ] Reconcile: fresh confined read for the service map, then `start()` through the full resolve-validate-rewrite sequence
 - [ ] Mechanism 2: confined `config --no-consistency <the project services this start names>`, returning the raw bytes too; a start with no project service skips resolve; awaited before the in-flight count in `withUpInFlight`; no orchestrator-side read of the project file
-- [ ] Mechanism 2: plugin stubs file (name and image per admitted plugin service) given to `config` and `build`; stub services dropped from the resolved model; per-start override for exactly the snapshot's services plus admitted plugins
+- [ ] Mechanism 2: plugin stubs (name and image per admitted plugin service) on stdin to `config`; build model (snapshot + stubs, `build.secrets` at workspace paths) on stdin to `build`; stub services dropped from the resolved model; per-start override for exactly the snapshot's services plus admitted plugins
+- [ ] Mechanism 2: top-level `secrets`/`configs` refuse `external` and `name` in every mode
 - [ ] Mechanism 2: `up` without `--remove-orphans`; ShipIt removes orphan containers by name (project label, service in neither the raw list nor the admitted plugins) before `up`
 - [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
 - [ ] Orchestrator-side `docker compose ps`, `logs`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths); plain `docker rm`/`inspect`/`network rm` calls unchanged
