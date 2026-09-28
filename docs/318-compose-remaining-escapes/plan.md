@@ -74,8 +74,12 @@ until a review has no important findings.
 
 | Round, run | Finding | Handled in |
 |---|---|---|
-| 4, `272e35bf-8469-469a-a123-52ee2bf214ab` | `config` opens a service's `label_file` while it loads the model, before any check | Mechanism 2 step 1 — `label_file` refused before `config`, in every mode |
+| 4, `272e35bf-8469-469a-a123-52ee2bf214ab` | `config` opens a service's `label_file` while it loads the model, before any check | Mechanism 2 step 1 — handled before `config` (refined in round 5) |
 | 4 | Opening every `env_file` would refuse an absent `required: false` file that works today | Mechanism 3 — an absent optional file is left out, as Compose does |
+| 5, `cf41ad91-f0b0-4f30-9d2f-e23d3aaebcdd` | The Dockerfile is read by path after its check, outside the requirement 1 exception | Mechanism 2 step 3 — the checked Dockerfile is given as `dockerfile_inline` |
+| 5 | `config` without profiles leaves profiled services out of the snapshot | Mechanism 2 step 2 — every profile enabled |
+| 5 | Refusing every `label_file` breaks a stack whose label file is in the workspace | Mechanism 2 step 1 — a checked copy in the project file; refused only in `extends` files |
+| 5 (found while applying the above) | `config` read the project file from the workspace again after ShipIt's checks | Mechanism 2 step 1 — `config` reads ShipIt's copy |
 
 ## Mechanism 1 — run Compose as the session uid
 
@@ -146,7 +150,12 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
 
 ### The before-`up` sequence
 
-1. **Raw gate.** `parseComposeFile`'s checks split into two sets. The
+1. **Raw gate.** ShipIt reads the project file once, as in Mechanism 3, and
+   every step below works on those bytes. `config` does not read the workspace
+   file again: it reads ShipIt's copy in the state dir (step 2). Otherwise the
+   file could change between ShipIt's checks and Compose's read (round 5).
+
+   `parseComposeFile`'s checks split into two sets. The
    **syntax set** runs on the raw project file only, as today: the
    contained-session interpolation refusal, the contained `extends` refusal,
    the `include:` refusal, and the path-string checks (no `${`, no leading `/`,
@@ -164,13 +173,20 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
    read, which is what the requirement 1 exception assumes (second review,
    finding 1).
 
-   In the project file and in every file of that chain, a service's
-   `label_file` is refused in every mode, with a message to use `labels:`.
-   `config` opens a label file while it loads the model, so no later check
-   could stop that read, and the requirement 1 exception does not cover it
-   (round 4).
-2. **Resolve.** Run `docker compose -p <project> -f <project file> config` as
-   the session uid (Mechanism 1), with Compose's env-file resolution turned off,
+   `config` opens a service's `label_file` while it loads the model, so no
+   later check could stop that read (round 4). In the project file, ShipIt
+   reads each label file as in Mechanism 3 and, in its copy, points the entry
+   at that checked copy, so a label file inside the workspace keeps working
+   (req 6; round 5). A `label_file` must be a literal path. In a file of the
+   `extends` chain, which Compose reads from the workspace, `label_file` is
+   refused with a message to move it into the project file or use `labels:`,
+   because that read would not be covered by the requirement 1 exception.
+2. **Resolve.** Run `docker compose -p <project> -f <ShipIt's copy>
+   --project-directory <directory of the project file> config` as the session
+   uid (Mechanism 1). The project directory keeps every relative path resolving
+   as it does today. Every profile is enabled, so services behind a profile are
+   in the snapshot and can still be started by name; each service keeps its
+   `profiles:` for `up` (round 5). Compose's env-file resolution is turned off,
    so Compose does not read `env_file` contents here (Mechanism 3 reads them).
    The project's `.env` is passed as a Mechanism 3 copy through `--env-file`
    (an empty copy when there is none), so the interpolation input is also a
@@ -208,9 +224,19 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
      declarations (req 2a, first review, finding 2).
    - **File references** (`env_file`, top-level `secrets`/`configs` `file:`):
      Mechanism 3.
-   - **Build paths** (`build.context`, `build.dockerfile`,
-     `build.additional_contexts` local paths): physical path inside the
-     workspace, else refused (req 1). See *Residual*. In every mode,
+   - **Build paths** (`build.context`, `build.additional_contexts` local
+     paths): physical path inside the workspace, else refused (req 1). See
+     *Residual*.
+   - **Dockerfile.** ShipIt reads the Dockerfile (`build.dockerfile`, or the
+     context's `Dockerfile` when none is named) as in Mechanism 3, and the
+     snapshot gives its content to Compose as `build.dockerfile_inline`. So the
+     build never reads the Dockerfile by path, and a Dockerfile changed after
+     the check has no effect (req 1; round 5). A project's own
+     `dockerfile_inline` stays as it is. A remote context (a Git URL) is left
+     as it is. One change: a Dockerfile-specific ignore file
+     (`<name>.dockerignore`) no longer applies; the context's `.dockerignore`
+     still does, and the build still works.
+   - **Other build inputs.** In every mode,
      `build.ssh` and `cache_from`/`cache_to` entries of the `local` type are
      refused: each makes the build read or write a path on the host, and the
      requirement 1 exception does not cover them (req 1, req 2; third review,
@@ -267,8 +293,9 @@ instead (req 5).
 
 ## Mechanism 3 — physical path, then a copy
 
-For each `env_file`, each top-level `secrets`/`configs` `file:`, and the
-project's `.env`, ShipIt itself:
+For the project file itself, each `env_file`, each top-level
+`secrets`/`configs` `file:`, each `label_file` in the project file, each
+Dockerfile, and the project's `.env`, ShipIt itself:
 
 1. opens the path the resolved model names, without blocking, and refuses
    anything that is not a regular file;
@@ -332,7 +359,8 @@ planning#620.
 - `compose-generator.ts` — split the checks into a syntax set (raw file only)
   and a security set (resolved model only); bind rule with today's socket
   allowance, named-volume, `volumes_from`, and build rules (incl. `build.ssh`
-  and `local` cache refusals); `label_file` refusal before `config`;
+  and `local` cache refusals); Dockerfile as `dockerfile_inline`;
+  `label_file` handling before `config`;
   `rewriteVolumes` on absolute sources, with the ShipIt
   volume declarations beside the mounts that use them; override no longer
   rewrites volumes.
@@ -359,8 +387,10 @@ These need a check on a deployment, listed in the PR test plan:
 
 - The orchestrator image installs `docker-compose-plugin` from Docker's apt
   repository with **no version pin** (`docker/Dockerfile.prod`). The `config`
-  flags used (env-file resolution off, `--env-file`) and the output shape
-  (whether `config` escapes `$`, whether `x-shipit-*` extensions survive) must
-  be confirmed on the installed version, or the version pinned.
+  flags used (env-file resolution off, `--env-file`, `--project-directory`,
+  every profile enabled), `build.dockerfile_inline`, and the output shape
+  (whether `config` escapes `$`, whether `x-shipit-*` extensions and
+  `profiles:` survive) must be confirmed on the installed version, or the
+  version pinned.
 - The dropped CLI reaches the socket and reads the handed-over files.
 - A plain stack (workspace binds and `/persist` only) starts unchanged.

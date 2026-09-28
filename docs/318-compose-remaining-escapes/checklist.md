@@ -14,8 +14,10 @@
 - [ ] Mechanism 1: hand the per-session service-env and docker-secret directories and files, the override, and the snapshot to the session identity (root-gated)
 - [ ] Mechanism 1: map a permission-denied Compose read to a `ComposeValidationError` naming the path and the fix
 - [ ] Mechanism 2: split `parseComposeFile` checks into a syntax set (raw file only) and a security set (resolved model only)
-- [ ] Mechanism 2: `extends`-chain check (literal paths only, physical path inside the workspace, recursive) before `config`; refuse `label_file` in the project file and the chain, in every mode
-- [ ] Mechanism 2: `config` step (env-file resolution off, `--env-file` copy) awaited before the in-flight count in `withUpInFlight`, and in reconcile
+- [ ] Mechanism 2: read the project file once; `config` reads ShipIt's copy with `--project-directory` set to the project file's directory
+- [ ] Mechanism 2: `extends`-chain check (literal paths only, physical path inside the workspace, recursive) before `config`; `label_file` in the project file → checked copy; in `extends` files → refused
+- [ ] Mechanism 2: Dockerfile read as in Mechanism 3 and given as `dockerfile_inline`
+- [ ] Mechanism 2: `config` step (every profile enabled, env-file resolution off, `--env-file` copy) awaited before the in-flight count in `withUpInFlight`, and in reconcile
 - [ ] Mechanism 2: security set on the resolved model (accept only Compose's own normalization); bind rule with today's socket allowance, named-volume, `volumes_from` (service-only, all modes), and build-path rules; refuse `build.ssh` and `local` cache entries in all modes; refuse anything unresolved
 - [ ] Mechanism 2: move `rewriteVolumes` onto the resolved model's absolute sources; declare ShipIt volumes beside the mounts that use them; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
 - [ ] Mechanism 2: write one snapshot per start (never changed after writing); `up` starts from it; service map from the resolved model
