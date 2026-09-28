@@ -76,6 +76,7 @@ The findings that still shape this design:
 | 17 (run `d670dd26-5e2f-4c19-a7d6-22d51a76b085`) | Overlay dep-dir matching reads only `./` sources, which the rewrite replaces; the checklist said the service map comes from the resolved model; the registry-login exception had no diagnostic | *What moves out of the override* — the matcher uses the recorded workspace path; checklist fixed; *Failure* — a registry-auth build failure names the exception |
 | 18 (run `57ae112d-1207-4851-b2d9-79f54fb27dda`) | Helper bind sources under `/workspace` are not Docker-host paths; a Stop during the awaited resolve is missed; `Dockerfile.dev` is unpinned too | Mechanism 1 — host-path translation for every ShipIt file; *Where this runs* — the start registers in `upSettled` before the resolve and re-checks Stop; both orchestrator Dockerfiles pinned |
 | 19 (run `fc18dd8f-a318-4061-a820-d255316bb4f1`) | `deployment/local/lib.sh` builds a fourth image list; changing `HOME` changes `${HOME}` interpolation; the service-env files have no Docker-host translation today | Key files — the fourth list; Mechanism 1 — `config` keeps today's environment; host path via the workspace volume (the default), or supplied |
+| 20 (run `5a762732-8294-4623-97a1-a1935b446994`) | Readers that reuse earlier raw bytes see a stale file; `stop` can come before any snapshot exists | Mechanism 2 — a fresh confined read per operation; Mechanism 1 — `stop` finds its pair by a container label, and handles no container and no pair |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -168,10 +169,16 @@ start for each would cost too much, and they do not need one.
 - `stop` and `down` need the model, because Compose runs a service's
   `pre_stop` hook (permitted in Open sessions, `validateServiceSecurity`) from
   its definition. So ShipIt keeps each start's snapshot and override while a
-  service started from them runs, and `stop <name>` loads that pair. It names
-  no project file and no program to run (Mechanism 2 steps 3–4), so loading it
-  on the orchestrator reads nothing the project controls. `down` first stops
-  each running service that way, then runs as below to remove the rest.
+  service started from them runs, and the override labels each service's
+  container with its start's snapshot. `stop <name>` reads that label from the
+  running container and loads the pair. It names no project file and no program
+  to run (Mechanism 2 steps 3–4), so loading it on the orchestrator reads
+  nothing the project controls. If the service has no container yet (a Stop
+  before or during its first start), `stop` records the Stop and has nothing
+  to stop; the racing start then sees it (*Where this runs*). If the pair is
+  gone, `stop` runs model-free, as below, and logs that no `pre_stop` hook ran.
+  `down` first stops each running service that way, then runs as below to
+  remove the rest.
 - `ps`, `logs`, `rm`, `inspect`, and the final `down` run with `-p <project>`
   and **no model file**, so Compose finds the stack's containers by the
   project label and opens no project file and no snapshot. Without `-f`,
@@ -290,9 +297,11 @@ today uses the confined resolve below instead:
   list of project service names;
 - `collectPluginFragmentIssues` (`api-routes-plugin-repos.ts`).
 
-They parse the raw bytes of the project file that the latest confined run
-returned, as they parse the file today; when there is none yet, ShipIt reads the
-file through a confined container. So the service map, the service names, and
+Each of them gets the project file's raw bytes from a confined read made for
+the operation that uses them (a start uses the bytes its own `config` run
+returned), and parses them as it parses the file today. None reuses bytes from
+an earlier read: the agent can edit the file at any time, and plugin admission,
+for example, must see the project's current service names, as it does today. So the service map, the service names, and
 the volume declarations come from the raw file as today, and services behind a
 profile are listed without being resolved. What runs comes only from the
 snapshot.

@@ -22,6 +22,7 @@
 - [ ] Mechanism 2: a start adds its promise to `upSettled` before the resolve and skips `build`/`up` if `stoppedByUser` holds the service afterwards
 - [x] Review round 18; findings applied
 - [x] Review round 19; findings applied
+- [x] Review round 20; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -37,7 +38,7 @@
 - [ ] Mechanism 2: `up` without `--remove-orphans`; ShipIt removes orphan containers by name (project label, service in neither the raw list nor the admitted plugins) before `up`
 - [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
 - [ ] Orchestrator-side `ps`, `logs`, `rm`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths)
-- [ ] Orchestrator-side `stop` with the start's own snapshot and override (keep the pair while a service started from it runs); `down` stops each running service that way first
+- [ ] Orchestrator-side `stop` with the start's own snapshot and override, found by a snapshot label the override puts on each container (keep the pair while a service started from it runs); no container → record the Stop only; pair gone → model-free stop, logged; `down` stops each running service that way first
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
 - [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume (with the `persist` / `persist/<sub>` exemption), `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
 - [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container and named by the Docker-host path; inlined `env_file`/`label_file` keys removed; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
@@ -45,7 +46,7 @@
 - [ ] Mechanism 2: step 4 records each rewritten bind's workspace-relative path; overlay dep-dir matching (`overlayMountsForService`) uses it
 - [x] Review round 17; findings applied
 - [ ] Mechanism 2: plugin-only stacks keep the override-only path
-- [ ] Mechanism 2: every orchestrator-side reader of the project file (`parseProjectCompose`, `assertProjectComposeStillValid`, reconcile, `parseUserNamedVolumes`, `readProjectServices`, `collectPluginFragmentIssues`) parses the raw bytes of the latest confined run, or reads the file through a confined container when there is none
+- [ ] Mechanism 2: every orchestrator-side reader of the project file (`parseProjectCompose`, `assertProjectComposeStillValid`, reconcile, `parseUserNamedVolumes`, `readProjectServices`, `collectPluginFragmentIssues`) parses raw bytes from a confined read made for that operation (a start uses its own `config` run's bytes); no reuse of earlier bytes
 - [ ] Mechanism 1: `build` mounts the project secret/config copies (own per-session directory, at their Docker-host path)
 - [ ] Tests: `docker run` arguments per command and cleanup, ownership, resolved-model validation over recorded `config` output, rewrite, secret-file copy, file-key removal, plugin-only path, fail-closed paths
 - [ ] Docs: `shipit-docs/compose.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
