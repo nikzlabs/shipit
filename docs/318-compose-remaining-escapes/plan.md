@@ -72,6 +72,7 @@ The findings that still shape this design:
 | 14 | The shipped image-build scripts build fixed image lists | Key files — every deployment builds the helper image |
 | 15 (run `977abb12-868f-4948-83e7-6eb8fdfc093e`) | Selecting a service follows its `depends_on` even with `--no-consistency`, so a plugin dependency fails in `config` | Mechanism 2 step 1 — the plugin stubs file is given to `config` too |
 | 15 | With `HOME` on `/tmp` and a session-identity user, `up` would not find or read the registry login | Mechanism 1 — `DOCKER_CONFIG` names the mounted login; `up` runs as root, so the override and service-env files stay root-only |
+| 16 (run `27ade2a2-1583-447f-9371-69c26cd280c0`) | On Compose 2.34.0, `config <name>` keeps a profiled service's `env_file` without inlining it, and Compose is unpinned | Mechanism 1 — one pinned, checked Compose version in both images; Mechanism 2 step 4 — refuse, never drop, an un-inlined `env_file` |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -175,6 +176,13 @@ env-file resolution off, stripped of file keys, and validated the same way.
   repository, and its reference is resolved at startup, as
   `resolveWorkerImageId` resolves the worker image (`app-lifecycle.ts`). If it
   is missing, starts are refused with a message that says so.
+- **A pinned Compose version.** This design depends on how `config` behaves:
+  which services it selects, and whether it inlines `env_file` values. That has
+  changed between releases (on 2.34.0, `config` keeps the `env_file` of a
+  service selected by name under a profile, docker/compose#12706). Today
+  `docker-compose-plugin` is unpinned (`docker/Dockerfile.prod`). So the helper
+  image and the orchestrator image both install one pinned version, the one the
+  deployment checks below were run on, and a bump repeats those checks.
 - **Isolation:** `--rm`, `--network none` (the CLI reaches the daemon through
   the mounted socket), a read-only root filesystem with a tmpfs `/tmp`, and
   `no-new-privileges`. `HOME` and `BUILDX_CONFIG` point into that `/tmp`, so the
@@ -339,9 +347,12 @@ snapshot.
      are (`composeSecretFilePath`). The daemon then binds ShipIt's
      copy, never a workspace path it would resolve on the host. This runs only
      when the project declares such a file.
-   - The `env_file` and `label_file` keys are removed, because their values are
-     already inlined. A snapshot that still names a file `up` would read is
-     refused.
+   - The `env_file` and `label_file` keys are removed, because on the pinned
+     Compose version their values are already inlined. ShipIt never drops a
+     key whose values Compose did not inline: if the resolved model still
+     holds one (another Compose version), the start is refused with a message
+     that names the service and the pinned version, rather than started with
+     its environment missing (req 6).
 5. **Write.** ShipIt writes the result as this start's snapshot in
    `<sessionDir>/state/compose/`: a new file per start, never changed after it
    is written, kept with that start's override while the start runs or a
@@ -463,9 +474,8 @@ path, and every fail-closed path.
 
 These need a check on a deployment, listed in the PR test plan:
 
-- The orchestrator image installs `docker-compose-plugin` with **no version
-  pin** (`docker/Dockerfile.prod`); the helper image must get the same version,
-  so pinning it in both is recommended. On that version: `config <names>`
+- Choose the pinned `docker-compose-plugin` version (not 2.34.0) and confirm
+  on it: `config <names>`
   enables each named service (also with a profile from `extends`) and includes
   its dependencies; `--no-consistency` accepts a dependency on a plugin
   service through the plugin stubs file; `config` inlines `env_file` and
