@@ -8,13 +8,15 @@
 - [x] Resolve requirements Q8: redesign around the confined Compose container
 - [x] Review round 7 on the redesign; findings applied
 - [x] Review round 8; findings applied
+- [x] Review round 9; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
-- [ ] Mechanism 1: `build` before `up` for the services `up` would build today; `up` always `--no-build`
+- [ ] Mechanism 1: `build` every time for the services `up` starts (replaces today's `--build`), mounting only its snapshot file; `up` always `--no-build`
+- [ ] Mechanism 1: minimal Compose helper image (base system, Docker CLI, Compose plugin) in `docker/` and `deploy.sh`, same Compose version as the orchestrator
 - [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
-- [ ] Mechanism 1: resolve the helper image (the orchestrator's own) at startup; refuse the start with a clear message when a container cannot start
-- [ ] Mechanism 1: move the override into `<state>/compose/`; hand `compose/` and the per-session service-env directory and files to the session identity (root-gated)
+- [ ] Mechanism 1: resolve the helper image at startup; refuse the start with a clear message when it is missing or a container cannot start
+- [ ] Mechanism 1: move the override into `<state>/compose/`; hand `compose/`, the per-session service-env directory, the per-session project secret-copy directory, and their files to the session identity (root-gated)
 - [ ] Mechanism 2: confined `config` with every profile enabled, returning the raw bytes too; awaited before the in-flight count in `withUpInFlight`, and in reconcile; no orchestrator-side read of the project file
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
 - [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume, `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved

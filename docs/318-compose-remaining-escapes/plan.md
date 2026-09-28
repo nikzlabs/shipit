@@ -55,6 +55,10 @@ The findings that still shape this design:
 | 7 | A stack with only plugin services has no project file to resolve | Mechanism 2 — override-only path |
 | 8 (run `f44fd239-5da5-40b6-95cd-e90eb1fcfd24`) | `build.secrets` reads a project secret file, which `build` could not see after the copy | Mechanism 1 — `build` also mounts the project's secret copies, kept apart from ShipIt's own |
 | 8 | Plugin preflight, plugin issue collection, and `parseUserNamedVolumes` also read the project file on the orchestrator | Mechanism 2 — every reader uses the resolved model |
+| 9 (run `c752d0d7-2b72-4994-95e7-743c74e93c72`) | `build` mounted all of `compose/`, and the override holds plugin credential values inline | Mechanism 1 — `build` mounts only its snapshot file |
+| 9 | The orchestrator image holds ShipIt's own files (`/app`), which a build context could name | Mechanism 1 — a dedicated minimal helper image |
+| 9 | `up` always passes `--build` today, so building only missing images would ignore an edited Dockerfile | Mechanism 1 — `build` runs every time, for the services `up` starts |
+| 9 | The project secret copies need the same ownership handoff | Mechanism 1 — included in the handoff |
 
 ## Mechanism 1 — confined Compose containers
 
@@ -69,7 +73,7 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 |---|---|---|---|---|---|
 | `config` (Mechanism 2 step 1) | read-only | — | — | — | no |
 | reading a project `secrets`/`configs` file (step 4) | read-only | — | — | — | no |
-| `build` | read-write | yes | read-only | — | yes |
+| `build` | read-write | its snapshot file only | read-only | — | yes |
 | `up --no-build` | — | yes | — | yes | yes |
 
 - **A build can read the project's own secret files.** `build.secrets` makes
@@ -82,11 +86,13 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 - **ShipIt's service-env files never share a container with project reads.**
   They hold values for this session's services. A build reads the context and
   Dockerfile the project names, so a build that could also see those files could
-  put them into an image. So `build` runs first, in its own container, with the
-  snapshot alone (a build needs nothing from the override), and `up` then runs
-  with `--no-build`. `build` runs for the services `up` would build today (an
-  image that does not exist yet, or every service when the caller asks for a
-  rebuild), so what gets built is unchanged.
+  put them into an image. The same holds for the override, which carries plugin
+  credential values inline (`mergePluginCredentialEnv`, `compose-generator.ts`).
+  So `build` runs first, in its own container, with its snapshot file mounted
+  alone (a build needs nothing from the override), and `up` then runs with
+  `--no-build`. Today `up` and `upService` always pass `--build`
+  (`compose-cli.ts`), so `build` runs every time, for the services that `up`
+  starts; an edited Dockerfile or context is picked up as it is today.
 - **`up` does not see the workspace.** After step 4 the snapshot names no file
   `up` reads, so nothing needs it.
 - The workspace comes from the shared workspace volume at this session's exact
@@ -99,7 +105,8 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   `.env.agent`. The service-env files are mounted read-only from this session's
   directory under `SHIPIT_SERVICE_ENV_DIR`, from its Docker-host location.
 - Nothing else is mounted: not another session, not the shared volume root
-  (which holds `.shipit.db`), and no orchestrator file except the image's own.
+  (which holds `.shipit.db`), and no orchestrator file. The image is a minimal
+  helper image, not the orchestrator's (see *How each container runs*).
 
 The other Compose commands stay on the orchestrator: `ps` (the status poller
 runs it every 5 seconds per session, `service-poller.ts`), `logs` (both log
@@ -112,9 +119,14 @@ installed Compose version is a deployment check.
 
 ### How each container runs
 
-- **Image:** the orchestrator's own image, so Compose is the same version ShipIt
-  runs today. It is resolved at startup, as `resolveWorkerImageId` resolves the
-  worker image (`app-lifecycle.ts`).
+- **Image:** a dedicated minimal helper image that holds only a base system,
+  the Docker CLI, and the Compose plugin. It is not the orchestrator's image,
+  which holds ShipIt's own files (`/app`, `docker/Dockerfile.prod`) that a build
+  context or a symlink could name. It is built with the orchestrator image, from
+  the same Docker apt repository, so Compose is the same version ShipIt runs
+  today, and its reference is resolved at startup, as `resolveWorkerImageId`
+  resolves the worker image (`app-lifecycle.ts`). If it is missing, starts are
+  refused with a message that says so.
 - **Isolation:** `--rm`, `--network none` (the CLI reaches the daemon through
   the mounted socket), a read-only root filesystem with a tmpfs `/tmp`, and
   `no-new-privileges`.
@@ -135,10 +147,12 @@ installed Compose version is a deployment check.
 
 The override and the service-env files are written `0600 root` today, in
 directories created `0700 root` (`writeComposeOverride`,
-`writeServiceEnvFilesToRoot`). ShipIt hands the `compose/` directory, the
-per-session service-env directory, and their files to the session identity
-(root-gated, as the git drop in `git-tree-uid.ts` is). The roots above them must
-allow traversal.
+`writeServiceEnvFilesToRoot`); ShipIt's secret writer does the same
+(`writeIsolatedSecretFiles`). ShipIt hands the `compose/` directory, the
+per-session service-env directory, the per-session directory of project
+secret/config copies, and their files to the session identity (root-gated, as
+the git drop in `git-tree-uid.ts` is). The roots above them must allow
+traversal.
 
 **This changes nothing the agent can reach.** None of these paths is inside the
 workspace or mounted into the agent container, and no confined container that
@@ -159,7 +173,8 @@ Every file Compose reads by a path the project names — the project file itself
 `env_file`, `label_file`, `.env`, `extends` files, build contexts,
 Dockerfiles and their ignore files, `build.ssh` keys, local build caches — is
 looked up inside a container that holds only this session's workspace. A
-symlink to anything else finds nothing, or the image's own files. So none of
+symlink to anything else finds nothing, or the helper image's base system,
+which holds nothing of ShipIt, the host, or another session. So none of
 these needs a rule of its own, and stacks that use them keep working (req 1,
 req 6). This holds in the bind deployment too, for these reads.
 
@@ -320,6 +335,8 @@ refused value names the field, the resolved value, and what to use instead
   service names from the resolved model, not the file.
 - `app-lifecycle.ts` / `startup-janitor.ts` — resolve the helper image; sweep
   leftover helper containers by label.
+- `docker/` and `deploy.sh` — a minimal Compose helper image (base system,
+  Docker CLI, Compose plugin), built with the orchestrator image.
 - Docs: `shipit-docs/compose.md` (interpolated sources, symlinked references,
   relative sources, `volumes_from`, `provider`),
   `docs/172-agent-containment/plan.md` (audit),
@@ -339,7 +356,8 @@ path, and every fail-closed path.
 These need a check on a deployment, listed in the PR test plan:
 
 - The orchestrator image installs `docker-compose-plugin` with **no version
-  pin** (`docker/Dockerfile.prod`). On the installed version: `--profile '*'`
+  pin** (`docker/Dockerfile.prod`); the helper image must get the same version,
+  so pinning it in both is recommended. On that version: `--profile '*'`
   enables every profile; `config` inlines `env_file` and `label_file` values;
   whether `config` escapes `$`; `x-shipit-*` extensions and `profiles:` survive;
   `up --no-build` loads a snapshot whose build contexts are not mounted.
