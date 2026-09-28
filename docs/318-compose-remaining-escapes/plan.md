@@ -213,14 +213,17 @@ sends it to the daemon) and an **`extends` `file:`** target (read while `config`
 builds the model). ShipIt checks their physical paths first, but a directory
 changed between that check and Compose's read can still point Compose at a
 world-readable path outside the session. The seal (Mechanism 1) blocks every
-sealed tree, so this is limited to world-readable files. Whether that is
-acceptable is an open question in [requirements.md](requirements.md).
+sealed tree, so this is limited to world-readable files. This window is the
+accepted exception in requirement 1 (requirements Q5). Closing it — running
+Compose's `config` and build steps in a throwaway container that mounts only
+this session's workspace volume and the Docker socket — is a follow-up on
+planning#620.
 
 ## What each requirement maps to
 
 | Req | Closed by |
 |---|---|
-| 1 (symlinked references) | Mechanism 1 (sealed trees) + Mechanism 3 (every other path, no window); build context: *Residual* |
+| 1 (symlinked references) | Mechanism 1 (sealed trees) + Mechanism 3 (every other path, no window); build context and `extends` `file:`: the accepted exception, *Residual* |
 | 2 (interpolation / `extends`, all modes) | Mechanism 2 steps 3–6; raw gate kept |
 | 2a (cross-session / shared-volume root, all modes) | Mechanism 1 + Mechanism 2 bind and named-volume rules |
 | 3 (non-`./` relative sources) | Mechanism 2 steps 3–4 (rewritten or refused) |

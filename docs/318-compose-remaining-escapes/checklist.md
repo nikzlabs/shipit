@@ -6,7 +6,7 @@
 - [x] Sync tracker (comment on planning#620)
 - [x] Independent review of the plan; requester accepted all six findings (requirements Q4)
 - [x] Revise plan.md to "resolve once" and the six findings
-- [ ] Resolve requirements Q5 (the build-context / `extends` `file:` window)
+- [x] Resolve requirements Q5 (the build-context / `extends` `file:` window)
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: one Compose spawn helper with the root-gated uid/gid drop; `streamLogs` uses it; refuse when root and no identity
 - [ ] Mechanism 1: hand the per-session service-env and docker-secret directories and files, the override, and the resolved file to the session identity (root-gated)

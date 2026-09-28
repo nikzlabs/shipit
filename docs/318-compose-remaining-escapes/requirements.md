@@ -27,6 +27,13 @@ paths.
    `validateBuildSecurity`), and the Compose CLI reads them as the orchestrator's
    user, following workspace symlinks.
 
+   One exception is accepted for now: a build context directory and an
+   `extends` `file:` target, which the Compose CLI reads by path itself, may
+   still reach a file that every user on the host can read, during the short
+   window between ShipIt's check and Compose's read. Another session's files and
+   ShipIt's private files stay unreachable. Closing this window is a tracked
+   follow-up. *(Resolved 2026-09-28 — see Resolved questions Q5.)*
+
 2. A compose file MUST NOT mount or read another session's files, the shared
    workspace volume's root, the orchestrator's own files, or an arbitrary host
    path, when the escaping source is produced by `${VAR}` interpolation or by
@@ -68,18 +75,7 @@ paths.
 
 ## Open questions
 
-- **Q5: may a narrow window remain for the two inputs Compose reads by path
-  itself?** A build context directory and an `extends` `file:` target are read
-  by the Compose CLI, not handed over as a copy (plan.md *Residual*). ShipIt
-  checks their physical paths first, and the session uid seal blocks every
-  sealed tree, but a directory changed between that check and Compose's read
-  can still reach a *world-readable* path outside the session. Requirement 1
-  says "MUST NOT" without this exception. Options: **(a, recommended)** accept
-  this bounded window now and track full confinement as a follow-up on
-  planning#620; **(b)** close it in this work by running Compose's `config` and
-  build steps in a throwaway container that mounts only this session's
-  workspace volume and the Docker socket — a new mechanism, and a larger
-  change.
+*(none — Q1–Q5 answered. Implementation is unblocked.)*
 
 ## Resolved questions
 
@@ -119,6 +115,17 @@ sources, the physical path of every file reference), rewrites its mounts, and
 starts `up` from exactly that file. The existing raw-text guards stay. No
 numbered requirement changed; this is a design choice recorded because the
 requester made it.
+
+**2026-09-28 — Q5: may a short window remain for the two inputs Compose reads
+by path itself (a build context directory, an `extends` `file:` target)? → yes,
+accept it now; track full confinement as a follow-up on planning#620.** ShipIt
+checks their physical paths first, and the session-uid seal keeps other
+sessions and ShipIt's private files out of reach, so the window reaches only
+files every user on the host can read. Recorded as the exception in
+requirement 1. The alternative was closing it in this work by running
+Compose's `config` and build steps in a throwaway container that mounts only
+this session's workspace volume and the Docker socket — a new mechanism and a
+larger change.
 
 ## What is already true (verified in this repository, 2026-09-27)
 
