@@ -435,6 +435,10 @@ snapshot.
    - **`volumes_from`.** Only a service of this project, whose own mounts are
      checked here. The `container:<name>` form is refused (req 2a); today it is
      refused in contained sessions only.
+   - **The trusted proxy's identity.** ShipIt identifies the trusted proxy by
+     an image digest that ShipIt pins, not by its tag alone. No other service
+     of the project may build or name that image (review round 33, run
+     `8bf23ca3-712f-4965-a34d-1fcc199952e3`).
    - **Socket-bearing services cannot be joined.** A service that mounts the
      Docker socket, directly or through its own `volumes_from`, may not be
      named by `volumes_from` or by the `service:<name>` form of any
