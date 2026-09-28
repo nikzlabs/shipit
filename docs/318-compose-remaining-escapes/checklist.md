@@ -50,8 +50,9 @@
 - [ ] Open-session `cap_add` only from `SAFE_ADDED_CAPABILITIES` (prefix stripped, uppercased); contained sessions keep refusing all
 - [ ] `security_opt` only `no-new-privileges` in every mode
 - [ ] `validateBuildSecurity` in every mode, with mode-neutral messages
-- [ ] Socket mount and `use_api_socket` only for ops sessions, or with `compose.docker-socket: true` and the repository's `allowDockerSocket` grant, read at each start; refusal names the setting
-- [ ] `allowDockerSocket` setting: `repos.allow_docker_socket` column and migration, `PATCH /api/repos/:url`, `project.allowDockerSocket` catalogue entry
+- [ ] Socket mount and `use_api_socket` only with `compose.docker-socket: true` and the repository's `allowDockerSocket` grant, read at each start; refusal names the setting
+- [ ] Ops sessions without the grant: only the trusted proxy's read-only mount, in every mode
+- [ ] `allowDockerSocket` setting: `repos.allow_docker_socket` column and migration, `RepoInfo`, `PATCH /api/repos/:url` through `applyRepoSettings`, reader and `::set` operation, `project.allowDockerSocket` catalogue entry, client store and toggle
 
 ## Finish
 

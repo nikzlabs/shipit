@@ -100,7 +100,12 @@ into another session or the host must be fully prevented, also on purpose. A
 check of the code against it found host reach in Open sessions outside
 requirements 1–3, and the answers to Q12–Q14 added the capability,
 security-option, and build rules and the socket grant (Mechanism 2 step 3, *The
-socket grant setting*).
+socket grant setting*). Review round 30 (run
+`69ea591c-7e4f-4f07-b4ed-f682e475978c`) on that part found: an Open ops session
+lets any service mount the raw socket (fixed: ops sessions get only the trusted
+proxy's mount without the grant); the setting needs its reader, operation, apply,
+and client parts (added); and the grant depends on the container guard's peer
+address check (filed as planning#621, since it applies to every user-only route).
 
 ## Mechanism 1 — confined Compose containers
 
@@ -442,10 +447,12 @@ snapshot.
      `build.entitlements`, and `build.network` only the default or `none`. Its
      messages stop saying "for contained services".
    - **The socket grant (req 8, requirements Q14).** A service may mount the
-     Docker socket, or set `use_api_socket`, only when the session is an ops
-     session (server-created, as today), or when `shipit.yaml` sets
+     Docker socket, or set `use_api_socket`, only when `shipit.yaml` sets
      `compose.docker-socket: true` **and** the repository's `allowDockerSocket`
-     setting is on. When the key is set and the setting is off, the start is
+     setting is on. An ops session without the grant gets only the trusted
+     proxy's read-only mount (`isTrustedOpsProxyService`), in every mode;
+     today that limit applies only in contained sessions, so in an Open ops
+     session any service can mount the raw socket (review round 30). When the key is set and the setting is off, the start is
      refused with a message that names the setting and where the user turns it
      on (req 5). ShipIt reads the setting from `RepoStore` at each start, so a
      change applies at the next start. This replaces
@@ -554,12 +561,25 @@ refused value names the field, the resolved value, and what to use instead
 uses the same parts:
 
 - **Store:** a `repos.allow_docker_socket` column, default off
-  (`repo-store.ts`, a migration in `shared/database.ts`).
+  (`repo-store.ts` with a setter, `RepoInfo` in the shared domain types, a
+  migration in `shared/database.ts`).
 - **Write:** the `PATCH /api/repos/:url` route (`api-routes-session-repos.ts`)
-  takes `allowDockerSocket`. The route has no `containerAccessible` flag, so the
+  takes `allowDockerSocket` and passes it to `applyRepoSettings`
+  (`settings-apply.ts`), which writes it and names `project.allowDockerSocket`
+  in the keys it changed. The route has no `containerAccessible` flag, so the
   container guard refuses it to the agent container and to the session's other
   containers, its services included (verified at `api-container-guard.ts`,
-  `registerContainerOriginGuard`).
+  `registerContainerOriginGuard`). The guard knows a caller by its socket peer
+  address, the same as for `allowAgentMerge` and the secret store; whether a
+  service can reach the API through a host-side forwarder is a question for the
+  guard, not for this setting (planning#621).
+- **Settings plumbing:** a reader in `settings-store-readers.ts` beside
+  `project.allowAgentMerge`, and a `project.allowDockerSocket::set` operation in
+  `settings-operations.ts` (`repoOperation` takes the new field), so an accepted
+  proposal writes it.
+- **Client:** the repository store (`client/stores/repo-store.ts`) sends
+  `allowDockerSocket`, and a toggle component beside `AgentPermissions.tsx`
+  renders the row.
 - **Catalogue and UI:** `project.allowDockerSocket` in
   `settings-catalogue/project-settings.ts`, declared like
   `project.allowAgentMerge` (same tab and "Agent permissions" section,
@@ -623,9 +643,11 @@ uses the same parts:
   `cap_add` rule; the `security_opt` rule; `validateBuildSecurity` in every
   mode. `service-manager.ts` / `service-manager-setup.ts` — the socket grant
   read from `RepoStore` at each start.
-- The socket grant setting: `repo-store.ts`, `shared/database.ts`,
-  `api-routes-session-repos.ts`, `settings-catalogue/project-settings.ts` (see
-  *The socket grant setting*).
+- The socket grant setting: `repo-store.ts`, `shared/database.ts`, the shared
+  `RepoInfo` type, `api-routes-session-repos.ts`, `settings-apply.ts`,
+  `settings-store-readers.ts`, `settings-operations.ts`,
+  `settings-catalogue/project-settings.ts`, `client/stores/repo-store.ts`, and a
+  toggle beside `AgentPermissions.tsx` (see *The socket grant setting*).
 - Docs: `shipit-docs/compose.md` (interpolated sources, symlinked references,
   relative sources, `volumes_from`, `provider`, the capability, security-option,
   and build rules, the socket grant), `shipit-docs/wiki/repos-and-sandboxes.md`
@@ -644,7 +666,9 @@ reserved named volume, `volumes_from: container:…`, and `provider` are refused
 an Open-session `cap_add` on the safe list passes and one off it is refused; a
 `security_opt` other than `no-new-privileges` and an Open-session
 `build.privileged` are refused; the socket mount passes only with the key and
-the grant, and is refused with the setting's name when the grant is off),
+the grant, and is refused with the setting's name when the grant is off; in an
+Open ops session the trusted proxy passes and a raw socket mount in another
+service is refused),
 the grant route's refusal of a session's containers, the rewrite, the secret-file copy, the removal of file keys, the plugin-only
 path, and every fail-closed path.
 
