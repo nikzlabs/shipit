@@ -69,24 +69,15 @@ paths.
    workspace and `/persist`, with no escaping reference, MUST keep working
    unchanged.
 
+   One exception: a build no longer gets the Docker registry login of the
+   orchestrator, so a build whose base image needs that login fails, with a
+   message that says why (requirement 5). Service images that `up` pulls keep
+   that login. *(Resolved 2026-09-28 — see Resolved questions Q9.)*
+
 ## Open questions
 
-- **Q9: may a build lose the orchestrator's registry login?** Review round 11
-  (2026-09-28, run `f390d1c3-db8d-4a42-aaa6-08a6e147440e`). Today Compose
-  inherits `DOCKER_CONFIG` / `HOME`, so a build can pull a private base image
-  with whatever registry login the orchestrator has. In the confined design,
-  `build` reads project paths, so giving it that login would let a project copy
-  the orchestrator's registry credentials into an image (requirement 1: the
-  orchestrator's own files). Withholding it breaks a build whose base image
-  needs that login (requirement 6). ShipIt does not manage registry logins
-  itself, so this works today only where an operator logged in inside the
-  orchestrator. Options: **(a, recommended)** builds do not get the login;
-  record this as an exception to requirement 6, with a clear message (req 5);
-  `up` keeps the login for service images. **(b)** give builds the login, and
-  record the credential exposure as an exception to requirement 1. **(c)**
-  pull private base images before the build, in a container that reads no
-  project path — more mechanism (ShipIt would have to find each Dockerfile's
-  base images).
+*(none — Q1–Q9 answered. Implementation is unblocked once the design review
+is clean.)*
 
 ## Resolved questions
 
@@ -173,6 +164,21 @@ of Q4–Q7 are dropped; the resolved-model validation of mounts and security
 settings stays. The alternatives were (b) keeping the design, making ShipIt's
 private files unreadable to session users, and recording the stack breaks as
 exceptions to requirement 6, and (c) adding more special handling.
+
+**2026-09-28 — Q9: may a build lose the orchestrator's registry login? → yes;
+builds do not get it.** Review round 11 (run
+`f390d1c3-db8d-4a42-aaa6-08a6e147440e`) found that a confined `build` reads
+project paths, so giving it the orchestrator's Docker client configuration
+would let a project copy those registry credentials into an image
+(requirement 1). ShipIt does not manage registry logins, and the shipped VPS
+deployment mounts no Docker client configuration into the orchestrator, so
+this affects only an operator who logged in inside the orchestrator container
+by hand. Recorded as the exception in requirement 6; `up`, which reads no
+project path, keeps the login for service images. The alternatives were
+(b) giving builds the login, as an exception to requirement 1, and (c)
+pulling base images before the build in a container that reads no project
+path. A real private-registry feature (for example a per-repository registry
+credential) is separate work.
 
 ## What is already true (verified in this repository, 2026-09-27)
 

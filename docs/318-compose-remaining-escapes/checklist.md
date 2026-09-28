@@ -11,7 +11,7 @@
 - [x] Review round 9; findings applied
 - [x] Review round 10; findings applied
 - [x] Review round 11; findings 1–2 applied, finding 3 → requirements Q9
-- [ ] Resolve requirements Q9 (builds and the orchestrator's registry login)
+- [x] Resolve requirements Q9 (builds and the orchestrator's registry login)
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)

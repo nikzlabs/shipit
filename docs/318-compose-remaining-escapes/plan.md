@@ -90,9 +90,9 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   That configuration is an orchestrator file, so only `up --no-build`, which
   reads no project path, mounts it; private service images keep pulling. `config`
   and `build` read project paths, so they do not get it. **One behaviour
-  change:** a build whose base image needs the orchestrator's registry login
-  now fails, with a message that says why and to name a pullable image or
-  publish the image instead (req 5). Giving those credentials to a container
+  change** (the requirement 6 exception, requirements Q9): a build whose base
+  image needs the orchestrator's registry login now fails, with a message that
+  says why and to name a pullable image or publish the image instead (req 5). Giving those credentials to a container
   that reads project paths would let a project copy them into an image.
 
 - **A build can read the project's own secret files.** `build.secrets` makes
