@@ -47,7 +47,7 @@ The findings that still shape this design:
 | 2 | A content-derived file name is not needed | Mechanism 2 step 5 — one snapshot per start |
 | 3 | `volumes_from` with `container:` is refused only in contained sessions | Mechanism 2 step 3 — service-only, every mode |
 | 3 | Refusing every outside bind breaks the ops template's socket mount | Mechanism 2 step 3 — today's socket allowance |
-| 5 | `config` without profiles drops profiled services | Mechanism 2 step 1 — every profile enabled |
+| 5 | `config` without profiles drops profiled services | Mechanism 2 step 1 — `config` names the services it resolves, which enables their profiles (refined in round 10) |
 | 7 | A service's `provider` makes the Compose client run a program, also on the orchestrator's `stop`/`down` | Mechanism 2 step 3 — refused in every mode |
 | 7 | The daemon binds a project `secrets`/`configs` `file:` on the host, following symlinks | Mechanism 2 step 4 — ShipIt's own copy, read through the confined container |
 | 7 | ShipIt's service-env files in the same container as a build could be read through the build | Mechanism 1 — `build` and `up` run separately, and only `up` sees them |
@@ -59,6 +59,11 @@ The findings that still shape this design:
 | 9 | The orchestrator image holds ShipIt's own files (`/app`), which a build context could name | Mechanism 1 — a dedicated minimal helper image |
 | 9 | `up` always passes `--build` today, so building only missing images would ignore an edited Dockerfile | Mechanism 1 — `build` runs every time, for the services `up` starts |
 | 9 | The project secret copies need the same ownership handoff | Mechanism 1 — included in the handoff |
+| 10 (run `8c2c20a0-bd6e-4375-978a-d387b620aa99`) | A project service can depend on a plugin service, which the project file alone does not declare | Mechanism 2 step 1 — `config` skips the consistency check; `up` checks with the override merged |
+| 10 | Enabling every profile makes a dormant service's missing `env_file` block the stack | Mechanism 2 step 1 — `config` names the same services `up` starts; the service map comes from the raw bytes, as today |
+| 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
+| 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
+| 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
 
 ## Mechanism 1 — confined Compose containers
 
@@ -69,12 +74,24 @@ container, and each sees only what it needs. Today these commands are spawned
 by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 `docker compose …`; they become `docker run … <image> docker compose …`.
 
-| Command | Workspace | Snapshot | Project secret/config copies | Override + service-env files | Docker socket |
-|---|---|---|---|---|---|
-| `config` (Mechanism 2 step 1) | read-only | — | — | — | no |
-| reading a project `secrets`/`configs` file (step 4) | read-only | — | — | — | no |
-| `build` | read-write | its snapshot file only | read-only | — | yes |
-| `up --no-build` | — | yes | — | yes | yes |
+| Command | Workspace | Snapshot | Project secret/config copies | Override + service-env files | Docker client config | Docker socket |
+|---|---|---|---|---|---|---|
+| `config` (Mechanism 2 step 1) | read-only | — | — | — | — | no |
+| reading the project file alone (reconcile; a reader with no run yet) | read-only | — | — | — | — | no |
+| reading a project `secrets`/`configs` file (step 4) | read-only | — | — | — | — | no |
+| `build` | read-write | its snapshot file only | read-only | — | — | yes |
+| `up --no-build` | — | yes | — | yes | read-only | yes |
+
+- **Registry credentials reach `up` only.** Today Compose inherits
+  `DOCKER_CONFIG` / `HOME` (`COMPOSE_ENV_PASSTHROUGH`, `compose-cli.ts`), so it
+  uses whatever registry login the orchestrator has when it pulls an image.
+  That configuration is an orchestrator file, so only `up --no-build`, which
+  reads no project path, mounts it; private service images keep pulling. `config`
+  and `build` read project paths, so they do not get it. **One behaviour
+  change:** a build whose base image needs the orchestrator's registry login
+  now fails, with a message that says why and to name a pullable image or
+  publish the image instead (req 5). Giving those credentials to a container
+  that reads project paths would let a project copy them into an image.
 
 - **A build can read the project's own secret files.** `build.secrets` makes
   the build read a project secret file, and step 4 points the snapshot at
@@ -111,11 +128,13 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 The other Compose commands stay on the orchestrator: `ps` (the status poller
 runs it every 5 seconds per session, `service-poller.ts`), `logs` (both log
 paths in `service-manager.ts`), `stop`, `down`, `rm`, and `inspect`. A container
-start for each would cost too much, and they do not need one: they load only
-the snapshot and ShipIt's override, which name no project file (Mechanism 2
-step 4) and no program to run (step 3). The project directory is `compose/`, so
-no project `.env` is read. That these commands open nothing else on the
-installed Compose version is a deployment check.
+start for each would cost too much, and they do not need one: they run with
+`-p <project>` and **no model file**, so Compose finds the stack's containers by
+the project label and opens no project file and no snapshot. That the
+installed Compose version supports this for each of these commands is a
+deployment check. If it does not, the fallback is a stack-wide model, resolved
+in the confined container like the snapshot but with every profile enabled and
+env-file resolution off, stripped of file keys, and validated the same way.
 
 ### How each container runs
 
@@ -134,13 +153,19 @@ installed Compose version is a deployment check.
   added when the socket is mounted. Anything a build writes into the workspace
   is owned as the agent's files are, which is consistent with docs/270.
 - **Environment:** `composeSpawnEnv()`'s allowlist only, as today; no
-  credentials.
+  credentials in it.
+- **Working directory:** the workspace, as today (`defaultComposeRunner` runs
+  with `cwd: workspaceDir`), because Compose reads `PWD/.env` and resolves
+  relative `-f` paths from it. `up`, which has no workspace, uses `compose/`.
 - **Cleanup:** each container has a unique name and a
   `shipit-compose-helper=<sessionId>` label. On cancel or timeout ShipIt removes
   it by name, because killing the `docker run` client does not stop the
   container. The startup janitor removes leftovers by label.
 - **Failure:** if a container cannot start (image missing, daemon error),
-  ShipIt refuses the start with a message that says so (req 5, req 6). The
+  ShipIt refuses the start with a message that says so (req 5, req 6). When
+  Compose fails on a path it cannot find or read, ShipIt adds the fix to
+  Compose's message: Compose sees only this session's workspace, so a file
+  reference, or the symlink it follows, must point inside it (req 5). The
   output stream to the service log is unchanged.
 
 ### ShipIt's inputs must be readable by the session identity
@@ -193,20 +218,26 @@ today uses the confined resolve below instead:
   list of project service names;
 - `collectPluginFragmentIssues` (`api-routes-plugin-repos.ts`).
 
-They read the session's latest resolved model and raw-gate result; when there
-is none yet, they run the confined resolve. The service map, the service names,
-and the volume declarations all come from that one output, so what ShipIt shows
-and what runs cannot differ.
+They parse the raw bytes of the project file that the latest confined run
+returned, as they parse the file today; when there is none yet, ShipIt reads the
+file through a confined container. So the service map, the service names, and
+the volume declarations come from the raw file as today, and services behind a
+profile are listed without being resolved. What runs comes only from the
+snapshot.
 
 ### The before-`up` sequence
 
 1. **Resolve.** In a confined container (workspace read-only, no socket), run
-   `docker compose -p <project> -f <project file> --profile '*' config`. Every
-   profile is enabled, so services behind a profile are in the snapshot and can
-   still be started by name; each keeps its `profiles:` for `up`. Compose reads
-   the project file, `.env`, `env_file`s, `label_file`s, and `extends` files
-   here, all inside the container. The same run also returns the project
-   file's raw bytes, for step 2.
+   `docker compose -p <project> -f <project file> config --no-consistency
+   <the services this start names>`. Naming the services selects exactly what
+   `up` will start: Compose enables their profiles and includes their
+   dependencies, as `up <names>` does, and a dormant service is not resolved,
+   so its missing `env_file` cannot block the start. `--no-consistency` lets a
+   project service depend on a plugin service that only the override declares;
+   Compose checks consistency again at `up`, with the override merged. Compose
+   reads the project file, `.env`, `env_file`s, `label_file`s, and `extends`
+   files here, all inside the container. The same run also returns the
+   project file's raw bytes, for step 2.
 2. **Raw gate (kept, requirements Q4).** The syntax checks of
    `parseComposeFile` — the contained-session interpolation and `extends`
    refusals, the `include:` refusal, and the path-string checks — run on those
@@ -257,8 +288,8 @@ and what runs cannot differ.
      copy, never a workspace path it would resolve on the host. This runs only
      when the project declares such a file.
    - The `env_file` and `label_file` keys are removed, because their values are
-     already inlined. A snapshot that still names a file the orchestrator-side
-     commands would read is refused.
+     already inlined. A snapshot that still names a file `up` would read is
+     refused.
 5. **Write.** ShipIt writes the result as this start's snapshot in
    `<sessionDir>/state/compose/`: a new file per start, never changed after it
    is written, removed once a later snapshot replaces it and no start uses it.
@@ -266,9 +297,10 @@ and what runs cannot differ.
    (`SESSION_STATE_SHARED_SUBDIR` is its only mounted part), so the agent cannot
    change the file. ShipIt writes `$` so that Compose's second parse gives back
    exactly the validated values.
-6. **Start.** `build` (when needed), then `up --no-build`, each in its confined
-   container (Mechanism 1), with `-f <this start's snapshot>` (and, for `up`,
-   `-f <override>`). Later commands use the latest snapshot.
+6. **Start.** `build`, then `up --no-build`, each in its confined container
+   (Mechanism 1), with `-f <this start's snapshot>` (and, for `up`,
+   `-f <override>`). The orchestrator-side commands use no model file
+   (Mechanism 1).
 
 **No project file** (`noProjectCompose`, a stack of plugin services only):
 steps 1–5 are skipped, and `up --no-build` runs in its confined container with
@@ -281,7 +313,8 @@ the override alone, as the override-only path does today (`service-manager.ts`,
 the in-flight count, so that a rejected parse never gets a polling exemption.
 `config` is now a container run, so steps 1–5 become an awaited step that
 completes **before** the count is taken, and `fn()` receives the snapshot path
-it must start from. The reconcile path uses the same sequence.
+it must start from. Reconcile starts nothing, so it only reads the project
+file's raw bytes through a confined container and parses them as today.
 
 ### What moves out of the override
 
@@ -314,13 +347,15 @@ refused value names the field, the resolved value, and what to use instead
 ## Key files (to touch)
 
 - `compose-cli.ts` — run `config`, `build`, and `up --no-build` in confined
-  containers with the per-command mounts; user, isolation, cleanup by name; the
-  session identity and the helper image on `ComposeCli`; `up` takes the snapshot
-  path.
+  containers with the per-command mounts, working directory, user, isolation,
+  and cleanup by name; the session identity and the helper image on
+  `ComposeCli`; `up` takes the snapshot path; `ps`, `logs`, `stop`, `down`,
+  `rm` with `-p` and no model file; the fix added to path-read failures.
 - `service-manager.ts` — resolve-validate-rewrite in `withUpInFlight` before the
-  in-flight count and in reconcile; `build` before `up`; one snapshot per start;
-  service map from the resolved model; override-only path kept. The log paths
-  and the poller are unchanged.
+  in-flight count; `build` before `up`; one snapshot per start; service map from
+  the raw bytes of the confined run; override-only path kept; both log paths
+  with `-p` and no model file.
+- `service-poller.ts` — `ps` with `-p` and no model file.
 - `compose-generator.ts` — the syntax checks run on the raw bytes the confined
   run returns (no orchestrator-side read); the security checks run on the
   resolved model; `provider` refusal; bind rule with today's
@@ -332,7 +367,7 @@ refused value names the field, the resolved value, and what to use instead
   to the session identity (root-gated); write project secret/config copies
   into their own per-session directory.
 - `services/plugin-services.ts`, `api-routes-plugin-repos.ts` — read project
-  service names from the resolved model, not the file.
+  service names from the confined run's raw bytes, not the file.
 - `app-lifecycle.ts` / `startup-janitor.ts` — resolve the helper image; sweep
   leftover helper containers by label.
 - `docker/` and `deploy.sh` — a minimal Compose helper image (base system,
@@ -357,14 +392,16 @@ These need a check on a deployment, listed in the PR test plan:
 
 - The orchestrator image installs `docker-compose-plugin` with **no version
   pin** (`docker/Dockerfile.prod`); the helper image must get the same version,
-  so pinning it in both is recommended. On that version: `--profile '*'`
-  enables every profile; `config` inlines `env_file` and `label_file` values;
-  whether `config` escapes `$`; `x-shipit-*` extensions and `profiles:` survive;
+  so pinning it in both is recommended. On that version: `config <names>`
+  enables the named services' profiles and includes their dependencies;
+  `--no-consistency` accepts a dependency on a plugin service; `config`
+  inlines `env_file` and `label_file` values; whether `config` escapes `$`;
   `up --no-build` loads a snapshot whose build contexts are not mounted.
+- `ps`, `logs`, `stop`, `down`, and `rm` work with `-p <project>` and no model
+  file (else the stack-wide-model fallback in Mechanism 1).
 - The confined containers reach the daemon through the socket with
-  `--network none`, as the session identity plus the socket group.
-- `ps`, `logs`, `stop`, and `down` open no project file when they load the
-  snapshot.
+  `--network none`, as the session identity plus the socket group; `up` pulls
+  a private service image with the mounted client configuration.
 - A symlinked `env_file`, `extends` file, build context, and project file that
   point outside the workspace fail inside the container.
 - The added start latency is acceptable, and a plain stack (workspace binds and
