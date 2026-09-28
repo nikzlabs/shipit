@@ -57,6 +57,17 @@ Q6):
 | 5. `snapshotLogs` is a fourth Compose spawn site | Mechanism 1 |
 | 6. A content-derived file name is not needed | Mechanism 2 step 5 — one snapshot per start, never changed after it is written |
 
+A third, fresh review on 2026-09-28 (run
+`f8b36dec-ae66-4428-bdcb-7a133e6bbbcf`) checked this revision. The requester
+accepted all its findings (requirements Q7):
+
+| Finding | Handled in |
+|---|---|
+| 1. `volumes_from` (`container:` form) is refused only in contained sessions | Mechanism 2 step 3 — service-only `volumes_from` in every mode |
+| 2. `build.ssh` and `local` `cache_from`/`cache_to` read or write host paths | Mechanism 2 step 3 — refused in every mode |
+| 3. Refusing every outside bind breaks the ops template's Docker socket mount | Mechanism 2 step 3 — today's socket allowance carries over unchanged |
+| 4. Running the security set on the raw file too adds no protection | Mechanism 2 steps 1 and 3 — the security set runs once, on the resolved model |
+
 ## Mechanism 1 — run Compose as the session uid
 
 ### One spawn path
@@ -131,8 +142,9 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
    contained-session interpolation refusal, the contained `extends` refusal,
    the `include:` refusal, and the path-string checks (no `${`, no leading `/`,
    no `..`, no `~`). These keep the clearest messages (first review, finding 5).
-   The **security set** (step 3) runs on the raw file too, and again on the
-   resolved model.
+   The **security set** runs once, on the resolved model (step 3). Running it on
+   the raw file as well would protect nothing more: `config` starts nothing, and
+   the resolved model is what `up` runs (third review, finding 4).
 
    Then, before `config` reads anything else, ShipIt checks the **`extends`
    chain** (Open sessions; contained sessions refuse `extends`). Each
@@ -163,6 +175,17 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
      workspace → rewritten (step 4). Outside it → refused (req 2, req 3). This
      covers `./data`, `data`, `.cache`, and `{type: bind, source: data}` alike,
      because Compose has already made them absolute (first review, finding 1).
+     One exception carries over unchanged from today's check
+     (`validateServiceSecurity`): the Docker socket bind
+     `/var/run/docker.sock`, under exactly today's conditions
+     (`compose.docker-socket: true`; in contained sessions only the trusted
+     proxy's read-only mount). The rewrite leaves it as it is. The shipped ops
+     template (`templates-ops.ts`) depends on it (third review, finding 3).
+   - **`volumes_from`.** In every mode, an entry must name a service of this
+     project, whose own mounts are checked here. The `container:<name>` form is
+     refused, because it takes the mounts of a container outside this project
+     (req 2a). Today this is refused in contained sessions only (third review,
+     finding 1).
    - **Named-volume sources.** A service's volume source must name a volume
      declared in the resolved top-level `volumes:`, and must not be a name
      reserved for ShipIt's own mounts. The top-level checks (no reserved name,
@@ -172,7 +195,11 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
      Mechanism 3.
    - **Build paths** (`build.context`, `build.dockerfile`,
      `build.additional_contexts` local paths): physical path inside the
-     workspace, else refused (req 1). See *Residual*.
+     workspace, else refused (req 1). See *Residual*. In every mode,
+     `build.ssh` and `cache_from`/`cache_to` entries of the `local` type are
+     refused: each makes the build read or write a path on the host, and the
+     requirement 1 exception does not cover them (req 1, req 2; third review,
+     finding 2). A registry cache stays permitted.
    - **Anything left unresolved** — a `$` in a path field, a source Compose did
      not make absolute, a field ShipIt does not recognise in a mount — is
      refused (req 6).
@@ -268,7 +295,7 @@ planning#620.
 |---|---|
 | 1 (symlinked references) | Mechanism 1 (sealed trees) + Mechanism 3 (every other path, no window); build context and `extends` `file:`: the accepted exception, *Residual* |
 | 2 (interpolation / `extends`, all modes) | Mechanism 2 steps 3–6; raw gate kept |
-| 2a (cross-session / shared-volume root, all modes) | Mechanism 1 + Mechanism 2 bind and named-volume rules |
+| 2a (cross-session / shared-volume root, all modes) | Mechanism 1 + Mechanism 2 bind, named-volume, and `volumes_from` rules |
 | 3 (non-`./` relative sources) | Mechanism 2 steps 3–4 (rewritten or refused) |
 | 4 (bind deployment) | out of scope — follow-up on planning#620 |
 | 5 (clear refusals) | `ComposeValidationError` naming field, value, and fix, including a denied read |
@@ -283,8 +310,9 @@ planning#620.
   before the in-flight count and in reconcile; one snapshot per start; service
   map from the resolved model.
 - `compose-generator.ts` — split the checks into a syntax set (raw file only)
-  and a security set (raw file and resolved model); bind / named-volume /
-  build-path rules; `rewriteVolumes` on absolute sources, with the ShipIt
+  and a security set (resolved model only); bind rule with today's socket
+  allowance, named-volume, `volumes_from`, and build rules (incl. `build.ssh`
+  and `local` cache refusals); `rewriteVolumes` on absolute sources, with the ShipIt
   volume declarations beside the mounts that use them; override no longer
   rewrites volumes.
 - `secret-resolver.ts` — hand the per-session env and secret directories and
@@ -300,7 +328,9 @@ planning#620.
 No Docker in a session container. Unit tests cover the spawn options (uid/gid,
 root-gated, both log paths included), the ownership changes, the `extends`
 chain check, resolved-model validation over recorded `config` output (a plain
-`./sub` stack passes and gets its volume declaration), the rewrite, the
+`./sub` stack passes and gets its volume declaration; the ops template's socket
+mount passes; `volumes_from: container:…`, `build.ssh`, and `local` cache
+entries are refused in Open sessions), the rewrite, the
 Mechanism 3 reader (symlink inside and outside the workspace) and its copy
 paths, and every fail-closed path.
 

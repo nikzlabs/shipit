@@ -75,7 +75,7 @@ paths.
 
 ## Open questions
 
-*(none — Q1–Q6 answered. Implementation is unblocked.)*
+*(none — Q1–Q7 answered. Implementation is unblocked.)*
 
 ## Resolved questions
 
@@ -135,6 +135,14 @@ config copies the Docker host's path; route the fourth Compose spawn
 (`snapshotLogs`) through the uid helper; write one snapshot per start rather
 than a content-named file. No numbered requirement changed; this is a design
 choice recorded because the requester made it.
+
+**2026-09-28 — Q7: after the third, fresh review, which findings apply? → all
+of them.** Refuse the `container:` form of `volumes_from` in every mode (only
+services of this project); refuse `build.ssh` and `local` `cache_from`/
+`cache_to` in every mode; keep today's Docker socket allowance, unchanged, in
+the resolved-model bind rule; run the security checks once, on the resolved
+model only. No numbered requirement changed. The requester also asked that
+future reviews' reasonable findings be applied without asking.
 
 ## What is already true (verified in this repository, 2026-09-27)
 
