@@ -74,6 +74,7 @@ The findings that still shape this design:
 | 15 | With `HOME` on `/tmp` and a session-identity user, `up` would not find or read the registry login | Mechanism 1 — `DOCKER_CONFIG` names the mounted login; `up` runs as root, so the override and service-env files stay root-only |
 | 16 (run `27ade2a2-1583-447f-9371-69c26cd280c0`) | On Compose 2.34.0, `config <name>` keeps a profiled service's `env_file` without inlining it, and Compose is unpinned | Mechanism 1 — one pinned, checked Compose version in both images; Mechanism 2 step 4 — refuse, never drop, an un-inlined `env_file` |
 | 17 (run `d670dd26-5e2f-4c19-a7d6-22d51a76b085`) | Overlay dep-dir matching reads only `./` sources, which the rewrite replaces; the checklist said the service map comes from the resolved model; the registry-login exception had no diagnostic | *What moves out of the override* — the matcher uses the recorded workspace path; checklist fixed; *Failure* — a registry-auth build failure names the exception |
+| 18 (run `57ae112d-1207-4851-b2d9-79f54fb27dda`) | Helper bind sources under `/workspace` are not Docker-host paths; a Stop during the awaited resolve is missed; `Dockerfile.dev` is unpinned too | Mechanism 1 — host-path translation for every ShipIt file; *Where this runs* — the start registers in `upSettled` before the resolve and re-checks Stop; both orchestrator Dockerfiles pinned |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -137,6 +138,17 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   rest of the state directory holds orchestrator-only files such as
   `.env.agent`. The service-env files are mounted read-only from this session's
   directory under `SHIPIT_SERVICE_ENV_DIR`, from its Docker-host location.
+- **Mount sources are Docker-host paths.** The daemon resolves a bind source on
+  its own host, where the orchestrator's `/workspace/...` path is not the file
+  (the shipped deployments mount `/workspace` as a named volume). So every
+  ShipIt file mounted into a helper — the snapshot, the plugin stubs file, the
+  override and `compose/`, the project secret copies, the service-env files —
+  is bind-mounted from its Docker-host path, translated as
+  `workspaceVolumeDaemonPath` (`compose-persist.ts`) already does for paths in
+  the workspace volume, or as ShipIt already resolves the service-env and
+  secrets directories. The agent can write none of these paths, so the
+  daemon's resolution of them on the host cannot be steered. The workspace
+  itself stays a volume-subpath mount.
 - Nothing else is mounted: not another session, not the shared volume root
   (which holds `.shipit.db`), and no orchestrator file. The image is a minimal
   helper image, not the orchestrator's (see *How each container runs*).
@@ -182,8 +194,10 @@ env-file resolution off, stripped of file keys, and validated the same way.
   changed between releases (on 2.34.0, `config` keeps the `env_file` of a
   service selected by name under a profile, docker/compose#12706). Today
   `docker-compose-plugin` is unpinned (`docker/Dockerfile.prod`). So the helper
-  image and the orchestrator image both install one pinned version, the one the
-  deployment checks below were run on, and a bump repeats those checks.
+  image and the orchestrator images (`docker/Dockerfile.prod`, and
+  `docker/Dockerfile.dev` for the local dev deployment) all install one pinned
+  version, the one the deployment checks below were run on, and a bump repeats
+  those checks.
 - **Isolation:** `--rm`, `--network none` (the CLI reaches the daemon through
   the mounted socket), a read-only root filesystem with a tmpfs `/tmp`, and
   `no-new-privileges`. `HOME` and `BUILDX_CONFIG` point into that `/tmp`, so the
@@ -397,6 +411,14 @@ the in-flight count, so that a rejected parse never gets a polling exemption.
 completes **before** the count is taken, and `fn()` receives the snapshot path
 it must start from. Reconcile starts nothing, so it only reads the project
 file's raw bytes through a confined container and parses them as today.
+
+A Stop must still win over a start that is resolving. `stopService` stops the
+service and then stops it again after every start it finds in `upSettled`
+(`stopAfterPendingUps`); a start that is still in the awaited resolve would not
+be there yet. So the start adds its promise to `upSettled` **before** the
+resolve — `upSettled` carries no polling exemption, unlike the in-flight
+count — and, after the resolve, skips `build` and `up` if `stoppedByUser` now
+holds the service.
 
 ### What moves out of the override
 

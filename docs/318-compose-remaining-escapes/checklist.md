@@ -17,7 +17,10 @@
 - [x] Review round 14; findings applied
 - [x] Review round 15; findings applied
 - [x] Review round 16; finding applied
-- [ ] Pin one checked `docker-compose-plugin` version (not 2.34.0) in `docker/Dockerfile.prod` and the helper image; refuse, never drop, an `env_file` that `config` did not inline
+- [ ] Pin one checked `docker-compose-plugin` version (not 2.34.0) in `docker/Dockerfile.prod`, `docker/Dockerfile.dev`, and the helper image; refuse, never drop, an `env_file` that `config` did not inline
+- [ ] Mechanism 1: bind-mount every ShipIt file into helpers from its Docker-host path (`workspaceVolumeDaemonPath`, or the existing service-env/secrets resolution)
+- [ ] Mechanism 2: a start adds its promise to `upSettled` before the resolve and skips `build`/`up` if `stoppedByUser` holds the service afterwards
+- [x] Review round 18; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
