@@ -75,7 +75,7 @@ paths.
 
 ## Open questions
 
-*(none — Q1–Q5 answered. Implementation is unblocked.)*
+*(none — Q1–Q6 answered. Implementation is unblocked.)*
 
 ## Resolved questions
 
@@ -126,6 +126,15 @@ requirement 1. The alternative was closing it in this work by running
 Compose's `config` and build steps in a throwaway container that mounts only
 this session's workspace volume and the Docker socket — a new mechanism and a
 larger change.
+
+**2026-09-28 — Q6: after the second independent review of the plan, which
+findings apply? → all of them.** Check the `extends` chain before `config`
+reads it; declare ShipIt's volumes beside the rewritten mounts; keep raw syntax
+checks and resolved-model security checks as separate sets; give secret and
+config copies the Docker host's path; route the fourth Compose spawn
+(`snapshotLogs`) through the uid helper; write one snapshot per start rather
+than a content-named file. No numbered requirement changed; this is a design
+choice recorded because the requester made it.
 
 ## What is already true (verified in this repository, 2026-09-27)
 

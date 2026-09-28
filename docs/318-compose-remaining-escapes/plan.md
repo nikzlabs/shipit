@@ -44,16 +44,29 @@ findings. Where each is handled:
 | 5. Retiring the raw guards would drop non-path checks | Kept. The raw guards stay; all security checks also run on the resolved model |
 | 6. UID wiring gaps (0700 dirs, the log follower, error text) | Mechanism 1 |
 
+A second review on 2026-09-28 (run `5fe6117c-73f9-4edf-bd30-ff1082bc0dc2`)
+checked this revision. The requester accepted all its findings (requirements
+Q6):
+
+| Finding | Handled in |
+|---|---|
+| 1. `config` read an `extends` `file:` before ShipIt checked its path | Mechanism 2 step 1 — the `extends` chain is checked before `config` |
+| 2. Moving the rewrite left the per-session volume undeclared for a plain `./sub` stack | Mechanism 2 step 4 — the file that holds a ShipIt-volume mount declares that volume |
+| 3. The existing path-string checks refuse Compose's absolute paths | Mechanism 2 steps 1 and 3 — raw syntax checks and resolved-model security checks are separate sets |
+| 4. Secret and config copies need the Docker host's path | Mechanism 3 |
+| 5. `snapshotLogs` is a fourth Compose spawn site | Mechanism 1 |
+| 6. A content-derived file name is not needed | Mechanism 2 step 5 — one snapshot per start, never changed after it is written |
+
 ## Mechanism 1 — run Compose as the session uid
 
 ### One spawn path
 
-Compose is spawned from three places today: `defaultComposeRunner` and
-`defaultComposeQuery` (`compose-cli.ts`), and the log follower in
-`ServiceManager.streamLogs` (`service-manager.ts`), which calls `spawn("docker",
-…)` itself. All three move to one helper in `compose-cli.ts` that adds
-`uid`/`gid` to the spawn options. So no Compose command reads a file as the
-orchestrator's user.
+Compose is spawned from four places today: `defaultComposeRunner` and
+`defaultComposeQuery` (`compose-cli.ts`), and `ServiceManager.streamLogs` and
+`ServiceManager.snapshotLogs` (`service-manager.ts`), which each call
+`spawn("docker", …)` themselves. All four move to one helper in
+`compose-cli.ts` that adds `uid`/`gid` to the spawn options. So no Compose
+command reads a file as the orchestrator's user.
 
 - The identity comes from `identityForSession(sessionId)`
   (`session-worker-uid.ts`), threaded into `ComposeCli` at construction.
@@ -80,7 +93,7 @@ file. Today:
 | resolved model (new, Mechanism 2) and compose override | orchestrator, `writeComposeOverride` | override 0600 root, in `<sessionDir>/state` | readable by the session identity. `<sessionDir>` is already owned by it (`sealSessionDir`). |
 | per-service env files | `writeServiceEnvFilesToRoot` (`secret-resolver.ts`) | dir `<SHIPIT_SERVICE_ENV_DIR>/<sessionId>` 0700 root; files 0600 root | hand the per-session **directory** and its files to the session identity; the root above it must allow traversal |
 | docker-secret files | `writeIsolatedSecretFiles` (`secret-resolver.ts`) | per-session dir 0700 root; files 0600 root | same as the env files |
-| copies of project file references (new, Mechanism 3) | orchestrator | — | written into the state dir, readable by the session identity |
+| copies of project file references (new, Mechanism 3) | orchestrator | — | `env_file` and `.env` copies in the state dir; `secrets`/`configs` copies in the per-session secrets dir; readable by the session identity |
 | secrets entrypoint | `stageSecretsEntrypoint` | 0755 root | none |
 
 Each path is already per session, so each is handed to *its* session's identity
@@ -113,33 +126,48 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
 
 ### The before-`up` sequence
 
-1. **Raw gate (unchanged).** `parseComposeFile` runs on the project file as
-   today, including the contained-session interpolation refusal, the contained
-   `extends` refusal, the `include:` refusal, and every literal check. These
-   stay as the first gate with the clearest messages (finding 5).
+1. **Raw gate.** `parseComposeFile`'s checks split into two sets. The
+   **syntax set** runs on the raw project file only, as today: the
+   contained-session interpolation refusal, the contained `extends` refusal,
+   the `include:` refusal, and the path-string checks (no `${`, no leading `/`,
+   no `..`, no `~`). These keep the clearest messages (first review, finding 5).
+   The **security set** (step 3) runs on the raw file too, and again on the
+   resolved model.
+
+   Then, before `config` reads anything else, ShipIt checks the **`extends`
+   chain** (Open sessions; contained sessions refuse `extends`). Each
+   `extends.file` must be a literal path — one that comes from a variable is
+   refused — and its physical path, checked as in Mechanism 3, must be inside
+   the workspace. ShipIt parses each such file and checks its own
+   `extends.file` entries the same way. This puts the check *before* Compose's
+   read, which is what the requirement 1 exception assumes (second review,
+   finding 1).
 2. **Resolve.** Run `docker compose -p <project> -f <project file> config` as
    the session uid (Mechanism 1), with Compose's env-file resolution turned off,
    so Compose does not read `env_file` contents here (Mechanism 3 reads them).
    The project's `.env` is passed as a Mechanism 3 copy through `--env-file`
    (an empty copy when there is none), so the interpolation input is also a
    checked file.
-3. **Validate the resolved model.** Every check in `parseComposeFile`
-   (`validateServiceSecurity`, `validateBuildSecurity`, top-level volumes,
-   networks, secrets, configs) runs again on the resolved model, so an
-   interpolated or `extends`-inherited `privileged`, `network_mode`, `cap_add`,
-   and so on is refused in every mode (req 2, finding 5). The checks accept only
-   the normalization Compose itself adds (the project-default `name:` on a
-   volume or network, the implicit `default` network), and nothing else. Then
-   the path rules:
+3. **Validate the resolved model.** The security set runs on the resolved
+   model: the non-path parts of `validateServiceSecurity` and
+   `validateBuildSecurity` (`privileged`, `network_mode`, `cap_add`, `devices`,
+   `user`, labels, and so on) and the top-level volume, network, secret, and
+   config declaration rules. So an interpolated or `extends`-inherited value is
+   refused in every mode (req 2). The syntax set does not run here, because
+   Compose has made every path absolute and those checks would refuse all of
+   them; the path rules below replace it (second review, finding 3). The
+   security set accepts only the normalization Compose itself adds (the
+   project-default `name:` on a volume or network, the implicit `default`
+   network), and nothing else. The path rules:
    - **Bind sources.** The resolved source is absolute. Inside this session's
      workspace → rewritten (step 4). Outside it → refused (req 2, req 3). This
      covers `./data`, `data`, `.cache`, and `{type: bind, source: data}` alike,
-     because Compose has already made them absolute (finding 1).
+     because Compose has already made them absolute (first review, finding 1).
    - **Named-volume sources.** A service's volume source must name a volume
      declared in the resolved top-level `volumes:`, and must not be a name
      reserved for ShipIt's own mounts. The top-level checks (no reserved name,
      no `driver_opts`, no `external`, no other `name:`) apply to the resolved
-     declarations (req 2a, finding 2).
+     declarations (req 2a, first review, finding 2).
    - **File references** (`env_file`, top-level `secrets`/`configs` `file:`):
      Mechanism 3.
    - **Build paths** (`build.context`, `build.dockerfile`,
@@ -152,16 +180,22 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
    of the per-session workspace volume, `.` becomes the shared volume at the
    exact session subpath (`workspaceVolumeMount`, planning#619), and `/persist`
    sources are rewritten as today. File references point at their Mechanism 3
-   copies.
-5. **Write.** ShipIt writes the result to a new file in `<sessionDir>/state`,
-   named by its content, readable by the session identity. The container never
-   mounts this directory (`SESSION_STATE_SHARED_SUBDIR` is the only mounted
-   part), so the agent cannot change the file. ShipIt writes `$` so that
-   Compose's second parse gives back exactly the validated values.
-6. **Start.** The `up` that ran this validation passes `-f <that file> -f
+   copies. The file that holds a mount of a ShipIt volume also declares that
+   volume. Today `generateComposeOverride` declares the per-session workspace
+   volume only when one of its *own* entries mounts it, so with the rewrite
+   moved here, the resolved file declares it; the override still declares it
+   for the mounts it adds itself (second review, finding 2).
+5. **Write.** ShipIt writes the result as this start's snapshot in
+   `<sessionDir>/state`: a new file for each start, never changed after it is
+   written, readable by the session identity, and removed once a later
+   snapshot replaces it and no start uses it (second review, finding 6). The
+   container never mounts this directory (`SESSION_STATE_SHARED_SUBDIR` is the
+   only mounted part), so the agent cannot change the file. ShipIt writes `$`
+   so that Compose's second parse gives back exactly the validated values.
+6. **Start.** The `up` that ran this validation passes `-f <its snapshot> -f
    <override>`. Later commands for the stack (`down`, `logs`, `ps`) use the
-   latest resolved file. No agent-writable file is read between step 3 and `up`
-   except the build paths in *Residual* (finding 4).
+   latest snapshot. No agent-writable file is read between step 3 and `up`
+   except the build paths in *Residual* (first review, finding 4).
 
 The service map ShipIt builds (`parseProjectCompose`) comes from the resolved
 model too, so what ShipIt shows and what runs cannot differ.
@@ -171,8 +205,8 @@ model too, so what ShipIt shows and what runs cannot differ.
 `withUpInFlight` (`service-manager.ts`) validates synchronously before it takes
 the in-flight count, so that a rejected parse never gets a polling exemption.
 `config` is a subprocess, so the sequence above becomes an awaited step that
-completes **before** the count is taken, and `fn()` receives the resolved-file
-path it must start from. The reconcile path uses the same sequence.
+completes **before** the count is taken, and `fn()` receives the snapshot path
+it must start from. The reconcile path uses the same sequence.
 
 ### What moves out of the override
 
@@ -199,18 +233,27 @@ project's `.env`, ShipIt itself:
 2. reads the opened file's real location from `/proc/self/fd/<fd>` and refuses
    unless it is inside the session workspace's real path (this also refuses
    every sealed tree);
-3. reads the bytes **from that same descriptor** and writes a copy into the state
-   dir.
+3. reads the bytes **from that same descriptor** and writes a copy.
 
 The check and the read are on one open file, so no check-then-use window
 exists. Compose then reads only the copy.
+
+Where the copy goes depends on who reads it. The Compose CLI reads `env_file`
+and `.env`, so those copies go in the state dir under the orchestrator's path.
+The Docker daemon mounts `secrets`/`configs` files, and in the shipped
+volume-backed deployment it sees a different path than the orchestrator. So
+those copies go in the per-session secrets directory, and the model names them
+by the Docker host's path, as `composeSecretFilePath` (`secret-resolver.ts`)
+already does for ShipIt's own secret files (second review, finding 4).
 
 ## Residual
 
 Compose reads two kinds of project input by path itself, which ShipIt cannot
 hand over as a copy: a **build context directory** (the CLI packs the tree and
 sends it to the daemon) and an **`extends` `file:`** target (read while `config`
-builds the model). ShipIt checks their physical paths first, but a directory
+builds the model). ShipIt checks their physical paths first (the `extends`
+chain in Mechanism 2 step 1, before `config`; build paths in step 3, before
+`up`), but a directory
 changed between that check and Compose's read can still point Compose at a
 world-readable path outside the session. The seal (Mechanism 1) blocks every
 sealed tree, so this is limited to world-readable files. This window is the
@@ -234,15 +277,19 @@ planning#620.
 ## Key files (to touch)
 
 - `compose-cli.ts` — one spawn helper with the root-gated uid/gid drop; identity
-  on `ComposeCli`; a `config` query; `up` takes the resolved-file path.
-- `service-manager.ts` — `streamLogs` uses the helper; resolve-validate-rewrite
-  in `withUpInFlight` before the in-flight count and in reconcile; service map
-  from the resolved model.
-- `compose-generator.ts` — security checks callable on the resolved model;
-  bind / named-volume / build-path rules; `rewriteVolumes` on absolute sources;
-  override no longer rewrites volumes. Raw guards unchanged.
+  on `ComposeCli`; a `config` query; `up` takes the snapshot path.
+- `service-manager.ts` — `streamLogs` and `snapshotLogs` use the helper;
+  `extends`-chain check, then resolve-validate-rewrite, in `withUpInFlight`
+  before the in-flight count and in reconcile; one snapshot per start; service
+  map from the resolved model.
+- `compose-generator.ts` — split the checks into a syntax set (raw file only)
+  and a security set (raw file and resolved model); bind / named-volume /
+  build-path rules; `rewriteVolumes` on absolute sources, with the ShipIt
+  volume declarations beside the mounts that use them; override no longer
+  rewrites volumes.
 - `secret-resolver.ts` — hand the per-session env and secret directories and
-  files to the session identity (root-gated).
+  files to the session identity (root-gated); secret/config copies use the
+  Docker host's path.
 - New: the Mechanism 3 reader (open, confirm through `/proc/self/fd`, copy).
 - Docs: `shipit-docs/compose.md` (interpolated sources, symlinked references,
   relative sources), `docs/172-agent-containment/plan.md` (audit),
@@ -251,9 +298,11 @@ planning#620.
 ## What cannot be verified here
 
 No Docker in a session container. Unit tests cover the spawn options (uid/gid,
-root-gated, the log follower included), the ownership changes, resolved-model
-validation over recorded `config` output, the rewrite, the Mechanism 3 reader
-(symlink inside and outside the workspace), and every fail-closed path.
+root-gated, both log paths included), the ownership changes, the `extends`
+chain check, resolved-model validation over recorded `config` output (a plain
+`./sub` stack passes and gets its volume declaration), the rewrite, the
+Mechanism 3 reader (symlink inside and outside the workspace) and its copy
+paths, and every fail-closed path.
 
 These need a check on a deployment, listed in the PR test plan:
 
