@@ -6,18 +6,21 @@
 - [x] Sync tracker (comment on planning#620)
 - [x] Review rounds 1–6; findings applied or escalated (plan.md *Design history*)
 - [x] Resolve requirements Q8: redesign around the confined Compose container
-- [ ] Review the confined-container design until no important findings remain
+- [x] Review round 7 on the redesign; findings applied
+- [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
-- [ ] Mechanism 1: run `config`, `up`, and `build` in the confined container (mounts at orchestrator paths, no socket for `config`, `--network none`, read-only root, session identity plus socket group, `composeSpawnEnv` only)
+- [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
+- [ ] Mechanism 1: `build` before `up` for the services `up` would build today; `up` always `--no-build`
 - [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
-- [ ] Mechanism 1: resolve the helper image (the orchestrator's own) at startup; refuse the start with a clear message when the container cannot start
+- [ ] Mechanism 1: resolve the helper image (the orchestrator's own) at startup; refuse the start with a clear message when a container cannot start
 - [ ] Mechanism 1: move the override into `<state>/compose/`; hand `compose/` and the per-session service-env directory and files to the session identity (root-gated)
-- [ ] Mechanism 2: split `parseComposeFile` checks into a syntax set (raw file) and a security set (resolved model)
-- [ ] Mechanism 2: confined `config` with every profile enabled, awaited before the in-flight count in `withUpInFlight`, and in reconcile
-- [ ] Mechanism 2: security set on the resolved model (accept only Compose's own normalization); bind rule with today's socket allowance; named-volume, `volumes_from` (service-only, every mode), and `secrets`/`configs` `file:` rules; refuse anything unresolved
-- [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; remove inlined `env_file`/`label_file` keys; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
+- [ ] Mechanism 2: confined `config` with every profile enabled, returning the raw bytes too; awaited before the in-flight count in `withUpInFlight`, and in reconcile; no orchestrator-side read of the project file
+- [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
+- [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume, `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
+- [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container and named by the Docker-host path; inlined `env_file`/`label_file` keys removed; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
 - [ ] Mechanism 2: one snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; `up` starts from it; service map from the resolved model
-- [ ] Tests: `docker run` arguments and cleanup, ownership, resolved-model validation over recorded `config` output, rewrite and file-key removal, fail-closed paths
+- [ ] Mechanism 2: plugin-only stacks keep the override-only path
+- [ ] Tests: `docker run` arguments per command and cleanup, ownership, resolved-model validation over recorded `config` output, rewrite, secret-file copy, file-key removal, plugin-only path, fail-closed paths
 - [ ] Docs: `shipit-docs/compose.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
 - [ ] `npm run lint:dev`, `npm run typecheck`, affected `npx vitest run`
 - [ ] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement
