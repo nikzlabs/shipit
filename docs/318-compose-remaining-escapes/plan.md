@@ -53,6 +53,8 @@ The findings that still shape this design:
 | 7 | ShipIt's service-env files in the same container as a build could be read through the build | Mechanism 1 — `build` and `up` run separately, and only `up` sees them |
 | 7 | The raw gate read the project file on the orchestrator | Mechanism 2 steps 1–2 — the confined run returns the raw bytes; the raw gate stays (Q4) |
 | 7 | A stack with only plugin services has no project file to resolve | Mechanism 2 — override-only path |
+| 8 (run `f44fd239-5da5-40b6-95cd-e90eb1fcfd24`) | `build.secrets` reads a project secret file, which `build` could not see after the copy | Mechanism 1 — `build` also mounts the project's secret copies, kept apart from ShipIt's own |
+| 8 | Plugin preflight, plugin issue collection, and `parseUserNamedVolumes` also read the project file on the orchestrator | Mechanism 2 — every reader uses the resolved model |
 
 ## Mechanism 1 — confined Compose containers
 
@@ -63,12 +65,19 @@ container, and each sees only what it needs. Today these commands are spawned
 by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 `docker compose …`; they become `docker run … <image> docker compose …`.
 
-| Command | Workspace | Snapshot | Override + service-env files | Docker socket |
-|---|---|---|---|---|
-| `config` (Mechanism 2 step 1) | read-only | — | — | no |
-| reading a project `secrets`/`configs` file (step 4) | read-only | — | — | no |
-| `build` | read-write | yes | — | yes |
-| `up --no-build` | — | yes | yes | yes |
+| Command | Workspace | Snapshot | Project secret/config copies | Override + service-env files | Docker socket |
+|---|---|---|---|---|---|
+| `config` (Mechanism 2 step 1) | read-only | — | — | — | no |
+| reading a project `secrets`/`configs` file (step 4) | read-only | — | — | — | no |
+| `build` | read-write | yes | read-only | — | yes |
+| `up --no-build` | — | yes | — | yes | yes |
+
+- **A build can read the project's own secret files.** `build.secrets` makes
+  the build read a project secret file, and step 4 points the snapshot at
+  ShipIt's copy of it. So `build` mounts those copies, read-only, at the
+  Docker-host path the snapshot names. They are the project's own content, kept
+  in a per-session directory of their own, apart from ShipIt's secret files for
+  `x-shipit-secrets`, which no confined container mounts.
 
 - **ShipIt's service-env files never share a container with project reads.**
   They hold values for this session's services. A build reads the context and
@@ -159,10 +168,20 @@ req 6). This holds in the bind deployment too, for these reads.
 ShipIt no longer reads the project file on the orchestrator. Today
 `parseComposeFile` reads it there (`fs.readFileSync`), which follows a symlink;
 and the raw text is not what `up` runs anyway, because Compose, not ShipIt,
-interpolates and resolves `extends`. Every place that parses the project file
-today (`parseProjectCompose`, `assertProjectComposeStillValid`, reconcile) uses
-the confined resolve below instead, and the service map comes from its
-resolved output, so what ShipIt shows and what runs cannot differ.
+interpolates and resolves `extends`. Every place that reads the project file
+today uses the confined resolve below instead:
+
+- in `service-manager.ts`: `parseProjectCompose`,
+  `assertProjectComposeStillValid`, reconcile, and `parseUserNamedVolumes`
+  (called from `preparePersistDirs` and `buildOverrideOptions`);
+- `readProjectServices` (`services/plugin-services.ts`), the plugin preflight's
+  list of project service names;
+- `collectPluginFragmentIssues` (`api-routes-plugin-repos.ts`).
+
+They read the session's latest resolved model and raw-gate result; when there
+is none yet, they run the confined resolve. The service map, the service names,
+and the volume declarations all come from that one output, so what ShipIt shows
+and what runs cannot differ.
 
 ### The before-`up` sequence
 
@@ -216,9 +235,10 @@ resolved output, so what ShipIt shows and what runs cannot differ.
      volume (today `generateComposeOverride` declares the per-session volume only
      for its *own* mounts).
    - Each project `secrets`/`configs` `file:` is read through a confined
-     container (workspace read-only, no socket), written into this session's
-     secrets directory, and named by its Docker-host path, as ShipIt's own
-     secret files are (`composeSecretFilePath`). The daemon then binds ShipIt's
+     container (workspace read-only, no socket), written into a per-session
+     directory for project copies (beside, not inside, ShipIt's own secret
+     files), and named by its Docker-host path, as ShipIt's own secret files
+     are (`composeSecretFilePath`). The daemon then binds ShipIt's
      copy, never a workspace path it would resolve on the host. This runs only
      when the project declares such a file.
    - The `env_file` and `label_file` keys are removed, because their values are
@@ -295,7 +315,9 @@ refused value names the field, the resolved value, and what to use instead
   `compose/`.
 - `secret-resolver.ts` — hand the per-session service-env directory and files
   to the session identity (root-gated); write project secret/config copies
-  beside ShipIt's own.
+  into their own per-session directory.
+- `services/plugin-services.ts`, `api-routes-plugin-repos.ts` — read project
+  service names from the resolved model, not the file.
 - `app-lifecycle.ts` / `startup-janitor.ts` — resolve the helper image; sweep
   leftover helper containers by label.
 - Docs: `shipit-docs/compose.md` (interpolated sources, symlinked references,
