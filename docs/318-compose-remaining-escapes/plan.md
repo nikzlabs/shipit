@@ -61,6 +61,9 @@ The findings that still shape this design:
 | 9 | The project secret copies need the same ownership handoff | Mechanism 1 — included in the handoff |
 | 10 (run `8c2c20a0-bd6e-4375-978a-d387b620aa99`) | A project service can depend on a plugin service, which the project file alone does not declare | Mechanism 2 step 1 — `config` skips the consistency check; `up` checks with the override merged |
 | 10 | Enabling every profile makes a dormant service's missing `env_file` block the stack | Mechanism 2 step 1 — only the profiles this start needs; the service map comes from the raw bytes, as today |
+| 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
+| 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
+| 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
 | 11 (run `f390d1c3-db8d-4a42-aaa6-08a6e147440e`) | A snapshot of only the named services leaves override entries with no image; with `--remove-orphans` it would also remove the other services' containers | Mechanism 2 step 6 — a per-start override; `--remove-orphans` replaced in round 12 |
 | 11 | A plugin service can be started by name, and `build` without the override cannot resolve a `depends_on` on a plugin service | Mechanism 2 step 1 — plugin names are not passed; the plugin stubs file (rounds 12 and 15) |
 | 12 (run `ed43e07e-1c4a-4e5f-9fcb-cf5a530022ed`) | Without `-f`, Compose looks for a Compose file in the working directory, which is the workspace | Mechanism 1 — orchestrator-side commands run in an empty ShipIt directory |
@@ -85,9 +88,8 @@ The findings that still shape this design:
 | 26 (run `8563719a-febe-497c-ae73-8ed1f91804c9`) | The orchestrator's Docker login is not at a Docker-host path; reconcile starts services | Mechanism 1 — a root-only copy of the login in the workspace volume; *Where this runs* — reconcile's start uses the full sequence |
 | 27 (run `c22e92cb-fcd8-40ca-91dd-babf6f04a434`) | External secrets/configs are not refused; `DOCKER_CONFIG` must name a directory; a symlink could reach the ShipIt files mounted into `config` and `build` | Mechanism 2 step 3 — `external`/`name` refused; Mechanism 1 — a login directory; ShipIt input to `config` and `build` on stdin, so no ShipIt file is mounted there and none needs a new owner |
 | 28 (run `08e8c576-c1ad-44ca-8006-e7704f35b681`) | A per-start container label changes the configuration hash and recreates unchanged services; `../scratch` build contexts work today; the checklist still mounted ShipIt files into `build` | Mechanism 1 — a root-only start record instead of a label; scratch mounted with the workspace; checklist fixed |
-| 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
-| 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
-| 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
+
+Round 29 (run `2843532c-aab8-4be3-9562-4424ffd6456d`) found no important findings, and no part of the design that could be removed without losing a needed behaviour.
 
 ## Mechanism 1 — confined Compose containers
 

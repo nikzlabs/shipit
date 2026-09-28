@@ -1,68 +1,51 @@
 # Checklist — 318 Compose remaining file escapes
 
+## Design
+
 - [x] Verify all four escapes still hold in current code (post-planning#619)
-- [x] Write requirements.md; resolve open questions with the requester
+- [x] Write requirements.md; resolve open questions with the requester (Q1–Q10)
 - [x] Write plan.md
-- [x] Sync tracker (comment on planning#620)
+- [x] Sync tracker (comments on planning#620)
 - [x] Review rounds 1–6; findings applied or escalated (plan.md *Design history*)
-- [x] Resolve requirements Q8: redesign around the confined Compose container
-- [x] Review round 7 on the redesign; findings applied
-- [x] Review round 8; findings applied
-- [x] Review round 9; findings applied
-- [x] Review round 10; findings applied
-- [x] Review round 11; findings 1–2 applied, finding 3 → requirements Q9
-- [x] Resolve requirements Q9 (builds and the orchestrator's registry login)
-- [x] Review round 12; findings applied
-- [x] Review round 13; finding applied
-- [x] Review round 14; findings applied
-- [x] Review round 15; findings applied
-- [x] Review round 16; finding applied
-- [ ] Pin one checked `docker-compose-plugin` version (not 2.34.0) in `docker/Dockerfile.prod`, `docker/Dockerfile.dev`, and the helper image; refuse, never drop, an `env_file` that `config` did not inline
-- [ ] Mechanism 1: bind-mount every ShipIt file into helpers from its Docker-host path: `workspaceVolumeDaemonPath` for the workspace volume (includes the state dir, the project secret copies in `state/compose/secrets/`, and the default service-env directory); a `SHIPIT_SERVICE_ENV_DIR` outside the volume needs a supplied host path, else refuse with a message naming the setting
-- [ ] Volume teardown: the final model-free `down` keeps `--volumes` (anonymous volumes go with their containers; else `docker rm -fv` first), then remove the volumes that carry this project's Compose label, by name
-- [ ] Per-start override sets `pull_policy: never` on each service this start builds
-- [ ] Mechanism 2: a start adds its promise to `upSettled` before the resolve and skips `build`/`up` if `stoppedByUser` holds the service afterwards
-- [x] Review round 18; findings applied
-- [x] Review round 19; findings applied
-- [x] Review round 20; findings applied
-- [x] Review round 21; findings applied
-- [x] Review round 22; finding 2 applied, finding 1 → requirements Q10
-- [x] Resolve requirements Q10 (the helper container's own files)
-- [x] Review round 23; findings applied
-- [x] Review round 24; findings applied
-- [x] Review round 25; finding applied (as one rule for every shared namespace)
-- [x] Review round 26; findings applied
-- [x] Review round 27; findings applied (ShipIt input on stdin; no ownership handoff)
-- [x] Review round 28; findings applied
-- [ ] Review the design until no important findings remain
+- [x] Redesign around the confined Compose container (requirements Q8)
+- [x] Review rounds 7–28 on the redesign; findings applied, or escalated as Q9 and Q10
+- [x] Review until no important findings remain (round 29: none)
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
-- [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
-- [ ] Mechanism 1: `build` every time for the services `up` starts (replaces today's `--build`), with the build model on stdin and no ShipIt file mounted; `up` always `--no-build`
-- [ ] Mechanism 1: minimal Compose helper image (base system plus the orchestrator's Docker packages) as a Dockerfile target, a service in each deployment's Compose definition, and in the image lists of `docker/local/dev.sh`, `docker/local/prod.sh`, `deployment/local/lib.sh`, `deployment/vps/deploy.sh`
-- [ ] Mechanism 1: `config` keeps today's environment (incl. `HOME`); `build` gets `HOME`, `DOCKER_CONFIG`, `BUILDX_CONFIG` on the tmpfs `/tmp`; `up` gets `DOCKER_CONFIG` = the mounted login
-- [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
-- [ ] Mechanism 1: resolve the helper image at startup; refuse the start with a clear message when it is missing or a container cannot start
-- [ ] Mechanism 1: move the override into `<state>/compose/`; `config` and `build` get their ShipIt input on stdin (`-f -`), so no ShipIt file is mounted into a container that reads project paths and every ShipIt file stays root-only
-- [ ] Mechanism 1: registry login copied as `config.json` into one root-only directory in the workspace volume (outside session dirs) before each `up`; `DOCKER_CONFIG` = that directory
-- [ ] Mechanism 1: `up` runs as root; `config`, file reads, and `build` run as the session identity
-- [ ] Reconcile: fresh confined read for the service map, then `start()` through the full resolve-validate-rewrite sequence
-- [ ] Mechanism 2: confined `config --no-consistency <the project services this start names>`, returning the raw bytes too; a start with no project service skips resolve; awaited before the in-flight count in `withUpInFlight`; no orchestrator-side read of the project file
-- [ ] Mechanism 2: plugin stubs (name and image per admitted plugin service) on stdin to `config`; build model (snapshot + stubs, `build.secrets` at workspace paths) on stdin to `build`; stub services dropped from the resolved model; per-start override for exactly the snapshot's services plus admitted plugins
-- [ ] Mechanism 2: top-level `secrets`/`configs` refuse `external` and `name` in every mode
-- [ ] Mechanism 2: `up` without `--remove-orphans`; ShipIt removes orphan containers by name (project label, service in neither the raw list nor the admitted plugins) before `up`
-- [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
-- [ ] Orchestrator-side `docker compose ps`, `logs`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths); plain `docker rm`/`inspect`/`network rm` calls unchanged
-- [ ] Orchestrator-side `stop` with the start's own snapshot and override, found in ShipIt's root-only record of which start last started each service (no container label, so the configuration hash does not change) (keep the pair while a service started from it runs); no container → record the Stop only; pair gone → model-free stop, logged; `down` stops each running service that way first
-- [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
-- [ ] Mechanism 2: `provider` refused; shared namespaces (`pid`, `ipc`, `network_mode`, `uts`, `cgroup`, `userns_mode`) refuse `host` and `container:<name>` in every mode; bind rule with today's socket allowance, matched exactly (not by prefix); named-volume (with the `persist` / `persist/<sub>` exemption), `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
-- [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container and named by the Docker-host path; inlined `env_file`/`label_file` keys removed; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
-- [ ] Mechanism 2: one snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; `up` starts from it; the service map stays on the raw bytes (every service, every profile), not the resolved model
-- [ ] Mechanism 2: step 4 records each rewritten bind's workspace-relative path; overlay dep-dir matching (`overlayMountsForService`) uses it
-- [x] Review round 17; findings applied
-- [ ] Mechanism 2: plugin-only stacks keep the override-only path
-- [ ] Mechanism 2: every orchestrator-side reader of the project file (`parseProjectCompose`, `assertProjectComposeStillValid`, reconcile, `parseUserNamedVolumes`, `readProjectServices`, `collectPluginFragmentIssues`) parses raw bytes from a confined read made for that operation (a start uses its own `config` run's bytes); no reuse of earlier bytes
-- [ ] Mechanism 1: `config`, file reads, and `build` also mount this session's scratch directory (`<sessionDir>/scratch`, the agent's `/persist`) at its orchestrator path, with the same access as the workspace
-- [ ] Tests: `docker run` arguments per command and cleanup, ownership, resolved-model validation over recorded `config` output, rewrite, secret-file copy, file-key removal, plugin-only path, fail-closed paths
+
+## Mechanism 1 — confined Compose containers
+
+- [ ] Minimal Compose helper image (base system plus the orchestrator's Docker packages) as a Dockerfile target, a service in each deployment's Compose definition, and in the image lists of `docker/local/dev.sh`, `docker/local/prod.sh`, `deployment/local/lib.sh`, `deployment/vps/deploy.sh`
+- [ ] Pin one checked `docker-compose-plugin` version (not 2.34.0) in `docker/Dockerfile.prod`, `docker/Dockerfile.dev`, and the helper image
+- [ ] Resolve the helper image at startup; refuse a start with a clear message when it is missing or a container cannot start
+- [ ] Run `config`, project-file reads, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md: mounts at orchestrator paths, `--network none`, read-only root with tmpfs `/tmp`, `no-new-privileges`, `composeSpawnEnv` only
+- [ ] `config`, file reads, and `build` mount this session's workspace and scratch (`<sessionDir>/scratch`) and no ShipIt file; their ShipIt input comes on stdin (`-f -`); they run as the session identity (plus the socket group for `build`)
+- [ ] `up --no-build` runs as root with the snapshot and `compose/`, the service-env files, and the registry login; no workspace
+- [ ] Bind-mount every ShipIt file from its Docker-host path (`workspaceVolumeDaemonPath`); a `SHIPIT_SERVICE_ENV_DIR` outside the workspace volume needs a supplied host path, else refuse with a message naming the setting
+- [ ] Registry login copied as `config.json` into one root-only directory in the workspace volume (outside session dirs) before each `up`; `DOCKER_CONFIG` = that directory
+- [ ] Environment: `config` keeps today's values (incl. `HOME`); `build` gets `HOME`, `DOCKER_CONFIG`, `BUILDX_CONFIG` on the tmpfs; working directory = the workspace (`compose/` for `up`)
+- [ ] Unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
+- [ ] Failure messages: the fix appended to path-read failures; a registry-auth build failure names the requirement 6 exception
+- [ ] `build` every time for the services `up` starts (replaces today's `--build`); `up` always `--no-build`
+- [ ] Orchestrator-side `docker compose ps`, `logs`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it; plain `docker rm`/`inspect`/`network rm` calls unchanged
+- [ ] Orchestrator-side `stop` with the start's own snapshot and override, found in ShipIt's root-only record of which start last started each service (no container label); keep the pair while such a service runs; no container → record the Stop only; pair gone → model-free stop, logged; `down` stops each running service that way first
+- [ ] Volume teardown: the final model-free `down` keeps `--volumes` (else `docker rm -fv` first), then remove the volumes that carry this project's Compose label, by name
+
+## Mechanism 2 — resolve once, validate, rewrite, start from that file
+
+- [ ] Confined `config --no-consistency <the project services this start names>` with the plugin stubs on stdin, returning the raw bytes too; a start with no project service skips resolve; stub services dropped from the resolved model
+- [ ] Every reader of the project file (`parseProjectCompose`, `assertProjectComposeStillValid`, reconcile, `parseUserNamedVolumes`, `readProjectServices`, `collectPluginFragmentIssues`) parses raw bytes from a confined read made for that operation; no orchestrator-side read, no reuse of earlier bytes; the service map stays on the raw bytes
+- [ ] Syntax checks on the raw bytes; security checks once, on the resolved model (accept only Compose's own normalization)
+- [ ] Rules in every mode: `provider` refused; shared namespaces (`pid`, `ipc`, `network_mode`, `uts`, `cgroup`, `userns_mode`) refuse `host` and `container:<name>`; binds inside the workspace or refused, with today's socket allowance matched exactly; named volumes declared (with the `persist` / `persist/<sub>` exemption); `volumes_from` service-only; top-level `secrets`/`configs` `file:` inside the workspace, `external` and `name` refused; anything unresolved refused
+- [ ] Refuse, never drop, an `env_file` that `config` did not inline
+- [ ] Rewrite: `rewriteVolumes` on absolute sources, recording each bind's workspace-relative path for `overlayMountsForService`; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container into `state/compose/secrets/`; inlined `env_file`/`label_file` keys removed; the override stops rewriting volumes and moves into `compose/`
+- [ ] One snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; build model (snapshot + stubs, `build.secrets` at workspace paths) on stdin to `build`; per-start override for exactly the snapshot's services plus admitted plugins, with `pull_policy: never` on built services
+- [ ] `up` without `--remove-orphans`; ShipIt removes orphan containers by name before `up`
+- [ ] In `withUpInFlight`: the start adds its promise to `upSettled`, then awaits the resolve before the in-flight count, then skips `build`/`up` if `stoppedByUser` holds the service
+- [ ] Reconcile: fresh confined read for the service map, then `start()` through the full sequence; plugin-only stacks keep the override-only path
+
+## Finish
+
+- [ ] Tests: `docker run` arguments per command and cleanup, resolved-model validation over recorded `config` output, rewrite, secret-file copy, file-key removal, stop record, plugin-only path, fail-closed paths
 - [ ] Docs: `shipit-docs/compose.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
 - [ ] `npm run lint:dev`, `npm run typecheck`, affected `npx vitest run`
 - [ ] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement
