@@ -81,6 +81,7 @@ The findings that still shape this design:
 | 22 (run `3423fa94-5659-49e8-8a8a-35e1cab27a5f`) | `rm` and `inspect` are plain Docker commands on container IDs, not Compose commands; a symlink can still reach the helper image's own files | Mechanism 1 — plain Docker commands unchanged; the helper-image files → requirements Q10 |
 | 23 (run `6c66d249-c288-4c31-8705-cf6107c5d6ab`) | After `build`, `up --no-build` with `pull_policy: always` would pull over the local build; label-based volume removal misses anonymous volumes | Mechanism 2 step 6 — `pull_policy: never` on built services in the per-start override; Mechanism 1 — the final `down` keeps `--volumes` for anonymous volumes |
 | 24 (run `5b8e7c49-e04b-424b-9632-ab940de2612f`) | `pid: host` / `pid: container:` is not checked; the socket exception is a prefix match | Mechanism 2 step 3 — a `pid` rule in every mode; the socket source must match exactly |
+| 25 (run `b14655ea-4487-42b8-98ba-aecef07994ab`) | `ipc: container:` shares another container's `/dev/shm` files | Mechanism 2 step 3 — one shared-namespace rule for `pid`, `ipc`, `network_mode`, `uts`, `cgroup`, `userns_mode` |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -384,11 +385,15 @@ snapshot.
      `persist/<sub>` (the source does not start with `.`, `/`, or `~`), and
      `--no-consistency` leaves the undeclared name as it is, so ShipIt still
      finds its short form in the resolved model (`persistSubpathOf`).
-   - **`pid`.** Absent, or a service of this project (`service:<name>`), in
-     every mode. `host` and `container:<name>` are refused (req 2a): sharing
-     another PID namespace shows that namespace's processes, and through
-     `/proc` their files, to a service that Open sessions let run as root with
-     added capabilities. Today `pid` is not checked at all.
+   - **Shared namespaces.** A service may share a namespace only with a service
+     of this project, in every mode. For every field that joins one — `pid`,
+     `ipc`, `network_mode`, `uts`, `cgroup`, `userns_mode` — the `host` and
+     `container:<name>` forms are refused (req 2a); `service:<name>` and a
+     field's own private values stay permitted. Joining another PID namespace
+     shows its processes, and through `/proc` their files, to a service that
+     Open sessions let run as root with added capabilities; joining another IPC
+     namespace shares its `/dev/shm` files. Today `pid` and `ipc` are not
+     checked at all, and `network_mode` refuses only `host`.
    - **`volumes_from`.** Only a service of this project, whose own mounts are
      checked here. The `container:<name>` form is refused (req 2a); today it is
      refused in contained sessions only.
