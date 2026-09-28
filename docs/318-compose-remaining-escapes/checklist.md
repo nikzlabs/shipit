@@ -18,11 +18,13 @@
 - [x] Review round 15; findings applied
 - [x] Review round 16; finding applied
 - [ ] Pin one checked `docker-compose-plugin` version (not 2.34.0) in `docker/Dockerfile.prod`, `docker/Dockerfile.dev`, and the helper image; refuse, never drop, an `env_file` that `config` did not inline
-- [ ] Mechanism 1: bind-mount every ShipIt file into helpers from its Docker-host path: `workspaceVolumeDaemonPath` for the workspace volume (includes the default service-env directory), `dockerSecretsConfig.hostDir` for secret copies; a `SHIPIT_SERVICE_ENV_DIR` outside the volume needs a supplied host path, else refuse with a message naming the setting
+- [ ] Mechanism 1: bind-mount every ShipIt file into helpers from its Docker-host path: `workspaceVolumeDaemonPath` for the workspace volume (includes the state dir, the project secret copies in `state/compose/secrets/`, and the default service-env directory); a `SHIPIT_SERVICE_ENV_DIR` outside the volume needs a supplied host path, else refuse with a message naming the setting
+- [ ] Volume teardown: after the model-free `down`, remove the volumes that carry this project's Compose label, by name
 - [ ] Mechanism 2: a start adds its promise to `upSettled` before the resolve and skips `build`/`up` if `stoppedByUser` holds the service afterwards
 - [x] Review round 18; findings applied
 - [x] Review round 19; findings applied
 - [x] Review round 20; findings applied
+- [x] Review round 21; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)

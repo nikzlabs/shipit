@@ -77,6 +77,7 @@ The findings that still shape this design:
 | 18 (run `57ae112d-1207-4851-b2d9-79f54fb27dda`) | Helper bind sources under `/workspace` are not Docker-host paths; a Stop during the awaited resolve is missed; `Dockerfile.dev` is unpinned too | Mechanism 1 — host-path translation for every ShipIt file; *Where this runs* — the start registers in `upSettled` before the resolve and re-checks Stop; both orchestrator Dockerfiles pinned |
 | 19 (run `fc18dd8f-a318-4061-a820-d255316bb4f1`) | `deployment/local/lib.sh` builds a fourth image list; changing `HOME` changes `${HOME}` interpolation; the service-env files have no Docker-host translation today | Key files — the fourth list; Mechanism 1 — `config` keeps today's environment; host path via the workspace volume (the default), or supplied |
 | 20 (run `5a762732-8294-4623-97a1-a1935b446994`) | Readers that reuse earlier raw bytes see a stale file; `stop` can come before any snapshot exists | Mechanism 2 — a fresh confined read per operation; Mechanism 1 — `stop` finds its pair by a container label, and handles no container and no pair |
+| 21 (run `650db04e-e8a6-41d5-ab58-9fc1b35d5890`) | A model-free `down --volumes` leaves declared volumes; `dockerSecretsConfig.hostDir` is not set in shipped deployments | Mechanism 1 — ShipIt removes the project's labelled volumes by name; secret copies in the session state dir, via the workspace-volume translation |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -116,7 +117,7 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   the build read a project secret file, and step 4 points the snapshot at
   ShipIt's copy of it. So `build` mounts those copies, read-only, at the
   Docker-host path the snapshot names. They are the project's own content, kept
-  in a per-session directory of their own, apart from ShipIt's secret files for
+  in `<sessionDir>/state/compose/secrets/`, apart from ShipIt's secret files for
   `x-shipit-secrets`, which no confined container mounts.
 
 - **ShipIt's service-env files never share a container with project reads.**
@@ -149,10 +150,12 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   translated as `workspaceVolumeDaemonPath` (`compose-persist.ts`) already does.
   That covers the service-env directory by default, which is
   `<stateDir>/service-env` inside that volume (`bootstrap-managers.ts`); no
-  translation exists for it today. The project secret copies sit beside
-  ShipIt's secret files, whose host path the deployment already supplies
-  (`dockerSecretsConfig.hostDir`). A `SHIPIT_SERVICE_ENV_DIR` set outside the
-  workspace volume needs its Docker-host path supplied the same way; without
+  translation exists for it today. The project secret copies live in the
+  session's state directory, inside that volume too, so the same translation
+  covers them in every deployment (`dockerSecretsConfig`, with its own host
+  path, exists only when `SHIPIT_SECRETS_INTERNAL_DIR` is set). A
+  `SHIPIT_SERVICE_ENV_DIR` set outside the workspace volume needs its
+  Docker-host path supplied; without
   it, a start that needs service-env files is refused with a message that
   names the setting (req 6). The agent can write none of these paths, so the
   daemon's resolution of them on the host cannot be steered. The workspace
@@ -178,7 +181,10 @@ start for each would cost too much, and they do not need one.
   to stop; the racing start then sees it (*Where this runs*). If the pair is
   gone, `stop` runs model-free, as below, and logs that no `pre_stop` hook ran.
   `down` first stops each running service that way, then runs as below to
-  remove the rest.
+  remove the rest. A model-free `down --volumes` no longer knows the declared
+  named volumes, so when ShipIt removes volumes (today `ServiceManager.stop`
+  passes `--volumes`), it removes the volumes that carry this project's
+  Compose label, by name.
 - `ps`, `logs`, `rm`, `inspect`, and the final `down` run with `-p <project>`
   and **no model file**, so Compose finds the stack's containers by the
   project label and opens no project file and no snapshot. Without `-f`,
@@ -376,10 +382,9 @@ snapshot.
      volume (today `generateComposeOverride` declares the per-session volume only
      for its *own* mounts).
    - Each project `secrets`/`configs` `file:` is read through a confined
-     container (workspace read-only, no socket), written into a per-session
-     directory for project copies (beside, not inside, ShipIt's own secret
-     files), and named by its Docker-host path, as ShipIt's own secret files
-     are (`composeSecretFilePath`). The daemon then binds ShipIt's
+     container (workspace read-only, no socket), written into
+     `<sessionDir>/state/compose/secrets/`, and named by its Docker-host path
+     (`workspaceVolumeDaemonPath`). The daemon then binds ShipIt's
      copy, never a workspace path it would resolve on the host. This runs only
      when the project declares such a file.
    - The `env_file` and `label_file` keys are removed, because on the pinned
@@ -491,9 +496,10 @@ refused value names the field, the resolved value, and what to use instead
   `rewriteVolumes` on absolute sources with ShipIt volume declarations beside
   the mounts; the override no longer rewrites volumes and moves into
   `compose/`.
-- `secret-resolver.ts` — write project secret/config copies into their own
-  per-session directory, readable by the session identity (root-gated); the
-  service-env files are unchanged.
+- `secret-resolver.ts` / `service-manager.ts` — write project secret/config
+  copies into `<sessionDir>/state/compose/secrets/`, readable by the session
+  identity (root-gated); the service-env files are unchanged. On volume
+  teardown, remove the volumes labelled with this project, by name.
 - `services/plugin-services.ts`, `api-routes-plugin-repos.ts` — read project
   service names from the confined run's raw bytes, not the file.
 - `app-lifecycle.ts` / `startup-janitor.ts` — resolve the helper image; sweep
