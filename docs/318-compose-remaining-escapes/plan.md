@@ -80,6 +80,7 @@ until a review has no important findings.
 | 5 | `config` without profiles leaves profiled services out of the snapshot | Mechanism 2 step 2 — every profile enabled |
 | 5 | Refusing every `label_file` breaks a stack whose label file is in the workspace | Mechanism 2 step 1 — a checked copy in the project file; refused only in `extends` files |
 | 5 (found while applying the above) | `config` read the project file from the workspace again after ShipIt's checks | Mechanism 2 step 1 — `config` reads ShipIt's copy |
+| 6, `95167b07-e363-4746-8ab3-5629a99b8153` | The Q5 window can reach ShipIt's database; the `extends` / `label_file` refusals and the Dockerfile inlining break working stacks | Not applied — open question Q8 in requirements.md, because it goes against Q5 and requirement 6 |
 
 ## Mechanism 1 — run Compose as the session uid
 

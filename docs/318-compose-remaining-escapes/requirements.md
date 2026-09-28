@@ -75,7 +75,27 @@ paths.
 
 ## Open questions
 
-*(none — Q1–Q7 answered. Implementation is unblocked.)*
+- **Q8: review round 6 (2026-09-28, run `95167b07-e363-4746-8ab3-5629a99b8153`)
+  undercut the Q5 decision and found two conflicts with requirement 6. How do
+  we go on?** (1) The Q5 exception assumed the short window reaches only
+  harmless world-readable files. But ShipIt's database is at
+  `/workspace/.shipit.db` on the shared volume root, opened with no mode
+  restriction (`shared/database.ts`, `DatabaseManager`), so it is probably
+  world-readable and inside the window. (2) Refusing an interpolated
+  `extends.file`, or a `label_file` inside an extended file, breaks Open-session
+  stacks that work today. (3) Giving the Dockerfile inline drops a
+  Dockerfile-specific `.dockerignore`, which can break a build. Options:
+  **(a, recommended)** run Compose's `config` and `up`/build in a throwaway
+  container that sees only this session's workspace, ShipIt's own files for
+  this stack, and the Docker socket (Q5 option b). The kernel then confines
+  every file Compose reads, so the copies, the Dockerfile inlining, the special
+  `extends` / `label_file` / `.env` handling, and the Q5 window all go away;
+  the resolved-model validation of mounts and security settings stays. This
+  replaces the Q3 choice (session uid). **(b)** keep the current design, make
+  ShipIt's database and other private files unreadable to session users, and
+  record the three stack breaks as exceptions to requirement 6. **(c)** keep
+  the current design and add more special handling (stage `extends` files,
+  keep Dockerfile ignore files) — more parts, and more for review to find.
 
 ## Resolved questions
 

@@ -9,6 +9,8 @@
 - [x] Resolve requirements Q5 (the build-context / `extends` `file:` window)
 - [x] Second independent review; requester accepted all findings (requirements Q6); plan.md revised
 - [x] Third, fresh review; requester accepted all findings (requirements Q7); plan.md revised
+- [x] Review loop rounds 4–5; findings applied (plan.md review record)
+- [ ] Resolve requirements Q8 (round 6: Q5 window reaches the database; requirement 6 conflicts)
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: one Compose spawn helper with the root-gated uid/gid drop; `streamLogs` and `snapshotLogs` use it; refuse when root and no identity
 - [ ] Mechanism 1: hand the per-session service-env and docker-secret directories and files, the override, and the snapshot to the session identity (root-gated)
