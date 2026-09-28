@@ -79,6 +79,7 @@ The findings that still shape this design:
 | 20 (run `5a762732-8294-4623-97a1-a1935b446994`) | Readers that reuse earlier raw bytes see a stale file; `stop` can come before any snapshot exists | Mechanism 2 — a fresh confined read per operation; Mechanism 1 — `stop` finds its pair by a container label, and handles no container and no pair |
 | 21 (run `650db04e-e8a6-41d5-ab58-9fc1b35d5890`) | A model-free `down --volumes` leaves declared volumes; `dockerSecretsConfig.hostDir` is not set in shipped deployments | Mechanism 1 — ShipIt removes the project's labelled volumes by name; secret copies in the session state dir, via the workspace-volume translation |
 | 22 (run `3423fa94-5659-49e8-8a8a-35e1cab27a5f`) | `rm` and `inspect` are plain Docker commands on container IDs, not Compose commands; a symlink can still reach the helper image's own files | Mechanism 1 — plain Docker commands unchanged; the helper-image files → requirements Q10 |
+| 23 (run `6c66d249-c288-4c31-8705-cf6107c5d6ab`) | After `build`, `up --no-build` with `pull_policy: always` would pull over the local build; label-based volume removal misses anonymous volumes | Mechanism 2 step 6 — `pull_policy: never` on built services in the per-start override; Mechanism 1 — the final `down` keeps `--volumes` for anonymous volumes |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -186,10 +187,14 @@ removal (Mechanism 2 step 6) uses them too.
   to stop; the racing start then sees it (*Where this runs*). If the pair is
   gone, `stop` runs model-free, as below, and logs that no `pre_stop` hook ran.
   `down` first stops each running service that way, then runs as below to
-  remove the rest. A model-free `down --volumes` no longer knows the declared
-  named volumes, so when ShipIt removes volumes (today `ServiceManager.stop`
-  passes `--volumes`), it removes the volumes that carry this project's
-  Compose label, by name.
+  remove the rest. When ShipIt removes volumes (today `ServiceManager.stop`
+  passes `--volumes`), the final `down` keeps `--volumes`, so Compose removes
+  each container together with its anonymous volumes (including volumes an
+  image declares), which needs no model. A model-free `down` no longer knows
+  the declared named volumes, so ShipIt then removes the volumes that carry
+  this project's Compose label, by name. That the installed version removes
+  anonymous volumes this way is a deployment check; if it does not, ShipIt
+  removes the project's containers with `docker rm -fv` before the `down`.
 - `ps`, `logs`, and the final `down` run with `-p <project>`
   and **no model file**, so Compose finds the stack's containers by the
   project label and opens no project file and no snapshot. Without `-f`,
@@ -415,7 +420,11 @@ snapshot.
    the snapshot plus the admitted plugin services. Today the override has an
    entry for every parsed project service (`generateComposeOverride`); an entry
    for a service the snapshot does not hold would have no image or build, and
-   Compose would refuse it. Then `build` runs with `-f <snapshot> -f <plugin
+   Compose would refuse it. The override also sets `pull_policy: never` on each
+   service this start builds. Today `up --build` pulls and then builds, so the
+   local build wins even under `pull_policy: always`; a separate `up` after
+   `build` would otherwise pull the registry image over it. Image-only
+   services keep their pull policy. Then `build` runs with `-f <snapshot> -f <plugin
    stubs>` (step 1), so that a project service's `depends_on` on a plugin
    service resolves during the build, and `up --no-build` with `-f <snapshot>
    -f <override>`, each in its confined container (Mechanism 1). On the
