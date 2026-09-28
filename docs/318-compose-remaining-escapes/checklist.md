@@ -15,6 +15,7 @@
 - [x] Review round 12; findings applied
 - [x] Review round 13; finding applied
 - [x] Review round 14; findings applied
+- [x] Review round 15; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -23,9 +24,10 @@
 - [ ] Mechanism 1: `HOME` and `BUILDX_CONFIG` on the container's tmpfs `/tmp`
 - [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
 - [ ] Mechanism 1: resolve the helper image at startup; refuse the start with a clear message when it is missing or a container cannot start
-- [ ] Mechanism 1: move the override into `<state>/compose/`; hand `compose/`, the per-session service-env directory, the per-session project secret-copy directory, and their files to the session identity (root-gated)
+- [ ] Mechanism 1: move the override into `<state>/compose/`; make the snapshot, the plugin stubs file, and the project secret copies readable by the session identity (root-gated); override and service-env files stay root-only
+- [ ] Mechanism 1: `up` runs as root with the Docker client config mounted read-only at a fixed path and `DOCKER_CONFIG` set to it; `config`, file reads, and `build` run as the session identity
 - [ ] Mechanism 2: confined `config --no-consistency <the project services this start names>`, returning the raw bytes too; a start with no project service skips resolve; awaited before the in-flight count in `withUpInFlight`; no orchestrator-side read of the project file
-- [ ] Mechanism 2: per-start override for exactly the snapshot's services plus admitted plugins; build view of name-and-image plugin stubs for `build`
+- [ ] Mechanism 2: plugin stubs file (name and image per admitted plugin service) given to `config` and `build`; stub services dropped from the resolved model; per-start override for exactly the snapshot's services plus admitted plugins
 - [ ] Mechanism 2: `up` without `--remove-orphans`; ShipIt removes orphan containers by name (project label, service in neither the raw list nor the admitted plugins) before `up`
 - [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
 - [ ] Orchestrator-side `ps`, `logs`, `rm`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths)
