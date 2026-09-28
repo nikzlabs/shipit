@@ -29,6 +29,7 @@
 - [x] Review round 22; finding 2 applied, finding 1 → requirements Q10
 - [x] Resolve requirements Q10 (the helper container's own files)
 - [x] Review round 23; findings applied
+- [x] Review round 24; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -46,7 +47,7 @@
 - [ ] Orchestrator-side `docker compose ps`, `logs`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths); plain `docker rm`/`inspect`/`network rm` calls unchanged
 - [ ] Orchestrator-side `stop` with the start's own snapshot and override, found by a snapshot label the override puts on each container (keep the pair while a service started from it runs); no container → record the Stop only; pair gone → model-free stop, logged; `down` stops each running service that way first
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
-- [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume (with the `persist` / `persist/<sub>` exemption), `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
+- [ ] Mechanism 2: `provider` refused; `pid` only absent or `service:<name>` (every mode); bind rule with today's socket allowance, matched exactly (not by prefix); named-volume (with the `persist` / `persist/<sub>` exemption), `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
 - [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container and named by the Docker-host path; inlined `env_file`/`label_file` keys removed; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
 - [ ] Mechanism 2: one snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; `up` starts from it; the service map stays on the raw bytes (every service, every profile), not the resolved model
 - [ ] Mechanism 2: step 4 records each rewritten bind's workspace-relative path; overlay dep-dir matching (`overlayMountsForService`) uses it

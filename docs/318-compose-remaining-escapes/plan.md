@@ -80,6 +80,7 @@ The findings that still shape this design:
 | 21 (run `650db04e-e8a6-41d5-ab58-9fc1b35d5890`) | A model-free `down --volumes` leaves declared volumes; `dockerSecretsConfig.hostDir` is not set in shipped deployments | Mechanism 1 — ShipIt removes the project's labelled volumes by name; secret copies in the session state dir, via the workspace-volume translation |
 | 22 (run `3423fa94-5659-49e8-8a8a-35e1cab27a5f`) | `rm` and `inspect` are plain Docker commands on container IDs, not Compose commands; a symlink can still reach the helper image's own files | Mechanism 1 — plain Docker commands unchanged; the helper-image files → requirements Q10 |
 | 23 (run `6c66d249-c288-4c31-8705-cf6107c5d6ab`) | After `build`, `up --no-build` with `pull_policy: always` would pull over the local build; label-based volume removal misses anonymous volumes | Mechanism 2 step 6 — `pull_policy: never` on built services in the per-start override; Mechanism 1 — the final `down` keeps `--volumes` for anonymous volumes |
+| 24 (run `5b8e7c49-e04b-424b-9632-ab940de2612f`) | `pid: host` / `pid: container:` is not checked; the socket exception is a prefix match | Mechanism 2 step 3 — a `pid` rule in every mode; the socket source must match exactly |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -366,10 +367,13 @@ snapshot.
    - **Bind sources.** Inside this session's workspace → rewritten (step 4).
      Outside → refused (req 2, req 3). This covers `./data`, `data`, `.cache`,
      and `{type: bind, source: data}` alike. The one exception is today's
-     Docker socket allowance, unchanged: `/var/run/docker.sock` with
+     Docker socket allowance: `/var/run/docker.sock` with
      `compose.docker-socket: true`, and in contained sessions only the trusted
      proxy's read-only mount (`validateServiceSecurity`; the ops template in
-     `templates-ops.ts` depends on it).
+     `templates-ops.ts` depends on it). The source must be exactly that path.
+     Today's absolute-path check skips every source that merely *starts with*
+     it (`startsWith("/var/run/docker.sock")`), so `/var/run/docker.sock.bak`
+     passes; the resolved rule does not copy that.
    - **Named-volume sources.** Must name a volume declared in the resolved
      top-level `volumes:`, never a name reserved for ShipIt's own mounts; the
      declarations get the top-level rules (no reserved name, no `driver_opts`,
@@ -380,6 +384,11 @@ snapshot.
      `persist/<sub>` (the source does not start with `.`, `/`, or `~`), and
      `--no-consistency` leaves the undeclared name as it is, so ShipIt still
      finds its short form in the resolved model (`persistSubpathOf`).
+   - **`pid`.** Absent, or a service of this project (`service:<name>`), in
+     every mode. `host` and `container:<name>` are refused (req 2a): sharing
+     another PID namespace shows that namespace's processes, and through
+     `/proc` their files, to a service that Open sessions let run as root with
+     added capabilities. Today `pid` is not checked at all.
    - **`volumes_from`.** Only a service of this project, whose own mounts are
      checked here. The `container:<name>` form is refused (req 2a); today it is
      refused in contained sessions only.
