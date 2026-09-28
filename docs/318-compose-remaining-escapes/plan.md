@@ -27,7 +27,7 @@ as a follow-up on planning#620.
 
 ## Design history
 
-Seven review rounds on 2026-09-27/28 shaped this plan. Rounds 1–5 hardened an
+Independent review rounds on 2026-09-27/28 shaped this plan. Rounds 1–5 hardened an
 earlier design: the Compose CLI on the orchestrator, dropped to the session uid
 (Q3), plus ShipIt-made copies of every file reference and special handling for
 `extends`, `label_file`, `.env`, and Dockerfiles. Round 6 (run
@@ -54,7 +54,7 @@ The findings that still shape this design:
 | 7 | The raw gate read the project file on the orchestrator | Mechanism 2 steps 1–2 — the confined run returns the raw bytes; the raw gate stays (Q4) |
 | 7 | A stack with only plugin services has no project file to resolve | Mechanism 2 — override-only path |
 | 8 (run `f44fd239-5da5-40b6-95cd-e90eb1fcfd24`) | `build.secrets` reads a project secret file, which `build` could not see after the copy | Mechanism 1 — `build` also mounts the project's secret copies, kept apart from ShipIt's own |
-| 8 | Plugin preflight, plugin issue collection, and `parseUserNamedVolumes` also read the project file on the orchestrator | Mechanism 2 — every reader uses the resolved model |
+| 8 | Plugin preflight, plugin issue collection, and `parseUserNamedVolumes` also read the project file on the orchestrator | Mechanism 2 — every reader parses the raw bytes of the confined run (refined in round 10) |
 | 9 (run `c752d0d7-2b72-4994-95e7-743c74e93c72`) | `build` mounted all of `compose/`, and the override holds plugin credential values inline | Mechanism 1 — `build` mounts only its snapshot file |
 | 9 | The orchestrator image holds ShipIt's own files (`/app`), which a build context could name | Mechanism 1 — a dedicated minimal helper image |
 | 9 | `up` always passes `--build` today, so building only missing images would ignore an edited Dockerfile | Mechanism 1 — `build` runs every time, for the services `up` starts |
@@ -62,7 +62,7 @@ The findings that still shape this design:
 | 10 (run `8c2c20a0-bd6e-4375-978a-d387b620aa99`) | A project service can depend on a plugin service, which the project file alone does not declare | Mechanism 2 step 1 — `config` skips the consistency check; `up` checks with the override merged |
 | 10 | Enabling every profile makes a dormant service's missing `env_file` block the stack | Mechanism 2 step 1 — only the profiles this start needs; the service map comes from the raw bytes, as today |
 | 11 (run `f390d1c3-db8d-4a42-aaa6-08a6e147440e`) | A snapshot of only the named services leaves override entries with no image; with `--remove-orphans` it would also remove the other services' containers | Mechanism 2 step 6 — a per-start override; `--remove-orphans` replaced in round 12 |
-| 11 | A plugin service can be started by name, and `build` without the override cannot resolve a `depends_on` on a plugin service | Mechanism 2 step 1 — plugin names are not passed; step 6 — a credential-free build view |
+| 11 | A plugin service can be started by name, and `build` without the override cannot resolve a `depends_on` on a plugin service | Mechanism 2 step 1 — plugin names are not passed; the plugin stubs file (rounds 12 and 15) |
 | 12 (run `ed43e07e-1c4a-4e5f-9fcb-cf5a530022ed`) | Without `-f`, Compose looks for a Compose file in the working directory, which is the workspace | Mechanism 1 — orchestrator-side commands run in an empty ShipIt directory |
 | 12 | Enabling a named service's profiles also enables its profile peers; profiles from `extends` are not in the raw list | Mechanism 2 step 1 — `config` names the services (round 10's form); step 6 — ShipIt removes orphans itself, so `--remove-orphans` (round 11's concern) is no longer passed |
 | 12 | The build view's plugin mounts had no volume declarations | Mechanism 2 step 6 — the build view holds only name-and-image stubs |
@@ -73,6 +73,7 @@ The findings that still shape this design:
 | 15 (run `977abb12-868f-4948-83e7-6eb8fdfc093e`) | Selecting a service follows its `depends_on` even with `--no-consistency`, so a plugin dependency fails in `config` | Mechanism 2 step 1 — the plugin stubs file is given to `config` too |
 | 15 | With `HOME` on `/tmp` and a session-identity user, `up` would not find or read the registry login | Mechanism 1 — `DOCKER_CONFIG` names the mounted login; `up` runs as root, so the override and service-env files stay root-only |
 | 16 (run `27ade2a2-1583-447f-9371-69c26cd280c0`) | On Compose 2.34.0, `config <name>` keeps a profiled service's `env_file` without inlining it, and Compose is unpinned | Mechanism 1 — one pinned, checked Compose version in both images; Mechanism 2 step 4 — refuse, never drop, an un-inlined `env_file` |
+| 17 (run `d670dd26-5e2f-4c19-a7d6-22d51a76b085`) | Overlay dep-dir matching reads only `./` sources, which the rewrite replaces; the checklist said the service map comes from the resolved model; the registry-login exception had no diagnostic | *What moves out of the override* — the matcher uses the recorded workspace path; checklist fixed; *Failure* — a registry-auth build failure names the exception |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -211,8 +212,11 @@ env-file resolution off, stripped of file keys, and validated the same way.
   ShipIt refuses the start with a message that says so (req 5, req 6). When
   Compose fails on a path it cannot find or read, ShipIt adds the fix to
   Compose's message: Compose sees only this session's workspace, so a file
-  reference, or the symlink it follows, must point inside it (req 5). The
-  output stream to the service log is unchanged.
+  reference, or the symlink it follows, must point inside it (req 5). When a
+  `build` fails on registry authentication, ShipIt adds that builds do not get
+  the orchestrator's registry login, and to use a pullable base image or
+  publish the image and name it instead (req 5, the requirement 6 exception).
+  The output stream to the service log is unchanged.
 
 ### Which ShipIt files the session identity must read
 
@@ -399,8 +403,11 @@ file's raw bytes through a confined container and parses them as today.
 `rewriteVolumes` moves from `generateComposeOverride` to step 4 and runs on
 absolute sources. The override keeps only what ShipIt adds (labels, networks,
 user, secrets wiring, the entrypoint bind, overlay dep-dir mounts). Overlay
-dep-dir matching (`overlayMountsForService`) reads the rewritten mounts. The
-override moves into the `compose/` subdirectory.
+dep-dir matching (`overlayMountsForService`) recognises only `.` and `./…`
+sources today, and a rewritten mount's source is a volume name. So step 4
+records, for each bind it rewrites, the workspace-relative path it came from,
+and the matcher uses that path. The override moves into the `compose/`
+subdirectory.
 
 ### Failure
 

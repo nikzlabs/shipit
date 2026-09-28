@@ -37,7 +37,9 @@
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
 - [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume (with the `persist` / `persist/<sub>` exemption), `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
 - [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container and named by the Docker-host path; inlined `env_file`/`label_file` keys removed; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
-- [ ] Mechanism 2: one snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; `up` starts from it; service map from the resolved model
+- [ ] Mechanism 2: one snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; `up` starts from it; the service map stays on the raw bytes (every service, every profile), not the resolved model
+- [ ] Mechanism 2: step 4 records each rewritten bind's workspace-relative path; overlay dep-dir matching (`overlayMountsForService`) uses it
+- [x] Review round 17; findings applied
 - [ ] Mechanism 2: plugin-only stacks keep the override-only path
 - [ ] Mechanism 2: every orchestrator-side reader of the project file (`parseProjectCompose`, `assertProjectComposeStillValid`, reconcile, `parseUserNamedVolumes`, `readProjectServices`, `collectPluginFragmentIssues`) parses the raw bytes of the latest confined run, or reads the file through a confined container when there is none
 - [ ] Mechanism 1: `build` mounts the project secret/config copies (own per-session directory, at their Docker-host path)
