@@ -76,8 +76,21 @@ paths.
 
 ## Open questions
 
-*(none — Q1–Q9 answered. Implementation is unblocked once the design review
-is clean.)*
+- **Q10: may a file reference reach the helper container's own files?**
+  Review round 22 (2026-09-28, run `3423fa94-5659-49e8-8a8a-35e1cab27a5f`).
+  Requirement 1 says a reference must not read files "outside this session's
+  own workspace". In the confined design, a workspace symlink resolves inside
+  the throwaway helper container, so it can reach that container's own files —
+  the helper image's base files, and the `/etc/hosts`, `/etc/resolv.conf`, and
+  `/etc/hostname` that Docker puts into every container. None of these belongs
+  to another session, the shared volume root, ShipIt, or the Docker host,
+  which is how this document defines "outside its session". No container
+  design can hide Docker's own `/etc` files. Options: **(a, recommended)**
+  reword requirement 1 to that definition (no file of another session, the
+  shared volume root, ShipIt or the orchestrator, or the Docker host), and keep
+  the helper image as small as practical, so little else is there; **(b)**
+  keep the literal wording, and add ShipIt-side checks of every reference on
+  top of the confinement — the copy-and-check mechanism that Q8 removed.
 
 ## Resolved questions
 

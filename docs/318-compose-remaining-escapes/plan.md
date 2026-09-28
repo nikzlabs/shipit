@@ -78,6 +78,7 @@ The findings that still shape this design:
 | 19 (run `fc18dd8f-a318-4061-a820-d255316bb4f1`) | `deployment/local/lib.sh` builds a fourth image list; changing `HOME` changes `${HOME}` interpolation; the service-env files have no Docker-host translation today | Key files — the fourth list; Mechanism 1 — `config` keeps today's environment; host path via the workspace volume (the default), or supplied |
 | 20 (run `5a762732-8294-4623-97a1-a1935b446994`) | Readers that reuse earlier raw bytes see a stale file; `stop` can come before any snapshot exists | Mechanism 2 — a fresh confined read per operation; Mechanism 1 — `stop` finds its pair by a container label, and handles no container and no pair |
 | 21 (run `650db04e-e8a6-41d5-ab58-9fc1b35d5890`) | A model-free `down --volumes` leaves declared volumes; `dockerSecretsConfig.hostDir` is not set in shipped deployments | Mechanism 1 — ShipIt removes the project's labelled volumes by name; secret copies in the session state dir, via the workspace-volume translation |
+| 22 (run `3423fa94-5659-49e8-8a8a-35e1cab27a5f`) | `rm` and `inspect` are plain Docker commands on container IDs, not Compose commands; a symlink can still reach the helper image's own files | Mechanism 1 — plain Docker commands unchanged; the helper-image files → requirements Q10 |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -166,8 +167,12 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 
 The other Compose commands stay on the orchestrator: `ps` (the status poller
 runs it every 5 seconds per session, `service-poller.ts`), `logs` (both log
-paths in `service-manager.ts`), `stop`, `down`, `rm`, and `inspect`. A container
-start for each would cost too much, and they do not need one.
+paths in `service-manager.ts`), `stop`, and `down`. A container start for each
+would cost too much, and they do not need one. The plain Docker commands
+ShipIt runs on container IDs (`docker ps --filter`, `docker inspect`,
+`docker rm -f`, `docker network rm`, in `compose-cli.ts` and
+`service-poller.ts`) read no Compose file and stay as they are; the orphan
+removal (Mechanism 2 step 6) uses them too.
 
 - `stop` and `down` need the model, because Compose runs a service's
   `pre_stop` hook (permitted in Open sessions, `validateServiceSecurity`) from
@@ -185,7 +190,7 @@ start for each would cost too much, and they do not need one.
   named volumes, so when ShipIt removes volumes (today `ServiceManager.stop`
   passes `--volumes`), it removes the volumes that carry this project's
   Compose label, by name.
-- `ps`, `logs`, `rm`, `inspect`, and the final `down` run with `-p <project>`
+- `ps`, `logs`, and the final `down` run with `-p <project>`
   and **no model file**, so Compose finds the stack's containers by the
   project label and opens no project file and no snapshot. Without `-f`,
 Compose looks for a Compose file in its working directory and the directories
@@ -479,8 +484,9 @@ refused value names the field, the resolved value, and what to use instead
   containers with the per-command mounts, working directory, user, isolation,
   and cleanup by name; the session identity and the helper image on
   `ComposeCli`; `up` takes the snapshot path and drops `--remove-orphans`;
-  `stop` with the start's snapshot and override; `ps`, `logs`, `rm`, and the
-  final `down` with `-p`, no model file, and an empty ShipIt working directory;
+  `stop` with the start's snapshot and override; `ps`, `logs`, and the final
+  `down` with `-p`, no model file, and an empty ShipIt working directory
+  (the plain `docker rm`/`inspect` calls unchanged);
   the fix added to path-read failures.
 - `service-manager.ts` — resolve-validate-rewrite in `withUpInFlight` before the
   in-flight count; plugin stubs file; per-start override; orphan removal by
@@ -540,7 +546,7 @@ These need a check on a deployment, listed in the PR test plan:
   project file with the short form written in the long form, mounted over the
   original path inside the confined container, so relative paths still resolve
   as before.
-- `ps`, `logs`, `rm`, and `down` work with `-p <project>` and no model file
+- `ps`, `logs`, and `down` work with `-p <project>` and no model file
   (else the stack-wide-model fallback in Mechanism 1); `stop` with a start's
   snapshot and override runs the service's `pre_stop` hook.
 - The confined containers reach the daemon through the socket with

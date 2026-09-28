@@ -25,6 +25,8 @@
 - [x] Review round 19; findings applied
 - [x] Review round 20; findings applied
 - [x] Review round 21; findings applied
+- [x] Review round 22; finding 2 applied, finding 1 → requirements Q10
+- [ ] Resolve requirements Q10 (the helper container's own files)
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -39,7 +41,7 @@
 - [ ] Mechanism 2: plugin stubs file (name and image per admitted plugin service) given to `config` and `build`; stub services dropped from the resolved model; per-start override for exactly the snapshot's services plus admitted plugins
 - [ ] Mechanism 2: `up` without `--remove-orphans`; ShipIt removes orphan containers by name (project label, service in neither the raw list nor the admitted plugins) before `up`
 - [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
-- [ ] Orchestrator-side `ps`, `logs`, `rm`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths)
+- [ ] Orchestrator-side `docker compose ps`, `logs`, and the final `down` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths); plain `docker rm`/`inspect`/`network rm` calls unchanged
 - [ ] Orchestrator-side `stop` with the start's own snapshot and override, found by a snapshot label the override puts on each container (keep the pair while a service started from it runs); no container → record the Stop only; pair gone → model-free stop, logged; `down` stops each running service that way first
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
 - [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume (with the `persist` / `persist/<sub>` exemption), `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
