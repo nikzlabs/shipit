@@ -106,6 +106,14 @@ lets any service mount the raw socket (fixed: ops sessions get only the trusted
 proxy's mount without the grant); the setting needs its reader, operation, apply,
 and client parts (added); and the grant depends on the container guard's peer
 address check (filed as planning#621, since it applies to every user-only route).
+Round 31 (run `ec0d3819-2662-458f-a4d8-93f6ca98941a`) found that `volumes_from`
+could inherit the proxy's socket mount (fixed: a socket-bearing service cannot
+be named) and that a sandbox has no repository to hold the grant (it gets no
+socket; its own Docker access switch is the user's path). It also said the
+agent-facing reader and `::set` operation could go. They stay: the reader keeps
+`shipit settings get` complete, and the operation lets the agent ask for the
+grant on a proposal card that only the user can accept, the same as
+`allowAgentMerge`.
 
 ## Mechanism 1 — confined Compose containers
 
@@ -423,7 +431,12 @@ snapshot.
      checked at all, and `network_mode` refuses only `host`.
    - **`volumes_from`.** Only a service of this project, whose own mounts are
      checked here. The `container:<name>` form is refused (req 2a); today it is
-     refused in contained sessions only.
+     refused in contained sessions only. A service that mounts the Docker
+     socket, directly or through its own `volumes_from`, may not be named,
+     because `volumes_from` inherits every mount; otherwise a service in an ops
+     session could take the trusted proxy's socket mount without the grant
+     (req 8, review round 31). A service that has the grant mounts the socket
+     itself.
    - **Top-level `secrets`/`configs`.** A `file:` must resolve inside the
      workspace (step 4 replaces it). `external` and `name` are refused in every
      mode, as they are for volumes and networks today, because they attach an
@@ -452,7 +465,13 @@ snapshot.
      setting is on. An ops session without the grant gets only the trusted
      proxy's read-only mount (`isTrustedOpsProxyService`), in every mode;
      today that limit applies only in contained sessions, so in an Open ops
-     session any service can mount the raw socket (review round 30). When the key is set and the setting is off, the start is
+     session any service can mount the raw socket (review round 30). A session
+     with no repository (a sandbox) has no grant, so its services get no
+     socket; the refusal points to the sandbox's own **Docker access** switch,
+     the user's session-scoped Docker path. Today such a session gets the socket
+     from the key alone (`service-manager.ts`, round 31). Requirement 6's
+     working-stack promise covers stacks that mount only the workspace and
+     `/persist`, so it does not cover a socket mount. When the key is set and the setting is off, the start is
      refused with a message that names the setting and where the user turns it
      on (req 5). ShipIt reads the setting from `RepoStore` at each start, so a
      change applies at the next start. This replaces
@@ -668,7 +687,8 @@ an Open-session `cap_add` on the safe list passes and one off it is refused; a
 `build.privileged` are refused; the socket mount passes only with the key and
 the grant, and is refused with the setting's name when the grant is off; in an
 Open ops session the trusted proxy passes and a raw socket mount in another
-service is refused),
+service is refused; `volumes_from` naming the proxy is refused; a sandbox's
+socket mount is refused),
 the grant route's refusal of a session's containers, the rewrite, the secret-file copy, the removal of file keys, the plugin-only
 path, and every fail-closed path.
 
