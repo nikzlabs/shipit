@@ -84,6 +84,7 @@ The findings that still shape this design:
 | 25 (run `b14655ea-4487-42b8-98ba-aecef07994ab`) | `ipc: container:` shares another container's `/dev/shm` files | Mechanism 2 step 3 — one shared-namespace rule for `pid`, `ipc`, `network_mode`, `uts`, `cgroup`, `userns_mode` |
 | 26 (run `8563719a-febe-497c-ae73-8ed1f91804c9`) | The orchestrator's Docker login is not at a Docker-host path; reconcile starts services | Mechanism 1 — a root-only copy of the login in the workspace volume; *Where this runs* — reconcile's start uses the full sequence |
 | 27 (run `c22e92cb-fcd8-40ca-91dd-babf6f04a434`) | External secrets/configs are not refused; `DOCKER_CONFIG` must name a directory; a symlink could reach the ShipIt files mounted into `config` and `build` | Mechanism 2 step 3 — `external`/`name` refused; Mechanism 1 — a login directory; ShipIt input to `config` and `build` on stdin, so no ShipIt file is mounted there and none needs a new owner |
+| 28 (run `08e8c576-c1ad-44ca-8006-e7704f35b681`) | A per-start container label changes the configuration hash and recreates unchanged services; `../scratch` build contexts work today; the checklist still mounted ShipIt files into `build` | Mechanism 1 — a root-only start record instead of a label; scratch mounted with the workspace; checklist fixed |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -102,13 +103,19 @@ must give such a container — the plugin stubs, the build model — arrives on
 standard input (`-f -`), so no symlink in the project can name it
 (requirement 1 as reworded in Q10).
 
-| Command | Workspace | ShipIt input | Override + service-env files | Docker client config | Docker socket |
+| Command | Workspace and scratch | ShipIt input | Override + service-env files | Docker client config | Docker socket |
 |---|---|---|---|---|---|
 | `config` (Mechanism 2 step 1) | read-only | the plugin stubs, on stdin | — | — | no |
 | reading the project file alone (a reader's fresh read) | read-only | — | — | — | no |
 | reading a project `secrets`/`configs` file (step 4) | read-only | — | — | — | no |
 | `build` | read-write | the build model, on stdin | — | — | yes |
 | `up --no-build` | — | the snapshot and `compose/`, mounted | yes | read-only | yes |
+
+"Scratch" is this session's scratch directory, `<sessionDir>/scratch`, which
+the agent sees as `/persist` (`session-state-dir.ts`). It sits beside the
+workspace, and a reference such as `build.context: ../scratch/app` reaches it
+today, so the containers that read project paths mount it too, at its
+orchestrator path. It is this session's own, which requirement 1 permits.
 
 - **The build model** is the snapshot with the plugin stubs added, and with
   each project secret or config that `build.secrets` uses named by its path in
@@ -151,8 +158,9 @@ standard input (`-f -`), so no symlink in the project can name it
   and to name a pullable image or publish the image instead (req 5).
 - The workspace comes from the shared workspace volume at this session's exact
   subpath — the same confined mount `.` uses (`workspaceVolumeMount`,
-  planning#619). It appears at the path the orchestrator uses, so the absolute
-  paths in the models mean the same thing inside and outside.
+  planning#619) — and the scratch directory the same way. Each appears at the
+  path the orchestrator uses, so the absolute paths in the models mean the same
+  thing inside and outside.
 - **Mount sources are Docker-host paths.** The daemon resolves a bind source on
   its own host, where the orchestrator's `/workspace/...` path is not the file
   (the shipped deployments mount `/workspace` as a named volume). So every
@@ -186,9 +194,11 @@ removal (Mechanism 2 step 6) uses them too.
 - `stop` and `down` need the model, because Compose runs a service's
   `pre_stop` hook (permitted in Open sessions, `validateServiceSecurity`) from
   its definition. So ShipIt keeps each start's snapshot and override while a
-  service started from them runs, and the override labels each service's
-  container with its start's snapshot. `stop <name>` reads that label from the
-  running container and loads the pair. It names no project file and no program
+  service started from them runs, and records, in a root-only file in
+  `compose/`, which start last started each service. `stop <name>` looks the
+  service up there and loads that pair. A container label would be simpler to
+  find, but Compose hashes a service's labels into its configuration, so a new
+  label on every start would make `up` recreate services that did not change. It names no project file and no program
   to run (Mechanism 2 steps 3–4), so loading it on the orchestrator reads
   nothing the project controls. If the service has no container yet (a Stop
   before or during its first start), `stop` records the Stop and has nothing
