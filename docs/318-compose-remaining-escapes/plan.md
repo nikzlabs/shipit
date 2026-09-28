@@ -113,7 +113,10 @@ socket; its own Docker access switch is the user's path). It also said the
 agent-facing reader and `::set` operation could go. They stay: the reader keeps
 `shipit settings get` complete, and the operation lets the agent ask for the
 grant on a proposal card that only the user can accept, the same as
-`allowAgentMerge`.
+`allowAgentMerge`. Round 32 (run `b58a7081-db1d-4cce-b726-b9af4bfe3482`) found
+that `pid: service:<proxy>` reaches the proxy's socket through `/proc` (fixed:
+one rule refuses every join — `volumes_from` or a `service:` namespace — to a
+socket-bearing service).
 
 ## Mechanism 1 — confined Compose containers
 
@@ -431,12 +434,15 @@ snapshot.
      checked at all, and `network_mode` refuses only `host`.
    - **`volumes_from`.** Only a service of this project, whose own mounts are
      checked here. The `container:<name>` form is refused (req 2a); today it is
-     refused in contained sessions only. A service that mounts the Docker
-     socket, directly or through its own `volumes_from`, may not be named,
-     because `volumes_from` inherits every mount; otherwise a service in an ops
-     session could take the trusted proxy's socket mount without the grant
-     (req 8, review round 31). A service that has the grant mounts the socket
-     itself.
+     refused in contained sessions only.
+   - **Socket-bearing services cannot be joined.** A service that mounts the
+     Docker socket, directly or through its own `volumes_from`, may not be
+     named by `volumes_from` or by the `service:<name>` form of any
+     shared-namespace field. `volumes_from` inherits every mount, and a shared
+     PID namespace exposes the other service's files through `/proc`; either
+     way a service in an ops session could reach the trusted proxy's socket
+     without the grant (req 8, review rounds 31 and 32). A service that has the
+     grant mounts the socket itself.
    - **Top-level `secrets`/`configs`.** A `file:` must resolve inside the
      workspace (step 4 replaces it). `external` and `name` are refused in every
      mode, as they are for volumes and networks today, because they attach an
@@ -687,7 +693,8 @@ an Open-session `cap_add` on the safe list passes and one off it is refused; a
 `build.privileged` are refused; the socket mount passes only with the key and
 the grant, and is refused with the setting's name when the grant is off; in an
 Open ops session the trusted proxy passes and a raw socket mount in another
-service is refused; `volumes_from` naming the proxy is refused; a sandbox's
+service is refused; `volumes_from` or `pid: service:` naming the proxy is
+refused; a sandbox's
 socket mount is refused),
 the grant route's refusal of a session's containers, the rewrite, the secret-file copy, the removal of file keys, the plugin-only
 path, and every fail-closed path.

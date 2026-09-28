@@ -52,7 +52,7 @@
 - [ ] `validateBuildSecurity` in every mode, with mode-neutral messages
 - [ ] Socket mount and `use_api_socket` only with `compose.docker-socket: true` and the repository's `allowDockerSocket` grant, read at each start; refusal names the setting
 - [ ] Ops sessions without the grant: only the trusted proxy's read-only mount, in every mode
-- [ ] `volumes_from` may not name a service that mounts the socket, directly or through its own `volumes_from`
+- [ ] Neither `volumes_from` nor a `service:<name>` namespace field may name a service that mounts the socket, directly or through its own `volumes_from`
 - [ ] Sessions with no repository: no socket; the refusal names the sandbox Docker access switch
 - [ ] `allowDockerSocket` setting: `repos.allow_docker_socket` column and migration, `RepoInfo`, `PATCH /api/repos/:url` through `applyRepoSettings`, reader and `::set` operation, `project.allowDockerSocket` catalogue entry, client store and toggle
 
