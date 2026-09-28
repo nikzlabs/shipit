@@ -18,15 +18,16 @@
 - [x] Review round 15; findings applied
 - [x] Review round 16; finding applied
 - [ ] Pin one checked `docker-compose-plugin` version (not 2.34.0) in `docker/Dockerfile.prod`, `docker/Dockerfile.dev`, and the helper image; refuse, never drop, an `env_file` that `config` did not inline
-- [ ] Mechanism 1: bind-mount every ShipIt file into helpers from its Docker-host path (`workspaceVolumeDaemonPath`, or the existing service-env/secrets resolution)
+- [ ] Mechanism 1: bind-mount every ShipIt file into helpers from its Docker-host path: `workspaceVolumeDaemonPath` for the workspace volume (includes the default service-env directory), `dockerSecretsConfig.hostDir` for secret copies; a `SHIPIT_SERVICE_ENV_DIR` outside the volume needs a supplied host path, else refuse with a message naming the setting
 - [ ] Mechanism 2: a start adds its promise to `upSettled` before the resolve and skips `build`/`up` if `stoppedByUser` holds the service afterwards
 - [x] Review round 18; findings applied
+- [x] Review round 19; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
 - [ ] Mechanism 1: `build` every time for the services `up` starts (replaces today's `--build`), mounting only its snapshot file; `up` always `--no-build`
-- [ ] Mechanism 1: minimal Compose helper image (base system plus the orchestrator's Docker packages) as a Dockerfile target, a service in each deployment's Compose definition, and in the image lists of `docker/local/dev.sh`, `docker/local/prod.sh`, `deployment/vps/deploy.sh`
-- [ ] Mechanism 1: `HOME` and `BUILDX_CONFIG` on the container's tmpfs `/tmp`
+- [ ] Mechanism 1: minimal Compose helper image (base system plus the orchestrator's Docker packages) as a Dockerfile target, a service in each deployment's Compose definition, and in the image lists of `docker/local/dev.sh`, `docker/local/prod.sh`, `deployment/local/lib.sh`, `deployment/vps/deploy.sh`
+- [ ] Mechanism 1: `config` keeps today's environment (incl. `HOME`); `build` gets `HOME`, `DOCKER_CONFIG`, `BUILDX_CONFIG` on the tmpfs `/tmp`; `up` gets `DOCKER_CONFIG` = the mounted login
 - [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
 - [ ] Mechanism 1: resolve the helper image at startup; refuse the start with a clear message when it is missing or a container cannot start
 - [ ] Mechanism 1: move the override into `<state>/compose/`; make the snapshot, the plugin stubs file, and the project secret copies readable by the session identity (root-gated); override and service-env files stay root-only

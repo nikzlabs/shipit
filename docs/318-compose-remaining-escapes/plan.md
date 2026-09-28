@@ -75,6 +75,7 @@ The findings that still shape this design:
 | 16 (run `27ade2a2-1583-447f-9371-69c26cd280c0`) | On Compose 2.34.0, `config <name>` keeps a profiled service's `env_file` without inlining it, and Compose is unpinned | Mechanism 1 — one pinned, checked Compose version in both images; Mechanism 2 step 4 — refuse, never drop, an un-inlined `env_file` |
 | 17 (run `d670dd26-5e2f-4c19-a7d6-22d51a76b085`) | Overlay dep-dir matching reads only `./` sources, which the rewrite replaces; the checklist said the service map comes from the resolved model; the registry-login exception had no diagnostic | *What moves out of the override* — the matcher uses the recorded workspace path; checklist fixed; *Failure* — a registry-auth build failure names the exception |
 | 18 (run `57ae112d-1207-4851-b2d9-79f54fb27dda`) | Helper bind sources under `/workspace` are not Docker-host paths; a Stop during the awaited resolve is missed; `Dockerfile.dev` is unpinned too | Mechanism 1 — host-path translation for every ShipIt file; *Where this runs* — the start registers in `upSettled` before the resolve and re-checks Stop; both orchestrator Dockerfiles pinned |
+| 19 (run `fc18dd8f-a318-4061-a820-d255316bb4f1`) | `deployment/local/lib.sh` builds a fourth image list; changing `HOME` changes `${HOME}` interpolation; the service-env files have no Docker-host translation today | Key files — the fourth list; Mechanism 1 — `config` keeps today's environment; host path via the workspace volume (the default), or supplied |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -143,10 +144,16 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   (the shipped deployments mount `/workspace` as a named volume). So every
   ShipIt file mounted into a helper — the snapshot, the plugin stubs file, the
   override and `compose/`, the project secret copies, the service-env files —
-  is bind-mounted from its Docker-host path, translated as
-  `workspaceVolumeDaemonPath` (`compose-persist.ts`) already does for paths in
-  the workspace volume, or as ShipIt already resolves the service-env and
-  secrets directories. The agent can write none of these paths, so the
+  is bind-mounted from its Docker-host path. Paths in the workspace volume are
+  translated as `workspaceVolumeDaemonPath` (`compose-persist.ts`) already does.
+  That covers the service-env directory by default, which is
+  `<stateDir>/service-env` inside that volume (`bootstrap-managers.ts`); no
+  translation exists for it today. The project secret copies sit beside
+  ShipIt's secret files, whose host path the deployment already supplies
+  (`dockerSecretsConfig.hostDir`). A `SHIPIT_SERVICE_ENV_DIR` set outside the
+  workspace volume needs its Docker-host path supplied the same way; without
+  it, a start that needs service-env files is refused with a message that
+  names the setting (req 6). The agent can write none of these paths, so the
   daemon's resolution of them on the host cannot be steered. The workspace
   itself stays a volume-subpath mount.
 - Nothing else is mounted: not another session, not the shared volume root
@@ -200,9 +207,7 @@ env-file resolution off, stripped of file keys, and validated the same way.
   those checks.
 - **Isolation:** `--rm`, `--network none` (the CLI reaches the daemon through
   the mounted socket), a read-only root filesystem with a tmpfs `/tmp`, and
-  `no-new-privileges`. `HOME` and `BUILDX_CONFIG` point into that `/tmp`, so the
-  build tooling has a private writable place for its state, and it is gone
-  with the container.
+  `no-new-privileges`.
 - **User:** `config`, the file reads, and `build` run as the session identity
   (`identityForSession`), with the socket's group added for `build`. Anything a
   build writes into the workspace is owned as the agent's files are, which is
@@ -211,13 +216,16 @@ env-file resolution off, stripped of file keys, and validated the same way.
   service-env files, the Docker client configuration). With the socket it can
   command the daemon either way.
 - **Environment:** `composeSpawnEnv()`'s allowlist only, as today; no
-  credentials in it.
+  credentials in it. `config` gets exactly today's values, `HOME` included,
+  because interpolation happens there and a project may use `${HOME}` (req 6).
+  `build` and `up` load the snapshot, whose `$` ShipIt escaped (Mechanism 2
+  step 5), so their environment changes no value in the model. For `build`,
+  `HOME`, `DOCKER_CONFIG`, and `BUILDX_CONFIG` point into the tmpfs `/tmp`, so
+  the build tooling has a private writable place for its state, gone with the
+  container. For `up`, `DOCKER_CONFIG` names the mounted registry login.
 - **Working directory:** the workspace, as today (`defaultComposeRunner` runs
   with `cwd: workspaceDir`), because Compose reads `PWD/.env` and resolves
   relative `-f` paths from it. `up`, which has no workspace, uses `compose/`.
-- **`HOME` and `BUILDX_CONFIG`** point into the tmpfs `/tmp` (see
-  *Isolation*); `up` finds the registry login through `DOCKER_CONFIG`, not
-  `HOME`.
 - **Cleanup:** each container has a unique name and a
   `shipit-compose-helper=<sessionId>` label. On cancel or timeout ShipIt removes
   it by name, because killing the `docker run` client does not stop the
@@ -483,7 +491,8 @@ refused value names the field, the resolved value, and what to use instead
   leftover helper containers by label.
 - The helper image, in every shipped deployment: a new Dockerfile target in
   `docker/`; a helper-image service in each deployment's Compose definition;
-  and the image lists that `docker/local/dev.sh`, `docker/local/prod.sh`, and
+  and the image lists that `docker/local/dev.sh`, `docker/local/prod.sh`,
+  `deployment/local/lib.sh` (the local install and update path), and
   `deployment/vps/deploy.sh` build, so no shipped deployment lacks it (req 4).
 - Docs: `shipit-docs/compose.md` (interpolated sources, symlinked references,
   relative sources, `volumes_from`, `provider`),
