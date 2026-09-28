@@ -66,6 +66,7 @@ The findings that still shape this design:
 | 12 (run `ed43e07e-1c4a-4e5f-9fcb-cf5a530022ed`) | Without `-f`, Compose looks for a Compose file in the working directory, which is the workspace | Mechanism 1 — orchestrator-side commands run in an empty ShipIt directory |
 | 12 | Enabling a named service's profiles also enables its profile peers; profiles from `extends` are not in the raw list | Mechanism 2 step 1 — `config` names the services (round 10's form); step 6 — ShipIt removes orphans itself, so `--remove-orphans` (round 11's concern) is no longer passed |
 | 12 | The build view's plugin mounts had no volume declarations | Mechanism 2 step 6 — the build view holds only name-and-image stubs |
+| 13 (run `bf6a78b7-62e3-4a0f-b918-f5b0d1d27af3`) | `config` runs before ShipIt's rewrite, so ShipIt's `persist/<sub>` short form must survive it | Mechanism 2 step 3 — recognised as a named-volume source in the resolved model and rewritten in step 4; exempt from the declaration rule |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -277,7 +278,13 @@ snapshot.
    - **Named-volume sources.** Must name a volume declared in the resolved
      top-level `volumes:`, never a name reserved for ShipIt's own mounts; the
      declarations get the top-level rules (no reserved name, no `driver_opts`,
-     no `external`, no other `name:`) (req 2a).
+     no `external`, no other `name:`) (req 2a). The exception is ShipIt's
+     `persist` volume (docs/317): a `persist` source, and ShipIt's
+     `persist/<sub>` short form, need no declaration, because step 4 rewrites
+     them. Compose reads `persist/<sub>:/data` as a named-volume source
+     `persist/<sub>` (the source does not start with `.`, `/`, or `~`), and
+     `--no-consistency` leaves the undeclared name as it is, so ShipIt still
+     finds its short form in the resolved model (`persistSubpathOf`).
    - **`volumes_from`.** Only a service of this project, whose own mounts are
      checked here. The `container:<name>` form is refused (req 2a); today it is
      refused in contained sessions only.
@@ -428,7 +435,12 @@ These need a check on a deployment, listed in the PR test plan:
   service; `build` accepts the stub build view; `config` inlines `env_file` and
   `label_file` values; whether `config` escapes `$`; `up --no-build` loads a
   snapshot whose build contexts are not mounted, and leaves running services
-  that are not in the snapshot alone.
+  that are not in the snapshot alone; `config --no-consistency` keeps a
+  `persist/<sub>:/data` source as the named-volume source `persist/<sub>`. If
+  that version refuses the name, the fallback is to give `config` a copy of the
+  project file with the short form written in the long form, mounted over the
+  original path inside the confined container, so relative paths still resolve
+  as before.
 - `ps`, `logs`, `stop`, `down`, and `rm` work with `-p <project>` and no model
   file (else the stack-wide-model fallback in Mechanism 1).
 - The confined containers reach the daemon through the socket with

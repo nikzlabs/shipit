@@ -13,6 +13,7 @@
 - [x] Review round 11; findings 1–2 applied, finding 3 → requirements Q9
 - [x] Resolve requirements Q9 (builds and the orchestrator's registry login)
 - [x] Review round 12; findings applied
+- [x] Review round 13; finding applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -27,7 +28,7 @@
 - [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
 - [ ] Orchestrator-side `ps`, `logs`, `stop`, `down`, `rm` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths, stop/down)
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
-- [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume, `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
+- [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume (with the `persist` / `persist/<sub>` exemption), `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
 - [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container and named by the Docker-host path; inlined `env_file`/`label_file` keys removed; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
 - [ ] Mechanism 2: one snapshot per start in `<state>/compose/`, never changed after writing, `$` escaped; `up` starts from it; service map from the resolved model
 - [ ] Mechanism 2: plugin-only stacks keep the override-only path
