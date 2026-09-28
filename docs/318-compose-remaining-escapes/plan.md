@@ -67,6 +67,9 @@ The findings that still shape this design:
 | 12 | Enabling a named service's profiles also enables its profile peers; profiles from `extends` are not in the raw list | Mechanism 2 step 1 — `config` names the services (round 10's form); step 6 — ShipIt removes orphans itself, so `--remove-orphans` (round 11's concern) is no longer passed |
 | 12 | The build view's plugin mounts had no volume declarations | Mechanism 2 step 6 — the build view holds only name-and-image stubs |
 | 13 (run `bf6a78b7-62e3-4a0f-b918-f5b0d1d27af3`) | `config` runs before ShipIt's rewrite, so ShipIt's `persist/<sub>` short form must survive it | Mechanism 2 step 3 — recognised as a named-volume source in the resolved model and rewritten in step 4; exempt from the declaration rule |
+| 14 (run `a4054d22-f8b7-43f8-9878-deee5d1a167e`) | A read-only helper gives the build tooling no writable state place | Mechanism 1 — `HOME` and `BUILDX_CONFIG` on the container's tmpfs; the orchestrator's Docker packages |
+| 14 | A model-free `stop` or `down` skips an Open session's `pre_stop` hook | Mechanism 1 — `stop` loads the start's own snapshot and override; `down` stops first |
+| 14 | The shipped image-build scripts build fixed image lists | Key files — every deployment builds the helper image |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -134,9 +137,18 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
 The other Compose commands stay on the orchestrator: `ps` (the status poller
 runs it every 5 seconds per session, `service-poller.ts`), `logs` (both log
 paths in `service-manager.ts`), `stop`, `down`, `rm`, and `inspect`. A container
-start for each would cost too much, and they do not need one: they run with
-`-p <project>` and **no model file**, so Compose finds the stack's containers by
-the project label and opens no project file and no snapshot. Without `-f`,
+start for each would cost too much, and they do not need one.
+
+- `stop` and `down` need the model, because Compose runs a service's
+  `pre_stop` hook (permitted in Open sessions, `validateServiceSecurity`) from
+  its definition. So ShipIt keeps each start's snapshot and override while a
+  service started from them runs, and `stop <name>` loads that pair. It names
+  no project file and no program to run (Mechanism 2 steps 3–4), so loading it
+  on the orchestrator reads nothing the project controls. `down` first stops
+  each running service that way, then runs as below to remove the rest.
+- `ps`, `logs`, `rm`, `inspect`, and the final `down` run with `-p <project>`
+  and **no model file**, so Compose finds the stack's containers by the
+  project label and opens no project file and no snapshot. Without `-f`,
 Compose looks for a Compose file in its working directory and the directories
 above it, and today that is the workspace (`compose-cli.ts`,
 `service-poller.ts`). So these commands run in an empty directory ShipIt owns
@@ -149,17 +161,20 @@ env-file resolution off, stripped of file keys, and validated the same way.
 
 ### How each container runs
 
-- **Image:** a dedicated minimal helper image that holds only a base system,
-  the Docker CLI, and the Compose plugin. It is not the orchestrator's image,
-  which holds ShipIt's own files (`/app`, `docker/Dockerfile.prod`) that a build
-  context or a symlink could name. It is built with the orchestrator image, from
-  the same Docker apt repository, so Compose is the same version ShipIt runs
-  today, and its reference is resolved at startup, as `resolveWorkerImageId`
-  resolves the worker image (`app-lifecycle.ts`). If it is missing, starts are
-  refused with a message that says so.
+- **Image:** a dedicated minimal helper image that holds only a base system and
+  the same Docker packages the orchestrator image installs today
+  (`docker-ce-cli`, `docker-compose-plugin`, `docker/Dockerfile.prod`), so
+  Compose builds the way it does today. It is not the orchestrator's image,
+  which holds ShipIt's own files (`/app`) that a build context or a symlink
+  could name. It is built with the orchestrator image, from the same Docker apt
+  repository, and its reference is resolved at startup, as
+  `resolveWorkerImageId` resolves the worker image (`app-lifecycle.ts`). If it
+  is missing, starts are refused with a message that says so.
 - **Isolation:** `--rm`, `--network none` (the CLI reaches the daemon through
   the mounted socket), a read-only root filesystem with a tmpfs `/tmp`, and
-  `no-new-privileges`.
+  `no-new-privileges`. `HOME` and `BUILDX_CONFIG` point into that `/tmp`, so the
+  build tooling has a private writable place for its state, and it is gone
+  with the container.
 - **User:** the session identity (`identityForSession`), with the socket's group
   added when the socket is mounted. Anything a build writes into the workspace
   is owned as the agent's files are, which is consistent with docs/270.
@@ -312,7 +327,9 @@ snapshot.
      refused.
 5. **Write.** ShipIt writes the result as this start's snapshot in
    `<sessionDir>/state/compose/`: a new file per start, never changed after it
-   is written, removed once a later snapshot replaces it and no start uses it.
+   is written, kept with that start's override while the start runs or a
+   service started from it is running (`stop` uses the pair, Mechanism 1), and
+   removed after that.
    The agent container never mounts the state directory
    (`SESSION_STATE_SHARED_SUBDIR` is its only mounted part), so the agent cannot
    change the file. ShipIt writes `$` so that Compose's second parse gives back
@@ -326,8 +343,9 @@ snapshot.
    environment, no credential), so that a project service's `depends_on` on a
    plugin service resolves during the build. Then `build` runs with
    `-f <snapshot> -f <build view>`, and `up --no-build` with `-f <snapshot>
-   -f <override>`, each in its confined container (Mechanism 1). The
-   orchestrator-side commands use no model file (Mechanism 1).
+   -f <override>`, each in its confined container (Mechanism 1). On the
+   orchestrator, `stop` loads this pair and the other commands use no model
+   file (Mechanism 1).
 
    `up` no longer passes `--remove-orphans`: the snapshot holds only the
    services this start needs, so Compose would take every other running
@@ -384,8 +402,9 @@ refused value names the field, the resolved value, and what to use instead
   containers with the per-command mounts, working directory, user, isolation,
   and cleanup by name; the session identity and the helper image on
   `ComposeCli`; `up` takes the snapshot path and drops `--remove-orphans`;
-  `ps`, `logs`, `stop`, `down`, `rm` with `-p`, no model file, and an empty
-  ShipIt working directory; the fix added to path-read failures.
+  `stop` with the start's snapshot and override; `ps`, `logs`, `rm`, and the
+  final `down` with `-p`, no model file, and an empty ShipIt working directory;
+  the fix added to path-read failures.
 - `service-manager.ts` — resolve-validate-rewrite in `withUpInFlight` before the
   in-flight count; per-start override and stub build view; orphan removal by
   name before `up`; `build` before `up`; one snapshot per start; service map
@@ -407,8 +426,10 @@ refused value names the field, the resolved value, and what to use instead
   service names from the confined run's raw bytes, not the file.
 - `app-lifecycle.ts` / `startup-janitor.ts` — resolve the helper image; sweep
   leftover helper containers by label.
-- `docker/` and `deploy.sh` — a minimal Compose helper image (base system,
-  Docker CLI, Compose plugin), built with the orchestrator image.
+- The helper image, in every shipped deployment: a new Dockerfile target in
+  `docker/`; a helper-image service in each deployment's Compose definition;
+  and the image lists that `docker/local/dev.sh`, `docker/local/prod.sh`, and
+  `deployment/vps/deploy.sh` build, so no shipped deployment lacks it (req 4).
 - Docs: `shipit-docs/compose.md` (interpolated sources, symlinked references,
   relative sources, `volumes_from`, `provider`),
   `docs/172-agent-containment/plan.md` (audit),
@@ -441,8 +462,9 @@ These need a check on a deployment, listed in the PR test plan:
   project file with the short form written in the long form, mounted over the
   original path inside the confined container, so relative paths still resolve
   as before.
-- `ps`, `logs`, `stop`, `down`, and `rm` work with `-p <project>` and no model
-  file (else the stack-wide-model fallback in Mechanism 1).
+- `ps`, `logs`, `rm`, and `down` work with `-p <project>` and no model file
+  (else the stack-wide-model fallback in Mechanism 1); `stop` with a start's
+  snapshot and override runs the service's `pre_stop` hook.
 - The confined containers reach the daemon through the socket with
   `--network none`, as the session identity plus the socket group; `up` pulls
   a private service image with the mounted client configuration.
