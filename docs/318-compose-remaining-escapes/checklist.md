@@ -10,7 +10,8 @@
 - [x] Redesign around the confined Compose container (requirements Q8)
 - [x] Review rounds 7–28 on the redesign; findings applied, or escalated as Q9 and Q10
 - [x] Review until no important findings remain (round 29: none)
-- [ ] Resolve requirements Q12–Q14 (requirement 7 in Open sessions) and design the answer
+- [x] Record the threat model as requirement 7; resolve Q12–Q14 (requirement 8) and design the answer
+- [ ] Review the requirement 7 and 8 design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 
 ## Mechanism 1 — confined Compose containers
@@ -44,10 +45,18 @@
 - [ ] In `withUpInFlight`: the start adds its promise to `upSettled`, then awaits the resolve before the in-flight count, then skips `build`/`up` if `stoppedByUser` holds the service
 - [ ] Reconcile: fresh confined read for the service map, then `start()` through the full sequence; plugin-only stacks keep the override-only path
 
+## Requirements 7 and 8 — settings that reach the host
+
+- [ ] Open-session `cap_add` only from `SAFE_ADDED_CAPABILITIES` (prefix stripped, uppercased); contained sessions keep refusing all
+- [ ] `security_opt` only `no-new-privileges` in every mode
+- [ ] `validateBuildSecurity` in every mode, with mode-neutral messages
+- [ ] Socket mount and `use_api_socket` only for ops sessions, or with `compose.docker-socket: true` and the repository's `allowDockerSocket` grant, read at each start; refusal names the setting
+- [ ] `allowDockerSocket` setting: `repos.allow_docker_socket` column and migration, `PATCH /api/repos/:url`, `project.allowDockerSocket` catalogue entry
+
 ## Finish
 
 - [ ] Tests: `docker run` arguments per command and cleanup, resolved-model validation over recorded `config` output, rewrite, secret-file copy, file-key removal, stop record, plugin-only path, fail-closed paths
-- [ ] Docs: `shipit-docs/compose.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
+- [ ] Docs: `shipit-docs/compose.md`, `shipit-docs/wiki/repos-and-sandboxes.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
 - [ ] `npm run lint:dev`, `npm run typecheck`, affected `npx vitest run`
 - [ ] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement
 - [ ] PR test plan lists the deployment checks from plan.md

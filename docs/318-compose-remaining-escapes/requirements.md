@@ -77,6 +77,17 @@ paths.
    message that says why (requirement 5). Service images that `up` pulls keep
    that login. *(Resolved 2026-09-28 — see Resolved questions Q9.)*
 
+   Second exception: in Open sessions, a service that adds a capability outside
+   ShipIt's short safe list or sets a security option other than
+   `no-new-privileges`, and a build that asks for extra privileges or a network
+   other than the default or none, is refused with a message (requirement 5).
+   *(Resolved 2026-09-28 — see Resolved questions Q13.)*
+
+   Third exception: a repository that sets `compose.docker-socket: true` no
+   longer gets the Docker socket until the user turns it on (requirement 8);
+   until then the start is refused with a message that names the setting.
+   *(Resolved 2026-09-28 — see Resolved questions Q14.)*
+
 7. A session MUST NOT reach another session or the Docker host through its
    Compose setup (the compose file and the `compose` block of `shipit.yaml`),
    even when the agent tries to on purpose. This holds in every session mode,
@@ -86,28 +97,15 @@ paths.
    its services show such a value. *(Stated 2026-09-28 — see Resolved
    questions Q11.)*
 
+8. Only the user can give a project's services the Docker socket. A file in the
+   repository can ask for it, but cannot turn it on. Ops sessions, which only
+   the user creates, keep their read-only Docker access. *(Resolved 2026-09-28
+   — see Resolved questions Q14.)*
+
 ## Open questions
 
-- **Q12 — Where do the Open-session fixes for requirement 7 go?** Checking the
-  code against requirement 7 found host reach that requirements 1–3 do not
-  name (Q13, Q14). They are in the Compose setup, but outside the file
-  references and mounts this work was scoped to. Put them in this work, or in
-  a separate issue?
-- **Q13 — Added capabilities and security options in Open sessions.**
-  `cap_add` is refused only in contained sessions (`validateServiceSecurity`);
-  `security_opt` is not checked in any mode; `build.privileged`,
-  `build.entitlements`, and `build.network` are checked only in contained
-  sessions (`validateBuildSecurity`). Some added capabilities, and options that
-  turn off seccomp, AppArmor, or SELinux, let a container reach host files or
-  leave its sandbox. Refusing them breaks Open-session stacks that use them
-  today, which is an exception to requirement 6. Allow a short safe list,
-  refuse all, or refuse only a named list of dangerous ones?
-- **Q14 — The Docker socket opt-in.** `compose.docker-socket: true` gives a
-  service the raw Docker socket in Open sessions, which is full control of the
-  host. `shipit.yaml` is read from the workspace (`resolveShipitConfig`), so
-  the agent can turn it on. Q7 kept this allowance unchanged; requirement 7
-  conflicts with that. Make the opt-in something only the user can set, keep
-  it as an accepted exception, or remove the raw socket?
+*(none — Q1–Q14 answered. Implementation is unblocked once the design review
+is clean.)*
 
 ## Resolved questions
 
@@ -232,6 +230,35 @@ be fully prevented". Recorded as requirement 7. The plan already used this
 split for the service-env files (*ShipIt's own files keep their owner*), and
 requirements 1, 2, and 2a have no accidental-only wording. The check of the
 code against requirement 7 raised Q12–Q14.
+
+**2026-09-28 — Q12: where do the Open-session fixes for requirement 7 go? →
+this work.** The check found host reach in Open sessions that requirements 1–3
+do not name: `cap_add` is refused only in contained sessions, `security_opt` is
+not checked in any mode, the build checks (`validateBuildSecurity`) run only in
+contained sessions, and the Docker socket opt-in is in a file the agent can
+write. They are in the Compose setup, so they belong here. The alternative was
+a separate issue, with planning#620 kept to file references and mounts.
+
+**2026-09-28 — Q13: what do Open sessions get for added capabilities and
+security options? → a short safe list.** A service may add only capabilities
+whose effect stays inside its own container, and may set no security option
+other than `no-new-privileges`; builds get the contained-session rules (no extra
+privileges or entitlements, the default network or none). Stacks that use more
+fail with a clear message — recorded as the second exception to requirement 6.
+The alternatives were refusing every added capability and option (simplest,
+breaks more stacks), and refusing a named list of dangerous values (lets an
+unlisted value through).
+
+**2026-09-28 — Q14: `compose.docker-socket: true` gives a service full control
+of the host, and `shipit.yaml` is read from the workspace, so the agent can
+set it. What do we do? → only the user turns it on.** The key in `shipit.yaml`
+still asks for the socket, but ShipIt gives it only when the user has turned on
+a per-repository setting that the agent cannot change. Recorded as requirement
+8 and the third exception to requirement 6. This replaces the "keep today's
+socket allowance, unchanged" part of Q7 for Open sessions; the path must still
+match exactly (plan round 24). The alternatives were keeping the opt-in as an
+accepted exception to requirement 7, and removing the raw socket (breaks stacks
+that use it).
 
 ## What is already true (verified in this repository, 2026-09-27)
 

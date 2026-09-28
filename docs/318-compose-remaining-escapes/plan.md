@@ -21,6 +21,10 @@ Two mechanisms, one per kind of reach:
   CLI, resolves mount sources on the host, so confinement does not cover them.
   ShipIt **resolves the model once** with `docker compose config`, validates
   that snapshot, rewrites its mounts, and starts `up` from exactly that file.
+- **Settings that reach the host** (req 7, 8). The same validation also limits
+  added capabilities, security options, and build settings in every mode, and
+  gives the Docker socket only when the user has turned it on for the
+  repository.
 
 Requirement 4's bind-deployment case is out of scope (requirements Q1); tracked
 as a follow-up on planning#620.
@@ -90,6 +94,13 @@ The findings that still shape this design:
 | 28 (run `08e8c576-c1ad-44ca-8006-e7704f35b681`) | A per-start container label changes the configuration hash and recreates unchanged services; `../scratch` build contexts work today; the checklist still mounted ShipIt files into `build` | Mechanism 1 — a root-only start record instead of a label; scratch mounted with the workspace; checklist fixed |
 
 Round 29 (run `2843532c-aab8-4be3-9562-4424ffd6456d`) found no important findings, and no part of the design that could be removed without losing a needed behaviour.
+
+After round 29 the requester stated the threat model (requirements Q11): reach
+into another session or the host must be fully prevented, also on purpose. A
+check of the code against it found host reach in Open sessions outside
+requirements 1–3, and the answers to Q12–Q14 added the capability,
+security-option, and build rules and the socket grant (Mechanism 2 step 3, *The
+socket grant setting*).
 
 ## Mechanism 1 — confined Compose containers
 
@@ -378,11 +389,11 @@ snapshot.
      program, and `stop`/`down` run on the orchestrator.
    - **Bind sources.** Inside this session's workspace → rewritten (step 4).
      Outside → refused (req 2, req 3). This covers `./data`, `data`, `.cache`,
-     and `{type: bind, source: data}` alike. The one exception is today's
-     Docker socket allowance: `/var/run/docker.sock` with
-     `compose.docker-socket: true`, and in contained sessions only the trusted
-     proxy's read-only mount (`validateServiceSecurity`; the ops template in
-     `templates-ops.ts` depends on it). The source must be exactly that path.
+     and `{type: bind, source: data}` alike. The one exception is the Docker
+     socket, `/var/run/docker.sock`, under the socket grant below; in contained
+     sessions only the trusted proxy's read-only mount, as today
+     (`validateServiceSecurity`; the ops template in `templates-ops.ts`
+     depends on it). The source must be exactly that path.
      Today's absolute-path check skips every source that merely *starts with*
      it (`startsWith("/var/run/docker.sock")`), so `/var/run/docker.sock.bak`
      passes; the resolved rule does not copy that.
@@ -413,6 +424,33 @@ snapshot.
      mode, as they are for volumes and networks today, because they attach an
      object this session did not create (req 2a); today only `file:` is
      checked (`validateTopLevelFileRefs`).
+   - **Added capabilities (req 7, requirements Q13).** Contained sessions keep
+     refusing every `cap_add`, as today. In Open sessions, each entry, after
+     ShipIt strips a `CAP_` prefix and uppercases it, must be on
+     `SAFE_ADDED_CAPABILITIES`: the capabilities whose effect stays inside the
+     container's own namespaces. The starting list is `NET_ADMIN`,
+     `SYS_PTRACE`, `IPC_LOCK`, and `SYS_NICE`, plus the names in Docker's
+     default set (adding one of those changes nothing). `ALL` and every other
+     name are refused. Today Open sessions accept any `cap_add`.
+   - **Security options (req 7, Q13).** In every mode, `security_opt` may hold
+     only `no-new-privileges` (also written `no-new-privileges:true` or
+     `=true`). Every other value is refused. Today `security_opt` is not checked
+     in any mode; ShipIt's own `no-new-privileges` in the override is not a
+     project value and stays.
+   - **Build settings (req 7, Q13).** `validateBuildSecurity` runs in every
+     mode, not only in contained sessions: no `build.privileged`, no
+     `build.entitlements`, and `build.network` only the default or `none`. Its
+     messages stop saying "for contained services".
+   - **The socket grant (req 8, requirements Q14).** A service may mount the
+     Docker socket, or set `use_api_socket`, only when the session is an ops
+     session (server-created, as today), or when `shipit.yaml` sets
+     `compose.docker-socket: true` **and** the repository's `allowDockerSocket`
+     setting is on. When the key is set and the setting is off, the start is
+     refused with a message that names the setting and where the user turns it
+     on (req 5). ShipIt reads the setting from `RepoStore` at each start, so a
+     change applies at the next start. This replaces
+     `dockerSocket: composeConfig.dockerSocket || opsSession`
+     (`service-manager.ts`).
    - **Anything left unresolved** — a `$` in a path field, a source Compose did
      not make absolute, a mount field ShipIt does not recognise — is refused
      (req 6).
@@ -510,6 +548,26 @@ volume, a file the project names that does not exist in the workspace) is a
 refused value names the field, the resolved value, and what to use instead
 (req 5).
 
+## The socket grant setting
+
+`allowDockerSocket` is a per-repository setting beside `allowAgentMerge`, and it
+uses the same parts:
+
+- **Store:** a `repos.allow_docker_socket` column, default off
+  (`repo-store.ts`, a migration in `shared/database.ts`).
+- **Write:** the `PATCH /api/repos/:url` route (`api-routes-session-repos.ts`)
+  takes `allowDockerSocket`. The route has no `containerAccessible` flag, so the
+  container guard refuses it to the agent container and to the session's other
+  containers, its services included (verified at `api-container-guard.ts`,
+  `registerContainerOriginGuard`).
+- **Catalogue and UI:** `project.allowDockerSocket` in
+  `settings-catalogue/project-settings.ts`, declared like
+  `project.allowAgentMerge` (same tab and "Agent permissions" section,
+  `propose: { kind: "yes" }`), with a description that says it gives the
+  project's services control of the Docker host. The agent can read it with
+  `shipit settings get` and can propose it; only the user's accept on the
+  proposal card, or the toggle, turns it on.
+
 ## What each requirement maps to
 
 | Req | Closed by |
@@ -521,7 +579,8 @@ refused value names the field, the resolved value, and what to use instead
 | 4 (bind deployment) | out of scope for mounts — follow-up on planning#620; Mechanism 1 confines reads there too |
 | 5 (clear refusals) | `ComposeValidationError` naming field, resolved value, and fix; a container that cannot start says so |
 | 6 (fail closed; plain stacks keep working) | failed `config`, container, or unrecognised mount refuses the start; in-workspace binds and `/persist` are rewritten, not refused; file references need no special rule; plugin-only stacks keep the override-only path |
-| 7 (no reach on purpose, every mode) | Mechanisms 1 and 2 for reads and mounts. **Not yet designed:** the Open-session capability, security-option, build, and socket gaps — waiting on requirements Q12–Q14 |
+| 7 (no reach on purpose, every mode) | Mechanisms 1 and 2 for reads and mounts; Mechanism 2 step 3 capability, security-option, and build rules in every mode |
+| 8 (only the user grants the socket) | Mechanism 2 step 3 socket grant; *The socket grant setting* |
 
 ## Key files (to touch)
 
@@ -560,8 +619,17 @@ refused value names the field, the resolved value, and what to use instead
   and the image lists that `docker/local/dev.sh`, `docker/local/prod.sh`,
   `deployment/local/lib.sh` (the local install and update path), and
   `deployment/vps/deploy.sh` build, so no shipped deployment lacks it (req 4).
+- `compose-generator.ts` (again) — `SAFE_ADDED_CAPABILITIES` and the Open-session
+  `cap_add` rule; the `security_opt` rule; `validateBuildSecurity` in every
+  mode. `service-manager.ts` / `service-manager-setup.ts` — the socket grant
+  read from `RepoStore` at each start.
+- The socket grant setting: `repo-store.ts`, `shared/database.ts`,
+  `api-routes-session-repos.ts`, `settings-catalogue/project-settings.ts` (see
+  *The socket grant setting*).
 - Docs: `shipit-docs/compose.md` (interpolated sources, symlinked references,
-  relative sources, `volumes_from`, `provider`),
+  relative sources, `volumes_from`, `provider`, the capability, security-option,
+  and build rules, the socket grant), `shipit-docs/wiki/repos-and-sandboxes.md`
+  (the new per-repository toggle),
   `docs/172-agent-containment/plan.md` (audit),
   `docs/086-shipit-yaml-and-compose/plan.md` (rewrite rules move).
 
@@ -572,8 +640,12 @@ per command (mounts, no socket for `config`, `--network none`, user and group,
 label, cleanup on cancel), the ownership changes, resolved-model validation over
 recorded `config` output (a plain `./sub` stack passes and gets its volume
 declaration; the ops socket mount passes; an interpolated outside bind, a
-reserved named volume, `volumes_from: container:…`, and `provider` are refused),
-the rewrite, the secret-file copy, the removal of file keys, the plugin-only
+reserved named volume, `volumes_from: container:…`, and `provider` are refused;
+an Open-session `cap_add` on the safe list passes and one off it is refused; a
+`security_opt` other than `no-new-privileges` and an Open-session
+`build.privileged` are refused; the socket mount passes only with the key and
+the grant, and is refused with the setting's name when the grant is off),
+the grant route's refusal of a session's containers, the rewrite, the secret-file copy, the removal of file keys, the plugin-only
 path, and every fail-closed path.
 
 These need a check on a deployment, listed in the PR test plan:
