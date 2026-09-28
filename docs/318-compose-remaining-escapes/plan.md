@@ -61,8 +61,11 @@ The findings that still shape this design:
 | 9 | The project secret copies need the same ownership handoff | Mechanism 1 — included in the handoff |
 | 10 (run `8c2c20a0-bd6e-4375-978a-d387b620aa99`) | A project service can depend on a plugin service, which the project file alone does not declare | Mechanism 2 step 1 — `config` skips the consistency check; `up` checks with the override merged |
 | 10 | Enabling every profile makes a dormant service's missing `env_file` block the stack | Mechanism 2 step 1 — only the profiles this start needs; the service map comes from the raw bytes, as today |
-| 11 (run `f390d1c3-db8d-4a42-aaa6-08a6e147440e`) | A snapshot of only the named services leaves override entries with no image; with `--remove-orphans` it would also remove the other services' containers | Mechanism 2 step 1 — every service enabled for the start; step 6 — a per-start override |
-| 11 | A plugin service can be started by name, and `build` without the override cannot resolve a `depends_on` on a plugin service | Mechanism 2 step 1 — plugin names add no profile; step 6 — a credential-free build view |
+| 11 (run `f390d1c3-db8d-4a42-aaa6-08a6e147440e`) | A snapshot of only the named services leaves override entries with no image; with `--remove-orphans` it would also remove the other services' containers | Mechanism 2 step 6 — a per-start override; `--remove-orphans` replaced in round 12 |
+| 11 | A plugin service can be started by name, and `build` without the override cannot resolve a `depends_on` on a plugin service | Mechanism 2 step 1 — plugin names are not passed; step 6 — a credential-free build view |
+| 12 (run `ed43e07e-1c4a-4e5f-9fcb-cf5a530022ed`) | Without `-f`, Compose looks for a Compose file in the working directory, which is the workspace | Mechanism 1 — orchestrator-side commands run in an empty ShipIt directory |
+| 12 | Enabling a named service's profiles also enables its profile peers; profiles from `extends` are not in the raw list | Mechanism 2 step 1 — `config` names the services (round 10's form); step 6 — ShipIt removes orphans itself, so `--remove-orphans` (round 11's concern) is no longer passed |
+| 12 | The build view's plugin mounts had no volume declarations | Mechanism 2 step 6 — the build view holds only name-and-image stubs |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -108,7 +111,7 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   put them into an image. The same holds for the override, which carries plugin
   credential values inline (`mergePluginCredentialEnv`, `compose-generator.ts`).
   So `build` runs first, in its own container, with its snapshot file and a
-  build view of the override that holds no credential and no `env_file`
+  build view that holds only name-and-image stubs of the plugin services
   (Mechanism 2 step 6), and `up` then runs with `--no-build`. Today `up` and `upService` always pass `--build`
   (`compose-cli.ts`), so `build` runs every time, for the services that `up`
   starts; an edited Dockerfile or context is picked up as it is today.
@@ -132,9 +135,14 @@ runs it every 5 seconds per session, `service-poller.ts`), `logs` (both log
 paths in `service-manager.ts`), `stop`, `down`, `rm`, and `inspect`. A container
 start for each would cost too much, and they do not need one: they run with
 `-p <project>` and **no model file**, so Compose finds the stack's containers by
-the project label and opens no project file and no snapshot. That the
-installed Compose version supports this for each of these commands is a
-deployment check. If it does not, the fallback is a stack-wide model, resolved
+the project label and opens no project file and no snapshot. Without `-f`,
+Compose looks for a Compose file in its working directory and the directories
+above it, and today that is the workspace (`compose-cli.ts`,
+`service-poller.ts`). So these commands run in an empty directory ShipIt owns
+in `<sessionDir>/state/compose/`, and no file ShipIt writes there, or in a
+directory above it, has a name Compose looks for (`compose.yaml`,
+`docker-compose.yml`, and their variants). That the installed Compose version
+supports this for each of these commands is a deployment check. If it does not, the fallback is a stack-wide model, resolved
 in the confined container like the snapshot but with every profile enabled and
 env-file resolution off, stripped of file keys, and validated the same way.
 
@@ -230,21 +238,19 @@ snapshot.
 ### The before-`up` sequence
 
 1. **Resolve.** In a confined container (workspace read-only, no socket), run
-   `docker compose -p <project> -f <project file> --profile <p>… config
-   --no-consistency`, with one `--profile` for each profile of the project
-   services this start names (a plugin service name adds none), and no service
-   names. So the snapshot holds every service Compose enables for this start —
-   the services with no profile plus the named services' profiles, which is the
-   set `up <names>` enables today. That matters because `up` passes
-   `--remove-orphans` (`compose-cli.ts`): a snapshot that held only the named
-   services would make Compose remove the containers of the others. A profiled
-   service that this start does not name is not resolved, so its missing
-   `env_file` cannot block the start. `--no-consistency` lets a project service
-   depend on a plugin service that only the override declares; Compose checks
-   consistency again at `up`, with the override merged. Compose reads the
-   project file, `.env`, `env_file`s, `label_file`s, and `extends` files here,
-   all inside the container. The same run also returns the project file's raw
-   bytes, for step 2.
+   `docker compose -p <project> -f <project file> config --no-consistency
+   <the project services this start names>`. Naming a service enables that
+   service, wherever its profile comes from (also through `extends`), and not
+   the other services in its profile, as `up <names>` does; Compose includes
+   the named services' dependencies. So a service this start does not need is
+   not resolved, and its missing `env_file` cannot block the start. A plugin
+   service name is not passed, and a start that names no project service skips
+   steps 1–5, as the plugin-only path does. `--no-consistency` lets a project
+   service depend on a plugin service that only the override declares; Compose
+   checks consistency again at `up`, with the override merged. Compose reads
+   the project file, `.env`, `env_file`s, `label_file`s, and `extends` files
+   here, all inside the container. The same run also returns the project
+   file's raw bytes, for step 2.
 2. **Raw gate (kept, requirements Q4).** The syntax checks of
    `parseComposeFile` — the contained-session interpolation and `extends`
    refusals, the `include:` refusal, and the path-string checks — run on those
@@ -308,13 +314,20 @@ snapshot.
    the snapshot plus the admitted plugin services. Today the override has an
    entry for every parsed project service (`generateComposeOverride`); an entry
    for a service the snapshot does not hold would have no image or build, and
-   Compose would refuse it. It also writes a **build view** of that override:
-   the plugin service definitions only, with no credential value and no
-   `env_file`, so that a project service's `depends_on` on a plugin service
-   resolves during the build. Then `build` runs with `-f <snapshot> -f <build
-   view>`, and `up --no-build` with `-f <snapshot> -f <override>`, each in its
-   confined container (Mechanism 1). The orchestrator-side commands use no
-   model file (Mechanism 1).
+   Compose would refuse it. It also writes a **build view**: a stub for each
+   admitted plugin service (its name and image, nothing else — no mount, no
+   environment, no credential), so that a project service's `depends_on` on a
+   plugin service resolves during the build. Then `build` runs with
+   `-f <snapshot> -f <build view>`, and `up --no-build` with `-f <snapshot>
+   -f <override>`, each in its confined container (Mechanism 1). The
+   orchestrator-side commands use no model file (Mechanism 1).
+
+   `up` no longer passes `--remove-orphans`: the snapshot holds only the
+   services this start needs, so Compose would take every other running
+   service for an orphan and remove it. ShipIt removes orphans itself, before
+   `up`: each container with the project label whose service is neither in the
+   raw service list (every service of the project file, in every profile) nor
+   an admitted plugin service is removed by name. That needs no model file.
 
 **No project file** (`noProjectCompose`, a stack of plugin services only):
 steps 1–5 are skipped, and `up --no-build` runs in its confined container with
@@ -363,13 +376,16 @@ refused value names the field, the resolved value, and what to use instead
 - `compose-cli.ts` — run `config`, `build`, and `up --no-build` in confined
   containers with the per-command mounts, working directory, user, isolation,
   and cleanup by name; the session identity and the helper image on
-  `ComposeCli`; `up` takes the snapshot path; `ps`, `logs`, `stop`, `down`,
-  `rm` with `-p` and no model file; the fix added to path-read failures.
+  `ComposeCli`; `up` takes the snapshot path and drops `--remove-orphans`;
+  `ps`, `logs`, `stop`, `down`, `rm` with `-p`, no model file, and an empty
+  ShipIt working directory; the fix added to path-read failures.
 - `service-manager.ts` — resolve-validate-rewrite in `withUpInFlight` before the
-  in-flight count; `build` before `up`; one snapshot per start; service map from
-  the raw bytes of the confined run; override-only path kept; both log paths
-  with `-p` and no model file.
-- `service-poller.ts` — `ps` with `-p` and no model file.
+  in-flight count; per-start override and stub build view; orphan removal by
+  name before `up`; `build` before `up`; one snapshot per start; service map
+  from the raw bytes of the confined run; override-only path kept; both log
+  paths with `-p` and no model file.
+- `service-poller.ts` — `ps` with `-p`, no model file, and the empty working
+  directory.
 - `compose-generator.ts` — the syntax checks run on the raw bytes the confined
   run returns (no orchestrator-side read); the security checks run on the
   resolved model; `provider` refusal; bind rule with today's
@@ -406,12 +422,13 @@ These need a check on a deployment, listed in the PR test plan:
 
 - The orchestrator image installs `docker-compose-plugin` with **no version
   pin** (`docker/Dockerfile.prod`); the helper image must get the same version,
-  so pinning it in both is recommended. On that version: `config` with the
-  named services' profiles yields the same service set `up <names>` enables;
-  `--no-consistency` accepts a dependency on a plugin service; `build` accepts
-  the build view; `config`
-  inlines `env_file` and `label_file` values; whether `config` escapes `$`;
-  `up --no-build` loads a snapshot whose build contexts are not mounted.
+  so pinning it in both is recommended. On that version: `config <names>`
+  enables each named service (also with a profile from `extends`) and includes
+  its dependencies; `--no-consistency` accepts a dependency on a plugin
+  service; `build` accepts the stub build view; `config` inlines `env_file` and
+  `label_file` values; whether `config` escapes `$`; `up --no-build` loads a
+  snapshot whose build contexts are not mounted, and leaves running services
+  that are not in the snapshot alone.
 - `ps`, `logs`, `stop`, `down`, and `rm` work with `-p <project>` and no model
   file (else the stack-wide-model fallback in Mechanism 1).
 - The confined containers reach the daemon through the socket with

@@ -12,6 +12,7 @@
 - [x] Review round 10; findings applied
 - [x] Review round 11; findings 1–2 applied, finding 3 → requirements Q9
 - [x] Resolve requirements Q9 (builds and the orchestrator's registry login)
+- [x] Review round 12; findings applied
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -20,10 +21,11 @@
 - [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
 - [ ] Mechanism 1: resolve the helper image at startup; refuse the start with a clear message when it is missing or a container cannot start
 - [ ] Mechanism 1: move the override into `<state>/compose/`; hand `compose/`, the per-session service-env directory, the per-session project secret-copy directory, and their files to the session identity (root-gated)
-- [ ] Mechanism 2: confined `config --no-consistency` with one `--profile` per profile of the named project services (no service names), returning the raw bytes too; awaited before the in-flight count in `withUpInFlight`; no orchestrator-side read of the project file
-- [ ] Mechanism 2: per-start override for exactly the snapshot's services plus admitted plugins; credential-free build view (plugin definitions only) for `build`
+- [ ] Mechanism 2: confined `config --no-consistency <the project services this start names>`, returning the raw bytes too; a start with no project service skips resolve; awaited before the in-flight count in `withUpInFlight`; no orchestrator-side read of the project file
+- [ ] Mechanism 2: per-start override for exactly the snapshot's services plus admitted plugins; build view of name-and-image plugin stubs for `build`
+- [ ] Mechanism 2: `up` without `--remove-orphans`; ShipIt removes orphan containers by name (project label, service in neither the raw list nor the admitted plugins) before `up`
 - [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
-- [ ] Orchestrator-side `ps`, `logs`, `stop`, `down`, `rm` with `-p <project>` and no model file (poller, both log paths, stop/down)
+- [ ] Orchestrator-side `ps`, `logs`, `stop`, `down`, `rm` with `-p <project>`, no model file, and an empty ShipIt working directory with no Compose file names above it (poller, both log paths, stop/down)
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
 - [ ] Mechanism 2: `provider` refused; bind rule with today's socket allowance; named-volume, `volumes_from` (service-only, every mode), and secret-file rules; refuse anything unresolved
 - [ ] Mechanism 2: `rewriteVolumes` on absolute sources; ShipIt volume declarations beside the mounts; project secret/config files copied through a confined container and named by the Docker-host path; inlined `env_file`/`label_file` keys removed; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
