@@ -14,12 +14,12 @@
 - [ ] Mechanism 1: hand the per-session service-env and docker-secret directories and files, the override, and the snapshot to the session identity (root-gated)
 - [ ] Mechanism 1: map a permission-denied Compose read to a `ComposeValidationError` naming the path and the fix
 - [ ] Mechanism 2: split `parseComposeFile` checks into a syntax set (raw file only) and a security set (resolved model only)
-- [ ] Mechanism 2: `extends`-chain check (literal paths only, physical path inside the workspace, recursive) before `config`
+- [ ] Mechanism 2: `extends`-chain check (literal paths only, physical path inside the workspace, recursive) before `config`; refuse `label_file` in the project file and the chain, in every mode
 - [ ] Mechanism 2: `config` step (env-file resolution off, `--env-file` copy) awaited before the in-flight count in `withUpInFlight`, and in reconcile
 - [ ] Mechanism 2: security set on the resolved model (accept only Compose's own normalization); bind rule with today's socket allowance, named-volume, `volumes_from` (service-only, all modes), and build-path rules; refuse `build.ssh` and `local` cache entries in all modes; refuse anything unresolved
 - [ ] Mechanism 2: move `rewriteVolumes` onto the resolved model's absolute sources; declare ShipIt volumes beside the mounts that use them; override stops rewriting volumes; overlay dep-dir matching reads rewritten mounts
 - [ ] Mechanism 2: write one snapshot per start (never changed after writing); `up` starts from it; service map from the resolved model
-- [ ] Mechanism 3: reader (open non-blocking, regular file only, confirm through `/proc/self/fd`, copy from the same descriptor) for `env_file`, `secrets`/`configs` `file:`, `.env`; secret/config copies named by the Docker host's path
+- [ ] Mechanism 3: reader (open non-blocking, regular file only, confirm through `/proc/self/fd`, copy from the same descriptor) for `env_file`, `secrets`/`configs` `file:`, `.env`; secret/config copies named by the Docker host's path; absent `required: false` env files left out
 - [ ] Tests: spawn options incl. both log paths, ownership, `extends` chain, resolved-model validation over recorded `config` output (plain `./sub` stack gets its volume declaration; ops socket mount passes; `volumes_from: container:…`, `build.ssh`, `local` cache refused in Open mode), rewrite, Mechanism 3 reader and copy paths, fail-closed paths
 - [ ] Docs: `shipit-docs/compose.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
 - [ ] `npm run lint:dev`, `npm run typecheck`, affected `npx vitest run`

@@ -68,6 +68,15 @@ accepted all its findings (requirements Q7):
 | 3. Refusing every outside bind breaks the ops template's Docker socket mount | Mechanism 2 step 3 — today's socket allowance carries over unchanged |
 | 4. Running the security set on the raw file too adds no protection | Mechanism 2 steps 1 and 3 — the security set runs once, on the resolved model |
 
+Later rounds (2026-09-28) are applied under the requester's standing
+instruction to apply every reasonable finding (requirements Q7), and repeat
+until a review has no important findings.
+
+| Round, run | Finding | Handled in |
+|---|---|---|
+| 4, `272e35bf-8469-469a-a123-52ee2bf214ab` | `config` opens a service's `label_file` while it loads the model, before any check | Mechanism 2 step 1 — `label_file` refused before `config`, in every mode |
+| 4 | Opening every `env_file` would refuse an absent `required: false` file that works today | Mechanism 3 — an absent optional file is left out, as Compose does |
+
 ## Mechanism 1 — run Compose as the session uid
 
 ### One spawn path
@@ -154,6 +163,12 @@ run. Mechanism 2 makes the file `up` reads the file ShipIt checked.
    `extends.file` entries the same way. This puts the check *before* Compose's
    read, which is what the requirement 1 exception assumes (second review,
    finding 1).
+
+   In the project file and in every file of that chain, a service's
+   `label_file` is refused in every mode, with a message to use `labels:`.
+   `config` opens a label file while it loads the model, so no later check
+   could stop that read, and the requirement 1 exception does not cover it
+   (round 4).
 2. **Resolve.** Run `docker compose -p <project> -f <project file> config` as
    the session uid (Mechanism 1), with Compose's env-file resolution turned off,
    so Compose does not read `env_file` contents here (Mechanism 3 reads them).
@@ -265,6 +280,11 @@ project's `.env`, ShipIt itself:
 The check and the read are on one open file, so no check-then-use window
 exists. Compose then reads only the copy.
 
+An `env_file` entry with `required: false` whose file does not exist is left
+out of the snapshot, as Compose itself skips it; the current validator permits
+this form, so stacks that use it keep working (req 6; round 4). If the file
+exists, it gets the same check and copy as any other.
+
 Where the copy goes depends on who reads it. The Compose CLI reads `env_file`
 and `.env`, so those copies go in the state dir under the orchestrator's path.
 The Docker daemon mounts `secrets`/`configs` files, and in the shipped
@@ -312,7 +332,8 @@ planning#620.
 - `compose-generator.ts` — split the checks into a syntax set (raw file only)
   and a security set (resolved model only); bind rule with today's socket
   allowance, named-volume, `volumes_from`, and build rules (incl. `build.ssh`
-  and `local` cache refusals); `rewriteVolumes` on absolute sources, with the ShipIt
+  and `local` cache refusals); `label_file` refusal before `config`;
+  `rewriteVolumes` on absolute sources, with the ShipIt
   volume declarations beside the mounts that use them; override no longer
   rewrites volumes.
 - `secret-resolver.ts` — hand the per-session env and secret directories and
