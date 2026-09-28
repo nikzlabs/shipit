@@ -82,6 +82,7 @@ The findings that still shape this design:
 | 23 (run `6c66d249-c288-4c31-8705-cf6107c5d6ab`) | After `build`, `up --no-build` with `pull_policy: always` would pull over the local build; label-based volume removal misses anonymous volumes | Mechanism 2 step 6 — `pull_policy: never` on built services in the per-start override; Mechanism 1 — the final `down` keeps `--volumes` for anonymous volumes |
 | 24 (run `5b8e7c49-e04b-424b-9632-ab940de2612f`) | `pid: host` / `pid: container:` is not checked; the socket exception is a prefix match | Mechanism 2 step 3 — a `pid` rule in every mode; the socket source must match exactly |
 | 25 (run `b14655ea-4487-42b8-98ba-aecef07994ab`) | `ipc: container:` shares another container's `/dev/shm` files | Mechanism 2 step 3 — one shared-namespace rule for `pid`, `ipc`, `network_mode`, `uts`, `cgroup`, `userns_mode` |
+| 26 (run `8563719a-febe-497c-ae73-8ed1f91804c9`) | The orchestrator's Docker login is not at a Docker-host path; reconcile starts services | Mechanism 1 — a root-only copy of the login in the workspace volume; *Where this runs* — reconcile's start uses the full sequence |
 | 10 | Compose reads `PWD/.env`, and today's working directory is the workspace | Mechanism 1 — every confined run uses the workspace as its working directory |
 | 10 | A confined read failure must still name the fix (req 5) | Mechanism 1 — ShipIt adds the fix to Compose's message |
 | 10 | Private image pulls use the orchestrator's Docker client configuration | Mechanism 1 — mounted into `up` only |
@@ -109,8 +110,13 @@ by `defaultComposeRunner` / `defaultComposeQuery` (`compose-cli.ts`) as
   That configuration is an orchestrator file, so only `up --no-build`, which
   reads no project path, mounts it: read-only, at a fixed path, with
   `DOCKER_CONFIG` set to that path (so `HOME` does not matter), and readable
-  because `up` runs as root (*How each container runs*). Private service
-  images keep pulling. `config` and `build` read project paths, so they do not
+  because `up` runs as root (*How each container runs*). The Docker host cannot
+  see the orchestrator's own copy (for example `/root/.docker` inside the
+  orchestrator container, `deployment/vps/docker-compose.yml`), so before each
+  `up` ShipIt copies that client configuration file, if there is one, to a
+  single root-only file in the workspace volume outside every session
+  directory, and mounts that through the workspace-volume translation. Private
+  service images keep pulling. `config` and `build` read project paths, so they do not
   get it. **One behaviour
   change** (the requirement 6 exception, requirements Q9): a build whose base
   image needs the orchestrator's registry login now fails, with a message that
@@ -463,8 +469,10 @@ the override alone, as the override-only path does today (`service-manager.ts`,
 the in-flight count, so that a rejected parse never gets a polling exemption.
 `config` is now a container run, so steps 1–5 become an awaited step that
 completes **before** the count is taken, and `fn()` receives the snapshot path
-it must start from. Reconcile starts nothing, so it only reads the project
-file's raw bytes through a confined container and parses them as today.
+it must start from. Reconcile rebuilds the service map from a fresh confined
+read of the raw bytes, and then calls `start()` (`service-manager.ts`), which
+starts the automatic services through this same sequence, like every other
+start.
 
 A Stop must still win over a start that is resolving. `stopService` stops the
 service and then stops it again after every start it finds in `upSettled`
