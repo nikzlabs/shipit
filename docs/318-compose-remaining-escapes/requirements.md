@@ -71,8 +71,22 @@ paths.
 
 ## Open questions
 
-*(none — Q1–Q8 answered. Implementation is unblocked once the new design has
-been reviewed.)*
+- **Q9: may a build lose the orchestrator's registry login?** Review round 11
+  (2026-09-28, run `f390d1c3-db8d-4a42-aaa6-08a6e147440e`). Today Compose
+  inherits `DOCKER_CONFIG` / `HOME`, so a build can pull a private base image
+  with whatever registry login the orchestrator has. In the confined design,
+  `build` reads project paths, so giving it that login would let a project copy
+  the orchestrator's registry credentials into an image (requirement 1: the
+  orchestrator's own files). Withholding it breaks a build whose base image
+  needs that login (requirement 6). ShipIt does not manage registry logins
+  itself, so this works today only where an operator logged in inside the
+  orchestrator. Options: **(a, recommended)** builds do not get the login;
+  record this as an exception to requirement 6, with a clear message (req 5);
+  `up` keeps the login for service images. **(b)** give builds the login, and
+  record the credential exposure as an exception to requirement 1. **(c)**
+  pull private base images before the build, in a container that reads no
+  project path — more mechanism (ShipIt would have to find each Dockerfile's
+  base images).
 
 ## Resolved questions
 

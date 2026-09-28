@@ -10,6 +10,8 @@
 - [x] Review round 8; findings applied
 - [x] Review round 9; findings applied
 - [x] Review round 10; findings applied
+- [x] Review round 11; findings 1–2 applied, finding 3 → requirements Q9
+- [ ] Resolve requirements Q9 (builds and the orchestrator's registry login)
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)
@@ -18,7 +20,8 @@
 - [ ] Mechanism 1: unique name and `shipit-compose-helper` label; remove by name on cancel or timeout; startup janitor sweep
 - [ ] Mechanism 1: resolve the helper image at startup; refuse the start with a clear message when it is missing or a container cannot start
 - [ ] Mechanism 1: move the override into `<state>/compose/`; hand `compose/`, the per-session service-env directory, the per-session project secret-copy directory, and their files to the session identity (root-gated)
-- [ ] Mechanism 2: confined `config --no-consistency <the services this start names>`, returning the raw bytes too; awaited before the in-flight count in `withUpInFlight`; no orchestrator-side read of the project file
+- [ ] Mechanism 2: confined `config --no-consistency` with one `--profile` per profile of the named project services (no service names), returning the raw bytes too; awaited before the in-flight count in `withUpInFlight`; no orchestrator-side read of the project file
+- [ ] Mechanism 2: per-start override for exactly the snapshot's services plus admitted plugins; credential-free build view (plugin definitions only) for `build`
 - [ ] Mechanism 1: working directory = the workspace (`compose/` for `up`); Docker client config mounted into `up` only; fix appended to path-read failures
 - [ ] Orchestrator-side `ps`, `logs`, `stop`, `down`, `rm` with `-p <project>` and no model file (poller, both log paths, stop/down)
 - [ ] Mechanism 2: syntax checks on the returned raw bytes; security checks on the resolved model (accept only Compose's own normalization)
