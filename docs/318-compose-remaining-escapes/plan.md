@@ -288,8 +288,12 @@ Every file Compose reads by a path the project names — the project file itself
 `env_file`, `label_file`, `.env`, `extends` files, build contexts,
 Dockerfiles and their ignore files, `build.ssh` keys, local build caches — is
 looked up inside a container that holds only this session's workspace. A
-symlink to anything else finds nothing, or the helper image's base system,
-which holds nothing of ShipIt, the host, or another session. So none of
+symlink to anything else finds nothing, or the helper container's own files —
+the helper image's base system and the `/etc/hosts`, `/etc/resolv.conf`, and
+`/etc/hostname` Docker adds to every container — none of which belongs to
+another session, the shared volume root, ShipIt, or the Docker host
+(requirement 1 as reworded in requirements Q10). The helper image is kept as
+small as practical for that reason. So none of
 these needs a rule of its own, and stacks that use them keep working (req 1,
 req 6). This holds in the bind deployment too, for these reads.
 

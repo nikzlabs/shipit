@@ -26,7 +26,7 @@
 - [x] Review round 20; findings applied
 - [x] Review round 21; findings applied
 - [x] Review round 22; finding 2 applied, finding 1 → requirements Q10
-- [ ] Resolve requirements Q10 (the helper container's own files)
+- [x] Resolve requirements Q10 (the helper container's own files)
 - [ ] Review the design until no important findings remain
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 - [ ] Mechanism 1: run `config`, secret/config file reads, `build`, and `up --no-build` in confined containers with the per-command mounts in plan.md (mounts at orchestrator paths, `--network none`, read-only root, session identity plus socket group when the socket is mounted, `composeSpawnEnv` only)

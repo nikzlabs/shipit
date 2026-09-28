@@ -21,9 +21,12 @@ paths.
 ## Requirements
 
 1. A compose file's file *references* — `env_file`, top-level `secrets:`/`configs:`
-   `file:`, and `build.context` — MUST NOT read files outside this session's own
-   workspace, even when the named path is a symlink whose target resolves outside
-   it. Today these are checked as strings only (`validateReadablePath`,
+   `file:`, and `build.context` — MUST NOT read any file of another session, the
+   shared workspace volume's root, ShipIt or the orchestrator, or the Docker
+   host, even when the named path is a symlink whose target resolves outside
+   this session's workspace. *(Reworded 2026-09-28 from "files outside this
+   session's own workspace" — see Resolved questions Q10.)* Today these are
+   checked as strings only (`validateReadablePath`,
    `validateBuildSecurity`), and the Compose CLI reads them as the orchestrator's
    user, following workspace symlinks.
 
@@ -76,21 +79,8 @@ paths.
 
 ## Open questions
 
-- **Q10: may a file reference reach the helper container's own files?**
-  Review round 22 (2026-09-28, run `3423fa94-5659-49e8-8a8a-35e1cab27a5f`).
-  Requirement 1 says a reference must not read files "outside this session's
-  own workspace". In the confined design, a workspace symlink resolves inside
-  the throwaway helper container, so it can reach that container's own files —
-  the helper image's base files, and the `/etc/hosts`, `/etc/resolv.conf`, and
-  `/etc/hostname` that Docker puts into every container. None of these belongs
-  to another session, the shared volume root, ShipIt, or the Docker host,
-  which is how this document defines "outside its session". No container
-  design can hide Docker's own `/etc` files. Options: **(a, recommended)**
-  reword requirement 1 to that definition (no file of another session, the
-  shared volume root, ShipIt or the orchestrator, or the Docker host), and keep
-  the helper image as small as practical, so little else is there; **(b)**
-  keep the literal wording, and add ShipIt-side checks of every reference on
-  top of the confinement — the copy-and-check mechanism that Q8 removed.
+*(none — Q1–Q10 answered. Implementation is unblocked once the design review
+is clean.)*
 
 ## Resolved questions
 
@@ -192,6 +182,19 @@ project path, keeps the login for service images. The alternatives were
 pulling base images before the build in a container that reads no project
 path. A real private-registry feature (for example a per-repository registry
 credential) is separate work.
+
+**2026-09-28 — Q10: may a file reference reach the helper container's own
+files? → yes; reword requirement 1 to the definition this document already
+uses.** Review round 22 (run `3423fa94-5659-49e8-8a8a-35e1cab27a5f`) found that
+a workspace symlink resolves inside the throwaway helper container, so it can
+reach that container's own files: the helper image's base files, and the
+`/etc/hosts`, `/etc/resolv.conf`, and `/etc/hostname` that Docker puts into
+every container. None belongs to another session, the shared volume root,
+ShipIt, or the Docker host, and no container design can hide Docker's own
+`/etc` files. Requirement 1 now names those four instead of "outside this
+session's own workspace"; the helper image stays as small as practical. The
+alternative was keeping the literal words and adding ShipIt-side checks of
+every reference on top of the confinement (the mechanism Q8 removed).
 
 ## What is already true (verified in this repository, 2026-09-27)
 
