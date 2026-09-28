@@ -521,6 +521,7 @@ refused value names the field, the resolved value, and what to use instead
 | 4 (bind deployment) | out of scope for mounts — follow-up on planning#620; Mechanism 1 confines reads there too |
 | 5 (clear refusals) | `ComposeValidationError` naming field, resolved value, and fix; a container that cannot start says so |
 | 6 (fail closed; plain stacks keep working) | failed `config`, container, or unrecognised mount refuses the start; in-workspace binds and `/persist` are rewritten, not refused; file references need no special rule; plugin-only stacks keep the override-only path |
+| 7 (no reach on purpose, every mode) | Mechanisms 1 and 2 for reads and mounts. **Not yet designed:** the Open-session capability, security-option, build, and socket gaps — waiting on requirements Q12–Q14 |
 
 ## Key files (to touch)
 

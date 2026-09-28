@@ -77,10 +77,37 @@ paths.
    message that says why (requirement 5). Service images that `up` pulls keep
    that login. *(Resolved 2026-09-28 — see Resolved questions Q9.)*
 
+7. A session MUST NOT reach another session or the Docker host through its
+   Compose setup (the compose file and the `compose` block of `shipit.yaml`),
+   even when the agent tries to on purpose. This holds in every session mode,
+   Open included, and it is the standard for requirements 1–3. Only this
+   session's own secrets (the values its own services receive) are protected
+   against accidental reach alone, because the agent can always make one of
+   its services show such a value. *(Stated 2026-09-28 — see Resolved
+   questions Q11.)*
+
 ## Open questions
 
-*(none — Q1–Q10 answered. Implementation is unblocked once the design review
-is clean.)*
+- **Q12 — Where do the Open-session fixes for requirement 7 go?** Checking the
+  code against requirement 7 found host reach that requirements 1–3 do not
+  name (Q13, Q14). They are in the Compose setup, but outside the file
+  references and mounts this work was scoped to. Put them in this work, or in
+  a separate issue?
+- **Q13 — Added capabilities and security options in Open sessions.**
+  `cap_add` is refused only in contained sessions (`validateServiceSecurity`);
+  `security_opt` is not checked in any mode; `build.privileged`,
+  `build.entitlements`, and `build.network` are checked only in contained
+  sessions (`validateBuildSecurity`). Some added capabilities, and options that
+  turn off seccomp, AppArmor, or SELinux, let a container reach host files or
+  leave its sandbox. Refusing them breaks Open-session stacks that use them
+  today, which is an exception to requirement 6. Allow a short safe list,
+  refuse all, or refuse only a named list of dangerous ones?
+- **Q14 — The Docker socket opt-in.** `compose.docker-socket: true` gives a
+  service the raw Docker socket in Open sessions, which is full control of the
+  host. `shipit.yaml` is read from the workspace (`resolveShipitConfig`), so
+  the agent can turn it on. Q7 kept this allowance unchanged; requirement 7
+  conflicts with that. Make the opt-in something only the user can set, keep
+  it as an accepted exception, or remove the raw socket?
 
 ## Resolved questions
 
@@ -195,6 +222,16 @@ ShipIt, or the Docker host, and no container design can hide Docker's own
 session's own workspace"; the helper image stays as small as practical. The
 alternative was keeping the literal words and adding ShipIt-side checks of
 every reference on top of the confinement (the mechanism Q8 removed).
+
+**2026-09-28 — Q11: what does this protection guard against? → cross-session
+and host access must be fully prevented; only the session's own secrets are
+protected against accidental reach alone.** The requester, correcting a chat
+summary that called the whole design protection from accidental reach: "well
+for secrets on the repo inside the session. Cross-session/host access should
+be fully prevented". Recorded as requirement 7. The plan already used this
+split for the service-env files (*ShipIt's own files keep their owner*), and
+requirements 1, 2, and 2a have no accidental-only wording. The check of the
+code against requirement 7 raised Q12–Q14.
 
 ## What is already true (verified in this repository, 2026-09-27)
 

@@ -10,6 +10,7 @@
 - [x] Redesign around the confined Compose container (requirements Q8)
 - [x] Review rounds 7–28 on the redesign; findings applied, or escalated as Q9 and Q10
 - [x] Review until no important findings remain (round 29: none)
+- [ ] Resolve requirements Q12–Q14 (requirement 7 in Open sessions) and design the answer
 - [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
 
 ## Mechanism 1 — confined Compose containers
