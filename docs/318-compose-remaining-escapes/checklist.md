@@ -49,6 +49,7 @@
 
 - [ ] Open-session `cap_add` only from `SAFE_ADDED_CAPABILITIES` (prefix stripped, uppercased); contained sessions keep refusing all
 - [ ] `security_opt` only `no-new-privileges` in every mode
+- [ ] `device_cgroup_rules` refused in every mode
 - [ ] `validateBuildSecurity` in every mode, with mode-neutral messages
 - [ ] Socket mount and `use_api_socket` only with `compose.docker-socket: true` and the repository's `allowDockerSocket` grant, read at each start; refusal names the setting
 - [ ] Ops sessions without the grant: only the trusted proxy's read-only mount, in every mode

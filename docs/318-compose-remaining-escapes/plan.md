@@ -465,6 +465,10 @@ snapshot.
      `=true`). Every other value is refused. Today `security_opt` is not checked
      in any mode; ShipIt's own `no-new-privileges` in the override is not a
      project value and stays.
+   - **Device rules (req 7).** `device_cgroup_rules` is refused in every mode;
+     `validateDevices` checks only `devices`, so today this field is not
+     checked in any mode (review round 34, run
+     `8071329c-00b5-4a91-8a13-2547249f9b42`).
    - **Build settings (req 7, Q13).** `validateBuildSecurity` runs in every
      mode, not only in contained sessions: no `build.privileged`, no
      `build.entitlements`, and `build.network` only the default or `none`. Its
