@@ -67,26 +67,19 @@ npm install
 
 ## Dev loop
 
-The recommended workflow is the hot-reload Docker script — it mounts the source tree into the orchestrator container and restarts on change:
+The workflow is the hot-reload Docker script — it mounts the source tree into the orchestrator container and restarts on change:
 
 ```bash
 docker/local/dev.sh
 ```
 
-If you want to run the orchestrator outside Docker (note: session containers still require Docker):
-
-```bash
-npm run dev          # Fastify orchestrator on :3000
-npx vite             # Vite dev server with HMR on :5173 (separate terminal)
-```
-
-The Vite dev server proxies WebSocket connections to the backend at `localhost:3000`.
+The orchestrator runs only inside that container, or in one of the deployments in `deployment/`. Started directly on the host, it refuses to start, because it needs the `WORKSPACE_VOLUME` those setups provide.
 
 ### Available scripts
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start the backend dev server (tsx) |
+| `npm run dev` | The backend dev server (tsx); `docker/local/dev.sh` runs it inside the orchestrator container |
 | `npm run build` | Build the frontend with Vite |
 | `npm run test:dev` | Run changed tests + smoke tests (fast local iteration) |
 | `npm run test:smoke` | Run only smoke tests (core startup/connectivity) |
