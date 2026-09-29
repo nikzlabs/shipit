@@ -27,8 +27,9 @@ Two mechanisms, one per kind of reach:
   gives the Docker socket only when the user has turned it on for the
   repository.
 
-Requirement 4's bind-deployment case is out of scope (requirements Q1); tracked
-as a follow-up on planning#620.
+Requirement 4's bind-deployment case was first left out (requirements Q1). ShipIt
+now refuses that deployment at startup (req 9, requirements Q16; *The bind
+deployment is refused*).
 
 ## Design history
 
@@ -647,6 +648,32 @@ uses the same parts:
   `shipit settings get` and can propose it; only the user's accept on the
   proposal card, or the toggle, turns it on.
 
+## The bind deployment is refused (req 9)
+
+Without `WORKSPACE_VOLUME`, the session's files are plain host paths to the
+daemon. `rewriteResolvedMount` then keeps a bind of a workspace subdirectory as
+that host path, and `rewriteFragmentVolume` does the same for a `repo: self`
+fragment, so the daemon follows a symlink in it. No shipped deployment runs that
+way; the one documented setup that did (the orchestrator run outside Docker, in
+`CONTRIBUTING.md`) is removed.
+
+- **Refusal:** `setupContainerManager` (`app-lifecycle.ts`) is where ShipIt
+  decides to run session containers. Before it makes the real
+  `SessionContainerManager`, `assertWorkspaceVolumeConfigured` throws when
+  `WORKSPACE_VOLUME` is empty, with a message that names the setting and points
+  to ShipIt's deployments. `buildApp` then fails, and the process stops with
+  that message, as it does for the credentials-volume refusal in `app-di.ts`.
+  The check reads the same variable, with the same test for "set", as
+  `buildServiceManager` and `buildConfinedCompose`, so no Compose start can see
+  a different answer.
+- **Not affected:** `RUNTIME_MODE=local` returns before that point and runs no
+  session containers. Test mode and an injected container manager or runner
+  factory do not make the real manager either.
+- **The bind branches stay.** With the refusal, no deployment ShipIt runs
+  reaches them; only callers that give no workspace volume (unit tests) do.
+  Making them refuse too would be a second mechanism for the same requirement,
+  and nobody could see the difference.
+
 ## Where the build differs from the design above
 
 - **Code layout.** `parseComposeContent` runs the raw syntax checks and
@@ -694,11 +721,12 @@ uses the same parts:
 | 2 (interpolation / `extends`, all modes) | Mechanism 2 steps 1–6 |
 | 2a (cross-session / shared-volume root, all modes) | Mechanism 1 (reads) + Mechanism 2 bind, named-volume, `volumes_from`, and secret-file rules (mounts) |
 | 3 (non-`./` relative sources) | Mechanism 2 steps 3–4 (rewritten or refused) |
-| 4 (bind deployment) | out of scope for mounts — follow-up on planning#620; Mechanism 1 confines reads there too |
+| 4 (bind deployment) | refused at startup (req 9) |
 | 5 (clear refusals) | `ComposeValidationError` naming field, resolved value, and fix; a container that cannot start says so |
 | 6 (fail closed; plain stacks keep working) | failed `config`, container, or unrecognised mount refuses the start; in-workspace binds and `/persist` are rewritten, not refused; file references need no special rule; plugin-only stacks keep the override-only path |
 | 7 (no reach on purpose, every mode) | Mechanisms 1 and 2 for reads and mounts; Mechanism 2 step 3 capability, security-option, and build rules in every mode |
 | 8 (only the user grants the socket) | Mechanism 2 step 3 socket grant; *The socket grant setting* |
+| 9 (no bind deployment) | *The bind deployment is refused* — `assertWorkspaceVolumeConfigured` in `setupContainerManager`; the host-run setup removed from `CONTRIBUTING.md` |
 
 ## Key files (to touch)
 

@@ -59,6 +59,15 @@
 - [x] Sessions with no repository: no socket; the refusal names the sandbox Docker access switch
 - [x] `allowDockerSocket` setting: `repos.allow_docker_socket` column and migration, `RepoInfo`, `PATCH /api/repos/:url` through `applyRepoSettings`, reader and `::set` operation, `project.allowDockerSocket` catalogue entry, client store and toggle
 
+## Requirement 9 — the bind deployment is refused
+
+- [x] Confirm item 2 of planning#620 at the source, and which setups run without `WORKSPACE_VOLUME`
+- [x] Requirement 9; Q16 answered (refuse the mode, remove its documentation)
+- [x] `assertWorkspaceVolumeConfigured` in `setupContainerManager`, before the real container manager; co-located tests
+- [x] Remove the host-run orchestrator setup from `CONTRIBUTING.md`, and the old recipe in `docs/061-self-hosting/plan.md` (design review)
+- [x] Independent review of the design, with a "would anyone notice if this were removed?" round (run `a39f5946-2380-441b-a50e-ef9784a8b789`: one finding, applied)
+- [x] Independent review of the implementation against requirement 9 (run `c81facd2-3d10-42e6-aa94-e97493ad2334`: one important finding, a second copy of the recipe from a broken edit, fixed; three minor ones applied)
+
 ## Finish
 
 - [x] Tests: `docker run` arguments per command and cleanup, resolved-model validation over recorded `config` output, rewrite, secret-file copy, file-key removal, stop record, plugin-only path, fail-closed paths

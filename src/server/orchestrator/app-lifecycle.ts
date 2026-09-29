@@ -141,6 +141,19 @@ export interface ContainerSetupResult {
   dockerProxyServer: HttpServer | null;
 }
 
+/**
+ * Without the workspace volume, Docker gets a session's workspace paths as host paths, which the
+ * session can redirect, so ShipIt does not run session containers (docs/318-compose-remaining-escapes req 9).
+ */
+export function assertWorkspaceVolumeConfigured(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.WORKSPACE_VOLUME) return;
+  throw new Error(
+    "ShipIt does not start: WORKSPACE_VOLUME is not set. Set it to the Docker volume that holds "
+    + "/workspace, as ShipIt's deployments do (deployment/README.md). Without it, ShipIt cannot keep "
+    + "a session's Compose mounts inside that session.",
+  );
+}
+
 export async function setupContainerManager(
   setupDeps: ContainerSetupDeps,
 ): Promise<ContainerSetupResult> {
@@ -155,6 +168,7 @@ export async function setupContainerManager(
   if (deps.sessionContainerManager) {
     containerManager = deps.sessionContainerManager;
   } else if (!isTestMode && !deps.runnerFactory) {
+    assertWorkspaceVolumeConfigured();
     containerManager = new SessionContainerManager({
       workspaceVolume: process.env.WORKSPACE_VOLUME,
       stateDir: setupDeps.stateDir,

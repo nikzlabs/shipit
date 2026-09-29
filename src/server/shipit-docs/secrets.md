@@ -168,7 +168,7 @@ Required environment variables on the orchestrator:
 | Variable | Purpose |
 |----------|---------|
 | `SHIPIT_SECRETS_INTERNAL_DIR` | Orchestrator-side directory where secret files are written (e.g. `/var/shipit/secrets`). |
-| `SHIPIT_SECRETS_HOST_DIR` | Host-side path the Docker daemon sees for the same directory. Required when the orchestrator runs in a container; omit for orchestrator-on-host setups. Covers both the per-secret `file:` references and the staged entrypoint wrapper's bind mount. |
+| `SHIPIT_SECRETS_HOST_DIR` | Host-side path the Docker daemon sees for the same directory. Required when that path differs from the orchestrator's (for example, a directory inside a Docker volume); omit it when the orchestrator mounts the directory at its host path. Covers both the per-secret `file:` references and the staged entrypoint wrapper's bind mount. |
 | `SHIPIT_SECRETS_ENTRYPOINT` | Path to `secrets-entrypoint.sh` inside the orchestrator image. Defaults to `/usr/local/share/shipit/secrets-entrypoint.sh`. |
 
 What this does NOT buy you: the agent already cannot read the per-service env

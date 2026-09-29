@@ -58,9 +58,9 @@ paths.
 
 4. Requirements 1–3 MUST hold in every deployment ShipIt ships. The bind
    deployment (no `WORKSPACE_VOLUME`), where ShipIt does not rewrite `./sub` and
-   the daemon follows host symlinks anywhere, is reachable by no shipped compose
-   file and is carried as a tracked follow-up rather than closed here.
-   *(Resolved 2026-09-27 — see Resolved questions Q1.)*
+   the daemon follows host symlinks anywhere, is refused (requirement 9).
+   *(Resolved 2026-09-27 — see Resolved questions Q1, which carried the bind
+   deployment as a follow-up; 2026-09-29 — Q16 refuses it.)*
 
 5. When ShipIt refuses a reference under 1–4, the message MUST name what was
    refused and what to use instead, in the style of the existing compose
@@ -106,24 +106,16 @@ paths.
    the user creates, keep their read-only Docker access. *(Resolved 2026-09-28
    — see Resolved questions Q14.)*
 
-9. In a deployment without `WORKSPACE_VOLUME` (the bind deployment), a mount
-   that a project's compose file, or a `repo: self` plugin's compose fragment,
-   names inside this session's workspace MUST NOT reach a path outside that
-   workspace, also when a part of the path is a symlink. This is requirement 7
-   in that mode, which requirement 4 left open. *(Added 2026-09-29 for item 2
-   of planning#620 — see Open questions Q16.)*
+9. ShipIt MUST NOT run session containers without `WORKSPACE_VOLUME` (the bind
+   deployment). In that mode Docker receives host paths inside a session's
+   workspace, which the session can redirect, so requirement 7 cannot hold.
+   Started that way, ShipIt refuses to start, with a message that names the
+   setting. ShipIt's documentation MUST NOT describe such a setup. *(Resolved
+   2026-09-29 — see Resolved questions Q16.)*
 
 ## Open questions
 
-- **Q16 — in the bind deployment, does ShipIt close the gap or refuse?** Today
-  no shipped deployment runs without `WORKSPACE_VOLUME`. One documented setup
-  does: the orchestrator run outside Docker (`CONTRIBUTING.md`), where Compose
-  is off until the operator sets the helper image by hand. The options: (a)
-  close it — mount each workspace subdirectory through the per-session
-  workspace volume of planning#619, with the workspace path as its device, so
-  stacks keep working there (requirement 6); (b) refuse every Compose start in
-  that mode, with a message that names `WORKSPACE_VOLUME`; (c) refuse to start
-  ShipIt in that mode at all.
+*(none — Q1–Q16 answered.)*
 
 ## Resolved questions
 
@@ -288,6 +280,15 @@ exception to requirement 6. The final review runs on the implementation. The
 requester, choosing the recommended option: "Ok go ahead and implement, then
 review". The alternative was more review rounds without the list.
 
+**2026-09-29 — Q16: in the bind deployment (no `WORKSPACE_VOLUME`), does ShipIt
+close the gap or refuse? → refuse the mode, and remove its documentation.** No
+shipped deployment runs that way; the one documented setup that did was the
+orchestrator run outside Docker, in `CONTRIBUTING.md`. The requester: "let's
+remove this documentation, and refuse such a mode". Recorded as requirement 9.
+The alternatives were closing the gap with the planning#619 per-session volume
+(the workspace path as its device), and refusing only Compose starts in that
+mode.
+
 ## What is already true (verified in this repository, 2026-09-27)
 
 - `validateReadablePath` (`compose-generator.ts`) checks the declared string for
@@ -316,3 +317,11 @@ review". The alternative was more review rounds without the list.
   `shared/database.ts`). Verified 2026-09-28.
 - ShipIt polls each session's stack with `docker compose ps` every 5 seconds
   (`ServicePoller`, `service-poller.ts`). Verified 2026-09-28.
+- Without `WORKSPACE_VOLUME`, `rewriteResolvedMount` (`compose-generator.ts`)
+  keeps a bind of a workspace subdirectory as a host path, and
+  `rewriteFragmentVolume` (`plugin-compose.ts`) binds a `repo: self` fragment's
+  paths as host paths. The workspace root, `/persist`, the helper containers'
+  mounts, and ShipIt's own files are not paths the agent can redirect. Every
+  shipped deployment sets `WORKSPACE_VOLUME` (`deployment/vps`,
+  `docker/local/prod`, `docker/local/dev`); `RUNTIME_MODE=local` runs no session
+  containers and resolves no Compose helper image. Verified 2026-09-29.

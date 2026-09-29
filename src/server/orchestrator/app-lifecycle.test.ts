@@ -14,6 +14,8 @@ import {
   markProviderAccountUnauthenticated,
   markProviderAccountReauthenticated,
   resolveAutoStartDeps,
+  assertWorkspaceVolumeConfigured,
+  setupContainerManager,
 } from "./app-lifecycle.js";
 import {
   ensureLocalAgentOpsHost,
@@ -54,6 +56,37 @@ describe("resolveAutoStartDeps", () => {
       RUNTIME_MODE: "containerized",
       SHIPIT_STATE_DIR: "/workspace/.inner-shipit",
     })).toEqual({ serveStatic: true });
+  });
+});
+
+// docs/318-compose-remaining-escapes req 9.
+describe("the workspace volume is required for session containers", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("refuses when WORKSPACE_VOLUME is unset or empty, and names it", () => {
+    expect(() => assertWorkspaceVolumeConfigured({})).toThrow(/WORKSPACE_VOLUME is not set/);
+    expect(() => assertWorkspaceVolumeConfigured({ WORKSPACE_VOLUME: "" })).toThrow(/WORKSPACE_VOLUME/);
+    expect(() => assertWorkspaceVolumeConfigured({ WORKSPACE_VOLUME: "shipit_workspace" })).not.toThrow();
+  });
+
+  const setup = (runtimeMode: "containerized" | "local") => setupContainerManager({
+    deps: {},
+    isTestMode: false,
+    credentialsDir: TEST_CREDENTIALS_DIR,
+    sessionManager: {} as SessionManager,
+    runtimeMode,
+  });
+
+  it("stops startup in the containerized mode", async () => {
+    vi.stubEnv("WORKSPACE_VOLUME", "");
+    await expect(setup("containerized")).rejects.toThrow(/WORKSPACE_VOLUME is not set/);
+  });
+
+  it("does not apply to local mode, which runs no session containers", async () => {
+    vi.stubEnv("WORKSPACE_VOLUME", "");
+    await expect(setup("local")).resolves.toEqual({ containerManager: null, dockerProxyServer: null });
   });
 });
 

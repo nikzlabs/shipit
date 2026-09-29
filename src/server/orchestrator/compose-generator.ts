@@ -1622,7 +1622,7 @@ function rewriteResolvedMount(
   if (vol.type !== "bind" || typeof vol.source !== "string" || vol.source === DOCKER_SOCKET_PATH) return vol;
   const relPath = path.posix.relative(opts.workspaceDir, vol.source);
   if (typeof vol.target === "string") records.push({ relPath, target: vol.target });
-  // The bind deployment mounts the workspace path itself (requirements Q1).
+  // ShipIt does not start session containers without a workspace volume (docs/318 req 9).
   if (!opts.workspaceVolume) return vol;
   const { bind: _bindOptions, ...mount } = vol;
   return { ...mount, ...workspaceVolumeMount(relPath, opts.workspaceSubpath) };

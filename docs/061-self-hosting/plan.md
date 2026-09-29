@@ -267,31 +267,10 @@ resources:
 
 ### Part C: ShipIt Self-Hosting Configuration
 
-With Parts A and B, ShipIt can host itself. The `shipit.yaml` for the ShipIt repo:
-
-```yaml
-capabilities:
-  docker: true
-
-resources:
-  memory: 3072
-  cpu: 2.0
-  pids: 4096
-
-install: npm ci
-
-preview:
-  command: |
-    docker build -t shipit-session-worker:dev -f docker/Dockerfile.session-worker.dev .
-    API_PORT=3001 npx vite --host 0.0.0.0 --port 3000 &
-    WORKSPACE_VOLUME="" USE_CONTAINERS=true SESSION_WORKER_IMAGE=shipit-session-worker:dev \
-      DOCKER_NETWORK=shipit-inner DOCKER_STACK=shipit-inner PORT=3001 npm run dev
-  ports: [3000]
-```
-
-The Vite dev server on port 3000 serves the client and proxies `/api/*` and `/ws` to Fastify on port 3001. The outer ShipIt's preview proxy exposes port 3000 as `{sessionId}--3000.localhost`. The inner ShipIt's own session containers join a separate bridge network (`shipit-inner`), invisible to the outer orchestrator.
-
-**Container cleanup**: The general label-based cleanup (Part A, change #6) handles this automatically — the inner ShipIt's session worker containers are created via the proxy with the `shipit-parent-session={sessionId}` label. The `shipit-inner` bridge network is also cleaned up as a session-labeled network.
+This part once gave a recipe that ran an inner ShipIt with session containers and no
+`WORKSPACE_VOLUME`. ShipIt refuses to start that way (docs/318-compose-remaining-escapes
+req 9), so the recipe is removed. ShipIt runs inside ShipIt in local mode instead
+(docs/118-shipit-ui-local).
 
 ---
 
