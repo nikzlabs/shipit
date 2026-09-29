@@ -621,7 +621,7 @@ describe("plugin credential delivery, end to end (req 23)", () => {
 
     expect(envOf(workspaceDir).FAL_KEY).toBe("sk-live");
     expect(readOverride(workspaceDir, "web").services.web.env_file).toEqual([envFile]);
-    expect(fs.readFileSync(envFile, "utf-8")).toContain("GITHUB_TOKEN=ghp_new");
+    expect(fs.readFileSync(envFile, "utf-8")).toContain('GITHUB_TOKEN="ghp_new"');
     await mgr.stop();
   });
 });

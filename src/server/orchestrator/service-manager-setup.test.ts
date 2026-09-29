@@ -680,7 +680,9 @@ describe("trackComposeStop — onStopped", () => {
     });
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([
+    // Earlier tests' background compose starts can still log into this spy.
+    const own = errors.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith("[compose:sess-x]"));
+    expect(own).toEqual([
       "[compose:sess-x] onStopped callback threw:",
     ]);
     errors.mockRestore();

@@ -3,6 +3,7 @@ import type { SecretStore } from "./secret-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { ServiceManager } from "./service-manager.js";
 import { getErrorMessage } from "./validation.js";
+import { envValueRefusal } from "./secret-resolver.js";
 
 export interface SecretsDeps {
   secretStore: SecretStore;
@@ -46,6 +47,11 @@ export async function registerSecretsRoutes(
       for (const [key, value] of Object.entries(set ?? {})) {
         if (typeof key !== "string" || typeof value !== "string") {
           return reply.code(400).send({ error: "All secret keys and values must be strings" });
+        }
+        // Refuse here: storing an unpaired surrogate would silently turn it into U+FFFD.
+        const refusal = envValueRefusal(value);
+        if (refusal) {
+          return reply.code(400).send({ error: `Secret "${key}" was not saved: its value ${refusal}.` });
         }
       }
       for (const key of keep ?? []) {

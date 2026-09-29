@@ -239,6 +239,10 @@ What follows from the design, and answers most of what users ask:
   them, which is the whole point of storing them.
 - **A value only reaches the services that declared it.** A `web` frontend does
   not receive the `db` password.
+- **A value arrives exactly as saved** — `$`, quotes, backslashes, spaces and
+  line breaks (a PEM key, for example) included. The only values the store
+  refuses are ones no environment variable can hold (a NUL character, invalid
+  text); saving one fails, and the message says which secret and why.
 - **You see a value only if it is marked `agent: true`**, which puts it in the
   agent container's environment for CLI tools that need it (`prisma migrate`,
   codegen). Treat anything so marked as exposed and keep real credentials out of

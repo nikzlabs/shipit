@@ -207,6 +207,35 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
   });
 });
 
+describe("a value no environment variable can carry (planning#624)", () => {
+  it("is reported in the service log once per refusal, and counts as missing", async () => {
+    let stored: Record<string, string> = { DATABASE_URL: "postgres://a\0b" };
+    const warnings: [string, string][] = [];
+    const resolver = new ServiceSecretsResolver({
+      sessionId: "s1",
+      workspaceDir,
+      serviceEnvDir: path.join(sessionDir, "service-env"),
+      secretsLoader: async () => stored,
+      onServiceWarning: (service, text) => warnings.push([service, text]),
+    });
+
+    await resolver.sync(apiService);
+    await resolver.sync(apiService);
+    expect(warnings).toEqual([[
+      "api",
+      expect.stringMatching(/secret "DATABASE_URL" was not passed to the service because its value contains a NUL character/),
+    ]]);
+    expect(resolver.getSnapshot().missingRequired).toEqual(["DATABASE_URL"]);
+    expect(fs.readFileSync(resolver.getServiceEnvFiles()!.api, "utf-8")).not.toContain("DATABASE_URL=");
+
+    stored = { DATABASE_URL: "postgres://x" };
+    await resolver.sync(apiService);
+    stored = { DATABASE_URL: "postgres://a\0b" };
+    await resolver.sync(apiService);
+    expect(warnings).toHaveLength(2);
+  });
+});
+
 describe("plugin credential DELIVERY to services (req 23)", () => {
   const paletteService = { name: "probe", credentials: ["FAL_KEY", "OPENAI_API_KEY"] };
 

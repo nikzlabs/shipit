@@ -159,6 +159,27 @@ describe("Integration: Secrets API routes", () => {
     expect(res.json().keys).not.toContain("ALSO");
   });
 
+  it.each([
+    ["a NUL character", "a\0b", /NUL character/],
+    ["an unpaired surrogate", "a\ud800b", /unpaired surrogate/],
+  ])("PUT /api/secrets refuses a value with %s and saves nothing (planning#624)", async (_label, value, reason) => {
+    const repoUrl = "https://github.com/org/repo";
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/secrets",
+      payload: { repoUrl, set: { GOOD: "ok", BAD: value } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Secret "BAD" was not saved: its value/);
+    expect(res.json().error).toMatch(reason);
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`,
+    });
+    expect(list.json().keys).toEqual([]);
+  });
+
   it("PUT /api/secrets overwrites a kept key when also present in `set`", async () => {
     const repoUrl = "https://github.com/org/repo";
 

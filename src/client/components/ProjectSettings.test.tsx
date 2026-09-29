@@ -282,6 +282,25 @@ describe("ProjectSettings - Secrets tab", () => {
     expect(screen.getByTestId("secrets-save")).not.toHaveTextContent("Saved");
   });
 
+  it("says why the server refused a value (planning#624)", async () => {
+    const error = 'Secret "API_KEY" was not saved: its value contains a NUL character, which an environment variable cannot hold.';
+    const base = secretsFetch();
+    fetchMock = vi.fn((input: unknown, init?: { method?: string }) =>
+      init?.method === "PUT"
+        ? Promise.resolve({ ok: false, status: 400, statusText: "Bad Request", json: () => Promise.resolve({ error }) })
+        : base(input, init));
+    vi.stubGlobal("fetch", fetchMock);
+    renderOnSecretsTab(["API_KEY"]);
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("API_KEY");
+    });
+
+    await userEvent.click(screen.getByTestId("secrets-save"));
+    await waitFor(() => {
+      expect(useUiStore.getState().toast?.message).toContain(error);
+    });
+  });
+
   /*
     Every one of these is a defect the independent review found and reproduced.
   */

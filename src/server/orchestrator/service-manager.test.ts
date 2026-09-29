@@ -956,8 +956,8 @@ services:
 
     const webEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "web"), "utf-8");
     const apiEnv = fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8");
-    expect(webEnv).toContain("STRIPE_KEY=sk_test_123");
-    expect(apiEnv).toContain("DATABASE_URL=postgres://x");
+    expect(webEnv).toContain('STRIPE_KEY="sk_test_123"');
+    expect(apiEnv).toContain('DATABASE_URL="postgres://x"');
 
     expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
 
@@ -1058,12 +1058,12 @@ services:
 
     await mgr.start();
     expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8"))
-      .toContain("DATABASE_URL=postgres://old");
+      .toContain('DATABASE_URL="postgres://old"');
 
     secrets = { DATABASE_URL: "postgres://new" };
     await mgr.refreshSecrets();
     expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "api"), "utf-8"))
-      .toContain("DATABASE_URL=postgres://new");
+      .toContain('DATABASE_URL="postgres://new"');
   });
 
   it("refreshSecrets rewrites secrets without starting an all-manual stack", async () => {
@@ -1094,7 +1094,7 @@ services:
     await mgr.refreshSecrets();
 
     expect(fs.readFileSync(serviceEnvFile(dir, "test-session", "worker"), "utf-8"))
-      .toContain("API_KEY=new");
+      .toContain('API_KEY="new"');
     expect(composeRunner.mock.calls.some(([args]) => args.includes("up"))).toBe(false);
   });
 
@@ -1224,12 +1224,47 @@ services:
 
     expect(fs.existsSync(path.join(stateOf(dir), ".env.agent"))).toBe(true);
     const agentEnv = fs.readFileSync(path.join(stateOf(dir), ".env.agent"), "utf-8");
-    expect(agentEnv).toContain("DATABASE_URL=postgres://x");
+    expect(agentEnv).toContain('DATABASE_URL="postgres://x"');
     expect(agentEnv).not.toContain("STRIPE_KEY");
 
     const snap = mgr.getSecretsSnapshot();
     expect(snap.agentNames).toEqual(["DATABASE_URL"]);
     expect(snap.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
+  });
+
+  it("keeps the reason a secret was refused in the service's log history (planning#624)", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const stored: { channel: string; text: string }[] = [];
+    const logStore = {
+      hasChannel: () => false,
+      append: (_sid: string, channel: string, text: string) => { stored.push({ channel, text }); },
+      snapshotText: () => "",
+    } as unknown as ConstructorParameters<typeof ServiceManager>[0]["logStore"];
+    const mgr = testServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
+      composeRunner: () => Promise.reject(new Error("no docker")),
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://a\0b" }),
+      pollIntervalMs: 0,
+      logStore,
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    const reason = /\[shipit\] service "api": secret "DATABASE_URL" was not passed .* NUL character/;
+    expect(stored.find((s) => reason.test(s.text))?.channel).toBe("service:api");
+    expect(mgr.getLogBuffer("api")).toMatch(reason);
   });
 
   it("removes the state dir's .env.agent when no agent: true declarations remain", async () => {
@@ -1466,7 +1501,7 @@ services:
 
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.api");
     expect(fs.existsSync(externalEnv)).toBe(true);
-    expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://x");
+    expect(fs.readFileSync(externalEnv, "utf-8")).toContain('DATABASE_URL="postgres://x"');
 
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
@@ -1509,8 +1544,8 @@ services:
 
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.dev");
     const body = fs.readFileSync(externalEnv, "utf-8");
-    expect(body).toContain("ANTHROPIC_API_KEY=sk-ant-xxx");
-    expect(body).toContain("GITHUB_TOKEN=ghp_xxx");
+    expect(body).toContain('ANTHROPIC_API_KEY="sk-ant-xxx"');
+    expect(body).toContain('GITHUB_TOKEN="ghp_xxx"');
 
     fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
   });
@@ -1551,13 +1586,13 @@ services:
     await mgr.start();
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.api");
     const overrideBefore = recordedOverride(dir, "api");
-    expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://old");
+    expect(fs.readFileSync(externalEnv, "utf-8")).toContain('DATABASE_URL="postgres://old"');
     expect(overrideBefore).toContain(externalEnv);
 
     secrets = { DATABASE_URL: "postgres://new" };
     await mgr.refreshSecrets();
 
-    expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://new");
+    expect(fs.readFileSync(externalEnv, "utf-8")).toContain('DATABASE_URL="postgres://new"');
     const overrideAfter = recordedOverride(dir, "api");
     expect(overrideAfter).toContain(externalEnv);
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);

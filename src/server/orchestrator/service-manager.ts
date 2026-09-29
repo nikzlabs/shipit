@@ -399,7 +399,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
       serviceEnvDir: opts.serviceEnvDir,
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
-      onPlatformSourceWarning: (serviceName, text) => this.emit("service_log", serviceName, text),
+      onServiceWarning: (serviceName, text) => this.appendShipitLog(serviceName, text),
     });
 
     this.retry = new ServiceRetryManager({
@@ -829,6 +829,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   private reportPortConflict(service: string, message: string): void {
     console.warn(`[compose:${this.sessionId}] ${message}`);
+    this.appendShipitLog(service, message);
+  }
+
+  // Persisted, so the line is still there when someone opens the log later.
+  private appendShipitLog(service: string, message: string): void {
     const line = `[shipit] ${message}\n`;
     this.logStore?.append(this.sessionId, `service:${service}`, line);
     this.bufferServiceLog(service, line);
