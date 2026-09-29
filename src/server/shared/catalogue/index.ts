@@ -17,19 +17,21 @@ import type {
   ServiceDef,
 } from "./types.js";
 import type { ModelIdentity } from "./model-identity.js";
-import { MODEL_VISION, type VisionSupport } from "./model-vision.js";
+import type { VisionSupport } from "./model-vision.js";
+import { servicesLive, visionLive } from "./model-list.js";
 
 export * from "./types.js";
 export * from "./model-identity.js";
 export * from "./model-vision.js";
+export * from "./model-list.js";
 export { HARNESSES } from "./harnesses.js";
 export { SERVICES, type ServiceId } from "./services.js";
 
 const _SERVICE_IDS_ARE_LITERAL: readonly ServiceId[] = SERVICES.map((s) => s.id);
 
-// Catalogue order determines defaults.
+// Catalogue order determines defaults. `SERVICES` is the embedded list; this is the live one (docs/318).
 export function allServices(): readonly ServiceDef[] {
-  return SERVICES;
+  return servicesLive();
 }
 
 export function allHarnesses(): readonly HarnessDef[] {
@@ -37,7 +39,7 @@ export function allHarnesses(): readonly HarnessDef[] {
 }
 
 export function getService(serviceId: string): ServiceDef | undefined {
-  return SERVICES.find((s) => s.id === serviceId);
+  return servicesLive().find((s) => s.id === serviceId);
 }
 
 export function getHarness(harnessId: AgentId): HarnessDef | undefined {
@@ -67,7 +69,7 @@ export function loginIntegrationForService(
 export function serviceForLoginIntegration(
   loginId: LoginIntegrationId,
 ): ServiceId | undefined {
-  return SERVICES.find((service) =>
+  return servicesLive().find((service) =>
     service.modes.some((mode) =>
       mode.credentials.some((c) => c.via === "account" && c.login === loginId),
     ),
@@ -76,7 +78,7 @@ export function serviceForLoginIntegration(
 
 export function allLoginIntegrations(): LoginIntegrationId[] {
   const seen: LoginIntegrationId[] = [];
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       for (const credential of mode.credentials) {
         if (credential.via === "account" && !seen.includes(credential.login)) {
@@ -279,7 +281,7 @@ export interface DirectCallEntry {
 /** Every shipped selection that may be, and can be, called directly. */
 export function directCallSelections(): DirectCallEntry[] {
   const out: DirectCallEntry[] = [];
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       for (const model of mode.models) {
         const selection = {
@@ -297,7 +299,7 @@ export function directCallSelections(): DirectCallEntry[] {
 
 export function credentialStorageEnvNames(): string[] {
   const out: string[] = [];
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       for (const credential of mode.credentials) {
         if (credential.via !== "string") continue;
@@ -324,7 +326,7 @@ export function storageEnvFor(serviceId: string, billingMode: BillingMode): stri
 export function credentialModeForStorageEnv(
   envName: string,
 ): { serviceId: ServiceId; billingMode: BillingMode } | undefined {
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       for (const credential of mode.credentials) {
         if (credential.via === "string" && credential.storageEnv === envName) {
@@ -403,7 +405,7 @@ export function selectionHonoursEffort(
 // Unknown selections must not become image refusals.
 export function visionSupportFor(selection: ModelSelection | undefined): VisionSupport {
   const key = selection ? getModel(selection)?.canonicalModelKey : undefined;
-  return key ? MODEL_VISION[key] : "unverified";
+  return key ? visionLive(key) : "unverified";
 }
 
 export interface CatalogueEntry {
@@ -416,7 +418,7 @@ export interface CatalogueEntry {
 /** Catalogue compatibility only; does not check installed binaries or configured credentials. */
 export function catalogueEntriesForHarness(harnessId: AgentId): CatalogueEntry[] {
   const out: CatalogueEntry[] = [];
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       for (const model of mode.models) {
         if (resolveModeStyle(harnessId, mode, model) === undefined) continue;
@@ -578,7 +580,7 @@ export function resolveSpawnShaping(
 
 export function modesOfferingModel(modelId: string): { serviceId: ServiceId; billingMode: BillingMode }[] {
   const out: { serviceId: ServiceId; billingMode: BillingMode }[] = [];
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       if (mode.models.some((m) => m.id === modelId)) {
         out.push({ serviceId: service.id, billingMode: mode.kind });
@@ -605,7 +607,7 @@ export function resolveModelSelection(
 
 function modesRetiringModel(modelId: string): { serviceId: ServiceId; billingMode: BillingMode }[] {
   const out: { serviceId: ServiceId; billingMode: BillingMode }[] = [];
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       if (mode.retired.some((r) => r.id === modelId)) {
         out.push({ serviceId: service.id, billingMode: mode.kind });
@@ -673,7 +675,7 @@ export function sameCredentialOwner(
 
 export function catalogueModelLabels(): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       for (const model of mode.models) {
         if (!(model.id in out)) out[model.id] = model.label;
@@ -686,7 +688,7 @@ export function catalogueModelLabels(): Record<string, string> {
 /** Ignores per-harness overrides; use contextWindowFor when the harness is known. */
 export function catalogueContextWindows(): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const service of SERVICES) {
+  for (const service of servicesLive()) {
     for (const mode of service.modes) {
       for (const model of mode.models) {
         if (!(model.id in out)) out[model.id] = model.contextWindow.default;

@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 
 import { claudeModelArg, scrubHarnessEnvCredentials, unshapeClaudeModelId } from "./spawn-routing.js";
-import { MODEL_CONTEXT_WINDOWS } from "./model-windows.js";
+import { modelContextWindows } from "./model-windows.js";
 
 describe("claudeModelArg", () => {
   it("appends [1m] to a 1M model the CLI does not recognize", () => {
-    expect(MODEL_CONTEXT_WINDOWS["claude-fable-5-1"]).toBe(1_000_000);
+    expect(modelContextWindows()["claude-fable-5-1"]).toBe(1_000_000);
     expect(claudeModelArg("claude-fable-5-1")).toBe("claude-fable-5-1[1m]");
   });
 
@@ -19,7 +19,7 @@ describe("claudeModelArg", () => {
   });
 
   it("leaves an id the catalogue has no window for alone", () => {
-    expect(MODEL_CONTEXT_WINDOWS["totally-made-up-model"]).toBeUndefined();
+    expect(modelContextWindows()["totally-made-up-model"]).toBeUndefined();
     expect(claudeModelArg("totally-made-up-model")).toBe("totally-made-up-model");
   });
 

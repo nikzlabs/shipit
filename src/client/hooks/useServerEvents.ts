@@ -29,6 +29,7 @@ import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-a
 import { useForegroundSignal } from "./useForegroundSignal.js";
 import { notifySessionNetworkModeChanged } from "./useSessionNetworkMode.js";
 import { notifyPreviewsStopped } from "./usePreviewsStopped.js";
+import { adoptModelList } from "../../server/shared/catalogue/model-list.js";
 
 let reloadingForClientUpdate = false;
 
@@ -517,6 +518,8 @@ export function useServerEvents(): void {
         } | null;
 
         backgroundWorkModels?: EligibleModelOption[];
+
+        modelList?: unknown;
       };
       if (data.reviewers) {
         useSettingsStore.getState().setReviewers(data.reviewers);
@@ -557,6 +560,8 @@ export function useServerEvents(): void {
         supportsGoals: a.supportsGoals ?? false,
         supportedPermissionModes: a.supportedPermissionModes,
       }));
+      // docs/318 — before the agent list, whose store update re-renders the pickers.
+      adoptModelList(data.modelList);
       useUiStore.getState().setAgentList(agents);
 
       // on a Codex-only install. Persisting matters because the per-session WS

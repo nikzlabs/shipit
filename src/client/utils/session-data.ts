@@ -7,6 +7,7 @@ import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { AgentOption, EligibleModelOption } from "../agent-types.js";
 import type { TemplateInfo } from "./template-info.js";
+import { adoptModelList } from "../../server/shared/catalogue/model-list.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
@@ -73,6 +74,8 @@ interface BootstrapResponse {
   sessions: SessionInfo[];
   repos?: RepoInfo[];
   agents: AgentOption[];
+  /** docs/318 — present while the server has a published model list in effect. */
+  modelList?: unknown;
   templates: TemplateInfo[];
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   settings: {
@@ -565,6 +568,8 @@ export async function loadBootstrapData(): Promise<void> {
   const data = await res.json() as BootstrapResponse;
   useSessionStore.getState().setSessions(data.sessions);
   if (data.repos) useRepoStore.getState().setRepos(data.repos);
+  // docs/318 — before the agent list, whose store update re-renders the pickers.
+  adoptModelList(data.modelList);
   useUiStore.getState().setAgentList(data.agents);
   useUiStore.getState().setTemplates(data.templates);
   useSettingsStore.getState().setGithubStatus({

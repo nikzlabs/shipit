@@ -499,6 +499,8 @@ export interface WorkerAgentStartBody {
   params: AgentRunParams;
   runToken?: string;
   deliveryId?: string;
+  /** docs/318 — the orchestrator's published model list; the worker's embedded one can predate it. */
+  modelList?: unknown;
 }
 
 export interface WorkerAgentKillBody {

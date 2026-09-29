@@ -29,6 +29,7 @@ import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginTurnSetup } from "./turn-stop-request.js";
+import { modelListField } from "../shared/catalogue/model-list.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
   dependencyGapNotice,
@@ -357,6 +358,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
           ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
           ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+          ...modelListField(),
         },
         { timeoutMs: SUB_AGENT_TRANSPORT_TIMEOUT_MS, signal: controller.signal },
       );
@@ -737,6 +739,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       params,
       ...(runToken !== undefined ? { runToken } : {}),
       ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+      ...modelListField(),
     };
 
     try {
@@ -887,7 +890,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.supersedeDisplacedAgent(proxy);
     this._agent = proxy;
 
-    await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken: proxy.runToken }, { timeoutMs: 0 });
+    await workerPost(
+      this.workerUrl,
+      "/agent/start",
+      { agentId, params, runToken: proxy.runToken, ...modelListField() } satisfies WorkerAgentStartBody,
+      { timeoutMs: 0 },
+    );
 
     return proxy;
   }

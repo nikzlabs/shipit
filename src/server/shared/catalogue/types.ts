@@ -1,14 +1,17 @@
 // This tree is imported by the client; keep Node dependencies out.
 import type { AgentId } from "../types/agent-types.js";
 import type { AgentCapabilities } from "../types/agent-types.js";
-import type { CanonicalModelKey, ModelFamily } from "./model-identity.js";
+import type { ModelFamily } from "./model-identity.js";
 
 // gemini-generate-content: POST <base>/v1beta/models/<id>:streamGenerateContent (docs/302).
-export type ApiStyle =
-  | "anthropic-messages"
-  | "openai-responses"
-  | "openai-chat-completions"
-  | "gemini-generate-content";
+export const API_STYLES = [
+  "anthropic-messages",
+  "openai-responses",
+  "openai-chat-completions",
+  "gemini-generate-content",
+] as const;
+
+export type ApiStyle = (typeof API_STYLES)[number];
 
 /** Allowance versus metered billing; independent of credential delivery. */
 export type BillingMode = "sub" | "key";
@@ -53,7 +56,8 @@ export interface ModelDef {
   /** The id this service's API expects, where the row's id is a harness alias. Defaults to id. */
   apiId?: string;
   label: string;
-  canonicalModelKey: CanonicalModelKey;
+  /** A string, not `CanonicalModelKey`: a published list can name a model this build does not (docs/318). */
+  canonicalModelKey: string;
   family: ModelFamily;
   /** Each style must have an endpoint in the owning mode. */
   styles: ApiStyle[];

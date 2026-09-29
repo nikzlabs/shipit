@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getContextWindowForModel, MODEL_CONTEXT_WINDOWS } from "./model-windows.js";
+import { getContextWindowForModel, modelContextWindows } from "./model-windows.js";
 
 // Frozen compatibility baseline; add new models to the catalogue, not this map.
 const PRE_CATALOGUE_WINDOWS: Record<string, number> = {
@@ -54,7 +54,7 @@ describe("context windows survive the catalogue derivation unchanged", () => {
 
   it("only ADDS keys — never changes one that already existed", () => {
     for (const [key, value] of Object.entries(PRE_CATALOGUE_WINDOWS)) {
-      expect(MODEL_CONTEXT_WINDOWS[key], key).toBe(value);
+      expect(modelContextWindows()[key], key).toBe(value);
     }
   });
 

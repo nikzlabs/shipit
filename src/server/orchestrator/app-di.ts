@@ -38,6 +38,7 @@ import type { LocalAgentFactory } from "./local-agent-home.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { recordNonTurnUsage, type NonTurnTelemetry } from "./services/non-turn-work.js";
 import { seedNonTurnModel } from "./services/settings.js";
+import { loadCachedModelList } from "./services/published-model-list.js";
 
 export type { RuntimeMode } from "../shared/types.js";
 
@@ -310,6 +311,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
       || (deps.authManager?.authenticated ?? false),
     checkCodexAuth: () => providerAccountManager.list("openai").some((a) => a.status === "ready"),
   });
+  // docs/318 req 6 — detection derives eligible models from the list in effect.
+  if (!isTestMode) loadCachedModelList(stateDir);
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();
   const declaredHarnesses = readInstalledHarnesses();

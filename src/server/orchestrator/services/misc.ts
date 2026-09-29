@@ -15,6 +15,7 @@ import { ServiceError } from "./types.js";
 import type { BootstrapData, GlobalSettings } from "./types.js";
 import type { RuntimeMode } from "../../shared/types.js";
 import { listSessions } from "./session.js";
+import { modelListField } from "../../shared/catalogue/index.js";
 import { resolveHarnessOnboarding, listAgents, getGlobalSettings } from "./settings.js";
 import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
@@ -101,6 +102,7 @@ export async function getBootstrapData(deps: {
     settings,
     runtimeMode: deps.runtimeMode ?? "containerized",
     ...(tailnetPreviewHost ? { tailnetPreviewHost } : {}),
+    ...modelListField(),
   };
 }
 
