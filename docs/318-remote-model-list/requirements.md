@@ -42,7 +42,8 @@ release before a user can pick it. This feature removes that step.
 
 - 2026-09-29 — What may the published list change? Nik: models only (req 4).
   Carries the constraint that a user's credential only ever goes to a URL the
-  release names for that credential's service.
+  release names for that credential's service. Nik confirmed this wording
+  on 2026-09-29: a new model picks one of its own service's endpoints.
 - 2026-09-29 — How soon must a new model appear on a running install? Nik:
   within an hour, without a restart, and the picker updates on its own
   (req 5).
