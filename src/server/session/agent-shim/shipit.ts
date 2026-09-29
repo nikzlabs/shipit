@@ -484,6 +484,10 @@ export function serverErrorMessage(
   res: { status: number; body: Record<string, unknown> },
   fallback: string,
 ): string {
+  // Fastify's own error reply names the HTTP status in `error` and the thrown error in `message`.
+  if (typeof res.body.statusCode === "number" && typeof res.body.message === "string" && res.body.message) {
+    return res.body.message;
+  }
   return typeof res.body.error === "string" ? res.body.error : fallback;
 }
 

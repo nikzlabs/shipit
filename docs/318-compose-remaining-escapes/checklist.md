@@ -67,4 +67,4 @@
 - [x] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement (run `82f95ad9-eb35-4197-a94e-8a452da139ef`: one finding, checked and not applicable)
 - [x] PR test plan lists the deployment checks from plan.md
 - [x] Deployment checks that need no ShipIt instance (2026-09-29; three defects found and fixed — plan.md *Deployment checks run on 2026-09-29*)
-- [ ] Deployment checks that need a ShipIt instance running this branch (plan.md, the "Still open" list)
+- [x] Deployment checks through a ShipIt instance running this branch (2026-09-29; private image pull and `SHIPIT_SERVICE_ENV_HOST_DIR` not applicable on that host)

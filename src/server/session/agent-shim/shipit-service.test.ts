@@ -327,6 +327,21 @@ describe("shipit service start", () => {
     expect(res.stderr).toContain("shipit service list");
   });
 
+  // The worker answers a failed action with Fastify's own error body.
+  it("shows the reason a start was refused, not the HTTP status text", async () => {
+    const { run } = makeRunner();
+    const reason = "Service `web`: `cap_add: SYS_ADMIN` is not allowed.";
+    const res = await run(["service", "restart", "web"], {
+      "POST /services/restart": {
+        status: 500,
+        body: { statusCode: 500, error: "Internal Server Error", message: reason },
+      },
+    });
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stderr).toContain(reason);
+    expect(res.stderr).not.toContain("Internal Server Error");
+  });
+
   it("restart uses the restart endpoint and the unbounded transport", async () => {
     const { run } = makeRunner();
     const res = await run(["service", "restart", "web"], {

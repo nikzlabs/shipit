@@ -6,8 +6,8 @@ description: Run the Compose commands that read project files in confined throwa
 
 # 318 — Compose remaining file escapes
 
-Implements [requirements.md](requirements.md). Built on the planning#620 branch; the
-deployment checks at the end of this document are still open.
+Implements [requirements.md](requirements.md). Built on the planning#620 branch and
+checked on a real deployment on 2026-09-29 (*Deployment checks run on 2026-09-29*).
 Follows planning#619, which closed the literal `./sub` symlink escape, the direct
 shared-volume mount, and `~` sources.
 
@@ -802,11 +802,33 @@ refused, `$` was escaped twice, and every service joined a second network (see
 *Where the build differs*). A dependency behind a profile that is not enabled
 is refused by `config`, as today's `up` refuses it.
 
-Still open, because they need a ShipIt instance that runs this branch: a
-private image pull with the copied login, `SHIPIT_SERVICE_ENV_HOST_DIR`, the
-helper-missing refusal on a start and on the plugin card, orphan removal, an
-existing ops session's proxy, a plugin-only stack, and the start latency of a
-whole ShipIt start.
+The same day the branch also ran as that host's ShipIt instance (a local
+install), which was then returned to `main`. Through ShipIt itself:
+
+- A new session's stack (a Vite app) starts, and its preview answers. The
+  service runs as the session user, joins only `shipit-session`, and ShipIt's
+  start files are root-only; `compose.up` took about 0.9 s.
+- `shipit service stop`/`start`/`restart` work from the agent container.
+- A refused `cap_add` shows its message in the API's `failure` and in
+  `shipit service list`; `label_file` and a literal `$` reach the container.
+- Orphan removal removes a stale service's container and keeps a one-off one.
+- A new ops session runs the proxy at the pinned digest, read-only; a file
+  changed to the tag-only form keeps it trusted and pinned.
+- With the helper image missing, startup logs it and a start fails closed with
+  a message naming the image and the fix; restoring it recovers the session.
+- A plugin-only stack (a self-exported plugin, no project file) starts its
+  service through the override-only path.
+- A declared `x-shipit-secrets` value reaches the service through the
+  service-env files (the default path inside the workspace volume), and not
+  the agent.
+
+Not checked there: a private image pull (that host's orchestrator has no
+registry login to copy) and `SHIPIT_SERVICE_ENV_HOST_DIR` (its service-env
+directory is the default one in the workspace volume). Two older issues
+showed up: `shipit service start`/`restart` printed "Internal Server Error"
+instead of the reason, because the CLI read only `error` from Fastify's error
+body (fixed in this branch), and a secret value with `$` is expanded by
+Compose's env-file interpolation (planning#624).
 
 These need a check on a deployment, listed in the PR test plan:
 
