@@ -1771,7 +1771,7 @@ describe("rewriteResolvedModel", () => {
   const stack = (volumes: unknown[], top: Record<string, unknown> = {}, name = "web") =>
     ({ name: PROJECT, services: { [name]: { image: "node:20", volumes } }, ...top });
   const rewrite = (model: Record<string, unknown>, opts: Parameters<typeof rewriteResolvedModel>[1] = rewriteOpts): Doc =>
-    rewriteResolvedModel(model, opts).model as Doc;
+    rewriteResolvedModel(model, opts).model as unknown as Doc;
 
   // planning#584: the boot sweeps select by the stack label, and Compose adds none of its own.
   it("labels the project's named volumes with the stack", () => {
@@ -1791,7 +1791,7 @@ describe("rewriteResolvedModel", () => {
 
   it("rewrites workspace volumes when workspaceVolume is set", () => {
     const { model, workspaceMounts } = rewriteResolvedModel(stack([bind(WS, "/app")]), rewriteOpts);
-    const doc = model as Doc;
+    const doc = model as unknown as Doc;
     expect(doc.services.web.volumes).toEqual([
       { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "sessions/abc/workspace" } },
     ]);
@@ -1805,7 +1805,7 @@ describe("rewriteResolvedModel", () => {
       stack([mount]),
       { sessionId: "test-session-123", workspaceDir: WS },
     );
-    expect((model as Doc).services.web.volumes).toEqual([mount]);
+    expect((model as unknown as Doc).services.web.volumes).toEqual([mount]);
     expect(workspaceMounts.get("web")).toEqual([{ relPath: "backend", target: "/app" }]);
   });
 
@@ -1901,7 +1901,7 @@ describe("rewriteResolvedModel", () => {
     };
     const before = structuredClone(model);
     const { model: out, builtServices, projectFiles } = rewriteResolvedModel(model, rewriteOpts);
-    expect((out as Doc).services.web).toEqual({ image: "app:dev", build: { context: WS, dockerfile: "Dockerfile" } });
+    expect((out as unknown as Doc).services.web).toEqual({ image: "app:dev", build: { context: WS, dockerfile: "Dockerfile" } });
     expect(builtServices).toEqual(["web"]);
     expect(projectFiles).toEqual([
       { kind: "secrets", name: "token", file: `${WS}/token` },
@@ -2957,7 +2957,7 @@ describe("the `persist` volume (docs/317)", () => {
     parseComposeContent(content, { dockerSocket: false });
     const model = fakeResolvedModel(content, { workspaceDir: WS, project: PROJECT });
     validateResolvedModel(model, { dockerSocket: false, project: PROJECT, workspaceDir: WS });
-    return rewriteResolvedModel(model, { ...rewriteOpts, ...extra }).model as PersistDoc;
+    return rewriteResolvedModel(model, { ...rewriteOpts, ...extra }).model as unknown as PersistDoc;
   }
 
   it("records which part of /persist each service mounts, in every declaration form", () => {

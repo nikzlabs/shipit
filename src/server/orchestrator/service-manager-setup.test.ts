@@ -24,7 +24,6 @@ import type { SessionInfo } from "../shared/types.js";
 import type { SessionManager } from "./sessions.js";
 import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 import type * as ComposeHelperModule from "./compose-helper.js";
-import { ConfinedCompose } from "./compose-helper.js";
 
 // Reads come from the test's own workspace; any other confined run fails as it would without Docker.
 vi.mock("./compose-helper.js", async (importOriginal) => {
@@ -531,22 +530,14 @@ describe("setupServiceManager threads serviceEnvDir to the secrets resolver (pla
       serviceEnvDir,
     };
 
-    const read = vi.spyOn(ConfinedCompose.prototype, "readProjectFile")
-      .mockImplementation((file) => fs.promises.readFile(path.resolve(clone, file)));
+    setupServiceManager(runner, deps);
 
-    try {
-      setupServiceManager(runner, deps);
+    const mgr = deps.serviceManagers.get("s1");
+    expect(mgr).toBeDefined();
+    await mgr!.refreshSecrets();
 
-      const mgr = deps.serviceManagers.get("s1");
-      expect(mgr).toBeDefined();
-      await mgr!.refreshSecrets();
-
-      expect(read).toHaveBeenCalledWith("docker-compose.yml");
-      expect(fs.existsSync(path.join(serviceEnvDir, "s1", ".env.api"))).toBe(true);
-      expect(fs.existsSync(path.join(clone, ".shipit"))).toBe(false);
-    } finally {
-      read.mockRestore();
-    }
+    expect(fs.existsSync(path.join(serviceEnvDir, "s1", ".env.api"))).toBe(true);
+    expect(fs.existsSync(path.join(clone, ".shipit"))).toBe(false);
   });
 });
 

@@ -477,7 +477,7 @@ describe("a start that cannot be checked is refused", () => {
   });
 
   it("when an interpolated source resolves outside the workspace", async () => {
-    const dir = setup("services:\n  web:\n    image: node:20\n    x-shipit-preview: auto\n    volumes:\n      - ${SRC}:/x\n");
+    const dir = setup("services:\n  web:\n    image: node:20\n    x-shipit-preview: auto\n    volumes:\n      - $SRC:/x\n");
     const { mgr, fake } = harness(dir, {
       makeFake: (o) => new FakeConfinedCompose({ ...o, env: { SRC: "/etc" } }),
     });
