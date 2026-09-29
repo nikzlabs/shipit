@@ -31,13 +31,16 @@ export async function sessionOwnedNetwork(
   socketPath: string,
   networkId: string,
   sessionId: string,
-): Promise<{ name?: string } | undefined> {
+): Promise<{ name?: string; isolated?: boolean } | undefined> {
   try {
     const result = await forwardToDocker(socketPath, "GET", `/networks/${networkId}`, {});
     if (result.statusCode !== 200) return undefined;
     const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
     if ((info.Labels as Record<string, string> | undefined)?.[PARENT_SESSION_LABEL] !== sessionId) return undefined;
-    return typeof info.Name === "string" ? { name: info.Name } : {};
+    const options = info.Options as Record<string, string> | undefined;
+    // Internal with no host address: nothing on it reaches the host, firewall or not (docs/319).
+    const isolated = info.Internal === true && options?.["com.docker.network.bridge.inhibit_ipv4"] === "true";
+    return { ...(typeof info.Name === "string" ? { name: info.Name } : {}), isolated };
   } catch {
     return undefined;
   }

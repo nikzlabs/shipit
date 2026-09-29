@@ -1698,6 +1698,8 @@ describe("generateComposeOverride", () => {
       { ...baseOpts, isolateNetwork: true },
     );
     expect(override).toContain("internal: true");
+    // No host address on the bridge, so nothing on it reaches the host before its firewall.
+    expect(override).toContain("com.docker.network.bridge.inhibit_ipv4: \"true\"");
     expect(override).toContain("networks: !override\n      - shipit-session");
     const doc = parseYaml(override) as {
       services: Record<string, { restart?: string; cap_drop: string[]; security_opt?: string[]; dns?: unknown }>;

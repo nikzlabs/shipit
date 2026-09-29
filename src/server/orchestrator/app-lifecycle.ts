@@ -289,6 +289,10 @@ export async function setupContainerManager(
     } catch (err) {
       console.warn(`[server] Docker API proxy setup skipped: ${(err as Error).message}`);
     }
+    // After the Docker proxy: its port is one of ShipIt's own that agents may use.
+    void containerManager.reconcileAdoptedFirewalls().catch((err: unknown) => {
+      console.warn("[egress] reconciling adopted firewalls failed:", err);
+    });
   }
 
   return { containerManager, dockerProxyServer };

@@ -7,6 +7,7 @@ import { identityForSession, sessionWorkerUid } from "./session-worker-uid.js";
 import { isSessionUid, SESSION_UID_MIN, SESSION_UID_MAX } from "./session-uid-allocator.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
+import { NO_HOST_ADDRESS_OPTION } from "./egress-firewall.js";
 import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { stackLabel } from "./stack-label.js";
@@ -2002,7 +2003,7 @@ export function generateComposeOverride(
     networks: {
       "shipit-session": {
         name: `shipit-session-${opts.sessionId}`,
-        ...(isolate ? { internal: true } : {}),
+        ...(isolate ? { internal: true, enable_ipv6: false, driver_opts: { ...NO_HOST_ADDRESS_OPTION } } : {}),
         // The boot sweeps select by the stack label (planning#584); Compose adds none of its own.
         ...(opts.stackName ? { labels: stackLabel(opts.stackName) } : {}),
       },

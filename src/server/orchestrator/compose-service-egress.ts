@@ -79,6 +79,8 @@ export async function ensureEgressNetwork(
       Name: name,
       Driver: "bridge",
       Internal: false,
+      // A daemon default must not add an IPv6 path next to the IPv4 one the firewall is built for.
+      EnableIPv6: false,
       CheckDuplicate: true,
       Labels: { ...labels, "shipit-parent-session": sessionId },
     });

@@ -23,6 +23,7 @@ vi.mock("./compose-service-egress.js", async (importActual) => {
 
 import { SessionContainerManager } from "./session-container.js";
 import { _setLocalBlockForTest } from "./local-block.js";
+import { LegacyEgressNamespaceError } from "./egress-firewall-install.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 
 const SESSION_ID = "sess-reload-1";
@@ -34,9 +35,9 @@ function createMockDocker() {
     listContainers: vi.fn(async () => [
       { Id: "agent-container-1", Labels: { "shipit-session-id": SESSION_ID }, State: "running" },
     ]),
-    getContainer: vi.fn(() => ({
+    getContainer: vi.fn((id: string) => ({
       inspect: vi.fn(async () => ({
-        NetworkSettings: { Networks: { [NETWORK]: { IPAddress: "172.18.0.7" } } },
+        NetworkSettings: { Networks: { [NETWORK]: { IPAddress: id === "orchestrator" ? "172.18.0.2" : "172.18.0.7" } } },
       })),
     })),
     getNetwork: vi.fn(() => ({
@@ -54,6 +55,7 @@ async function buildManager(config: ResolvedEgressConfig | (() => ResolvedEgress
     skipHealthCheck: true,
     stackName: "shipit-test",
     resolveEgressConfig: () => (typeof config === "function" ? config() : config),
+    readOwnContainerId: async () => "orchestrator",
   });
   await manager.rediscover(new Set([SESSION_ID]), () => ({
     workspaceDir: `/workspace/sessions/${SESSION_ID}/workspace`,
@@ -298,7 +300,7 @@ describe("reloadEgress — open policy with the local block", () => {
       inputs: { hosts: [], cidrs: [] },
       sshTargets: [{ address: "10.0.0.5", port: 2222 }],
       hostAddresses: ["203.0.113.7"],
-      localTcp: [{ subnet: "172.18.0.0/16", port: Number(process.env.PORT || "3000") }],
+      localTcp: [{ subnet: "172.18.0.2/32", port: Number(process.env.PORT || "3000") }],
     });
     expect(reloadEgressSidecars).not.toHaveBeenCalled();
   });
@@ -310,5 +312,72 @@ describe("reloadEgress — open policy with the local block", () => {
     });
     await manager.reloadEgress(SESSION_ID);
     expect(installEgressFirewall.mock.calls[0]?.[1]).toMatchObject({ policy: "open" });
+  });
+});
+
+describe("reconcileAdoptedFirewalls (docs/319)", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+    process.env.SESSION_EGRESS_SIDECAR_IMAGE = "shipit-egress-sidecar:test";
+    _setLocalBlockForTest(true);
+    allowEgressToSubnets.mockClear();
+    installEgressFirewall.mockClear();
+    containComposeServices.mockClear();
+  });
+  afterEach(() => {
+    process.env = savedEnv;
+    _setLocalBlockForTest(false);
+  });
+
+  it("replaces only ShipIt's own address in an adopted agent, with no reinstall", async () => {
+    const manager = await buildManager({ contained: false, extraHosts: [] });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(installEgressFirewall).not.toHaveBeenCalled();
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    expect(allowEgressToSubnets.mock.calls[0][1]).toMatchObject({
+      agentContainerId: "agent-container-1",
+      subnets: [],
+      localTcp: [{ subnet: "172.18.0.2/32", port: Number(process.env.PORT || "3000") }],
+    });
+  });
+
+  it("reinstalls a namespace from before docs/319, which has no chain to update", async () => {
+    const manager = await buildManager({ contained: false, extraHosts: [], sshTargets: [{ address: "10.0.0.5", port: 22 }] });
+    allowEgressToSubnets.mockRejectedValueOnce(new LegacyEgressNamespaceError("old"));
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(installEgressFirewall).toHaveBeenCalledTimes(1);
+    expect(installEgressFirewall.mock.calls[0][1]).toMatchObject({
+      policy: "open",
+      sshTargets: [{ address: "10.0.0.5", port: 22 }],
+    });
+    expect(manager.get(SESSION_ID)?.firewallPolicy).toBe("open");
+  });
+
+  it("contains Compose services again only where their session network is from before docs/319", async () => {
+    const manager = await buildManager({ contained: false, extraHosts: [] });
+    const docker = manager.dockerClient as unknown as {
+      listContainers: ReturnType<typeof vi.fn>;
+      getNetwork: ReturnType<typeof vi.fn>;
+    };
+    docker.listContainers.mockResolvedValue([
+      { Id: "svc-old", Labels: { "shipit-parent-session": "old", "shipit-service-name": "web" }, State: "running" },
+      { Id: "svc-new", Labels: { "shipit-parent-session": "new", "shipit-service-name": "web" }, State: "running" },
+    ]);
+    docker.getNetwork.mockImplementation((name: string) => ({
+      inspect: vi.fn(async () => (name === "shipit-session-new"
+        ? { Internal: true, Options: { "com.docker.network.bridge.inhibit_ipv4": "true" } }
+        : { Internal: false, IPAM: { Config: [{ Subnet: "172.18.0.0/16" }] } })),
+    }));
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    const calls = containComposeServices.mock.calls as unknown as [{ sessionId: string }][];
+    expect(calls.map((call) => call[0].sessionId)).toEqual(["old"]);
+  });
+
+  it("retries a failed refresh", async () => {
+    const manager = await buildManager({ contained: false, extraHosts: [] });
+    allowEgressToSubnets.mockRejectedValueOnce(new Error("sidecar busy"));
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(2);
   });
 });

@@ -48,6 +48,7 @@ import {
   allowEgressToSubnets,
   buildTierAEgressInputs,
   installEgressFirewall,
+  LegacyEgressNamespaceError,
   NO_TIER_A_INPUTS,
   type EgressPolicy,
   type LocalTcpAccept,
@@ -237,6 +238,7 @@ export interface SessionContainerManagerOpts {
   dockerProxyHost?: string;
   dockerProxyPort?: number;
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  readOwnContainerId?: () => Promise<string>;
 }
 
 const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
@@ -280,6 +282,9 @@ function ipInSubnet(ip: string, subnet: string): boolean {
 
 export class SessionContainerManager extends EventEmitter<SessionContainerManagerEvents> {
   private docker: Docker;
+  /** The orchestrator's own container id; Docker writes it as the hostname. */
+  private readOwnContainerId: () => Promise<string> = async () =>
+    (await (await import("node:fs/promises")).readFile("/etc/hostname", "utf-8")).trim();
   private containers = new Map<string, SessionContainer>();
   private composeEgressRuns = new Map<string, Promise<void>>();
   private composeServiceNames = new Map<string, string[]>();
@@ -349,6 +354,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.dockerProxyHost = opts.dockerProxyHost;
     this.dockerProxyPort = opts.dockerProxyPort;
     this.resolveEgressConfig = opts.resolveEgressConfig;
+    if (opts.readOwnContainerId) this.readOwnContainerId = opts.readOwnContainerId;
   }
 
   get dockerClient(): Docker {
@@ -422,22 +428,99 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return readHostAddresses(this.docker, image);
   }
 
-  private orchestratorSubnets?: string[];
+  private orchestratorAddress?: string;
 
   /**
    * TCP an agent may use on the orchestrator network: the orchestrator's own
-   * ports only, because every session's agent shares that network.
+   * address and ports only, because every session's agent shares that network.
    */
   async orchestratorTcp(): Promise<LocalTcpAccept[]> {
-    if (!this.orchestratorSubnets) {
-      const info = await this.docker.getNetwork(this.networkName).inspect();
-      const subnets = extractNetworkSubnets(info).filter((cidr) => !cidr.includes(":"));
+    if (!this.orchestratorAddress) {
+      const info = await this.docker.getContainer(await this.readOwnContainerId()).inspect();
+      const address = info.NetworkSettings?.Networks?.[this.networkName]?.IPAddress;
       // Without it the agent's firewall would shut it out of ShipIt itself.
-      if (subnets.length === 0) throw new Error(`network ${this.networkName} reports no IPv4 subnet`);
-      this.orchestratorSubnets = subnets;
+      if (!address) throw new Error(`ShipIt has no address on network ${this.networkName}`);
+      this.orchestratorAddress = address;
     }
     const ports = [Number(process.env.PORT || "3000"), ...(this.dockerProxyPort ? [this.dockerProxyPort] : [])];
-    return this.orchestratorSubnets.flatMap((subnet) => ports.map((port) => ({ subnet, port })));
+    return ports.map((port) => ({ subnet: `${this.orchestratorAddress}/32`, port }));
+  }
+
+  /**
+   * After a restart: ShipIt may hold a new address, so every adopted agent's
+   * accept for it is replaced — only that chain, because a reinstall would drop
+   * the resolver's pinned addresses. A namespace from before docs/319 has no
+   * such chain and is reinstalled whole, and Compose services still on an old
+   * session network are contained again (their start stops them if the network
+   * cannot hold them). Runs in the background; each step is retried.
+   */
+  async reconcileAdoptedFirewalls(opts: { attempts?: number; retryDelayMs?: number } = {}): Promise<void> {
+    const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    if (!sidecarImage) return;
+    const attempts = opts.attempts ?? 3;
+    const retry = async (label: string, step: () => Promise<void>): Promise<void> => {
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          await step();
+          return;
+        } catch (err) {
+          if (attempt === attempts) {
+            console.warn(`[egress] ${label} failed after ${attempts} attempts; the container keeps its old rules:`, err);
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, opts.retryDelayMs ?? 5_000));
+        }
+      }
+    };
+    for (const sc of [...this.containers.values()]) {
+      if (sc.status !== "running" || !sc.id) continue;
+      const cfg = this.resolveEgressConfig?.(sc.sessionId) ?? { contained: true, extraHosts: [] };
+      const contained = egressEnforceEnabled() && cfg.contained;
+      const policy: EgressPolicy | null = contained ? "contained" : localBlockActive() ? "open" : null;
+      if (!policy) continue;
+      await retry(`[${sc.sessionId}] agent firewall`, async () => {
+        const localTcp = await this.orchestratorTcp();
+        const labels = { ...this.baseLabels(), "shipit-parent-session": sc.sessionId };
+        try {
+          await allowEgressToSubnets(this.docker, { agentContainerId: sc.id, sidecarImage, subnets: [], localTcp, labels });
+          return;
+        } catch (err) {
+          if (!(err instanceof LegacyEgressNamespaceError)) throw err;
+        }
+        await installEgressFirewall(this.docker, {
+          agentContainerId: sc.id,
+          sidecarImage,
+          inputs: contained ? await buildTierAEgressInputs(cfg.extraCidrs ? { extraCidrs: cfg.extraCidrs } : {}) : NO_TIER_A_INPUTS,
+          policy,
+          hostAddresses: await this.hostAddresses(),
+          localTcp,
+          sshTargets: cfg.sshTargets ?? [],
+          ...(contained && egressDnsEnabled() ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
+          ...(contained && egressProxyEnabled() ? { proxyUid: EGRESS_PROXY_UID, proxyPort: EGRESS_PROXY_PORT } : {}),
+          labels,
+        });
+        sc.firewallPolicy = policy;
+        sc.appliedSshCidrs = contained ? [...(cfg.extraCidrs ?? [])] : [];
+        sc.appliedSshTargets = sshTargetKeys(cfg.sshTargets);
+        const info = await this.docker.getContainer(sc.id).inspect();
+        for (const name of Object.keys(info.NetworkSettings?.Networks ?? {})) {
+          if (name.startsWith("shipit-session-")) (sc.joinedSessionNetworks ??= new Set()).add(name);
+        }
+        await this.reopenJoinedSessionEgress(sc.sessionId);
+        console.log(`[egress:${sc.sessionId}] reinstalled a firewall from before docs/319 (${policy})`);
+      });
+    }
+    if (!egressEnforceEnabled() && !localBlockActive()) return;
+    const running = await this.docker.listContainers({ filters: { label: ["shipit-parent-session", "shipit-service-name"] } });
+    const sessions = new Set(running.map((entry) => entry.Labels?.["shipit-parent-session"]).filter((id): id is string => Boolean(id)));
+    for (const sessionId of sessions) {
+      let info: Docker.NetworkInspectInfo;
+      try {
+        info = await this.docker.getNetwork(`shipit-session-${sessionId}`).inspect();
+      } catch { /* no session network: nothing ShipIt contains */ continue; }
+      if (info.Internal && info.Options?.["com.docker.network.bridge.inhibit_ipv4"] === "true") continue;
+      await retry(`[${sessionId}] Compose services`, () => this.containComposeServices(sessionId, [], true));
+    }
   }
 
   isEgressDnsContained(sessionId: string): boolean {
@@ -465,7 +548,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const network = this.docker.getNetwork(`shipit-session-${sessionId}`);
     let info: Docker.NetworkInspectInfo;
     try { info = await network.inspect(); } catch { return; }
-    if ((info.Internal ?? false) === internal) return;
+    const noHostAddress = info.Options?.["com.docker.network.bridge.inhibit_ipv4"] === "true";
+    if ((info.Internal ?? false) === internal && noHostAddress === internal) return;
     await this.resetSessionNetwork(sessionId);
   }
 

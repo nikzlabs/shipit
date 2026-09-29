@@ -38,6 +38,7 @@ const SESSION_NET = `shipit-session-${SESSION_ID.slice(0, 12)}`;
 interface FakeNetwork {
   Name: string;
   Internal: boolean;
+  Options?: Record<string, string>;
   IPAM: { Config: { Subnet: string; Gateway?: string }[] };
 }
 
@@ -47,7 +48,12 @@ function statusError(statusCode: number, message: string): Error {
 
 function fakeDocker(events: string[]) {
   const networks = new Map<string, FakeNetwork>([
-    [SESSION_NET, { Name: SESSION_NET, Internal: true, IPAM: { Config: [{ Subnet: "172.30.0.0/24", Gateway: "172.30.0.1" }] } }],
+    [SESSION_NET, {
+      Name: SESSION_NET,
+      Internal: true,
+      Options: { "com.docker.network.bridge.inhibit_ipv4": "true" },
+      IPAM: { Config: [{ Subnet: "172.30.0.0/24", Gateway: "172.30.0.1" }] },
+    }],
     [EGRESS, { Name: EGRESS, Internal: false, IPAM: { Config: [{ Subnet: "172.31.0.0/24", Gateway: "172.31.0.1" }] } }],
   ]);
   const attached = new Set<string>([SESSION_NET]);
@@ -156,6 +162,12 @@ describe("prepareProxyContainerStart", () => {
     fake.inspectInfo.HostConfig.RestartPolicy = { Name: "always" };
 
     await expect(prepareProxyContainerStart(target(fake.docker))).rejects.toThrow(/RestartPolicy "always"/);
+  });
+
+  it("refuses an internal network that gives the host an address on it", async () => {
+    const fake = fakeDocker([]);
+    delete fake.networks.get(SESSION_NET)!.Options;
+    await expect(prepareProxyContainerStart(target(fake.docker))).rejects.toThrow("not internal");
   });
 
   it("refuses a network that is not internal, which would be a route before the firewall", async () => {

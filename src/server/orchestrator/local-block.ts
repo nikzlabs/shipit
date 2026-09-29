@@ -189,9 +189,13 @@ export async function assertLoopbackOnlyWithoutBlock(
   let inspect: unknown;
   try {
     inspect = await docker.getContainer(await readOwnId()).inspect();
-  } catch {
-    // Not running in a container of its own, so nothing is published for it.
-    return;
+  } catch (err) {
+    // Unread bindings are not loopback-only ones; outside a container ShipIt listens on every address.
+    throw new Error(
+      `ShipIt refuses to start: ${state.reason}, and it cannot read its own published ports to confirm they are `
+      + `on loopback only (${err instanceof Error ? err.message : String(err)}). See docs/319-api-reach-through-host.`,
+      { cause: err },
+    );
   }
   const bindings = nonLoopbackBindings(inspect);
   if (bindings.length === 0) return;

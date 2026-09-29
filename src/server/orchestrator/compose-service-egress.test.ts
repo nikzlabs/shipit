@@ -182,7 +182,7 @@ describe("containComposeServices", () => {
       const { docker, network } = fakeDocker(events);
       const egress = {
         ...network,
-        inspect: vi.fn(async () => ({ Internal: false, IPAM: { Config: [{ Subnet: "172.31.0.0/24" }] } })),
+        inspect: vi.fn(async () => ({ Internal: false, IPAM: { Config: [{ Subnet: "172.31.0.0/24", Gateway: "172.31.0.1" }] } })),
       };
       vi.mocked(docker.getNetwork).mockImplementation((name) => (
         name === "shipit-egress-session-1" ? egress : network

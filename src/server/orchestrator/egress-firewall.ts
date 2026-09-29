@@ -104,21 +104,17 @@ export function extractNetworkSubnets(networkInfo: unknown): string[] {
   return out;
 }
 
-function firstHostAddress(cidr: string): string | null {
-  const [base, prefixText] = cidr.split("/");
-  const prefix = Number(prefixText);
-  if (!base || !isValidIpv4(base) || !Number.isInteger(prefix) || prefix > 30) return null;
-  const parts = base.split(".").map(Number);
-  const value = parts.reduce((acc, part) => (acc * 256) + part, 0) >>> 0;
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  const first = ((value & mask) + 1) >>> 0;
-  return [first >>> 24, (first >>> 16) & 255, (first >>> 8) & 255, first & 255].join(".");
-}
+/**
+ * An internal network with this option gives the host no address on its
+ * bridge, so a container on it cannot reach the host before its firewall is in
+ * (docs/319-api-reach-through-host).
+ */
+export const NO_HOST_ADDRESS_OPTION = { "com.docker.network.bridge.inhibit_ipv4": "true" } as const;
 
 /**
  * The network's gateways: each is the Docker host's address on that bridge, so
- * the local block refuses it (docs/319-api-reach-through-host). Docker takes a
- * subnet's first address when IPAM names no gateway.
+ * the local block refuses it (docs/319-api-reach-through-host). A network with
+ * no named gateway has none: its first address may belong to a container.
  */
 export function extractNetworkGateways(networkInfo: unknown): string[] {
   if (!networkInfo || typeof networkInfo !== "object") return [];
@@ -131,12 +127,7 @@ export function extractNetworkGateways(networkInfo: unknown): string[] {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
     const gateway = typeof record.Gateway === "string" ? record.Gateway.trim().split("/")[0] ?? "" : "";
-    if (gateway && isValidIp(gateway)) {
-      out.add(gateway);
-      continue;
-    }
-    const derived = typeof record.Subnet === "string" ? firstHostAddress(record.Subnet.trim()) : null;
-    if (derived) out.add(derived);
+    if (gateway && isValidIp(gateway)) out.add(gateway);
   }
   return [...out];
 }

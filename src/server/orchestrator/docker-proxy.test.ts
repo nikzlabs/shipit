@@ -225,7 +225,10 @@ function createMockDaemon(): MockDaemon {
         const id = networkInspectMatch[1];
         const n = networks.get(id);
         if (!n) { respond(404, { message: "not found" }); return; }
-        respond(200, { Id: id, Name: n.name ?? id, Labels: n.labels });
+        respond(200, {
+          Id: id, Name: n.name ?? id, Labels: n.labels,
+          Internal: n.createBody?.Internal === true, Options: n.createBody?.Options ?? {},
+        });
         return;
       }
 
@@ -1694,11 +1697,32 @@ describe("Docker API proxy", () => {
       daemon.networks.set(key, { labels: { [PARENT_SESSION_LABEL]: "session-1" }, name });
     }
 
+    describe("network connect", () => {
+      it("joins a network created through the proxy, which gives no route out", async () => {
+        const created = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "my-net" });
+        const id = await createContainer();
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/networks/${(created.body as { Id: string }).Id}/connect`, {
+          Container: id,
+        });
+        expect(res.status).toBe(200);
+      });
+
+      it("refuses a network that could give a running container a route before any firewall", async () => {
+        ownNetwork("legacy-net");
+        const id = await createContainer();
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/legacy-net/connect", { Container: id });
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain("not internal");
+      });
+    });
+
     describe("network create", () => {
       it("makes a network created through the proxy internal", async () => {
         const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "my-net" });
         expect(res.status).toBe(201);
         expect([...daemon.networks.values()][0]!.createBody?.Internal).toBe(true);
+        expect([...daemon.networks.values()][0]!.createBody?.Options)
+          .toMatchObject({ "com.docker.network.bridge.inhibit_ipv4": "true" });
       });
 
       it("overrides Internal: false, and drops another casing Docker would read as the same field", async () => {
@@ -1723,6 +1747,20 @@ describe("Docker API proxy", () => {
         const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "my-net", Internal: false });
         expect(res.status).toBe(201);
         expect([...daemon.networks.values()][0]!.createBody?.Internal).toBe(false);
+      });
+
+      it.each(["macvlan", "ipvlan", "host"])("refuses the %s driver", async (driver) => {
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "lan", Driver: driver });
+        expect(res.status).toBe(403);
+        expect(daemon.networks.size).toBe(0);
+      });
+
+      it("refuses a chosen address range, which could overlap this machine's networks", async () => {
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", {
+          Name: "ranged", IPAM: { Config: [{ Subnet: "10.10.10.0/24" }] },
+        });
+        expect(res.status).toBe(403);
+        expect(daemon.networks.size).toBe(0);
       });
 
       // ShipIt finds its own networks by name; one a session took first would be used as ShipIt's.

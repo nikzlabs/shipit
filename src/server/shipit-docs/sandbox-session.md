@@ -66,7 +66,9 @@ A sandbox grants up to three independent capabilities:
   reach this machine, private networks or the tailnet, in either Network mode.
   For the same reason the proxy refuses a restart policy (a restart Docker does
   on its own would skip the container's network rules), and a network you
-  create is internal. Reach your containers by name on the session's Docker
+  create is internal, uses the `bridge` driver, and gets an address range
+  Docker picks (a chosen range or another driver is refused). A container can
+  join only such a network. Reach your containers by name on the session's Docker
   network, not through a port published on the host: a host port is on this
   machine, so it is blocked.
 - **Network access** (`network`, default **on**). Controls how contained egress

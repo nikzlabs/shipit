@@ -39,6 +39,7 @@ import {
   withProxyStartLock,
 } from "./docker-proxy-egress.js";
 import { createDockerClient } from "./docker-client.js";
+import { NO_HOST_ADDRESS_OPTION } from "./egress-firewall.js";
 import { localBlockActive } from "./local-block.js";
 import { stackLabel } from "./stack-label.js";
 
@@ -379,13 +380,32 @@ function buildRoutes(getDocker: () => Docker): Route[] {
         if (typeof body.Name === "string" && isEgressNetworkName(body.Name)) {
           forbidden(ctx.res, `Network name "${body.Name}" is reserved for ShipIt's egress networks`); return;
         }
+        // Another driver can attach containers to the host's own network; a chosen range can overlap it.
+        const driver: unknown = Object.entries(body).find(([key]) => key.normalize("NFKC").toLowerCase() === "driver")?.[1];
+        if (driver !== undefined && driver !== "" && driver !== "bridge") {
+          forbidden(ctx.res, `Network driver ${JSON.stringify(driver)} is not allowed: only "bridge" keeps containers away `
+            + "from this machine and private networks"); return;
+        }
+        const ipam: unknown = Object.entries(body).find(([key]) => key.normalize("NFKC").toLowerCase() === "ipam")?.[1];
+        const ipamConfig: unknown = ipam && typeof ipam === "object"
+          ? Object.entries(ipam as Record<string, unknown>).find(([key]) => key.normalize("NFKC").toLowerCase() === "config")?.[1]
+          : undefined;
+        if (Array.isArray(ipamConfig) && ipamConfig.length > 0) {
+          forbidden(ctx.res, "Choosing a network's address range is not allowed: Docker picks one that does not "
+            + "overlap this machine's networks"); return;
+        }
         // A container on it then starts with no route out, before its firewall (docs/319). Go decodes
         // any casing of the key into the same field, and the last one wins.
+        const options = Object.entries(body).find(([key]) => key === "Options")?.[1];
         body = {
           ...Object.fromEntries(
-            Object.entries(body).filter(([key]) => key.normalize("NFKC").toLowerCase() !== "internal"),
+            Object.entries(body).filter(([key]) =>
+              !["internal", "options", "enableipv6"].includes(key.normalize("NFKC").toLowerCase())),
           ),
           Internal: true,
+          EnableIPv6: false,
+          // No host address on the bridge: nothing on it reaches the host before its firewall.
+          Options: { ...(options && typeof options === "object" ? options : {}), ...NO_HOST_ADDRESS_OPTION },
         };
       }
 
@@ -450,6 +470,12 @@ function buildRoutes(getDocker: () => Docker): Route[] {
     const egressRefusal = egressNetworkAttachRefusal(networkId, network);
     if (egressRefusal) {
       forbidden(ctx.res, egressRefusal); return;
+    }
+    // A running container joins without a new firewall, so only a network that gives it no route counts.
+    if (localBlockActive() && !network.isolated) {
+      forbidden(ctx.res, `Network "${network.name ?? networkId}" is not internal with no host address, so a container `
+        + "on it could reach this machine and private networks; use a network created through this Docker access");
+      return;
     }
 
     try {

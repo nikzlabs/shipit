@@ -31,6 +31,7 @@ Each fact below was read at the source on 2026-09-29.
 - The VPS stack publishes only on `127.0.0.1` (`deployment/vps/docker-compose.yml:22-24`); its tailnet access is a host `socat` forwarder (`deployment/vps/tailscale.sh:208`). The local stack publishes on `${SHIPIT_BIND_ADDR:-127.0.0.1}` plus an optional tailnet overlay (`docker/local/prod/compose.yml:25-26`, `deployment/local/lib.sh:128-131`).
 - The orchestrator's address changes when it is replaced, so the VPS stack reaches it by service name (`deployment/vps/docker-compose.yml:43-45`). A rule cannot pin that address.
 - After an update, ShipIt replaces idle containers of the previous build and keeps those with live work or an always-on preview (`restart-turn-reattach.ts:60-110`).
+- On the test machine (Docker 29.7.2): a container on an `internal: true` network still reaches the host's services through that network's gateway; with `com.docker.network.bridge.inhibit_ipv4=true` the bridge has no host address and the container reaches no host address at all, while containers on it still reach each other by name. A TCP connect that an `OUTPUT` drop refuses hangs rather than failing, while a UDP send fails at once with EPERM.
 
 ## Design
 
@@ -40,23 +41,24 @@ Every session container's `OUTPUT` chain gets the same prefix, in this order, fo
 
 1. Loopback, and replies on connections that already exist — as today. IPv6 neighbour discovery, or IPv6 stops working.
 2. `SHIPIT-SSH`: each granted SSH destination, TCP to its port only (§4). First, so that a grant of the ShipIt host itself works on its port.
-3. `SHIPIT-LOCAL`: first **drop** the host's own addresses (§5), each attached network's gateway, and broadcast and multicast destinations (they reach the host's bridge interface). Then **accept** only what this kind of container needs:
-   - agent: TCP to the orchestrator network on the orchestrator's own ports (the API and, with Docker access, the Docker proxy). Not the whole subnet, because every other session's agent is on it. When the agent joins its own session's networks, their subnets.
+3. `SHIPIT-CORE`, agent only: TCP to the orchestrator's own address on its own ports (the API and, with Docker access, the Docker proxy). Not the orchestrator network's subnet, because every other session's agent is on it. The orchestrator's address can change when it is replaced, so at start ShipIt replaces this one chain in every adopted agent; a full reinstall would drop the resolver's pinned addresses.
+4. `SHIPIT-LOCAL`: first **drop** the host's own addresses (§5), each attached network's gateway, and broadcast and multicast destinations (they reach the host's bridge interface). Then **accept** only what this kind of container needs:
+   - agent: the subnets of its own session's networks when it joins them.
    - Compose service: its session network and its egress network. Only this session's containers and the orchestrator are on them.
    - plugin holder: nothing. Its network is shared between sessions, and plugins need no local peer.
    - container started through the Docker proxy: the session's Docker networks.
-4. `SHIPIT-BLOCK`: drop `10.0.0.0/8`, `100.64.0.0/10` (the tailnet), `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` (includes the tailnet's IPv6 range), `fe80::/10`.
-5. The mode's own rules: contained keeps its DNS rules, its allowlist set and policy `DROP`; open sets policy `ACCEPT`.
+5. `SHIPIT-BLOCK`: drop `10.0.0.0/8`, `100.64.0.0/10` (the tailnet), `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` (includes the tailnet's IPv6 range), `fe80::/10`.
+6. The mode's own rules: contained keeps its DNS rules, its allowlist set and policy `DROP`; open sets policy `ACCEPT`.
 
 Because the block comes before the allowlist, an allowlisted name that resolves to a private address is refused too (req 4).
 
 The installer sets the policy to `DROP` before it flushes the chain, and sets `ACCEPT` last in open mode. A reinstall therefore never leaves a moment with no block. Drops are inserted at the top of `SHIPIT-LOCAL` and accepts are appended, so a later network join can never put an accept in front of a drop.
 
-The open policy uses only plain `iptables`/`ip6tables` rules, with no `ipset`. If IPv6 rules cannot be installed and the namespace has an IPv6 address outside link-local, the install fails, so IPv6 is never left open.
+The open policy uses only plain `iptables`/`ip6tables` rules, with no `ipset`. If IPv6 rules cannot be installed on a kernel with IPv6, the install fails: a later network join could give the namespace an IPv6 path, so today's addresses do not decide it. Networks that ShipIt or the Docker proxy create have IPv6 off.
 
 ### 2. One install path, two policies (req 1, req 2)
 
-`init-firewall.sh` takes `EGRESS_POLICY=open|contained`. Contained is today's behaviour plus the block. Open installs the block and policy `ACCEPT`; no resolver or proxy runs. The self-test checks that a private address and the gateway are refused.
+`init-firewall.sh` takes `EGRESS_POLICY=open|contained`. Contained is today's behaviour plus the block. Open installs the block and policy `ACCEPT`; no resolver or proxy runs. The self-test sends a UDP datagram to a link-local address and to the gateway and requires both to fail at once (a refused TCP connect only hangs).
 
 | Egress limits for the session | Host can run the sidecar | Result |
 |---|---|---|
@@ -78,7 +80,7 @@ The firewall is installed where contained mode installs it today, with the `cont
 
 A container must not run with a route out before its firewall is in place. Contained mode already does this for Compose services: they start on an internal session network, and ShipIt connects the egress network only after the firewall is in. When the block is active, open mode uses the same set-up. Each part is needed for req 4:
 
-- The session network is internal and services keep only it. A project's own bridge networks would give a route, and a gateway on the host, before the firewall.
+- The session network is internal, gives the host no address on its bridge (`com.docker.network.bridge.inhibit_ipv4`: an internal network's gateway still answers for the host), has IPv6 off, and services keep only it. A project's own bridge networks would give a route, and a gateway on the host, before the firewall. ShipIt resets an existing session network that lacks these settings.
 - A restart policy is replaced by `restart: "no"`, because a restart runs the service in a new namespace with no firewall.
 - A service that adds `NET_ADMIN` is refused with a message, because it could remove its own block. Contained mode already refuses every added capability.
 - The reserved `shipit-egress-` label prefix is refused, because the containment pass uses those labels to tell its own sidecars apart.
@@ -94,8 +96,10 @@ The plugin holder gets its firewall before the plugin starts in its namespace, a
 
 The same rule — no route before the firewall — applied at the proxy:
 
-- The session's Docker network (`shipit-session-<first 12>`) is created internal when the block is active, and a network that the agent creates through the proxy is made internal. A container therefore starts with no route out.
+- The session's Docker network (`shipit-session-<first 12>`) is created internal, with no host address and IPv6 off, when the block is active, and so is a network that the agent creates through the proxy. A container therefore starts with no route out.
+- A start, and a join of a running container, are refused on a network that is not internal with no host address: a running container that joins one gets no new firewall.
 - The proxy refuses a restart policy, because a restart loses the firewall.
+- The proxy accepts only the `bridge` driver and an address range that Docker picks: another driver can attach a container to the host's own network, and a chosen range can overlap it.
 - The proxy refuses to connect a container to a ShipIt egress network (`shipit-egress-*`), and refuses a network name that starts with `shipit-`, because ShipIt finds its own networks by name.
 - The proxy treats ShipIt's firewall sidecars as not the session's: they carry the session label but hold `NET_ADMIN` in its namespace. A container created with a `shipit-egress-` label is refused.
 - On every start and restart through the proxy, ShipIt first disconnects the container from the egress network (a new namespace has no firewall), then lets Docker start it, pauses it, connects the egress network, installs the firewall, and unpauses it. If a step fails, ShipIt stops the container and the call fails.
@@ -124,9 +128,9 @@ The origin index also lists agent containers (label `shipit-session-id`), with e
 
 ### 7. Hosts that cannot run the sidecar (req 6)
 
-**The probe.** The sidecar image gets `probe-firewall.sh`. It installs the rule types the block uses in a network namespace of its own (`--network none`, `NET_ADMIN`). In the containerized runtime, the orchestrator runs it once at start through the Docker API; `RUNTIME_MODE=local` has no session containers and skips it. The block is active only if the sidecar image is configured and the probe passes. The probe decides req 6 only: each install still fails closed on its own (§1).
+**The probe.** The sidecar image gets `probe-firewall.sh`. It installs the rule types the block uses in a network namespace of its own (`--network none`, `NET_ADMIN`), for IPv6 too where the kernel has it. In the containerized runtime, the orchestrator runs it once at start through the Docker API; `RUNTIME_MODE=local` has no session containers and skips it. The block is active only if the sidecar image is configured and the probe passes. The probe decides req 6 only: each install still fails closed on its own (§1).
 
-**The orchestrator refuses to listen on other addresses.** If the block is not active, the orchestrator reads its own container's port bindings (the container id from `/etc/hostname`, as `resolveOwnContainerIp` in `docker-proxy.ts` does). If a binding is on any address other than loopback, it logs which binding, why, and how to remove it, and exits. It cannot close one binding and keep the others, so it keeps none.
+**The orchestrator refuses to listen on other addresses.** If the block is not active, the orchestrator reads its own container's port bindings (the container id from `/etc/hostname`, as `resolveOwnContainerIp` in `docker-proxy.ts` does). If a binding is on any address other than loopback, or if it cannot read them (outside a container it listens on every address), it logs why and how to fix it, and exits. It cannot close one binding and keep the others, so it keeps none.
 
 **Setup does not add an entrance.** The scripts run the same probe with the sidecar image:
 
@@ -158,7 +162,9 @@ Build steps of a Compose `build:`, and of `docker build` through the Docker prox
 
 ### 11. Rollout
 
-A container that the previous build started and that ShipIt keeps across the update (live work, always-on preview) keeps its old rules until it is next created. All new containers get the block.
+Containers that the previous build started and that ShipIt keeps across the update (live work, always-on preview) are brought up to date at start, in the background, each step retried: an agent from before this change gets its firewall reinstalled whole, and Compose services still on an old session network are contained again — which stops them where that network cannot hold them, so their next start uses the new set-up. A Docker-access network from before the update that still has containers stays as it is, and the proxy refuses new starts on it until it is empty.
+
+Tests start session workers in-process, and a worker opens `SSH_AUTH_SOCK` and removes it on stop; inside a session that is the live socket, so `server-test-setup.ts` unsets it.
 
 ## Every install and access option (req 3)
 

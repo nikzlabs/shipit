@@ -40,7 +40,6 @@ exit 0`);
   stub("ip", `${record}
 case "$*" in
   "route") echo "default via 172.18.0.1 dev eth0" ;;
-  "-6 addr show scope global") [ -n "\${STUB_V6_ADDR:-}" ] && echo "inet6 \${STUB_V6_ADDR} scope global" ;;
 esac
 exit 0`);
   stub("dig", `${record}
@@ -94,31 +93,31 @@ describe("init-firewall.sh — the local block (docs/319 req 4)", () => {
     const { code, calls } = await runScript(stubs, "init-firewall.sh", {
       EGRESS_POLICY: "open",
       EGRESS_HOST_ADDRS: "203.0.113.7 2001:db8::7",
-      EGRESS_LOCAL_TCP: "172.18.0.0/16:4123",
+      EGRESS_LOCAL_TCP: "172.18.0.2/32:4123",
     });
     expect(code).toBe(0);
     expect(calls.some((c) => c.startsWith("ipset "))).toBe(false);
     // DROP before any flush, so a reinstall never runs without the block.
     expect(indexOf(calls, "iptables -P OUTPUT DROP")).toBeLessThan(indexOf(calls, "iptables -F OUTPUT"));
     const ssh = indexOf(calls, "iptables -A OUTPUT -j SHIPIT-SSH");
+    const core = indexOf(calls, "iptables -A OUTPUT -j SHIPIT-CORE");
     const local = indexOf(calls, "iptables -A OUTPUT -j SHIPIT-LOCAL");
     const block = indexOf(calls, "iptables -A OUTPUT -j SHIPIT-BLOCK");
-    expect(ssh).toBeLessThan(local);
+    expect(ssh).toBeLessThan(core);
+    expect(core).toBeLessThan(local);
     expect(local).toBeLessThan(block);
     expect(block).toBeLessThan(calls.lastIndexOf("iptables -P OUTPUT ACCEPT"));
-    const hostDrop = indexOf(calls, "iptables -A SHIPIT-LOCAL -d 203.0.113.7 -j DROP");
-    const gwDrop = indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.18.0.1 -j DROP");
-    const orchestrator = indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.18.0.0/16 -p tcp --dport 4123 -j ACCEPT");
-    expect(hostDrop).toBeLessThan(orchestrator);
-    expect(gwDrop).toBeLessThan(orchestrator);
+    indexOf(calls, "iptables -A SHIPIT-LOCAL -d 203.0.113.7 -j DROP");
+    indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.18.0.1 -j DROP");
+    // Only ShipIt's own address on the shared network: every session's agent is on it.
+    indexOf(calls, "iptables -A SHIPIT-CORE -d 172.18.0.2/32 -p tcp --dport 4123 -j ACCEPT");
+    expect(calls.some((c) => c.includes("-j ACCEPT") && c.includes("172.18.0.0/"))).toBe(false);
     for (const range of ["10.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16"]) {
       indexOf(calls, `iptables -A SHIPIT-BLOCK -d ${range} -j DROP`);
     }
     for (const range of ["fc00::/7", "fe80::/10"]) indexOf(calls, `ip6tables -A SHIPIT-BLOCK -d ${range} -j DROP`);
     indexOf(calls, "ip6tables -A SHIPIT-LOCAL -d 2001:db8::7 -j DROP");
     expect(calls.lastIndexOf("ip6tables -P OUTPUT ACCEPT")).toBeGreaterThan(indexOf(calls, "ip6tables -A OUTPUT -j SHIPIT-BLOCK"));
-    // No whole-subnet accept of the gateway's network: other sessions are on it.
-    expect(calls.some((c) => c.includes("172.18.0.0/24"))).toBe(false);
   });
 
   it("contained policy: the allowlist set comes after the block, so a private answer stays refused", async () => {
@@ -145,17 +144,22 @@ describe("init-firewall.sh — the local block (docs/319 req 4)", () => {
     expect(calls.some((c) => c.startsWith("iptables -A SHIPIT-SSH") && !c.includes("--dport"))).toBe(false);
   });
 
-  it("fails when IPv6 rules fail and the namespace can send IPv6", async () => {
+  // A later network join could give the namespace IPv6, so the kernel decides, not today's addresses.
+  it("fails when IPv6 rules fail on a kernel with IPv6", async () => {
     const { code } = await runScript(stubs, "init-firewall.sh", {
       EGRESS_POLICY: "open",
       STUB_IP6_FAIL: "1",
-      STUB_V6_ADDR: "2001:db8::10/64",
+      EGRESS_IPV6_MARKER: stubs.log.replace(/calls\.log$/, "iptables"),
     });
     expect(code).not.toBe(0);
   });
 
-  it("continues without IPv6 rules when the namespace has no routable IPv6", async () => {
-    const { code } = await runScript(stubs, "init-firewall.sh", { EGRESS_POLICY: "open", STUB_IP6_FAIL: "1" });
+  it("continues without IPv6 rules on a kernel without IPv6", async () => {
+    const { code } = await runScript(stubs, "init-firewall.sh", {
+      EGRESS_POLICY: "open",
+      STUB_IP6_FAIL: "1",
+      EGRESS_IPV6_MARKER: "/nonexistent/if_inet6",
+    });
     expect(code).toBe(0);
   });
 
@@ -186,6 +190,22 @@ describe("allow-subnet.sh — later network joins", () => {
     const accept = indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.20.0.0/24 -j ACCEPT");
     expect(drop).toBeLessThan(accept);
     expect(calls.some((c) => c.startsWith("iptables -A OUTPUT"))).toBe(false);
+  });
+
+  it("replaces ShipIt's own address when asked, and only that chain", async () => {
+    const { code, calls } = await runScript(stubs, "allow-subnet.sh", {
+      STUB_CHAIN_EXISTS: "1",
+      EGRESS_LOCAL_TCP: "172.18.0.3/32:4123",
+    });
+    expect(code).toBe(0);
+    const flush = indexOf(calls, "iptables -F SHIPIT-CORE");
+    expect(indexOf(calls, "iptables -A SHIPIT-CORE -d 172.18.0.3/32 -p tcp --dport 4123 -j ACCEPT")).toBeGreaterThan(flush);
+    expect(calls.some((c) => c.includes("-F OUTPUT") || c.includes("SHIPIT-LOCAL"))).toBe(false);
+  });
+
+  it("tells the caller to reinstall when a namespace predates ShipIt's own chain", async () => {
+    const { code } = await runScript(stubs, "allow-subnet.sh", { EGRESS_LOCAL_TCP: "172.18.0.3/32:4123" });
+    expect(code).toBe(3);
   });
 
   it("keeps the pre-docs/319 behaviour in a namespace without the chain", async () => {

@@ -12,7 +12,7 @@
 - [x] Agent container: firewall in both modes; open policy runs no resolver or proxy; orchestrator ports only on the shared network
 - [x] Compose: internal topology and open-policy containment when the block is active; `NET_ADMIN`, restart policies and reserved labels refused
 - [x] Plugin holder in both modes, with no local accepts
-- [ ] Docker proxy containers: internal networks, restart policies and egress-network joins refused, containment on start and restart
+- [x] Docker proxy containers: isolated networks only (bridge, Docker-picked range, no host address, IPv6 off), restart policies and egress-network joins refused, containment on start and restart
 - [x] Agent joins its Docker-access network
 - [x] Agent addresses and IPv6 addresses resolve as session containers (planning#506)
 - [x] Startup probe, own-binding refusal, Docker Desktop refusal
@@ -21,5 +21,8 @@
 - [x] Public-install text (req 7) and `project.allowDockerSocket` description (req 9)
 - [x] `src/server/shipit-docs/` and wiki updated
 - [x] Build steps recorded as planning#512's scope (req 10)
-- [ ] Implementation reviewed against every requirement
-- [ ] Deployment checks run on the test machine; test items removed
+- [x] Implementation reviewed against every requirement (two rounds; findings applied or documented)
+- [x] Adopted containers brought up to date at start
+- [x] Internal session networks give the host no address; IPv6 off on ShipIt's networks
+- [x] Deployment checks run on the test machine (firewall scripts, both policies, Compose set-up); test items removed
+- [ ] After deploy: the checks that need the new orchestrator (PR test plan)

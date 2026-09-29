@@ -82,6 +82,11 @@ describe("assertLoopbackOnlyWithoutBlock (docs/319 req 6)", () => {
     await expect(assertLoopbackOnlyWithoutBlock(docker, async () => "self")).rejects.toThrow(/100\.64\.1\.2:4123/);
   });
 
+  it("refuses to start when it cannot read its own bindings", async () => {
+    const { docker } = helperDocker();
+    await expect(assertLoopbackOnlyWithoutBlock(docker, async () => "self")).rejects.toThrow(/cannot read its own/);
+  });
+
   it("starts on loopback only", async () => {
     const { docker } = helperDocker({ inspect: published("127.0.0.1") });
     await expect(assertLoopbackOnlyWithoutBlock(docker, async () => "self")).resolves.toBeUndefined();

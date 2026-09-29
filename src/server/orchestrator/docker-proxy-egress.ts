@@ -111,8 +111,11 @@ export async function prepareProxyContainerStart(target: ProxyEgressTarget): Pro
   const endpoints = endpointsOf(info);
   for (const [name, endpoint] of Object.entries(endpoints)) {
     if (name === egressName) continue;
-    const network = await docker.getNetwork(endpoint?.NetworkID || name).inspect() as { Internal?: boolean };
-    if (!network.Internal) {
+    const network = await docker.getNetwork(endpoint?.NetworkID || name).inspect() as {
+      Internal?: boolean;
+      Options?: Record<string, string>;
+    };
+    if (!network.Internal || network.Options?.["com.docker.network.bridge.inhibit_ipv4"] !== "true") {
       throw new ProxyEgressRefusal(
         `network "${name}" is not internal, so the container would reach this machine and private networks `
           + "before ShipIt's firewall is in place; use a network created through this Docker access instead",

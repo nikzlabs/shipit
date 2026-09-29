@@ -216,12 +216,17 @@ export async function installEgressFirewall(
   }
 }
 
+/** The namespace was installed before docs/319 and has no chain to update; reinstall it. */
+export class LegacyEgressNamespaceError extends Error {}
+
 export interface AllowEgressToSubnetsOpts {
   agentContainerId: string;
   sidecarImage: string;
   subnets: string[];
   /** The networks' gateways: the host, refused before their subnets open. */
   gateways?: string[];
+  /** When set, replaces the namespace's accepts for ShipIt's own address. */
+  localTcp?: readonly LocalTcpAccept[];
   labels?: Record<string, string>;
 }
 
@@ -231,7 +236,8 @@ export async function allowEgressToSubnets(
   opts: AllowEgressToSubnetsOpts,
 ): Promise<string[]> {
   const subnets = opts.subnets.map((s) => s.trim()).filter((s) => s && isValidCidr(s));
-  if (subnets.length === 0) return [];
+  const localTcp = formatLocalTcp(opts.localTcp ?? []);
+  if (subnets.length === 0 && localTcp.length === 0) return [];
   const gateways = (opts.gateways ?? []).map((g) => g.trim()).filter((g) => g && isValidIp(g));
 
   const container = await docker.createContainer({
@@ -246,6 +252,7 @@ export async function allowEgressToSubnets(
     Env: [
       `EGRESS_ALLOW_SUBNETS=${subnets.join(" ")}`,
       `EGRESS_BLOCK_ADDRS=${gateways.join(" ")}`,
+      ...(localTcp.length > 0 ? [`EGRESS_LOCAL_TCP=${localTcp.join(" ")}`] : []),
     ],
   });
 
@@ -260,6 +267,7 @@ export async function allowEgressToSubnets(
       } catch {
         /* logs best-effort */
       }
+      if (code === 3) throw new LegacyEgressNamespaceError(`egress namespace predates docs/319${logs ? `:\n${logs}` : ""}`);
       throw new Error(`egress subnet-allow sidecar exited ${code}${logs ? `:\n${logs}` : ""}`);
     }
   } finally {

@@ -5,6 +5,7 @@
 # Inputs (env, space-separated):
 #   EGRESS_ALLOW_SUBNETS  CIDRs to allow (e.g. "172.19.0.0/16")
 #   EGRESS_BLOCK_ADDRS    those networks' gateways: the Docker host, always refused
+#   EGRESS_LOCAL_TCP      when set, replaces SHIPIT-CORE: ShipIt's own address:port pairs
 #
 # Idempotent and best effort: failure affects preview access, not containment.
 # A namespace installed before docs/319 has no SHIPIT-LOCAL chain; its rules
@@ -51,6 +52,19 @@ allow_one() {
   fi
   log "allowed egress to $cidr"
 }
+
+if [[ -n "${EGRESS_LOCAL_TCP:-}" ]]; then
+  if ! iptables -n -L SHIPIT-CORE >/dev/null 2>&1; then
+    # Exit 3: installed before docs/319; the caller reinstalls the whole firewall.
+    log "no SHIPIT-CORE chain in this namespace"
+    exit 3
+  fi
+  iptables -F SHIPIT-CORE
+  for pair in $EGRESS_LOCAL_TCP; do
+    iptables -A SHIPIT-CORE -d "${pair%:*}" -p tcp --dport "${pair##*:}" -j ACCEPT
+  done
+  log "ShipIt's own address set to $EGRESS_LOCAL_TCP"
+fi
 
 # A gateway that cannot be refused must not get its subnet opened.
 for addr in ${EGRESS_BLOCK_ADDRS:-}; do

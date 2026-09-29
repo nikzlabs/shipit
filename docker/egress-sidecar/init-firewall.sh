@@ -7,7 +7,7 @@
 #   EGRESS_ALLOWED_HOSTS  FQDNs to resolve (in the agent's own DNS view) and allow
 #   EGRESS_ALLOWED_CIDRS  CIDRs / IPs to allow (e.g. GitHub `meta` ranges)
 #   EGRESS_HOST_ADDRS     the Docker host's own addresses, always refused
-#   EGRESS_LOCAL_TCP      subnet:port pairs this container may use on ShipIt's network
+#   EGRESS_LOCAL_TCP      address:port pairs for ShipIt itself on a network other sessions share
 #   EGRESS_SSH_TARGETS    granted SSH destinations as host:port or [v6]:port
 #
 # Both policies refuse the host, private networks and the tailnet before any
@@ -24,6 +24,7 @@ log() { echo "[egress-init] $*"; }
 
 LOCAL_CHAIN=SHIPIT-LOCAL
 SSH_CHAIN=SHIPIT-SSH
+CORE_CHAIN=SHIPIT-CORE
 BLOCK_CHAIN=SHIPIT-BLOCK
 # The host's private addresses, private networks and the tailnet (docs/319 req 4).
 BLOCK_V4="10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16"
@@ -150,19 +151,22 @@ fill_ssh() {
 
 install_block_v4() {
   new_chain iptables "$SSH_CHAIN"
+  new_chain iptables "$CORE_CHAIN"
   new_chain iptables "$LOCAL_CHAIN"
   new_chain iptables "$BLOCK_CHAIN"
   fill_ssh iptables
+  # Its own chain, so allow-subnet.sh can replace it when ShipIt's address changes.
+  local pair
+  for pair in ${EGRESS_LOCAL_TCP:-}; do
+    iptables -A "$CORE_CHAIN" -d "${pair%:*}" -p tcp --dport "${pair##*:}" -j ACCEPT
+  done
   iptables -A "$LOCAL_CHAIN" -m addrtype --dst-type BROADCAST -j DROP
   iptables -A "$LOCAL_CHAIN" -m addrtype --dst-type MULTICAST -j DROP
-  local addr pair
+  local addr
   for addr in ${EGRESS_HOST_ADDRS:-}; do
     if is_v4 "$addr"; then iptables -A "$LOCAL_CHAIN" -d "$addr" -j DROP; fi
   done
   if [[ -n "$default_gw" ]]; then iptables -A "$LOCAL_CHAIN" -d "$default_gw" -j DROP; fi
-  for pair in ${EGRESS_LOCAL_TCP:-}; do
-    iptables -A "$LOCAL_CHAIN" -d "${pair%:*}" -p tcp --dport "${pair##*:}" -j ACCEPT
-  done
   local range
   for range in $BLOCK_V4; do iptables -A "$BLOCK_CHAIN" -d "$range" -j DROP; done
 }
@@ -201,6 +205,7 @@ install_v4() {
   fi
   install_block_v4
   iptables -A OUTPUT -j "$SSH_CHAIN"
+  iptables -A OUTPUT -j "$CORE_CHAIN"
   iptables -A OUTPUT -j "$LOCAL_CHAIN"
   iptables -A OUTPUT -j "$BLOCK_CHAIN"
   if [[ "$POLICY" == "open" ]]; then
@@ -217,8 +222,10 @@ install_v4() {
   iptables -A OUTPUT -m set --match-set "$SET4" dst -j ACCEPT
   iptables -P OUTPUT DROP
 }
-# An address outside link-local means the namespace can send IPv6.
-has_routable_v6() { [[ -n "$(ip -6 addr show scope global 2>/dev/null)" ]]; }
+# A kernel with IPv6 can give this namespace an IPv6 path later (a network join),
+# so its rules must be in place from the start.
+# EGRESS_IPV6_MARKER is a test seam; production never sets it.
+has_ipv6_kernel() { [[ -e "${EGRESS_IPV6_MARKER:-/proc/net/if_inet6}" ]]; }
 # Each step returns on failure: install_v6 decides whether a failure is fatal.
 install_v6_rules() {
   ip6tables -F OUTPUT || return 1
@@ -249,11 +256,11 @@ install_v6_rules() {
 }
 install_v6() {
   if install_v6_rules; then return 0; fi
-  if has_routable_v6; then
-    log "IPv6 rules failed and this namespace has IPv6 addresses — refusing to leave IPv6 open"
+  if has_ipv6_kernel; then
+    log "IPv6 rules failed on a kernel with IPv6 — refusing to leave IPv6 open"
     return 1
   fi
-  log "IPv6 rules not installed; this namespace has no IPv6 address outside link-local"
+  log "IPv6 rules not installed; this kernel has no IPv6"
 }
 install_v4
 install_v6
@@ -287,11 +294,12 @@ if [[ -n "$PROXY_UID" ]]; then
 fi
 
 # --- 5. Fail-closed self-test ----------------------------------------------
-# A drop in OUTPUT fails connect() at once with EPERM, and a namespace with no
-# route fails it with ENETUNREACH; any other outcome means a packet left.
+# A dropped UDP send fails at once with EPERM (a dropped TCP connect only
+# hangs), and a namespace with no route fails with ENETUNREACH; a silent send
+# means the datagram left.
 refused_locally() {
   local out
-  out="$(timeout 3 bash -c "exec 3<>/dev/tcp/$1/9" 2>&1 || true)"
+  out="$(timeout 3 bash -c "exec 3<>/dev/udp/$1/9 && echo probe >&3" 2>&1 || true)"
   [[ "$out" == *"not permitted"* || "$out" == *"Network is unreachable"* ]]
 }
 for probe in 169.254.0.1 ${default_gw:-}; do

@@ -61,6 +61,7 @@ import {
   type LocalTcpAccept,
 } from "./egress-firewall-install.js";
 import { sessionContainerRefusal } from "./local-block.js";
+import { NO_HOST_ADDRESS_OPTION } from "./egress-firewall.js";
 import { SSH_AGENT_SOCKET_PATH } from "./ssh-provision.js";
 import {
   buildResolverConfigB64,
@@ -1009,7 +1010,8 @@ async function ensureDockerAccessNetwork(
     if (info.Labels?.["shipit-parent-session"] !== sessionId) {
       throw new Error(`network ${name} exists but does not belong to session ${sessionId}; refusing to use it`);
     }
-    if ((info.Internal ?? false) === internal) return;
+    const noHostAddress = info.Options?.["com.docker.network.bridge.inhibit_ipv4"] === "true";
+    if ((info.Internal ?? false) === internal && noHostAddress === internal) return;
     if (Object.keys(info.Containers ?? {}).length > 0) {
       console.warn(`[containers] session network ${name} is ${internal ? "not " : ""}internal but still has containers; keeping it`);
       return;
@@ -1021,6 +1023,8 @@ async function ensureDockerAccessNetwork(
       Name: name,
       Driver: "bridge",
       Internal: internal,
+      EnableIPv6: false,
+      ...(internal ? { Options: { ...NO_HOST_ADDRESS_OPTION } } : {}),
       Labels: { ...deps.baseLabels(), "shipit-parent-session": sessionId },
     });
   } catch (err) {
