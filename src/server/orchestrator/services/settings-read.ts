@@ -477,11 +477,13 @@ function enforcementStatus(deps: SettingsReadDeps): EgressEnforcementStatus {
  *
  * The two statuses are NOT interchangeable, and treating them as one was wrong
  * in the case req 3 exists for. `disabled` (`SESSION_EGRESS_ENFORCE=0`) means
- * `container-lifecycle.ts` never installs a firewall, so nothing is contained
- * whatever the setting says. `no-sidecar` means enforcement is ON with no
- * sidecar image, and a session that resolves contained **throws and refuses to
- * start** (`container-lifecycle.ts:747`) — so the setting is not irrelevant, it
- * is the thing blocking the container, and turning it off is what unblocks it.
+ * egress limits are off, so no session gets an allowlist whatever the setting
+ * says; where the host can run the sidecar, every session still gets the local
+ * block (docs/319-api-reach-through-host). `no-sidecar` means enforcement is ON
+ * with no sidecar image, and a session that resolves contained **throws and
+ * refuses to start** (`container-lifecycle.ts:747`) — so the setting is not
+ * irrelevant, it is the thing blocking the container, and turning it off is what
+ * unblocks it.
  */
 function enforcementDisabledEffect(
   deps: SettingsReadDeps,
@@ -490,7 +492,10 @@ function enforcementDisabledEffect(
   return enforcementStatus(deps) === "disabled"
     ? {
         state: "excluded",
-        detail: renderOwn(`Egress enforcement is switched off on this install (SESSION_EGRESS_ENFORCE=0), so no session is contained and ${restricts}.`),
+        detail: renderOwn(
+          `Egress enforcement is switched off on this install (SESSION_EGRESS_ENFORCE=0), so no session is contained and ${restricts}. `
+          + "Where this host can run the egress sidecar, sessions still cannot reach this machine, private networks or the tailnet.",
+        ),
       }
     : null;
 }

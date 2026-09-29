@@ -149,3 +149,44 @@ describe("createContainer — the applied egress exclusion it records", () => {
     expect(sc.egressUserHostsExcluded).toBe(false);
   });
 });
+
+/** docs/319 req 2 — the local block reaches the agent in open mode too. */
+describe("createContainer — the local block in open mode", () => {
+  const blockDeps = {
+    egressEnforce: true,
+    egressSidecarImage: "shipit-egress-sidecar:test",
+    localBlock: true,
+    hostAddresses: async () => ["203.0.113.7"],
+    orchestratorTcp: async () => [{ subnet: "172.20.0.0/16", port: 4123 }],
+  } as Partial<LifecycleDeps>;
+
+  it("installs the open policy for an open session, with the host, orchestrator and SSH inputs", async () => {
+    const sc = await createWith(
+      { contained: false, extraHosts: [], sshTargets: [{ address: "10.0.0.5", port: 22 }] },
+      blockDeps,
+    );
+    expect(installEgressFirewall).toHaveBeenCalledTimes(1);
+    const calls = installEgressFirewall.mock.calls as unknown as [unknown, Record<string, unknown>][];
+    expect(calls[0]![1]).toMatchObject({
+      policy: "open",
+      inputs: { hosts: [], cidrs: [] },
+      hostAddresses: ["203.0.113.7"],
+      localTcp: [{ subnet: "172.20.0.0/16", port: 4123 }],
+      sshTargets: [{ address: "10.0.0.5", port: 22 }],
+      resolverUid: undefined,
+      proxyUid: undefined,
+    });
+    expect(sc).toMatchObject({ egressUserHostsExcluded: false });
+  });
+
+  it("installs the open policy when egress limits are off for the whole install", async () => {
+    await createWith({ contained: true, extraHosts: [] }, { ...blockDeps, egressEnforce: false });
+    const calls = installEgressFirewall.mock.calls as unknown as [unknown, Record<string, unknown>][];
+    expect(calls[0]![1]).toMatchObject({ policy: "open" });
+  });
+
+  it("installs nothing where the host cannot run the block and egress is open", async () => {
+    await createWith({ contained: false, extraHosts: [] }, { ...blockDeps, localBlock: false });
+    expect(installEgressFirewall).not.toHaveBeenCalled();
+  });
+});

@@ -53,7 +53,14 @@ import {
   identityForTarget,
 } from "./session-worker-uid.js";
 import type { SessionIdentity } from "../shared/session-identity.js";
-import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
+import {
+  buildTierAEgressInputs,
+  installEgressFirewall,
+  NO_TIER_A_INPUTS,
+  type EgressPolicy,
+  type LocalTcpAccept,
+} from "./egress-firewall-install.js";
+import { sessionContainerRefusal } from "./local-block.js";
 import { SSH_AGENT_SOCKET_PATH } from "./ssh-provision.js";
 import {
   buildResolverConfigB64,
@@ -119,6 +126,12 @@ export interface LifecycleDeps {
   egressProxy?: boolean;
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
   reopenJoinedEgress?: (sessionId: string) => Promise<void>;
+  /** docs/319: the host can install the local block, so every container gets a firewall. */
+  localBlock?: boolean;
+  hostAddresses?: () => Promise<string[]>;
+  /** What an agent may use on the orchestrator network, which every session's agent shares. */
+  orchestratorTcp?: () => Promise<LocalTcpAccept[]>;
+  connectSessionNetwork?: (sessionId: string, networkName: string) => Promise<void>;
   kernelRuntime?: string;
   seccompSecurityOpt?: string;
   readonlyRootfs?: boolean;
@@ -597,6 +610,8 @@ export async function createContainer(
   if (deps.containers.has(config.sessionId)) {
     throw new Error(`Container already exists for session ${config.sessionId}`);
   }
+  const refusal = sessionContainerRefusal();
+  if (refusal) throw new Error(refusal);
 
   const epochAtStart = opts?.intentEpoch ?? deps.destroyEpochs.get(config.sessionId) ?? 0;
   const abortIfTornDown = (at: string): void => {
@@ -684,21 +699,7 @@ export async function createContainer(
   let sessionNetworkName: string | undefined;
   if (config.dockerAccess) {
     sessionNetworkName = `shipit-session-${config.sessionId.slice(0, 12)}`;
-    try {
-      await deps.docker.createNetwork({
-        Name: sessionNetworkName,
-        Driver: "bridge",
-        Labels: {
-          ...deps.baseLabels(),
-          "shipit-parent-session": config.sessionId,
-        },
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("already exists")) {
-        console.warn(`[containers] Failed to create session network ${sessionNetworkName}:`, msg);
-      }
-    }
+    await ensureDockerAccessNetwork(deps, sessionNetworkName, config.sessionId);
     env.push(`SHIPIT_SESSION_NETWORK=${sessionNetworkName}`);
   }
 
@@ -833,7 +834,8 @@ export async function createContainer(
     sc.egressFirewallReady = new Promise<void>((resolve) => {
       signalEgressFirewallReady = resolve;
     });
-    if (deps.egressEnforce && egressCfg.contained) {
+    const policy = agentFirewallPolicy(deps, egressCfg);
+    if (policy) {
       if (!deps.egressSidecarImage) {
         throw new Error(
           "Agent egress containment is on but cannot be enforced: SESSION_EGRESS_SIDECAR_IMAGE is not set. " +
@@ -841,23 +843,30 @@ export async function createContainer(
             "with SESSION_EGRESS_ENFORCE=0 if this host can't run the NET_ADMIN sidecar.",
         );
       }
+      const contained = policy === "contained";
       const egressLabels = { ...deps.baseLabels(), "shipit-parent-session": config.sessionId };
-      const inputs = await buildTierAEgressInputs(
-        egressCfg.extraCidrs ? { extraCidrs: egressCfg.extraCidrs } : {},
-      );
+      const inputs = contained
+        ? await buildTierAEgressInputs(egressCfg.extraCidrs ? { extraCidrs: egressCfg.extraCidrs } : {})
+        : NO_TIER_A_INPUTS;
       // What this firewall now admits, so a later revoke knows a rule is there
       // to withdraw (docs/305).
-      sc.appliedSshCidrs = [...(egressCfg.extraCidrs ?? [])];
+      sc.appliedSshCidrs = contained ? [...(egressCfg.extraCidrs ?? [])] : [];
+      sc.appliedSshTargets = sshTargetKeys(egressCfg.sshTargets);
+      sc.firewallPolicy = policy;
       await installEgressFirewall(deps.docker, {
         agentContainerId: container.id,
         sidecarImage: deps.egressSidecarImage,
         inputs,
-        resolverUid: deps.egressDns ? EGRESS_RESOLVER_UID : undefined,
-        proxyUid: deps.egressProxy ? EGRESS_PROXY_UID : undefined,
-        proxyPort: deps.egressProxy ? EGRESS_PROXY_PORT : undefined,
+        policy,
+        hostAddresses: await (deps.hostAddresses?.() ?? Promise.resolve([])),
+        localTcp: await (deps.orchestratorTcp?.() ?? Promise.resolve([])),
+        sshTargets: egressCfg.sshTargets ?? [],
+        resolverUid: contained && deps.egressDns ? EGRESS_RESOLVER_UID : undefined,
+        proxyUid: contained && deps.egressProxy ? EGRESS_PROXY_UID : undefined,
+        proxyPort: contained && deps.egressProxy ? EGRESS_PROXY_PORT : undefined,
         labels: egressLabels,
       });
-      if (deps.egressDns) {
+      if (contained && deps.egressDns) {
         const configB64 = buildResolverConfigB64({
           internalDomains: sessionInternalNames({ opsSession: config.opsSession }),
           extraDomains: egressCfg.extraHosts,
@@ -870,7 +879,7 @@ export async function createContainer(
           labels: { ...egressLabels, [EGRESS_RESOLVER_LABEL]: config.sessionId, "shipit-egress-parent": container.id },
         });
       }
-      if (deps.egressProxy) {
+      if (contained && deps.egressProxy) {
         const orchPort = process.env.PORT || "3000";
         const decisionUrl = `http://${orchestratorCallbackHost()}:${orchPort}/api/egress/decision`;
         await launchEgressProxy(deps.docker, {
@@ -883,16 +892,20 @@ export async function createContainer(
           labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId, "shipit-egress-parent": container.id },
         });
       }
-      const dnsNote = deps.egressDns ? " + Tier B controlled resolver" : "";
-      const proxyNote = deps.egressProxy ? " + Tier C SNI proxy" : "";
+      const dnsNote = contained && deps.egressDns ? " + Tier B controlled resolver" : "";
+      const proxyNote = contained && deps.egressProxy ? " + Tier C SNI proxy" : "";
       console.log(
-        `[egress:${config.sessionId}] Tier A firewall installed ` +
+        `[egress:${config.sessionId}] ${policy} firewall installed ` +
           `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)${dnsNote}${proxyNote}`,
       );
       signalEgressFirewallReady();
       await deps.reopenJoinedEgress?.(config.sessionId);
     }
     signalEgressFirewallReady();
+    // The agent reaches its Docker-access containers here, not through host ports the block refuses.
+    if (sessionNetworkName && deps.localBlock) {
+      await deps.connectSessionNetwork?.(config.sessionId, sessionNetworkName);
+    }
 
     abortIfTornDown("before the worker health wait");
 
@@ -963,6 +976,52 @@ export async function createContainer(
       }
     }
     throw err;
+  }
+}
+
+/** Null installs no firewall: egress limits off and no local block on this host. */
+export function agentFirewallPolicy(
+  deps: Pick<LifecycleDeps, "egressEnforce" | "localBlock">,
+  egressCfg: Pick<ResolvedEgressConfig, "contained">,
+): EgressPolicy | null {
+  if (deps.egressEnforce && egressCfg.contained) return "contained";
+  return deps.localBlock ? "open" : null;
+}
+
+export function sshTargetKeys(targets: ResolvedEgressConfig["sshTargets"]): string[] {
+  return [...new Set((targets ?? []).map((t) => `${t.address} ${t.port}`))].sort();
+}
+
+// A container started through the Docker proxy must start with no route out (docs/319 req 8).
+async function ensureDockerAccessNetwork(
+  deps: LifecycleDeps,
+  name: string,
+  sessionId: string,
+): Promise<void> {
+  const internal = deps.localBlock === true;
+  try {
+    const info = await deps.docker.getNetwork(name).inspect();
+    if ((info.Internal ?? false) === internal) return;
+    if (Object.keys(info.Containers ?? {}).length > 0) {
+      console.warn(`[containers] session network ${name} is ${internal ? "not " : ""}internal but still has containers; keeping it`);
+      return;
+    }
+    await deps.docker.getNetwork(name).remove();
+  } catch {
+    // Absent: create it below.
+  }
+  try {
+    await deps.docker.createNetwork({
+      Name: name,
+      Driver: "bridge",
+      Internal: internal,
+      Labels: { ...deps.baseLabels(), "shipit-parent-session": sessionId },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("already exists")) {
+      console.warn(`[containers] Failed to create session network ${name}:`, msg);
+    }
   }
 }
 

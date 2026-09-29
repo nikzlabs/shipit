@@ -81,6 +81,16 @@ shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${DOCKER
 
 docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
 
+# docs/319 req 6: a forwarder installed before this host lost the egress sidecar
+# would keep a non-loopback entrance open, so stop it.
+if [ -f /etc/systemd/system/shipit-tailscale-preview.service ] \
+  && ! docker run --rm --network none --cap-add NET_ADMIN \
+    --entrypoint /usr/local/bin/probe-firewall.sh shipit-egress-sidecar:prod >/dev/null 2>&1; then
+  echo "WARNING: this host cannot run the egress sidecar, so ShipIt stays on loopback only." >&2
+  echo "         Stopping the Tailscale forwarder; tailscale.sh reinstalls it on a host that can." >&2
+  systemctl disable --now shipit-tailscale-preview.service 2>/dev/null || true
+fi
+
 # Mark the new image live before slow cleanup can be interrupted.
 if [ -n "${SHIPIT_RESTART_MARKER:-}" ]; then
   echo "$SHIPIT_BUILD_ID" > "$SHIPIT_RESTART_MARKER" 2>/dev/null || true

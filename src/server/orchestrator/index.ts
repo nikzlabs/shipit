@@ -126,6 +126,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         durableHosts: [...egressAllowlistStore.effectiveHosts(sessionId), ...ssh.names],
       }),
       ...(ssh.cidrs.length > 0 ? { extraCidrs: ssh.cidrs } : {}),
+      ...(ssh.targets.length > 0 ? { sshTargets: ssh.targets } : {}),
       base: egressAllowlistStore.effectiveBase(),
       identityRules: composeEgressIdentityRules(),
     };

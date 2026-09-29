@@ -336,14 +336,62 @@ the host is configured.
   sessions **fail to start**, with an error naming the missing image. Loud, and
   obvious.
 - **Enforcement was switched off at the deployment.** Sessions start fine and
-  run with **open egress** — no allowlist, no prompts, nothing blocked. This is
-  the one to surface: the user believes their sessions are contained and they
-  are not, and nothing else on screen says so.
+  run as **Open** — any internet host, no allowlist, no prompts. This is the
+  one to surface: the user believes their sessions are contained and they are
+  not, and nothing else on screen says so. The block on this machine, private
+  networks and the tailnet still applies wherever the host can run the egress
+  sidecar (next two sections).
 
 Either way the fix is on the host, not in a session — see
 [installing-and-updating.md](installing-and-updating.md). If a user is
 surprised that a session reached the internet freely, check this warning before
 looking anywhere else.
+
+## "It can't reach my LAN" / "…my tailnet" / "…this machine"
+
+In both Network modes, a session's containers — the agent, its Compose
+services, plugin containers, and containers started with Docker access —
+cannot reach the machine that runs ShipIt, private networks (the LAN,
+`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local) or the tailnet.
+That is deliberate: it keeps code running in a session away from ShipIt's host
+and the user's other machines. Open mode still reaches the internet and
+Contained keeps its allowlist, but an allowlisted host whose address is private
+is still blocked. So neither switching to Open nor an allowlist entry changes this; do
+not suggest either.
+
+The one exception is an **SSH destination**. A machine the user grants in
+**Session settings → SSH destinations** is reachable from that session on its
+SSH port, and on nothing else (`/shipit-docs/ssh.md`). If the work needs a local
+machine for anything other than SSH, say so plainly; there is no setting that
+opens it. This session's own services are not affected: reach them by name or
+by the `url` ShipIt lists, never through a port published on the host
+(`/shipit-docs/preview.md`).
+
+A Compose service the user gives the Docker socket (**Project Settings →
+Deployments → "Give this project's services the Docker socket"**) controls the
+machine, so ShipIt cannot hold it to any of this. That is part of what the user
+accepts with that toggle.
+
+## "I can't reach ShipIt over the tailnet or LAN any more"
+
+ShipIt installs the block above as a firewall in each session container, using
+its egress sidecar. A host that cannot run the sidecar (rootless Docker, or a
+locked-down kernel, for example) cannot apply the block, so there ShipIt listens
+only on loopback: setup leaves out a tailnet binding and puts a non-loopback
+bind address back to `127.0.0.1`, saying why, and ShipIt refuses to start if it
+finds a non-loopback binding anyway, with a log line naming it. On that host,
+contained sessions do not start either, and on Docker Desktop no session
+container starts at all.
+
+From the same machine, through Cloudflare Tunnel with Access, or through an SSH
+tunnel, ShipIt still works. Getting tailnet or LAN access back means making the
+host able to run the sidecar — a host change, outside every session
+([installing-and-updating.md](installing-and-updating.md)).
+
+One install shape sets all of this aside: ShipIt made public with **no
+sign-in**, through the Cloudflare setup's opt-out or a bind address the
+internet can reach. Then anyone on the internet has the user's access, and so
+does a session. If the user describes that setup, say so.
 
 ## "A service won't start" / "it says crashed"
 

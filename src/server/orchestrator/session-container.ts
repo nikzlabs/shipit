@@ -6,6 +6,7 @@ import {
   destroyContainer,
   buildContainerConfig,
   cleanupSessionDockerResources,
+  sshTargetKeys,
   type LifecycleDeps,
   type CreateContainerOpts,
 } from "./container-lifecycle.js";
@@ -16,6 +17,7 @@ import {
   cleanupOrphanContainers,
   reapStandbyContainers,
   getSessionByContainerIp,
+  containerAddresses,
   type DiscoveryDeps,
 } from "./container-discovery.js";
 import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
@@ -46,8 +48,12 @@ import {
   allowEgressToSubnets,
   buildTierAEgressInputs,
   installEgressFirewall,
+  NO_TIER_A_INPUTS,
+  type EgressPolicy,
+  type LocalTcpAccept,
 } from "./egress-firewall-install.js";
-import { extractNetworkSubnets } from "./egress-firewall.js";
+import { localBlockActive, hostAddresses as readHostAddresses } from "./local-block.js";
+import { extractNetworkGateways, extractNetworkSubnets } from "./egress-firewall.js";
 import {
   containComposeServices as applyComposeServiceEgress,
   invalidateComposeServiceContainment,
@@ -182,6 +188,12 @@ export interface SessionContainer {
    * is rebuilt.
    */
   appliedSshCidrs?: string[];
+  /** docs/319 — the SSH destinations and ports in this firewall's SSH chain. */
+  appliedSshTargets?: string[];
+  /** The policy this container's firewall was installed with; absent means none or unknown. */
+  firewallPolicy?: EgressPolicy;
+  /** The agent's addresses other than `containerIp` (planning#506). */
+  otherAddresses?: string[];
   joinedSessionNetworks?: Set<string>;
 }
 
@@ -374,6 +386,21 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
   }
 
+  /**
+   * Whether this session's containers start with no route out and get a
+   * firewall before they get one: contained egress, or the local block in open
+   * mode (docs/319-api-reach-through-host).
+   */
+  isNetworkIsolated(sessionId: string): boolean {
+    return this.isEgressContained(sessionId) || localBlockActive();
+  }
+
+  /** The firewall policy for this session's containers; null installs none. */
+  firewallPolicy(sessionId: string): EgressPolicy | null {
+    if (this.isEgressContained(sessionId)) return "contained";
+    return localBlockActive() ? "open" : null;
+  }
+
   resolveEgress(sessionId: string): ResolvedEgressConfig | undefined {
     return this.resolveEgressConfig?.(sessionId);
   }
@@ -389,7 +416,35 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       sidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
       dnsEnabled: this.isEgressDnsContained(sessionId),
       proxyEnabled: this.isEgressProxyContained(sessionId),
+      blockLocal: localBlockActive(),
+      ...(localBlockActive() ? { hostAddresses: () => this.hostAddresses() } : {}),
     };
+  }
+
+  /** The Docker host's own addresses, for the local block (docs/319). */
+  async hostAddresses(): Promise<string[]> {
+    const image = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    if (!image) return [];
+    return readHostAddresses(this.docker, image);
+  }
+
+  private orchestratorSubnets?: string[];
+
+  /**
+   * TCP an agent may use on the orchestrator network: the orchestrator's own
+   * ports only, because every session's agent shares that network.
+   */
+  async orchestratorTcp(): Promise<LocalTcpAccept[]> {
+    if (!this.orchestratorSubnets) {
+      try {
+        const info = await this.docker.getNetwork(this.networkName).inspect();
+        this.orchestratorSubnets = extractNetworkSubnets(info).filter((cidr) => !cidr.includes(":"));
+      } catch {
+        return [];
+      }
+    }
+    const ports = [Number(process.env.PORT || "3000"), ...(this.dockerProxyPort ? [this.dockerProxyPort] : [])];
+    return this.orchestratorSubnets.flatMap((subnet) => ports.map((port) => ({ subnet, port })));
   }
 
   isEgressDnsContained(sessionId: string): boolean {
@@ -422,7 +477,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   async prepareComposeServiceStart(sessionId: string, _serviceNames: string[]): Promise<void> {
-    if (!this.isEgressContained(sessionId)) return;
+    if (!this.isNetworkIsolated(sessionId)) return;
     // Learn subnets before services can send requests to the API guard.
     await this.recordSessionNetworkRanges(sessionId);
     const containers = await this.docker.listContainers({
@@ -459,12 +514,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     serviceNames: string[],
     refresh: boolean,
   ): Promise<void> {
-    if (!egressEnforceEnabled()) return;
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     const sc = this.containers.get(sessionId);
     const config = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
-    const contained = sc?.egressContainedAtStart ?? config.contained;
-    if (!contained) return;
+    const contained = egressEnforceEnabled() && (sc?.egressContainedAtStart ?? config.contained);
+    const policy: EgressPolicy | null = contained ? "contained" : localBlockActive() ? "open" : null;
+    if (!policy) return;
     if (serviceNames.length > 0) this.composeServiceNames.set(sessionId, [...serviceNames]);
     if (!sidecarImage) {
       throw new Error(
@@ -479,9 +534,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         sessionId,
         sidecarImage,
         config: { ...config, contained },
+        policy,
+        hostAddresses: await readHostAddresses(this.docker, sidecarImage),
         serviceNames,
-        dnsEnabled: egressDnsEnabled(),
-        proxyEnabled: egressProxyEnabled(),
+        dnsEnabled: contained && egressDnsEnabled(),
+        proxyEnabled: contained && egressProxyEnabled(),
         labels: this.baseLabels(),
         orchestratorHost: orchestratorCallbackHost(),
         refresh,
@@ -505,24 +562,26 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   /** Returns whether the agent was reloaded. Throws if any sidecar replacement fails. */
   async reloadEgress(sessionId: string): Promise<boolean> {
-    if (!egressEnforceEnabled()) return false;
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     if (!sidecarImage) return false;
     const sc = this.containers.get(sessionId);
     const cfg = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
-    if (!cfg.contained) return false;
+    const agentRunning = sc?.status === "running" && Boolean(sc.id);
+    const containedNow = egressEnforceEnabled() && cfg.contained;
+    const policy: EgressPolicy | null = sc?.firewallPolicy ?? (containedNow ? "contained" : localBlockActive() ? "open" : null);
+    if (!policy) return false;
+
+    // docs/305, docs/319 req 5 — SSH destinations live in the firewall itself,
+    // so no resolver or proxy reload can admit or withdraw them.
+    let sshChanged = false;
+    if (agentRunning && sc?.id) {
+      sshChanged = await this.applySshChanges(sc, sessionId, sidecarImage, policy, cfg);
+    }
+    if (policy !== "contained" || !containedNow) return sshChanged;
     const reloadResolver = egressDnsEnabled();
     const reloadProxy = egressProxyEnabled();
-    const agentRunning = sc?.status === "running" && Boolean(sc.id);
 
-    // docs/305 — an IP-literal destination issues no DNS query, so reloading the
-    // resolver and proxy cannot admit or withdraw it; only the Tier A ipset can.
-    let cidrsChanged = false;
-    if (agentRunning && sc?.id) {
-      cidrsChanged = await this.applySshCidrs(sc, sessionId, sidecarImage, cfg.extraCidrs ?? []);
-    }
-
-    if (!reloadResolver && !reloadProxy) return cidrsChanged;
+    if (!reloadResolver && !reloadProxy) return sshChanged;
     if (agentRunning && sc?.id) {
       // The replacement is destructive and sequential — resolver, then proxy —
       // so from here until it returns the container enforces neither policy
@@ -561,36 +620,43 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * Bring the live namespace's SSH CIDRs to `next`, and report whether anything
-   * moved.
+   * Bring the live namespace's SSH destinations to the current grants, and
+   * report whether anything moved.
    *
-   * Adding is cheap — `allowEgressToSubnets` appends ACCEPT rules. **Removing is
-   * not possible that way at all**: nothing withdraws a rule it added. So a
-   * shrinking set reinstalls Tier A, which destroys and rebuilds the ipsets from
-   * `EGRESS_ALLOWED_CIDRS` (`init-firewall.sh:68`), and then reopens the joined
-   * preview networks the reinstall's OUTPUT flush dropped — the same sequence
-   * container creation runs.
+   * Adding a CIDR alone is cheap — `allowEgressToSubnets` appends an ACCEPT
+   * rule. Anything else reinstalls the firewall, which rebuilds the SSH chain
+   * and the ipsets (`init-firewall.sh`), and then reopens the joined networks
+   * the reinstall's flush dropped — the same sequence container creation runs.
    */
-  private async applySshCidrs(
+  private async applySshChanges(
     sc: SessionContainer,
     sessionId: string,
     sidecarImage: string,
-    next: string[],
+    policy: EgressPolicy,
+    cfg: ResolvedEgressConfig,
   ): Promise<boolean> {
+    const contained = policy === "contained";
+    const next = contained ? cfg.extraCidrs ?? [] : [];
     const previous = sc.appliedSshCidrs ?? [];
     const nextSet = new Set(next);
     const removed = previous.filter((c) => !nextSet.has(c));
     const added = next.filter((c) => !previous.includes(c));
-    if (removed.length === 0 && added.length === 0) return false;
+    const nextTargets = sshTargetKeys(cfg.sshTargets);
+    const targetsChanged = nextTargets.join(",") !== [...(sc.appliedSshTargets ?? [])].sort().join(",");
+    if (removed.length === 0 && added.length === 0 && !targetsChanged) return false;
 
     const labels = { ...this.baseLabels(), "shipit-parent-session": sessionId };
-    if (removed.length > 0) {
+    if (removed.length > 0 || targetsChanged) {
       await installEgressFirewall(this.docker, {
         agentContainerId: sc.id,
         sidecarImage,
-        inputs: await buildTierAEgressInputs({ extraCidrs: next }),
-        ...(egressDnsEnabled() ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
-        ...(egressProxyEnabled()
+        inputs: contained ? await buildTierAEgressInputs({ extraCidrs: next }) : NO_TIER_A_INPUTS,
+        policy,
+        hostAddresses: await this.hostAddresses(),
+        localTcp: await this.orchestratorTcp(),
+        sshTargets: cfg.sshTargets ?? [],
+        ...(contained && egressDnsEnabled() ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
+        ...(contained && egressProxyEnabled()
           ? { proxyUid: EGRESS_PROXY_UID, proxyPort: EGRESS_PROXY_PORT }
           : {}),
         labels,
@@ -605,6 +671,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       });
     }
     sc.appliedSshCidrs = [...next];
+    sc.appliedSshTargets = nextTargets;
+    sc.firewallPolicy = policy;
     return true;
   }
 
@@ -651,6 +719,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       egressProxy: egressProxyEnabled(),
       ...(this.resolveEgressConfig ? { resolveEgressConfig: this.resolveEgressConfig } : {}),
       reopenJoinedEgress: (sessionId: string) => this.reopenJoinedSessionEgress(sessionId),
+      localBlock: localBlockActive(),
+      hostAddresses: () => this.hostAddresses(),
+      orchestratorTcp: () => this.orchestratorTcp(),
+      connectSessionNetwork: (sessionId: string, networkName: string) => this.connectToNetwork(sessionId, networkName),
       kernelRuntime: kernelRuntime(),
       seccompSecurityOpt: resolveSeccompSecurityOpt(),
       readonlyRootfs: readonlyRootfsEnabled(),
@@ -728,8 +800,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
     // Firewall rebuilds flush OUTPUT; retain attachments so their rules can be restored.
     (sc.joinedSessionNetworks ??= new Set()).add(networkName);
+    await this.recordAgentAddresses(sc);
 
     await this.allowEgressToSessionNetwork(sc.id, sessionId, networkName);
+  }
+
+  // The guard must resolve the agent's second address as the agent (planning#506).
+  private async recordAgentAddresses(sc: SessionContainer): Promise<void> {
+    try {
+      const info = await this.docker.getContainer(sc.id).inspect();
+      sc.otherAddresses = containerAddresses(info.NetworkSettings?.Networks, sc.containerIp);
+    } catch { /* the origin index refresh records them too */ }
   }
 
   async ensureConnectedToSessionNetwork(sessionId: string, networkName: string): Promise<boolean> {
@@ -776,13 +857,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   ): Promise<void> {
     const sc = this.containers.get(sessionId);
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
-    if (!egressEnforceEnabled() || !sidecarImage) {
+    if (!sidecarImage) {
       return;
     }
     // Do not overwrite unknown boot policy with the current policy used as a fallback.
-    const contained =
-      sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
-    if (!contained) {
+    const contained = egressEnforceEnabled()
+      && (sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true);
+    if (!contained && !sc?.firewallPolicy && !localBlockActive()) {
       return;
     }
     if (sc?.egressContainedAtStart === undefined) {
@@ -809,6 +890,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         agentContainerId,
         sidecarImage,
         subnets,
+        gateways: extractNetworkGateways(info),
         labels: { ...this.baseLabels(), "shipit-parent-session": sessionId },
       });
       console.log(`[egress:${sessionId}] opened agent egress to session subnet(s) ${allowed.join(", ")} (${networkName})`);
@@ -995,10 +1077,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       const bracketedAtStart = this.containerTopologyMutations > 0;
       this.containerOriginRefresh = (async () => {
         try {
-          const entries = await Promise.race([
-            this.docker.listContainers({
-              filters: { label: ["shipit-parent-session"] },
-            }),
+          const [entries, agents] = await Promise.race([
+            Promise.all([
+              this.docker.listContainers({ filters: { label: ["shipit-parent-session"] } }),
+              this.docker.listContainers({ filters: { label: [CONTAINER_SESSION_ID_LABEL] } }),
+            ]),
             new Promise<never>((_, reject) => {
               setTimeout(() => reject(new Error("container-origin lookup timed out")),
                 ORIGIN_INDEX_TIMEOUT_MS).unref();
@@ -1008,9 +1091,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
           for (const entry of entries) {
             const sessionId = entry.Labels?.["shipit-parent-session"];
             if (!sessionId) continue;
-            for (const network of Object.values(entry.NetworkSettings?.Networks ?? {})) {
-              if (network.IPAddress) next.set(network.IPAddress, sessionId);
-            }
+            for (const addr of containerAddresses(entry.NetworkSettings?.Networks)) next.set(addr, sessionId);
+          }
+          // An agent address not yet recorded as the agent is still a session container, never the user.
+          for (const entry of agents) {
+            const sessionId = entry.Labels?.[CONTAINER_SESSION_ID_LABEL];
+            if (!sessionId) continue;
+            const addresses = containerAddresses(entry.NetworkSettings?.Networks);
+            for (const addr of addresses) if (!next.has(addr)) next.set(addr, sessionId);
+            const sc = this.containers.get(sessionId);
+            if (sc?.id === entry.Id) sc.otherAddresses = addresses.filter((a) => a !== sc.containerIp);
           }
           this.containerOriginSessions = next;
           // Keep known addresses, but withhold cached absence if topology changed during the query.

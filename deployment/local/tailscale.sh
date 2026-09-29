@@ -85,6 +85,17 @@ echo "==> Recorded tailnet opt-in in $SHIPIT_ENV_FILE"
 echo "==> Restarting ShipIt to add the tailnet binding..."
 shipit_build_and_up
 
+if [ "${SHIPIT_LOCAL_BLOCK:-}" = "unavailable" ]; then
+  echo "" >&2
+  echo "Tailnet access was not added. ShipIt's egress sidecar cannot run on this" >&2
+  echo "host, so ShipIt cannot keep sessions away from this machine, private" >&2
+  echo "networks and the tailnet, and it stays on localhost only." >&2
+  echo "Rootless Docker and locked-down kernels are the usual reason. The opt-in" >&2
+  echo "is recorded: on a host where the egress sidecar can run, update.sh adds" >&2
+  echo "the tailnet binding." >&2
+  exit 1
+fi
+
 # Report the address resolved during the restart, not the preflight value.
 if [ -z "${SHIPIT_TAILNET_IP:-}" ]; then
   echo "" >&2

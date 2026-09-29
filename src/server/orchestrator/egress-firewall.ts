@@ -104,6 +104,43 @@ export function extractNetworkSubnets(networkInfo: unknown): string[] {
   return out;
 }
 
+function firstHostAddress(cidr: string): string | null {
+  const [base, prefixText] = cidr.split("/");
+  const prefix = Number(prefixText);
+  if (!base || !isValidIpv4(base) || !Number.isInteger(prefix) || prefix > 30) return null;
+  const parts = base.split(".").map(Number);
+  const value = (((parts[0]! << 24) >>> 0) + (parts[1]! << 16) + (parts[2]! << 8) + parts[3]!) >>> 0;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  const first = ((value & mask) + 1) >>> 0;
+  return [first >>> 24, (first >>> 16) & 255, (first >>> 8) & 255, first & 255].join(".");
+}
+
+/**
+ * The network's gateways: each is the Docker host's address on that bridge, so
+ * the local block refuses it (docs/319-api-reach-through-host). Docker takes a
+ * subnet's first address when IPAM names no gateway.
+ */
+export function extractNetworkGateways(networkInfo: unknown): string[] {
+  if (!networkInfo || typeof networkInfo !== "object") return [];
+  const ipam = (networkInfo as Record<string, unknown>).IPAM;
+  if (!ipam || typeof ipam !== "object") return [];
+  const config = (ipam as Record<string, unknown>).Config;
+  if (!Array.isArray(config)) return [];
+  const out = new Set<string>();
+  for (const entry of config) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const gateway = typeof record.Gateway === "string" ? record.Gateway.trim().split("/")[0] ?? "" : "";
+    if (gateway && isValidIp(gateway)) {
+      out.add(gateway);
+      continue;
+    }
+    const derived = typeof record.Subnet === "string" ? firstHostAddress(record.Subnet.trim()) : null;
+    if (derived) out.add(derived);
+  }
+  return [...out];
+}
+
 export function buildIpsetMembers(opts: { ips?: readonly string[]; cidrs?: readonly string[] }): string[] {
   const members = new Set<string>();
   for (const ip of opts.ips ?? []) {

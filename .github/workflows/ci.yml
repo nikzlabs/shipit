@@ -159,3 +159,39 @@ jobs:
             -v "$PWD/docker/egress-sidecar/image-checks.sh:/image-checks.sh:ro" \
             --entrypoint sh shipit-egress-sidecar:ci \
             /image-checks.sh "$resolver_uid" "$proxy_uid"
+      # docs/319: the local block, installed in a real namespace, refuses what it must.
+      - name: Verify the local block in a real network namespace
+        run: |
+          set -euo pipefail
+          image=shipit-egress-sidecar:ci
+          docker network create shipit-ci-block >/dev/null
+          gw=$(docker network inspect shipit-ci-block --format '{{(index .IPAM.Config 0).Gateway}}')
+          # A drop in OUTPUT fails connect() at once with EPERM; anything else means a packet left.
+          refused() {
+            local out
+            out=$(docker run --rm --network container:shipit-ci-target --entrypoint bash "$image" \
+              -c "timeout 3 bash -c 'exec 3<>/dev/tcp/$1/$2' 2>&1 || true")
+            [[ "$out" == *"not permitted"* ]]
+          }
+          for policy in open contained; do
+            docker run -d --name shipit-ci-target --network shipit-ci-block --entrypoint sleep "$image" 300 >/dev/null
+            docker run --rm --network container:shipit-ci-target --cap-add NET_ADMIN \
+              -e EGRESS_POLICY="$policy" \
+              -e EGRESS_HOST_ADDRS="$(hostname -I)" \
+              -e EGRESS_SSH_TARGETS="10.1.2.3:22" \
+              -e EGRESS_ALLOWED_CIDRS="1.1.1.1/32 10.1.2.0/24" \
+              "$image"
+            for target in "$gw 22" "10.1.2.3 80" "100.64.0.1 80" "192.168.1.1 80" "169.254.169.254 80" \
+                "$(hostname -I | awk '{print $1}') 22"; do
+              if ! refused $target; then echo "$policy: $target was not refused"; exit 1; fi
+            done
+            if refused 10.1.2.3 22; then echo "$policy: the SSH destination's port was refused"; exit 1; fi
+            if refused 1.1.1.1 443; then echo "$policy: an internet address was refused"; exit 1; fi
+            if [ "$policy" = contained ] && ! refused 8.8.8.8 443; then
+              echo "contained: an address outside the allowlist was not refused"; exit 1
+            fi
+            docker rm -f shipit-ci-target >/dev/null
+            echo "$policy policy: ok"
+          done
+          docker run --rm --network none --cap-add NET_ADMIN --entrypoint /usr/local/bin/probe-firewall.sh "$image"
+          docker network rm shipit-ci-block >/dev/null

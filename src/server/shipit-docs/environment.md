@@ -469,3 +469,30 @@ Service containers declared in `docker-compose.yml` are separate containers, so
 they do **not** draw on the session's CPU budget — they get their own. ShipIt
 gives them a low scheduling weight so they yield to the platform under
 contention; set your own `deploy.resources` limits if a service needs a cap.
+
+## Network
+
+In both Network modes, no container in this session — this one, its Compose
+services, plugin containers, and containers started with Docker access — can
+reach the machine that runs ShipIt, private networks (the LAN, `10.0.0.0/8`,
+`172.16.0.0/12`, `192.168.0.0/16`, link-local) or the tailnet. This keeps code
+running in a session away from ShipIt's host and the user's other machines.
+From this container, what stays reachable:
+
+- ShipIt itself at `$SHIPIT_HOST:$SHIPIT_PORT`, and this session's own services
+  on the session network, by name or by the `url` ShipIt lists for them
+  ([preview.md](preview.md)). Never through a port published on the host.
+- An SSH destination granted to this session, on its SSH port only
+  ([ssh.md](ssh.md)).
+- The internet: any host in an **Open** session, the allowlist in a
+  **Contained** one. An allowlisted name whose address is private stays blocked.
+
+So a refused or timed-out connection to a local address is this block, not a
+network fault, and no allowlist entry changes it. Tell the user which address
+the work needed and why. If it is a machine they reach over SSH, a destination
+grant in Session settings is the way in.
+
+A host that cannot run ShipIt's egress sidecar cannot apply this block. There
+ShipIt listens only on loopback, and contained sessions do not start. A Compose
+service given the Docker socket controls this machine, so none of this holds
+for it ([compose.md](compose.md)).

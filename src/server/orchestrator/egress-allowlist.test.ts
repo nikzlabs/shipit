@@ -465,17 +465,29 @@ describe("sshEgressTargets", () => {
     expect(sshEgressTargets(
       [{ address: "prod.example.com" }, { address: "100.83.12.47" }, { address: "PROD.example.com" }],
       classify,
-    )).toEqual({ names: ["prod.example.com"], cidrs: ["100.83.12.47/32"] });
+    )).toEqual({
+      names: ["prod.example.com"],
+      cidrs: ["100.83.12.47/32"],
+      targets: [{ address: "prod.example.com", port: 22 }, { address: "100.83.12.47", port: 22 }],
+    });
+  });
+
+  // docs/319 req 5: the exception to the local block is the destination's own port.
+  it("keeps each destination's port for the firewall's SSH chain", () => {
+    expect(sshEgressTargets(
+      [{ address: "10.0.0.5", port: 2222 }, { address: "10.0.0.5", port: 22 }],
+      classify,
+    ).targets).toEqual([{ address: "10.0.0.5", port: 2222 }, { address: "10.0.0.5", port: 22 }]);
   });
 
   // req 12 says "an IP address", and the Tier A ipset carries both families.
   it("gives an IPv6 destination its /128", () => {
     expect(sshEgressTargets([{ address: "2001:db8::1" }], classify))
-      .toEqual({ names: [], cidrs: ["2001:db8::1/128"] });
+      .toEqual({ names: [], cidrs: ["2001:db8::1/128"], targets: [{ address: "2001:db8::1", port: 22 }] });
   });
 
   it("is empty for a session with no grant", () => {
-    expect(sshEgressTargets([], classify)).toEqual({ names: [], cidrs: [] });
+    expect(sshEgressTargets([], classify)).toEqual({ names: [], cidrs: [], targets: [] });
   });
 });
 
@@ -494,6 +506,7 @@ describe("sandboxLifelineEgressConfig with SSH grants", () => {
     const cfg = sandboxLifelineEgressConfig(networkOff, "", {
       names: ["prod.example.com"],
       cidrs: ["100.83.12.47/32"],
+      targets: [{ address: "100.83.12.47", port: 22 }],
     })!;
     expect(cfg.userHostsExcluded).toBe(true);
     expect(cfg.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST, "prod.example.com"]);

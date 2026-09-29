@@ -89,11 +89,13 @@ Every row has an overflow menu. In order:
   changed in Settings → Network), **Contained** (default-deny: only the allowlist
   — the LLM API, GitHub, package registries, and hosts the user has added — is
   reachable, with an inline prompt when something new is wanted), or **Open**
-  (unrestricted outbound, no allowlist, no prompts). Changing it restarts the
-  session's container to apply. The same dialog also opens from the composer's
-  permission-mode control, **including on a new session before its first
-  message**, so the user can pick the network mode and grant SSH destinations in
-  advance.
+  (any internet host, no allowlist, no prompts). In both modes a session cannot
+  reach the machine that runs ShipIt, private networks (the LAN) or the tailnet;
+  an SSH destination granted in the same dialog is reachable on its own port
+  only. Changing the mode restarts the session's container to apply. The same
+  dialog also opens from the composer's permission-mode control, **including on
+  a new session before its first message**, so the user can pick the network
+  mode and grant SSH destinations in advance.
 
 **Recover recent rewind**, **Download chat** and **Session settings** are on the
 **open** session's row only, not on every row in the list. An archived row

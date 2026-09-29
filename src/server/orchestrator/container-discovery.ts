@@ -148,6 +148,7 @@ export async function rediscoverContainers(
           bootedLimits,
           // Use actual mounts; workspace configuration may have changed since creation.
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
+          otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
         });
         // Do not restore standby status: the immutable label survives a claim.
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
@@ -209,6 +210,7 @@ export async function adoptRunningContainer(
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
           bootedLimits,
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
+          otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
         });
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         return true;
@@ -379,7 +381,25 @@ export function getSessionByContainerIp(
   ip: string,
 ): SessionContainer | undefined {
   for (const sc of containers.values()) {
-    if (sc.containerIp === ip) return sc;
+    if (sc.containerIp === ip || sc.otherAddresses?.includes(ip)) return sc;
   }
   return undefined;
+}
+
+/**
+ * Every address a container holds, IPv4 and IPv6, except `primary`. An agent's
+ * second address must resolve as that agent, or the guard reads it as the user
+ * (planning#506, docs/319 req 1).
+ */
+export function containerAddresses(
+  networks: Record<string, { IPAddress?: string; GlobalIPv6Address?: string }> | undefined,
+  primary?: string,
+): string[] {
+  const out = new Set<string>();
+  for (const network of Object.values(networks ?? {})) {
+    for (const addr of [network.IPAddress, network.GlobalIPv6Address]) {
+      if (addr && addr !== primary) out.add(addr);
+    }
+  }
+  return [...out];
 }

@@ -50,7 +50,9 @@ The user clears the recorded key with **Forget** in Settings â†’ Integrations â†
 
 ## Reachability
 
-A granted destination is added to this session's egress allowlist at grant time. A destination addressed by IP is added as a CIDR, because an IP literal issues no DNS lookup and so cannot be admitted by name. A host that is **not** granted is unreachable even if you know its address.
+A granted destination is added to this session's egress allowlist at grant time. A destination addressed by IP is added as a CIDR, because an IP literal issues no DNS lookup and so cannot be admitted by name. In a contained session, a host that is **not** granted is unreachable even if you know its address.
+
+In both Network modes, this session's containers cannot reach the machine that runs ShipIt, private networks (the LAN) or the tailnet. A granted destination is the one exception, and only on its configured SSH port: a LAN or tailnet machine, or the ShipIt host itself, granted here answers on that port and on nothing else. A web server or database on the same machine stays unreachable. For a destination addressed by name, the exception covers the address the name had when the grant was applied; a changed address is covered from the next grant change or container start.
 
 A **network-off sandbox** is the one deliberate exception to "no user host widens the policy": SSH grants are composed into its effective policy explicitly, so a sandbox with Network access off can still reach exactly its granted destinations and nothing else new.
 

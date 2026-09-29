@@ -1,6 +1,6 @@
 # 319 — Checklist
 
-- [ ] Open questions in `requirements.md` answered and recorded
+- [x] Open questions in `requirements.md` answered and recorded
 - [ ] Plan reviewed, including one "would anyone notice if this were removed?" round
 - [ ] `init-firewall.sh`: `EGRESS_POLICY`, `SHIPIT-LOCAL` / `SHIPIT-SSH` / `SHIPIT-BLOCK`, open self-test
 - [ ] `allow-subnet.sh`: gateways dropped at the top of `SHIPIT-LOCAL`, subnets appended
@@ -12,11 +12,12 @@
 - [ ] Agent container: firewall in both modes; open policy runs no resolver or proxy
 - [ ] Compose: internal topology and open-policy containment when the block is active; `NET_ADMIN` and reserved labels refused
 - [ ] Plugin holder in both modes
-- [ ] Docker proxy containers (per the answer to the second open question)
+- [ ] Docker proxy containers: internal networks, restart policies and egress-network joins refused, containment on start and restart, agent joins the network
 - [ ] Origin index lists agent containers' addresses (planning#506)
 - [ ] Startup probe, own-binding refusal, Docker Desktop refusal
 - [ ] `deployment/local/lib.sh`, `deployment/local/tailscale.sh`, `deployment/vps/tailscale.sh`
 - [ ] UI copy for open mode
+- [ ] Public-install text (req 7) and `project.allowDockerSocket` description (req 9)
 - [ ] `src/server/shipit-docs/` and wiki updated
 - [ ] Implementation reviewed against every requirement
 - [ ] Deployment checks run on the test machine; test items removed

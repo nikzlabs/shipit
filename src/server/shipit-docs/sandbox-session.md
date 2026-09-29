@@ -62,6 +62,13 @@ A sandbox grants up to three independent capabilities:
   casing but the canonical one (`"privileged"` for `Privileged`) with *Ambiguous
   field casing* — the Docker CLI, Compose and the SDKs always spell them
   canonically, so that 403 means a hand-written API call, not a broken tool.
+  Containers you start belong to this session, so, like this one, they cannot
+  reach this machine, private networks or the tailnet, in either Network mode.
+  For the same reason the proxy refuses a restart policy (a restart Docker does
+  on its own would skip the container's network rules), and a network you
+  create is internal. Reach your containers by name on the session's Docker
+  network, not through a port published on the host: a host port is on this
+  machine, so it is blocked.
 - **Network access** (`network`, default **on**). Controls how contained egress
   is. **On** = the standard allowlist every session runs under (LLM API, GitHub,
   package registries, plus user-added hosts). **Off** = **no internet** — egress
@@ -70,6 +77,10 @@ A sandbox grants up to three independent capabilities:
   granted (so push still works). "Off" only ever tightens; it is never an
   air-gap (the lifeline is irreducible). Egress containment is enforced by default;
   where it's been disabled or the host can't enforce it, the toggle is inert.
+  Either way, this machine, private networks and the tailnet stay out of reach
+  (except a granted SSH destination, on its port only — [ssh.md](ssh.md)) on any
+  host that can run the egress sidecar; see Network in
+  [environment.md](environment.md).
 
 ## Pull requests
 

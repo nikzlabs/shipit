@@ -118,6 +118,57 @@ describe("ServiceManager", () => {
     await mgr.stop();
   });
 
+  describe("an open firewall policy (docs/319-api-reach-through-host)", () => {
+    function openManager(dir: string, internal: boolean[] = []) {
+      return testServiceManager({
+        sessionId: "test-session",
+        workspaceDir: dir,
+        serviceEnvDir: serviceEnvOf(dir),
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+        composeRunner: async () => undefined,
+        composeQuery: emptyComposeQuery,
+        pollIntervalMs: 0,
+        containServicesFn: async () => undefined,
+        firewallPolicy: "open",
+        ensureSessionNetworkModeFn: async (value) => { internal.push(value); },
+      });
+    }
+
+    it("isolates the services without the contained-only checks and settings", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    user: \"0\"\n    x-shipit-preview: manual\n");
+      const internal: boolean[] = [];
+      const mgr = openManager(dir, internal);
+      await mgr.start();
+      await mgr.startService("web");
+      const override = recordedOverride(dir, "web");
+      expect(internal).toEqual([true]);
+      expect(override).toContain("internal: true");
+      expect(override).toContain("restart: no");
+      expect(override).not.toContain("SETUID");
+      await mgr.stop();
+    });
+
+    it("refuses a service that adds NET_ADMIN", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    cap_add: [NET_ADMIN]\n    x-shipit-preview: manual\n");
+      const mgr = openManager(dir);
+      await mgr.start();
+      await expect(mgr.startService("web")).rejects.toThrow("NET_ADMIN could remove that");
+      await mgr.stop();
+    });
+
+    it("reports a change of policy alone as a containment change", () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n");
+      const mgr = openManager(dir);
+      const contain = async () => undefined;
+      expect(mgr.updateEgressContainment(contain, false, false, undefined, "open")).toBe(false);
+      expect(mgr.updateEgressContainment(contain, false, false, undefined, "contained")).toBe(true);
+      expect(mgr.updateEgressContainment(contain, false, false)).toBe(false);
+    });
+  });
+
   it("rejects invalid compose files during start", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n    privileged: true\n");

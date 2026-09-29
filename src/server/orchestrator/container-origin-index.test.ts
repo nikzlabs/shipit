@@ -169,6 +169,30 @@ describe("container-origin index", () => {
     expect(Date.now() - startedAt).toBeLessThan(4_000);
   });
 
+  // planning#506, docs/319 req 1: an agent's second address is a session container, never the user.
+  it("resolves an agent container's other addresses to its session", async () => {
+    const agent = {
+      Id: "agent",
+      Labels: { "shipit-session-id": SESSION },
+      NetworkSettings: {
+        Networks: {
+          "shipit-test": { IPAddress: "172.18.0.5" },
+          [`shipit-session-${SESSION}`]: { IPAddress: "172.31.0.2", GlobalIPv6Address: "fd00:31::2" },
+        },
+      },
+    };
+    const { docker, state } = createFakeDocker([]);
+    docker.listContainers = vi.fn(async (args?: { all?: boolean; filters?: { label?: string[] } }) => {
+      if (args?.all) return [];
+      if (state.fail) throw new Error("dockerd unavailable");
+      return args?.filters?.label?.[0] === "shipit-session-id" ? [agent] : [];
+    }) as never;
+    manager = createManager(docker);
+
+    expect(await manager.getSessionByAnyContainerIp("172.31.0.2")).toEqual({ sessionId: SESSION });
+    expect(await manager.getSessionByAnyContainerIp("fd00:31::2")).toEqual({ sessionId: SESSION });
+  });
+
   it("does not re-ask a failing daemon on every request", async () => {
     const { docker, state, listContainers } = createFakeDocker([]);
     state.fail = true;
@@ -178,6 +202,7 @@ describe("container-origin index", () => {
       await expect(manager.getSessionByAnyContainerIp(BROWSER_IP)).rejects.toThrow(/unavailable/);
     }
 
-    expect(listContainers.mock.calls.length).toBe(1);
+    // One refresh lists child containers and agent containers.
+    expect(listContainers.mock.calls.length).toBe(2);
   });
 });

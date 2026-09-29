@@ -12,12 +12,17 @@ vi.mock("./egress-firewall-install.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, allowEgressToSubnets, installEgressFirewall };
 });
+vi.mock("./local-block.js", async (importActual) => {
+  const actual = (await importActual()) as Record<string, unknown>;
+  return { ...actual, hostAddresses: vi.fn(async () => ["203.0.113.7"]) };
+});
 vi.mock("./compose-service-egress.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, containComposeServices };
 });
 
 import { SessionContainerManager } from "./session-container.js";
+import { _setLocalBlockForTest } from "./local-block.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 
 const SESSION_ID = "sess-reload-1";
@@ -255,5 +260,51 @@ describe("reloadEgress — SSH CIDR grants", () => {
     await manager.reloadEgress(SESSION_ID);
     expect(allowEgressToSubnets).not.toHaveBeenCalled();
     expect(installEgressFirewall).not.toHaveBeenCalled();
+  });
+});
+
+/** docs/319 req 2, req 5 — open sessions get the block, and SSH changes reach it too. */
+describe("reloadEgress — open policy with the local block", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+    process.env.SESSION_EGRESS_ENFORCE = "1";
+    process.env.SESSION_EGRESS_SIDECAR_IMAGE = "shipit-egress-sidecar:test";
+    _setLocalBlockForTest(true);
+    reloadEgressSidecars.mockClear();
+    containComposeServices.mockClear();
+    allowEgressToSubnets.mockClear();
+    installEgressFirewall.mockClear();
+  });
+  afterEach(() => {
+    process.env = savedEnv;
+    _setLocalBlockForTest(false);
+  });
+
+  it("reinstalls the open firewall with the new SSH destination, and reloads no resolver", async () => {
+    let targets: { address: string; port: number }[] = [];
+    const manager = await buildManager(() => ({ contained: false, extraHosts: [], sshTargets: [...targets] }));
+    await expect(manager.reloadEgress(SESSION_ID)).resolves.toBe(false);
+    expect(installEgressFirewall).not.toHaveBeenCalled();
+
+    targets = [{ address: "10.0.0.5", port: 2222 }];
+    await expect(manager.reloadEgress(SESSION_ID)).resolves.toBe(true);
+    expect(installEgressFirewall).toHaveBeenCalledTimes(1);
+    expect(installEgressFirewall.mock.calls[0][1]).toMatchObject({
+      policy: "open",
+      inputs: { hosts: [], cidrs: [] },
+      sshTargets: [{ address: "10.0.0.5", port: 2222 }],
+      hostAddresses: ["203.0.113.7"],
+    });
+    expect(reloadEgressSidecars).not.toHaveBeenCalled();
+  });
+
+  it("also applies the block when egress limits are off for the whole install", async () => {
+    process.env.SESSION_EGRESS_ENFORCE = "0";
+    const manager = await buildManager({
+      contained: true, extraHosts: [], sshTargets: [{ address: "nas.example", port: 22 }],
+    });
+    await manager.reloadEgress(SESSION_ID);
+    expect(installEgressFirewall.mock.calls[0]?.[1]).toMatchObject({ policy: "open" });
   });
 });

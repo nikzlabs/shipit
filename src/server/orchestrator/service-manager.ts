@@ -55,6 +55,7 @@ import {
   type DockerSecretsConfig,
 } from "./service-secrets-resolver.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
+import type { EgressPolicy } from "./egress-firewall-install.js";
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { serializeStackOp } from "./stack-op-queue.js";
@@ -209,6 +210,8 @@ export interface ServiceManagerOptions {
   networkJoinFn?: (networkName: string) => Promise<void>;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
+  /** What `containServicesFn` installs; omitted means contained. */
+  firewallPolicy?: EgressPolicy;
   /** Use the containment sidecar's loopback DNS upstream. */
   containServiceDns?: boolean;
   containServiceProxy?: boolean;
@@ -278,6 +281,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   private containServicesFn?: (serviceNames: string[]) => Promise<void>;
+  private firewallPolicy: EgressPolicy;
   private containServiceDns: boolean;
   private containServiceProxy: boolean;
   private readonly ensureSessionNetworkModeFn?: (internal: boolean) => Promise<void>;
@@ -380,6 +384,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
+    this.firewallPolicy = opts.firewallPolicy ?? "contained";
     this.containServiceDns = opts.containServiceDns ?? false;
     this.containServiceProxy = opts.containServiceProxy ?? false;
     this.ensureSessionNetworkModeFn = opts.ensureSessionNetworkModeFn;
@@ -496,15 +501,22 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     containServiceDns: boolean,
     containServiceProxy: boolean,
     prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>,
+    firewallPolicy: EgressPolicy = "contained",
   ): boolean {
+    const wasContained = this.egressContained();
     const changed = Boolean(this.containServicesFn) !== Boolean(containServicesFn)
       || this.containServiceDns !== containServiceDns
       || this.containServiceProxy !== containServiceProxy;
     this.containServicesFn = containServicesFn;
+    this.firewallPolicy = firewallPolicy;
     this.containServiceDns = containServiceDns;
     this.containServiceProxy = containServiceProxy;
     this.prepareContainedStartFn = prepareContainedStartFn;
-    return changed;
+    return changed || wasContained !== this.egressContained();
+  }
+
+  private egressContained(): boolean {
+    return Boolean(this.containServicesFn) && this.firewallPolicy === "contained";
   }
 
   private handleNonZeroExit(name: string, exitCode: number, oomKilled?: boolean): void {
@@ -1294,7 +1306,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       workspaceSubpath: this.workspaceSubpath,
       ...(workspaceDevice ? { workspaceDevice } : {}),
       stackName: this.stackName,
-      ...(this.containServicesFn ? { containEgress: true } : {}),
+      ...(this.egressContained() ? { containEgress: true } : {}),
+      ...(this.containServicesFn ? { isolateNetwork: true } : {}),
       ...(this.containServiceDns ? { containDns: true } : {}),
       ...(this.containServiceProxy ? { containProxy: true } : {}),
       ...(builtServices.length > 0 ? { builtServices } : {}),
@@ -1309,7 +1322,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     return {
       dockerSocket: this.composeConfig.dockerSocket,
       dockerSocketGrant: this.dockerSocketGrant(),
-      containEgress: Boolean(this.containServicesFn),
+      containEgress: this.egressContained(),
+      isolateNetwork: Boolean(this.containServicesFn),
       trustedOpsProxy: this.opsSession,
     };
   }

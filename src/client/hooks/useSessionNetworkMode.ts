@@ -62,7 +62,7 @@ export function resolvesToContained(mode: NetworkMode, globalEnabled: boolean): 
  */
 export function enforcementWarning(status: EgressEnforcementStatus): string | null {
   if (status === "disabled") {
-    return "Egress enforcement is switched off on this deployment, so a contained session still runs with open network access. An operator can unset SESSION_EGRESS_ENFORCE=0 to restore it.";
+    return "Egress limits are switched off on this deployment, so a contained session still runs as Open: internet access with no allowlist. An operator can unset SESSION_EGRESS_ENFORCE=0 to restore them.";
   }
   if (status === "no-sidecar") {
     return "The egress sidecar is unavailable on this deployment, so contained sessions will not start. An operator needs to configure SESSION_EGRESS_SIDECAR_IMAGE.";

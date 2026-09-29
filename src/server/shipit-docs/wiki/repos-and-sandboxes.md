@@ -120,8 +120,10 @@ Sessions*). It has three tabs.
   the Docker host — every container on it, other sessions' included — so
   `compose.docker-socket: true` in `shipit.yaml` only *asks* for the socket; a
   service gets it only when this toggle is on as well (`/shipit-docs/compose.md`).
-  The same route refuses a session container, so if the work needs it, propose
-  it and let the user accept.
+  It also means ShipIt cannot keep that service away from this machine or
+  private networks, as it does every other container in a session; say so when
+  you propose it. The same route refuses a session container, so if the work
+  needs it, propose it and let the user accept.
 - **Connect your repo** — links to Vercel, Cloudflare Pages and Netlify. These
   are account pages on other people's products, so they open in a new tab; that
   is the narrow exception, not a habit. What ShipIt does on its side is push
@@ -305,7 +307,7 @@ useful and safe. Each names exactly what it widens:
 |---|---|---|
 | **GitHub access** | The credential broker is wired for `git` and `gh`: clone and push **private** repositories, open pull requests, anywhere that account can reach. The token is brokered, never resident in the container | No GitHub token. Public HTTPS clones may still work; pushing to the user's repositories does not. This is **not** a network seal |
 | **Allow merging PRs** | The agent may run `gh pr merge` — gated on green checks, never a force-merge | The agent cannot merge. This is a *sub-grant* of GitHub access: it is unavailable, and is cleared, whenever GitHub access is off |
-| **Docker access** | `DOCKER_HOST` points at a **session-scoped** Docker proxy — only this session's containers, networks and volumes are visible. No host socket, no `--privileged`. A bind mount has to resolve inside the workspace, and a container that binds a host path can carry no restart policy and cannot be `docker restart`ed (stop it and start it instead): each mount has to follow a fresh check of the path | No Docker at all |
+| **Docker access** | `DOCKER_HOST` points at a **session-scoped** Docker proxy — only this session's containers, networks and volumes are visible. No host socket, no `--privileged`. A bind mount has to resolve inside the workspace, and a container that binds a host path cannot be `docker restart`ed (stop it and start it instead): each mount has to follow a fresh check of the path. The containers it starts are the session's own, so in either Network mode they cannot reach the machine that runs ShipIt, private networks or the tailnet. A container that asks for a restart policy is refused, because a restart Docker does on its own would skip its network rules, and a network the agent creates is internal. The agent reaches its containers by name on the session's Docker network, never through a port published on the host | No Docker at all |
 | **Network access** | Whatever every other session gets. Normally the standard allowlist (LLM API, GitHub, package registries, hosts the user added) with an inline prompt for a new host — but this switch does not decide that. A per-session override decides it if one is set, otherwise the workspace's Network setting, and either can be Open | Egress is tightened to the agent's lifeline (the LLM API and ShipIt), plus GitHub if that is granted — **where the install enforces containment at all**. It only ever tightens; it is never an air-gap, and on an install with no enforcement it is inert |
 
 They are **server-authoritative**. An agent cannot read them out of a workspace

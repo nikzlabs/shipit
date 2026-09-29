@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Docker from "dockerode";
 
-const { installFirewall, allowSubnets, launchResolver, launchProxy } = vi.hoisted(() => ({
+const { installFirewall, allowSubnets, launchResolver, launchProxy, buildInputs } = vi.hoisted(() => ({
   installFirewall: vi.fn(async () => undefined),
   allowSubnets: vi.fn(async () => ["172.30.0.0/24"]),
   launchResolver: vi.fn(async () => "resolver-id"),
   launchProxy: vi.fn(async () => "proxy-id"),
+  buildInputs: vi.fn(async () => ({ hosts: ["api.github.com"], cidrs: [] })),
 }));
 
 vi.mock("./egress-firewall-install.js", async (load) => ({
   // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
   ...(await load<typeof import("./egress-firewall-install.js")>()),
-  buildTierAEgressInputs: vi.fn(async () => ({ hosts: ["api.github.com"], cidrs: [] })),
+  buildTierAEgressInputs: buildInputs,
   installEgressFirewall: installFirewall,
   allowEgressToSubnets: allowSubnets,
 }));
@@ -27,11 +28,14 @@ vi.mock("./egress-proxy-install.js", async (load) => ({
 }));
 
 import { containComposeServices } from "./compose-service-egress.js";
+import { NO_TIER_A_INPUTS } from "./egress-firewall-install.js";
 
 function fakeDocker(events: string[]) {
   const container = {
     pause: vi.fn(async () => { events.push("pause"); }),
-    inspect: vi.fn(async () => ({ State: { Paused: false } })),
+    inspect: vi.fn(async (): Promise<{ State: { Paused: boolean; StartedAt?: string } }> => ({
+      State: { Paused: false },
+    })),
     unpause: vi.fn(async () => { events.push("unpause"); }),
     remove: vi.fn(async () => { events.push("remove"); }),
     stop: vi.fn(async () => { events.push("stop"); }),
@@ -39,7 +43,10 @@ function fakeDocker(events: string[]) {
   const network = {
     connect: vi.fn(async () => { events.push("connect"); }),
     disconnect: vi.fn(async () => undefined),
-    inspect: vi.fn(async () => ({ Internal: true, IPAM: { Config: [{ Subnet: "172.30.0.0/24" }] } })),
+    inspect: vi.fn(async (): Promise<{ Internal: boolean; IPAM: { Config: { Subnet: string; Gateway?: string }[] } }> => ({
+      Internal: true,
+      IPAM: { Config: [{ Subnet: "172.30.0.0/24" }] },
+    })),
   };
   const docker = {
     version: vi.fn(async () => ({ ApiVersion: "1.48" })),
@@ -49,6 +56,7 @@ function fakeDocker(events: string[]) {
       Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
     }]),
     listNetworks: vi.fn(async () => [{ Name: "shipit-egress-session-1" }]),
+    createNetwork: vi.fn(async () => undefined),
     getNetwork: vi.fn(() => network),
     getContainer: vi.fn(() => container),
   } as unknown as Docker;
@@ -123,19 +131,129 @@ describe("containComposeServices", () => {
     expect(container.remove).toHaveBeenCalledWith({ force: true });
   });
 
-  it("does nothing for an open session", async () => {
+  it("gives an open session the open firewall with no allowlist, resolver or proxy", async () => {
+    const events: string[] = [];
+    const { docker } = fakeDocker(events);
+    installFirewall.mockImplementationOnce(async () => { events.push("firewall"); });
+    await containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: false, extraHosts: ["packages.example"] },
+      serviceNames: ["web"],
+      dnsEnabled: true,
+      proxyEnabled: true,
+    });
+    expect(events).toEqual(["pause", "connect", "firewall", "unpause"]);
+    expect(installFirewall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      policy: "open",
+      inputs: NO_TIER_A_INPUTS,
+      resolverUid: undefined,
+      proxyUid: undefined,
+      proxyPort: undefined,
+    }));
+    expect(buildInputs).not.toHaveBeenCalled();
+    expect(launchResolver).not.toHaveBeenCalled();
+    expect(launchProxy).not.toHaveBeenCalled();
+  });
+
+  it("lets an explicit open policy override a contained config", async () => {
     const events: string[] = [];
     const { docker } = fakeDocker(events);
     await containComposeServices({
       docker,
       sessionId: "session-1",
       sidecarImage: "egress:test",
-      config: { contained: false, extraHosts: [] },
+      config: { contained: true, extraHosts: [] },
       serviceNames: ["web"],
+      policy: "open",
       dnsEnabled: true,
       proxyEnabled: true,
     });
-    expect(events).toEqual([]);
+    expect(installFirewall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ policy: "open" }));
+    expect(launchResolver).not.toHaveBeenCalled();
+    expect(launchProxy).not.toHaveBeenCalled();
+  });
+
+  it.each(["contained", "open"] as const)(
+    "passes the host's addresses and both networks' gateways under the %s policy",
+    async (policy) => {
+      const events: string[] = [];
+      const { docker, network } = fakeDocker(events);
+      const egress = {
+        ...network,
+        inspect: vi.fn(async () => ({ Internal: false, IPAM: { Config: [{ Subnet: "172.31.0.0/24" }] } })),
+      };
+      vi.mocked(docker.getNetwork).mockImplementation((name) => (
+        name === "shipit-egress-session-1" ? egress : network
+      ) as never);
+      network.inspect.mockResolvedValue({
+        Internal: true,
+        IPAM: { Config: [{ Subnet: "172.30.0.0/24", Gateway: "172.30.0.254" }] },
+      });
+
+      await containComposeServices({
+        docker,
+        sessionId: "session-1",
+        sidecarImage: "egress:test",
+        config: { contained: policy === "contained", extraHosts: [] },
+        serviceNames: ["web"],
+        hostAddresses: ["203.0.113.7"],
+        dnsEnabled: false,
+        proxyEnabled: false,
+      });
+
+      expect(installFirewall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        policy,
+        hostAddresses: ["203.0.113.7"],
+      }));
+      expect(allowSubnets).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        subnets: ["172.30.0.0/24", "172.31.0.0/24"],
+        gateways: ["172.30.0.254", "172.31.0.1"],
+      }));
+    },
+  );
+
+  it("reinstalls a service's firewall when the policy changes", async () => {
+    const events: string[] = [];
+    const { docker, container } = fakeDocker(events);
+    container.inspect.mockResolvedValue({ State: { Paused: false, StartedAt: "2026-09-29T00:00:00Z" } });
+    const run = (policy: "contained" | "open") => containComposeServices({
+      docker,
+      sessionId: "session-policy",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      policy,
+      dnsEnabled: false,
+      proxyEnabled: false,
+    });
+
+    await run("open");
+    await run("open");
+    expect(installFirewall).toHaveBeenCalledTimes(1);
+    await run("contained");
+    expect(installFirewall).toHaveBeenCalledTimes(2);
+    expect(installFirewall).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      policy: "contained",
+    }));
+  });
+
+  it("refuses an open-policy service whose session network is not internal", async () => {
+    const events: string[] = [];
+    const { docker, network, container } = fakeDocker(events);
+    network.inspect.mockResolvedValue({ Internal: false, IPAM: { Config: [] } });
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: false, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).rejects.toThrow("is not internal");
+    expect(container.stop).toHaveBeenCalledWith({ t: 0 });
+    expect(installFirewall).not.toHaveBeenCalled();
   });
 
   it("tolerates an existing egress-network endpoint and still reinstalls containment", async () => {

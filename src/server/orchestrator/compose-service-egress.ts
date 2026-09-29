@@ -6,8 +6,10 @@ import {
   buildTierAEgressInputs,
   installEgressFirewall,
   allowEgressToSubnets,
+  NO_TIER_A_INPUTS,
+  type EgressPolicy,
 } from "./egress-firewall-install.js";
-import { extractNetworkSubnets } from "./egress-firewall.js";
+import { extractNetworkGateways, extractNetworkSubnets } from "./egress-firewall.js";
 import {
   buildResolverConfigB64,
   launchEgressResolver,
@@ -42,6 +44,10 @@ export interface ContainComposeServicesOptions {
   sidecarImage: string;
   config: ResolvedEgressConfig;
   serviceNames: string[];
+  /** Omitted follows `config.contained`. Open runs no resolver or proxy. */
+  policy?: EgressPolicy;
+  /** The Docker host's own addresses (`local-block.ts`). */
+  hostAddresses?: readonly string[];
   dnsEnabled: boolean;
   proxyEnabled: boolean;
   labels?: Record<string, string>;
@@ -60,7 +66,7 @@ function apiVersionAtLeast(actual: string, minimumMajor: number, minimumMinor: n
     && (major > minimumMajor || (major === minimumMajor && minor >= minimumMinor));
 }
 
-async function ensureEgressNetwork(
+export async function ensureEgressNetwork(
   docker: Docker,
   sessionId: string,
   labels: Record<string, string>,
@@ -120,7 +126,10 @@ async function reapServiceSidecars(
 }
 
 export async function containComposeServices(opts: ContainComposeServicesOptions): Promise<void> {
-  if (!opts.config.contained) return;
+  const policy = opts.policy ?? (opts.config.contained ? "contained" : "open");
+  const contained = policy === "contained";
+  const dnsEnabled = contained && opts.dnsEnabled;
+  const proxyEnabled = contained && opts.proxyEnabled;
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
   const containers = await opts.docker.listContainers({ all: true, filters: { label: [parentLabel] } });
   const allServiceContainers = containers.filter((entry) =>
@@ -186,20 +195,24 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   const allowedLocalSubnets = [
     ...new Set([...extractNetworkSubnets(sessionNetworkInfo), ...extractNetworkSubnets(egressNetworkInfo)]),
   ];
-  const inputs = await buildTierAEgressInputs();
+  const localGateways = [
+    ...new Set([...extractNetworkGateways(sessionNetworkInfo), ...extractNetworkGateways(egressNetworkInfo)]),
+  ];
+  const inputs = contained ? await buildTierAEgressInputs() : NO_TIER_A_INPUTS;
   const discoveredServiceNames = serviceContainers
     .map((entry) => entry.Labels?.["shipit-service-name"])
     .filter((name): name is string => Boolean(name));
   const serviceNames = [...new Set([...opts.serviceNames, ...discoveredServiceNames])];
   const trustedInternalDomains = [opts.orchestratorHost ?? os.hostname()];
   const policyHash = createHash("sha256").update(JSON.stringify({
+    policy,
     serviceNames: [...serviceNames].sort(),
     trustedInternalDomains: [...trustedInternalDomains].sort(),
     extraHosts: [...opts.config.extraHosts].sort(),
     base: opts.config.base,
     identityRules: opts.config.identityRules,
-    dns: opts.dnsEnabled,
-    proxy: opts.proxyEnabled,
+    dns: dnsEnabled,
+    proxy: proxyEnabled,
   })).digest("hex").slice(0, 16);
 
   const failures: Error[] = [];
@@ -230,9 +243,9 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
           && entry.Labels?.[COMPOSE_EGRESS_POLICY_LABEL] === policyHash
           && (entry.Created ?? 0) >= serviceStartedAt
       );
-      const hasCurrentResolver = !opts.dnsEnabled
+      const hasCurrentResolver = !dnsEnabled
         || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_RESOLVER_LABEL]));
-      const hasCurrentProxy = !opts.proxyEnabled
+      const hasCurrentProxy = !proxyEnabled
         || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_PROXY_LABEL]));
       const hasCurrentFirewall = containedServiceState.get(stateKey) === `${startedAt}:${policyHash}`;
       if (!opts.refresh && Number.isFinite(serviceStartedAt) && hasCurrentFirewall
@@ -263,9 +276,11 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         agentContainerId: info.Id,
         sidecarImage: opts.sidecarImage,
         inputs,
-        resolverUid: opts.dnsEnabled ? EGRESS_RESOLVER_UID : undefined,
-        proxyUid: opts.proxyEnabled ? EGRESS_PROXY_UID : undefined,
-        proxyPort: opts.proxyEnabled ? EGRESS_PROXY_PORT : undefined,
+        policy,
+        hostAddresses: opts.hostAddresses,
+        resolverUid: dnsEnabled ? EGRESS_RESOLVER_UID : undefined,
+        proxyUid: proxyEnabled ? EGRESS_PROXY_UID : undefined,
+        proxyPort: proxyEnabled ? EGRESS_PROXY_PORT : undefined,
         labels: sidecarLabels,
       });
       // The firewall installer allows only the egress bridge; restore session-local routes.
@@ -273,9 +288,10 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         agentContainerId: info.Id,
         sidecarImage: opts.sidecarImage,
         subnets: allowedLocalSubnets,
+        gateways: localGateways,
         labels: sidecarLabels,
       });
-      if (opts.dnsEnabled) {
+      if (dnsEnabled) {
         await launchEgressResolver(opts.docker, {
           agentContainerId: info.Id,
           sidecarImage: opts.sidecarImage,
@@ -288,7 +304,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
           labels: { ...sidecarLabels, [EGRESS_RESOLVER_LABEL]: opts.sessionId },
         });
       }
-      if (opts.proxyEnabled) {
+      if (proxyEnabled) {
         const host = opts.orchestratorHost ?? os.hostname();
         const port = opts.orchestratorPort ?? process.env.PORT ?? "3000";
         await launchEgressProxy(opts.docker, {

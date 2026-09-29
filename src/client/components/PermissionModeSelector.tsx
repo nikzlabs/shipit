@@ -323,7 +323,7 @@ export function PermissionModeSelector({
                           : "Follow the workspace setting."
                         : m === "contained"
                           ? "Deny by default; only allowlisted hosts are reachable."
-                          : "Unrestricted outbound network access."}
+                          : "Internet access with no allowlist; not this machine, private networks or the tailnet."}
                     </p>
                   </div>
                 </DropdownMenuItem>

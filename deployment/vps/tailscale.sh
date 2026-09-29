@@ -16,6 +16,7 @@ BACKEND_PORT=4123
 FALLBACK_PORT=4123
 FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
 FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
+SIDECAR_IMAGE="shipit-egress-sidecar:prod"
 # Persist the advertised preview host across updates.
 PREVIEW_HOST_FILE="/opt/shipit/.tailnet-preview-host"
 
@@ -36,6 +37,31 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 echo "==> ShipIt — Tailscale access (app + previews; any Cloudflare path is unchanged)"
+
+# --- Local block (docs/319-api-reach-through-host req 6) --------------------
+# A host that cannot keep sessions away from this machine gets no forwarder.
+echo "==> Checking that this host can keep sessions away from this machine..."
+if ! docker image inspect "$SIDECAR_IMAGE" >/dev/null 2>&1; then
+  echo "Error: ShipIt's egress sidecar image ($SIDECAR_IMAGE) is not built yet." >&2
+  echo "       Run bash /opt/shipit/deployment/vps/deploy.sh first, then re-run this script." >&2
+  exit 1
+fi
+if ! docker run --rm --network none --cap-add NET_ADMIN \
+  --entrypoint /usr/local/bin/probe-firewall.sh "$SIDECAR_IMAGE" >/dev/null 2>&1; then
+  echo "" >&2
+  echo "Error: tailnet access was not added. ShipIt's egress sidecar cannot run on" >&2
+  echo "       this host, so ShipIt cannot keep sessions away from this machine," >&2
+  echo "       private networks and the tailnet, and it stays on 127.0.0.1:${BACKEND_PORT} only." >&2
+  echo "       Rootless Docker and locked-down kernels are the usual reason. Re-run this" >&2
+  echo "       script on a host where the egress sidecar can run. Cloudflare Tunnel with" >&2
+  echo "       Access and an SSH tunnel keep working." >&2
+  if systemctl is-enabled --quiet shipit-tailscale-preview.service 2>/dev/null \
+    || systemctl is-active --quiet shipit-tailscale-preview.service 2>/dev/null; then
+    systemctl disable --now shipit-tailscale-preview.service 2>/dev/null || true
+    echo "       The tailnet forwarder installed earlier has been stopped and disabled." >&2
+  fi
+  exit 1
+fi
 
 # --- Install Tailscale ------------------------------------------------------
 if command -v tailscale &>/dev/null; then
@@ -171,6 +197,7 @@ set -uo pipefail
 PREVIEW_HOST_FILE="${PREVIEW_HOST_FILE}"
 LISTEN_PORT="${LISTEN_PORT}"
 BACKEND_PORT="${BACKEND_PORT}"
+SIDECAR_IMAGE="${SIDECAR_IMAGE}"
 
 mkdir -p "\$(dirname "\$PREVIEW_HOST_FILE")"
 
@@ -186,6 +213,13 @@ kill_socat() {
 # Exit after signal cleanup instead of returning to the loop.
 trap 'kill_socat; exit 0' INT TERM
 trap kill_socat EXIT
+
+# Forward only while this host can keep sessions away from it (docs/319-api-reach-through-host req 6).
+until docker run --rm --network none --cap-add NET_ADMIN \\
+  --entrypoint /usr/local/bin/probe-firewall.sh "\$SIDECAR_IMAGE" >/dev/null 2>&1; do
+  echo "Not forwarding: the egress sidecar check did not pass (the sidecar cannot run on this host, or Docker is not ready), so ShipIt cannot keep sessions away from this machine, private networks and the tailnet. Checking again in 60 s."
+  sleep 60
+done
 
 prev_ip=""
 while true; do
