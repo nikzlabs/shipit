@@ -20,6 +20,12 @@ The API container guard (`api-container-guard.ts`, docs/201-container-api-trust-
 
 6. On a host that cannot enforce requirement 4 (for example rootless Docker, or a locked-down kernel), ShipIt is reachable only on loopback: it refuses to listen on any other address, and its setup does not install a forwarder to it. Access from the same machine, through Cloudflare Tunnel with Access, and through an SSH tunnel keeps working.
 
+## Open questions
+
+- An operator can make ShipIt public with no sign-in: the Cloudflare setup's `SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1`, or a bind address that the internet can reach. Then anyone on the internet gets the user's access, and so does a request from a session that goes out to the internet and comes back (requirement 1). Does ShipIt keep this opt-out as the operator's explicit choice and say that it sets requirement 1 aside, or remove the opt-out?
+- In a session where the user turned on Docker access, the agent starts containers through ShipIt's Docker proxy. Today those containers get no firewall in either mode. Does ShipIt contain them like Compose services (requirements 1 and 4), or does the user's Docker-access grant accept that they can reach the machine?
+- A Compose service that the user gives the Docker socket (docs/318-compose-remaining-escapes requirement 8) can control the machine, so no firewall can hold for it. Is that part of what the user accepts with the grant (ShipIt says so where it is turned on), or does ShipIt refuse the socket?
+
 ## Resolved questions
 
 - 2026-09-29 — How does ShipIt tell the user's own requests apart from a session container's request that arrives on the same host address? The user rejected a one-time browser proof and a host network rule, and asked for networking options. From the eight options listed with the Astra role, the user chose: session containers cannot reach the host or private and tailnet networks in either egress mode, enforced by the existing per-container egress sidecar. The user asked that granted SSH destinations stay reachable. Requirements 4 and 5 were added.
