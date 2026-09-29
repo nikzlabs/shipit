@@ -1576,7 +1576,8 @@ describe("settings that reach outside the service (docs/318 req 7)", () => {
     });
 
     it("including the ops proxy in an ops session", () => {
-      const p = file(`${OPS_TEMPLATE.files["docker-compose.yml"]!}\n  web:\n    image: node:20\n    pid: service:docker-socket-proxy\n`);
+      // An explicit user keeps the contained-user rule from answering first where no fill-in UID exists.
+      const p = file(`${OPS_TEMPLATE.files["docker-compose.yml"]!}\n  web:\n    image: node:20\n    user: "1000"\n    pid: service:docker-socket-proxy\n`);
       for (const containEgress of bothModes) {
         expect(() => parseComposeFile(p, { dockerSocket: true, containEgress, trustedOpsProxy: true }))
           .toThrow("`pid: service:docker-socket-proxy` is not allowed");

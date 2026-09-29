@@ -292,9 +292,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       ? { serviceEnvHostDir: process.env.SHIPIT_SERVICE_ENV_HOST_DIR }
       : {}),
   };
-  const projectComposeAccess = (sessionId: string, workspaceDir: string) => projectComposeAccessFor(
+  const projectComposeAccess = deps.projectComposeAccess ?? ((sessionId: string, workspaceDir: string) => projectComposeAccessFor(
     sessionId, workspaceDir, { containerManager, serviceEnvDir, composeHelperConfig, sessionManager, repoStore },
-  );
+  ));
 
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 

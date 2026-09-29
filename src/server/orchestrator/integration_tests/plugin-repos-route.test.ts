@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
+import { localProjectComposeAccess } from "../compose-test-helpers.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import { GitManager } from "../../shared/git.js";
@@ -73,6 +74,8 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
       databaseManager: dbManager,
       workspaceDir: tmpDir,
       serveStatic: false,
+      // No Docker here: read the project file straight from the workspace.
+      projectComposeAccess: (_sessionId, dir) => localProjectComposeAccess(dir),
     });
 
     sessionManager.track("sess", "Session", workspaceDir);

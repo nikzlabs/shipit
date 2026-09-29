@@ -31,6 +31,7 @@ import { initGlobalGitConfig, pinGitMessageLocale } from "./git-config.js";
 import { configureLfsRemoteCredentialResolver } from "./git-lfs.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
+import type { ProjectComposeAccess } from "./services/plugin-services.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
@@ -102,6 +103,8 @@ export interface AppDeps {
   runtimeMode?: RuntimeMode;
   mcpOAuthFetchImpl?: typeof fetch;
   trackerFetchImpl?: typeof fetch;
+  /** Test seam: plugin readers' project-file access; production reads through the confined helper. */
+  projectComposeAccess?: (sessionId: string, workspaceDir: string) => ProjectComposeAccess;
 }
 
 export interface ManagerSet {
