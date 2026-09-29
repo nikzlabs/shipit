@@ -574,9 +574,10 @@ describe("the harness\u00d7service join", () => {
       "haiku",
       "claude-fable-5-1",
     ]);
-    expect(catalogueModelIdsForHarness("codex").slice(0, 12)).toEqual([
+    expect(catalogueModelIdsForHarness("codex").slice(0, 13)).toEqual([
       "gpt-5.6-sol",
       "gpt-6-astra",
+      "gpt-6.1-sol",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-terra",
@@ -663,6 +664,27 @@ describe("the harness\u00d7service join", () => {
       }
       if (billingMode === "key") expect(reasoningOptionsFor("grok", selection)).toEqual([]);
     }
+  });
+
+  it("offers GPT-6.1 Sol on both OpenAI billing modes without none reasoning or replacing the default", () => {
+    for (const billingMode of ["sub", "key"] as const) {
+      const selection = { serviceId: "openai", billingMode, modelId: "gpt-6.1-sol" };
+      expect(getModel(selection)).toMatchObject({
+        label: "GPT-6.1 Sol", canonicalModelKey: "gpt-6.1-sol", family: "gpt",
+        price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+        styles: ["openai-responses"], contextWindow: { default: 1_050_000 },
+      });
+      expect(visionSupportFor(selection)).toBe("yes");
+      for (const harness of ["codex", "opencode"] as const) {
+        expect(catalogueEntriesForHarness(harness).some((entry) => sameSelection(entry.selection, selection))).toBe(true);
+        expect(resolveStyle(harness, getModel(selection)!, billingMode === "sub" ? "account" : "string"))
+          .toBe("openai-responses");
+        expect(reasoningOptionsFor(harness, selection).map((option) => option.value))
+          .toEqual(["low", "medium", "high", "xhigh", "max"]);
+        expect(selectionHonoursEffort(harness, selection, "none")).toBe(false);
+      }
+    }
+    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-5.6-sol");
   });
 
   it("offers Codex Spark only through the OpenAI subscription", () => {

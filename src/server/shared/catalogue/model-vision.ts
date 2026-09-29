@@ -16,6 +16,8 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
 
   // Verified from OpenAI's model page and Codex 0.153.2 metadata, 2026-09-04.
   "gpt-6-astra": "yes",
+  // OpenAI model page, 2026-09-29.
+  "gpt-6.1-sol": "yes",
   // OpenAI model pages, 2026-09-22.
   "gpt-6-sol": "yes",
   "gpt-6-luna": "yes",

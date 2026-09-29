@@ -35,6 +35,7 @@ export const MODEL_IDENTITIES = {
   fable5: identity("claude-fable-5", "claude"),
   fable51: identity("claude-fable-5.1", "claude"),
 
+  gpt61sol: identity("gpt-6.1-sol", "gpt"),
   gpt6sol: identity("gpt-6-sol", "gpt"),
   gpt6luna: identity("gpt-6-luna", "gpt"),
   gpt6astra: identity("gpt-6-astra", "gpt"),

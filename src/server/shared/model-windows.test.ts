@@ -65,7 +65,8 @@ describe("context windows survive the catalogue derivation unchanged", () => {
     }
   });
 
-  it("uses the published window for GPT-6 Sol and Luna until telemetry reports one", () => {
+  it("uses the published window for GPT-6.1 Sol, GPT-6 Sol and Luna until telemetry reports one", () => {
+    expect(getContextWindowForModel("gpt-6.1-sol")).toBe(1_050_000);
     expect(getContextWindowForModel("gpt-6-sol")).toBe(1_050_000);
     expect(getContextWindowForModel("gpt-6-luna")).toBe(1_050_000);
   });

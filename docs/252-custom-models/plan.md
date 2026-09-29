@@ -205,6 +205,20 @@ requested the latest Claude Code CLI and explicitly approved an age exception:
 2.1.280 is pinned with a regenerated lockfile and an exception expiring
 2026-09-30. No live model response has been verified.
 
+**Catalogue maintenance (2026-09-29): GPT-6.1 Sol.** The user asked for
+GPT-6.1 Sol. The official [model page](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+read on this date, gives `gpt-6.1-sol`, image input, a 1,050,000-token context
+window, and prices of $2 input, $0.10 cached input, $10 output and $2.50 cache
+writes per million tokens. Its reasoning efforts are `low` to `max`; `none` and
+`minimal` are not supported, unlike GPT-6 Sol. Chat Completions has no tool
+calling for it, so the row uses Responses only. It is added under both OpenAI
+billing modes, after GPT-6 Astra. GPT-5.6 Sol stays the default because
+[Codex's model page](https://learn.chatgpt.com/docs/models) excludes Free and Go
+and keeps it off by default for Enterprise and Edu. The pinned Codex 0.155.1
+starts a thread with the new ID without a CLI update; its bundled list does not
+include it. OpenCode's ChatGPT-route filter accepts it. No authenticated
+inference has been verified.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither
