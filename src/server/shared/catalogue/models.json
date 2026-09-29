@@ -7,6 +7,7 @@
           {"id":"claude-opus-5","label":"Opus 5","canonicalModelKey":"claude-opus-5","family":"claude","styles":["anthropic-messages"],"price":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":6.25},"contextWindow":{"default":1000000}},
           {"id":"claude-opus-5-5","label":"Opus 5.5","canonicalModelKey":"claude-opus-5.5","family":"claude","styles":["anthropic-messages"],"price":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":{"default":1000000},"reasoningEfforts":["low","medium","high","xhigh","max"]},
           {"id":"claude-sonnet-5","label":"Sonnet 5","canonicalModelKey":"claude-sonnet-5","family":"claude","styles":["anthropic-messages"],"price":{"input":3,"output":15,"cacheRead":0.3,"cacheWrite":3.75},"contextWindow":{"default":1000000}},
+          {"id":"claude-sonnet-5-5","label":"Sonnet 5.5","canonicalModelKey":"claude-sonnet-5.5","family":"claude","styles":["anthropic-messages"],"price":{"input":2,"output":10,"cacheRead":0.2,"cacheWrite":2.5},"contextWindow":{"default":1000000},"reasoningEfforts":["low","medium","high","xhigh","max"]},
           {"id":"haiku","apiId":"claude-haiku-4-5","label":"Haiku 4.5","canonicalModelKey":"claude-haiku-4.5","family":"claude","styles":["anthropic-messages"],"price":{"input":1,"output":5,"cacheRead":0.1,"cacheWrite":1.25},"contextWindow":{"default":200000}},
           {"id":"claude-fable-5-1","label":"Fable 5.1","canonicalModelKey":"claude-fable-5.1","family":"claude","styles":["anthropic-messages"],"price":{"input":10,"output":50,"cacheRead":0.25,"cacheWrite":12.5},"contextWindow":{"default":1000000}}
         ],
@@ -19,6 +20,7 @@
           {"id":"claude-opus-5","label":"Opus 5","canonicalModelKey":"claude-opus-5","family":"claude","styles":["anthropic-messages"],"price":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":6.25},"contextWindow":{"default":1000000}},
           {"id":"claude-opus-5-5","label":"Opus 5.5","canonicalModelKey":"claude-opus-5.5","family":"claude","styles":["anthropic-messages"],"price":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":{"default":1000000},"reasoningEfforts":["low","medium","high","xhigh","max"]},
           {"id":"claude-sonnet-5","label":"Sonnet 5","canonicalModelKey":"claude-sonnet-5","family":"claude","styles":["anthropic-messages"],"price":{"input":3,"output":15,"cacheRead":0.3,"cacheWrite":3.75},"contextWindow":{"default":1000000}},
+          {"id":"claude-sonnet-5-5","label":"Sonnet 5.5","canonicalModelKey":"claude-sonnet-5.5","family":"claude","styles":["anthropic-messages"],"price":{"input":2,"output":10,"cacheRead":0.2,"cacheWrite":2.5},"contextWindow":{"default":1000000},"reasoningEfforts":["low","medium","high","xhigh","max"]},
           {"id":"haiku","apiId":"claude-haiku-4-5","label":"Haiku 4.5","canonicalModelKey":"claude-haiku-4.5","family":"claude","styles":["anthropic-messages"],"price":{"input":1,"output":5,"cacheRead":0.1,"cacheWrite":1.25},"contextWindow":{"default":200000}},
           {"id":"claude-fable-5-1","label":"Fable 5.1","canonicalModelKey":"claude-fable-5.1","family":"claude","styles":["anthropic-messages"],"price":{"input":10,"output":50,"cacheRead":0.25,"cacheWrite":12.5},"contextWindow":{"default":1000000}}
         ],
@@ -211,6 +213,7 @@
     "claude-opus-5": "yes",
     "claude-opus-5.5": "yes",
     "claude-sonnet-5": "yes",
+    "claude-sonnet-5.5": "yes",
     "claude-haiku-4.5": "yes",
     "claude-fable-5": "yes",
     "claude-fable-5.1": "yes",

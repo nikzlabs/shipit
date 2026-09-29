@@ -33,6 +33,9 @@ table — a phase is checked off when its PR has merged.
 - [x] Add GPT-6.1 Sol under both OpenAI billing modes with published metadata;
       validate the pinned Codex 0.155.1 with the new ID
 
+- [x] Add Sonnet 5.5 under both Anthropic billing modes with published metadata;
+      run a live turn on the pinned Claude Code 2.1.280
+
 ## Phase 2 — Credentials and Settings
 
 - [x] `CredentialRoute` — credential storage keyed by `(service, billing mode)`

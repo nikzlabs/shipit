@@ -219,6 +219,20 @@ starts a thread with the new ID without a CLI update; its bundled list does not
 include it. OpenCode's ChatGPT-route filter accepts it. No authenticated
 inference has been verified.
 
+**Catalogue maintenance (2026-09-29): Sonnet 5.5.** The user asked for Sonnet
+5.5. Anthropic's [model page](https://platform.claude.com/docs/en/models/sonnet-5-5/overview)
+and [pricing](https://platform.claude.com/docs/en/about-claude/pricing), read on
+this date, give `claude-sonnet-5-5`, image input, a 1M context window, efforts
+`low` to `max`, and prices of $2 input, $10 output, $0.20 cache reads and $2.50
+five-minute cache writes per million tokens. The row uses Anthropic Messages
+under both Anthropic billing modes, directly after Sonnet 5. Opus 5 stays the
+default. Gateway availability is not inferred from Anthropic's release. The
+pinned Claude Code 2.1.280 completed a live turn with a tool call on the new
+ID, but its model catalog does not describe it: it logs `unrecognized_model`,
+keeps auto-compact within 200K tokens, and reports a 200K window, which the
+Claude adapter then shows. Claude Code 2.1.284 (published 2026-09-28) is the
+first release whose catalog describes Sonnet 5.5; 2.1.283 does not.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither
