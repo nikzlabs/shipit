@@ -94,7 +94,7 @@ export function ProjectSettings({
                 notes={{
                   "Agent permissions": (
                     <p className="text-xs text-(--color-text-secondary)">
-                      What agents working in this repository may do on their own.
+                      What agents and services working in this repository may do on their own.
                     </p>
                   ),
                 }}

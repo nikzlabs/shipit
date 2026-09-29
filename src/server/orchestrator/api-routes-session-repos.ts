@@ -206,7 +206,7 @@ export async function registerSessionReposRoutes(
 
   app.patch<{
     Params: { url: string };
-    Body: { hidden?: boolean; colorIndex?: number; allowAgentMerge?: boolean };
+    Body: { hidden?: boolean; colorIndex?: number; allowAgentMerge?: boolean; allowDockerSocket?: boolean };
   }>(
     "/api/repos/:url",
     async (request, reply) => {
@@ -214,12 +214,18 @@ export async function registerSessionReposRoutes(
         const url = decodeURIComponent(request.params.url);
         const hidden = request.body?.hidden;
         const colorIndex = request.body?.colorIndex;
-        // Keep this route browser-only so agents cannot grant themselves merge permission.
+        // Keep this route browser-only so agents cannot grant themselves merge
+        // permission or the Docker socket (docs/318-compose-remaining-escapes req 8).
         const allowAgentMerge = request.body?.allowAgentMerge;
-        if (hidden === undefined && colorIndex === undefined && allowAgentMerge === undefined) {
+        const allowDockerSocket = request.body?.allowDockerSocket;
+        if (
+          hidden === undefined && colorIndex === undefined
+          && allowAgentMerge === undefined && allowDockerSocket === undefined
+        ) {
           reply.code(400).send({
             error:
-              "Request body must include a boolean 'hidden', a numeric 'colorIndex', or a boolean 'allowAgentMerge'",
+              "Request body must include a boolean 'hidden', a numeric 'colorIndex', a boolean 'allowAgentMerge', "
+              + "or a boolean 'allowDockerSocket'",
           });
           return;
         }
@@ -229,6 +235,10 @@ export async function registerSessionReposRoutes(
         }
         if (allowAgentMerge !== undefined && typeof allowAgentMerge !== "boolean") {
           reply.code(400).send({ error: "'allowAgentMerge' must be a boolean" });
+          return;
+        }
+        if (allowDockerSocket !== undefined && typeof allowDockerSocket !== "boolean") {
+          reply.code(400).send({ error: "'allowDockerSocket' must be a boolean" });
           return;
         }
         if (colorIndex !== undefined) assertValidRepoColorIndex(colorIndex);
@@ -244,7 +254,7 @@ export async function registerSessionReposRoutes(
         // Revoking agent merging also cancels the merge requests claimed under
         // it, and that cancellation is part of the write rather than of this
         // route (docs/299 → Apply goes through a shared layer).
-        const written = await applyRepoSettings(deps, url, { hidden, colorIndex, allowAgentMerge });
+        const written = await applyRepoSettings(deps, url, { hidden, colorIndex, allowAgentMerge, allowDockerSocket });
         if (written.notFound) {
           reply.code(404).send({ error: "Repository not found" });
           return;

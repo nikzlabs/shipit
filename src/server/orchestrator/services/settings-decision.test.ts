@@ -237,6 +237,31 @@ describe("the lock spans the check and the write", () => {
   });
 });
 
+describe("resolveSettingsProposal — the Docker socket grant (docs/318-compose-remaining-escapes req 8)", () => {
+  it("is written only by the user's accept on the card", async () => {
+    fx.close();
+    fx = proposalFixture({ remoteUrl: "https://github.com/o/a" });
+    const card = await post({ key: "project.allowDockerSocket", valueText: "true", item: undefined });
+    expect(fx.repoStore.allowsDockerSocket("https://github.com/o/a")).toBe(false);
+
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    expect(fx.repoStore.allowsDockerSocket("https://github.com/o/a")).toBe(true);
+    expect(fx.repoStore.allowsAgentMerge("https://github.com/o/a")).toBe(false);
+  });
+
+  it("writes nothing when the card is dismissed", async () => {
+    fx.close();
+    fx = proposalFixture({ remoteUrl: "https://github.com/o/a" });
+    const card = await post({ key: "project.allowDockerSocket", valueText: "true", item: undefined });
+
+    await decide(card.cardId, "dismiss");
+
+    expect(fx.repoStore.allowsDockerSocket("https://github.com/o/a")).toBe(false);
+  });
+});
+
 describe("resolveSettingsProposal — refused", () => {
   it("refuses a card for a repository this session no longer binds", async () => {
     fx.close();

@@ -204,6 +204,84 @@ describe("RepoStore", () => {
     });
   });
 
+  describe("Docker socket grant (docs/318-compose-remaining-escapes req 8)", () => {
+    const URL = "https://github.com/owner/repo.git";
+
+    it("a freshly-added repo does not allow the Docker socket", () => {
+      const repo = store.add(URL);
+      expect(repo.allowDockerSocket).toBe(false);
+      expect(store.allowsDockerSocket(URL)).toBe(false);
+    });
+
+    it("setAllowDockerSocket flips the flag and the read reflects it", () => {
+      store.add(URL);
+      expect(store.setAllowDockerSocket(URL, true)).toBe("ok");
+      expect(store.allowsDockerSocket(URL)).toBe(true);
+      expect(store.get(URL)?.allowDockerSocket).toBe(true);
+      store.setAllowDockerSocket(URL, false);
+      expect(store.allowsDockerSocket(URL)).toBe(false);
+    });
+
+    it("is independent of the agent-merge grant", () => {
+      store.add(URL);
+      store.setAllowAgentMerge(URL, true);
+      expect(store.allowsDockerSocket(URL)).toBe(false);
+      store.setAllowDockerSocket(URL, true);
+      store.setAllowAgentMerge(URL, false);
+      expect(store.allowsDockerSocket(URL)).toBe(true);
+    });
+
+    it("is per-repository", () => {
+      const OTHER = "https://github.com/other/thing.git";
+      store.add(URL);
+      store.add(OTHER);
+      store.setAllowDockerSocket(URL, true);
+      expect(store.allowsDockerSocket(OTHER)).toBe(false);
+    });
+
+    it("can be held by a remote with no GitHub identity", () => {
+      const gitlab = "https://gitlab.com/owner/repo.git";
+      store.add(gitlab);
+      expect(store.setAllowDockerSocket(gitlab, true)).toBe("ok");
+      expect(store.allowsDockerSocket(gitlab)).toBe(true);
+    });
+
+    it("is keyed like trust: case, a trailing .git and a trailing slash collapse; another host does not", () => {
+      store.add(URL);
+      store.setAllowDockerSocket("https://GitHub.com/owner/repo/", true);
+      expect(store.allowsDockerSocket(URL)).toBe(true);
+      expect(store.allowsDockerSocket("https://github.com/owner/repo")).toBe(true);
+      expect(store.allowsDockerSocket("https://github.com.evil.example/owner/repo")).toBe(false);
+    });
+
+    it("an unknown remote is not granted, and setting one writes nothing", () => {
+      expect(store.allowsDockerSocket("https://github.com/never/added.git")).toBe(false);
+      expect(store.setAllowDockerSocket("https://github.com/never/added.git", true)).toBe("not-found");
+      expect(store.add("https://github.com/never/added.git").allowDockerSocket).toBe(false);
+    });
+
+    it("survives closing and reopening the database file", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-store-socket-"));
+      const file = path.join(dir, "shipit.db");
+      try {
+        const first = new DatabaseManager(file);
+        const firstStore = new RepoStore(first);
+        firstStore.add(URL);
+        expect(firstStore.setAllowDockerSocket(URL, true)).toBe("ok");
+        first.close();
+
+        const second = new DatabaseManager(file);
+        try {
+          expect(new RepoStore(second).allowsDockerSocket(URL)).toBe(true);
+        } finally {
+          second.close();
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("trust (docs/178)", () => {
     const URL = "https://github.com/owner/repo.git";
 

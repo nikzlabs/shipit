@@ -284,6 +284,8 @@ export interface RepoInfo {
   trusted?: boolean;
   /** Browser-only grant; never derive from agent-writable repository content. */
   allowAgentMerge?: boolean;
+  /** Browser-only grant of the Docker socket to Compose services (docs/318 req 8). */
+  allowDockerSocket?: boolean;
   hidden?: boolean;
   defaultBranch?: string;
   colorIndex?: number;

@@ -55,6 +55,27 @@ export const PROJECT_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  "project.allowDockerSocket": defineSetting({
+    key: "project.allowDockerSocket",
+    tab: "project-deployments",
+    section: "Agent permissions",
+    component: "docker-socket",
+    scope: "project",
+    address: REPOSITORY_ADDRESS,
+    label: "Give this project's services the Docker socket",
+    description:
+      "A Compose service holding the Docker socket controls the Docker host: it can reach every "
+      + "container on it, other sessions' included, and mount any file on the host. This takes effect "
+      + "only when this repository's shipit.yaml sets compose.docker-socket: true. Off for every "
+      + "repository until you turn it on.",
+    type: bool({ default: false }),
+    // Browser-only like agent merging (docs/318-compose-remaining-escapes req 8):
+    // the repository can ask for the socket, and only the user can grant it.
+    store: { kind: "bespoke", ownedBy: "the repositories store (PATCH /api/repos/:url `allowDockerSocket`)" },
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "project.secrets": defineSetting({
     key: "project.secrets",
     tab: "project-secrets",
