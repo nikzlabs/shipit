@@ -303,7 +303,7 @@ export function parseComposeContent(content: string | Buffer, opts: ComposeParse
     validateContainedInterpolation(name, svc, containEgress);
     validateRawVolumeSources(name, svc.volumes);
     validateServiceEnvFile(name, svc.env_file);
-    validateServiceLabelFile(name, svc.label_file, containEgress);
+    validateServiceLabelFile(name, svc.label_file);
 
     const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
     const ports = rawPorts
@@ -772,14 +772,8 @@ function isWithinDir(p: string, dir: string): boolean {
   return rel !== ".." && !rel.startsWith("../") && !path.posix.isAbsolute(rel);
 }
 
-// Contained sessions check label keys, and a label file's keys cannot be checked here.
-function validateServiceLabelFile(name: string, labelFile: unknown, containEgress: boolean): void {
+function validateServiceLabelFile(name: string, labelFile: unknown): void {
   if (labelFile === undefined || labelFile === null) return;
-  if (containEgress) {
-    throw new ComposeValidationError(
-      `Service \`${name}\`: \`label_file\` is not supported for contained services. Use \`labels:\`.`,
-    );
-  }
   for (const entry of Array.isArray(labelFile) ? labelFile : [labelFile]) {
     validateReadablePath("Service", name, entry);
   }
@@ -1278,13 +1272,13 @@ function validateResolvedMounts(
   }
 }
 
-// On ShipIt's pinned Compose version, `config` inlines these files' values and drops the keys.
+// On ShipIt's pinned Compose version, `config` inlines `env_file` and drops the key. It inlines
+// `label_file` too but keeps that key, which the rewrite removes (docs/318 deployment checks).
 function validateResolvedServiceFiles(name: string, svc: Record<string, unknown>): void {
-  for (const field of ["env_file", "label_file"] as const) {
-    const value = svc[field];
-    if (value === undefined || value === null || isEmptyList(value)) continue;
+  const envFile = svc.env_file;
+  if (envFile !== undefined && envFile !== null && !isEmptyList(envFile)) {
     throw new ComposeValidationError(
-      `Service \`${name}\`: Compose did not resolve \`${field}\`, so ShipIt cannot see the values it sets `
+      `Service \`${name}\`: Compose did not resolve \`env_file\`, so ShipIt cannot see the values it sets `
       + "and does not start the service without them. This Compose version differs from the one ShipIt "
       + "pins; ask the operator to install the pinned version.",
     );
@@ -1561,6 +1555,7 @@ export function rewriteResolvedModel(
     }
     if (records.length > 0) workspaceMounts.set(name, records);
   }
+  dropImplicitDefaultNetwork(out);
 
   const labels = shipitVolumeLabels(opts.sessionId, opts.stackName);
   const volumes: Record<string, unknown> = {};
@@ -1590,6 +1585,27 @@ export function rewriteResolvedModel(
     }
   }
   return { model: out, workspaceMounts, projectFiles, builtServices };
+}
+
+/**
+ * `config` writes `networks: {default: null}` for a service that names no network. The override
+ * adds `shipit-session`, and the merge would keep both, so the service would join a second network
+ * it never joined before; a service that names its networks keeps them.
+ */
+function dropImplicitDefaultNetwork(model: Record<string, unknown>): void {
+  const services = isMapping(model.services) ? Object.values(model.services).filter(isMapping) : [];
+  for (const svc of services) {
+    const nets = svc.networks;
+    if (isMapping(nets) && Object.keys(nets).length === 1 && "default" in nets && nets.default === null) {
+      delete svc.networks;
+    }
+  }
+  const stillUsed = services.some((svc) =>
+    Array.isArray(svc.networks) ? svc.networks.includes("default") : isMapping(svc.networks) && "default" in svc.networks);
+  if (!stillUsed && isMapping(model.networks)) {
+    delete model.networks.default;
+    if (Object.keys(model.networks).length === 0) delete model.networks;
+  }
 }
 
 function rewriteResolvedMount(
@@ -1646,6 +1662,20 @@ function sessionWorkspaceDeclaration(
     );
   }
   return { driver: "local", driver_opts: { type: "none", o: "bind", device: workspaceDevice }, labels };
+}
+
+/**
+ * `config` prints every `$` as `$$`, so its output is a model Compose reads back unchanged. ShipIt
+ * checks and rewrites the values themselves, so it removes that escaping once when it reads the
+ * output, and `serializeComposeModel` adds it back once.
+ */
+export function unescapeComposeDollars(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\$\$/g, "$");
+  if (Array.isArray(value)) return value.map(unescapeComposeDollars);
+  if (isMapping(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, unescapeComposeDollars(nested)]));
+  }
+  return value;
 }
 
 /** Compose reads `$$` as a literal `$`, so the model it loads holds exactly the validated values. */

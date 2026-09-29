@@ -5,9 +5,10 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml } from "yaml";
 import type { ComposeRunner, ComposeOutputSink } from "./compose-cli.js";
 import type { ConfinedComposeApi } from "./compose-helper.js";
+import { serializeComposeModel } from "./compose-generator.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import { composeStateDirForWorkspace } from "./session-state-dir.js";
 import type { ProjectComposeAccess } from "./services/plugin-services.js";
@@ -29,9 +30,9 @@ export interface FakeResolveOptions {
   env?: Record<string, string | undefined>;
 }
 
-/** `docker compose config`, for the fields validation and the rewrite read. */
+/** `docker compose config`, for the fields validation and the rewrite read; like Compose, it prints `$` as `$$`. */
 export function fakeComposeConfig(projectFile: string, opts: FakeResolveOptions): string {
-  return stringifyYaml(fakeResolvedModel(projectFile, opts));
+  return serializeComposeModel(fakeResolvedModel(projectFile, opts));
 }
 
 export function fakeResolvedModel(projectFile: string, opts: FakeResolveOptions): Mapping {
@@ -200,7 +201,9 @@ function normalizeService(svc: Mapping, opts: FakeResolveOptions, env: Record<st
   if (svc.label_file !== undefined || svc.labels !== undefined) {
     const fromFiles = Object.assign({}, ...fileList(svc.label_file).map((f) => readEnvFile(abs(f)))) as Mapping;
     out.labels = { ...fromFiles, ...toMap(svc.labels, env) };
-    delete out.label_file;
+    // Compose 5.5.1 inlines the labels but keeps the key, with absolute paths.
+    if (svc.label_file !== undefined) out.label_file = fileList(svc.label_file).map(abs);
+    else delete out.label_file;
   }
   if (Array.isArray(svc.volumes)) {
     out.volumes = (svc.volumes as unknown[]).map((vol): unknown => {

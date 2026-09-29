@@ -188,7 +188,7 @@ describe("the card is not optimistic about a COMPOSE FILE (planning#377)", () =>
     );
     fs.writeFileSync(
       path.join(workspaceDir, "docker-compose.yml"),
-      "services:\n  web:\n    image: node:22-alpine\n    label_file: ./labels.env\n",
+      "services:\n  web:\n    image: node:22-alpine\n    extends: { file: base.yml, service: web }\n",
     );
   });
   afterEach(() => {
@@ -213,7 +213,7 @@ describe("the card is not optimistic about a COMPOSE FILE (planning#377)", () =>
     const reason = verdict.ok ? "" : verdict.reason;
     expect(reason).toContain("refuses this project's own compose file");
     expect(reason).not.toContain("could not read");
-    expect(reason).toContain("`label_file`");
+    expect(reason).toContain("`extends`");
   });
 
   it("does not refuse the same file where the rule does not apply", async () => {

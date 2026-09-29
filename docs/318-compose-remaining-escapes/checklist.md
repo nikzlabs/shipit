@@ -66,4 +66,5 @@
 - [x] `npm run lint:dev`, `npm run typecheck`, affected `npx vitest run`
 - [x] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement (run `82f95ad9-eb35-4197-a94e-8a452da139ef`: one finding, checked and not applicable)
 - [x] PR test plan lists the deployment checks from plan.md
-- [ ] Deployment checks from plan.md run on a real deployment
+- [x] Deployment checks that need no ShipIt instance (2026-09-29; three defects found and fixed — plan.md *Deployment checks run on 2026-09-29*)
+- [ ] Deployment checks that need a ShipIt instance running this branch (plan.md, the "Still open" list)

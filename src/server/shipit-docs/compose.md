@@ -676,8 +676,7 @@ These rules apply in Open and contained sessions alike:
 - **`logging`** may use only the `json-file` or `local` driver, or none.
 - **`deploy.resources.reservations.devices`** is refused, and a `post_start`
   or `pre_stop` hook may not set `privileged`.
-- **`label_file`** must be inside the workspace, and a contained session
-  refuses it.
+- **`label_file`** must be inside the workspace.
 - **Ops sessions** trust `docker-socket-proxy` only as the ops template
   defines it. ShipIt always runs the proxy image at its pinned digest, and no
   other service may build or name that image.

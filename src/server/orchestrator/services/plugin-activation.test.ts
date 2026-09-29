@@ -245,7 +245,7 @@ describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
     writeConfig(declareProbe);
     fs.writeFileSync(
       path.join(workspaceDir, "docker-compose.yml"),
-      "services:\n  web:\n    image: node:22-alpine\n    label_file: ./labels.env\n",
+      "services:\n  web:\n    image: node:22-alpine\n    extends: { file: base.yml, service: web }\n",
     );
 
     await activateDeclaredPlugins("sess", workspaceDir, {
@@ -261,7 +261,7 @@ describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
     expect(state?.error).toContain("refuses this project's own compose file");
     expect(state?.error).not.toContain("could not read");
     expect(state?.error).toContain("`web`");
-    expect(state?.error).toContain("`label_file`");
+    expect(state?.error).toContain("`extends`");
     expect(liveCommit()).toBeUndefined();
   });
 

@@ -357,13 +357,15 @@ describe("readProjectServices carries why the name domain is unknown", () => {
 services:
   web:
     image: node:22-alpine
-    label_file: ./labels.env
+    extends:
+      file: base.yml
+      service: web
 `);
     const project = await read(true);
 
     expect(project.unknown).toBe(true);
     expect(project.failure?.kind).toBe("refused");
-    expect(project.failure?.message).toContain("`label_file`");
+    expect(project.failure?.message).toContain("`extends`");
     const open = await read(false);
     expect(open).toMatchObject({ names: ["web"], unknown: false });
     expect(open.failure).toBeUndefined();

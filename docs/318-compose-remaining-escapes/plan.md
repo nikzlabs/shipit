@@ -512,7 +512,7 @@ snapshot.
      Some fields stay on the list only with a check of their own: `logging`
      (the `json-file` or `local` driver), `deploy` (no device reservations),
      `post_start`/`pre_stop` (no `privileged`), and `label_file` (inside the
-     workspace; refused in contained sessions).
+     workspace).
    - **Anything left unresolved** — a `$` in a path field, a source Compose did
      not make absolute, a mount field ShipIt does not recognise — is refused
      (req 6).
@@ -663,9 +663,16 @@ uses the same parts:
 - **Compose's own normalization accepted:** `name: <project>_<key>` on
   declarations, and the implicit `networks: {default: null}` on the trusted
   proxy.
-- **Snapshot.** `env_file` and `label_file` are removed only when `config`
-  left them empty; a non-empty one is refused as not inlined. `ports` is
-  dropped from the snapshot, because the override resets it anyway.
+- **Snapshot.** On 5.5.1, `config` inlines `env_file` and drops the key, and
+  inlines `label_file` but keeps the key. So a non-empty `env_file` is refused
+  as not inlined, and `label_file` is removed. `ports` is dropped from the
+  snapshot, because the override resets it anyway.
+- **`$` in values.** `config` prints every `$` as `$$`. ShipIt removes that
+  escaping once when it reads the output (`unescapeComposeDollars`), checks the
+  true values, and `serializeComposeModel` escapes them once again.
+- **Networks.** `config` writes `networks: {default: null}` for a service that
+  names no network. The snapshot drops that entry, and the unused `default`
+  network, so the service joins only `shipit-session`, as before.
 - **Project secret copies** are mode 0644 inside a 0700 root-owned directory,
   so a service that runs as a non-root user can read its own secret. They are
   this session's own secrets (requirement 7's accidental-reach class).
@@ -764,6 +771,42 @@ refused; a sandbox's
 socket mount is refused),
 the grant route's refusal of a session's containers, the rewrite, the secret-file copy, the removal of file keys, the plugin-only
 path, and every fail-closed path.
+
+### Deployment checks run on 2026-09-29
+
+On a host with Docker Engine 29.7.2, with the helper image built from this
+branch and ShipIt's own flags and functions (not a ShipIt instance), these
+passed:
+
+- The helper image builds; Docker's apt repository has
+  `docker-compose-plugin=5.5.1-1~debian.12~bookworm`. A helper container starts
+  in about 0.18 s.
+- The pinned proxy digest is Docker Hub's for
+  `tecnativa/docker-socket-proxy:0.3.0`, and the pinned reference pulls.
+- `config --no-consistency <names>` with the stubs on `-f -`: the named
+  services, a profile from `extends`, the dependencies, and a plugin dependency
+  resolve; a profile peer is left out; `env_file` is inlined; the raw-bytes
+  framing returns the file exactly. ShipIt's validator accepts the real output.
+- A symlinked `env_file`, project file, and build context that point outside
+  the workspace are not found inside the helper.
+- `build` as the session user plus the socket group, with `--network none`,
+  builds; `up --no-build` as root from the snapshot and override starts the
+  services with the right user, values, labels, mounts, and secret (readable
+  by a non-root service).
+- `ps` and `logs` with only `-p` in an empty directory; `stop` with the start's
+  pair runs `pre_stop`; a model-free `down --volumes` removes the containers,
+  networks, and every declared volume.
+
+They found three defects, fixed in this branch: a kept `label_file` key was
+refused, `$` was escaped twice, and every service joined a second network (see
+*Where the build differs*). A dependency behind a profile that is not enabled
+is refused by `config`, as today's `up` refuses it.
+
+Still open, because they need a ShipIt instance that runs this branch: a
+private image pull with the copied login, `SHIPIT_SERVICE_ENV_HOST_DIR`, the
+helper-missing refusal on a start and on the plugin card, orphan removal, an
+existing ops session's proxy, a plugin-only stack, and the start latency of a
+whole ShipIt start.
 
 These need a check on a deployment, listed in the PR test plan:
 

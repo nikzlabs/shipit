@@ -1529,10 +1529,11 @@ describe("settings that reach outside the service (docs/318 req 7)", () => {
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("`privileged: true` is not allowed");
   });
 
-  it("checks label_file paths, and refuses it in contained sessions", () => {
+  it("checks label_file paths in every mode", () => {
     const ok = service("    label_file: ./labels.env\n");
-    expect(() => parseComposeFile(ok, { dockerSocket: false })).not.toThrow();
-    expect(() => parseComposeFile(ok, { dockerSocket: false, containEgress: true })).toThrow("`label_file`");
+    for (const containEgress of bothModes) {
+      expect(() => parseComposeFile(ok, { dockerSocket: false, containEgress })).not.toThrow();
+    }
     const outside = service("    label_file: [/etc/labels]\n");
     expect(() => parseComposeFile(outside, { dockerSocket: false })).toThrow("absolute path");
   });
@@ -1773,6 +1774,25 @@ describe("rewriteResolvedModel", () => {
     ({ name: PROJECT, services: { [name]: { image: "node:20", volumes } }, ...top });
   const rewrite = (model: Record<string, unknown>, opts: Parameters<typeof rewriteResolvedModel>[1] = rewriteOpts): Doc =>
     rewriteResolvedModel(model, opts).model as unknown as Doc;
+
+  // Compose 5.5.1 writes `networks: {default: null}` for a service that names no network.
+  it("drops Compose's implicit default network, and keeps networks a service names", () => {
+    const model = {
+      name: PROJECT,
+      services: {
+        web: { image: "node:20", networks: { default: null } },
+        api: { image: "node:20", networks: { backend: null, default: null } },
+      },
+      networks: { default: { name: `${PROJECT}_default` }, backend: { name: `${PROJECT}_backend` } },
+    };
+    const doc = rewriteResolvedModel(model, rewriteOpts).model as Record<string, Record<string, Record<string, unknown>>>;
+    expect(doc.services.web).not.toHaveProperty("networks");
+    expect(doc.services.api.networks).toEqual({ backend: null, default: null });
+    expect(Object.keys(doc.networks)).toEqual(["default", "backend"]);
+
+    const only = rewriteResolvedModel({ ...model, services: { web: model.services.web } }, rewriteOpts).model;
+    expect(only).not.toHaveProperty("networks.default");
+  });
 
   // planning#584: the boot sweeps select by the stack label, and Compose adds none of its own.
   it("labels the project's named volumes with the stack", () => {
@@ -3252,11 +3272,15 @@ networks:
     }
   });
 
-  it("refuses an env_file or label_file Compose did not inline", () => {
+  it("refuses an env_file Compose did not inline", () => {
     expect(() => validateResolvedModel(resolved({ env_file: [{ path: `${WS}/.env`, required: true }] }), ctx))
       .toThrow("did not resolve `env_file`");
-    expect(() => validateResolvedModel(resolved({ label_file: [`${WS}/labels`] }), ctx))
-      .toThrow("did not resolve `label_file`");
+  });
+
+  // Compose 5.5.1 inlines the labels and keeps the key; the rewrite drops it.
+  it("accepts the label_file key Compose keeps beside the inlined labels", () => {
+    expect(() => validateResolvedModel(resolved({ labels: { a: "1" }, label_file: [`${WS}/labels`] }), ctx))
+      .not.toThrow();
   });
 
   it("refuses a leftover extends", () => {

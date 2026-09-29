@@ -267,7 +267,7 @@ describe("the phase-3 gate fails closed (reqs 13, 15)", () => {
 services:
   web:
     image: node:22-alpine
-    label_file: ./labels.env
+    extends: { file: base.yml, service: web }
 `);
     const verdict = await judge({}, { containEgress: true });
 
@@ -276,7 +276,7 @@ services:
     expect(reason).toContain("refuses this project's own compose file");
     expect(reason).not.toContain("could not read");
     expect(reason).toContain("`web`");
-    expect(reason).toContain("`label_file`");
+    expect(reason).toContain("`extends`");
     expect(reason).toContain(COMMIT.slice(0, 9));
   });
 
@@ -285,7 +285,7 @@ services:
 services:
   web:
     image: node:22-alpine
-    label_file: ./labels.env
+    extends: { file: base.yml, service: web }
 `);
     const reason = (await judge({}, { containEgress: true }) as { reason: string }).reason;
 
@@ -298,7 +298,7 @@ services:
     );
 
     expect(snapshot.repos[0].issues[0]).toBe(reason);
-    expect(snapshot.repos[0].issues[0]).toContain("`label_file`");
+    expect(snapshot.repos[0].issues[0]).toContain("`extends`");
   });
 
   it("refuses when it cannot read the declaration at all", async () => {

@@ -201,6 +201,17 @@ services:
     expect(args).not.toContain("--remove-orphans");
   });
 
+  // `config` prints `$` as `$$` (checked on Compose 5.5.1); the snapshot must escape it once, not twice.
+  it("keeps a literal $ literal through config and the snapshot", async () => {
+    const dir = setup("services:\n  web:\n    image: node:22\n    x-shipit-preview: auto\n    environment:\n      LIT: \"a$$b\"\n");
+    const { mgr } = harness(dir);
+    await mgr.start();
+
+    const snapshot = recordedSnapshot(dir, "web");
+    expect(snapshot).toContain("a$$b");
+    expect(snapshot).not.toContain("a$$$$b");
+  });
+
   it("copies a project secret file into ShipIt's state and names the copy", async () => {
     const dir = setup(
       "services:\n  web:\n    build: .\n    x-shipit-preview: auto\n    secrets: [tok]\n"

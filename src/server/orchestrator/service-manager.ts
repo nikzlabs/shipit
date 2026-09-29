@@ -23,6 +23,7 @@ import {
   resolvedPersistUse,
   rewriteResolvedModel,
   serializeComposeModel,
+  unescapeComposeDollars,
   validateResolvedModel,
   writeRootOnlyFile,
   DEFAULT_STOP_GRACE_PERIOD_MS,
@@ -2035,7 +2036,7 @@ function parseResolvedModel(stdout: string): Record<string, unknown> {
   if (!isMapping(model) || !isMapping(model.services)) {
     throw new ComposeValidationError("Compose's resolved model has no `services` section.", "malformed");
   }
-  return model;
+  return unescapeComposeDollars(model) as Record<string, unknown>;
 }
 
 function describeExit(exitCode: number, oomKilled?: boolean): string {
