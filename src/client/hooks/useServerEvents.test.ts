@@ -6,6 +6,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { getParkedHarness, getSavedModelId } from "../utils/local-storage.js";
 import { persistHarnessPick } from "../utils/harness-seed.js";
+import { applyModelList, exportModelList, getModel, serializeModelList } from "../../server/shared/catalogue/index.js";
 
 class FakeEventSource {
   static CONNECTING = 0;
@@ -863,5 +864,46 @@ describe("useServerEvents — update_notice (docs/304)", () => {
     });
 
     expect(useUiStore.getState().updateNotice).toBeNull();
+  });
+});
+
+describe("useServerEvents — agent_list carries the model list (docs/318)", () => {
+  const opus6 = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-6" } as const;
+
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    useUiStore.setState({ agentList: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    applyModelList(undefined);
+  });
+
+  it("applies the list before it stores the agents, so the re-render sees the new model", () => {
+    const doc = exportModelList();
+    doc.services.anthropic?.sub?.models.push({
+      id: "claude-opus-6",
+      label: "Opus 6",
+      canonicalModelKey: "claude-opus-6",
+      family: "claude",
+      styles: ["anthropic-messages"],
+      price: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: { default: 1_000_000 },
+    });
+    let labelAtStore: string | undefined;
+    const unsubscribe = useUiStore.subscribe((state, prev) => {
+      if (state.agentList !== prev.agentList) labelAtStore = getModel(opus6)?.label;
+    });
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("agent_list", { agents: [], modelList: JSON.parse(serializeModelList(doc)) });
+    });
+    unsubscribe();
+
+    expect(labelAtStore).toBe("Opus 6");
   });
 });

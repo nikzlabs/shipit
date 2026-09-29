@@ -13,7 +13,8 @@ import type {
   PermissionMode,
 } from "../../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
-import { CLAUDE_MODELS, CLAUDE_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { CLAUDE_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { catalogueModelIdsForHarness } from "../../../shared/catalogue/index.js";
 import { unshapeClaudeModelId } from "../../../shared/spawn-routing.js";
 import type {
   AgentId,
@@ -107,7 +108,10 @@ export class ClaudeAdapter
     supportsPermissionModes: true,
     supportedPermissionModes: CLAUDE_PERMISSION_MODES,
     toolNames: [...CLAUDE_TOOL_NAMES],
-    models: CLAUDE_MODELS,
+    // Read per access: the worker adopts the orchestrator's model list (docs/318).
+    get models() {
+      return catalogueModelIdsForHarness("claude");
+    },
     supportsReview: true,
     supportsSteering: true,
     supportsCompaction: true,

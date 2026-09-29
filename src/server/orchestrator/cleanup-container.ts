@@ -9,6 +9,7 @@ import { workerPost } from "./worker-http.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { getErrorMessage } from "./validation.js";
 import { CLEANUP_CONTAINER_SESSION_ID } from "./shipit-own-sessions.js";
+import { modelListField } from "../shared/catalogue/model-list.js";
 import type { SubAgentRunResult } from "../shared/sub-agent-run.js";
 import {
   BACKGROUND_HARNESS_MAX_OUTPUT_CHARS,
@@ -317,6 +318,7 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
           ...(req.serviceRouting !== undefined ? { serviceRouting: req.serviceRouting } : {}),
           ...(req.credentialSecret !== undefined ? { credentialSecret: req.credentialSecret } : {}),
           ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
+          ...modelListField(),
         },
         // The worker's own timer settles the run; the transport outlives it so a
         // timed-out run still returns its partial text rather than a socket error.

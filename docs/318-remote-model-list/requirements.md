@@ -6,6 +6,8 @@ description: ShipIt reads its model list from a JSON file on the ShipIt reposito
 
 # 318 — Remote model list: requirements
 
+The design that implements these requirements is in [`plan.md`](./plan.md).
+
 New models are released often, and today every one of them needs a ShipIt
 release before a user can pick it. This feature removes that step.
 
@@ -18,18 +20,31 @@ release before a user can pick it. This feature removes that step.
 3. When ShipIt cannot read the published list, it uses the list embedded in
    its own release.
 
+4. The published list changes models only: it can add a model to a service
+   ShipIt already has, change a model's label, price, context window,
+   reasoning levels or image support, and retire a model. Services, their
+   endpoints and their credentials come from the release and nothing else.
+
+5. A model added to the published list appears on a running install within
+   an hour, without a restart. The model picker shows it without the user
+   doing anything.
+
+6. After ShipIt has read the published list once, a later failure to read it
+   leaves ShipIt on the last list it read — also across a restart. ShipIt
+   falls back to the embedded list (req 3) only when it has never read the
+   published list.
+
 ## Open questions
 
-- What may the published list change? Only models (add a model, change its
-  label, price, context window, reasoning levels or image support, retire it) —
-  or also services, their endpoints and their credentials? An endpoint in this
-  file decides which URL receives a user's API key.
-- How soon must a new model in the published list appear on a running install:
-  without a restart, within a set time — or only at the next restart?
-- After ShipIt has read the published list once, and later cannot read it (no
-  network, file removed), what does it use: the last list it read, or the list
-  embedded in its release?
+- None.
 
 ## Resolved questions
 
-- None yet.
+- 2026-09-29 — What may the published list change? Nik: models only (req 4).
+  Carries the constraint that a user's credential only ever goes to a URL the
+  release names for that credential's service.
+- 2026-09-29 — How soon must a new model appear on a running install? Nik:
+  within an hour, without a restart, and the picker updates on its own
+  (req 5).
+- 2026-09-29 — What does ShipIt use when a read fails after a successful
+  one? Nik: the last list it read, kept across restarts (req 6).

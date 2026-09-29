@@ -13,21 +13,22 @@ const LEGACY_CONTEXT_WINDOWS: Record<string, number> = {
   "gpt-5.6": 272_000,
 };
 
-// Runtime telemetry supersedes these initial estimates.
-export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  ...LEGACY_CONTEXT_WINDOWS,
-  ...catalogueContextWindows(),
-};
+// Runtime telemetry supersedes these initial estimates. Read per call: the
+// model list can change while the process runs (docs/318).
+export function modelContextWindows(): Record<string, number> {
+  return { ...LEGACY_CONTEXT_WINDOWS, ...catalogueContextWindows() };
+}
 
 export function getContextWindowForModel(model: string | undefined): number {
   if (!model) return DEFAULT_CONTEXT_WINDOW_TOKENS;
-  const exact = MODEL_CONTEXT_WINDOWS[model];
+  const windows = modelContextWindows();
+  const exact = windows[model];
   if (exact) return exact;
   let bestKey: string | null = null;
-  for (const key of Object.keys(MODEL_CONTEXT_WINDOWS)) {
+  for (const key of Object.keys(windows)) {
     if (model.includes(key) && (bestKey === null || key.length > bestKey.length)) {
       bestKey = key;
     }
   }
-  return bestKey ? MODEL_CONTEXT_WINDOWS[bestKey] : DEFAULT_CONTEXT_WINDOW_TOKENS;
+  return bestKey ? windows[bestKey] : DEFAULT_CONTEXT_WINDOW_TOKENS;
 }

@@ -191,6 +191,13 @@ Three rules the user asks about:
   a given row, and the menu offers only the ones that survive. Some harnesses
   offer none at all.
 
+**New models arrive without a ShipIt update.** ShipIt reads its model list from
+the ShipIt repository every hour, and the model menu picks up a new model on its
+own. Only models of services this install already has can arrive this way. When
+it cannot read the list, ShipIt keeps the last list it read. A model that needs
+new harness code still needs an update. When the user asks for a model that is
+not in the menu, check `shipit agent params` before you say it needs an update.
+
 To start work on something specific yourself, name a **role** rather than
 assembling parameters — see below, and `/shipit-docs/agent.md`.
 

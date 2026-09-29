@@ -11,7 +11,7 @@ import { GitHubAuthManager } from "../github-auth.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import {
-  MODEL_CONTEXT_WINDOWS,
+  modelContextWindows,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   getContextWindowForModel,
 } from "../../shared/agent-registry.js";
@@ -315,8 +315,8 @@ describe("Integration: Context window usage (105)", () => {
     client.close();
   });
 
-  it("MODEL_CONTEXT_WINDOWS resolves known and unknown models", () => {
-    expect(getContextWindowForModel("sonnet")).toBe(MODEL_CONTEXT_WINDOWS.sonnet);
+  it("modelContextWindows resolves known and unknown models", () => {
+    expect(getContextWindowForModel("sonnet")).toBe(modelContextWindows().sonnet);
     expect(getContextWindowForModel("opus-1m")).toBe(1_000_000);
     expect(getContextWindowForModel("claude-sonnet-4-20250514")).toBe(200_000);
     expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(272_000);

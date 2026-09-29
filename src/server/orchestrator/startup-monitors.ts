@@ -23,6 +23,8 @@ import { stopWarmPreview } from "./warm-preview.js";
 import { runUpdateCheckIfDue, versionAnchor, UPDATE_CHECK_TICK_MS } from "./services/update-notice.js";
 import type { UpdateNotice } from "../shared/types.js";
 import { startEventLoopLagMonitor } from "./event-loop-lag.js";
+import { MODEL_LIST_REFRESH_MS, refreshPublishedModelList } from "./services/published-model-list.js";
+import { seedAndBuildAgentListPayload } from "./services/settings.js";
 
 export interface StartupMonitors {
   kickDiskEscalation: (excludeSessionId?: string) => void;
@@ -42,7 +44,7 @@ export async function startStartupMonitors(
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
     mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
-    cleanupContainer, version,
+    cleanupContainer, version, agentRegistry, providerAccountManager,
   } = rt;
 
   // Held for the process: the first dictation after a quiet period must not pay
@@ -285,6 +287,20 @@ export async function startStartupMonitors(
   if (updateCheckInterval?.unref) updateCheckInterval.unref();
   if (!isTestMode) void runUpdateCheckIfDue(updateNoticeDeps);
 
+  // docs/318 — the published model list: at startup and hourly.
+  const modelListDeps = {
+    stateDir,
+    onChange: () => {
+      for (const agent of agentRegistry.list()) agentRegistry.refreshAuth(agent.id);
+      sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+    },
+  };
+  const modelListInterval = isTestMode
+    ? null
+    : setInterval(() => { void refreshPublishedModelList(modelListDeps); }, MODEL_LIST_REFRESH_MS);
+  if (modelListInterval?.unref) modelListInterval.unref();
+  if (!isTestMode) void refreshPublishedModelList(modelListDeps);
+
   const stopEventLoopLagMonitor = isTestMode ? null : startEventLoopLagMonitor();
 
   if (containerManager) {
@@ -345,6 +361,7 @@ export async function startStartupMonitors(
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);
     if (warmSweepInterval) clearInterval(warmSweepInterval);
     if (updateCheckInterval) clearInterval(updateCheckInterval);
+    if (modelListInterval) clearInterval(modelListInterval);
     stopEventLoopLagMonitor?.();
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();

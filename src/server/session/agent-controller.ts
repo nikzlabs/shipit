@@ -12,6 +12,7 @@ import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
+import { adoptModelList } from "../shared/catalogue/model-list.js";
 import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
 import { reclaimStillRenderingBrowsers } from "./agents/browser-reclaim.js";
 import {
@@ -96,6 +97,7 @@ export class AgentController {
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
+      adoptModelList(request.body.modelList);
 
       let startSettled!: () => void;
       this.pendingStart = new Promise<void>((resolve) => { startSettled = resolve; });
@@ -181,7 +183,7 @@ export class AgentController {
       return { cancelled: true };
     });
 
-    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; credentialSecret?: string } }>(
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; credentialSecret?: string; modelList?: unknown } }>(
       "/agent/spawn",
       async (request, reply) => {
         const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, credentialSecret } = request.body ?? {};
@@ -193,6 +195,7 @@ export class AgentController {
           console.warn(`[sub-agent] worker rejected spawn=${spawnId}: no model named`);
           return reply.code(400).send({ error: "model is required — a spawn names the model it runs" });
         }
+        adoptModelList(request.body.modelList);
         let agent: AgentProcess;
         try {
           agent = this.deps.agentFactory(agentId);

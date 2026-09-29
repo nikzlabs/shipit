@@ -13,6 +13,8 @@ import {
   startNodeRuntimeProvisioning,
 } from "./node-runtime.js";
 import type { AgentProcess, AgentRunParams } from "../shared/types.js";
+import { applyModelList, exportModelList, getModel, serializeModelList } from "../shared/catalogue/index.js";
+import { claudeModelArg } from "../shared/spawn-routing.js";
 
 class FakeAgent extends EventEmitter {
   readonly agentId = "claude" as const;
@@ -627,5 +629,78 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
     retired.emit("event", { type: "agent_background_tasks", tasks: [{ id: "a" }, { id: "b" }] });
     retired.emit("event", { type: "agent_self_wake", taskId: "a" });
     expect(await status()).toMatchObject({ backgroundTaskCount: 1, selfWakeActive: false });
+  });
+});
+
+describe("AgentController — the orchestrator's model list (docs/318)", () => {
+  let app: FastifyInstance;
+  let workspace: string;
+  let agents: FakeAgent[];
+  const opus6 = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-6" } as const;
+
+  async function start(extra: Record<string, unknown> = {}): Promise<void> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "hi", cwd: workspace }, ...extra },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    agents.at(-1)!.emit("done", 0);
+    await new Promise((r) => setImmediate(r));
+  }
+
+  function listWithOpus6(): unknown {
+    const doc = exportModelList();
+    doc.services.anthropic?.sub?.models.push({
+      id: "claude-opus-6",
+      label: "Opus 6",
+      canonicalModelKey: "claude-opus-6",
+      family: "claude",
+      styles: ["anthropic-messages"],
+      price: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: { default: 1_000_000 },
+    });
+    return JSON.parse(serializeModelList(doc));
+  }
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-ml-"));
+    agents = [];
+    resetNodeRuntimeForTests();
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const agent = new FakeAgent();
+        agents.push(agent);
+        return agent as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    applyModelList(undefined);
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("runs the agent on the list the start request carries", async () => {
+    await start({ modelList: listWithOpus6() });
+    expect(getModel(opus6)?.label).toBe("Opus 6");
+    expect(claudeModelArg("claude-opus-6")).toBe("claude-opus-6[1m]");
+    expect(agents[0]!.lastParams).not.toBeNull();
+  });
+
+  it("keeps an adopted list when a later request carries none", async () => {
+    await start({ modelList: listWithOpus6() });
+    await start();
+    expect(agents).toHaveLength(2);
+    expect(getModel(opus6)?.label).toBe("Opus 6");
   });
 });

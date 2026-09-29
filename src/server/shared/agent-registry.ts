@@ -18,10 +18,6 @@ const execFileAsync = promisify(execFile);
 
 export { ANTIGRAVITY_TOOL_NAMES, CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
 
-// Catalogue order determines defaults; these lists are not credential-filtered.
-export const CLAUDE_MODELS = catalogueModelIdsForHarness("claude");
-export const CODEX_MODELS = catalogueModelIdsForHarness("codex");
-
 export interface EligibleModel {
   serviceId: string;
   serviceName: string;
@@ -60,7 +56,10 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
             },
           }
         : {}),
-      models: catalogueModelIdsForHarness(harness.id),
+      // A getter: the model list can change while the process runs (docs/318).
+      get models() {
+        return catalogueModelIdsForHarness(harness.id);
+      },
     },
   }));
 
@@ -104,7 +103,7 @@ export function isAllowedAgentEnvKey(key: string): boolean {
 
 export {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
-  MODEL_CONTEXT_WINDOWS,
+  modelContextWindows,
   getContextWindowForModel,
 } from "./model-windows.js";
 

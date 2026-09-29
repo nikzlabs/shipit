@@ -1,3 +1,5 @@
+// docs/318 — every install reads these model rows from `models.json` on `main`,
+// within an hour of a merge: after changing a row, run `npm run catalogue:export`.
 import { MODEL_IDENTITIES } from "./model-identity.js";
 import type { ServiceDef } from "./types.js";
 
