@@ -1014,9 +1014,14 @@ instead of a repeat.
   plugin (keyed by `alias`) gets a per-session **state directory**, mounted
   read-write into its service containers at **`/plugin-state`** and named by
   **`SHIPIT_PLUGIN_STATE`** on both surfaces (concrete names set by the
-  fixture), surviving service restarts,
-  refreshes, and container restarts, deleted with the session. This is the
-  home of "same live state" between a CLI and a UI that is neither project
+  fixture). It survives service restarts, refreshes, container restarts,
+  archive, unarchive and disk-tier eviction, and only a Full reset deletes it —
+  what `shipit-docs/plugin-authoring.md` tells plugin authors. No per-session
+  path deletes it: `deleteSession` removes database rows only, runs only for
+  warm sessions, and leaves the session directory on disk. The docs/262 tests
+  in `services/session-archive.test.ts` and
+  `services/session-restore-freshness.test.ts` guard archive and unarchive.
+  This is the home of "same live state" between a CLI and a UI that is neither project
   data nor plugin source. Related mechanic for slice 2: a plugin service's
   **published port must stay stable per (session, service)** even if a
   tracked commit edits the fragment's port, because the preview origin is
