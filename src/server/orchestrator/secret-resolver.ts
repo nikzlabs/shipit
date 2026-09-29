@@ -262,7 +262,7 @@ function quoteEnvFileValue(value: string): string {
 }
 
 /** Why an environment variable cannot carry `value`, or undefined when it can. */
-function envValueRefusal(value: string): string | undefined {
+export function envValueRefusal(value: string): string | undefined {
   if (value.includes("\0")) {
     return "contains a NUL character, which an environment variable cannot hold";
   }

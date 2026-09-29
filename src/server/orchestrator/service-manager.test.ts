@@ -1232,6 +1232,41 @@ services:
     expect(snap.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
   });
 
+  it("keeps the reason a secret was refused in the service's log history (planning#624)", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const stored: { channel: string; text: string }[] = [];
+    const logStore = {
+      hasChannel: () => false,
+      append: (_sid: string, channel: string, text: string) => { stored.push({ channel, text }); },
+      snapshotText: () => "",
+    } as unknown as ConstructorParameters<typeof ServiceManager>[0]["logStore"];
+    const mgr = testServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
+      composeRunner: () => Promise.reject(new Error("no docker")),
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://a\0b" }),
+      pollIntervalMs: 0,
+      logStore,
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    const reason = /\[shipit\] service "api": secret "DATABASE_URL" was not passed .* NUL character/;
+    expect(stored.find((s) => reason.test(s.text))?.channel).toBe("service:api");
+    expect(mgr.getLogBuffer("api")).toMatch(reason);
+  });
+
   it("removes the state dir's .env.agent when no agent: true declarations remain", async () => {
     const dir = setup();
     fs.mkdirSync(stateOf(dir), { recursive: true });

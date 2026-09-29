@@ -246,7 +246,7 @@ export class ServiceSecretsResolver {
         this.onServiceWarning?.(
           service,
           `service "${service}": secret "${r.name}" was not passed to the service because ` +
-            `its value ${r.reason}. Change the value in Project Settings → Secrets.\n`,
+            `its value ${r.reason}. Change the value in Project Settings → Secrets.`,
         );
       }
     }
@@ -263,7 +263,7 @@ export class ServiceSecretsResolver {
         w.service,
         `service "${w.service}": secret "${w.name}" declares source: ${w.source} ` +
           `which is no longer forwarded — set a "${w.name}" secret in ` +
-          `Project Settings → Secrets if the service needs it.\n`,
+          `Project Settings → Secrets if the service needs it.`,
       );
     }
   }
