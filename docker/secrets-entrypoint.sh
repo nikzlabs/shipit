@@ -22,9 +22,10 @@ _shipit_deliver() {
     PIPESTATUS | SHLVL | _ | BASH_ARGC | BASH_ARGV | BASH_LINENO | BASH_SOURCE)
       _shipit_refuse "secret $1 cannot be delivered, because the shell keeps that name for itself" ;;
   esac
-  # $(...) removes trailing newlines, so cat's exit status is appended after a
-  # "." and removed again. No multibyte encoding uses "." as a trailing byte.
-  set -- "$(cat "$2"; printf '.%s' "$?")" "$@"
+  # $(...) removes trailing newlines, so ".0" (read) or ".1" (failed) is appended
+  # and removed again; set -e cannot skip it in an && || list. No multibyte
+  # encoding uses "." as a trailing byte.
+  set -- "$(cat "$2" && printf .0 || printf .1)" "$@"
   case "$1" in
     *.0) ;;
     *) _shipit_refuse "secret $2 could not be read" ;;

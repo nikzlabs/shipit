@@ -495,17 +495,17 @@ describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
     expect(stderr).toContain("no secret file is readable");
   });
 
-  // Root reads a mode-000 file, so only a non-root run can produce the failure.
-  it.skipIf(process.getuid?.() === 0).each(SHELLS)(
-    "%s stops the start, not delivering an empty value, when a secret file cannot be read",
-    (_label, shell) => {
-      const { script, mountDir } = mountSecrets({ K: "v" });
-      fs.chmodSync(path.join(mountDir, "shipit-K"), 0o000);
-      const { status, env } = start(shell, script);
-      expect(status).not.toBe(0);
-      expect(env.size).toBe(0);
-    },
-  );
+  it.each(SHELLS)("%s stops the start, not delivering partial output, when cat fails", (_label, shell) => {
+    const { script } = mountSecrets({ K: "v" });
+    // Its partial output even ends like a successful read.
+    const failing = path.join(tmpDir, "failing-bin");
+    fs.mkdirSync(failing);
+    fs.writeFileSync(path.join(failing, "cat"), "#!/bin/sh\nprintf 'partial.0'\nexit 1\n", { mode: 0o755 });
+    const { status, stderr, env } = start(shell, script, `${failing}:${process.env.PATH}`);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("secret K could not be read");
+  });
 });
 
 describe("resolveSecrets — Phase 2 extended syntax", () => {
