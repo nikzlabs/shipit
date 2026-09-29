@@ -14,9 +14,14 @@ The API container guard (`api-container-guard.ts`, docs/201-container-api-trust-
 
 3. Requirement 1 is true for every install ShipIt supports: the local install on macOS, Linux, and WSL2, and the VPS install, each with its access options (loopback only, a configured bind address, tailnet, Cloudflare).
 
+4. A session's containers cannot reach the machine that runs ShipIt, or addresses on private networks or the tailnet, in either egress mode. In open mode, internet access stays as it is today.
+
+5. The exception to requirement 4 is the SSH destinations granted to a session: that session can reach each of them.
+
 ## Open questions
 
-- How does ShipIt tell the user's own requests apart from a session container's request that arrives on the same host address? The orchestrator cannot tell them apart by address: Docker's port proxy and the VPS tailnet forwarder connect to it from the same address for every caller. The choices are a one-time browser proof (every install and path, but the first open of ShipIt in each browser changes), a host network rule (no change for the user, but it covers only Linux hosts), or both.
-- If the chosen mechanism cannot apply on an install, does ShipIt refuse to start sessions there, or start them and show a warning?
+- On a host that cannot run the egress sidecar (rootless Docker, a locked-down kernel), requirement 4 cannot apply. Does ShipIt then refuse to listen on any address other than loopback, or listen there and show a warning? On Linux, containers cannot reach a loopback-only ShipIt (tested 2026-09-29); rootless Docker is not tested.
 
 ## Resolved questions
+
+- 2026-09-29 — How does ShipIt tell the user's own requests apart from a session container's request that arrives on the same host address? The user rejected a one-time browser proof and a host network rule, and asked for networking options. From the eight options listed with the Astra role, the user chose: session containers cannot reach the host or private and tailnet networks in either egress mode, enforced by the existing per-container egress sidecar. The user asked that granted SSH destinations stay reachable. Requirements 4 and 5 were added.
