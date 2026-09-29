@@ -30,6 +30,9 @@ table — a phase is checked off when its PR has merged.
 - [x] Add Opus 5.5 under both Anthropic billing modes with published metadata
 - [x] Update Claude Code to 2.1.280 with the approved exact-version age exception
 
+- [x] Add GPT-6.1 Sol under both OpenAI billing modes with published metadata;
+      validate the pinned Codex 0.155.1 with the new ID
+
 ## Phase 2 — Credentials and Settings
 
 - [x] `CredentialRoute` — credential storage keyed by `(service, billing mode)`
