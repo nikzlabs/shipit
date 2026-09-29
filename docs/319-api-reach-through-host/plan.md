@@ -96,7 +96,8 @@ The same rule — no route before the firewall — applied at the proxy:
 
 - The session's Docker network (`shipit-session-<first 12>`) is created internal when the block is active, and a network that the agent creates through the proxy is made internal. A container therefore starts with no route out.
 - The proxy refuses a restart policy, because a restart loses the firewall.
-- The proxy refuses to connect a container to a ShipIt egress network (`shipit-egress-*`).
+- The proxy refuses to connect a container to a ShipIt egress network (`shipit-egress-*`), and refuses a network name that starts with `shipit-`, because ShipIt finds its own networks by name.
+- The proxy treats ShipIt's firewall sidecars as not the session's: they carry the session label but hold `NET_ADMIN` in its namespace. A container created with a `shipit-egress-` label is refused.
 - On every start and restart through the proxy, ShipIt first disconnects the container from the egress network (a new namespace has no firewall), then lets Docker start it, pauses it, connects the egress network, installs the firewall, and unpauses it. If a step fails, ShipIt stops the container and the call fails.
 - These containers get the open policy in both modes. They have no egress limits today, and req 8 asks for requirements 1 and 4, not for egress limits.
 - The agent joins the session's Docker network, so it reaches its containers there by name. A port that such a container publishes on the host is on the machine, so the block refuses it (req 4).
@@ -131,6 +132,7 @@ The origin index also lists agent containers (label `shipit-session-id`), with e
 
 - `deployment/local/lib.sh`, at every local start after the image build: if the probe fails, it leaves the tailnet overlay out of the Compose files (even when the file cannot be deleted) and replaces a non-loopback `SHIPIT_BIND_ADDR` with `127.0.0.1`, and says why. So an update on such a host starts on loopback instead of reaching the refusal above. `deployment/local/tailscale.sh` reads that result for its message instead of running its own probe.
 - `deployment/vps/tailscale.sh`: if the probe fails, it stops with a message and installs nothing. The forwarder it installs runs the probe when it starts (at boot, or after Docker restarts) and does not forward while the probe fails.
+- `deployment/vps/deploy.sh`: an update on a host where the probe fails stops a forwarder that an earlier `tailscale.sh` installed, because that forwarder predates the probe in the wrapper.
 
 Cloudflare Tunnel connects to `127.0.0.1:4123` from the host, so it keeps working, as do the same machine and an SSH tunnel (req 6).
 
@@ -150,7 +152,11 @@ Text only:
 - UI: the open-mode description ("Unrestricted outbound network access") says that open sessions reach the internet but not this machine, private networks or the tailnet.
 - `src/server/shipit-docs/` (compose, ssh, sandbox and the environment pages where they describe open mode, Docker access or SSH grants) and the wiki (`wiki/sessions.md`, `wiki/repos-and-sandboxes.md`, `wiki/troubleshooting.md`).
 
-### 10. Rollout
+### 10. Image builds (req 10)
+
+Build steps of a Compose `build:`, and of `docker build` through the Docker proxy, run in the Docker builder's own sandboxes, not in a session container, so the block does not reach them. Requirement 10 leaves them to planning#512 (docs/291-contained-builds), which must also cover Open mode. Until then this is a known gap, and the docs do not claim that builds are blocked.
+
+### 11. Rollout
 
 A container that the previous build started and that ShipIt keeps across the update (live work, always-on preview) keeps its old rules until it is next created. All new containers get the block.
 
@@ -189,7 +195,7 @@ A container that the previous build started and that ShipIt keeps across the upd
 - The origin index in `session-container.ts` (agent addresses, IPv6).
 - `docker-proxy.ts`, `docker-proxy-sanitize.ts`, `docker-proxy-auth.ts`, and a new `docker-proxy-egress.ts` (§3a).
 - New `local-block.ts`: the probe, the Docker Desktop check, and the startup refusal.
-- `deployment/local/lib.sh`, `deployment/local/tailscale.sh`, `deployment/vps/tailscale.sh`, `deployment/vps/cloudflare.sh`, `deployment/vps/setup.sh`.
+- `deployment/local/lib.sh`, `deployment/local/tailscale.sh`, `deployment/vps/tailscale.sh`, `deployment/vps/deploy.sh`, `deployment/vps/cloudflare.sh`, `deployment/vps/setup.sh`.
 - `.github/workflows/ci.yml`: a job that installs the open policy in a real network namespace and checks what it refuses.
 
 ## Deployment checks

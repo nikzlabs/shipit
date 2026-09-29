@@ -39,6 +39,9 @@ function createMockDocker() {
         NetworkSettings: { Networks: { [NETWORK]: { IPAddress: "172.18.0.7" } } },
       })),
     })),
+    getNetwork: vi.fn(() => ({
+      inspect: vi.fn(async () => ({ IPAM: { Config: [{ Subnet: "172.18.0.0/16", Gateway: "172.18.0.1" }] } })),
+    })),
   };
 }
 
@@ -295,6 +298,7 @@ describe("reloadEgress — open policy with the local block", () => {
       inputs: { hosts: [], cidrs: [] },
       sshTargets: [{ address: "10.0.0.5", port: 2222 }],
       hostAddresses: ["203.0.113.7"],
+      localTcp: [{ subnet: "172.18.0.0/16", port: Number(process.env.PORT || "3000") }],
     });
     expect(reloadEgressSidecars).not.toHaveBeenCalled();
   });

@@ -283,7 +283,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         proxyPort: proxyEnabled ? EGRESS_PROXY_PORT : undefined,
         labels: sidecarLabels,
       });
-      // The firewall installer allows only the egress bridge; restore session-local routes.
+      // The installer accepts nothing local; open only this session's own networks.
       await allowEgressToSubnets(opts.docker, {
         agentContainerId: info.Id,
         sidecarImage: opts.sidecarImage,

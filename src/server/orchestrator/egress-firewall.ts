@@ -109,7 +109,7 @@ function firstHostAddress(cidr: string): string | null {
   const prefix = Number(prefixText);
   if (!base || !isValidIpv4(base) || !Number.isInteger(prefix) || prefix > 30) return null;
   const parts = base.split(".").map(Number);
-  const value = (((parts[0]! << 24) >>> 0) + (parts[1]! << 16) + (parts[2]! << 8) + parts[3]!) >>> 0;
+  const value = parts.reduce((acc, part) => (acc * 256) + part, 0) >>> 0;
   const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
   const first = ((value & mask) + 1) >>> 0;
   return [first >>> 24, (first >>> 16) & 255, (first >>> 8) & 255, first & 255].join(".");

@@ -1,23 +1,25 @@
 # 319 — Checklist
 
 - [x] Open questions in `requirements.md` answered and recorded
-- [ ] Plan reviewed, including one "would anyone notice if this were removed?" round
-- [ ] `init-firewall.sh`: `EGRESS_POLICY`, `SHIPIT-LOCAL` / `SHIPIT-SSH` / `SHIPIT-BLOCK`, open self-test
-- [ ] `allow-subnet.sh`: gateways dropped at the top of `SHIPIT-LOCAL`, subnets appended
-- [ ] `set-ssh.sh` and `probe-firewall.sh` in the sidecar image
-- [ ] Script tests with stubbed tools (rule order, open policy uses no `ipset`)
-- [ ] CI job: open policy in a real network namespace
-- [ ] Host address discovery, cached, fail closed
-- [ ] SSH destinations carry their port; IP grants leave the Tier A set
-- [ ] Agent container: firewall in both modes; open policy runs no resolver or proxy
-- [ ] Compose: internal topology and open-policy containment when the block is active; `NET_ADMIN` and reserved labels refused
-- [ ] Plugin holder in both modes
-- [ ] Docker proxy containers: internal networks, restart policies and egress-network joins refused, containment on start and restart, agent joins the network
-- [ ] Origin index lists agent containers' addresses (planning#506)
-- [ ] Startup probe, own-binding refusal, Docker Desktop refusal
-- [ ] `deployment/local/lib.sh`, `deployment/local/tailscale.sh`, `deployment/vps/tailscale.sh`
-- [ ] UI copy for open mode
-- [ ] Public-install text (req 7) and `project.allowDockerSocket` description (req 9)
-- [ ] `src/server/shipit-docs/` and wiki updated
+- [x] Plan reviewed, including one "would anyone notice if this were removed?" round
+- [x] `init-firewall.sh`: `EGRESS_POLICY`, `SHIPIT-SSH` / `SHIPIT-LOCAL` / `SHIPIT-BLOCK`, open self-test, `DROP` during a reinstall
+- [x] `allow-subnet.sh`: gateways dropped at the top of `SHIPIT-LOCAL`, subnets appended
+- [x] `probe-firewall.sh` in the sidecar image
+- [x] Script tests with stubbed tools (rule order, open policy uses no `ipset`)
+- [x] CI job: both policies in a real network namespace
+- [x] Host address discovery, 60 s reuse, fail closed
+- [x] SSH destinations carry their port into the SSH chain
+- [x] Agent container: firewall in both modes; open policy runs no resolver or proxy; orchestrator ports only on the shared network
+- [x] Compose: internal topology and open-policy containment when the block is active; `NET_ADMIN`, restart policies and reserved labels refused
+- [x] Plugin holder in both modes, with no local accepts
+- [ ] Docker proxy containers: internal networks, restart policies and egress-network joins refused, containment on start and restart
+- [x] Agent joins its Docker-access network
+- [x] Agent addresses and IPv6 addresses resolve as session containers (planning#506)
+- [x] Startup probe, own-binding refusal, Docker Desktop refusal
+- [x] `deployment/local/lib.sh`, `deployment/local/tailscale.sh`, `deployment/vps/tailscale.sh`, `deployment/vps/deploy.sh`
+- [x] UI copy for open mode
+- [x] Public-install text (req 7) and `project.allowDockerSocket` description (req 9)
+- [x] `src/server/shipit-docs/` and wiki updated
+- [x] Build steps recorded as planning#512's scope (req 10)
 - [ ] Implementation reviewed against every requirement
 - [ ] Deployment checks run on the test machine; test items removed

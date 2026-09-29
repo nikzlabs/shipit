@@ -999,16 +999,22 @@ async function ensureDockerAccessNetwork(
   sessionId: string,
 ): Promise<void> {
   const internal = deps.localBlock === true;
+  let info: Docker.NetworkInspectInfo | undefined;
   try {
-    const info = await deps.docker.getNetwork(name).inspect();
+    info = await deps.docker.getNetwork(name).inspect();
+  } catch {
+    // Absent: create it below.
+  }
+  if (info) {
+    if (info.Labels?.["shipit-parent-session"] !== sessionId) {
+      throw new Error(`network ${name} exists but does not belong to session ${sessionId}; refusing to use it`);
+    }
     if ((info.Internal ?? false) === internal) return;
     if (Object.keys(info.Containers ?? {}).length > 0) {
       console.warn(`[containers] session network ${name} is ${internal ? "not " : ""}internal but still has containers; keeping it`);
       return;
     }
-    await deps.docker.getNetwork(name).remove();
-  } catch {
-    // Absent: create it below.
+    try { await deps.docker.getNetwork(name).remove(); } catch { /* recreated below, or reused if it survives */ }
   }
   try {
     await deps.docker.createNetwork({

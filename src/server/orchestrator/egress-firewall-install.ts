@@ -108,6 +108,9 @@ export interface LocalTcpAccept {
 
 export const NO_TIER_A_INPUTS: TierAEgressInputs = { hosts: [], cidrs: [] };
 
+/** Every firewall sidecar holds NET_ADMIN in a session's namespace; the Docker proxy refuses them. */
+export const EGRESS_SIDECAR_MARKER_LABEL = "shipit-egress-sidecar";
+
 export interface InstallEgressFirewallOpts {
   agentContainerId: string;
   sidecarImage: string;
@@ -182,7 +185,7 @@ export async function installEgressFirewall(
 ): Promise<void> {
   const container = await docker.createContainer({
     Image: opts.sidecarImage,
-    Labels: opts.labels,
+    Labels: { ...opts.labels, [EGRESS_SIDECAR_MARKER_LABEL]: "true" },
     HostConfig: {
       NetworkMode: `container:${opts.agentContainerId}`,
       CapAdd: ["NET_ADMIN"],
@@ -233,7 +236,7 @@ export async function allowEgressToSubnets(
 
   const container = await docker.createContainer({
     Image: opts.sidecarImage,
-    Labels: opts.labels,
+    Labels: { ...opts.labels, [EGRESS_SIDECAR_MARKER_LABEL]: "true" },
     Entrypoint: ["/usr/local/bin/allow-subnet.sh"],
     HostConfig: {
       NetworkMode: `container:${opts.agentContainerId}`,

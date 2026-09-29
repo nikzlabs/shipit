@@ -1,28 +1,53 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+
+const { prepareStart, containStart } = vi.hoisted(() => ({
+  prepareStart: vi.fn(async (_target: { containerId: string; sessionId: string }) => true),
+  containStart: vi.fn(async (_target: { containerId: string; sessionId: string }) => undefined),
+}));
+
+vi.mock("./docker-proxy-egress.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./docker-proxy-egress.js")>()),
+  prepareProxyContainerStart: prepareStart,
+  containProxyContainer: containStart,
+}));
+
 import { createDockerProxy, PARENT_SESSION_LABEL } from "./docker-proxy.js";
 import type { SessionInfo, DockerProxyDeps } from "./docker-proxy.js";
+import { ProxyEgressRefusal } from "./docker-proxy-egress.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
+import { _setLocalBlockForTest } from "./local-block.js";
 
 interface MockDaemon {
   server: http.Server;
   socketPath: string;
   containers: Map<string, { labels: Record<string, string>; running: boolean; hostConfig?: Record<string, unknown> }>;
-  networks: Map<string, { labels: Record<string, string> }>;
+  networks: Map<string, MockNetwork>;
   volumes: Map<string, { labels: Record<string, string> }>;
   /** exec_id → container_id */
   execs: Map<string, string>;
   onServe?: (method: string, url: string) => void;
+  /** Answer container starts and restarts with this status instead of starting. */
+  startStatus?: number;
+  /** Start the container, then drop the connection before answering. */
+  dropStart?: boolean;
   close: () => Promise<void>;
+}
+
+interface MockNetwork {
+  labels: Record<string, string>;
+  name?: string;
+  createBody?: Record<string, unknown>;
 }
 
 function createMockDaemon(): MockDaemon {
   const containers = new Map<string, { labels: Record<string, string>; running: boolean; hostConfig?: Record<string, unknown> }>();
-  const networks = new Map<string, { labels: Record<string, string> }>();
+  const networks = new Map<string, MockNetwork>();
   const volumes = new Map<string, { labels: Record<string, string> }>();
   const execs = new Map<string, string>();
   let containerCounter = 0;
@@ -99,7 +124,8 @@ function createMockDaemon(): MockDaemon {
         const c = containers.get(id);
         if (!c) { respond(404, { message: "not found" }); return; }
         respond(200, {
-          Id: id,
+          // An entry stored under a name answers with the id Docker would report for it.
+          Id: (c as { id?: string }).id ?? id,
           Config: { Labels: c.labels },
           State: { Running: c.running },
           ...(c.hostConfig ? { HostConfig: c.hostConfig } : {}),
@@ -112,7 +138,9 @@ function createMockDaemon(): MockDaemon {
         const id = containerStartMatch[1];
         const c = containers.get(id);
         if (!c) { respond(404, { message: "not found" }); return; }
+        if (daemon.startStatus) { respond(daemon.startStatus, { message: "mock start refused" }); return; }
         c.running = true;
+        if (daemon.dropStart) { res.socket?.destroy(); return; }
         respond(204, {});
         return;
       }
@@ -122,6 +150,7 @@ function createMockDaemon(): MockDaemon {
         const id = containerRestartMatch[1];
         const c = containers.get(id);
         if (!c) { respond(404, { message: "not found" }); return; }
+        if (daemon.startStatus) { respond(daemon.startStatus, { message: "mock restart refused" }); return; }
         c.running = true;
         respond(204, {});
         return;
@@ -178,7 +207,7 @@ function createMockDaemon(): MockDaemon {
       if ((/\/networks\/create/.exec(url)) && method === "POST") {
         const id = `mock-network-${Date.now()}`;
         const labels = (body.Labels ?? {}) as Record<string, string>;
-        networks.set(id, { labels });
+        networks.set(id, { labels, name: body.Name as string | undefined, createBody: body });
         respond(201, { Id: id });
         return;
       }
@@ -196,7 +225,7 @@ function createMockDaemon(): MockDaemon {
         const id = networkInspectMatch[1];
         const n = networks.get(id);
         if (!n) { respond(404, { message: "not found" }); return; }
-        respond(200, { Id: id, Labels: n.labels });
+        respond(200, { Id: id, Name: n.name ?? id, Labels: n.labels });
         return;
       }
 
@@ -525,6 +554,27 @@ describe("Docker API proxy", () => {
 
       expect(res.status).toBe(403);
       expect(bracketOpensSeen).toBe(0);
+    });
+  });
+
+  // docs/319: a firewall sidecar carries the session label but holds NET_ADMIN in its namespace.
+  describe("ShipIt's egress sidecars", () => {
+    it("are not the session's containers, so no exec reaches them", async () => {
+      daemon.containers.set("resolver", {
+        labels: { [PARENT_SESSION_LABEL]: "session-1", "shipit-egress-resolver": "session-1" },
+        running: true,
+      });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/resolver/exec", { Cmd: ["sh"] });
+      expect(res.status).toBe(403);
+    });
+
+    it("cannot be imitated: a create with a reserved label is refused", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        Labels: { "shipit-egress-parent": "x" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("reserved");
     });
   });
 
@@ -1616,6 +1666,308 @@ describe("Docker API proxy", () => {
       const res = await create({ Binds: [`${workspace}/escape:/app:rw`] });
       expect(res.status).toBe(403);
       expect((res.body as any).message).toContain("outside session workspace");
+    });
+  });
+
+  describe("local block (docs/319-api-reach-through-host req 8)", () => {
+    const EGRESS = "shipit-egress-session-1";
+
+    beforeEach(() => {
+      prepareStart.mockReset().mockImplementation(async () => true);
+      containStart.mockReset().mockImplementation(async () => undefined);
+      vi.stubEnv("SESSION_EGRESS_SIDECAR_IMAGE", "egress:test");
+      _setLocalBlockForTest(true);
+    });
+
+    afterEach(() => {
+      _setLocalBlockForTest(false);
+      vi.unstubAllEnvs();
+    });
+
+    async function createContainer(hostConfig: Record<string, unknown> = {}): Promise<string> {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", { Image: "alpine", HostConfig: hostConfig });
+      expect(res.status).toBe(201);
+      return (res.body as { Id: string }).Id;
+    }
+
+    function ownNetwork(key: string, name = key): void {
+      daemon.networks.set(key, { labels: { [PARENT_SESSION_LABEL]: "session-1" }, name });
+    }
+
+    describe("network create", () => {
+      it("makes a network created through the proxy internal", async () => {
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "my-net" });
+        expect(res.status).toBe(201);
+        expect([...daemon.networks.values()][0]!.createBody?.Internal).toBe(true);
+      });
+
+      it("overrides Internal: false, and drops another casing Docker would read as the same field", async () => {
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", {
+          Name: "my-net", Internal: false, internal: false,
+        });
+        expect(res.status).toBe(201);
+        const body = [...daemon.networks.values()][0]!.createBody!;
+        expect(body.Internal).toBe(true);
+        expect(Object.keys(body).filter((k) => k.toLowerCase() === "internal")).toEqual(["Internal"]);
+      });
+
+      it("refuses a name reserved for ShipIt's egress networks", async () => {
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: EGRESS });
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain("reserved");
+        expect(daemon.networks.size).toBe(0);
+      });
+
+      it("changes nothing while the block is inactive", async () => {
+        _setLocalBlockForTest(false);
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "my-net", Internal: false });
+        expect(res.status).toBe(201);
+        expect([...daemon.networks.values()][0]!.createBody?.Internal).toBe(false);
+      });
+
+      // ShipIt finds its own networks by name; one a session took first would be used as ShipIt's.
+      it("refuses every shipit- name, with or without the block", async () => {
+        _setLocalBlockForTest(false);
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "shipit-session-0123456789ab" });
+        expect(res.status).toBe(403);
+        expect(daemon.networks.size).toBe(0);
+      });
+    });
+
+    describe("container create", () => {
+      it.each(["always", "unless-stopped", "on-failure"])("refuses RestartPolicy %s", async (name) => {
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+          Image: "alpine", HostConfig: { RestartPolicy: { Name: name } },
+        });
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain(`RestartPolicy "${name}" is not allowed`);
+        expect((res.body as any).message).toContain("firewall");
+        expect(daemon.containers.size).toBe(0);
+      });
+
+      it.each(["", "no"])("allows RestartPolicy %j", async (name) => {
+        await createContainer({ RestartPolicy: { Name: name } });
+      });
+
+      it("allows a restart policy while the block is inactive", async () => {
+        _setLocalBlockForTest(false);
+        await createContainer({ RestartPolicy: { Name: "always" } });
+      });
+
+      it.each([
+        ["by name", EGRESS],
+        ["by id", "3f2a9c"],
+      ])("refuses NetworkMode naming the session's egress network %s", async (_how, ref) => {
+        ownNetwork(ref, EGRESS);
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+          Image: "alpine", HostConfig: { NetworkMode: ref },
+        });
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain("ShipIt egress network");
+        expect(daemon.containers.size).toBe(0);
+      });
+
+      it("refuses NetworkingConfig.EndpointsConfig naming the session's egress network", async () => {
+        ownNetwork("3f2a9c", EGRESS);
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+          Image: "alpine", HostConfig: {}, NetworkingConfig: { EndpointsConfig: { "3f2a9c": {} } },
+        });
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain("ShipIt egress network");
+      });
+
+      it("still allows the session's own networks", async () => {
+        ownNetwork("shipit-session-abc123");
+        await createContainer({ NetworkMode: "shipit-session-abc123" });
+      });
+
+      it("allows the egress network while the block is inactive", async () => {
+        _setLocalBlockForTest(false);
+        ownNetwork(EGRESS);
+        await createContainer({ NetworkMode: EGRESS });
+      });
+    });
+
+    describe("network connect", () => {
+      it("refuses to connect a container to the session's egress network", async () => {
+        const id = await createContainer();
+        ownNetwork("3f2a9c", EGRESS);
+        let forwarded = false;
+        daemon.onServe = (method, url) => { if (url.includes("/connect")) forwarded = true; };
+
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/3f2a9c/connect", { Container: id });
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain("ShipIt egress network");
+        expect(forwarded).toBe(false);
+      });
+
+      it("connects to it while the block is inactive", async () => {
+        _setLocalBlockForTest(false);
+        const id = await createContainer();
+        ownNetwork(EGRESS);
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/networks/${EGRESS}/connect`, { Container: id });
+        expect(res.status).toBe(200);
+      });
+    });
+
+    describe("start and restart", () => {
+      it.each(["start", "restart"])("prepares before Docker's %s and contains after it", async (op) => {
+        const id = await createContainer();
+        const events: string[] = [];
+        prepareStart.mockImplementation(async () => {
+          events.push(`prepare running=${daemon.containers.get(id)!.running}`);
+          return true;
+        });
+        daemon.onServe = (method, url) => { if (url.endsWith(`/${op}`)) events.push(`docker ${method} ${url}`); };
+        containStart.mockImplementation(async () => {
+          events.push(`contain running=${daemon.containers.get(id)!.running} brackets=${openBrackets}`);
+        });
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/${op}`);
+
+        expect(res.status).toBe(204);
+        expect(events).toEqual([
+          "prepare running=false",
+          `docker POST /v1.41/containers/${id}/${op}`,
+          "contain running=true brackets=1",
+        ]);
+        expect(openBrackets).toBe(0);
+        expect(prepareStart).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: "session-1",
+          containerId: id,
+          sidecarImage: "egress:test",
+          labels: { "shipit-stack": "shipit-a" },
+        }));
+        expect(containStart).toHaveBeenCalledWith(prepareStart.mock.calls[0]![0]);
+      });
+
+      it("calls Docker by the full id it prepared, not by the name the caller used", async () => {
+        const id = await createContainer();
+        const entry = daemon.containers.get(id)!;
+        Object.assign(entry, { id });
+        daemon.containers.set("web", entry);
+        const starts: string[] = [];
+        daemon.onServe = (method, url) => { if (url.includes("/start")) starts.push(url); };
+
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/web/start");
+
+        expect(res.status).toBe(204);
+        expect(starts).toEqual([`/v1.41/containers/${id}/start`]);
+        expect(prepareStart).toHaveBeenCalledWith(expect.objectContaining({ containerId: id }));
+      });
+
+      it("answers 500, saying the container was stopped, when containment fails", async () => {
+        const id = await createContainer();
+        containStart.mockRejectedValueOnce(new Error("egress firewall installer exited 1:\niptables: denied"));
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(500);
+        const message = (res.body as any).message as string;
+        expect(message).toContain("The container was stopped");
+        expect(message).toContain("could not keep it away from this machine and private networks");
+        expect(message).toContain("installer exited 1");
+        expect(message).not.toContain("iptables: denied");
+        expect(openBrackets).toBe(0);
+      });
+
+      it("refuses the start, and never forwards it, when the container cannot be started safely", async () => {
+        const id = await createContainer();
+        prepareStart.mockRejectedValueOnce(new ProxyEgressRefusal('network "legacy" is not internal'));
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain('Starting this container is refused: network "legacy" is not internal');
+        expect(daemon.containers.get(id)!.running).toBe(false);
+        expect(containStart).not.toHaveBeenCalled();
+      });
+
+      it("does not start the container when preparing it fails", async () => {
+        const id = await createContainer();
+        prepareStart.mockRejectedValueOnce(new Error("disconnect failed"));
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(500);
+        expect((res.body as any).message).toContain("ShipIt did not start the container");
+        expect(daemon.containers.get(id)!.running).toBe(false);
+      });
+
+      it("contains nothing when Docker refuses the start", async () => {
+        const id = await createContainer();
+        daemon.startStatus = 500;
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(500);
+        expect((res.body as any).message).toBe("mock start refused");
+        expect(containStart).not.toHaveBeenCalled();
+      });
+
+      it("still contains the container when Docker's answer to the start is lost", async () => {
+        const id = await createContainer();
+        daemon.dropStart = true;
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(500);
+        expect(daemon.containers.get(id)!.running).toBe(true);
+        expect(containStart).toHaveBeenCalledTimes(1);
+      });
+
+      it("contains a container Docker reports as already running, whose egress was just detached", async () => {
+        const id = await createContainer();
+        daemon.startStatus = 304;
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(304);
+        expect(containStart).toHaveBeenCalledTimes(1);
+      });
+
+      it("skips containment for a container with no network", async () => {
+        const id = await createContainer();
+        prepareStart.mockResolvedValueOnce(false);
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(204);
+        expect(containStart).not.toHaveBeenCalled();
+      });
+
+      it("refuses to start when no egress sidecar image is configured", async () => {
+        const id = await createContainer();
+        vi.stubEnv("SESSION_EGRESS_SIDECAR_IMAGE", "");
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/start`);
+
+        expect(res.status).toBe(500);
+        expect((res.body as any).message).toContain("no egress sidecar image");
+        expect(daemon.containers.get(id)!.running).toBe(false);
+        expect(prepareStart).not.toHaveBeenCalled();
+      });
+
+      it("checks ownership before anything else", async () => {
+        daemon.containers.set("foreign", { labels: { [PARENT_SESSION_LABEL]: "other-session" }, running: false });
+
+        const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/foreign/start");
+
+        expect(res.status).toBe(403);
+        expect(prepareStart).not.toHaveBeenCalled();
+      });
+
+      it.each(["start", "restart"])("%s is passed straight through while the block is inactive", async (op) => {
+        _setLocalBlockForTest(false);
+        const id = await createContainer();
+
+        const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/${op}`);
+
+        expect(res.status).toBe(204);
+        expect(daemon.containers.get(id)!.running).toBe(true);
+        expect(prepareStart).not.toHaveBeenCalled();
+        expect(containStart).not.toHaveBeenCalled();
+      });
     });
   });
 });

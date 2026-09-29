@@ -63,7 +63,7 @@ async function runScript(
   env: Record<string, string>,
 ): Promise<{ code: number; stdout: string; calls: string[] }> {
   let code = 0;
-  let stdout = "";
+  let stdout: string;
   try {
     const result = await run("bash", [path.join(SCRIPTS, script)], {
       env: { PATH: `${stubs.dir}:${process.env.PATH ?? ""}`, ...env },

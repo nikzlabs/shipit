@@ -1,4 +1,5 @@
 import http from "node:http";
+import type Docker from "dockerode";
 
 import {
   respond,
@@ -18,6 +19,7 @@ import type { DockerProxyDeps, Route, RequestContext } from "./docker-proxy-help
 import {
   containerBelongsToSession,
   networkBelongsToSession,
+  sessionOwnedNetwork,
   volumeBelongsToSession,
   getExecParentContainerId,
 } from "./docker-proxy-auth.js";
@@ -28,6 +30,17 @@ import {
   verifyContainerMountPaths,
 } from "./docker-proxy-sanitize.js";
 import { findAmbiguousFieldCasing } from "./docker-proxy-field-casing.js";
+import {
+  ProxyEgressRefusal,
+  containProxyContainer,
+  egressNetworkAttachRefusal,
+  isEgressNetworkName,
+  prepareProxyContainerStart,
+  withProxyStartLock,
+} from "./docker-proxy-egress.js";
+import { createDockerClient } from "./docker-client.js";
+import { localBlockActive } from "./local-block.js";
+import { stackLabel } from "./stack-label.js";
 
 export {
   respond,
@@ -64,7 +77,94 @@ export {
 } from "./docker-proxy-sanitize.js";
 export { findAmbiguousFieldCasing } from "./docker-proxy-field-casing.js";
 
-function buildRoutes(): Route[] {
+function firstLine(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).split("\n", 1)[0] ?? "";
+}
+
+/**
+ * A start or restart with the local block active (docs/319-api-reach-through-host req 8). Docker
+ * is called by the container's full id, so the container prepared is the one Docker starts.
+ */
+async function startContained(
+  ctx: RequestContext,
+  docker: Docker,
+  containerRef: string,
+  suffix: string,
+  query: string,
+): Promise<void> {
+  const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+  if (!sidecarImage) {
+    respond(ctx.res, 500, {
+      message: "ShipIt did not start the container: no egress sidecar image is configured, "
+        + "so it cannot keep the container away from this machine and private networks",
+    });
+    return;
+  }
+  const body = await readBody(ctx.req, MAX_BODY_SIZE);
+  const contentType = ctx.req.headers["content-type"];
+  const version = /^\/v[\d.]+/.exec(ctx.req.url ?? "")?.[0] ?? "";
+
+  await withProxyStartLock(docker, containerRef, async (containerId) => {
+    const target = {
+      docker,
+      sessionId: ctx.session.sessionId,
+      containerId,
+      sidecarImage,
+      labels: stackLabel(ctx.stackName),
+    };
+    let contain: boolean;
+    try {
+      contain = await prepareProxyContainerStart(target);
+    } catch (err) {
+      if (err instanceof ProxyEgressRefusal) {
+        forbidden(ctx.res, `Starting this container is refused: ${err.message}`);
+      } else {
+        respond(ctx.res, 500, {
+          message: `ShipIt did not start the container: it could not prepare the firewall that keeps it `
+            + `away from this machine and private networks (${firstLine(err)})`,
+        });
+      }
+      return;
+    }
+
+    let dockerResult: Awaited<ReturnType<typeof forwardToDocker>>;
+    try {
+      dockerResult = await forwardToDocker(
+        ctx.socketPath,
+        "POST",
+        `${version}/containers/${containerId}${suffix}${query}`,
+        contentType ? { "content-type": contentType } : {},
+        body.length > 0 ? body : undefined,
+      );
+    } catch (err) {
+      // Docker may have started it before the answer was lost; a stopped container is left alone.
+      if (contain) {
+        try { await containProxyContainer(target); } catch { /* it stopped the container */ }
+      }
+      throw err;
+    }
+    // 304: already running, and the egress network was just detached, so it is reattached behind
+    // a fresh firewall.
+    const started = (dockerResult.statusCode >= 200 && dockerResult.statusCode < 300)
+      || dockerResult.statusCode === 304;
+    if (contain && started) {
+      try {
+        await containProxyContainer(target);
+      } catch (err) {
+        console.warn(`[docker-proxy:${ctx.session.sessionId}] containment of ${containerId} failed:`, err);
+        respond(ctx.res, 500, {
+          message: "The container was stopped: ShipIt could not keep it away from this machine "
+            + `and private networks (${firstLine(err)})`,
+        });
+        return;
+      }
+    }
+    ctx.res.writeHead(dockerResult.statusCode, dockerResult.headers);
+    ctx.res.end(dockerResult.body);
+  });
+}
+
+function buildRoutes(getDocker: () => Docker): Route[] {
   const routes: Route[] = [];
 
   function route(method: string, pattern: RegExp, handler: Route["handler"]): void {
@@ -128,11 +228,20 @@ function buildRoutes(): Route[] {
     mounting?: boolean;
     /** Docker stops the container first, and the session decides how long that takes. */
     mountsAfterStopping?: boolean;
+    /** Runs the container in a new network namespace, which needs its firewall (docs/319). */
+    startsNamespace?: boolean;
   }[] = [
     { method: "GET", suffix: "/json" },
-    { method: "POST", suffix: "/start", topologyChanging: true, mounting: true },
+    { method: "POST", suffix: "/start", topologyChanging: true, mounting: true, startsNamespace: true },
     { method: "POST", suffix: "/stop" },
-    { method: "POST", suffix: "/restart", topologyChanging: true, mounting: true, mountsAfterStopping: true },
+    {
+      method: "POST",
+      suffix: "/restart",
+      topologyChanging: true,
+      mounting: true,
+      mountsAfterStopping: true,
+      startsNamespace: true,
+    },
     { method: "POST", suffix: "/kill" },
     { method: "DELETE", suffix: "" },
     { method: "POST", suffix: "/wait" },
@@ -164,6 +273,10 @@ function buildRoutes(): Route[] {
       }
       const endTopologyChange = op.topologyChanging ? ctx.beginTopologyChange?.() : undefined;
       try {
+        if (op.startsNamespace && localBlockActive()) {
+          await startContained(ctx, getDocker(), containerId, op.suffix, match[2] ?? "");
+          return;
+        }
         const piped = pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
         if (op.topologyChanging) await piped;
       } finally {
@@ -251,11 +364,29 @@ function buildRoutes(): Route[] {
   route("POST", /^(?:\/v[\d.]+)?\/networks\/create(\?.*)?$/, async (ctx) => {
     try {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
-      const body = parseJsonObjectBody(bodyBuf);
+      let body = parseJsonObjectBody(bodyBuf);
 
       const ambiguous = findAmbiguousFieldCasing(body);
       if (ambiguous) {
         forbidden(ctx.res, ambiguous); return;
+      }
+
+      // ShipIt finds its own networks by name, so a session must not take one first.
+      if (typeof body.Name === "string" && body.Name.trim().toLowerCase().startsWith("shipit-")) {
+        forbidden(ctx.res, `Network name "${body.Name}" is reserved for ShipIt's own networks`); return;
+      }
+      if (localBlockActive()) {
+        if (typeof body.Name === "string" && isEgressNetworkName(body.Name)) {
+          forbidden(ctx.res, `Network name "${body.Name}" is reserved for ShipIt's egress networks`); return;
+        }
+        // A container on it then starts with no route out, before its firewall (docs/319). Go decodes
+        // any casing of the key into the same field, and the last one wins.
+        body = {
+          ...Object.fromEntries(
+            Object.entries(body).filter(([key]) => key.normalize("NFKC").toLowerCase() !== "internal"),
+          ),
+          Internal: true,
+        };
       }
 
       body.Labels = { ...((body.Labels ?? {}) as Record<string, string>), ...ownershipLabels(ctx) };
@@ -312,8 +443,13 @@ function buildRoutes(): Route[] {
 
   route("POST", /^(?:\/v[\d.]+)?\/networks\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/connect(\?.*)?$/, async (ctx, match) => {
     const networkId = match[1];
-    if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
+    const network = await sessionOwnedNetwork(ctx.socketPath, networkId, ctx.session.sessionId);
+    if (!network) {
       forbidden(ctx.res, "Network does not belong to this session"); return;
+    }
+    const egressRefusal = egressNetworkAttachRefusal(networkId, network);
+    if (egressRefusal) {
+      forbidden(ctx.res, egressRefusal); return;
     }
 
     try {
@@ -507,7 +643,8 @@ function buildRoutes(): Route[] {
 
 export function createDockerProxy(deps: DockerProxyDeps): http.Server {
   const socketPath = deps.socketPath ?? DOCKER_SOCKET;
-  const routes = buildRoutes();
+  let docker: Docker | undefined;
+  const routes = buildRoutes(() => (docker ??= createDockerClient({ socketPath })));
 
   const server = http.createServer(async (req, res) => {
     try {

@@ -395,12 +395,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return this.isEgressContained(sessionId) || localBlockActive();
   }
 
-  /** The firewall policy for this session's containers; null installs none. */
-  firewallPolicy(sessionId: string): EgressPolicy | null {
-    if (this.isEgressContained(sessionId)) return "contained";
-    return localBlockActive() ? "open" : null;
-  }
-
   resolveEgress(sessionId: string): ResolvedEgressConfig | undefined {
     return this.resolveEgressConfig?.(sessionId);
   }
@@ -436,12 +430,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   async orchestratorTcp(): Promise<LocalTcpAccept[]> {
     if (!this.orchestratorSubnets) {
-      try {
-        const info = await this.docker.getNetwork(this.networkName).inspect();
-        this.orchestratorSubnets = extractNetworkSubnets(info).filter((cidr) => !cidr.includes(":"));
-      } catch {
-        return [];
-      }
+      const info = await this.docker.getNetwork(this.networkName).inspect();
+      const subnets = extractNetworkSubnets(info).filter((cidr) => !cidr.includes(":"));
+      // Without it the agent's firewall would shut it out of ShipIt itself.
+      if (subnets.length === 0) throw new Error(`network ${this.networkName} reports no IPv4 subnet`);
+      this.orchestratorSubnets = subnets;
     }
     const ports = [Number(process.env.PORT || "3000"), ...(this.dockerProxyPort ? [this.dockerProxyPort] : [])];
     return this.orchestratorSubnets.flatMap((subnet) => ports.map((port) => ({ subnet, port })));
