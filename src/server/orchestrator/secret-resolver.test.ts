@@ -366,6 +366,20 @@ const SHELLS = [["sh"], ["dash"], ["bash"], ["bash", "--posix"], ["busybox", "sh
   .map((shell) => [shell.join(" "), shell] as const);
 const CAT = execFileSync("sh", ["-c", "command -v cat"]).toString("utf-8").trim();
 
+// busybox can run its own cat applet without looking at PATH, so a cat placed
+// on PATH reaches only the other shells.
+const SHELLS_FINDING_CAT_ON_PATH = SHELLS.filter(([, shell]) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cat-lookup-"));
+  try {
+    fs.writeFileSync(path.join(dir, "cat"), "#!/bin/sh\nprintf stub\n", { mode: 0o755 });
+    const [bin, ...pre] = shell;
+    const result = spawnSync(bin, [...pre, "-c", "cat /dev/null"], { env: { PATH: `${dir}:${process.env.PATH}` } });
+    return result.stdout?.toString("utf-8") === "stub";
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Names a shell treats specially, plus every variable bash knows when it is installed.
 const SHELL_NAMES = [...new Set([
   "PIPESTATUS", "SHLVL", "_", "UID", "PPID", "OPTIND", "IFS", "PS4", "LANG", "LC_ALL", "RANDOM", "SECONDS",
@@ -446,7 +460,8 @@ describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
       written.map((name) => [name, fs.readFileSync(path.join(sessionDir, name))]),
     ));
     // A PATH entry that runs code if the wrapper ever puts it into eval, and a
-    // cat that fails if any secret is already set while it reads.
+    // cat that fails if any secret is already set while it reads (busybox may
+    // use its own cat instead).
     const trap = path.join(tmpDir, "bin$(touch pwned)");
     fs.mkdirSync(trap);
     fs.writeFileSync(path.join(trap, "cat"), [
@@ -495,7 +510,16 @@ describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
     expect(stderr).toContain("no secret file is readable");
   });
 
-  it.each(SHELLS)("%s stops the start, not delivering partial output, when cat fails", (_label, shell) => {
+  it.each(SHELLS)("%s stops the start when a secret file cannot be read", (_label, shell) => {
+    const { script, mountDir } = mountSecrets({ AAAA: "a" });
+    fs.mkdirSync(path.join(mountDir, "shipit-K"));
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("secret K could not be read");
+  });
+
+  it.each(SHELLS_FINDING_CAT_ON_PATH)("%s does not take partial output from a failing cat for a read", (_label, shell) => {
     const { script } = mountSecrets({ K: "v" });
     // Its partial output even ends like a successful read.
     const failing = path.join(tmpDir, "failing-bin");
