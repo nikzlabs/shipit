@@ -17,6 +17,11 @@ import type { PresentStore } from "./present-store.js";
 import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
+import {
+  COMPOSE_HELPER_IMAGE_ENV,
+  resolveComposeHelperImage,
+  setComposeHelperImage,
+} from "./compose-helper.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
 import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
@@ -159,6 +164,18 @@ export async function setupContainerManager(
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
       await containerManager.ensureNetwork();
+      const helperImage = await resolveComposeHelperImage(
+        containerManager.getDockerClient(), process.env[COMPOSE_HELPER_IMAGE_ENV],
+      );
+      setComposeHelperImage(helperImage);
+      if (helperImage.status === "ready") {
+        console.log(`[server] Compose helper image ${helperImage.name} pinned to ${helperImage.id}`);
+      } else {
+        console.warn(
+          `[server] Compose helper image unavailable (${helperImage.reason}) — `
+          + "Compose commands that read project files will be refused",
+        );
+      }
       if (isOverlayEnabled() && !process.env.SESSION_WORKER_IMAGE_ID) {
         const workerImageId = await containerManager.resolveWorkerImageId();
         if (workerImageId) {

@@ -11,12 +11,9 @@ import { SessionManager } from "../sessions.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { resolveSessionPluginServices } from "../services/plugin-services.js";
 import { clearActivationState } from "../services/plugin-activation.js";
-import { ServiceManager, type ComposeQuery, type ComposeRunner } from "../service-manager.js";
-import {
-  COMPOSE_OVERRIDE_FILE,
-  SESSION_STATE_SUBDIR,
-  SESSION_WORKSPACE_SUBDIR,
-} from "../session-state-dir.js";
+import type { ServiceManager, ComposeQuery, ComposeRunner } from "../service-manager.js";
+import { localProjectComposeAccess, recordedOverride, testServiceManager } from "../compose-test-helpers.js";
+import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 import { GitManager } from "../../shared/git.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import { GitHubAuthManager } from "../github-auth.js";
@@ -111,7 +108,7 @@ interface Stack {
 
 function makeStack(): Stack {
   const commands: string[][] = [];
-  const mgr = new ServiceManager({
+  const mgr = testServiceManager({
     sessionId: SESSION_ID,
     workspaceDir,
     serviceEnvDir: path.join(sessionDir, "service-env"),
@@ -126,13 +123,14 @@ function makeStack(): Stack {
 async function startStack(stack: Stack): Promise<void> {
   const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
     containEgress: false,
+    projectCompose: localProjectComposeAccess(workspaceDir),
   });
   stack.mgr.setPluginServices(services);
   await stack.mgr.start();
 }
 
-function readOverride(): Record<string, Record<string, unknown>> {
-  return (parseYaml(fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8")) as {
+function readOverride(service: string): Record<string, Record<string, unknown>> {
+  return (parseYaml(recordedOverride(workspaceDir, service)) as {
     services: Record<string, Record<string, unknown>>;
   }).services;
 }
@@ -152,7 +150,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     expect(stack.mgr.getServices().map((s) => s.name).sort())
       .toEqual(["probe", "probe-worker", "web"]);
-    const override = readOverride();
+    const override = readOverride("probe");
 
     expect(override.probe).toMatchObject({
       image: "node:22-alpine",
@@ -198,9 +196,9 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     expect(stack.mgr.getServices().map((s) => s.name).sort())
       .toEqual(["probe-worker", "reqs-probe", "web"]);
-    expect(readOverride()["reqs-probe"]).toBeDefined();
+    expect(readOverride("reqs-probe")["reqs-probe"]).toBeDefined();
     expect(startedNames(stack.commands)).toContain("probe-worker");
-    expect(readOverride()["probe-worker"].depends_on).toEqual(["reqs-probe"]);
+    expect(readOverride("probe-worker")["probe-worker"].depends_on).toEqual(["reqs-probe"]);
     expect(stack.mgr.getService("reqs-probe")?.origin).toMatchObject({ sourceName: "probe" });
     await stack.mgr.stop();
   });
@@ -269,7 +267,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     expect(stack.mgr.getServices().map((s) => s.name)).toEqual(["probe"]);
     expect(stack.mgr.getService("probe")?.origin).toBeUndefined();
-    expect(readOverride()["probe-worker"]).toBeUndefined();
+    expect(readOverride("probe")["probe-worker"]).toBeUndefined();
     expect(startedNames(stack.commands)).toContain("probe");
     await stack.mgr.stop();
   });
@@ -277,7 +275,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
   it("still sends the service list when the stack fails to start (#2325)", async () => {
     writeFixture();
     const commands: string[][] = [];
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: SESSION_ID,
       workspaceDir,
       serviceEnvDir: path.join(sessionDir, "service-env"),
@@ -301,6 +299,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
       containEgress: false,
+      projectCompose: localProjectComposeAccess(workspaceDir),
     });
     mgr.setPluginServices(services);
     await expect(mgr.start()).rejects.toThrow("compose up failed");
@@ -330,6 +329,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
       containEgress: false,
       workspaceVolume: "shipit-ws",
       stateRoot: path.join(stateRoot, "elsewhere"),
+      projectCompose: localProjectComposeAccess(workspaceDir),
     });
 
     expect(services).toEqual([]);

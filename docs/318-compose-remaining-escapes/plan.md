@@ -6,7 +6,8 @@ description: Run the Compose commands that read project files in confined throwa
 
 # 318 — Compose remaining file escapes
 
-Implements [requirements.md](requirements.md). Design; nothing here is built yet.
+Implements [requirements.md](requirements.md). Built on the planning#620 branch and
+checked on a real deployment on 2026-09-29 (*Deployment checks run on 2026-09-29*).
 Follows planning#619, which closed the literal `./sub` symlink escape, the direct
 shared-volume mount, and `~` sources.
 
@@ -116,7 +117,15 @@ grant on a proposal card that only the user can accept, the same as
 `allowAgentMerge`. Round 32 (run `b58a7081-db1d-4cce-b726-b9af4bfe3482`) found
 that `pid: service:<proxy>` reaches the proxy's socket through `/proc` (fixed:
 one rule refuses every join — `volumes_from` or a `service:` namespace — to a
-socket-bearing service).
+socket-bearing service). Round 33 found that the proxy was known by its tag
+alone (fixed: a pinned digest), and round 34 found one more unchecked field
+(fixed: refused). Because each round found one more field, the requester chose
+a list of classified fields over more rounds (requirements Q15). The independent review of
+the implementation (run `82f95ad9-eb35-4197-a94e-8a452da139ef`) reported that
+the snapshot was written before the project secret copies were named in it;
+the code copies first and writes after (`service-manager.ts`, covered by
+`service-manager-confined.test.ts`), so nothing changed. It found no part of
+the change that could be removed.
 
 ## Mechanism 1 — confined Compose containers
 
@@ -274,10 +283,11 @@ env-file resolution off, stripped of file keys, and validated the same way.
   image and the orchestrator images (`docker/Dockerfile.prod`, and
   `docker/Dockerfile.dev` for the local dev deployment) all install one pinned
   version, the one the deployment checks below were run on, and a bump repeats
-  those checks.
+  those checks. The pin is `docker-compose-plugin=5.5.1-1~debian.12~bookworm`
+  (`orchestrator-compose.test.ts` fails if the three files disagree).
 - **Isolation:** `--rm`, `--network none` (the CLI reaches the daemon through
-  the mounted socket), a read-only root filesystem with a tmpfs `/tmp`, and
-  `no-new-privileges`.
+  the mounted socket), a read-only root filesystem with a tmpfs `/tmp`,
+  `no-new-privileges`, `--cap-drop ALL`, and `--pull never`.
 - **User:** `config`, the file reads, and `build` run as the session identity
   (`identityForSession`), with the socket's group added for `build`. Anything a
   build writes into the workspace is owned as the agent's files are, which is
@@ -438,7 +448,10 @@ snapshot.
    - **The trusted proxy's identity.** ShipIt identifies the trusted proxy by
      an image digest that ShipIt pins, not by its tag alone. No other service
      of the project may build or name that image (review round 33, run
-     `8bf23ca3-712f-4965-a34d-1fcc199952e3`).
+     `8bf23ca3-712f-4965-a34d-1fcc199952e3`). The proxy is trusted only with
+     the ops template's own keys. An ops file written before the pin names
+     the tag alone; it stays trusted, because the override always sets the
+     pinned reference as the proxy's `image`.
    - **Socket-bearing services cannot be joined.** A service that mounts the
      Docker socket, directly or through its own `volumes_from`, may not be
      named by `volumes_from` or by the `service:<name>` form of any
@@ -458,8 +471,8 @@ snapshot.
      `SAFE_ADDED_CAPABILITIES`: the capabilities whose effect stays inside the
      container's own namespaces. The starting list is `NET_ADMIN`,
      `SYS_PTRACE`, `IPC_LOCK`, and `SYS_NICE`, plus the names in Docker's
-     default set (adding one of those changes nothing). `ALL` and every other
-     name are refused. Today Open sessions accept any `cap_add`.
+     default set except `NET_RAW`, which ShipIt drops from every service.
+     `ALL` and every other name are refused.
    - **Security options (req 7, Q13).** In every mode, `security_opt` may hold
      only `no-new-privileges` (also written `no-new-privileges:true` or
      `=true`). Every other value is refused. Today `security_opt` is not checked
@@ -491,6 +504,15 @@ snapshot.
      change applies at the next start. This replaces
      `dockerSocket: composeConfig.dockerSocket || opsSession`
      (`service-manager.ts`).
+   - **Classified fields only (req 7, requirements Q15).** Each service key
+     must be on `CLASSIFIED_SERVICE_FIELDS`, or start with `x-`. A key on the
+     list either has no effect outside the container or has its own check in
+     this step. Any other key is refused with a message that names it, so a
+     field a later Compose release adds is refused until ShipIt classifies it.
+     Some fields stay on the list only with a check of their own: `logging`
+     (the `json-file` or `local` driver), `deploy` (no device reservations),
+     `post_start`/`pre_stop` (no `privileged`), and `label_file` (inside the
+     workspace).
    - **Anything left unresolved** — a `$` in a path field, a source Compose did
      not make absolute, a mount field ShipIt does not recognise — is refused
      (req 6).
@@ -595,7 +617,11 @@ uses the same parts:
 
 - **Store:** a `repos.allow_docker_socket` column, default off
   (`repo-store.ts` with a setter, `RepoInfo` in the shared domain types, a
-  migration in `shared/database.ts`).
+  migration in `shared/database.ts`). It is keyed like repository trust
+  (`canonicalRepoKey`), so a repository on any host can hold it.
+- **Read:** `dockerSocketGrantFor` (`service-manager-setup.ts`) at each start.
+  A sandbox gets no grant by its session kind, whatever repository address
+  its workspace names (planning#623).
 - **Write:** the `PATCH /api/repos/:url` route (`api-routes-session-repos.ts`)
   takes `allowDockerSocket` and passes it to `applyRepoSettings`
   (`settings-apply.ts`), which writes it and names `project.allowDockerSocket`
@@ -620,6 +646,45 @@ uses the same parts:
   project's services control of the Docker host. The agent can read it with
   `shipit settings get` and can propose it; only the user's accept on the
   proposal card, or the toggle, turns it on.
+
+## Where the build differs from the design above
+
+- **Code layout.** `parseComposeContent` runs the raw syntax checks and
+  `validateResolvedModel` the security checks (`compose-generator.ts`);
+  `rewriteResolvedModel` writes the snapshot; `ConfinedCompose`
+  (`compose-helper.ts`) runs the confined commands; `compose-start-record.ts`
+  holds the stop record. `parseComposeFile` and `parseUserNamedVolumes` are
+  gone. The plugin readers take a `ProjectComposeAccess` (a confined read, the
+  socket grant, and the ops flag).
+- **When a refusal shows.** A security refusal appears when a start resolves
+  that service. A manual service is not checked until it is started, and the
+  plugin preflight and the secrets-status refresh see only the raw syntax
+  checks.
+- **Compose's own normalization accepted:** `name: <project>_<key>` on
+  declarations, and the implicit `networks: {default: null}` on the trusted
+  proxy.
+- **Snapshot.** On 5.5.1, `config` inlines `env_file` and drops the key, and
+  inlines `label_file` but keeps the key. So a non-empty `env_file` is refused
+  as not inlined, and `label_file` is removed. `ports` is dropped from the
+  snapshot, because the override resets it anyway.
+- **`$` in values.** `config` prints every `$` as `$$`. ShipIt removes that
+  escaping once when it reads the output (`unescapeComposeDollars`), checks the
+  true values, and `serializeComposeModel` escapes them once again.
+- **Networks.** `config` writes `networks: {default: null}` for a service that
+  names no network. The snapshot drops that entry, and the unused `default`
+  network, so the service joins only `shipit-session`, as before.
+- **Project secret copies** are mode 0644 inside a 0700 root-owned directory,
+  so a service that runs as a non-root user can read its own secret. They are
+  this session's own secrets (requirement 7's accidental-reach class).
+- **A Stop during the resolve** of a multi-service start does not narrow
+  `build`: every service with `build:` in the snapshot is built.
+- **A plugin-only start** in a project that has a compose file skips orphan
+  removal, because it read no service list.
+- **Settings.** The registry login is copied to `<stateDir>/compose-registry-login`;
+  `SHIPIT_SERVICE_ENV_HOST_DIR` supplies the service-env directory's
+  Docker-host path when it is outside the workspace volume.
+- **Containers started before this change** have no stop record; `stop` stops
+  them model-free.
 
 ## What each requirement maps to
 
@@ -707,6 +772,64 @@ socket mount is refused),
 the grant route's refusal of a session's containers, the rewrite, the secret-file copy, the removal of file keys, the plugin-only
 path, and every fail-closed path.
 
+### Deployment checks run on 2026-09-29
+
+On a host with Docker Engine 29.7.2, with the helper image built from this
+branch and ShipIt's own flags and functions (not a ShipIt instance), these
+passed:
+
+- The helper image builds; Docker's apt repository has
+  `docker-compose-plugin=5.5.1-1~debian.12~bookworm`. A helper container starts
+  in about 0.18 s.
+- The pinned proxy digest is Docker Hub's for
+  `tecnativa/docker-socket-proxy:0.3.0`, and the pinned reference pulls.
+- `config --no-consistency <names>` with the stubs on `-f -`: the named
+  services, a profile from `extends`, the dependencies, and a plugin dependency
+  resolve; a profile peer is left out; `env_file` is inlined; the raw-bytes
+  framing returns the file exactly. ShipIt's validator accepts the real output.
+- A symlinked `env_file`, project file, and build context that point outside
+  the workspace are not found inside the helper.
+- `build` as the session user plus the socket group, with `--network none`,
+  builds; `up --no-build` as root from the snapshot and override starts the
+  services with the right user, values, labels, mounts, and secret (readable
+  by a non-root service).
+- `ps` and `logs` with only `-p` in an empty directory; `stop` with the start's
+  pair runs `pre_stop`; a model-free `down --volumes` removes the containers,
+  networks, and every declared volume.
+
+They found three defects, fixed in this branch: a kept `label_file` key was
+refused, `$` was escaped twice, and every service joined a second network (see
+*Where the build differs*). A dependency behind a profile that is not enabled
+is refused by `config`, as today's `up` refuses it.
+
+The same day the branch also ran as that host's ShipIt instance (a local
+install), which was then returned to `main`. Through ShipIt itself:
+
+- A new session's stack (a Vite app) starts, and its preview answers. The
+  service runs as the session user, joins only `shipit-session`, and ShipIt's
+  start files are root-only; `compose.up` took about 0.9 s.
+- `shipit service stop`/`start`/`restart` work from the agent container.
+- A refused `cap_add` shows its message in the API's `failure` and in
+  `shipit service list`; `label_file` and a literal `$` reach the container.
+- Orphan removal removes a stale service's container and keeps a one-off one.
+- A new ops session runs the proxy at the pinned digest, read-only; a file
+  changed to the tag-only form keeps it trusted and pinned.
+- With the helper image missing, startup logs it and a start fails closed with
+  a message naming the image and the fix; restoring it recovers the session.
+- A plugin-only stack (a self-exported plugin, no project file) starts its
+  service through the override-only path.
+- A declared `x-shipit-secrets` value reaches the service through the
+  service-env files (the default path inside the workspace volume), and not
+  the agent.
+
+Not checked there: a private image pull (that host's orchestrator has no
+registry login to copy) and `SHIPIT_SERVICE_ENV_HOST_DIR` (its service-env
+directory is the default one in the workspace volume). Two older issues
+showed up: `shipit service start`/`restart` printed "Internal Server Error"
+instead of the reason, because the CLI read only `error` from Fastify's error
+body (fixed in this branch), and a secret value with `$` is expanded by
+Compose's env-file interpolation (planning#624).
+
 These need a check on a deployment, listed in the PR test plan:
 
 - Choose the pinned `docker-compose-plugin` version (not 2.34.0) and confirm
@@ -732,3 +855,20 @@ These need a check on a deployment, listed in the PR test plan:
   point outside the workspace fail inside the container.
 - The added start latency is acceptable, and a plain stack (workspace binds and
   `/persist` only) and a plugin-only stack start unchanged.
+- On the pinned version, `config` output adds `networks: {default: null}` and
+  `name: <project>_<key>` in exactly those forms, adds no service field outside
+  `CLASSIFIED_SERVICE_FIELDS`, and drops `env_file`/`label_file` once inlined.
+- `stop` from a start's snapshot and override works on the orchestrator,
+  where the override's Docker-host paths do not exist.
+- `up` loads a project secret copy by its Docker-host path, and a non-root
+  service can read it.
+- Orphan removal removes only containers of services no longer in the file or
+  the plugin list, and keeps one-off `run` containers.
+- A model-free `down --volumes` also removes the `persist` and
+  session-workspace volumes ShipIt declared, found by project label.
+- `SHIPIT_SERVICE_ENV_HOST_DIR` works for a service-env directory outside the
+  workspace volume, and its absence refuses the start with a message naming it.
+- The helper-missing refusal appears on a plain stack start and on the plugin
+  card; the helper runs with `--cap-drop ALL` and `--pull never`.
+- The trusted proxy's pinned digest matches Docker Hub's for
+  `tecnativa/docker-socket-proxy:0.3.0` (read from ghcr.io).

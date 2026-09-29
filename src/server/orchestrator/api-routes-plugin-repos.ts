@@ -35,7 +35,7 @@ import {
   getPluginServiceFailures,
 } from "./services/plugin-activation.js";
 import { collectPluginFragments } from "./plugin-compose.js";
-import { parseComposeFile } from "./compose-generator.js";
+import { readProjectServices, type ProjectComposeAccess } from "./services/plugin-services.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { getErrorMessage } from "./validation.js";
 import { buildPluginStatus, liveDepStoreNotice } from "./services/plugin-status.js";
@@ -100,7 +100,7 @@ export async function registerPluginRepoRoutes(
       }
       let snapshot: PluginReposSnapshot;
       try {
-        snapshot = assemblePluginSnapshot(
+        snapshot = await assemblePluginSnapshot(
           request.params.id,
           session.workspaceDir,
           session.remoteUrl ?? null,
@@ -200,7 +200,7 @@ export async function registerPluginRepoRoutes(
       }
 
       try {
-        return assemblePluginSnapshot(
+        return await assemblePluginSnapshot(
           request.query.sessionId,
           session.workspaceDir,
           consumerRepoUrl,
@@ -219,12 +219,12 @@ export async function registerPluginRepoRoutes(
   );
 }
 
-export function assemblePluginSnapshot(
+export async function assemblePluginSnapshot(
   sessionId: string | undefined,
   workspaceDir: string,
   consumerRepoUrl: string | null,
   deps: ApiDeps,
-): PluginReposSnapshot {
+): Promise<PluginReposSnapshot> {
   const config = resolveShipitConfig(workspaceDir);
   // Resolve once so a concurrent refresh cannot mix generations in one snapshot.
   const live = liveGenerationsFor(workspaceDir, config.plugins.repos);
@@ -256,7 +256,12 @@ export function assemblePluginSnapshot(
     config.pluginExports,
     consumerRepoUrl,
     config.warnings,
-    readRuntimeState(sessionId, workspaceDir, config, live, { containEgress }),
+    await readRuntimeState(sessionId, workspaceDir, config, live, {
+      containEgress,
+      ...(sessionId && deps.projectComposeAccess
+        ? { projectCompose: deps.projectComposeAccess(sessionId, workspaceDir) }
+        : {}),
+    }),
     credentialGroups,
     hostGroups,
   );
@@ -273,17 +278,19 @@ function liveGenerationsFor(
   }
 }
 
-function readRuntimeState(
+async function readRuntimeState(
   sessionId: string | undefined,
   workspaceDir: string,
   config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
   live: LiveGenerations,
-  opts: { containEgress: boolean },
-): Record<string, PluginRepoRuntime> {
+  opts: { containEgress: boolean; projectCompose?: ProjectComposeAccess },
+): Promise<Record<string, PluginRepoRuntime>> {
   const runtime: Record<string, PluginRepoRuntime> = {};
   if (!sessionId) return runtime;
 
-  const serviceIssues = collectPluginFragmentIssues(workspaceDir, live, config, opts.containEgress);
+  const serviceIssues = await collectPluginFragmentIssues(
+    workspaceDir, live, config, opts.containEgress, opts.projectCompose,
+  );
 
   const settingsIssues = pluginSettingsIssuesByRepo(config.plugins, config.pluginExports, live);
   const issuesFor = (repoName: string): string[] => [
@@ -337,24 +344,16 @@ function readRuntimeState(
   return runtime;
 }
 
-function collectPluginFragmentIssues(
+async function collectPluginFragmentIssues(
   workspaceDir: string,
   live: LiveGenerations,
   config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
   containEgress: boolean,
-): Map<string, string[]> {
+  projectCompose: ProjectComposeAccess | undefined,
+): Promise<Map<string, string[]>> {
+  // Project compose errors are reported separately.
+  const { names: projectServiceNames } = await readProjectServices(config, containEgress, projectCompose);
   try {
-    let projectServiceNames: string[] = [];
-    if (config.compose) {
-      try {
-        projectServiceNames = parseComposeFile(path.join(workspaceDir, config.compose.file), {
-          dockerSocket: config.compose.dockerSocket,
-          containEgress,
-        }).map((s) => s.name);
-      } catch {
-        // Project compose errors are reported separately.
-      }
-    }
     return collectPluginFragments({
       workspaceDir,
       live,

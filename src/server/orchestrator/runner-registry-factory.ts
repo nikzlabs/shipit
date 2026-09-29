@@ -29,7 +29,13 @@ import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import type { QuotaContinuationManager } from "./services/quota-continuation.js";
-import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager, type ServiceSetupDeps } from "./service-manager-setup.js";
+import {
+  applyShipitConfigChange,
+  emitPluginReposUpdated,
+  setupServiceManager,
+  type ComposeHelperConfig,
+  type ServiceSetupDeps,
+} from "./service-manager-setup.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
@@ -85,6 +91,7 @@ export interface RunnerRegistryDeps {
   };
   /** Orchestrator-private directory outside the agent's workspace mount. */
   serviceEnvDir: string;
+  composeHelperConfig?: ComposeHelperConfig;
   logStore?: LogStore;
   runtimeMode: RuntimeMode;
   broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
@@ -151,7 +158,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushScheduler, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
+    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, composeHelperConfig, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
     reconcileAgentMergeClaimsFor,
     isAgentMergeInFlight,
@@ -522,6 +529,7 @@ export function createRunnerRegistry(
           secretStore,
           dockerSecretsConfig,
           serviceEnvDir,
+          ...(composeHelperConfig ? { composeHelperConfig } : {}),
           logStore,
           broadcastLog,
           credentialStore,

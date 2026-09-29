@@ -984,6 +984,14 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "session_message_proposal")) return;
     db.exec("ALTER TABLE messages ADD COLUMN session_message_proposal TEXT");
   },
+
+  // docs/318-compose-remaining-escapes req 8 — no backfill: `compose.docker-socket`
+  // in a repository file no longer grants the socket on its own.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "allow_docker_socket")) return;
+    db.exec("ALTER TABLE repos ADD COLUMN allow_docker_socket INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

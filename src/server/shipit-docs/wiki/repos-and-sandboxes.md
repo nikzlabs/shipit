@@ -104,7 +104,7 @@ Sessions*). It has three tabs.
 
 **Secrets** — the values this repository's services need. Its own section below.
 
-**Deployments** — two unrelated things sharing a tab:
+**Deployments** — the agent permissions, and links to hosting platforms:
 
 - **Agent permissions → "Allow agents to merge their own pull requests."** It
   ships off and is granted per repository; read this one's state with `shipit
@@ -114,6 +114,14 @@ Sessions*). It has three tabs.
   protection and required reviews still apply on top. This toggle is the user's
   alone — the route that writes it refuses a session container, so you cannot
   grant yourself the permission, and asking is the only path you have.
+- **Agent permissions → "Give this project's services the Docker socket."**
+  Also off until the user turns it on, per repository; read it with `shipit
+  settings get project.allowDockerSocket`. A service holding the socket controls
+  the Docker host — every container on it, other sessions' included — so
+  `compose.docker-socket: true` in `shipit.yaml` only *asks* for the socket; a
+  service gets it only when this toggle is on as well (`/shipit-docs/compose.md`).
+  The same route refuses a session container, so if the work needs it, propose
+  it and let the user accept.
 - **Connect your repo** — links to Vercel, Cloudflare Pages and Netlify. These
   are account pages on other people's products, so they open in a new tab; that
   is the narrow exception, not a habit. What ShipIt does on its side is push
@@ -378,5 +386,6 @@ access to it; it destroys nothing you already made.
 | **Trusts a repository once**, from the notice above the composer or the Preview tab | Say plainly that this is why messages are blocked, and name the control |
 | Types secret **values** in Project Settings → Secrets | Declare the names in `x-shipit-secrets`, and name the exact missing one when it blocks you |
 | Turns on "Allow agents to merge their own pull requests" | Ask for it when merging is the ask; never route around it |
+| Turns on "Give this project's services the Docker socket" | Propose it when a service needs the socket; never route around it |
 | Chooses a sandbox's capability switches | Find out what is granted, use it, and name the switch when one is missing |
 | Picks the repository's sidebar colour | — |

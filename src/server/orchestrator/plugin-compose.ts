@@ -33,6 +33,7 @@ import {
 } from "./plugin-generations.js";
 import {
   escapeDollars,
+  NO_DOCKER_SOCKET,
   OVERRIDE_SENTINELS,
   validateServiceSecurity,
   WORKSPACE_VOLUME_ALIAS,
@@ -420,7 +421,7 @@ function parseFragmentService(
   }
 
   // A project's Docker socket grant never extends to imported plugins.
-  validateServiceSecurity(name, svc, false, containEgress, false);
+  validateServiceSecurity(name, svc, NO_DOCKER_SOCKET, containEgress, false);
 
   validateFragmentVolumes(name, svc.volumes);
   validateFragmentEnvironment(name, svc.environment);

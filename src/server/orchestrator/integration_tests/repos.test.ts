@@ -432,6 +432,70 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
   });
 });
 
+describe("PATCH /api/repos/:url (Docker socket grant, docs/318-compose-remaining-escapes req 8)", () => {
+  const url = "https://github.com/owner/repo.git";
+
+  it("grants and revokes, and reports the flag back", async () => {
+    repoStore.add(url);
+
+    const on = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowDockerSocket: true },
+    });
+    expect(on.statusCode).toBe(200);
+    expect(on.json().repo).toMatchObject({ url, allowDockerSocket: true });
+    expect(repoStore.allowsDockerSocket(url)).toBe(true);
+    expect(repoStore.allowsAgentMerge(url)).toBe(false);
+
+    const off = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowDockerSocket: false },
+    });
+    expect(off.statusCode).toBe(200);
+    expect(repoStore.allowsDockerSocket(url)).toBe(false);
+  });
+
+  it("rejects a non-boolean rather than reading it as truthy", async () => {
+    repoStore.add(url);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowDockerSocket: "yes" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repoStore.allowsDockerSocket(url)).toBe(false);
+  });
+
+  it("grants a remote with no GitHub identity", async () => {
+    const gitlab = "https://gitlab.com/owner/repo.git";
+    repoStore.add(gitlab);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(gitlab)}`,
+      payload: { allowDockerSocket: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(repoStore.allowsDockerSocket(gitlab)).toBe(true);
+  });
+
+  it("404s for a repository ShipIt does not hold", async () => {
+    const never = "https://github.com/never/added.git";
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(never)}`,
+      payload: { allowDockerSocket: true },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(repoStore.add(never).allowDockerSocket).toBe(false);
+  });
+
+  it("is not reachable from a session container", () => {
+    expect([...app.containerAccessibleRoutes].some((r) => r.includes("/api/repos"))).toBe(false);
+  });
+});
+
 describe("DELETE /api/repos/:url", () => {
   it("removes a repo", async () => {
     repoStore.add("https://github.com/owner/repo.git");

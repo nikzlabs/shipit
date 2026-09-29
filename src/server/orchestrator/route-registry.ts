@@ -197,7 +197,7 @@ export async function registerRoutes(
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh,
     authManagers, runParamsPreps,
     runnerRegistry, repoPrefetcher, mergeWatchManager,
-    refreshPluginReposForSession, runPluginCommandForSession,
+    refreshPluginReposForSession, runPluginCommandForSession, projectComposeAccess,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId, version,
@@ -296,6 +296,7 @@ export async function registerRoutes(
     composeStopPromises,
     refreshPluginReposForSession,
     runPluginCommandForSession,
+    projectComposeAccess,
     // Tests must not invoke Docker or an agent CLI.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
     ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),

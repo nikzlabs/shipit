@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { listTemplates, getTemplate, applyTemplate, generatePackageLock, OPS_TEMPLATE_ID } from "./templates.js";
+import { parseComposeContent, validateResolvedModel, TRUSTED_OPS_PROXY_IMAGE } from "./compose-generator.js";
+import { fakeResolvedModel } from "./compose-test-helpers.js";
 
 interface ComposeShape {
   services?: Record<
@@ -84,6 +86,20 @@ describe("getTemplate", () => {
     expect(getTemplate("nonexistent")).toBeUndefined();
   });
 
+  it("every template's compose file passes the raw gate and the resolved validation", () => {
+    const workspaceDir = "/workspace/sessions/s1/workspace";
+    const project = "shipit-s1";
+    for (const id of [...listTemplates().map((t) => t.id), OPS_TEMPLATE_ID]) {
+      const compose = getTemplate(id)!.files["docker-compose.yml"];
+      if (!compose) continue;
+      const ops = id === OPS_TEMPLATE_ID;
+      const opts = { dockerSocket: ops, trustedOpsProxy: ops };
+      expect(() => parseComposeContent(compose, opts), id).not.toThrow();
+      const model = fakeResolvedModel(compose, { workspaceDir, project });
+      expect(() => validateResolvedModel(model, { ...opts, project, workspaceDir }), id).not.toThrow();
+    }
+  });
+
   it("resolves the ops template by id but hides it from listTemplates()", () => {
     const ops = getTemplate(OPS_TEMPLATE_ID);
     expect(ops).toBeDefined();
@@ -114,6 +130,7 @@ describe("getTemplate", () => {
     expect(ops.files["prompts/trace-a-pr.md"]).toContain("shipit session logs");
     expect(ops.files["README.md"]).toContain("shipit session logs");
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
+    expect(ops.files["docker-compose.yml"]).toContain(`image: ${TRUSTED_OPS_PROXY_IMAGE}\n`);
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-depends-on-install: false");
     expect(ops.files["docker-compose.yml"]).toContain("/var/run/docker.sock:/var/run/docker.sock:ro");

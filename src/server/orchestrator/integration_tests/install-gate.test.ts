@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { ContainerSessionRunner } from "../container-session-runner.js";
-import { ServiceManager, type ComposeRunner, type ComposeQuery } from "../service-manager.js";
+import type { ServiceManager, ComposeRunner, ComposeQuery } from "../service-manager.js";
+import { testServiceManager } from "../compose-test-helpers.js";
 import { SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 import { serializeStackOp } from "../stack-op-queue.js";
 
@@ -366,7 +367,7 @@ describe("Integration: install gate — resolution without SSE install_done (doc
       runningForStatusProbes: 3,
     });
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "gate-e2e",
       workspaceDir,
       serviceEnvDir: path.resolve(workspaceDir, "..", "service-env"),
@@ -457,7 +458,7 @@ describe("Integration: install gate — liveness watchdog (docs/286)", () => {
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId,
       workspaceDir,
       serviceEnvDir: path.resolve(workspaceDir, "..", "service-env"),

@@ -166,6 +166,7 @@ describe("the record covers the settings the converted tabs generate", () => {
       "voice.webhook.url",
       "voice.webhook.token",
       "project.allowAgentMerge",
+      "project.allowDockerSocket",
       "project.secrets",
       "project.colorIndex",
       "keyboard.keybindings",
@@ -197,7 +198,12 @@ describe("the record covers the settings the converted tabs generate", () => {
     const project = ALL_SETTINGS.filter((d) => d.tab.startsWith("project-"));
     const rows = project.filter((d) => isGeneratedRow(d)).map((d) => d.key);
 
-    expect(rows).toEqual(["project.allowAgentMerge", "project.secrets", "project.colorIndex"]);
+    expect(rows).toEqual([
+      "project.allowAgentMerge",
+      "project.allowDockerSocket",
+      "project.secrets",
+      "project.colorIndex",
+    ]);
     const held = Object.keys(initialSettingValues());
     for (const declaration of project) {
       expect(held, declaration.key).not.toContain(declaration.key);

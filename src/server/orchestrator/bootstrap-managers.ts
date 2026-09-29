@@ -96,7 +96,13 @@ import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import { createStagedGenerationGate } from "./services/plugin-preflight.js";
 import type { PluginComposeService } from "./plugin-compose.js";
-import { emitPluginReposUpdated, trackComposeStop } from "./service-manager-setup.js";
+import {
+  emitPluginReposUpdated,
+  projectComposeAccessFor,
+  trackComposeStop,
+  type ComposeHelperConfig,
+} from "./service-manager-setup.js";
+import { composeRegistryLoginDir } from "./compose-helper.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
@@ -279,6 +285,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // Keep service secrets outside the agent's workspace mount.
   const serviceEnvDir = process.env.SHIPIT_SERVICE_ENV_DIR
     ?? path.join(stateDir, "service-env");
+  // The confined Compose containers bind these by their Docker-host paths (docs/318).
+  const composeHelperConfig: ComposeHelperConfig = {
+    registryLoginDir: composeRegistryLoginDir(stateDir),
+    ...(process.env.SHIPIT_SERVICE_ENV_HOST_DIR
+      ? { serviceEnvHostDir: process.env.SHIPIT_SERVICE_ENV_HOST_DIR }
+      : {}),
+  };
+  const projectComposeAccess = deps.projectComposeAccess ?? ((sessionId: string, workspaceDir: string) => projectComposeAccessFor(
+    sessionId, workspaceDir, { containerManager, serviceEnvDir, composeHelperConfig, sessionManager, repoStore },
+  ));
 
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 
@@ -400,6 +416,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       validateStaged: createStagedGenerationGate({
         workspaceDir,
         containEgress: () => containerManager?.isEgressContained(sessionId) ?? false,
+        projectCompose: projectComposeAccess(sessionId, workspaceDir),
       }),
       ...(remoteUrl ? { consumerKey: remoteUrl } : {}),
       ensureCache: (cacheDir: string, repoUrl: string) => {
@@ -438,6 +455,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         : {}),
       containEgress: containerManager?.isEgressContained(sessionId) ?? false,
       stackName: process.env.DOCKER_STACK,
+      projectCompose: projectComposeAccess(sessionId, workspaceDir),
     });
 
   const refreshPluginReposForSession = async (
@@ -624,6 +642,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
+    composeHelperConfig,
     ...(credentialsDir ? { credentialsDir } : {}),
     ...(providerAccountManager ? { providerAccountManager } : {}),
     readSystemPrompt: readSystemPromptApp,
@@ -914,7 +933,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const preStartWarmPreview = containerManager
     ? createWarmPreviewStarter({
         repoStore, sessionManager, serviceManagers, composeStopPromises,
-        containerManager, secretStore, credentialStore, serviceEnvDir, logStore,
+        containerManager, secretStore, credentialStore, serviceEnvDir, composeHelperConfig, logStore,
         ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
         isSessionActive: (sessionId: string) => !!registryHolder.ref?.get(sessionId),
       })
@@ -1038,6 +1057,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     activatePluginRepos,
     refreshPluginReposForSession,
     runPluginCommandForSession,
+    projectComposeAccess,
     runnerRegistry,
     repoPrefetcher,
     drainQueueForSession,

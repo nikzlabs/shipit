@@ -11,12 +11,9 @@ import type Docker from "dockerode";
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import { ALLOWED_SERVICE_KEYS, parsePluginFragment } from "./plugin-compose.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
-import { ServiceManager, type ComposeQuery, type ComposeRunner } from "./service-manager.js";
-import {
-  COMPOSE_OVERRIDE_FILE,
-  SESSION_STATE_SUBDIR,
-  SESSION_WORKSPACE_SUBDIR,
-} from "./session-state-dir.js";
+import type { ComposeQuery, ComposeRunner } from "./service-manager.js";
+import { localProjectComposeAccess, recordedOverride, testServiceManager } from "./compose-test-helpers.js";
+import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
 import { LOOPBACK_ONLY_PREFIXES } from "../shared/worker-auth.js";
 import { releaseSessionGenerationHolds } from "./plugin-leases.js";
 
@@ -28,6 +25,7 @@ let stateRoot: string;
 let sessionDir: string;
 let workspaceDir: string;
 let stateDir: string;
+let overrideText: string;
 
 beforeEach(() => {
   stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-svc-boundary-"));
@@ -102,7 +100,7 @@ function writeProject(declaration: string): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), declaration);
   fs.writeFileSync(
     path.join(workspaceDir, "docker-compose.yml"),
-    "services:\n  web:\n    image: node:20\n    user: \"1000:1000\"\n",
+    "services:\n  web:\n    image: node:20\n    user: \"1000:1000\"\n    x-shipit-preview: auto\n",
   );
 }
 
@@ -164,8 +162,9 @@ async function emitProbeService(opts: RunOptions = {}): Promise<Record<string, u
     ...(opts.docker ? { docker: opts.docker } : {}),
     ...(opts.workspaceVolume ? { workspaceVolume: opts.workspaceVolume, stateRoot } : {}),
     containEgress: opts.containEgress ?? false,
+    projectCompose: localProjectComposeAccess(workspaceDir),
   });
-  const mgr = new ServiceManager({
+  const mgr = testServiceManager({
     sessionId: SESSION_ID,
     workspaceDir,
     serviceEnvDir: path.join(sessionDir, "service-env"),
@@ -185,11 +184,10 @@ async function emitProbeService(opts: RunOptions = {}): Promise<Record<string, u
   });
   mgr.setPluginServices(services);
   await mgr.start();
+  overrideText = recordedOverride(workspaceDir, "probe");
   await mgr.stop();
 
-  const override = parseYaml(
-    fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8"),
-  ) as { services: Record<string, Record<string, unknown>> };
+  const override = parseYaml(overrideText) as { services: Record<string, Record<string, unknown>> };
   expect(Object.keys(override.services).sort()).toEqual(["probe", "web"]);
   return override.services.probe;
 }
@@ -351,8 +349,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
     expect(probe.security_opt).toEqual(["no-new-privileges"]);
     expect(probe.restart).toBe("no");
     // A merged bridge would bypass containment; replace the network list.
-    expect(fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8"))
-      .toContain("networks: !override");
+    expect(overrideText).toContain("networks: !override");
   });
 
   it("mounts session paths as volume subpaths in the production layout, never as binds", async () => {
@@ -383,7 +380,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
       source: "shipit-session-workspace",
       volume: { subpath: "tools/probe" },
     });
-    const override = parseYaml(fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8")) as {
+    const override = parseYaml(overrideText) as {
       volumes: Record<string, { driver_opts?: Record<string, string> }>;
     };
     expect(override.volumes["shipit-session-workspace"].driver_opts?.device).toBe(WORKSPACE_DEVICE);
@@ -444,6 +441,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
       containEgress: false,
+      projectCompose: localProjectComposeAccess(workspaceDir),
     });
 
     expect(services).toEqual([]);

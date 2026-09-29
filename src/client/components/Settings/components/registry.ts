@@ -6,7 +6,7 @@
  * about it is the presentation: the destination is still the one its
  * declaration names (req 3). A small one over a value the record holds reaches
  * it through `useSetting` and the shared writer; a PANEL, and a component over a
- * value the record cannot hold (`voice.providerKey`, the five repository
+ * value the record cannot hold (`voice.providerKey`, the six repository
  * settings), keeps its own reader and writer at the address its declaration
  * names in prose — membership of the rows is wider than membership of the
  * record (P11).
@@ -15,6 +15,7 @@
 import type { ReactNode } from "react";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 import { AgentPermissions } from "../../AgentPermissions.js";
+import { DockerSocketPermission } from "../../DockerSocketPermission.js";
 import { KeybindingSettings } from "../../KeybindingSettings.js";
 import { McpServerSettings } from "../../McpServerSettings.js";
 import { RepoColorPicker } from "../../RepoColorPicker.js";
@@ -60,6 +61,7 @@ export const SETTING_COMPONENTS: Readonly<Record<string, SettingComponent>> = {
   // and writes where its declaration says, because the value record is keyed by
   // setting alone and cannot hold a repository's value (`setting-values.ts`).
   "agent-merge": AgentPermissions,
+  "docker-socket": DockerSocketPermission,
   "repo-color": RepoColorPicker,
   "project-secrets": SecretsTab,
 };

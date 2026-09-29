@@ -24,6 +24,9 @@ import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { workspaceVolumeDaemonPath } from "./compose-persist.js";
+import type { DockerSocketGrant } from "./compose-generator.js";
+import { ConfinedCompose, composeHelperDaemonPath } from "./compose-helper.js";
+import type { ProjectComposeAccess } from "./services/plugin-services.js";
 
 /**
  * Compose creates the session network with the first service, so a project whose services are all
@@ -326,13 +329,65 @@ const DEFAULT_COMPOSE_CONFIG = { file: "docker-compose.yml", dockerSocket: false
 export type ServiceManagerBuildDeps = Pick<
   ServiceSetupDeps,
   | "sessionManager"
+  | "repoStore"
   | "containerManager"
   | "secretStore"
   | "credentialStore"
   | "dockerSecretsConfig"
   | "serviceEnvDir"
+  | "composeHelperConfig"
   | "logStore"
 >;
+
+/** Where the confined Compose containers find ShipIt's files on the Docker host (docs/318). */
+export interface ComposeHelperConfig {
+  /** Root-only, in the workspace volume and outside every session; see `composeRegistryLoginDir`. */
+  registryLoginDir?: string;
+  /** SHIPIT_SERVICE_ENV_HOST_DIR: the service-env directory's Docker-host path, when it is outside the workspace volume. */
+  serviceEnvHostDir?: string;
+}
+
+export type ConfinedComposeDeps = Pick<ServiceSetupDeps, "containerManager" | "serviceEnvDir" | "composeHelperConfig">;
+
+/** The confined runner for one session's Compose commands, and its Docker-host path translation. */
+export function buildConfinedCompose(
+  sessionId: string,
+  workspaceDir: string,
+  deps: ConfinedComposeDeps,
+): { confined: ConfinedCompose; daemonPath: (orchestratorPath: string) => Promise<string> } {
+  const workspaceVolume = process.env.WORKSPACE_VOLUME;
+  const { serviceEnvHostDir, registryLoginDir } = deps.composeHelperConfig ?? {};
+  const daemonPath = composeHelperDaemonPath({
+    ...(deps.containerManager ? { docker: deps.containerManager.getDockerClient() } : {}),
+    ...(workspaceVolume ? { workspaceVolume } : {}),
+    serviceEnvDir: deps.serviceEnvDir,
+    ...(serviceEnvHostDir ? { serviceEnvHostDir } : {}),
+  });
+  const confined = new ConfinedCompose({
+    sessionId,
+    workspaceDir,
+    ...(workspaceVolume ? { workspaceVolume } : {}),
+    daemonPath,
+    ...(registryLoginDir ? { registryLoginDir } : {}),
+    ...(process.env.DOCKER_STACK ? { stackName: process.env.DOCKER_STACK } : {}),
+  });
+  return { confined, daemonPath };
+}
+
+/** Plugin readers' access to the project compose file: a confined read per call. */
+export function projectComposeAccessFor(
+  sessionId: string,
+  workspaceDir: string,
+  deps: ConfinedComposeDeps & Pick<ServiceSetupDeps, "sessionManager" | "repoStore">,
+): ProjectComposeAccess {
+  return {
+    // Built per read: the state directory is resolved only when a reader needs the file.
+    readProjectFile: async (file) =>
+      buildConfinedCompose(sessionId, workspaceDir, deps).confined.readProjectFile(file),
+    dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
+    opsSession: deps.sessionManager.get(sessionId)?.kind === "ops",
+  };
+}
 
 export function createSecretsLoader(
   sessionId: string,
@@ -388,6 +443,15 @@ export async function joinSessionNetworkEndpoints(
   }
 }
 
+/** A sandbox has no repository to hold the grant, whatever address its workspace names (planning#623). */
+export function dockerSocketGrantFor(
+  session: SessionInfo | undefined,
+  repoStore: Pick<RepoStore, "allowsDockerSocket">,
+): DockerSocketGrant {
+  if (!session || session.kind === "sandbox" || !session.remoteUrl) return "no_repository";
+  return repoStore.allowsDockerSocket(session.remoteUrl) ? "granted" : "not_granted";
+}
+
 export function buildServiceManager(args: {
   sessionId: string;
   workspaceDir: string;
@@ -407,6 +471,7 @@ export function buildServiceManager(args: {
   const accountAgentEnvLoader = credentialStore
     ? () => collectAccountAgentEnv(credentialStore)
     : undefined;
+  const helper = buildConfinedCompose(sessionId, workspaceDir, deps);
 
   return new ServiceManager({
     sessionId,
@@ -420,11 +485,14 @@ export function buildServiceManager(args: {
       : {}),
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
+    dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
     secretsLoader: createSecretsLoader(sessionId, deps),
     accountAgentEnvLoader,
     pluginCredentialsLoader: () => collectPluginCredentialDeclarations(workspaceDir),
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
+    confinedCompose: helper.confined,
+    composeFileDaemonPath: helper.daemonPath,
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? (networkName: string) => joinSessionNetworkEndpoints(containerManager, sessionId, networkName)
@@ -518,6 +586,7 @@ export interface ServiceSetupDeps {
   secretStore?: SecretStore;
   dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
   serviceEnvDir: string;
+  composeHelperConfig?: ComposeHelperConfig;
   logStore?: LogStore;
   activatePluginRepos?: (
     sessionId: string,

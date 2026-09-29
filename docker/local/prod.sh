@@ -10,5 +10,5 @@ docker network rm $(docker network ls -q --filter "label=shipit-stack=shipit-pro
 # Stamp the image with the commit it is built from; see compose.yml's build args.
 SHIPIT_BUILD_ID="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
 export SHIPIT_BUILD_ID
-docker compose build --pull session-worker shipit egress-sidecar
+docker compose build --pull session-worker shipit egress-sidecar compose-helper
 exec docker compose up --no-build shipit "$@"

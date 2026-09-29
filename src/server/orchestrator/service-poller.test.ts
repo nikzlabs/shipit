@@ -675,3 +675,35 @@ describe("ServicePoller — statuses expire when docker stops answering (docs/12
     ]);
   });
 });
+
+describe("ServicePoller — query working directory (docs/318)", () => {
+  function pollerRecordingCwds(overrides: Partial<ServicePollerOptions>) {
+    const cwds: string[] = [];
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const poller = buildPoller({
+      getService: (name) => (name === "web" ? svc : undefined),
+      listServices: () => [svc],
+      composeQuery: async (args, cwd) => {
+        cwds.push(cwd);
+        if (args[1] === "ps") return JSON.stringify({ Service: "web", ID: "c1", State: "running" });
+        return "[]";
+      },
+      ...overrides,
+    });
+    return { poller, cwds };
+  }
+
+  it("runs its queries in the workspace by default", async () => {
+    const { poller, cwds } = pollerRecordingCwds({});
+    await poller.pollOnce();
+    expect(cwds.length).toBeGreaterThan(1);
+    expect(new Set(cwds)).toEqual(new Set(["/workspace"]));
+  });
+
+  it("runs every query in the directory it is given", async () => {
+    const { poller, cwds } = pollerRecordingCwds({ queryCwd: () => "/state/compose/no-model" });
+    await poller.pollOnce();
+    expect(cwds.length).toBeGreaterThan(1);
+    expect(new Set(cwds)).toEqual(new Set(["/state/compose/no-model"]));
+  });
+});

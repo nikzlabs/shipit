@@ -12,6 +12,7 @@ interface RepoRow {
   trusted: number;
   hidden: number;
   allow_agent_merge: number;
+  allow_docker_socket: number;
   default_branch: string | null;
   color_index: number | null;
 }
@@ -39,6 +40,7 @@ export class RepoStore {
     info.trusted = row.trusted === 1;
     info.hidden = row.hidden === 1;
     info.allowAgentMerge = row.allow_agent_merge === 1;
+    info.allowDockerSocket = row.allow_docker_socket === 1;
     if (row.default_branch) info.defaultBranch = row.default_branch;
     if (isValidRepoColorIndex(row.color_index)) info.colorIndex = row.color_index;
     return info;
@@ -195,6 +197,30 @@ export class RepoStore {
     const matches = rows.filter((r) => repoId(r.url) === id);
     if (matches.length === 0) return "not-found";
     const update = this.db.prepare("UPDATE repos SET allow_agent_merge = ? WHERE url = ?");
+    const tx = this.db.transaction(() => {
+      for (const r of matches) update.run(val, r.url);
+    });
+    tx();
+    return "ok";
+  }
+
+  // Keyed like trust rather than like agent merging: the socket is not a GitHub
+  // capability, so a remote with no GitHub identity must still be able to hold it.
+  allowsDockerSocket(url: string): boolean {
+    const key = canonicalRepoKey(url);
+    const rows = this.db
+      .prepare("SELECT url, allow_docker_socket FROM repos")
+      .all() as Pick<RepoRow, "url" | "allow_docker_socket">[];
+    return rows.some((r) => r.allow_docker_socket === 1 && canonicalRepoKey(r.url) === key);
+  }
+
+  setAllowDockerSocket(url: string, allow: boolean): "ok" | "not-found" {
+    const key = canonicalRepoKey(url);
+    const val = allow ? 1 : 0;
+    const rows = this.db.prepare("SELECT url FROM repos").all() as Pick<RepoRow, "url">[];
+    const matches = rows.filter((r) => canonicalRepoKey(r.url) === key);
+    if (matches.length === 0) return "not-found";
+    const update = this.db.prepare("UPDATE repos SET allow_docker_socket = ? WHERE url = ?");
     const tx = this.db.transaction(() => {
       for (const r of matches) update.run(val, r.url);
     });

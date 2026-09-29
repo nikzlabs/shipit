@@ -329,6 +329,17 @@ describe("proposeSettingChange", () => {
     expect(card.target).toEqual({ key: "project.allowAgentMerge", repoUrl: "https://github.com/o/r" });
   });
 
+  it("proposes the Docker socket grant for the session's own repository, from off to on", async () => {
+    fx.close();
+    fx = proposalFixture({ remoteUrl: "https://github.com/o/r" });
+    const card = await propose({ key: "project.allowDockerSocket", valueText: "true", reason: "why" });
+    expect(card).toMatchObject({
+      target: { key: "project.allowDockerSocket", repoUrl: "https://github.com/o/r" },
+      from: "off",
+      to: "on",
+    });
+  });
+
   describe("a list entry", () => {
     it("proposes joining the list, with membership as the card's from and to", async () => {
       const card = await propose({

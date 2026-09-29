@@ -115,3 +115,19 @@ describe("SHIPIT_BUILD_ID does not poison the shared prefix", () => {
     );
   });
 });
+
+// Mechanism 2 relies on how `config` selects services and inlines env files, which changed between
+// Compose releases (docs/318-compose-remaining-escapes).
+describe("one pinned Compose version", () => {
+  const FILES = ["Dockerfile.compose-helper", "Dockerfile.prod", "Dockerfile.dev"];
+  const pin = (dockerfile: string) => /\bdocker-compose-plugin=(\S+)/.exec(instructions(dockerfile))?.[1];
+
+  it.each(FILES)("%s pins docker-compose-plugin", (dockerfile) => {
+    expect(pin(dockerfile), `${dockerfile} installs an unpinned docker-compose-plugin`).toBeDefined();
+    expect(pin(dockerfile)).not.toMatch(/^2\.34\.0-/);
+  });
+
+  it("the helper and both orchestrator images pin the same version", () => {
+    expect(new Set(FILES.map(pin)).size).toBe(1);
+  });
+});

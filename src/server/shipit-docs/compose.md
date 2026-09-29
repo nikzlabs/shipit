@@ -610,8 +610,15 @@ services:
 
 ## What not to do
 
-- **Don't mount the Docker socket** (`/var/run/docker.sock`) — ShipIt manages
-  that through `shipit.yaml` when needed.
+- **Don't mount the Docker socket** (`/var/run/docker.sock`) unless the user
+  has granted it. A service gets the socket (a mount of exactly
+  `/var/run/docker.sock`, or `use_api_socket: true`) only when `shipit.yaml`
+  sets `compose.docker-socket: true` **and** the user has turned on the
+  repository setting `project.allowDockerSocket`. You cannot turn that setting
+  on: read it with `shipit settings get project.allowDockerSocket`, and if the
+  work needs it, propose it so the user can accept. An ops session without the
+  grant keeps only its read-only socket proxy. A sandbox has no repository, so
+  its services get no socket.
 - **Don't use `network_mode: host`** — use explicit port mappings.
 - **Don't set `privileged: true`** — not allowed for security.
 - **Don't request arbitrary `devices:`** — only `/dev/kvm:/dev/kvm` is permitted
@@ -641,6 +648,55 @@ services:
   other — see "Where to put `npm install`" above. (Python is the documented
   exception: its venv is interpreter-pinned, so the preview service installs
   its own deps and the agent never does — single-writer, no race.)
+
+## Fields ShipIt checks in every session
+
+ShipIt checks the service definitions that Compose will actually run, after
+variable interpolation and `extends`, so a value is refused the same way
+whether it is written literally or produced by `${VAR}` or a base service.
+These rules apply in Open and contained sessions alike:
+
+- **Only fields ShipIt knows.** A service key that ShipIt has not classified is
+  refused, and the message names it. Keys that start with `x-` are always
+  accepted. If a standard Compose field you need is refused, tell the user.
+- **Added capabilities.** In an Open session, `cap_add` may name only
+  capabilities on ShipIt's short safe list; the refusal names the list. A
+  contained session accepts none.
+- **`security_opt`** may hold only `no-new-privileges`.
+- **`device_cgroup_rules`** and **`provider`** are refused.
+- **Shared namespaces.** `pid`, `ipc`, `network_mode`, `uts`, `cgroup`, and
+  `userns_mode` may not be `host` or `container:<name>`. `service:<name>` for a
+  service in this file is fine.
+- **`volumes_from`** may name only a service in this file, never
+  `container:<name>`, and never a service that has the Docker socket.
+- **Builds.** `build.privileged`, a non-empty `build.entitlements`, and a
+  `build.network` other than the default or `none` are refused.
+- **Top-level `secrets:` and `configs:`** use `file:` inside the workspace;
+  `external:` and `name:` are refused, as for volumes and networks.
+- **`logging`** may use only the `json-file` or `local` driver, or none.
+- **`deploy.resources.reservations.devices`** is refused, and a `post_start`
+  or `pre_stop` hook may not set `privileged`.
+- **`label_file`** must be inside the workspace.
+- **Ops sessions** trust `docker-socket-proxy` only as the ops template
+  defines it. ShipIt always runs the proxy image at its pinned digest, and no
+  other service may build or name that image.
+
+### Files Compose reads, and mounts
+
+ShipIt runs the Compose steps that read your files (`config`, `build`, and
+the file reads) in a throwaway container that sees only this session's
+workspace and `/persist`. Every file reference — `env_file`, `label_file`,
+`.env`, `extends` files, build contexts, Dockerfiles, secret and config
+`file:` — must lead to a file there. A symlink that leads out of the workspace
+finds nothing, and the start fails with Compose's message plus that fix.
+
+A bind source, however it is written (`./data`, `data`, `.cache`, or the long
+form), must be inside the workspace; ShipIt refuses any other. For
+`/persist`, mount the `persist` volume. A named volume a service mounts must
+be declared in the top-level `volumes:` (`persist` and `persist/<sub>` need no
+declaration), and a mount may be a bind, a volume, or `tmpfs`.
+A build does not get the orchestrator's registry login: use a public base
+image, or publish the image and name it in `image:`.
 
 ## Pairing with shipit.yaml
 
@@ -680,18 +736,16 @@ the read says which case you are in (`/shipit-docs/settings.md`).
 This protection applies to running Compose services, not Dockerfile build
 steps. BuildKit runs build commands in daemon-managed containers before the
 service exists, so a build step still has ordinary Docker egress even in a
-contained session — the allowlist does not reach it. What a contained session's
-build step may not do is ask for a *wider* namespace than the builder's default:
-`build.network` may only be `none` or the default (`build.network: host` makes
-the host's network namespace the build's default for every `RUN`), and a
+contained session — the allowlist does not reach it. A build step may not ask
+for a *wider* namespace than the builder's default, in any session:
+`build.network` may only be `none` or the default, and a
 `build.privileged: true` or a non-empty `build.entitlements` is rejected.
 ShipIt requires Docker Compose 2.24.4 or newer for contained service network
 replacement.
 
 Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
-request `use_api_socket`, add lifecycle hooks, declare a `build.network` other
-than `none`/default, ask for `build.privileged` or a `build.entitlements` entry,
-or declare labels in ShipIt's reserved `shipit-egress-*` namespace. Service `extends` is
+request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
+reserved `shipit-egress-*` namespace. Service `extends` is
 also rejected in contained sessions because ShipIt cannot safely validate and override
 definitions from a second file. Compose `include:` is rejected in **every**
 session for the same reason — the effective model would be the root file plus

@@ -6,6 +6,7 @@ import { reapOrphanEgressSidecars } from "./egress-orphan-reaper.js";
 import { stackLabelFilters } from "./stack-label.js";
 import { reapOrphanPluginInstalls } from "./plugin-install.js";
 import { reapOrphanPnpmBaseBuilds } from "./pnpm-base-builder.js";
+import { reapOrphanComposeHelpers } from "./compose-helper.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -54,6 +55,7 @@ export interface DiskJanitorResult {
   orphanEgressSidecarsRemoved: number;
   orphanPluginInstallsRemoved: number;
   orphanPnpmBaseBuildsRemoved: number;
+  orphanComposeHelpersRemoved: number;
   sharedTreeNodesReclaimed: number;
 }
 
@@ -71,6 +73,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     orphanEgressSidecarsRemoved: 0,
     orphanPluginInstallsRemoved: 0,
     orphanPnpmBaseBuildsRemoved: 0,
+    orphanComposeHelpersRemoved: 0,
     sharedTreeNodesReclaimed: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
@@ -92,6 +95,13 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
       );
     } catch (err) {
       console.warn("[disk-janitor] orphan pnpm-base-build sweep failed:", getMessage(err));
+    }
+    try {
+      result.orphanComposeHelpersRemoved = await reapOrphanComposeHelpers(
+        deps.docker, { paceMs, stackName: deps.stackName },
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan compose-helper sweep failed:", getMessage(err));
     }
   }
 
@@ -196,7 +206,8 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `credential-dirs=${result.credentialDirsRemoved} `
     + `log-dirs=${result.logDirsRemoved} `
     + `orphan-egress-sidecars=${result.orphanEgressSidecarsRemoved} `
-    + `orphan-plugin-installs=${result.orphanPluginInstallsRemoved}`,
+    + `orphan-plugin-installs=${result.orphanPluginInstallsRemoved} `
+    + `orphan-compose-helpers=${result.orphanComposeHelpersRemoved}`,
   );
   return result;
 }

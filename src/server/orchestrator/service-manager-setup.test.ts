@@ -4,7 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
-import { applyOverlayDepDirsForSession, applyShipitConfigChange, emitPluginReposUpdated, joinSessionNetworkEndpoints, setupServiceManager } from "./service-manager-setup.js";
+import {
+  applyOverlayDepDirsForSession,
+  applyShipitConfigChange,
+  buildConfinedCompose,
+  dockerSocketGrantFor,
+  emitPluginReposUpdated,
+  joinSessionNetworkEndpoints,
+  projectComposeAccessFor,
+  setupServiceManager,
+} from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { installContentKeyDiagnostic } from "./install-content-key.js";
 import { isOpsSafeLine } from "./services/host-session-logs.js";
@@ -14,6 +23,33 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionManager } from "./sessions.js";
 import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
+import type * as ComposeHelperModule from "./compose-helper.js";
+
+// Reads come from the test's own workspace; any other confined run fails as it would without Docker.
+vi.mock("./compose-helper.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof ComposeHelperModule>();
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  class ConfinedCompose {
+    constructor(private readonly opts: { workspaceDir: string }) {}
+    readProjectFile(file: string): Promise<Buffer> {
+      return readFile(resolve(this.opts.workspaceDir, file));
+    }
+    readWorkspaceFile(file: string): Promise<Buffer> {
+      return readFile(resolve(this.opts.workspaceDir, file));
+    }
+    config(): Promise<never> {
+      return Promise.reject(new Error("no Compose helper in this test"));
+    }
+    build(): Promise<never> {
+      return Promise.reject(new Error("no Compose helper in this test"));
+    }
+    up(): Promise<never> {
+      return Promise.reject(new Error("no Compose helper in this test"));
+    }
+  }
+  return { ...actual, ConfinedCompose };
+});
 
 const REMOTE = "https://github.com/owner/repo.git";
 
@@ -752,5 +788,56 @@ describe("applyOverlayDepDirsForSession — clearing a set the services still ho
 
     expect(await applyOverlayDepDirsForSession("s1", mgr, deps(null))).toBe(false);
     expect(mgr.setOverlayDepDirs).not.toHaveBeenCalled();
+  });
+});
+
+describe("dockerSocketGrantFor", () => {
+  const granted = { allowsDockerSocket: (url: string) => url === "https://github.com/o/granted" };
+  const session = (patch: Partial<SessionInfo>): SessionInfo => ({ id: "s1", ...patch }) as SessionInfo;
+
+  it("follows the repository's setting", () => {
+    expect(dockerSocketGrantFor(session({ remoteUrl: "https://github.com/o/granted" }), granted)).toBe("granted");
+    expect(dockerSocketGrantFor(session({ remoteUrl: "https://github.com/o/other" }), granted)).toBe("not_granted");
+  });
+
+  it("gives a sandbox no grant, whatever address its workspace names", () => {
+    expect(dockerSocketGrantFor(
+      session({ kind: "sandbox", remoteUrl: "https://github.com/o/granted" }),
+      granted,
+    )).toBe("no_repository");
+  });
+
+  it("gives a session with no repository no grant", () => {
+    expect(dockerSocketGrantFor(session({}), granted)).toBe("no_repository");
+    expect(dockerSocketGrantFor(undefined, granted)).toBe("no_repository");
+  });
+});
+
+describe("the confined Compose runner a session gets (docs/318)", () => {
+  it("translates the service-env directory to its configured Docker-host path", async () => {
+    const serviceEnvDir = "/var/lib/shipit-env";
+    const { daemonPath } = buildConfinedCompose("s1", "/workspace/sessions/s1/workspace", {
+      containerManager: null,
+      serviceEnvDir,
+      composeHelperConfig: { serviceEnvHostDir: "/srv/shipit/service-env" },
+    });
+    expect(await daemonPath(`${serviceEnvDir}/s1/.env.api`)).toBe("/srv/shipit/service-env/s1/.env.api");
+  });
+
+  it("gives plugin readers a fresh read per call, with the session's grant and ops flag", async () => {
+    const clone = path.join(tmpDir, "session", "workspace");
+    fs.mkdirSync(clone, { recursive: true });
+    fs.writeFileSync(path.join(clone, "docker-compose.yml"), "services: {}\n");
+    const access = projectComposeAccessFor("s1", clone, {
+      containerManager: null,
+      serviceEnvDir: path.join(tmpDir, "service-env"),
+      sessionManager: { get: () => ({ kind: "ops", workspaceDir: clone }) } as unknown as SessionManager,
+      repoStore,
+    });
+    expect((await access.readProjectFile("docker-compose.yml")).toString()).toBe("services: {}\n");
+    fs.writeFileSync(path.join(clone, "docker-compose.yml"), "services:\n  web: {image: x}\n");
+    expect((await access.readProjectFile("docker-compose.yml")).toString()).toContain("web");
+    expect(access.opsSession).toBe(true);
+    expect(access.dockerSocketGrant()).toBe("no_repository");
   });
 });

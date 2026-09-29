@@ -1039,6 +1039,7 @@ const OPERATIONS: Record<string, SettingsOperation> = {
   // Project settings. The repository is the session's own binding, frozen on
   // the card, and re-verified before the write.
   "project.allowAgentMerge::set": repoOperation("allowAgentMerge"),
+  "project.allowDockerSocket::set": repoOperation("allowDockerSocket"),
   "project.colorIndex::set": repoOperation("colorIndex"),
 };
 
@@ -1086,7 +1087,7 @@ function removableRefusal(deps: SettingsOperationDeps, host: string): Rendered |
       + "cannot take it off.");
 }
 
-function repoOperation(field: "allowAgentMerge" | "colorIndex"): SettingsOperation {
+function repoOperation(field: "allowAgentMerge" | "allowDockerSocket" | "colorIndex"): SettingsOperation {
   return {
     domains: (target) => [repositoryDomain(target.repoUrl ?? "")],
     preflight: (deps, target) => {
@@ -1110,9 +1111,11 @@ function repoOperation(field: "allowAgentMerge" | "colorIndex"): SettingsOperati
           ...(deps.agentMergeClaims ? { agentMergeClaims: deps.agentMergeClaims } : {}),
         },
         target.repoUrl ?? "",
-        field === "allowAgentMerge"
-          ? { allowAgentMerge: value === true }
-          : { colorIndex: value as number },
+        field === "colorIndex"
+          ? { colorIndex: value as number }
+          : field === "allowAgentMerge"
+            ? { allowAgentMerge: value === true }
+            : { allowDockerSocket: value === true },
       );
       if (notFound) throw new ServiceError(400, "ShipIt has no record of this session's repository any more.");
       return outcome;

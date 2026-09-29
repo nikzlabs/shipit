@@ -603,6 +603,14 @@ describe("Project Settings' rows", () => {
     expect(within(section).getByTestId("allow-agent-merge-toggle")).toBeInTheDocument();
   });
 
+  it("places the Docker socket row in the same section, after the agent-merge row", () => {
+    render(<DeclaredSettings tab="project-deployments" />);
+    const section = screen.getByRole("region", { name: "Agent permissions" });
+    const merge = within(section).getByTestId("allow-agent-merge-toggle");
+    const socket = within(section).getByTestId("allow-docker-socket-toggle");
+    expect(merge.compareDocumentPosition(socket) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("places the colour picker on the Appearance tab", () => {
     render(<DeclaredSettings tab="project-appearance" />);
     expect(screen.getByTestId("repo-color-picker")).toBeInTheDocument();
