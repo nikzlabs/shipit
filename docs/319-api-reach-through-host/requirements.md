@@ -18,10 +18,9 @@ The API container guard (`api-container-guard.ts`, docs/201-container-api-trust-
 
 5. The exception to requirement 4 is the SSH destinations granted to a session: that session can reach each of them.
 
-## Open questions
-
-- On a host that cannot run the egress sidecar (rootless Docker, a locked-down kernel), requirement 4 cannot apply. Does ShipIt then refuse to listen on any address other than loopback, or listen there and show a warning? On Linux, containers cannot reach a loopback-only ShipIt (tested 2026-09-29); rootless Docker is not tested.
+6. On a host that cannot enforce requirement 4 (for example rootless Docker, or a locked-down kernel), ShipIt is reachable only on loopback: it refuses to listen on any other address, and its setup does not install a forwarder to it. Access from the same machine, through Cloudflare Tunnel with Access, and through an SSH tunnel keeps working.
 
 ## Resolved questions
 
 - 2026-09-29 — How does ShipIt tell the user's own requests apart from a session container's request that arrives on the same host address? The user rejected a one-time browser proof and a host network rule, and asked for networking options. From the eight options listed with the Astra role, the user chose: session containers cannot reach the host or private and tailnet networks in either egress mode, enforced by the existing per-container egress sidecar. The user asked that granted SSH destinations stay reachable. Requirements 4 and 5 were added.
+- 2026-09-29 — On a host that cannot run the egress sidecar, does ShipIt refuse to listen on any address other than loopback, or listen there and show a warning? The user asked what would stop working (access from other devices over the tailnet or LAN, and the VPS Tailscale forwarder, on those hosts only), then chose the recommendation: refuse. Requirement 6 was added.
