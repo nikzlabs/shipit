@@ -7,6 +7,7 @@ import {
   composeSecretFilePath,
   stageSecretsEntrypoint,
   type DeclaredSecret,
+  type RefusedSecret,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
 import {
@@ -56,7 +57,7 @@ export interface ServiceSecretsResolverOptions {
   // Must be outside the agent-readable workspace.
   serviceEnvDir: string;
   onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
-  onPlatformSourceWarning?: (serviceName: string, text: string) => void;
+  onServiceWarning?: (serviceName: string, text: string) => void;
   pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
 }
 
@@ -73,9 +74,10 @@ export class ServiceSecretsResolver {
   private readonly dockerSecretsConfig?: DockerSecretsConfig;
   private readonly serviceEnvDir: string;
   private readonly onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
-  private readonly onPlatformSourceWarning?: (serviceName: string, text: string) => void;
+  private readonly onServiceWarning?: (serviceName: string, text: string) => void;
   private readonly pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
   private readonly warnedPlatformSources = new Set<string>();
+  private warnedRefusals = new Set<string>();
 
   private declaredSecretNames: string[] = [];
   private missingSecretsByService: Record<string, string[]> = {};
@@ -102,7 +104,7 @@ export class ServiceSecretsResolver {
     this.dockerSecretsConfig = opts.dockerSecretsConfig;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.onSnapshot = opts.onSnapshot;
-    this.onPlatformSourceWarning = opts.onPlatformSourceWarning;
+    this.onServiceWarning = opts.onServiceWarning;
     this.pluginCredentialsLoader = opts.pluginCredentialsLoader;
   }
 
@@ -166,6 +168,7 @@ export class ServiceSecretsResolver {
     this.missingSecretsByService = resolution.missingByService;
 
     this.warnPlatformSources(resolution.platformSourceWarnings);
+    this.warnRefusals(resolution.refusedByService);
 
     // Explicit project values override account-level agent values.
     let mergedAgentValues = resolution.agentValues;
@@ -232,13 +235,31 @@ export class ServiceSecretsResolver {
     }
   }
 
+  // Warn once per refusal; a value fixed and broken again warns again.
+  private warnRefusals(refusedByService: Record<string, RefusedSecret[]>): void {
+    const current = new Set<string>();
+    for (const [service, refused] of Object.entries(refusedByService)) {
+      for (const r of refused) {
+        const key = `${service}\0${r.name}\0${r.reason}`;
+        current.add(key);
+        if (this.warnedRefusals.has(key)) continue;
+        this.onServiceWarning?.(
+          service,
+          `service "${service}": secret "${r.name}" was not passed to the service because ` +
+            `its value ${r.reason}. Change the value in Project Settings → Secrets.\n`,
+        );
+      }
+    }
+    this.warnedRefusals = current;
+  }
+
   private warnPlatformSources(warnings: { service: string; name: string; source: string }[]): void {
-    if (!this.onPlatformSourceWarning) return;
+    if (!this.onServiceWarning) return;
     for (const w of warnings) {
       const key = `${w.service}\0${w.name}\0${w.source}`;
       if (this.warnedPlatformSources.has(key)) continue;
       this.warnedPlatformSources.add(key);
-      this.onPlatformSourceWarning(
+      this.onServiceWarning(
         w.service,
         `service "${w.service}": secret "${w.name}" declares source: ${w.source} ` +
           `which is no longer forwarded — set a "${w.name}" secret in ` +

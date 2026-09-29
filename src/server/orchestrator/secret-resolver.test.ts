@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   resolveSecrets,
   collectMcpAgentEnv,
@@ -106,9 +107,19 @@ describe("collectMcpAgentEnv (docs/088)", () => {
 describe("renderAgentEnvBody (docs/088)", () => {
   it("renders sorted KEY=VALUE lines and a ShipIt header", () => {
     const body = renderAgentEnvBody({ B_KEY: "2", A_KEY: "1" });
-    expect(body).toContain("A_KEY=1");
-    expect(body).toContain("B_KEY=2");
+    expect(body).toContain('A_KEY="1"');
+    expect(body).toContain('B_KEY="2"');
     expect(body.indexOf("A_KEY")).toBeLessThan(body.indexOf("B_KEY"));
+  });
+
+  it("quotes values the same way as a service env file (planning#624)", () => {
+    expect(renderAgentEnvBody({ K: 'sv-$x-1 "q" \\' })).toContain('K="sv-$$x-1 \\"q\\" \\\\"\n');
+  });
+
+  it("leaves out a value no environment variable can carry, instead of altering it", () => {
+    const body = renderAgentEnvBody({ NUL: "a\0b", OK: "v" });
+    expect(body).not.toContain("NUL=");
+    expect(body).toContain('OK="v"');
   });
 
   it("returns an empty string for an empty map", () => {
@@ -136,7 +147,7 @@ describe("resolveSecrets", () => {
       services,
       userSecrets: { STRIPE_KEY: "sk_test_123", UNUSED: "x" },
     });
-    expect(result.perServiceEnv.web).toContain("STRIPE_KEY=sk_test_123");
+    expect(result.perServiceEnv.web).toContain('STRIPE_KEY="sk_test_123"');
     expect(result.perServiceEnv.web).not.toContain("UNUSED");
     expect(result.declaredNames).toEqual(["STRIPE_KEY"]);
   });
@@ -195,7 +206,7 @@ describe("resolveSecrets", () => {
       userSecrets: { ZED: "z", ALPHA: "a", MIDDLE: "m" },
     });
     const lines = result.perServiceEnv.api.trim().split("\n").filter(l => !l.startsWith("#"));
-    expect(lines).toEqual(["ALPHA=a", "MIDDLE=m", "ZED=z"]);
+    expect(lines).toEqual(['ALPHA="a"', 'MIDDLE="m"', 'ZED="z"']);
   });
 
   it("de-duplicates within a service if the user repeats a name", () => {
@@ -210,15 +221,15 @@ describe("resolveSecrets", () => {
     expect(matches?.length).toBe(1);
   });
 
-  it("skips multi-line values (env_file format can't express them)", () => {
+  it("writes a multi-line value as one escaped line", () => {
     const services: ComposeService[] = [
       { name: "api", secrets: ["MULTILINE"] },
     ];
     const result = resolveSecrets({
       services,
-      userSecrets: { MULTILINE: "line1\nline2" },
+      userSecrets: { MULTILINE: "line1\nline2\r\n" },
     });
-    expect(result.perServiceEnv.api).not.toContain("MULTILINE=");
+    expect(result.perServiceEnv.api).toContain('MULTILINE="line1\\nline2\\r\\n"\n');
   });
 
   it("collects unique declared names across services", () => {
@@ -228,6 +239,121 @@ describe("resolveSecrets", () => {
     ];
     const result = resolveSecrets({ services, userSecrets: {} });
     expect(result.declaredNames).toEqual(["DATABASE_URL", "STRIPE_KEY"]);
+  });
+});
+
+// Values Compose's env-file reader would otherwise change (planning#624).
+const AWKWARD_VALUES: Record<string, string> = {
+  DOLLAR: "sv-$x-1",
+  BRACED: `$\{HOME_PROBE}-$$-$`,
+  QUOTES: `it's "quoted"`,
+  BACKSLASHES: "a\\b\\\\c\\n\\$x\\",
+  HASH: "a #not-a-comment#",
+  SPACES: "  lead and trail  ",
+  NEWLINES: "-----BEGIN KEY-----\nabc\n-----END KEY-----\n",
+  CARRIAGE: "a\rb\r\n",
+  QUOTED_START: "'single",
+  UNICODE: "é 中文 🚀 ﻿",
+};
+
+describe("service env file quoting (planning#624)", () => {
+  function envLine(name: string, value: string): string | undefined {
+    const { perServiceEnv } = resolveSecrets({
+      services: [{ name: "api", secrets: [name] }],
+      userSecrets: { [name]: value },
+    });
+    return perServiceEnv.api.split("\n").find((l) => l.startsWith(`${name}=`));
+  }
+
+  it.each([
+    ["sv-$x-1", '"sv-$$x-1"'],
+    [`$\{HOME}`, `"$$\{HOME}"`],
+    [`say "hi"`, '"say \\"hi\\""'],
+    ["a\\b\\", '"a\\\\b\\\\"'],
+    ["x #y", '"x #y"'],
+    ["  padded  ", '"  padded  "'],
+    ["a\nb\rc", '"a\\nb\\rc"'],
+    ["'single'", `"'single'"`],
+  ])("writes %j as %s", (value, written) => {
+    expect(envLine("K", value)).toBe(`K=${written}`);
+  });
+
+  it.each([
+    ["a NUL character", "a\0b", /NUL character/],
+    ["an unpaired surrogate", "a\ud800b", /unpaired surrogate/],
+  ])("refuses a value with %s rather than altering it", (_label, value, reason) => {
+    const result = resolveSecrets({
+      services: [{
+        name: "api",
+        secrets: ["BAD", "GOOD"],
+        secretRequirements: [{ name: "BAD", required: true, agent: true }, { name: "GOOD" }],
+      }],
+      userSecrets: { BAD: value, GOOD: "ok" },
+    });
+    expect(result.perServiceEnv.api).not.toContain("BAD=");
+    expect(result.perServiceEnv.api).toContain('GOOD="ok"');
+    expect(result.perServiceValues.api).toEqual({ GOOD: "ok" });
+    expect(result.agentValues).toEqual({});
+    expect(result.missingByService.api).toEqual(["BAD"]);
+    expect(result.missingRequiredByService.api).toEqual(["BAD"]);
+    expect(result.refusedByService.api).toEqual([{ name: "BAD", reason: expect.stringMatching(reason) }]);
+  });
+
+  it("accepts a value whose surrogates are paired", () => {
+    expect(envLine("K", "🚀")).toBe('K="🚀"');
+  });
+});
+
+function composeCommand(): string[] | undefined {
+  for (const cmd of [["docker", "compose"], ["docker-compose"]]) {
+    if (spawnSync(cmd[0], [...cmd.slice(1), "version"], { stdio: "ignore" }).status === 0) return cmd;
+  }
+  return undefined;
+}
+const compose = composeCommand();
+
+// The unit tests above pin the encoding; this checks it against Compose's own reader.
+describe.skipIf(!compose)("Compose reads a service env file back verbatim (planning#624)", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("delivers every awkward value unchanged", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-env-roundtrip-"));
+    const { perServiceEnv } = resolveSecrets({
+      services: [{ name: "svc", secrets: Object.keys(AWKWARD_VALUES) }],
+      userSecrets: AWKWARD_VALUES,
+    });
+    const envFile = path.join(tmpDir, ".env.svc");
+    fs.writeFileSync(envFile, perServiceEnv.svc);
+    const composeFile = path.join(tmpDir, "compose.yml");
+    fs.writeFileSync(composeFile, [
+      "services:",
+      "  svc:",
+      "    image: alpine",
+      `    env_file: [${JSON.stringify(envFile)}]`,
+      "    environment:",
+      '      CONTROL: "a$$b"',
+      "",
+    ].join("\n"));
+
+    const [bin, ...pre] = compose!;
+    const out = execFileSync(bin, [...pre, "-p", "roundtrip", "-f", composeFile, "config", "--format", "json"], {
+      // Referenced names are set, so any interpolation would show.
+      env: { ...process.env, x: "LEAKED", HOME_PROBE: "LEAKED" },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const environment = JSON.parse(out.toString("utf-8")).services.svc.environment as Record<string, string>;
+    // `config` writes each literal `$` as `$$`; CONTROL shows whether this version does.
+    const unescape = environment.CONTROL === "a$$b"
+      ? (v: string) => v.replaceAll("$$", "$")
+      : (v: string) => v;
+    expect(unescape(environment.CONTROL)).toBe("a$b");
+    for (const [name, value] of Object.entries(AWKWARD_VALUES)) {
+      expect(unescape(environment[name]), name).toBe(value);
+    }
   });
 });
 
@@ -358,7 +484,7 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
       userSecrets: { DATABASE_URL: "postgres://u:p@db:5432/app", STRIPE_KEY: "sk_test" },
     });
     expect(result.agentValues).toEqual({ DATABASE_URL: "postgres://u:p@db:5432/app" });
-    expect(result.agentEnv).toContain("DATABASE_URL=postgres://u:p@db:5432/app");
+    expect(result.agentEnv).toContain('DATABASE_URL="postgres://u:p@db:5432/app"');
     expect(result.agentEnv).not.toContain("STRIPE_KEY");
   });
 
@@ -407,7 +533,7 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
     });
     expect(result.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
     const lines = result.agentEnv.trim().split("\n").filter((l) => !l.startsWith("#"));
-    expect(lines).toEqual(["DATABASE_URL=postgres://x"]);
+    expect(lines).toEqual(['DATABASE_URL="postgres://x"']);
   });
 });
 
@@ -488,7 +614,7 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
       services,
       userSecrets: { GITHUB_TOKEN: "ghp_user_supplied" },
     });
-    expect(result.perServiceEnv.orchestrator).toContain("GITHUB_TOKEN=ghp_user_supplied");
+    expect(result.perServiceEnv.orchestrator).toContain('GITHUB_TOKEN="ghp_user_supplied"');
     expect(result.missingByService).toEqual({});
   });
 
@@ -553,7 +679,7 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
       services,
       userSecrets: { GITHUB_TOKEN: "ghp_user_dedicated" },
     });
-    expect(withSecret.perServiceEnv.evil).toContain("GITHUB_TOKEN=ghp_user_dedicated");
+    expect(withSecret.perServiceEnv.evil).toContain('GITHUB_TOKEN="ghp_user_dedicated"');
   });
 
   it("still preserves the source field on the declared aggregate (parsed, not honored)", () => {

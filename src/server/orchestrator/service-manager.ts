@@ -399,7 +399,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
       serviceEnvDir: opts.serviceEnvDir,
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
-      onPlatformSourceWarning: (serviceName, text) => this.emit("service_log", serviceName, text),
+      onServiceWarning: (serviceName, text) => this.emit("service_log", serviceName, text),
     });
 
     this.retry = new ServiceRetryManager({

@@ -120,10 +120,17 @@ services:
 
 ```
 # .env.api (generated)
-DATABASE_URL=postgres://...
-REDIS_URL=redis://...
-STRIPE_SECRET_KEY=sk_test_...
+DATABASE_URL="postgres://..."
+REDIS_URL="redis://..."
+STRIPE_SECRET_KEY="sk_test_..."
 ```
+
+Each value is double-quoted and escaped so that Compose reads back exactly what
+the user stored — `$`, quotes, backslashes, `#`, leading or trailing spaces, and
+line breaks (a PEM key, for example) all arrive unchanged. The only values
+ShipIt does not pass are ones no environment variable can hold: a value with a
+NUL character or invalid Unicode. ShipIt leaves that variable unset, counts the
+secret as missing, and writes the reason to the service's log.
 
 **Service-only env files are NOT in your workspace.** In containerized runtime
 ShipIt writes them to an orchestrator-private directory *outside* the workspace
