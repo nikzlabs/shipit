@@ -120,7 +120,12 @@ one rule refuses every join — `volumes_from` or a `service:` namespace — to 
 socket-bearing service). Round 33 found that the proxy was known by its tag
 alone (fixed: a pinned digest), and round 34 found one more unchecked field
 (fixed: refused). Because each round found one more field, the requester chose
-a list of classified fields over more rounds (requirements Q15).
+a list of classified fields over more rounds (requirements Q15). The independent review of
+the implementation (run `82f95ad9-eb35-4197-a94e-8a452da139ef`) reported that
+the snapshot was written before the project secret copies were named in it;
+the code copies first and writes after (`service-manager.ts`, covered by
+`service-manager-confined.test.ts`), so nothing changed. It found no part of
+the change that could be removed.
 
 ## Mechanism 1 — confined Compose containers
 

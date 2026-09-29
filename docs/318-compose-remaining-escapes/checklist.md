@@ -64,6 +64,6 @@
 - [x] Tests: `docker run` arguments per command and cleanup, resolved-model validation over recorded `config` output, rewrite, secret-file copy, file-key removal, stop record, plugin-only path, fail-closed paths
 - [x] Docs: `shipit-docs/compose.md`, `shipit-docs/wiki/repos-and-sandboxes.md`, `docs/172-agent-containment/plan.md`, `docs/086-shipit-yaml-and-compose/plan.md`
 - [x] `npm run lint:dev`, `npm run typecheck`, affected `npx vitest run`
-- [ ] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement
-- [ ] PR test plan lists the deployment checks from plan.md
+- [x] Independent review (`shipit agent run --role reviewer`) of the implementation against every requirement (run `82f95ad9-eb35-4197-a94e-8a452da139ef`: one finding, checked and not applicable)
+- [x] PR test plan lists the deployment checks from plan.md
 - [ ] Deployment checks from plan.md run on a real deployment
