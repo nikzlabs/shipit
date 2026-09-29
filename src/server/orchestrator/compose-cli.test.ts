@@ -6,6 +6,7 @@ import {
   ComposeCli,
   composeUpPhaseOf,
   extractActiveEndpointNetwork,
+  prepareModelFreeComposeDir,
   type ComposeOutputSink,
   type ComposeRunner,
   type ComposeQuery,
@@ -912,5 +913,86 @@ exit 17
 
     expect(chunks.join("")).toBe("#5 building");
     expect(flushed).toBe(1);
+  });
+});
+
+describe("ComposeCli — model-free commands (docs/318)", () => {
+  const PROJECT = "shipit-sess-1";
+  let tmp: string;
+  afterEach(() => {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function modelFreeCli(volumes = "") {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "compose-model-free-"));
+    const composeStateDir = path.join(tmp, "sessions", SID, "state", "compose");
+    const runs: { args: string[]; cwd: string }[] = [];
+    const queries: string[][] = [];
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: path.join(tmp, "sessions", SID, "workspace"),
+      composeFile: "docker-compose.yml",
+      overrideFile: path.join(composeStateDir, "override.yml"),
+      composeStateDir,
+      composeRunner: vi.fn(async (args: string[], cwd: string) => { runs.push({ args, cwd }); }),
+      composeQuery: vi.fn(async (args: string[]) => {
+        queries.push(args);
+        return args[1] === "ls" ? volumes : "";
+      }),
+    });
+    return { cli, runs, queries, composeStateDir };
+  }
+
+  it("names the project and no model file, in an empty ShipIt directory", () => {
+    const { cli, composeStateDir } = modelFreeCli();
+    expect(cli.modelFreeArgs("ps", "--format", "json", "-a"))
+      .toEqual(["compose", "-p", PROJECT, "ps", "--format", "json", "-a"]);
+    const dir = cli.modelFreeDir();
+    expect(path.dirname(dir)).toBe(composeStateDir);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("refuses a directory Compose would find a project file above", () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "compose-model-free-"));
+    fs.writeFileSync(path.join(tmp, "compose.yaml"), "services: {}\n");
+    expect(() => prepareModelFreeComposeDir(path.join(tmp, "state", "compose")))
+      .toThrow(/would load .*compose\.yaml/);
+  });
+
+  it("stops a service from the model it was started from", async () => {
+    const { cli, runs, composeStateDir } = modelFreeCli();
+    const model = { snapshotFile: path.join(composeStateDir, "s1.yml"), overrideFile: path.join(composeStateDir, "o1.yml") };
+    await cli.stopFrom("web", model);
+    expect(runs).toEqual([{
+      args: ["compose", "-f", model.snapshotFile, "-f", model.overrideFile, "-p", PROJECT, "stop", "web"],
+      cwd: composeStateDir,
+    }]);
+  });
+
+  it("stops without a model, in the empty directory, when the start's files are gone", async () => {
+    const { cli, runs } = modelFreeCli();
+    await cli.stopFrom("web", null);
+    expect(runs).toEqual([{ args: ["compose", "-p", PROJECT, "stop", "web"], cwd: cli.modelFreeDir() }]);
+  });
+
+  it("keeps --volumes on the final down, then removes the project's labelled volumes by name", async () => {
+    const { cli, runs, queries } = modelFreeCli("shipit-sess-1_data\nshipit-sess-1_shipit-persist\n");
+    await cli.downModelFree({ removeVolumes: true });
+    expect(runs).toEqual([{
+      args: ["compose", "-p", PROJECT, "down", "--remove-orphans", "--volumes"],
+      cwd: cli.modelFreeDir(),
+    }]);
+    expect(queries).toEqual([
+      ["volume", "ls", "-q", "--filter", `label=com.docker.compose.project=${PROJECT}`],
+      ["volume", "rm", "shipit-sess-1_data"],
+      ["volume", "rm", "shipit-sess-1_shipit-persist"],
+    ]);
+  });
+
+  it("leaves volumes alone when the down keeps them", async () => {
+    const { cli, runs, queries } = modelFreeCli("shipit-sess-1_data\n");
+    await cli.downModelFree({ removeVolumes: false });
+    expect(runs[0]!.args).toEqual(["compose", "-p", PROJECT, "down", "--remove-orphans"]);
+    expect(queries).toEqual([]);
   });
 });

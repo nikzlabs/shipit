@@ -21,6 +21,7 @@ import {
   type ComposeOverrideOptions,
   type ComposeService,
   type ComposeServiceOrigin,
+  type DockerSocketGrant,
   type OverlayDepDirVolume,
   type PersistVolume,
 } from "./compose-generator.js";
@@ -183,8 +184,10 @@ export interface ServiceManagerOptions {
   stackName?: string;
   /** No project compose file is declared; missing declared files still fail. */
   noProjectCompose?: boolean;
-  /** Server-authoritative permission to mount the host Docker socket. */
+  /** Server-authoritative: the ops template's proxy may mount the socket read-only without the grant. */
   opsSession?: boolean;
+  /** Read at each parse (docs/318 req 8); absent means not granted. */
+  dockerSocketGrant?: () => DockerSocketGrant;
   networkJoinFn?: (networkName: string) => Promise<void>;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
@@ -244,6 +247,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private portProbeSettled = new Set<string>();
   private readonly stackName?: string;
   private readonly opsSession: boolean;
+  private readonly dockerSocketGrant: () => DockerSocketGrant;
   private noProjectCompose: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
@@ -329,6 +333,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
+    this.dockerSocketGrant = opts.dockerSocketGrant ?? (() => "not_granted");
     this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
@@ -1284,7 +1289,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private parseProjectCompose(composePath: string): ComposeService[] {
     try {
       const parsed = parseComposeFile(composePath, {
-        dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+        dockerSocket: this.composeConfig.dockerSocket,
+        dockerSocketGrant: this.dockerSocketGrant(),
         containEgress: Boolean(this.containServicesFn),
         trustedOpsProxy: this.opsSession,
       });

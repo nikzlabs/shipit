@@ -6,7 +6,8 @@ description: Run the Compose commands that read project files in confined throwa
 
 # 318 — Compose remaining file escapes
 
-Implements [requirements.md](requirements.md). Design; nothing here is built yet.
+Implements [requirements.md](requirements.md). Built on the planning#620 branch; the
+deployment checks at the end of this document are still open.
 Follows planning#619, which closed the literal `./sub` symlink escape, the direct
 shared-volume mount, and `~` sources.
 
@@ -277,10 +278,11 @@ env-file resolution off, stripped of file keys, and validated the same way.
   image and the orchestrator images (`docker/Dockerfile.prod`, and
   `docker/Dockerfile.dev` for the local dev deployment) all install one pinned
   version, the one the deployment checks below were run on, and a bump repeats
-  those checks.
+  those checks. The pin is `docker-compose-plugin=5.5.1-1~debian.12~bookworm`
+  (`orchestrator-compose.test.ts` fails if the three files disagree).
 - **Isolation:** `--rm`, `--network none` (the CLI reaches the daemon through
-  the mounted socket), a read-only root filesystem with a tmpfs `/tmp`, and
-  `no-new-privileges`.
+  the mounted socket), a read-only root filesystem with a tmpfs `/tmp`,
+  `no-new-privileges`, `--cap-drop ALL`, and `--pull never`.
 - **User:** `config`, the file reads, and `build` run as the session identity
   (`identityForSession`), with the socket's group added for `build`. Anything a
   build writes into the workspace is owned as the agent's files are, which is
@@ -441,7 +443,10 @@ snapshot.
    - **The trusted proxy's identity.** ShipIt identifies the trusted proxy by
      an image digest that ShipIt pins, not by its tag alone. No other service
      of the project may build or name that image (review round 33, run
-     `8bf23ca3-712f-4965-a34d-1fcc199952e3`).
+     `8bf23ca3-712f-4965-a34d-1fcc199952e3`). The proxy is trusted only with
+     the ops template's own keys. An ops file written before the pin names
+     the tag alone; it stays trusted, because the override always sets the
+     pinned reference as the proxy's `image`.
    - **Socket-bearing services cannot be joined.** A service that mounts the
      Docker socket, directly or through its own `volumes_from`, may not be
      named by `volumes_from` or by the `service:<name>` form of any
@@ -461,8 +466,8 @@ snapshot.
      `SAFE_ADDED_CAPABILITIES`: the capabilities whose effect stays inside the
      container's own namespaces. The starting list is `NET_ADMIN`,
      `SYS_PTRACE`, `IPC_LOCK`, and `SYS_NICE`, plus the names in Docker's
-     default set (adding one of those changes nothing). `ALL` and every other
-     name are refused. Today Open sessions accept any `cap_add`.
+     default set except `NET_RAW`, which ShipIt drops from every service.
+     `ALL` and every other name are refused.
    - **Security options (req 7, Q13).** In every mode, `security_opt` may hold
      only `no-new-privileges` (also written `no-new-privileges:true` or
      `=true`). Every other value is refused. Today `security_opt` is not checked
@@ -499,6 +504,10 @@ snapshot.
      list either has no effect outside the container or has its own check in
      this step. Any other key is refused with a message that names it, so a
      field a later Compose release adds is refused until ShipIt classifies it.
+     Some fields stay on the list only with a check of their own: `logging`
+     (the `json-file` or `local` driver), `deploy` (no device reservations),
+     `post_start`/`pre_stop` (no `privileged`), and `label_file` (inside the
+     workspace; refused in contained sessions).
    - **Anything left unresolved** — a `$` in a path field, a source Compose did
      not make absolute, a mount field ShipIt does not recognise — is refused
      (req 6).
@@ -603,7 +612,11 @@ uses the same parts:
 
 - **Store:** a `repos.allow_docker_socket` column, default off
   (`repo-store.ts` with a setter, `RepoInfo` in the shared domain types, a
-  migration in `shared/database.ts`).
+  migration in `shared/database.ts`). It is keyed like repository trust
+  (`canonicalRepoKey`), so a repository on any host can hold it.
+- **Read:** `dockerSocketGrantFor` (`service-manager-setup.ts`) at each start.
+  A sandbox gets no grant by its session kind, whatever repository address
+  its workspace names (planning#623).
 - **Write:** the `PATCH /api/repos/:url` route (`api-routes-session-repos.ts`)
   takes `allowDockerSocket` and passes it to `applyRepoSettings`
   (`settings-apply.ts`), which writes it and names `project.allowDockerSocket`

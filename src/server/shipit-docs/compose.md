@@ -673,6 +673,29 @@ These rules apply in Open and contained sessions alike:
   `build.network` other than the default or `none` are refused.
 - **Top-level `secrets:` and `configs:`** use `file:` inside the workspace;
   `external:` and `name:` are refused, as for volumes and networks.
+- **`logging`** may use only the `json-file` or `local` driver, or none.
+- **`deploy.resources.reservations.devices`** is refused, and a `post_start`
+  or `pre_stop` hook may not set `privileged`.
+- **`label_file`** must be inside the workspace, and a contained session
+  refuses it.
+- **Ops sessions** trust `docker-socket-proxy` only as the ops template
+  defines it. ShipIt always runs the proxy image at its pinned digest, and no
+  other service may build or name that image.
+
+### Files Compose reads, and mounts
+
+ShipIt runs the Compose steps that read your files (`config`, `build`, and
+the file reads) in a throwaway container that sees only this session's
+workspace and `/persist`. Every file reference — `env_file`, `label_file`,
+`.env`, `extends` files, build contexts, Dockerfiles, secret and config
+`file:` — must lead to a file there. A symlink that leads out of the workspace
+finds nothing, and the start fails with Compose's message plus that fix.
+
+A bind source, however it is written (`./data`, `data`, `.cache`, or the long
+form), must be inside the workspace; ShipIt refuses any other. For
+`/persist`, mount the `persist` volume.
+A build does not get the orchestrator's registry login: use a public base
+image, or publish the image and name it in `image:`.
 
 ## Pairing with shipit.yaml
 

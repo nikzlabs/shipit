@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { listTemplates, getTemplate, applyTemplate, generatePackageLock, OPS_TEMPLATE_ID } from "./templates.js";
+import { parseComposeFile, TRUSTED_OPS_PROXY_IMAGE } from "./compose-generator.js";
 
 interface ComposeShape {
   services?: Record<
@@ -84,6 +85,22 @@ describe("getTemplate", () => {
     expect(getTemplate("nonexistent")).toBeUndefined();
   });
 
+  it("every template's compose file passes ShipIt's compose checks", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "template-compose-"));
+    try {
+      for (const id of [...listTemplates().map((t) => t.id), OPS_TEMPLATE_ID]) {
+        const compose = getTemplate(id)!.files["docker-compose.yml"];
+        if (!compose) continue;
+        const file = path.join(dir, `${id}.yml`);
+        fs.writeFileSync(file, compose);
+        const ops = id === OPS_TEMPLATE_ID;
+        expect(() => parseComposeFile(file, { dockerSocket: ops, trustedOpsProxy: ops }), id).not.toThrow();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves the ops template by id but hides it from listTemplates()", () => {
     const ops = getTemplate(OPS_TEMPLATE_ID);
     expect(ops).toBeDefined();
@@ -114,6 +131,7 @@ describe("getTemplate", () => {
     expect(ops.files["prompts/trace-a-pr.md"]).toContain("shipit session logs");
     expect(ops.files["README.md"]).toContain("shipit session logs");
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
+    expect(ops.files["docker-compose.yml"]).toContain(`image: ${TRUSTED_OPS_PROXY_IMAGE}\n`);
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-depends-on-install: false");
     expect(ops.files["docker-compose.yml"]).toContain("/var/run/docker.sock:/var/run/docker.sock:ro");

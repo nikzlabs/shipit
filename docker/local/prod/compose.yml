@@ -42,6 +42,7 @@ services:
       - DOCKER_STACK=shipit-prod
       - SHIPIT_DEPLOYMENT=local
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
+      - SESSION_COMPOSE_HELPER_IMAGE=shipit-compose-helper:prod
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
       - SHIPIT_ALLOWED_ORIGINS=${SHIPIT_ALLOWED_ORIGINS:-}
     networks:
@@ -62,6 +63,15 @@ services:
       context: ../..
       dockerfile: Dockerfile.egress-sidecar
     image: shipit-egress-sidecar:prod
+    profiles:
+      - build-only
+
+  # Runs the Compose commands that read a session's project files (docs/318).
+  compose-helper:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.compose-helper
+    image: shipit-compose-helper:prod
     profiles:
       - build-only
 

@@ -13,6 +13,7 @@ import type { GitRemoteCredential } from "./repo-git.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import { CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
+import { COMPOSE_HELPER_LABEL } from "./compose-helper.js";
 
 /** Applies the `--filter label=key[=value]` pairs of a `docker … ls` argv the way the CLI would. */
 function matchesLabelFilterArgs(labels: Record<string, string>, args: string[]): boolean {
@@ -1478,6 +1479,39 @@ describe("runDiskJanitor", () => {
     expect([...removed].sort()).toEqual(["proxy-orphan", "res-orphan"]);
     expect(removed).not.toContain("res-live");
     expect(result.orphanEgressSidecarsRemoved).toBe(2);
+  });
+
+  it("removes Compose helper containers an earlier process left, and keeps this process's own", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const bootSeconds = Math.floor((Date.now() - process.uptime() * 1000) / 1000);
+    const helpers = [
+      { Id: "helper-leftover", Created: bootSeconds - 600, Labels: { [COMPOSE_HELPER_LABEL]: "s1", "shipit-stack": "shipit" } },
+      { Id: "helper-live", Created: bootSeconds + 3600, Labels: { [COMPOSE_HELPER_LABEL]: "s2", "shipit-stack": "shipit" } },
+      { Id: "helper-other-stack", Created: bootSeconds - 600, Labels: { [COMPOSE_HELPER_LABEL]: "s3", "shipit-stack": "other" } },
+    ];
+    const removed: string[] = [];
+    const docker = {
+      listContainers: async (opts: { filters?: { label?: string[] } }) => helpers.filter((c) =>
+        (opts.filters?.label ?? []).every((f) => {
+          const [key, value] = f.split("=");
+          return value === undefined ? key in c.Labels : (c.Labels as Record<string, string>)[key] === value;
+        })),
+      listVolumes: async () => ({ Volumes: [] }),
+      getContainer: (id: string) => ({ remove: async () => { removed.push(id); } }),
+    } as unknown as Parameters<typeof runDiskJanitor>[0]["docker"];
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      docker,
+      stackName: "shipit",
+    });
+
+    expect(removed).toEqual(["helper-leftover"]);
+    expect(result.orphanComposeHelpersRemoved).toBe(1);
   });
 
   it("skips the egress-sidecar sweep entirely when no Docker client is wired", async () => {

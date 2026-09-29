@@ -174,7 +174,7 @@ shipit_build_and_up() {
   SHIPIT_BUILD_ID="$(git -C "$SHIPIT_HOME" rev-parse HEAD 2>/dev/null || true)"
   export SHIPIT_BUILD_ID
   echo "==> Building ShipIt images..."
-  docker compose "${compose_files[@]}" build --pull session-worker shipit egress-sidecar
+  docker compose "${compose_files[@]}" build --pull session-worker shipit egress-sidecar compose-helper
   echo "==> Starting ShipIt (detached)..."
   docker compose "${compose_files[@]}" up -d --no-build shipit
 }

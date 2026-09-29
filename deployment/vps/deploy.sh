@@ -68,7 +68,7 @@ case "${FORCE_REBUILD:-0}" in
     BUILD_ARGS+=("--no-cache")
     ;;
 esac
-shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit egress-sidecar
+shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit egress-sidecar compose-helper
 
 # Build the Docker-capable image after its local base, without --pull.
 DOCKER_IMG_BUILD_ARGS=()

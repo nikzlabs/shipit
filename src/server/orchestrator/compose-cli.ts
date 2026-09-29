@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
-import { composeProjectName } from "./compose-stack-reaper.js";
+import { COMPOSE_PROJECT_LABEL, composeProjectName } from "./compose-stack-reaper.js";
+import { composeStateDirForWorkspace } from "./session-state-dir.js";
 
 export interface ComposeOutputSink {
   (chunk: string): void;
@@ -35,9 +38,43 @@ export interface ComposeCliOptions {
    * Owned here rather than by each caller: `refreshSecrets` reaches `up` without ever joining.
    */
   rejoinSessionNetwork?: () => Promise<void>;
+  /** `<sessionDir>/state/compose`; defaults from `workspaceDir`. */
+  composeStateDir?: string;
+}
+
+/** The files one start ran `up` from; `stop` loads them so a `pre_stop` hook still runs. */
+export interface ComposeStartModel {
+  snapshotFile: string;
+  overrideFile: string;
 }
 
 type UpRecovery = "none" | "container" | "network";
+
+// Compose's default project file names. Without `-f` it loads the first it finds in its working
+// directory or any directory above it.
+const COMPOSE_DEFAULT_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+
+/**
+ * The empty directory the orchestrator runs `ps`, `logs`, `stop`, and `down` in with `-p` and no
+ * `-f`, so Compose finds the stack by its project label and opens no project file
+ * (docs/318-compose-remaining-escapes, Mechanism 1).
+ */
+export function prepareModelFreeComposeDir(composeStateDir: string): string {
+  const dir = path.join(composeStateDir, "no-model");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (let d = dir; ; d = path.dirname(d)) {
+    for (const name of COMPOSE_DEFAULT_FILES) {
+      const found = path.join(d, name);
+      if (fs.existsSync(found)) {
+        throw new Error(
+          `ShipIt runs Compose without a project file in ${dir}, but Compose would load ${found} `
+          + "from a directory above it. Remove that file.",
+        );
+      }
+    }
+    if (path.dirname(d) === d) return dir;
+  }
+}
 
 export class ComposeCli {
   private readonly sessionId: string;
@@ -49,6 +86,8 @@ export class ComposeCli {
   readonly query: ComposeQuery;
   private readonly onTopologyChange?: () => () => void;
   private readonly rejoinFn?: () => Promise<void>;
+  private readonly composeStateDirOption?: string;
+  private modelFreeDirPath: string | null = null;
 
   constructor(opts: ComposeCliOptions) {
     this.sessionId = opts.sessionId;
@@ -60,6 +99,7 @@ export class ComposeCli {
     this.query = opts.composeQuery ?? defaultComposeQuery;
     this.onTopologyChange = opts.onTopologyChange;
     this.rejoinFn = opts.rejoinSessionNetwork;
+    this.composeStateDirOption = opts.composeStateDir;
   }
 
   setComposeFile(file: string, noProjectFile = false): void {
@@ -144,6 +184,67 @@ export class ComposeCli {
     const args = ["down", "--remove-orphans"];
     if (opts.removeVolumes) args.push("--volumes");
     return this.run(undefined, ...args);
+  }
+
+  /** For `ps` and `logs`: run with `modelFreeDir()` as the working directory. */
+  modelFreeArgs(...extra: string[]): string[] {
+    return ["compose", "-p", composeProjectName(this.sessionId), ...extra];
+  }
+
+  modelFreeDir(): string {
+    this.modelFreeDirPath ??= prepareModelFreeComposeDir(this.composeStateDir());
+    return this.modelFreeDirPath;
+  }
+
+  /** `model` is null when the start's files are gone; Compose then cannot run a `pre_stop` hook. */
+  stopFrom(name: string, model: ComposeStartModel | null): Promise<void> {
+    if (!model) {
+      console.log(
+        `[compose:${this.sessionId}] stopping ${name} without the model it was started from — `
+        + "a pre_stop hook, if it has one, did not run",
+      );
+      return this.runner(this.modelFreeArgs("stop", name), this.modelFreeDir());
+    }
+    return this.runner(
+      [
+        "compose", "-f", model.snapshotFile, "-f", model.overrideFile,
+        "-p", composeProjectName(this.sessionId), "stop", name,
+      ],
+      this.composeStateDir(),
+    );
+  }
+
+  /**
+   * `--volumes` still takes each container's anonymous volumes; the declared named ones are
+   * unknown without a model, so they go by their project label.
+   */
+  async downModelFree(opts: { removeVolumes: boolean }): Promise<void> {
+    const args = this.modelFreeArgs("down", "--remove-orphans");
+    if (opts.removeVolumes) args.push("--volumes");
+    await this.runner(args, this.modelFreeDir());
+    if (opts.removeVolumes) await this.removeProjectVolumes();
+  }
+
+  async removeProjectVolumes(): Promise<string[]> {
+    const project = composeProjectName(this.sessionId);
+    const out = await this.query(
+      ["volume", "ls", "-q", "--filter", `label=${COMPOSE_PROJECT_LABEL}=${project}`],
+      this.workspaceDir,
+    );
+    const removed: string[] = [];
+    for (const name of out.split("\n").map(s => s.trim()).filter(Boolean)) {
+      try {
+        await this.query(["volume", "rm", name], this.workspaceDir);
+        removed.push(name);
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] could not remove volume ${name}:`, (err as Error).message);
+      }
+    }
+    return removed;
+  }
+
+  private composeStateDir(): string {
+    return this.composeStateDirOption ?? composeStateDirForWorkspace(this.workspaceDir);
   }
 
   async killStaleContainers(): Promise<void> {

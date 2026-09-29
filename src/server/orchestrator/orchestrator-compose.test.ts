@@ -70,3 +70,36 @@ describe("orchestrator compose services declare an init shim (planning#613)", ()
     expect(init).toBe(true);
   });
 });
+
+// Confined Compose runs need the helper image wherever ShipIt ships (docs/318 req 4).
+describe("every deployment builds the Compose helper image (docs/318)", () => {
+  const DEPLOYMENTS = [
+    { compose: "deployment/vps/docker-compose.yml", script: "deployment/vps/deploy.sh" },
+    { compose: "docker/local/dev/compose.yml", script: "docker/local/dev.sh" },
+    { compose: "docker/local/prod/compose.yml", script: "docker/local/prod.sh" },
+    { compose: "docker/local/prod/compose.yml", script: "deployment/local/lib.sh" },
+  ];
+
+  interface Service { build?: { dockerfile?: string } | string; image?: string; environment?: string[] }
+
+  it("covers every orchestrator compose file", () => {
+    expect(new Set(DEPLOYMENTS.map((d) => d.compose))).toEqual(new Set(orchestratorServices().map((s) => s.file)));
+  });
+
+  it.each(DEPLOYMENTS)("$script builds the helper that $compose names", ({ compose, script }) => {
+    const services = (parseYaml(fs.readFileSync(path.join(REPO_ROOT, compose), "utf-8")) as {
+      services: Record<string, Service>;
+    }).services;
+    const helper = services["compose-helper"];
+    expect(typeof helper?.build === "object" && helper.build.dockerfile).toBe("Dockerfile.compose-helper");
+    const orchestrator = Object.values(services).find((svc) =>
+      typeof svc.build === "object" && ORCHESTRATOR_DOCKERFILES.includes(svc.build.dockerfile ?? ""));
+    expect(orchestrator?.environment).toContain(`SESSION_COMPOSE_HELPER_IMAGE=${helper?.image}`);
+
+    const buildLines = fs.readFileSync(path.join(REPO_ROOT, script), "utf-8")
+      .split("\n")
+      .filter((line) => /docker compose\b.*\sbuild\s.*\bshipit\b/.test(line));
+    expect(buildLines.length, `${script} has no image build line`).toBeGreaterThan(0);
+    for (const line of buildLines) expect(line).toMatch(/\bcompose-helper\b/);
+  });
+});

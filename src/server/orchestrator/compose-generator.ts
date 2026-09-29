@@ -101,6 +101,64 @@ export const SESSION_WORKSPACE_VOLUME_ALIAS = "shipit-session-workspace";
 
 const RESERVED_VOLUME_NAMES: readonly string[] = [WORKSPACE_VOLUME_ALIAS, SESSION_WORKSPACE_VOLUME_ALIAS];
 
+export const DOCKER_SOCKET_PATH = "/var/run/docker.sock";
+
+const OPS_PROXY_REPOSITORY = "tecnativa/docker-socket-proxy";
+const OPS_PROXY_DIGEST = "sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2";
+// TODO(planning#620): confirm against registry-1.docker.io; read from ghcr.io, which the same upstream push fills.
+export const TRUSTED_OPS_PROXY_IMAGE = `${OPS_PROXY_REPOSITORY}:0.3.0@${OPS_PROXY_DIGEST}`;
+
+// Ops sessions created before the pin name the tag; the override runs the pinned image either way.
+const LEGACY_OPS_PROXY_IMAGE = `${OPS_PROXY_REPOSITORY}:0.3.0`;
+
+/** The user's `project.allowDockerSocket` for the session's repository (docs/318 req 8). */
+export type DockerSocketGrant = "granted" | "not_granted" | "no_repository";
+
+export interface DockerSocketAccess {
+  /** `compose.docker-socket` in shipit.yaml: the repository asks; only the grant allows. */
+  requested: boolean;
+  grant: DockerSocketGrant;
+}
+
+export const NO_DOCKER_SOCKET: DockerSocketAccess = { requested: false, grant: "not_granted" };
+
+const SOCKET_SETTING_HINT = "the user turns it on with \"Give this project's services the Docker socket\" "
+  + "(`project.allowDockerSocket`) in Project Settings → Deployments → Agent permissions";
+
+/** Open sessions only; NET_RAW is left off because ShipIt drops it from every service. */
+export const SAFE_ADDED_CAPABILITIES: ReadonlySet<string> = new Set([
+  "NET_ADMIN", "SYS_PTRACE", "IPC_LOCK", "SYS_NICE",
+  // Docker's default set.
+  "AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD",
+  "NET_BIND_SERVICE", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT",
+]);
+
+/**
+ * Service keys ShipIt accepts besides `x-` ones: each has no effect outside the service's
+ * container, or is checked in this file (docs/318 req 7, requirements Q15). Others are refused.
+ */
+export const CLASSIFIED_SERVICE_FIELDS: ReadonlySet<string> = new Set([
+  "attach", "build", "cap_add", "cap_drop", "cgroup", "command", "configs", "container_name",
+  "cpu_count", "cpu_percent", "cpu_period", "cpu_quota", "cpu_shares", "cpus", "cpuset",
+  "depends_on", "deploy", "develop", "device_cgroup_rules", "devices", "dns", "dns_opt",
+  "dns_search", "domainname", "entrypoint", "env_file", "environment", "expose", "extends",
+  "extra_hosts", "group_add", "healthcheck", "hostname", "image", "init", "ipc", "label_file",
+  "labels", "links", "logging", "mem_limit", "mem_reservation", "mem_swappiness", "memswap_limit",
+  "network_mode", "networks", "pid", "pids_limit", "platform", "ports", "post_start", "pre_stop",
+  "privileged", "profiles", "provider", "pull_policy", "pull_refresh_after", "read_only", "restart",
+  "scale", "secrets", "security_opt", "shm_size", "stdin_open", "stop_grace_period", "stop_signal",
+  "sysctls", "tmpfs", "tty", "ulimits", "use_api_socket", "user", "userns_mode", "uts", "volumes",
+  "volumes_from", "working_dir",
+]);
+
+const NAMESPACE_FIELDS = ["pid", "ipc", "network_mode", "uts", "cgroup", "userns_mode"] as const;
+
+const NO_NEW_PRIVILEGES_OPTIONS: ReadonlySet<string> = new Set([
+  "no-new-privileges", "no-new-privileges:true", "no-new-privileges=true",
+]);
+
+const LOCAL_LOG_DRIVERS: ReadonlySet<string> = new Set(["json-file", "local"]);
+
 export type ComposeValidationKind = "malformed" | "refused";
 
 export class ComposeValidationError extends Error {
@@ -189,8 +247,19 @@ export function parseStopGracePeriodMs(raw: unknown): number | undefined {
 
 export function parseComposeFile(
   composePath: string,
-  opts: { dockerSocket: boolean; containEgress?: boolean; trustedOpsProxy?: boolean },
+  opts: {
+    /** `compose.docker-socket` in shipit.yaml. */
+    dockerSocket: boolean;
+    /** Absent means not granted. */
+    dockerSocketGrant?: DockerSocketGrant;
+    containEgress?: boolean;
+    trustedOpsProxy?: boolean;
+  },
 ): ComposeService[] {
+  const socket: DockerSocketAccess = {
+    requested: opts.dockerSocket,
+    grant: opts.dockerSocketGrant ?? "not_granted",
+  };
   let content: string;
   try {
     content = fs.readFileSync(composePath, "utf-8");
@@ -257,11 +326,12 @@ export function parseComposeFile(
     validateServiceSecurity(
       name,
       svc,
-      opts.dockerSocket,
+      socket,
       opts.containEgress ?? false,
       opts.trustedOpsProxy ?? false,
     );
     validateServiceEnvFile(name, svc.env_file);
+    validateServiceLabelFile(name, svc.label_file, opts.containEgress ?? false);
 
     const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
     const ports = rawPorts
@@ -333,6 +403,12 @@ export function parseComposeFile(
       ...(persistSubpaths.length > 0 ? { persistSubpaths } : {}),
     });
   }
+
+  const serviceEntries = Object.entries(services)
+    .filter((entry): entry is [string, Record<string, unknown>] =>
+      typeof entry[1] === "object" && entry[1] !== null);
+  validateSocketJoins(serviceEntries);
+  if (opts.trustedOpsProxy) validateOpsProxyImageUse(serviceEntries);
 
   return result;
 }
@@ -530,6 +606,15 @@ function meansFalse(value: unknown): boolean {
     && ["false", "n", "no", "off"].includes(value.trim().toLowerCase());
 }
 
+// Compose also reads string spellings such as "true" as set.
+function meansSet(value: unknown): boolean {
+  return value !== undefined && value !== null && !meansFalse(value);
+}
+
+function isEmptyList(value: unknown): boolean {
+  return Array.isArray(value) && value.length === 0;
+}
+
 function validateTopLevelVolumes(block: unknown): void {
   if (!block || typeof block !== "object" || Array.isArray(block)) return;
   for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
@@ -617,11 +702,37 @@ function validateTopLevelNetworks(block: unknown): void {
 }
 
 /** Environment-backed sources depend on composeSpawnEnv excluding credentials. */
-function validateTopLevelFileRefs(kind: string, block: unknown): void {
+function validateTopLevelFileRefs(kind: "Secret" | "Config", block: unknown): void {
   if (!block || typeof block !== "object" || Array.isArray(block)) return;
   for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    validateReadablePath(kind, name, (entry as Record<string, unknown>).file);
+    const ref = entry as Record<string, unknown>;
+    if (!meansNotExternal(ref.external)) {
+      throw new ComposeValidationError(
+        `${kind} \`${name}\`: \`external: ${showValue(ref.external)}\` is not allowed. It attaches an object `
+        + "this session did not create. Declare it with `file:` and a path in the workspace.",
+      );
+    }
+    if (ref.name !== undefined) {
+      throw new ComposeValidationError(
+        `${kind} \`${name}\`: \`name: ${showValue(ref.name)}\` is not allowed — it can point at an object `
+        + "outside this session. Remove it; Compose names the object after the project.",
+      );
+    }
+    validateReadablePath(kind, name, ref.file);
+  }
+}
+
+// Contained sessions check label keys, and a label file's keys cannot be checked here.
+function validateServiceLabelFile(name: string, labelFile: unknown, containEgress: boolean): void {
+  if (labelFile === undefined || labelFile === null) return;
+  if (containEgress) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`label_file\` is not supported for contained services. Use \`labels:\`.`,
+    );
+  }
+  for (const entry of Array.isArray(labelFile) ? labelFile : [labelFile]) {
+    validateReadablePath("Service", name, entry);
   }
 }
 
@@ -648,41 +759,60 @@ function validateBuildSecurity(name: string, build: unknown): void {
       : "unsupported";
     if (value !== "" && value !== "none" && value !== "default") {
       throw new ComposeValidationError(
-        `Service \`${name}\`: \`build.network: ${showValue(network)}\` is not allowed for contained services. `
-        + "A build step is not covered by ShipIt's service-network policy, so it may only use the "
-        + "builder default or `none`.",
+        `Service \`${name}\`: \`build.network: ${showValue(network)}\` is not allowed. `
+        + "A build may use only the builder default (omit the key) or `none`.",
       );
     }
   }
 
   if (cfg.privileged !== undefined && !meansFalse(cfg.privileged)) {
     throw new ComposeValidationError(
-      `Service \`${name}\`: \`build.privileged\` is not allowed for contained services. `
-      + "It asks BuildKit for the `security.insecure` entitlement.",
+      `Service \`${name}\`: \`build.privileged: ${showValue(cfg.privileged)}\` is not allowed. `
+      + "Remove it; a build runs without extra privileges.",
     );
   }
 
   if (Array.isArray(cfg.entitlements) ? cfg.entitlements.length > 0 : cfg.entitlements !== undefined) {
     throw new ComposeValidationError(
-      `Service \`${name}\`: \`build.entitlements\` is not allowed for contained services. `
-      + "An entitlement widens the sandbox a build step runs in.",
+      `Service \`${name}\`: \`build.entitlements: ${showValue(cfg.entitlements)}\` is not allowed. `
+      + "Remove it; a build runs without extra entitlements.",
     );
   }
 }
+
+function buildTags(build: unknown): unknown[] {
+  if (!build || typeof build !== "object" || Array.isArray(build)) return [];
+  const tags = (build as Record<string, unknown>).tags;
+  return Array.isArray(tags) ? tags : [];
+}
+
+function namesOpsProxyImage(ref: unknown): boolean {
+  if (typeof ref !== "string") return false;
+  const lower = ref.trim().toLowerCase();
+  if (lower.includes(OPS_PROXY_DIGEST.slice("sha256:".length))) return true;
+  const withoutDigest = lower.split("@", 1)[0];
+  const tagAt = withoutDigest.indexOf(":", withoutDigest.lastIndexOf("/") + 1);
+  const repository = tagAt === -1 ? withoutDigest : withoutDigest.slice(0, tagAt);
+  return repository.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, "")
+    === OPS_PROXY_REPOSITORY;
+}
+
+// The ops template's keys only: this container holds the socket.
+const TRUSTED_OPS_PROXY_FIELDS: ReadonlySet<string> = new Set([
+  "image", "environment", "volumes", "restart", "x-shipit-preview", "x-shipit-depends-on-install",
+]);
+
+const OPS_PROXY_HINT = "ShipIt trusts `docker-socket-proxy` only as the ops template defines it, "
+  + `with image \`${TRUSTED_OPS_PROXY_IMAGE}\`. Restore that definition.`;
 
 function isTrustedOpsProxyService(
   name: string,
   svc: Record<string, unknown>,
   trustedOpsProxy: boolean,
 ): boolean {
-  if (name !== "docker-socket-proxy" || !trustedOpsProxy
-    || svc.image !== "tecnativa/docker-socket-proxy:0.3.0"
-    || svc.build !== undefined || svc.command !== undefined || svc.entrypoint !== undefined
-    || svc.configs !== undefined || svc.secrets !== undefined || svc.env_file !== undefined
-    || svc.tmpfs !== undefined || svc.working_dir !== undefined || svc.healthcheck !== undefined
-    || svc.user !== undefined || svc.pid !== undefined || svc.ipc !== undefined
-    || svc.security_opt !== undefined || svc.cap_add !== undefined
-    || svc.network_mode !== undefined) return false;
+  if (name !== "docker-socket-proxy" || !trustedOpsProxy) return false;
+  if (svc.image !== TRUSTED_OPS_PROXY_IMAGE && svc.image !== LEGACY_OPS_PROXY_IMAGE) return false;
+  if (Object.keys(svc).some((key) => !TRUSTED_OPS_PROXY_FIELDS.has(key))) return false;
   const environment = svc.environment;
   const env: Record<string, unknown> = {};
   // List entries can inherit environment values that this validator cannot inspect.
@@ -698,8 +828,8 @@ function isTrustedOpsProxyService(
     typeof vol === "string"
       ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
       : Boolean(vol && typeof vol === "object"
-        && (vol as Record<string, unknown>).source === "/var/run/docker.sock"
-        && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
+        && (vol as Record<string, unknown>).source === DOCKER_SOCKET_PATH
+        && (vol as Record<string, unknown>).target === DOCKER_SOCKET_PATH
         && (vol as Record<string, unknown>).read_only === true));
   return hasReadOnlySocket
     && Object.keys(env).length === expectedKeys.size
@@ -708,19 +838,252 @@ function isTrustedOpsProxyService(
     && denied.every((key) => String(env[key]) === "0");
 }
 
+function socketGranted(socket: DockerSocketAccess): boolean {
+  return socket.requested && socket.grant === "granted";
+}
+
+function refuseDockerSocket(
+  name: string,
+  what: string,
+  socket: DockerSocketAccess,
+  opsSession: boolean,
+): never {
+  if (name === "docker-socket-proxy" && opsSession) {
+    throw new ComposeValidationError(`Service \`${name}\`: ${what} is not allowed here. ${OPS_PROXY_HINT}`);
+  }
+  if (socket.grant === "no_repository") {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: ${what} is not allowed in a session without a repository. For Docker in `
+      + "this session, the user can turn on \"Docker access\" in Session settings.",
+    );
+  }
+  if (name === "docker-socket-proxy") {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: Docker socket mount is only allowed for ` +
+      `server-created ops sessions. Recreate it from the sidebar's ` +
+      `"New advanced session" menu → "Ops session" so it is marked as kind="ops".`,
+    );
+  }
+  if (!socket.requested) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: ${what} is not allowed. It needs \`compose.docker-socket: true\` in `
+      + `shipit.yaml, and ${SOCKET_SETTING_HINT}.`,
+    );
+  }
+  throw new ComposeValidationError(
+    `Service \`${name}\`: ${what} needs the user's permission. \`compose.docker-socket: true\` asks `
+    + `for the Docker socket, and ${SOCKET_SETTING_HINT}.`,
+  );
+}
+
+function validateNamespaces(name: string, svc: Record<string, unknown>): void {
+  for (const field of NAMESPACE_FIELDS) {
+    const raw = svc[field];
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string") {
+      throw new ComposeValidationError(`Service \`${name}\`: \`${field}\` must be a string.`);
+    }
+    const value = raw.trim().toLowerCase();
+    if (value === "host" || value.startsWith("container:")) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`${field}: ${raw}\` is not allowed. Share it only with a service of `
+        + `this project (\`${field}: service:<name>\`), or omit it.`,
+      );
+    }
+  }
+}
+
+function validateCapAdd(name: string, capAdd: unknown): void {
+  if (capAdd === undefined || capAdd === null) return;
+  if (!Array.isArray(capAdd)) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`cap_add\` must be a list.`);
+  }
+  for (const entry of capAdd) {
+    const cap = typeof entry === "string" ? entry.trim().toUpperCase().replace(/^CAP_/, "") : "";
+    if (SAFE_ADDED_CAPABILITIES.has(cap)) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`cap_add: ${showValue(entry)}\` is not allowed. A service may add only `
+      + `${[...SAFE_ADDED_CAPABILITIES].join(", ")}.`,
+    );
+  }
+}
+
+function validateSecurityOpt(name: string, securityOpt: unknown): void {
+  if (securityOpt === undefined || securityOpt === null) return;
+  if (!Array.isArray(securityOpt)) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`security_opt\` must be a list.`);
+  }
+  for (const entry of securityOpt) {
+    if (typeof entry === "string" && NO_NEW_PRIVILEGES_OPTIONS.has(entry.trim())) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`security_opt: ${showValue(entry)}\` is not allowed. `
+      + "The only security option a service may set is `no-new-privileges`.",
+    );
+  }
+}
+
+function validateLogging(name: string, logging: unknown): void {
+  if (logging === undefined || logging === null) return;
+  if (typeof logging !== "object" || Array.isArray(logging)) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`logging\` must be a mapping.`);
+  }
+  const driver = (logging as Record<string, unknown>).driver;
+  if (driver === undefined || driver === null) return;
+  if (typeof driver === "string" && LOCAL_LOG_DRIVERS.has(driver.trim())) return;
+  throw new ComposeValidationError(
+    `Service \`${name}\`: \`logging.driver: ${showValue(driver)}\` is not allowed. `
+    + "Use `json-file` or `local`, or omit the driver.",
+  );
+}
+
+function validateHooks(name: string, svc: Record<string, unknown>): void {
+  for (const field of ["post_start", "pre_stop"] as const) {
+    const hooks = svc[field];
+    if (hooks === undefined || hooks === null) continue;
+    if (!Array.isArray(hooks)) {
+      throw new ComposeValidationError(`Service \`${name}\`: \`${field}\` must be a list.`);
+    }
+    hooks.forEach((hook, index) => {
+      if (!hook || typeof hook !== "object") return;
+      const privileged = (hook as Record<string, unknown>).privileged;
+      if (!meansSet(privileged)) return;
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`${field}[${index}].privileged: ${showValue(privileged)}\` is not allowed. `
+        + "Run the hook without extra privileges.",
+      );
+    });
+  }
+}
+
+function validateVolumesFrom(name: string, volumesFrom: unknown): void {
+  if (volumesFrom === undefined || volumesFrom === null) return;
+  if (!Array.isArray(volumesFrom)) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`volumes_from\` must be a list.`);
+  }
+  for (const entry of volumesFrom) {
+    if (typeof entry !== "string") {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`volumes_from\` entry \`${showValue(entry)}\` must name a service of this project.`,
+      );
+    }
+    if (entry.trim().toLowerCase().startsWith("container:")) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`volumes_from: ${entry}\` is not allowed. Name a service of this project instead.`,
+      );
+    }
+  }
+}
+
+function validateDeployDevices(name: string, deploy: Record<string, unknown>): void {
+  const resources = deploy.resources;
+  if (!resources || typeof resources !== "object") return;
+  const reservations = (resources as Record<string, unknown>).reservations;
+  if (!reservations || typeof reservations !== "object") return;
+  const devices = (reservations as Record<string, unknown>).devices;
+  if (devices === undefined || devices === null || isEmptyList(devices)) return;
+  throw new ComposeValidationError(
+    `Service \`${name}\`: \`deploy.resources.reservations.devices\` is not allowed. `
+    + `The one device a service may use is \`${ALLOWED_DEVICE}\`, through \`devices:\`.`,
+  );
+}
+
+/** Host or volume source of a mount entry; undefined for an anonymous volume. */
+function volumeSource(vol: unknown): string | undefined {
+  if (typeof vol === "string") {
+    // A bare path is an anonymous-volume target, not a host source.
+    return vol.includes(":") ? vol.split(":")[0] : undefined;
+  }
+  if (vol && typeof vol === "object") {
+    const source = (vol as Record<string, unknown>).source;
+    return typeof source === "string" ? source : undefined;
+  }
+  return undefined;
+}
+
+function mountsDockerSocket(svc: Record<string, unknown>): boolean {
+  if (meansSet(svc.use_api_socket)) return true;
+  return Array.isArray(svc.volumes) && svc.volumes.some((vol) =>
+    volumeSource(vol) === DOCKER_SOCKET_PATH
+    && !(vol && typeof vol === "object" && (vol as Record<string, unknown>).type === "volume"));
+}
+
+function volumesFromServices(svc: Record<string, unknown>): string[] {
+  if (!Array.isArray(svc.volumes_from)) return [];
+  return svc.volumes_from
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.split(":", 1)[0].trim());
+}
+
+function serviceNamespaceTarget(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.toLowerCase().startsWith("service:") ? trimmed.slice("service:".length).trim() : null;
+}
+
+// A join shares the holder's socket, which only the grant gives.
+function validateSocketJoins(services: [string, Record<string, unknown>][]): void {
+  const holders = new Set(services.filter(([, svc]) => mountsDockerSocket(svc)).map(([name]) => name));
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [name, svc] of services) {
+      if (holders.has(name) || !volumesFromServices(svc).some((target) => holders.has(target))) continue;
+      holders.add(name);
+      grew = true;
+    }
+  }
+  for (const [name, svc] of services) {
+    const inherited = volumesFromServices(svc).find((target) => holders.has(target));
+    if (inherited !== undefined) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`volumes_from: ${inherited}\` is not allowed, because \`${inherited}\` has the `
+        + "Docker socket. Mount what the service needs directly.",
+      );
+    }
+    for (const field of NAMESPACE_FIELDS) {
+      const target = serviceNamespaceTarget(svc[field]);
+      if (target === null || !holders.has(target)) continue;
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`${field}: service:${target}\` is not allowed, because \`${target}\` has the `
+        + "Docker socket. Give the service its own namespace.",
+      );
+    }
+  }
+}
+
+function validateOpsProxyImageUse(services: [string, Record<string, unknown>][]): void {
+  for (const [name, svc] of services) {
+    if (isTrustedOpsProxyService(name, svc, true)) continue;
+    const named = [svc.image, ...buildTags(svc.build)].find(namesOpsProxyImage);
+    if (named === undefined) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: image \`${showValue(named)}\` is reserved for the ops session's `
+      + "`docker-socket-proxy` in the form the ops template defines. Use another image name.",
+    );
+  }
+}
+
 export function validateServiceSecurity(
   name: string,
   svc: Record<string, unknown>,
-  dockerSocket: boolean,
+  socket: DockerSocketAccess,
   containEgress: boolean,
   trustedOpsProxy: boolean,
 ): void {
+  for (const key of Object.keys(svc)) {
+    if (CLASSIFIED_SERVICE_FIELDS.has(key) || key.startsWith("x-")) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: the Compose field \`${key}\` is not supported. `
+      + "Remove it; ShipIt accepts only the service fields it has checked.",
+    );
+  }
   if (containEgress) {
     const interpolationSensitive = [
       svc.privileged, svc.volumes, svc.devices, svc.network_mode, svc.user,
       svc.use_api_socket, svc.deploy, svc.labels, svc.cap_add, svc.post_start,
       svc.pre_stop, svc.extends,
-      svc.volumes_from,
+      svc.volumes_from, svc.pid, svc.ipc, svc.uts, svc.cgroup, svc.userns_mode,
+      svc.security_opt, svc.device_cgroup_rules, svc.logging,
     ];
     const containsInterpolation = (value: unknown): boolean => {
       if (typeof value === "string") return value.includes("${");
@@ -736,48 +1099,60 @@ export function validateServiceSecurity(
     }
   }
   const trustedProxyShape = isTrustedOpsProxyService(name, svc, trustedOpsProxy);
-  if (svc.privileged === true) {
+  if (meansSet(svc.privileged)) {
     throw new ComposeValidationError(
-      `Service \`${name}\`: \`privileged: true\` is not allowed. ` +
+      `Service \`${name}\`: \`privileged: ${showValue(svc.privileged)}\` is not allowed. ` +
       `Remove the privileged flag.`,
     );
   }
-
-  if (svc.network_mode === "host") {
+  // Compose runs a provider's program itself, on the orchestrator too.
+  if (svc.provider !== undefined) {
     throw new ComposeValidationError(
-      `Service \`${name}\`: \`network_mode: host\` is not allowed. ` +
-      `Use explicit port mappings instead.`,
+      `Service \`${name}\`: \`provider\` is not allowed. Declare the service with \`image:\` or \`build:\`.`,
     );
   }
 
+  validateNamespaces(name, svc);
 
   // Added capabilities could disable the namespace firewall.
   if (containEgress && Array.isArray(svc.cap_add) && svc.cap_add.length > 0) {
     throw new ComposeValidationError(
-      `Service \`${name}\`: \`cap_add\` is not allowed. Remove added Linux capabilities.`,
+      `Service \`${name}\`: \`cap_add\` is not allowed for contained services. `
+      + "Remove added Linux capabilities, or use an Open session.",
     );
   }
-  if (containEgress && svc.use_api_socket === true) {
+  validateCapAdd(name, svc.cap_add);
+  validateSecurityOpt(name, svc.security_opt);
+  if (svc.device_cgroup_rules !== undefined && !isEmptyList(svc.device_cgroup_rules)) {
     throw new ComposeValidationError(
-      `Service \`${name}\`: \`use_api_socket: true\` is not allowed for contained services.`,
+      `Service \`${name}\`: \`device_cgroup_rules: ${showValue(svc.device_cgroup_rules)}\` is not allowed. `
+      + `The one device a service may use is \`${ALLOWED_DEVICE}\`, through \`devices:\`.`,
     );
   }
-  if (!dockerSocket && svc.use_api_socket === true) {
-    throw new ComposeValidationError(
-      `Service \`${name}\`: \`use_api_socket: true\` requires \`compose.docker-socket: true\`.`,
-    );
+  validateLogging(name, svc.logging);
+
+  if (meansSet(svc.use_api_socket)) {
+    if (containEgress) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`use_api_socket: ${showValue(svc.use_api_socket)}\` is not allowed for `
+        + "contained services. Remove it.",
+      );
+    }
+    if (!socketGranted(socket)) refuseDockerSocket(name, "`use_api_socket`", socket, trustedOpsProxy);
   }
   if (containEgress && (svc.post_start !== undefined || svc.pre_stop !== undefined)) {
     throw new ComposeValidationError(
       `Service \`${name}\`: Compose lifecycle hooks are not allowed for contained services.`,
     );
   }
+  validateHooks(name, svc);
   if (containEgress && svc.volumes_from !== undefined) {
     throw new ComposeValidationError(
       `Service \`${name}\`: \`volumes_from\` is not allowed for contained services.`,
     );
   }
-  if (containEgress) validateBuildSecurity(name, svc.build);
+  validateVolumesFrom(name, svc.volumes_from);
+  validateBuildSecurity(name, svc.build);
 
   const labels = svc.labels;
   const labelKeys = Array.isArray(labels)
@@ -790,13 +1165,14 @@ export function validateServiceSecurity(
     );
   }
   const deploy = svc.deploy;
-  if (containEgress && deploy && typeof deploy === "object") {
+  if (deploy && typeof deploy === "object") {
     const restartPolicy = (deploy as Record<string, unknown>).restart_policy;
-    if (restartPolicy !== undefined) {
+    if (containEgress && restartPolicy !== undefined) {
       throw new ComposeValidationError(
         `Service \`${name}\`: \`deploy.restart_policy\` is not allowed for contained services.`,
       );
     }
+    validateDeployDevices(name, deploy as Record<string, unknown>);
   }
 
   validateDevices(name, svc, isDevKvmAllowed());
@@ -804,15 +1180,7 @@ export function validateServiceSecurity(
   if (Array.isArray(svc.volumes)) {
     for (const vol of svc.volumes) {
       if (persistSubpathOf(name, vol) !== null) continue;
-      let source: string | undefined;
-      if (typeof vol === "string") {
-        // A bare path is an anonymous-volume target, not a host source.
-        if (!vol.includes(":")) continue;
-        source = vol.split(":")[0];
-      } else if (vol && typeof vol === "object") {
-        const obj = vol as Record<string, unknown>;
-        if (typeof obj.source === "string") source = obj.source;
-      }
+      const source = volumeSource(vol);
       if (!source) continue;
 
       // ShipIt declares these in the override; the shared one would mount every session's files.
@@ -824,33 +1192,20 @@ export function validateServiceSecurity(
       }
       if (vol && typeof vol === "object" && (vol as Record<string, unknown>).type === "volume") continue;
 
-      const isSocket = source === "/var/run/docker.sock";
-      const socketReadOnly = typeof vol === "string"
-        ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
-        : Boolean(vol && typeof vol === "object"
-          && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
-          && (vol as Record<string, unknown>).read_only === true);
-      if (isSocket && containEgress && !(trustedProxyShape && socketReadOnly)) {
-        throw new ComposeValidationError(
-          `Service \`${name}\`: direct Docker socket access is not allowed with contained egress. `
-          + "Use ShipIt's trusted docker-socket-proxy service.",
-        );
-      }
-      if (isSocket && !dockerSocket) {
-        if (name === "docker-socket-proxy") {
+      const isSocket = source === DOCKER_SOCKET_PATH;
+      if (isSocket && !trustedProxyShape) {
+        if (containEgress) {
+          const instead = name === "docker-socket-proxy" && trustedOpsProxy
+            ? OPS_PROXY_HINT
+            : "Use ShipIt's trusted docker-socket-proxy service.";
           throw new ComposeValidationError(
-            `Service \`${name}\`: Docker socket mount is only allowed for ` +
-            `server-created ops sessions. Recreate it from the sidebar's ` +
-            `"New advanced session" menu → "Ops session" so it is marked as kind="ops".`,
+            `Service \`${name}\`: direct Docker socket access is not allowed with contained egress. ${instead}`,
           );
         }
-        throw new ComposeValidationError(
-          `Service \`${name}\`: Docker socket mount is not allowed. ` +
-          `Set \`compose.docker-socket: true\` in shipit.yaml to enable it.`,
-        );
+        if (!socketGranted(socket)) refuseDockerSocket(name, "a Docker socket mount", socket, trustedOpsProxy);
       }
 
-      if (source.startsWith("/") && !source.startsWith("/var/run/docker.sock")) {
+      if (source.startsWith("/") && !isSocket) {
         throw new ComposeValidationError(
           `Service \`${name}\`: Absolute bind mount path \`${source}\` is not allowed. ` +
           `Use relative paths within the workspace.`,
@@ -1154,6 +1509,7 @@ export function generateComposeOverride(
     const entry: Record<string, unknown> = {
       // ShipIt-owned fields must override the plugin definition.
       ...(svc.pluginDefinition ?? {}),
+      ...(svc.trustedOpsProxy ? { image: TRUSTED_OPS_PROXY_IMAGE } : {}),
       labels,
       // A service container is a sibling on the host, not inside the worker's cgroup, so without
       // this it keeps the default weight and outranks the session it belongs to (docs/229).

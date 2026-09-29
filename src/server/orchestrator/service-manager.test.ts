@@ -17,7 +17,8 @@ import {
   type ComposeQuery,
   type SecretsStatusInternalSnapshot,
 } from "./service-manager.js";
-import { DEFAULT_STOP_GRACE_PERIOD_MS } from "./compose-generator.js";
+import { DEFAULT_STOP_GRACE_PERIOD_MS, type DockerSocketGrant } from "./compose-generator.js";
+import { OPS_TEMPLATE } from "./templates-ops.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
@@ -164,15 +165,7 @@ services:
 
   it("allows the ops session proxy socket mount and starts it automatically", async () => {
     const dir = setup();
-    writeCompose(dir, `
-services:
-  docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
-    x-shipit-preview: auto
-    x-shipit-depends-on-install: false
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-`);
+    writeCompose(dir, OPS_TEMPLATE.files["docker-compose.yml"]!);
 
     const composeCalls: string[][] = [];
     const composeRunner: ComposeRunner = (args) => {
@@ -218,19 +211,55 @@ services:
 
   it("rejects the ops proxy socket mount for ordinary sessions", async () => {
     const dir = setup();
-    writeCompose(dir, `
-services:
-  docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
-    x-shipit-preview: auto
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-`);
+    writeCompose(dir, OPS_TEMPLATE.files["docker-compose.yml"]!);
 
     const mgr = createManager(dir);
 
     await expect(mgr.start()).rejects.toThrow("server-created ops sessions");
     expect(mgr.getServices()).toEqual([]);
+  });
+
+  it("reads the socket grant at each start, and the key alone does not grant it", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  tool:\n    image: docker:cli\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n");
+    let grant: DockerSocketGrant = "not_granted";
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: true },
+      composeRunner: fakeComposeRunner,
+      dockerSocketGrant: () => grant,
+      pollIntervalMs: 0,
+    });
+
+    await expect(mgr.start()).rejects.toThrow("project.allowDockerSocket");
+    grant = "no_repository";
+    await expect(mgr.start()).rejects.toThrow("Docker access");
+    grant = "granted";
+    try { await mgr.start(); } catch { /* the fake runner fails `up` */ }
+    expect(mgr.getService("tool")).toBeDefined();
+  });
+
+  it("gives an Open ops session without the grant only the proxy's socket", async () => {
+    const dir = setup();
+    writeCompose(dir, `${OPS_TEMPLATE.files["docker-compose.yml"]!}
+  tool:
+    image: docker:cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`);
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: true },
+      composeRunner: fakeComposeRunner,
+      opsSession: true,
+      pollIntervalMs: 0,
+    });
+
+    await expect(mgr.start()).rejects.toThrow("Service `tool`: a Docker socket mount needs the user's permission");
   });
 
   it("extracts host port from port mapping", async () => {

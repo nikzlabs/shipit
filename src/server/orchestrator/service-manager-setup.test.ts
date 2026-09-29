@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
-import { applyOverlayDepDirsForSession, applyShipitConfigChange, emitPluginReposUpdated, joinSessionNetworkEndpoints, setupServiceManager } from "./service-manager-setup.js";
+import { applyOverlayDepDirsForSession, applyShipitConfigChange, dockerSocketGrantFor, emitPluginReposUpdated, joinSessionNetworkEndpoints, setupServiceManager } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { installContentKeyDiagnostic } from "./install-content-key.js";
 import { isOpsSafeLine } from "./services/host-session-logs.js";
@@ -752,5 +752,27 @@ describe("applyOverlayDepDirsForSession — clearing a set the services still ho
 
     expect(await applyOverlayDepDirsForSession("s1", mgr, deps(null))).toBe(false);
     expect(mgr.setOverlayDepDirs).not.toHaveBeenCalled();
+  });
+});
+
+describe("dockerSocketGrantFor", () => {
+  const granted = { allowsDockerSocket: (url: string) => url === "https://github.com/o/granted" };
+  const session = (patch: Partial<SessionInfo>): SessionInfo => ({ id: "s1", ...patch }) as SessionInfo;
+
+  it("follows the repository's setting", () => {
+    expect(dockerSocketGrantFor(session({ remoteUrl: "https://github.com/o/granted" }), granted)).toBe("granted");
+    expect(dockerSocketGrantFor(session({ remoteUrl: "https://github.com/o/other" }), granted)).toBe("not_granted");
+  });
+
+  it("gives a sandbox no grant, whatever address its workspace names", () => {
+    expect(dockerSocketGrantFor(
+      session({ kind: "sandbox", remoteUrl: "https://github.com/o/granted" }),
+      granted,
+    )).toBe("no_repository");
+  });
+
+  it("gives a session with no repository no grant", () => {
+    expect(dockerSocketGrantFor(session({}), granted)).toBe("no_repository");
+    expect(dockerSocketGrantFor(undefined, granted)).toBe("no_repository");
   });
 });

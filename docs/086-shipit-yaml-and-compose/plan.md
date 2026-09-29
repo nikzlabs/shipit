@@ -396,6 +396,12 @@ local volume whose root is this session's workspace (device = the workspace volu
 `~` source paths, paths outside the workspace (e.g., `../`), and either reserved volume
 name are rejected with a validation error.
 
+Since docs/318-compose-remaining-escapes, the rewrite no longer lives in the override.
+ShipIt resolves the project file once with `docker compose config` in a confined helper
+container, validates and rewrites that resolved model (every in-workspace bind, however
+it is spelled), writes it as the start's snapshot under `<state>/compose/`, and starts
+`up --no-build` from the snapshot plus an override that holds only what ShipIt adds.
+
 **Manual services via profiles:** Services with `x-shipit-preview: manual` (or
 defaulting to manual) are assigned to the `shipit-manual` profile in the override.
 Compose only starts profiled services when explicitly requested.

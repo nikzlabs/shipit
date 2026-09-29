@@ -17,7 +17,7 @@ const DOCKER_COMPOSE_YML = `# docs/128 — read-only Docker access for the ops s
 # exec, build, secrets) are rejected by the proxy.
 services:
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     x-shipit-preview: auto
     x-shipit-depends-on-install: false
     restart: unless-stopped

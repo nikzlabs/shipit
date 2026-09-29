@@ -22,6 +22,8 @@ const INCONCLUSIVE_CONTAINER_STATES = new Set(["created", "removing"]);
 export interface ServicePollerOptions {
   sessionId: string;
   workspaceDir: string;
+  /** Working directory for its queries; defaults to `workspaceDir`. */
+  queryCwd?: () => string;
   composeQuery: ComposeQueryFn;
   /** Zero disables periodic polling. */
   pollIntervalMs: number;
@@ -59,7 +61,7 @@ function withQueryTimeout(promise: Promise<string>, message: string): Promise<st
 
 export class ServicePoller {
   private readonly sessionId: string;
-  private readonly workspaceDir: string;
+  private readonly queryCwd: () => string;
   private readonly composeQuery: ComposeQueryFn;
   private readonly pollIntervalMs: number;
   private readonly composeArgs: (...extra: string[]) => string[];
@@ -81,7 +83,7 @@ export class ServicePoller {
 
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
-    this.workspaceDir = opts.workspaceDir;
+    this.queryCwd = opts.queryCwd ?? (() => opts.workspaceDir);
     this.composeQuery = (args, cwd) => withQueryTimeout(
       opts.composeQuery(args, cwd),
       `docker ${args[0]} did not answer within ${COMPOSE_QUERY_TIMEOUT_MS}ms`,
@@ -105,7 +107,7 @@ export class ServicePoller {
     const args = this.composeArgs("ps", "--format", "json", "-a");
     let stdout: string;
     try {
-      stdout = await this.composeQuery(args, this.workspaceDir);
+      stdout = await this.composeQuery(args, this.queryCwd());
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
       // Query failure is not an empty container list; expire only sustained stale claims.
@@ -270,7 +272,7 @@ export class ServicePoller {
       try {
         const stdout = await this.composeQuery(
           ["inspect", containerName],
-          this.workspaceDir,
+          this.queryCwd(),
         );
         const parsed = JSON.parse(stdout) as { State?: { OOMKilled?: boolean }; NetworkSettings?: { IPAddress?: string; Networks?: Record<string, { IPAddress?: string }> } }[];
         // Exited containers may have no networks, but their OOM flag still matters.
@@ -283,9 +285,9 @@ export class ServicePoller {
           try {
             await this.composeQuery(
               ["network", "connect", networkName, containerName],
-              this.workspaceDir,
+              this.queryCwd(),
             );
-            const stdout2 = await this.composeQuery(["inspect", containerName], this.workspaceDir);
+            const stdout2 = await this.composeQuery(["inspect", containerName], this.queryCwd());
             const parsed2 = JSON.parse(stdout2) as typeof parsed;
             nets = parsed2[0]?.NetworkSettings?.Networks;
           } catch {

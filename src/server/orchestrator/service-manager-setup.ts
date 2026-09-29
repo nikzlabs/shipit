@@ -24,6 +24,7 @@ import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { workspaceVolumeDaemonPath } from "./compose-persist.js";
+import type { DockerSocketGrant } from "./compose-generator.js";
 
 /**
  * Compose creates the session network with the first service, so a project whose services are all
@@ -326,6 +327,7 @@ const DEFAULT_COMPOSE_CONFIG = { file: "docker-compose.yml", dockerSocket: false
 export type ServiceManagerBuildDeps = Pick<
   ServiceSetupDeps,
   | "sessionManager"
+  | "repoStore"
   | "containerManager"
   | "secretStore"
   | "credentialStore"
@@ -388,6 +390,15 @@ export async function joinSessionNetworkEndpoints(
   }
 }
 
+/** A sandbox has no repository to hold the grant, whatever address its workspace names (planning#623). */
+export function dockerSocketGrantFor(
+  session: SessionInfo | undefined,
+  repoStore: Pick<RepoStore, "allowsDockerSocket">,
+): DockerSocketGrant {
+  if (!session || session.kind === "sandbox" || !session.remoteUrl) return "no_repository";
+  return repoStore.allowsDockerSocket(session.remoteUrl) ? "granted" : "not_granted";
+}
+
 export function buildServiceManager(args: {
   sessionId: string;
   workspaceDir: string;
@@ -420,6 +431,7 @@ export function buildServiceManager(args: {
       : {}),
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
+    dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
     secretsLoader: createSecretsLoader(sessionId, deps),
     accountAgentEnvLoader,
     pluginCredentialsLoader: () => collectPluginCredentialDeclarations(workspaceDir),
