@@ -50,6 +50,7 @@ import {
   createWarmPreviewStarter,
   runRepoMigration,
   runRemoteCredentialScrub,
+  clearUnrecordedRepoAddresses,
   retireWarmSessions,
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
@@ -145,6 +146,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   await retireWarmSessions({
     repoStore, sessionManager, chatHistoryManager, usageManager, presentStore,
   });
+  clearUnrecordedRepoAddresses(sessionManager);
 
   const { containerManager, dockerProxyServer } = await setupContainerManager({
     deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, resolveEgressConfig,

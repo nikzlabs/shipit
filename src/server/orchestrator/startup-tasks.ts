@@ -180,6 +180,22 @@ async function scrubGitRemotes(dir: string): Promise<boolean> {
   return changed;
 }
 
+// planning#623 — no server path records an address for an ops or sandbox session, so a stored
+// one was copied from the workspace's `origin` by an older build and must not grant anything.
+export function clearUnrecordedRepoAddresses(sessionManager: SessionManager): number {
+  let cleared = 0;
+  for (const session of sessionManager.listAllIncludingWarm()) {
+    if ((session.kind === "ops" || session.kind === "sandbox") && session.remoteUrl) {
+      sessionManager.setRemoteUrl(session.id, undefined);
+      cleared++;
+    }
+  }
+  if (cleared > 0) {
+    console.log(`[startup] cleared a workspace-derived repository address from ${cleared} ops/sandbox session(s)`);
+  }
+  return cleared;
+}
+
 // Run before container discovery so old-image standbys are not adopted; startup rewarms the pool.
 export async function retireWarmSessions(deps: {
   repoStore: RepoStore;

@@ -113,6 +113,7 @@ export type { WarmPreviewDeps } from "./warm-preview.js";
 export {
   runRepoMigration,
   runRemoteCredentialScrub,
+  clearUnrecordedRepoAddresses,
   runMcpOAuthStartupRefresh,
   retireWarmSessions,
   scheduleStartupTasks,

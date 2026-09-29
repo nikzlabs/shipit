@@ -52,31 +52,6 @@ export type {
   RegisterMergeWatchResult,
 } from "./child-sessions.js";
 
-export async function listSessions(
-  sessionManager: SessionManager,
-  createGitManager: (dir: string) => GitManager,
-): Promise<SessionInfo[]> {
-  const sessions = sessionManager.list();
-  await Promise.all(
-    sessions.map(async (session) => {
-      if (session.workspaceDir && !session.remoteUrl) {
-        try {
-          const git = createGitManager(session.workspaceDir);
-          const remotes = await git.getRemotes();
-          const origin = remotes.find((r) => r.name === "origin");
-          if (origin?.url) {
-            sessionManager.setRemoteUrl(session.id, origin.url);
-            session.remoteUrl = origin.url;
-          }
-        } catch {
-          // The workspace may be absent or have no git repository.
-        }
-      }
-    })
-  );
-  return sessions;
-}
-
 export function getSessionStatus(
   runnerRegistry: SessionRunnerRegistry,
   sessionId: string,

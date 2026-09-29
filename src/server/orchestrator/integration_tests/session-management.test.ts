@@ -111,22 +111,23 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
     expect(session?.remoteUrl).toBe("https://github.com/owner/repo.git");
   });
 
-  it("bootstrap lazy-populates remoteUrl from git config", async () => {
+  // planning#623 — trust, secrets and repository grants key on the stored address.
+  it("bootstrap does not take remoteUrl from the workspace's origin", async () => {
     const sessionDir = path.join(tmpDir, "sess-git");
     fs.mkdirSync(sessionDir, { recursive: true });
     const git = new GitManager(sessionDir);
     await git.init();
-    await git.addRemote("origin", "https://github.com/lazy/populated.git");
+    await git.addRemote("origin", "https://github.com/workspace/set.git");
 
-    sessionManager.track("sess-git", "Lazy session", sessionDir);
+    sessionManager.track("sess-git", "Local session", sessionDir);
 
     const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
     expect(res.statusCode).toBe(200);
     const sessions = res.json().sessions as { id: string; remoteUrl: string }[];
     const session = sessions.find((s) => s.id === "sess-git");
-    expect(session?.remoteUrl).toBe("https://github.com/lazy/populated.git");
+    expect(session?.remoteUrl).toBe("");
 
-    expect(sessionManager.get("sess-git")?.remoteUrl).toBe("https://github.com/lazy/populated.git");
+    expect(sessionManager.get("sess-git")?.remoteUrl).toBe("");
   });
 
   it("bootstrap handles sessions with missing workspace dirs gracefully", async () => {
