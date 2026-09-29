@@ -1544,6 +1544,7 @@ export async function executeAgentTurn(
   try {
     // Prepare before reading run parameters: credential repair can change the resume ID.
     const envBegan = Date.now();
+    const previousRouteId = deps.listenerDeps.usageManager?.lastTurnCredentialRouteId?.(sessionId);
     const prep = await deps.prepareAgentEnv?.(sessionId, agentId, {
       reusingResidentAgent: input.reuseExistingAgent === true,
       ownUserText: input.userText,
@@ -1551,6 +1552,7 @@ export async function executeAgentTurn(
         ? { excludeRouteIds: input.attemptLedger.map((entry) => entry.routeId) }
         : {}),
       ...(runner?.residentRoute ? { residentRoute: runner.residentRoute } : {}),
+      ...(previousRouteId ? { previousRouteId } : {}),
       requireResidentRoute:
         runner?.residentRoute !== undefined
         && (input.reuseExistingAgent === true
@@ -1576,16 +1578,13 @@ export async function executeAgentTurn(
           `${lastRefusal.label} ${reason} — continuing this turn on ${routeLabel}.`,
           deps.listenerDeps.chatHistoryManager,
         );
-      } else {
-        const previousRouteId = deps.listenerDeps.usageManager?.lastTurnCredentialRouteId?.(sessionId);
-        if (previousRouteId !== undefined && previousRouteId !== turnRoute.id) {
-          emitNoticeInTurn(
-            runner,
-            sessionId,
-            `Continuing on ${routeLabel}.`,
-            deps.listenerDeps.chatHistoryManager,
-          );
-        }
+      } else if (previousRouteId !== undefined && previousRouteId !== turnRoute.id) {
+        emitNoticeInTurn(
+          runner,
+          sessionId,
+          `Continuing on ${routeLabel}.`,
+          deps.listenerDeps.chatHistoryManager,
+        );
       }
     }
 

@@ -7,6 +7,8 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
 import { prepareSessionAgentEnvironment } from "./session-agent-env.js";
+import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
+import { writeSessionResidentRoute } from "./session-credentials.js";
 
 class FakeRunner extends EventEmitter {
   agentId = "claude" as const;
@@ -68,7 +70,10 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function routeTurn(mode: "strict" | "balanced") {
+  async function routeTurn(
+    mode: "strict" | "balanced",
+    turn: { residentRoute?: { kind: "account"; id: string }; previousRouteId?: string } = {},
+  ) {
     const accounts = [
       { id: "acct-first", lastUsedAt: 9_000 },
       { id: "acct-second", lastUsedAt: 1 },
@@ -89,6 +94,7 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
         sessionId: "s1",
         agentId: "claude",
         enforceAccountRouting: true,
+        ...turn,
         deps: {
           credentialsDir: tmpDir,
           credentialStore: makeCredentialStore(),
@@ -99,6 +105,36 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
     );
     return { setProviderRouteCalls, markAccountUsed, selectAccountForTurn, turnRoute: result.turnRoute };
   }
+
+  it("gives the router the previous turn's account as current when the process ended (req 8)", async () => {
+    const { selectAccountForTurn } = await routeTurn("balanced", { previousRouteId: "acct-first" });
+    expect(selectAccountForTurn).toHaveBeenCalledWith(
+      "anthropic",
+      expect.objectContaining({ currentRouteId: "acct-first" }),
+    );
+  });
+
+  it("prefers the last spawn's record, which also covers a turn that died before its result (req 8)", async () => {
+    fs.mkdirSync(perSessionCredentialsDir(tmpDir, "s1"), { recursive: true });
+    writeSessionResidentRoute(tmpDir, "s1", "claude", { kind: "account", id: "acct-second" });
+
+    const { selectAccountForTurn } = await routeTurn("balanced", { previousRouteId: "acct-first" });
+    expect(selectAccountForTurn).toHaveBeenCalledWith(
+      "anthropic",
+      expect.objectContaining({ currentRouteId: "acct-second" }),
+    );
+  });
+
+  it("a live process's account is the session's account, over the previous turn's (req 8)", async () => {
+    const { selectAccountForTurn } = await routeTurn("balanced", {
+      residentRoute: { kind: "account", id: "acct-second" },
+      previousRouteId: "acct-first",
+    });
+    expect(selectAccountForTurn).toHaveBeenCalledWith(
+      "anthropic",
+      expect.objectContaining({ currentRouteId: "acct-second" }),
+    );
+  });
 
   it("strict routes the turn to the highest-ranked account even when it is the busiest", async () => {
     const { turnRoute, setProviderRouteCalls } = await routeTurn("strict");

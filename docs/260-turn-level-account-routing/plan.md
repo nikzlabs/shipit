@@ -35,17 +35,60 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
     "try once to confirm".
   - **Refusal memory** (section 2) is the only skip — and even that yields
     under req 12 (section 3).
-- **Balanced spreads sessions, strict is absolute (req 8, resolved
-  2026-08-10).** Under `strict` the session moves back to the primary the
-  turn it recovers, one process restart accepted. Under `balanced` the mode
-  spreads **sessions** over accounts, not individual turns: selection takes a
-  `residentRoute` option, and when the resident process's account is eligible
-  and under its cutoff, that account is chosen; otherwise the normal
-  least-recently-used walk runs. This is req 8's own definition of "better"
-  for balanced — not a design-level tiebreak — so a session without a
-  resident process still lands on the least-recently-used account, which is
-  what spreads new work.
-- **A stale window stops counting (req 8, fixed 2026-08-12).** The move back
+- **A session keeps its account; the strategy places, it does not recall
+  (req 8, rewritten 2026-09-29).** Selection takes a `currentRouteId` — the
+  account the session is on — and `pickKeepingCurrent` applies it the same
+  way under both strategies: the walk still sorts candidates into tiers
+  (clear → over-cutoff → looks-spent; refused and excluded accounts are not
+  candidates), takes the first non-empty tier, and inside that tier the
+  current account wins over the strategy's order. So a session moves only
+  when a strictly better tier exists — its account refused, or passed its
+  cutoff while another is clear — and never back to a primary that
+  recovered. A session with no current account (a new one) gets the
+  strategy's first pick, which is what spreads new work under `balanced`
+  and fills the primary first under `strict`.
+
+  The current account is, in order: `runner.residentRoute` when a CLI
+  process is alive; the last spawn's record (`.shipit-resident-route.json`,
+  written before every routed spawn, container mode only), which also
+  covers a turn that died before its `agent_result`; and the route of the
+  session's previous own turn, `usage_turns.credential_route_id`
+  (`lastTurnCredentialRouteId`, the same read the "Continuing on" notice
+  uses), which `turn-executor.ts` reads once before env-prep and threads as
+  `previousRouteId` — the only source in local mode. The resident route
+  alone was not enough, and that was the bug behind the 2026-09-29 report:
+  it is cleared whenever the process ends — container reclaim, process
+  exit, live steering off — and the next turn then had nothing to keep, so
+  `balanced` sent it to the least-recently-used account, which was the
+  *other* one because the session's own last turn had just stamped its
+  account as used. Every turn after a process ended switched accounts.
+
+  Why no move back (the 2026-08-10 answer was the opposite): a move costs a
+  full prompt-cache write of the conversation on the new account on every
+  model — caches are per organization — and on Claude Sonnet 5.5 it drops
+  the other account's thinking blocks, which are bound to the account that
+  produced them. The forced move cannot be avoided; the voluntary move back
+  can.
+
+  Req 7's "resume state is account-agnostic" is true of the transcript file
+  and not of Sonnet 5.5 content inside it: the API silently drops another
+  account's Sonnet 5.5 thinking blocks on resend
+  ([preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)),
+  so the conversation survives a move but that reasoning does not. The
+  catalogue (`shared/catalogue/services.ts`) does not offer Sonnet 5.5 yet;
+  when it does, this rule already limits the loss to forced moves. See
+  docs/150-multiple-provider-subscriptions plan, "Conversation continuity".
+
+  **Known limit, accepted:** accounts and pasted-token credentials on one
+  service are two pools, and the account walk runs first
+  (`selectRouteForSelection`). A session on a pasted token got there only
+  because no account was ready, so connecting an account moves it on its
+  next turn. Keeping it would need a cross-pool tier comparison; the move
+  follows a user action, not a strategy preference.
+- **A stale window stops counting (req 8, fixed 2026-08-12).** Written when
+  req 8 still moved a session back to a recovered primary; the move back is
+  gone, but the rule below still decides which tier an account sorts into,
+  and so where a new session starts and where a moving one goes. The move back
   did not happen in practice under `strict`. `isOverCutoff` read the last
   `usedPct` with no time component at all, so a primary that hit its 5h limit
   stayed in the `overCutoff` tier after that limit reset, and `clear[0]` — the
@@ -94,8 +137,8 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
   drain nudge when the work clears), account disconnect/sign-out, string
   credential deletion, and the credential-change release. While busy, the
   turn runs on the resident process's own account regardless of what the
-  strategy prefers (`requireResidentRoute`) — the documented exception to
-  req 8 — and the move happens at the first clean turn. **Known limitation
+  strategy prefers (`requireResidentRoute`) — even when req 8 says the
+  session must move — and the move happens at the first clean turn. **Known limitation
   (follow-up):** the tracker half is a bounded hint — it expires ~10 minutes
   after the last refresh and the Codex CLI reports no background tasks — so
   a very long untracked background process can still lose its protection;
@@ -462,8 +505,8 @@ this section's own poisoning class arriving through the back door.
   - Exhaustion stamps are latest-wins: a re-probe's shorter stated reset
     supersedes an older longer estimate instead of `Math.max` (req 9).
   - `balanced` session-spreading covers string-delivered subscriptions: the
-    `residentRouteId` option (renamed from `residentAccountId`) is honoured
-    by the string walk too (req 8).
+    `residentRouteId` option (renamed from `residentAccountId`, and since
+    2026-09-29 `currentRouteId`) is honoured by the string walk too (req 8).
   - A per-session **resident-route record** (`.shipit-resident-route.json`,
     written at every routed pre-spawn stamp) recovers post-restart identity
     for string/env-delivered credentials, which leave no subtree marker;
@@ -564,6 +607,11 @@ plus, at most, the running-turn wait message.
 - **Attempt loop:** refusal → next account in strategy order; all refused →
   terminal message with this turn's provider reset times; exclusion set bounds
   attempts to one per account; metered routes never entered.
+- **Req 8:** a session's current account wins inside its tier under both
+  strategies; a secondary is kept after the primary recovers; a current
+  account past its cutoff yields to a clear one; a session whose process
+  ended passes its previous turn's route (`turn-route-continuity.test.ts`,
+  `provider-account-manager.test.ts`, `service-routing.test.ts`).
 - **Req 12:** a turn after an all-refused turn tries every account again;
   no selection path can return `all_exhausted` without attempts this turn.
 - **Refusal memory:** blocks ≤30 min per stamp; honours a nearer stated reset;

@@ -698,6 +698,16 @@ why `token-sync-manager.ts` keeps a conversation-state allowlist
 That satisfies req 9 with no new machinery: keep `agentSessionId`, preserve the
 conversation-state subpaths across reprovisioning, and let the CLI resume.
 
+**The file is account-agnostic; one model's content in it is not (2026-09-29).**
+Claude Sonnet 5.5 binds its thinking blocks to the account (organization) that
+produced them. When another account resends them, the API drops them without
+an error and the model answers without that reasoning
+([preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)).
+So a switch still resumes the conversation, but on Sonnet 5.5 it loses the
+other account's reasoning. The catalogue (`shared/catalogue/services.ts`) does
+not offer Sonnet 5.5 yet, and docs/260-turn-level-account-routing req 8 (no move
+back) limits the loss to forced moves.
+
 What genuinely is account-bound is the running process and the credential files.
 So an account switch for an already-pinned session is:
 

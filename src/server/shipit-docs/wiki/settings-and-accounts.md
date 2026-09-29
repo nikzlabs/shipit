@@ -130,6 +130,15 @@ there are two:
   Worth knowing when a user expects it to even out and it does not: it rotates
   by last use, not by how much each has left, so wildly unequal sessions still
   drain unequally.
+
+  Under **both** options a session then **stays** on its credential. It moves
+  only when it must — the credential refused a turn for quota, passed its
+  cutoff while another has not, or was disconnected — and it **never moves
+  back** when a preferred credential recovers. So *Use in order* does not
+  return a session to the first credential; new sessions start there. The
+  reason: each move sends the whole conversation again without the prompt
+  cache, which spends quota, and on some models it loses the earlier
+  reasoning. A move shows in the chat as "Continuing on «name»."
 - **Cutoffs**, as a percentage of a reported quota: a short-window (5h) one and
   a weekly (7d) one. Past its cutoff a credential stops taking *new* work while
   another is below one — and is still used when none is, so nothing is stranded.

@@ -101,7 +101,7 @@ describe("per-turn account routing (docs/260)", () => {
   async function runEnvPrep(
     sessionId: string,
     agentId: AgentId,
-    opts: { excludeRouteIds?: string[] } = {},
+    opts: { excludeRouteIds?: string[]; previousRouteId?: string } = {},
   ): Promise<{ runner: FakeRunner; turnRoute: { kind: ProviderRouteKind; id: string } | undefined }> {
     const runner = new FakeRunner();
     runner.sessionId = sessionId;
@@ -110,6 +110,7 @@ describe("per-turn account routing (docs/260)", () => {
       agentId,
       enforceAccountRouting: true,
       ...(opts.excludeRouteIds ? { excludeRouteIds: opts.excludeRouteIds } : {}),
+      ...(opts.previousRouteId ? { previousRouteId: opts.previousRouteId } : {}),
       deps: {
         credentialsDir: root,
         credentialStore: store,
@@ -195,7 +196,7 @@ describe("per-turn account routing (docs/260)", () => {
     expect(turnRoute).not.toEqual({ kind: "reserved", id: "anthropic-key" });
   });
 
-  it("returns to the strategy's best account the turn its refusal clears (reqs 1, 8)", async () => {
+  it("keeps a session on the secondary after the primary's refusal clears — no move back (req 8)", async () => {
     const first = readyAccount("claude", "Primary");
     const second = readyAccount("claude", "Secondary");
     accounts.markAccountExhausted("anthropic", first, Date.now() + 1_000);
@@ -204,7 +205,24 @@ describe("per-turn account routing (docs/260)", () => {
     expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(second);
 
     accounts.clearAccountExhaustion("anthropic", first);
-    expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(first);
+    expect((await runEnvPrep("s1", "claude", { previousRouteId: second })).turnRoute?.id).toBe(second);
+    // A new session, with no account yet, starts where the strategy says.
+    sessions.track("s2", "Test", path.join(root, "sessions", "s2"));
+    expect((await runEnvPrep("s2", "claude")).turnRoute?.id).toBe(first);
+  });
+
+  it("balanced keeps a session on its account across turns whose process ended (req 8)", async () => {
+    readyAccount("claude", "A");
+    readyAccount("claude", "B");
+    store.setSelectionMode("anthropic", "sub", "balanced");
+    sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
+
+    const firstTurn = (await runEnvPrep("s1", "claude")).turnRoute?.id;
+    const secondTurn = (await runEnvPrep("s1", "claude", { previousRouteId: firstTurn })).turnRoute?.id;
+    const thirdTurn = (await runEnvPrep("s1", "claude", { previousRouteId: secondTurn })).turnRoute?.id;
+
+    expect(firstTurn).toBeDefined();
+    expect([secondTurn, thirdTurn]).toEqual([firstTurn, firstTurn]);
   });
 
   it("still TRIES the best remembered-refused account rather than failing untried (req 12)", async () => {
@@ -252,7 +270,7 @@ describe("per-turn account routing (docs/260)", () => {
       expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(first);
 
       limits = { "anthropic:sub": { [first]: sessionWindowAt(95) } };
-      expect((await runEnvPrep("s1", "claude")).turnRoute?.id).toBe(second);
+      expect((await runEnvPrep("s1", "claude", { previousRouteId: first })).turnRoute?.id).toBe(second);
     });
 
     it("stays put below the cutoff, and moves once the user lowers it", async () => {
