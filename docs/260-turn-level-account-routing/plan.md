@@ -48,11 +48,14 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
   strategy's first pick, which is what spreads new work under `balanced`
   and fills the primary first under `strict`.
 
-  The current account is `runner.residentRoute` when a CLI process is
-  alive, otherwise the route of the session's previous own turn,
-  `usage_turns.credential_route_id` (`lastTurnCredentialRouteId`, the same
-  read the "Continuing on" notice uses). `turn-executor.ts` reads it once
-  before env-prep and threads it as `previousRouteId`. The resident route
+  The current account is, in order: `runner.residentRoute` when a CLI
+  process is alive; the last spawn's record (`.shipit-resident-route.json`,
+  written before every routed spawn, container mode only), which also
+  covers a turn that died before its `agent_result`; and the route of the
+  session's previous own turn, `usage_turns.credential_route_id`
+  (`lastTurnCredentialRouteId`, the same read the "Continuing on" notice
+  uses), which `turn-executor.ts` reads once before env-prep and threads as
+  `previousRouteId` — the only source in local mode. The resident route
   alone was not enough, and that was the bug behind the 2026-09-29 report:
   it is cleared whenever the process ends — container reclaim, process
   exit, live steering off — and the next turn then had nothing to keep, so
@@ -66,6 +69,13 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
   the other account's thinking blocks, which are bound to the account that
   produced them. The forced move cannot be avoided; the voluntary move back
   can.
+
+  **Known limit, accepted:** accounts and pasted-token credentials on one
+  service are two pools, and the account walk runs first
+  (`selectRouteForSelection`). A session on a pasted token got there only
+  because no account was ready, so connecting an account moves it on its
+  next turn. Keeping it would need a cross-pool tier comparison; the move
+  follows a user action, not a strategy preference.
 - **A stale window stops counting (req 8, fixed 2026-08-12).** Written when
   req 8 still moved a session back to a recovered primary; the move back is
   gone, but the rule below still decides which tier an account sorts into,

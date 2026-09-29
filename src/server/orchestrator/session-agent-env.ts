@@ -17,6 +17,7 @@ import {
   provisionAgentCredentials,
   provisionRepoMemory,
   readSessionAccountMarker,
+  readSessionResidentRoute,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
   syncAgentTokenBack,
@@ -262,8 +263,11 @@ function selectTurnRoute(
         : !id.startsWith("cred_") || deps.credentialStore.getCredentialRoute(id) !== undefined;
     if (stillExists) return { kind, id };
   }
-  // A process that ended between turns leaves no resident route; the session's account is its last turn's.
-  const currentRouteId = opts.residentRoute?.id ?? opts.previousRouteId;
+  // A process that ended between turns leaves no resident route. The spawn record also
+  // covers a turn that died before its result; usage history covers local mode, which has none.
+  const currentRouteId = opts.residentRoute?.id
+    ?? readSessionResidentRoute(deps.credentialsDir, session.id)[agentId]?.id
+    ?? opts.previousRouteId;
   // This turn attempts the result; only actual refusals in its exclusion list are final.
   const selection = selectRouteForSelection(
     agentId,
