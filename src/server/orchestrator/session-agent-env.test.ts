@@ -1859,6 +1859,7 @@ describe("agentEnvTurnArgs", () => {
       reusingResidentAgent: true,
       excludeRouteIds: ["r1"],
       residentRoute: { kind: "account" as const, id: "a1" },
+      previousRouteId: "a0",
       requireResidentRoute: true,
       ownUserText: "the message this turn submits",
     };

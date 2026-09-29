@@ -924,39 +924,61 @@ describe("ProviderAccountManager", () => {
         });
       });
 
-      it("under balanced, an eligible resident account keeps serving its session (req 8)", () => {
+      it("under balanced, the session's current account keeps serving it though it was used last (req 8)", () => {
         const { a, b } = twoReadyAccounts();
         store.setSelectionMode("anthropic", "sub", "balanced");
         const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
         mgr.markAccountUsed("anthropic", a);
 
-        expect(mgr.selectAccountForTurn("anthropic", { residentRouteId: a })).toEqual({
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
+        expect(mgr.selectAccountForTurn("anthropic", { currentRouteId: a })).toEqual({
           ok: true,
           route: { kind: "account", id: a },
         });
         store.setSelectionMode("anthropic", "sub", "strict");
       });
 
-      it("under strict, the strategy is absolute and the resident option is ignored (req 8)", () => {
+      it("under strict, a session on the secondary is never moved back to the primary (req 8)", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
 
-        expect(mgr.selectAccountForTurn("anthropic", { residentRouteId: b })).toEqual({
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
+        expect(mgr.selectAccountForTurn("anthropic", { currentRouteId: b })).toEqual({
           ok: true,
-          route: { kind: "account", id: a },
+          route: { kind: "account", id: b },
         });
       });
 
-      it("a resident account that is over its cutoff stops being preferred (req 8)", () => {
+      it("a current account that is over its cutoff yields to a clear one (req 8)", () => {
         const { a, b } = twoReadyAccounts();
         store.setSelectionMode("anthropic", "sub", "balanced");
         const mgr = mgrWith({ [a]: { session: win(95) }, [b]: { session: win(10) } });
 
-        expect(mgr.selectAccountForTurn("anthropic", { residentRouteId: a })).toEqual({
+        expect(mgr.selectAccountForTurn("anthropic", { currentRouteId: a })).toEqual({
           ok: true,
           route: { kind: "account", id: b },
         });
         store.setSelectionMode("anthropic", "sub", "strict");
+      });
+
+      it("a current account stays when no account is clear of its cutoff (req 8)", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(95) }, [b]: { session: win(95) } });
+
+        expect(mgr.selectAccountForTurn("anthropic", { currentRouteId: b })).toEqual({
+          ok: true,
+          route: { kind: "account", id: b },
+        });
+      });
+
+      it("a current account that is excluded after a refusal is left (req 8)", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
+
+        expect(mgr.selectAccountForTurn("anthropic", { currentRouteId: b, exclude: [b] })).toEqual({
+          ok: true,
+          route: { kind: "account", id: a },
+        });
       });
     });
   });

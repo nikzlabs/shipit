@@ -52,15 +52,14 @@ requirement below contradicts it.
    account-agnostic, verified in docs/150); credentials are never rewritten
    under a turn that is running right now (decision of 2026-08-03).
 
-8. The strategy always wins. When a better account (per the selection
-   strategy) becomes eligible again, the next turn moves onto it — even when
-   the session's resident CLI process runs on another account. The restart
-   cost of that process is accepted; the conversation is preserved. Under
-   `balanced`, "better" is measured across sessions, not turns: the mode
-   spreads **sessions** over accounts, so a session's resident process keeps
-   its account while that account stays eligible and under its cutoff. Under
-   strict priority the primary is always better, and the move-back applies
-   literally.
+8. A session stays on the account it is on. It moves to another account only
+   when its own account cannot serve it: the account refused the turn, it is
+   past its cutoff while another account is not, or it was disconnected. It
+   never moves back to an account the strategy prefers. This holds under
+   every selection strategy, and whether or not the session's CLI process is
+   still running. The strategy chooses where a new session starts and where a
+   session goes when it must move; under `balanced` it therefore spreads
+   **sessions**, not turns.
 
 9. A quota refusal reported by the harness is remembered: the account is left
    alone until the provider-stated reset time, but re-tried after at most
@@ -121,10 +120,13 @@ not user-observable requirements.
   unconditional. A freshness guard may still keep the *same account's* newer
   locally-refreshed token — the account-blind expiry guard in
   `token-sync-manager.ts` is exactly the bug shape req 4 forbids.
-- **Resident-process churn.** Switching accounts kills a resident CLI process
-  (seconds of latency, conversation preserved). Req 8 accepts this: the
-  strategy wins; stickiness is at most a tiebreak among equally-ranked
-  accounts.
+- **The cost of a move.** Switching accounts kills a resident CLI process
+  (seconds of latency, conversation preserved), and the new account starts
+  with an empty prompt cache, because caches are per organization — so the
+  first request writes the whole conversation to the cache again. Claude
+  Sonnet 5.5 also binds its thinking blocks to the account that produced
+  them; another account drops them. Req 8 therefore moves a session only
+  when it must.
 - **Repeated-refusal cost.** Bounded by req 9: a refusal is remembered until
   the stated reset with a ~30-minute re-probe cap, and cleared early by newer
   healthy account data. The remembered refusal is still harness-reported, so
@@ -157,7 +159,16 @@ None — design and implementation are unblocked.
 
 - 2026-08-10 — Moving back when a better account recovers (strict priority,
   resident process on the secondary)? Nik: follow the strategy — the next
-  turn moves back. Recorded as requirement 8.
+  turn moves back. Recorded as requirement 8. Superseded 2026-09-29, below.
+- 2026-09-29 — Should a session still move back to the preferred account
+  once it recovers, now that each move costs a full prompt-cache write on
+  every model and, on Claude Sonnet 5.5, the other account's thinking? Nik:
+  never move back. Nik also reported sessions switching accounts under
+  *Spread evenly* while their account still had quota — the stickiness
+  lived only on the running CLI process, so any turn after that process
+  ended went to the least-recently-used account. Requirement 8 rewritten:
+  a session stays on its account under every strategy, with or without a
+  running process, and moves only when that account cannot serve it.
 - 2026-08-10 — How long is a harness refusal remembered? Nik: until the
   provider-stated reset, with a ~30-minute re-probe cap. Recorded as
   requirement 9.
@@ -183,7 +194,8 @@ None — design and implementation are unblocked.
   Raised by the cross-backend review: literal least-recently-used ordering
   would alternate accounts and restart the resident process on every turn.
   Nik: balanced spreads **sessions** — a resident process keeps its account
-  while it stays eligible and under its cutoff. Folded into requirement 8.
+  while it stays eligible and under its cutoff. Folded into requirement 8;
+  extended 2026-09-29 to sessions with no running process.
 - 2026-08-10 — Scope across credential shapes? Nik: all subscription-shaped
   credentials — Claude accounts, Codex accounts, string-delivered
   subscriptions. Recorded as requirement 11.

@@ -68,7 +68,10 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function routeTurn(mode: "strict" | "balanced") {
+  async function routeTurn(
+    mode: "strict" | "balanced",
+    turn: { residentRoute?: { kind: "account"; id: string }; previousRouteId?: string } = {},
+  ) {
     const accounts = [
       { id: "acct-first", lastUsedAt: 9_000 },
       { id: "acct-second", lastUsedAt: 1 },
@@ -89,6 +92,7 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
         sessionId: "s1",
         agentId: "claude",
         enforceAccountRouting: true,
+        ...turn,
         deps: {
           credentialsDir: tmpDir,
           credentialStore: makeCredentialStore(),
@@ -99,6 +103,25 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
     );
     return { setProviderRouteCalls, markAccountUsed, selectAccountForTurn, turnRoute: result.turnRoute };
   }
+
+  it("a session whose process ended is kept on its previous turn's account (req 8)", async () => {
+    const { selectAccountForTurn } = await routeTurn("balanced", { previousRouteId: "acct-first" });
+    expect(selectAccountForTurn).toHaveBeenCalledWith(
+      "anthropic",
+      expect.objectContaining({ currentRouteId: "acct-first" }),
+    );
+  });
+
+  it("a live process's account is the session's account, over the previous turn's (req 8)", async () => {
+    const { selectAccountForTurn } = await routeTurn("balanced", {
+      residentRoute: { kind: "account", id: "acct-second" },
+      previousRouteId: "acct-first",
+    });
+    expect(selectAccountForTurn).toHaveBeenCalledWith(
+      "anthropic",
+      expect.objectContaining({ currentRouteId: "acct-second" }),
+    );
+  });
 
   it("strict routes the turn to the highest-ranked account even when it is the busiest", async () => {
     const { turnRoute, setProviderRouteCalls } = await routeTurn("strict");

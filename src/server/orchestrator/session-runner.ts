@@ -431,6 +431,8 @@ export interface SystemTurnDeps {
       reusingResidentAgent?: boolean;
       excludeRouteIds?: readonly string[];
       residentRoute?: { kind: ProviderRouteKind; id: string };
+      /** The route of the session's previous own turn, kept when no resident process remains. */
+      previousRouteId?: string;
       requireResidentRoute?: boolean;
       /** This turn's own user text, already persisted; a replay armed here must not carry it. */
       ownUserText?: string;
