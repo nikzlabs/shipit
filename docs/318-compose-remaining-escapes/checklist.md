@@ -11,8 +11,8 @@
 - [x] Review rounds 7–28 on the redesign; findings applied, or escalated as Q9 and Q10
 - [x] Review until no important findings remain (round 29: none)
 - [x] Record the threat model as requirement 7; resolve Q12–Q14 (requirement 8) and design the answer
-- [ ] Review the requirement 7 and 8 design until no important findings remain
-- [ ] Get go-ahead on the plan (large, daemon-unverifiable change)
+- [x] Review the requirement 7 and 8 design (rounds 30–34); the loop replaced by the classified-field list (requirements Q15)
+- [x] Get go-ahead on the plan (large, daemon-unverifiable change)
 
 ## Mechanism 1 — confined Compose containers
 
@@ -50,6 +50,7 @@
 - [ ] Open-session `cap_add` only from `SAFE_ADDED_CAPABILITIES` (prefix stripped, uppercased); contained sessions keep refusing all
 - [ ] `security_opt` only `no-new-privileges` in every mode
 - [ ] `device_cgroup_rules` refused in every mode
+- [ ] `CLASSIFIED_SERVICE_FIELDS`: any other service key (except `x-`) refused in every mode, naming the key
 - [ ] `validateBuildSecurity` in every mode, with mode-neutral messages
 - [ ] Socket mount and `use_api_socket` only with `compose.docker-socket: true` and the repository's `allowDockerSocket` grant, read at each start; refusal names the setting
 - [ ] Ops sessions without the grant: only the trusted proxy's read-only mount, in every mode

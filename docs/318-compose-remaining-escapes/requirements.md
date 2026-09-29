@@ -88,6 +88,10 @@ paths.
    until then the start is refused with a message that names the setting.
    *(Resolved 2026-09-28 — see Resolved questions Q14.)*
 
+   Fourth exception: a service that uses a Compose field ShipIt has not
+   classified is refused with a message that names the field (requirement 5).
+   *(Resolved 2026-09-29 — see Resolved questions Q15.)*
+
 7. A session MUST NOT reach another session or the Docker host through its
    Compose setup (the compose file and the `compose` block of `shipit.yaml`),
    even when the agent tries to on purpose. This holds in every session mode,
@@ -104,8 +108,7 @@ paths.
 
 ## Open questions
 
-*(none — Q1–Q14 answered. Implementation is unblocked once the design review
-is clean.)*
+*(none — Q1–Q15 answered.)*
 
 ## Resolved questions
 
@@ -259,6 +262,16 @@ socket allowance, unchanged" part of Q7 for Open sessions; the path must still
 match exactly (plan round 24). The alternatives were keeping the opt-in as an
 accepted exception to requirement 7, and removing the raw socket (breaks stacks
 that use it).
+
+**2026-09-29 — Q15: review rounds 30–34 each found one more service field
+that no check covered. How do we stop? → accept only the fields ShipIt has
+classified, and stop the review loop.** ShipIt refuses every service field that
+is not on its list of classified fields, so a field nobody listed is refused by
+default. A stack that uses a safe field not yet on the list stops with a
+message that names it, until ShipIt adds the field — recorded as the fourth
+exception to requirement 6. The final review runs on the implementation. The
+requester, choosing the recommended option: "Ok go ahead and implement, then
+review". The alternative was more review rounds without the list.
 
 ## What is already true (verified in this repository, 2026-09-27)
 

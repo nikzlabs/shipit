@@ -116,7 +116,10 @@ grant on a proposal card that only the user can accept, the same as
 `allowAgentMerge`. Round 32 (run `b58a7081-db1d-4cce-b726-b9af4bfe3482`) found
 that `pid: service:<proxy>` reaches the proxy's socket through `/proc` (fixed:
 one rule refuses every join — `volumes_from` or a `service:` namespace — to a
-socket-bearing service).
+socket-bearing service). Round 33 found that the proxy was known by its tag
+alone (fixed: a pinned digest), and round 34 found one more unchecked field
+(fixed: refused). Because each round found one more field, the requester chose
+a list of classified fields over more rounds (requirements Q15).
 
 ## Mechanism 1 — confined Compose containers
 
@@ -491,6 +494,11 @@ snapshot.
      change applies at the next start. This replaces
      `dockerSocket: composeConfig.dockerSocket || opsSession`
      (`service-manager.ts`).
+   - **Classified fields only (req 7, requirements Q15).** Each service key
+     must be on `CLASSIFIED_SERVICE_FIELDS`, or start with `x-`. A key on the
+     list either has no effect outside the container or has its own check in
+     this step. Any other key is refused with a message that names it, so a
+     field a later Compose release adds is refused until ShipIt classifies it.
    - **Anything left unresolved** — a `$` in a path field, a source Compose did
      not make absolute, a mount field ShipIt does not recognise — is refused
      (req 6).
