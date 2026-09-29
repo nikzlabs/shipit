@@ -106,9 +106,24 @@ paths.
    the user creates, keep their read-only Docker access. *(Resolved 2026-09-28
    — see Resolved questions Q14.)*
 
+9. In a deployment without `WORKSPACE_VOLUME` (the bind deployment), a mount
+   that a project's compose file, or a `repo: self` plugin's compose fragment,
+   names inside this session's workspace MUST NOT reach a path outside that
+   workspace, also when a part of the path is a symlink. This is requirement 7
+   in that mode, which requirement 4 left open. *(Added 2026-09-29 for item 2
+   of planning#620 — see Open questions Q16.)*
+
 ## Open questions
 
-*(none — Q1–Q15 answered.)*
+- **Q16 — in the bind deployment, does ShipIt close the gap or refuse?** Today
+  no shipped deployment runs without `WORKSPACE_VOLUME`. One documented setup
+  does: the orchestrator run outside Docker (`CONTRIBUTING.md`), where Compose
+  is off until the operator sets the helper image by hand. The options: (a)
+  close it — mount each workspace subdirectory through the per-session
+  workspace volume of planning#619, with the workspace path as its device, so
+  stacks keep working there (requirement 6); (b) refuse every Compose start in
+  that mode, with a message that names `WORKSPACE_VOLUME`; (c) refuse to start
+  ShipIt in that mode at all.
 
 ## Resolved questions
 
