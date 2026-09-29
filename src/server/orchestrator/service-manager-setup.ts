@@ -380,9 +380,10 @@ export function projectComposeAccessFor(
   workspaceDir: string,
   deps: ConfinedComposeDeps & Pick<ServiceSetupDeps, "sessionManager" | "repoStore">,
 ): ProjectComposeAccess {
-  const { confined } = buildConfinedCompose(sessionId, workspaceDir, deps);
   return {
-    readProjectFile: (file) => confined.readProjectFile(file),
+    // Built per read: the state directory is resolved only when a reader needs the file.
+    readProjectFile: async (file) =>
+      buildConfinedCompose(sessionId, workspaceDir, deps).confined.readProjectFile(file),
     dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
     opsSession: deps.sessionManager.get(sessionId)?.kind === "ops",
   };

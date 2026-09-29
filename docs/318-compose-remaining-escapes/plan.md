@@ -642,6 +642,38 @@ uses the same parts:
   `shipit settings get` and can propose it; only the user's accept on the
   proposal card, or the toggle, turns it on.
 
+## Where the build differs from the design above
+
+- **Code layout.** `parseComposeContent` runs the raw syntax checks and
+  `validateResolvedModel` the security checks (`compose-generator.ts`);
+  `rewriteResolvedModel` writes the snapshot; `ConfinedCompose`
+  (`compose-helper.ts`) runs the confined commands; `compose-start-record.ts`
+  holds the stop record. `parseComposeFile` and `parseUserNamedVolumes` are
+  gone. The plugin readers take a `ProjectComposeAccess` (a confined read, the
+  socket grant, and the ops flag).
+- **When a refusal shows.** A security refusal appears when a start resolves
+  that service. A manual service is not checked until it is started, and the
+  plugin preflight and the secrets-status refresh see only the raw syntax
+  checks.
+- **Compose's own normalization accepted:** `name: <project>_<key>` on
+  declarations, and the implicit `networks: {default: null}` on the trusted
+  proxy.
+- **Snapshot.** `env_file` and `label_file` are removed only when `config`
+  left them empty; a non-empty one is refused as not inlined. `ports` is
+  dropped from the snapshot, because the override resets it anyway.
+- **Project secret copies** are mode 0644 inside a 0700 root-owned directory,
+  so a service that runs as a non-root user can read its own secret. They are
+  this session's own secrets (requirement 7's accidental-reach class).
+- **A Stop during the resolve** of a multi-service start does not narrow
+  `build`: every service with `build:` in the snapshot is built.
+- **A plugin-only start** in a project that has a compose file skips orphan
+  removal, because it read no service list.
+- **Settings.** The registry login is copied to `<stateDir>/compose-registry-login`;
+  `SHIPIT_SERVICE_ENV_HOST_DIR` supplies the service-env directory's
+  Docker-host path when it is outside the workspace volume.
+- **Containers started before this change** have no stop record; `stop` stops
+  them model-free.
+
 ## What each requirement maps to
 
 | Req | Closed by |
@@ -753,3 +785,20 @@ These need a check on a deployment, listed in the PR test plan:
   point outside the workspace fail inside the container.
 - The added start latency is acceptable, and a plain stack (workspace binds and
   `/persist` only) and a plugin-only stack start unchanged.
+- On the pinned version, `config` output adds `networks: {default: null}` and
+  `name: <project>_<key>` in exactly those forms, adds no service field outside
+  `CLASSIFIED_SERVICE_FIELDS`, and drops `env_file`/`label_file` once inlined.
+- `stop` from a start's snapshot and override works on the orchestrator,
+  where the override's Docker-host paths do not exist.
+- `up` loads a project secret copy by its Docker-host path, and a non-root
+  service can read it.
+- Orphan removal removes only containers of services no longer in the file or
+  the plugin list, and keeps one-off `run` containers.
+- A model-free `down --volumes` also removes the `persist` and
+  session-workspace volumes ShipIt declared, found by project label.
+- `SHIPIT_SERVICE_ENV_HOST_DIR` works for a service-env directory outside the
+  workspace volume, and its absence refuses the start with a message naming it.
+- The helper-missing refusal appears on a plain stack start and on the plugin
+  card; the helper runs with `--cap-drop ALL` and `--pull never`.
+- The trusted proxy's pinned digest matches Docker Hub's for
+  `tecnativa/docker-socket-proxy:0.3.0` (read from ghcr.io).
