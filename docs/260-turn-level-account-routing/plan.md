@@ -70,6 +70,15 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
   produced them. The forced move cannot be avoided; the voluntary move back
   can.
 
+  Req 7's "resume state is account-agnostic" is true of the transcript file
+  and not of Sonnet 5.5 content inside it: the API silently drops another
+  account's Sonnet 5.5 thinking blocks on resend
+  ([preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)),
+  so the conversation survives a move but that reasoning does not. The
+  catalogue (`shared/catalogue/services.ts`) does not offer Sonnet 5.5 yet;
+  when it does, this rule already limits the loss to forced moves. See
+  docs/150-multiple-provider-subscriptions plan, "Conversation continuity".
+
   **Known limit, accepted:** accounts and pasted-token credentials on one
   service are two pools, and the account walk runs first
   (`selectRouteForSelection`). A session on a pasted token got there only
