@@ -368,7 +368,8 @@ const CAT = execFileSync("sh", ["-c", "command -v cat"]).toString("utf-8").trim(
 
 // Names a shell treats specially, plus every variable bash knows when it is installed.
 const SHELL_NAMES = [...new Set([
-  "PIPESTATUS", "SHLVL", "_", "UID", "PPID", "OPTIND", "IFS", "PS4", "LANG", "RANDOM", "SECONDS", "LINENO", "PATH",
+  "PIPESTATUS", "SHLVL", "_", "UID", "PPID", "OPTIND", "IFS", "PS4", "LANG", "LC_ALL", "RANDOM", "SECONDS",
+  "LINENO", "PATH", "FUNCNEST", "EXECIGNORE", "GLOBIGNORE", "POSIXLY_CORRECT", "LD_PRELOAD",
   ...(spawnSync("bash", ["-c", "compgen -v"], { env: { PATH: process.env.PATH } })
     .stdout?.toString("utf-8").split("\n") ?? []),
 ])].filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
@@ -419,10 +420,14 @@ describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
     TRAILING_DOT: "value.",
     ONLY_DOT: ".",
     SHELL_SYNTAX: "`id` $(id) $HOME \"$@\" * -n",
+    ENDS_IN_READ_MARKER: "x.0",
     // The old wrapper's loop variable, which later iterations overwrote.
     f: "not a path",
-    // Sorts before most names, so exporting it in order would hide cat from the rest.
+    // Each of these, set before the other files are read, would stop the reads.
     PATH: "/nonexistent-bin",
+    EXECIGNORE: "*cat*",
+    FUNCNEST: "1",
+    LC_ALL: "C",
     zz_after_the_others: "z",
   };
 
@@ -440,10 +445,17 @@ describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
     const { script } = mountSecrets(Object.fromEntries(
       written.map((name) => [name, fs.readFileSync(path.join(sessionDir, name))]),
     ));
-    // A PATH entry that runs code if the wrapper ever puts it into eval.
+    // A PATH entry that runs code if the wrapper ever puts it into eval, and a
+    // cat that fails if any secret is already set while it reads.
     const trap = path.join(tmpDir, "bin$(touch pwned)");
     fs.mkdirSync(trap);
-    fs.symlinkSync(CAT, path.join(trap, "cat"));
+    fs.writeFileSync(path.join(trap, "cat"), [
+      "#!/bin/sh",
+      ...Object.keys(values).filter((name) => name !== "PATH").map((name) =>
+        `[ -z "\${${name}+x}" ] || { echo "cat saw secret ${name}" >&2; exit 1; }`),
+      `exec '${CAT}' "$@"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
 
     const { status, stderr, env } = start(shell, script, `${trap}:${process.env.PATH}`);
     expect(stderr).toBe("");
@@ -473,6 +485,14 @@ describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
     expect(env.size).toBe(0);
     expect(stderr).toContain("is not named after an environment variable");
     expect(fs.existsSync(path.join(tmpDir, "pwned"))).toBe(false);
+  });
+
+  it.each(SHELLS)("%s stops the start when it finds no secret file", (_label, shell) => {
+    const { script } = mountSecrets({});
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("no secret file is readable");
   });
 
   // Root reads a mode-000 file, so only a non-root run can produce the failure.
