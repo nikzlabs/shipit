@@ -154,11 +154,21 @@ agent; everything else stays service-only.
 When the orchestrator is started with `SHIPIT_SECRETS_INTERNAL_DIR` set,
 secrets are delivered via Docker Compose's native `secrets:` mechanism
 instead of `env_file:`. Each value is written to a per-secret file outside
-the workspace volume; compose mounts it as a tmpfs file at
+the workspace volume; compose bind-mounts it read-only at
 `/run/secrets/shipit-<NAME>` inside only the service containers that
 declared the secret. A small entrypoint wrapper baked into the
 orchestrator image (`secrets-entrypoint.sh`) reads those files and
-exports them as env vars before exec'ing the original command. The wrapper is
+exports them as env vars before exec'ing the original command. Each value
+arrives byte for byte, trailing newlines included (a PEM key, for example), and
+ShipIt refuses the same values as in env-file mode. If the wrapper finds no
+secret file or cannot read one, the service does not start and its log shows
+the reason, so the service never gets an empty value in place of a secret. The
+same happens for a secret whose name the image's shell keeps for itself: the
+wrapper always refuses `PIPESTATUS`, `SHLVL`, `_`, `BASH_ARGC`, `BASH_ARGV`,
+`BASH_LINENO` and `BASH_SOURCE`, which bash would change or drop without an
+error, and the shell itself refuses names such as `UID`, `EUID` and `PPID`
+under bash or `OPTIND` under dash. Give such a secret another name, or use
+env-file mode. The wrapper is
 staged next to the secret files (`<SHIPIT_SECRETS_INTERNAL_DIR>/_entrypoint/`)
 and bind-mounted into each service container from there — never into your git
 clone, so it can't be committed to your repository.

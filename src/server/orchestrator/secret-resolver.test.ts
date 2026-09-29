@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   resolveSecrets,
   collectMcpAgentEnv,
@@ -354,6 +355,180 @@ describe.skipIf(!compose)("Compose reads a service env file back verbatim (plann
     for (const [name, value] of Object.entries(AWKWARD_VALUES)) {
       expect(unescape(environment[name]), name).toBe(value);
     }
+  });
+});
+
+const ENTRYPOINT = fileURLToPath(new URL("../../../docker/secrets-entrypoint.sh", import.meta.url));
+
+// Service images start the wrapper with whatever /bin/sh they ship; bash runs it in POSIX mode.
+const SHELLS = [["sh"], ["dash"], ["bash"], ["bash", "--posix"], ["busybox", "sh"]]
+  .filter(([bin, ...pre]) => spawnSync(bin, [...pre, "-c", "exit 0"], { stdio: "ignore" }).status === 0)
+  .map((shell) => [shell.join(" "), shell] as const);
+const CAT = execFileSync("sh", ["-c", "command -v cat"]).toString("utf-8").trim();
+
+// busybox can run its own cat applet without looking at PATH, so a cat placed
+// on PATH reaches only the other shells.
+const SHELLS_FINDING_CAT_ON_PATH = SHELLS.filter(([, shell]) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cat-lookup-"));
+  try {
+    fs.writeFileSync(path.join(dir, "cat"), "#!/bin/sh\nprintf stub\n", { mode: 0o755 });
+    const [bin, ...pre] = shell;
+    const result = spawnSync(bin, [...pre, "-c", "cat /dev/null"], { env: { PATH: `${dir}:${process.env.PATH}` } });
+    return result.stdout?.toString("utf-8") === "stub";
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Names a shell treats specially, plus every variable bash knows when it is installed.
+const SHELL_NAMES = [...new Set([
+  "PIPESTATUS", "SHLVL", "_", "UID", "PPID", "OPTIND", "IFS", "PS4", "LANG", "LC_ALL", "RANDOM", "SECONDS",
+  "LINENO", "PATH", "FUNCNEST", "EXECIGNORE", "GLOBIGNORE", "POSIXLY_CORRECT", "LD_PRELOAD",
+  ...(spawnSync("bash", ["-c", "compgen -v"], { env: { PATH: process.env.PATH } })
+    .stdout?.toString("utf-8").split("\n") ?? []),
+])].filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+
+describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "secrets-entrypoint-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Stands in for Compose, which mounts each file at /run/secrets/shipit-<NAME>.
+  function mountSecrets(files: Record<string, string | Buffer>): { script: string; mountDir: string } {
+    const mountDir = fs.mkdtempSync(path.join(tmpDir, "run-secrets-"));
+    for (const [name, body] of Object.entries(files)) {
+      fs.writeFileSync(path.join(mountDir, `shipit-${name}`), body);
+    }
+    const source = fs.readFileSync(ENTRYPOINT, "utf-8");
+    expect(source).toContain("/run/secrets/shipit-");
+    const script = `${mountDir}.sh`;
+    fs.writeFileSync(script, source.replaceAll("/run/secrets", mountDir));
+    return { script, mountDir };
+  }
+
+  // The service's command writes out the environment it was started with.
+  function start(shell: readonly string[], script: string, envPath = process.env.PATH) {
+    const [bin, ...pre] = shell;
+    const result = spawnSync(bin, [...pre, script, CAT, "/proc/self/environ"], {
+      cwd: tmpDir,
+      env: { PATH: envPath },
+    });
+    const env = new Map<string, string>();
+    for (const entry of result.stdout.toString("utf-8").split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq > 0) env.set(entry.slice(0, eq), entry.slice(eq + 1));
+    }
+    return { status: result.status, stderr: result.stderr.toString("utf-8"), env };
+  }
+
+  const values: Record<string, string> = {
+    ...AWKWARD_VALUES,
+    TRAILING_NEWLINES: "value\n\n\n",
+    ONLY_NEWLINES: "\n\n",
+    TRAILING_DOT: "value.",
+    ONLY_DOT: ".",
+    SHELL_SYNTAX: "`id` $(id) $HOME \"$@\" * -n",
+    ENDS_IN_READ_MARKER: "x.0",
+    // The old wrapper's loop variable, which later iterations overwrote.
+    f: "not a path",
+    // Each of these, set before the other files are read, would stop the reads.
+    PATH: "/nonexistent-bin",
+    EXECIGNORE: "*cat*",
+    FUNCNEST: "1",
+    LC_ALL: "C",
+    zz_after_the_others: "z",
+  };
+
+  it.each(SHELLS)("%s exports every stored value unchanged", (_label, shell) => {
+    const { perServiceValues } = resolveSecrets({
+      services: [{ name: "svc", secrets: Object.keys(values) }],
+      userSecrets: values,
+    });
+    const { sessionDir, written } = writeIsolatedSecretFiles({
+      rootDir: path.join(tmpDir, "secrets"),
+      sessionId: "s1",
+      values: perServiceValues.svc,
+    });
+    expect(written).toEqual(Object.keys(values).sort());
+    const { script } = mountSecrets(Object.fromEntries(
+      written.map((name) => [name, fs.readFileSync(path.join(sessionDir, name))]),
+    ));
+    // A PATH entry that runs code if the wrapper ever puts it into eval, and a
+    // cat that fails if any secret is already set while it reads (busybox may
+    // use its own cat instead).
+    const trap = path.join(tmpDir, "bin$(touch pwned)");
+    fs.mkdirSync(trap);
+    fs.writeFileSync(path.join(trap, "cat"), [
+      "#!/bin/sh",
+      ...Object.keys(values).filter((name) => name !== "PATH").map((name) =>
+        `[ -z "\${${name}+x}" ] || { echo "cat saw secret ${name}" >&2; exit 1; }`),
+      `exec '${CAT}' "$@"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    const { status, stderr, env } = start(shell, script, `${trap}:${process.env.PATH}`);
+    expect(stderr).toBe("");
+    expect(status).toBe(0);
+    for (const [name, value] of Object.entries(values)) {
+      expect(env.get(name), name).toBe(value);
+    }
+    expect(fs.existsSync(path.join(tmpDir, "pwned"))).toBe(false);
+  });
+
+  it.each(SHELLS)("%s delivers each name a shell treats specially exactly, or stops with a reason", (_label, shell) => {
+    const wrong: string[] = [];
+    for (const name of SHELL_NAMES) {
+      const { script } = mountSecrets({ [name]: "v\n", AAAA: "a\n", zzzz: "z\n" });
+      const { status, stderr, env } = start(shell, script);
+      const exact = status === 0 && env.get(name) === "v\n" && env.get("AAAA") === "a\n" && env.get("zzzz") === "z\n";
+      const refused = status !== 0 && stderr.trim() !== "" && env.size === 0;
+      if (!exact && !refused) wrong.push(`${name}: status ${status}, got ${JSON.stringify(env.get(name))}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it.each(SHELLS)("%s stops the start for a file not named after an environment variable", (_label, shell) => {
+    const { script } = mountSecrets({ "A;touch pwned": "v" });
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("is not named after an environment variable");
+    expect(fs.existsSync(path.join(tmpDir, "pwned"))).toBe(false);
+  });
+
+  it.each(SHELLS)("%s stops the start when it finds no secret file", (_label, shell) => {
+    const { script } = mountSecrets({});
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("no secret file is readable");
+  });
+
+  it.each(SHELLS)("%s stops the start when a secret file cannot be read", (_label, shell) => {
+    const { script, mountDir } = mountSecrets({ AAAA: "a" });
+    fs.mkdirSync(path.join(mountDir, "shipit-K"));
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("secret K could not be read");
+  });
+
+  it.each(SHELLS_FINDING_CAT_ON_PATH)("%s does not take partial output from a failing cat for a read", (_label, shell) => {
+    const { script } = mountSecrets({ K: "v" });
+    // Its partial output even ends like a successful read.
+    const failing = path.join(tmpDir, "failing-bin");
+    fs.mkdirSync(failing);
+    fs.writeFileSync(path.join(failing, "cat"), "#!/bin/sh\nprintf 'partial.0'\nexit 1\n", { mode: 0o755 });
+    const { status, stderr, env } = start(shell, script, `${failing}:${process.env.PATH}`);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("secret K could not be read");
   });
 });
 
