@@ -1077,8 +1077,8 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   it("prices OpenCode's models as OpenCode, not as the vendors that make them", () => {
     const zen = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "key", modelId });
     const go = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "sub", modelId });
-    expect(zen("claude-sonnet-5")!.price.input).toBeLessThan(
-      getModel({ serviceId: "anthropic", billingMode: "key", modelId: "claude-sonnet-5" })!.price.input,
+    expect(zen("grok-4.6")!.price.cacheWrite).toBeLessThan(
+      getModel({ serviceId: "xai", billingMode: "key", modelId: "grok-4.6" })!.price.cacheWrite,
     );
     // On Go: Zen lists no V4.1 row, so the vendor comparison is stated there.
     expect(go("deepseek-flash")!.price.input).not.toBe(
