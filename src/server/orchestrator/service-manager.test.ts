@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
-  ServiceManager,
+  type ServiceManager,
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
@@ -23,6 +23,7 @@ import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-
 import { serializeStackOp } from "./stack-op-queue.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import { markPreviewReachable, forgetStackUp } from "./preview-timing.js";
+import { recordedOverride, testServiceManager } from "./compose-test-helpers.js";
 
 function makeSessionDir(prefix: string): string {
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -65,7 +66,7 @@ describe("ServiceManager", () => {
     Promise.reject(new Error("docker not available in test"));
 
   function createManager(dir: string, composeRunner: ComposeRunner = fakeComposeRunner) {
-    return new ServiceManager({
+    return testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -98,7 +99,7 @@ describe("ServiceManager", () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    user: \"1001:1001\"\n    x-shipit-preview: manual\n");
     const events: string[] = [];
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -119,7 +120,7 @@ describe("ServiceManager", () => {
 
   it("rejects invalid compose files during start", async () => {
     const dir = setup();
-    writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n    privileged: true\n");
     const mgr = createManager(dir);
     await expect(mgr.start()).rejects.toThrow("privileged");
   });
@@ -129,9 +130,7 @@ describe("ServiceManager", () => {
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
     const mgr = createManager(dir);
     try { await mgr.start(); } catch { /* expected */ }
-    const overridePath = path.join(stateOf(dir), "compose.override.yml");
-    expect(fs.existsSync(overridePath)).toBe(true);
-    const content = fs.readFileSync(overridePath, "utf-8");
+    const content = recordedOverride(dir, "web");
     expect(content).toContain("shipit-parent-session: test-session");
     expect(content).toContain("shipit-service-name: web");
   });
@@ -186,7 +185,7 @@ services:
       }));
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -212,18 +211,19 @@ services:
   it("rejects the ops proxy socket mount for ordinary sessions", async () => {
     const dir = setup();
     writeCompose(dir, OPS_TEMPLATE.files["docker-compose.yml"]!);
-
-    const mgr = createManager(dir);
+    const composeRunner = vi.fn<ComposeRunner>(() => Promise.resolve());
+    const mgr = createManager(dir, composeRunner);
 
     await expect(mgr.start()).rejects.toThrow("server-created ops sessions");
-    expect(mgr.getServices()).toEqual([]);
+    expect(mgr.getService("docker-socket-proxy")?.status).toBe("error");
+    expect(composeRunner.mock.calls.some(([args]) => args.includes("up"))).toBe(false);
   });
 
   it("reads the socket grant at each start, and the key alone does not grant it", async () => {
     const dir = setup();
-    writeCompose(dir, "services:\n  tool:\n    image: docker:cli\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n");
+    writeCompose(dir, "services:\n  tool:\n    image: docker:cli\n    x-shipit-preview: auto\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n");
     let grant: DockerSocketGrant = "not_granted";
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -246,10 +246,11 @@ services:
     writeCompose(dir, `${OPS_TEMPLATE.files["docker-compose.yml"]!}
   tool:
     image: docker:cli
+    x-shipit-preview: auto
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 `);
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -336,7 +337,7 @@ services:
     };
     const composeQuery: ComposeQuery = () => Promise.resolve("");
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -370,7 +371,7 @@ services:
     const composeQuery: ComposeQuery = () => Promise.resolve("");
     const networkJoinCalls: string[] = [];
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -425,7 +426,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -512,7 +513,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
       return Promise.resolve(queryResponses[key] ?? "");
     };
-    return new ServiceManager({
+    return testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -643,7 +644,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
       return Promise.resolve("");
     };
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -681,7 +682,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
       return Promise.resolve("");
     };
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -719,6 +720,8 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
   });
 
   describe("projectComposeFailure", () => {
+    const PRIVILEGED_WEB = "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n    privileged: true\n";
+
     it("is null while the compose file parses", async () => {
       const dir = setup();
       writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
@@ -729,12 +732,12 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
 
     it("records a REFUSED file with the rule's own message", async () => {
       const dir = setup();
-      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      writeCompose(dir, PRIVILEGED_WEB);
       const mgr = createMockedManager(dir);
 
       await expect(mgr.start()).rejects.toThrow(/privileged/);
 
-      expect(mgr.getServices()).toEqual([]);
+      expect(mgr.getService("web")?.status).toBe("error");
       expect(mgr.projectComposeFailure?.kind).toBe("refused");
       expect(mgr.projectComposeFailure?.message).toContain("web");
       expect(mgr.projectComposeFailure?.message).toContain("privileged");
@@ -751,7 +754,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
 
     it("retracts the failure once the file parses again", async () => {
       const dir = setup();
-      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      writeCompose(dir, PRIVILEGED_WEB);
       const mgr = createMockedManager(dir);
       await expect(mgr.start()).rejects.toThrow();
       expect(mgr.projectComposeFailure).not.toBeNull();
@@ -763,7 +766,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
 
     it("drops a stale failure when the project stops declaring a compose file", async () => {
       const dir = setup();
-      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      writeCompose(dir, PRIVILEGED_WEB);
       const mgr = createMockedManager(dir);
       await expect(mgr.start()).rejects.toThrow();
 
@@ -777,7 +780,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
 
     it("drops the failure the moment the compose config changes, before any reconcile", async () => {
       const dir = setup();
-      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      writeCompose(dir, PRIVILEGED_WEB);
       const mgr = createMockedManager(dir);
       await expect(mgr.start()).rejects.toThrow();
       expect(mgr.projectComposeFailure).not.toBeNull();
@@ -788,9 +791,9 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
 
     it("keeps the failure when a reconcile dies before it reaches the parse", async () => {
       const dir = setup();
-      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      writeCompose(dir, PRIVILEGED_WEB);
       let networkCalls = 0;
-      const mgr = new ServiceManager({
+      const mgr = testServiceManager({
         sessionId: "test-session",
         workspaceDir: dir,
         serviceEnvDir: serviceEnvOf(dir),
@@ -812,7 +815,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
 
     it("retracts the failure when the secrets-status refresh re-reads a fixed file", async () => {
       const dir = setup();
-      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      writeCompose(dir, PRIVILEGED_WEB);
       const mgr = createMockedManager(dir);
       await expect(mgr.start()).rejects.toThrow();
       expect(mgr.projectComposeFailure).not.toBeNull();
@@ -829,7 +832,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       await mgr.start();
       expect(mgr.projectComposeFailure).toBeNull();
 
-      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      writeCompose(dir, "include:\n  - other.yml\nservices:\n  web:\n    image: node:20\n");
       await mgr.refreshSecretsStatus();
       expect(mgr.projectComposeFailure?.kind).toBe("refused");
     });
@@ -870,7 +873,7 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
       return Promise.resolve("");
     };
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -938,7 +941,7 @@ services:
       - DATABASE_URL
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -975,7 +978,7 @@ services:
     image: postgres:16
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1003,7 +1006,7 @@ services:
       - STRIPE_KEY
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1042,7 +1045,7 @@ services:
       if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
       return Promise.resolve("");
     };
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1075,7 +1078,7 @@ services:
 `);
     let secret = "old";
     const composeRunner = vi.fn<ComposeRunner>(() => Promise.resolve());
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1111,7 +1114,7 @@ services:
       - API_KEY
 `);
     const composeRunner = vi.fn<ComposeRunner>(() => Promise.resolve());
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1142,7 +1145,7 @@ services:
       - DATABASE_URL
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1155,7 +1158,7 @@ services:
 
     try { await mgr.start(); } catch { /* expected */ }
 
-    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    const override = recordedOverride(dir, "api");
     expect(override).toContain("env_file:");
     expect(override).toContain(serviceEnvFile(dir, "test-session", "api"));
     expect(override).not.toContain(".shipit/.env.api");
@@ -1177,7 +1180,7 @@ services:
       - STRIPE_KEY
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1206,7 +1209,7 @@ services:
       - STRIPE_KEY
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1243,7 +1246,7 @@ services:
       - STRIPE_KEY
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1273,7 +1276,7 @@ services:
       - DATABASE_URL
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1301,7 +1304,7 @@ services:
     expect(fs.statSync(stagedWrapper).mode & 0o777).toBe(0o755);
     expect(fs.existsSync(path.join(dir, ".shipit/secrets-entrypoint.sh"))).toBe(false);
 
-    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    const override = recordedOverride(dir, "api");
     expect(override).toContain("shipit-DATABASE_URL");
     expect(override).toContain("/shipit/secrets-entrypoint.sh");
     expect(override).toContain(stagedWrapper);
@@ -1324,7 +1327,7 @@ services:
       - DATABASE_URL
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1343,7 +1346,7 @@ services:
 
     expect(fs.readdirSync(dir).sort()).toEqual(["docker-compose.yml"]);
 
-    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    const override = recordedOverride(dir, "api");
     expect(override).toContain(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"));
 
     fs.rmSync(secretsRoot, { recursive: true, force: true });
@@ -1363,7 +1366,7 @@ services:
       - DATABASE_URL
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1382,7 +1385,7 @@ services:
     try { await mgr.start(); } catch { /* expected */ }
 
     expect(fs.existsSync(path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh"))).toBe(true);
-    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    const override = recordedOverride(dir, "api");
     expect(override).toContain("/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh");
     expect(override).toContain("/var/lib/shipit/secrets/test-session/DATABASE_URL");
     expect(override).not.toContain(secretsRoot);
@@ -1405,7 +1408,7 @@ services:
       - DATABASE_URL
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const make = () => new ServiceManager({
+    const make = () => testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1448,7 +1451,7 @@ services:
       - DATABASE_URL
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
@@ -1467,7 +1470,7 @@ services:
 
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
-    const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    const override = recordedOverride(dir, "api");
     expect(override).toContain("env_file:");
     expect(override).toContain(externalEnv);
     expect(override).not.toContain(".shipit/.env.api");
@@ -1488,7 +1491,7 @@ services:
       - GITHUB_TOKEN
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
@@ -1534,7 +1537,7 @@ services:
       if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
       return Promise.resolve("");
     };
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
@@ -1547,7 +1550,7 @@ services:
 
     await mgr.start();
     const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.api");
-    const overrideBefore = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    const overrideBefore = recordedOverride(dir, "api");
     expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://old");
     expect(overrideBefore).toContain(externalEnv);
 
@@ -1555,7 +1558,7 @@ services:
     await mgr.refreshSecrets();
 
     expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://new");
-    const overrideAfter = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
+    const overrideAfter = recordedOverride(dir, "api");
     expect(overrideAfter).toContain(externalEnv);
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
@@ -1575,7 +1578,7 @@ services:
 `);
     const composeRunner: ComposeRunner = () => Promise.resolve();
     const composeQuery: ComposeQuery = () => Promise.resolve("");
-    const make = () => new ServiceManager({
+    const make = () => testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
@@ -1617,7 +1620,7 @@ services:
       - SENTRY_DSN
 `);
     const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1656,7 +1659,7 @@ services:
 `);
     let declarations: PluginCredentialDeclaration[] = [];
     const composeCalls: string[][] = [];
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1695,7 +1698,7 @@ services:
   it("refreshSecretsStatus leaves the snapshot alone when the compose file will not parse", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  api:\n    image: node:20\n");
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -1762,7 +1765,7 @@ describe("ServiceManager install-running retry gate", () => {
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2120,7 +2123,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2165,7 +2168,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2205,7 +2208,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2245,7 +2248,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2278,7 +2281,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2332,7 +2335,7 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId,
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2672,7 +2675,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2726,7 +2729,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "gate-hung-teardown",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2778,7 +2781,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "gate-long-grace",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2830,7 +2833,7 @@ services:
     };
 
     const sessionId = "gate-stale-queued-batch";
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId,
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2888,7 +2891,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "gate-teardown-generations",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -2980,7 +2983,7 @@ services:
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -3118,7 +3121,7 @@ describe("ServiceManager stuck-starting recovery (#2044)", () => {
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -3328,7 +3331,7 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -3461,7 +3464,7 @@ services:
       snapshotText: () => "",
     } as unknown as ConstructorParameters<typeof ServiceManager>[0]["logStore"];
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -3515,7 +3518,7 @@ services:
       }
       return Promise.resolve();
     };
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -3612,7 +3615,7 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
       return Promise.resolve("");
     };
 
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
@@ -3800,7 +3803,7 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     await mgr.start();
     setPsResponse(runningPs);
     const startPromise = mgr.startService("web");
-    await Promise.resolve();
+    await vi.waitFor(() => expect(finishUp).toBeDefined());
 
     const stopPromise = mgr.stopService("web");
     await Promise.resolve();
@@ -3848,10 +3851,9 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
 
     await mgr.start();
     const firstUp = mgr.startService("web");
-    await Promise.resolve();
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
     const secondUp = mgr.startService("web");
-    await Promise.resolve();
-    expect(releases).toHaveLength(2);
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
 
     await mgr.stopService("web");
 

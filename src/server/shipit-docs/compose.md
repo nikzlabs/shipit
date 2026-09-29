@@ -693,7 +693,9 @@ finds nothing, and the start fails with Compose's message plus that fix.
 
 A bind source, however it is written (`./data`, `data`, `.cache`, or the long
 form), must be inside the workspace; ShipIt refuses any other. For
-`/persist`, mount the `persist` volume.
+`/persist`, mount the `persist` volume. A named volume a service mounts must
+be declared in the top-level `volumes:` (`persist` and `persist/<sub>` need no
+declaration), and a mount may be a bind, a volume, or `tmpfs`.
 A build does not get the orchestrator's registry login: use a public base
 image, or publish the image and name it in `image:`.
 

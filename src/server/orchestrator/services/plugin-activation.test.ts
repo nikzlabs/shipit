@@ -12,6 +12,7 @@ import {
   getPluginPrepareFailures,
 } from "./plugin-activation.js";
 import { createStagedGenerationGate } from "./plugin-preflight.js";
+import { localProjectComposeAccess } from "../compose-test-helpers.js";
 import { assemblePluginSnapshot } from "../api-routes-plugin-repos.js";
 import type { ApiDeps } from "../api-routes.js";
 import { pluginsRoot, readActiveGeneration } from "../plugin-generations.js";
@@ -208,7 +209,11 @@ describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
 
     await activateDeclaredPlugins("sess", workspaceDir, {
       ...deps(),
-      validateStaged: createStagedGenerationGate({ workspaceDir, containEgress: () => false }),
+      validateStaged: createStagedGenerationGate({
+        workspaceDir,
+        containEgress: () => false,
+        projectCompose: localProjectComposeAccess(workspaceDir),
+      }),
     });
 
     const state = getActivationState("sess", "tools");
@@ -222,7 +227,11 @@ describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
 
     await activateDeclaredPlugins("sess", workspaceDir, {
       ...deps(),
-      validateStaged: createStagedGenerationGate({ workspaceDir, containEgress: () => false }),
+      validateStaged: createStagedGenerationGate({
+        workspaceDir,
+        containEgress: () => false,
+        projectCompose: localProjectComposeAccess(workspaceDir),
+      }),
     });
 
     const state = getActivationState("sess", "tools");
@@ -236,26 +245,34 @@ describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
     writeConfig(declareProbe);
     fs.writeFileSync(
       path.join(workspaceDir, "docker-compose.yml"),
-      'services:\n  web:\n    image: node:22-alpine\n    user: "0"\n',
+      "services:\n  web:\n    image: node:22-alpine\n    label_file: ./labels.env\n",
     );
 
     await activateDeclaredPlugins("sess", workspaceDir, {
       ...deps(),
-      validateStaged: createStagedGenerationGate({ workspaceDir, containEgress: () => true }),
+      validateStaged: createStagedGenerationGate({
+        workspaceDir,
+        containEgress: () => true,
+        projectCompose: localProjectComposeAccess(workspaceDir),
+      }),
     });
 
     const state = getActivationState("sess", "tools");
     expect(state?.error).toContain("refuses this project's own compose file");
     expect(state?.error).not.toContain("could not read");
     expect(state?.error).toContain("`web`");
-    expect(state?.error).toContain("`user:`");
+    expect(state?.error).toContain("`label_file`");
     expect(liveCommit()).toBeUndefined();
   });
 
   it("keeps the prior version live when a later commit's fragment is rejected", async () => {
     await publishFragment("services:\n  probe:\n    image: node:22-alpine\n");
     writeConfig(declareProbe);
-    const gate = createStagedGenerationGate({ workspaceDir, containEgress: () => false });
+    const gate = createStagedGenerationGate({
+        workspaceDir,
+        containEgress: () => false,
+        projectCompose: localProjectComposeAccess(workspaceDir),
+      });
     await activateDeclaredPlugins("sess", workspaceDir, { ...deps(), validateStaged: gate });
     const good = getActivationState("sess", "tools")?.generation?.commit;
     expect(good).toBeTruthy();
@@ -329,7 +346,7 @@ describe("lifetime and selectors", () => {
     });
     expect(getActivationState("sess", "tools")?.generation).toBeUndefined();
 
-    const snapshot = assemblePluginSnapshot("sess", workspaceDir, null, {
+    const snapshot = await assemblePluginSnapshot("sess", workspaceDir, null, {
       containerManager: {
         isEgressContained: () => true,
         resolveEgress: () => ({ contained: true, extraHosts: [] }),
@@ -359,7 +376,7 @@ describe("lifetime and selectors", () => {
       },
     });
 
-    const snapshot = assemblePluginSnapshot("sess", workspaceDir, null, {} as unknown as ApiDeps);
+    const snapshot = await assemblePluginSnapshot("sess", workspaceDir, null, {} as unknown as ApiDeps);
     expect(snapshot.repos[0]?.status).toBe("active");
     expect(snapshot.repos[0]?.depStoreNotice).toBe(cold);
     expect(snapshot.repos[0]?.issues).toEqual([]);
@@ -383,7 +400,7 @@ describe("lifetime and selectors", () => {
       depStoreReason: "Dependencies are installed from scratch in every session and never shared: nope.",
     });
 
-    const snapshot = assemblePluginSnapshot("sess", workspaceDir, null, {} as unknown as ApiDeps);
+    const snapshot = await assemblePluginSnapshot("sess", workspaceDir, null, {} as unknown as ApiDeps);
     expect(snapshot.repos[0]?.status).toBe("active");
     expect(snapshot.repos[0]?.depStoreNotice).toBeUndefined();
     expect(snapshot.repos[0]?.issues).toEqual([]);

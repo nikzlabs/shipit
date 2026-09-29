@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { listTemplates, getTemplate, applyTemplate, generatePackageLock, OPS_TEMPLATE_ID } from "./templates.js";
-import { parseComposeFile, TRUSTED_OPS_PROXY_IMAGE } from "./compose-generator.js";
+import { parseComposeContent, validateResolvedModel, TRUSTED_OPS_PROXY_IMAGE } from "./compose-generator.js";
+import { fakeResolvedModel } from "./compose-test-helpers.js";
 
 interface ComposeShape {
   services?: Record<
@@ -85,19 +86,17 @@ describe("getTemplate", () => {
     expect(getTemplate("nonexistent")).toBeUndefined();
   });
 
-  it("every template's compose file passes ShipIt's compose checks", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "template-compose-"));
-    try {
-      for (const id of [...listTemplates().map((t) => t.id), OPS_TEMPLATE_ID]) {
-        const compose = getTemplate(id)!.files["docker-compose.yml"];
-        if (!compose) continue;
-        const file = path.join(dir, `${id}.yml`);
-        fs.writeFileSync(file, compose);
-        const ops = id === OPS_TEMPLATE_ID;
-        expect(() => parseComposeFile(file, { dockerSocket: ops, trustedOpsProxy: ops }), id).not.toThrow();
-      }
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+  it("every template's compose file passes the raw gate and the resolved validation", () => {
+    const workspaceDir = "/workspace/sessions/s1/workspace";
+    const project = "shipit-s1";
+    for (const id of [...listTemplates().map((t) => t.id), OPS_TEMPLATE_ID]) {
+      const compose = getTemplate(id)!.files["docker-compose.yml"];
+      if (!compose) continue;
+      const ops = id === OPS_TEMPLATE_ID;
+      const opts = { dockerSocket: ops, trustedOpsProxy: ops };
+      expect(() => parseComposeContent(compose, opts), id).not.toThrow();
+      const model = fakeResolvedModel(compose, { workspaceDir, project });
+      expect(() => validateResolvedModel(model, { ...opts, project, workspaceDir }), id).not.toThrow();
     }
   });
 

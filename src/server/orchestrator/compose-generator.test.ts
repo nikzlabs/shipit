@@ -6,10 +6,14 @@ import { parse as parseYaml } from "yaml";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import {
   extractContainerPort,
-  parseComposeFile,
-  parseUserNamedVolumes,
+  parseComposeContent,
+  validateResolvedModel,
+  rewriteResolvedModel,
+  serializeComposeModel,
+  composeBuildModel,
+  pluginStubModel,
   generateComposeOverride,
-  writeComposeOverride,
+  writeRootOnlyFile,
   ComposeValidationError,
   validateDevices,
   isDevKvmAllowed,
@@ -18,8 +22,27 @@ import {
   UNKNOWN_STOP_GRACE_PERIOD_MS,
   TRUSTED_OPS_PROXY_IMAGE,
   CLASSIFIED_SERVICE_FIELDS,
+  type ComposeParseOptions,
+  type ComposeService,
 } from "./compose-generator.js";
+import { fakeResolvedModel } from "./compose-test-helpers.js";
 import { OPS_TEMPLATE } from "./templates-ops.js";
+
+const PROJECT = "shipit-test";
+
+/** What a start runs on the file: the raw gate, then validation of the model Compose resolves. */
+function parseComposeFile(
+  file: string,
+  opts: ComposeParseOptions,
+  env?: Record<string, string>,
+): ComposeService[] {
+  const raw = fs.readFileSync(file, "utf-8");
+  const services = parseComposeContent(raw, opts);
+  const workspaceDir = path.dirname(file);
+  const model = fakeResolvedModel(raw, { workspaceDir, project: PROJECT, ...(env ? { env } : {}) });
+  validateResolvedModel(model, { ...opts, project: PROJECT, workspaceDir });
+  return services;
+}
 
 describe("parseStopGracePeriodMs (docs/283)", () => {
   it("reads a bare number as seconds, per Compose", () => {
@@ -524,7 +547,7 @@ services:
       context: .
       network: \${BUILD_NET}
 `);
-    expect(() => parseComposeFile(interpolated, { dockerSocket: false, containEgress: true }))
+    expect(() => parseComposeFile(interpolated, { dockerSocket: false, containEgress: true }, { BUILD_NET: "host" }))
       .toThrow("build.network");
 
     for (const value of ["none", "default"]) {
@@ -758,9 +781,15 @@ services:
       "a secrets declaration": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    x-shipit-secrets: [POST]\n    environment:\n${environment}\n${socket}`,
       "an unapproved environment key": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    environment:\n${trustedProxyEnvironment("      ALLOW_START: 1")}\n${socket}`,
     };
+    const extraFiles: Record<string, Record<string, string>> = {
+      extends: { "base.yml": "services:\n  proxy:\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n" },
+    };
     for (const [label, body] of Object.entries(cases)) {
       it(label, () => {
         const dir = setup();
+        for (const [name, content] of Object.entries(extraFiles[label] ?? {})) {
+          fs.writeFileSync(path.join(dir, name), content);
+        }
         const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n  docker-socket-proxy:\n${body}`);
         expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true, trustedOpsProxy: true }))
           .toThrow(ComposeValidationError);
@@ -996,8 +1025,7 @@ services:
 volumes:
   - pgdata
 `);
-    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
-    expect(parseUserNamedVolumes(p)).toEqual([]);
+    expect(() => parseComposeContent(fs.readFileSync(p), { dockerSocket: false })).not.toThrow();
   });
 
   it("rejects a driver_opts host bind in a contained session too", () => {
@@ -1137,7 +1165,6 @@ volumes:
       com.example.keep: "true"
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
-    expect(parseUserNamedVolumes(p).map((v) => v.name)).toEqual(["pgdata", "cache"]);
   });
 
   it("rejects an absolute env_file path (the CLI reads it, in the orchestrator's own fs)", () => {
@@ -1307,14 +1334,11 @@ services:
       - type: volume
         source: mydata
         target: /data
+volumes:
+  mydata:
 `);
     const services = parseComposeFile(p, { dockerSocket: false });
     expect(services).toHaveLength(1);
-  });
-
-  it("throws for missing compose file", () => {
-    expect(() => parseComposeFile("/nonexistent/file.yml", { dockerSocket: false }))
-      .toThrow("Cannot read compose file");
   });
 
   it("throws for compose file without services", () => {
@@ -1580,25 +1604,28 @@ describe("generateComposeOverride", () => {
   });
 
   // planning#584: the boot sweeps select by the stack label, and Compose adds none of its own.
-  it("labels the session network and user-named volumes with the stack, like the services", () => {
-    const override = generateComposeOverride(
-      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
-      { ...baseOpts, stackName: "shipit-a", userNamedVolumes: [{ name: "pgdata" }] },
-    );
+  it("labels the session network with the stack, like the services", () => {
+    const override = generateComposeOverride([{ name: "db" }], { ...baseOpts, stackName: "shipit-a" });
     const doc = parseYaml(override) as {
       services: Record<string, { labels: Record<string, string> }>;
       networks: Record<string, { labels?: Record<string, string> }>;
-      volumes: Record<string, { labels?: Record<string, string> }>;
     };
     expect(doc.services.db.labels["shipit-stack"]).toBe("shipit-a");
     expect(doc.networks["shipit-session"].labels).toEqual({ "shipit-stack": "shipit-a" });
-    expect(doc.volumes.pgdata.labels).toMatchObject({ "shipit-stack": "shipit-a" });
 
-    const unscoped = parseYaml(generateComposeOverride(
-      [{ name: "db" }], { ...baseOpts, userNamedVolumes: [{ name: "pgdata" }] },
-    )) as { networks: Record<string, { labels?: unknown }>; volumes: Record<string, { labels: Record<string, string> }> };
+    const unscoped = parseYaml(generateComposeOverride([{ name: "db" }], baseOpts)) as {
+      networks: Record<string, { labels?: unknown }>;
+    };
     expect(unscoped.networks["shipit-session"].labels).toBeUndefined();
-    expect(unscoped.volumes.pgdata.labels).not.toHaveProperty("shipit-stack");
+  });
+
+  it("sets pull_policy: never only on the services this start builds", () => {
+    const doc = parseYaml(generateComposeOverride(
+      [{ name: "web" }, { name: "db" }],
+      { ...baseOpts, builtServices: ["web"] },
+    )) as { services: Record<string, { pull_policy?: string }> };
+    expect(doc.services.web.pull_policy).toBe("never");
+    expect(doc.services.db.pull_policy).toBeUndefined();
   });
 
   it("makes the service network internal while egress containment is active", () => {
@@ -1725,41 +1752,79 @@ describe("generateComposeOverride", () => {
     );
     expect(override).toContain("!reset []");
   });
+});
+
+describe("rewriteResolvedModel", () => {
+  const WS = "/workspace/sessions/abc/workspace";
+  const rewriteOpts = {
+    sessionId: "test-session-123",
+    workspaceDir: WS,
+    workspaceVolume: "shipit-ws-vol",
+    workspaceSubpath: "sessions/abc/workspace",
+  };
+  interface Doc {
+    services: Record<string, Record<string, unknown> & { volumes?: Record<string, unknown>[] }>;
+    volumes?: Record<string, Record<string, unknown> & { labels?: Record<string, string> }>;
+  }
+  const bind = (source: string, target: string, extra: Record<string, unknown> = {}) =>
+    ({ type: "bind", source, target, ...extra, bind: { create_host_path: true } });
+  const stack = (volumes: unknown[], top: Record<string, unknown> = {}, name = "web") =>
+    ({ name: PROJECT, services: { [name]: { image: "node:20", volumes } }, ...top });
+  const rewrite = (model: Record<string, unknown>, opts: Parameters<typeof rewriteResolvedModel>[1] = rewriteOpts): Doc =>
+    rewriteResolvedModel(model, opts).model as Doc;
+
+  // planning#584: the boot sweeps select by the stack label, and Compose adds none of its own.
+  it("labels the project's named volumes with the stack", () => {
+    const model = stack(
+      [{ type: "volume", source: "pgdata", target: "/var/lib/postgresql/data", volume: {} }],
+      { volumes: { pgdata: { name: `${PROJECT}_pgdata`, labels: { "com.example.keep": "true" } } } },
+    );
+    const doc = rewrite(model, { ...rewriteOpts, stackName: "shipit-a" });
+    expect(doc.volumes?.pgdata.labels).toMatchObject({
+      "com.example.keep": "true",
+      "shipit-managed": "true",
+      "shipit-session": "test-session-123",
+      "shipit-stack": "shipit-a",
+    });
+    expect(rewrite(model).volumes?.pgdata.labels).not.toHaveProperty("shipit-stack");
+  });
 
   it("rewrites workspace volumes when workspaceVolume is set", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", ports: ["5173:5173"], volumes: [".:/app"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
+    const { model, workspaceMounts } = rewriteResolvedModel(stack([bind(WS, "/app")]), rewriteOpts);
+    const doc = model as Doc;
+    expect(doc.services.web.volumes).toEqual([
+      { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "sessions/abc/workspace" } },
+    ]);
+    expect(doc.volumes).toEqual({ "shipit-workspace": { name: "shipit-ws-vol", external: true } });
+    expect(workspaceMounts.get("web")).toEqual([{ relPath: "", target: "/app" }]);
+  });
+
+  it("keeps binds, and records them, without a workspace volume", () => {
+    const mount = bind(`${WS}/backend`, "/app");
+    const { model, workspaceMounts } = rewriteResolvedModel(
+      stack([mount]),
+      { sessionId: "test-session-123", workspaceDir: WS },
     );
-    expect(override).toContain("source: shipit-workspace");
-    expect(override).toContain("target: /app");
-    expect(override).toContain("subpath: sessions/abc/workspace");
-    expect(override).toContain("shipit-workspace");
-    expect(override).toContain("external: true");
+    expect((model as Doc).services.web.volumes).toEqual([mount]);
+    expect(workspaceMounts.get("web")).toEqual([{ relPath: "backend", target: "/app" }]);
   });
 
   describe("workspace subdirectory mounts", () => {
     const DEVICE = "/var/lib/docker/volumes/shipit-ws-vol/_data/sessions/abc/workspace";
-    const volumeOpts = {
-      ...baseOpts,
-      workspaceVolume: "shipit-ws-vol",
-      workspaceSubpath: "sessions/abc/workspace",
-      workspaceDevice: DEVICE,
-    };
-    interface Doc {
-      services: Record<string, { volumes: Record<string, unknown>[] }>;
-      volumes: Record<string, Record<string, unknown>>;
-    }
-    const render = (volumes: unknown[], opts: Parameters<typeof generateComposeOverride>[1] = volumeOpts): Doc =>
-      parseYaml(generateComposeOverride([{ name: "api", volumes }], opts)) as Doc;
+    const volumeOpts = { ...rewriteOpts, workspaceDevice: DEVICE };
+    const render = (volumes: unknown[], opts: Parameters<typeof rewriteResolvedModel>[1] = volumeOpts) =>
+      rewrite(stack(volumes, {}, "api"), opts);
 
     it("mounts a subdirectory from a volume rooted at this session's workspace, not the shared one", () => {
-      const doc = render(["./backend:/app:ro", { type: "bind", source: "./frontend", target: "/web" }]);
+      const doc = render([
+        bind(`${WS}/backend`, "/app", { read_only: true }),
+        { type: "bind", source: `${WS}/frontend`, target: "/web" },
+      ]);
       expect(doc.services.api.volumes).toEqual([
         { type: "volume", source: "shipit-session-workspace", volume: { subpath: "backend" }, target: "/app", read_only: true },
         { type: "volume", source: "shipit-session-workspace", volume: { subpath: "frontend" }, target: "/web" },
       ]);
-      expect(doc.volumes["shipit-session-workspace"]).toEqual({
+      expect(doc.volumes?.["shipit-session-workspace"]).toEqual({
         driver: "local",
         driver_opts: { type: "none", o: "bind", device: DEVICE },
         labels: { "shipit-managed": "true", "shipit-session": "test-session-123" },
@@ -1768,54 +1833,81 @@ describe("generateComposeOverride", () => {
 
     // Docker confines a subpath only to its volume's root, and the shared root holds every session.
     it("never emits a shared-volume subpath below the workspace directory itself", () => {
-      const doc = render([".:/a", "./:/b", "./.:/c", "./x:/d", "./x/./y/:/e", "./x//y:/f"]);
-      const shared = doc.services.api.volumes.filter((v) => v.source === "shipit-workspace");
+      const doc = render([
+        bind(WS, "/a"), bind(`${WS}/`, "/b"), bind(`${WS}/.`, "/c"),
+        bind(`${WS}/x`, "/d"), bind(`${WS}/x/./y/`, "/e"), bind(`${WS}/x//y`, "/f"),
+      ]);
+      const volumes = doc.services.api.volumes ?? [];
+      const shared = volumes.filter((v) => v.source === "shipit-workspace");
       expect(shared.map((v) => v.target)).toEqual(["/a", "/b", "/c"]);
       for (const mount of shared) expect(mount.volume).toEqual({ subpath: "sessions/abc/workspace" });
-      expect(doc.services.api.volumes.filter((v) => v.source === "shipit-session-workspace").map((v) => v.volume))
+      expect(volumes.filter((v) => v.source === "shipit-session-workspace").map((v) => v.volume))
         .toEqual([{ subpath: "x" }, { subpath: "x/y" }, { subpath: "x/y" }]);
     });
 
     it("declares no session volume for a stack that only mounts the whole workspace", () => {
-      const doc = render([".:/app"], { ...volumeOpts, workspaceDevice: undefined });
-      expect(doc.volumes["shipit-session-workspace"]).toBeUndefined();
-      expect(doc.volumes["shipit-workspace"]).toEqual({ name: "shipit-ws-vol", external: true });
+      const doc = render([bind(WS, "/app")], { ...volumeOpts, workspaceDevice: undefined });
+      expect(doc.volumes?.["shipit-session-workspace"]).toBeUndefined();
+      expect(doc.volumes?.["shipit-workspace"]).toEqual({ name: "shipit-ws-vol", external: true });
     });
 
     it("refuses a subdirectory mount when the workspace's daemon path is unknown", () => {
-      expect(() => render(["./backend:/app"], { ...volumeOpts, workspaceDevice: undefined }))
+      expect(() => render([bind(`${WS}/backend`, "/app")], { ...volumeOpts, workspaceDevice: undefined }))
         .toThrow("could not locate this session's workspace on the Docker host");
     });
 
     it("refuses to mount the workspace when its place in the shared volume is unknown", () => {
-      expect(() => render([".:/app"], { ...volumeOpts, workspaceSubpath: undefined }))
+      expect(() => render([bind(WS, "/app")], { ...volumeOpts, workspaceSubpath: undefined }))
         .toThrow("could not locate this session inside the workspace volume");
     });
   });
 
   it("preserves read-only mode on rewritten volumes", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app:ro"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
-    );
-    expect(override).toContain("read_only: true");
+    const doc = rewrite(stack([bind(WS, "/app", { read_only: true })]));
+    expect(doc.services.web.volumes?.[0]).toMatchObject({ source: "shipit-workspace", read_only: true });
   });
 
   it("leaves non-workspace volumes untouched", () => {
-    const override = generateComposeOverride(
-      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol" },
-    );
-    expect(override).toContain("pgdata:/var/lib/postgresql/data");
+    const pgdata = { type: "volume", source: "pgdata", target: "/var/lib/postgresql/data", volume: {} };
+    const doc = rewrite(stack([pgdata], { volumes: { pgdata: { name: `${PROJECT}_pgdata` } } }));
+    expect(doc.services.web.volumes).toEqual([pgdata]);
   });
 
   it("rewrites object-form workspace volumes", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", volumes: [{ type: "bind", source: ".", target: "/app" }] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "ws/dir" },
+    const doc = rewrite(
+      stack([{ type: "bind", source: WS, target: "/app" }]),
+      { ...rewriteOpts, workspaceSubpath: "ws/dir" },
     );
-    expect(override).toContain("source: shipit-workspace");
-    expect(override).toContain("subpath: ws/dir");
+    expect(doc.services.web.volumes).toEqual([
+      { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "ws/dir" } },
+    ]);
+  });
+
+  it("drops empty env_file, label_file and ports, and lists built services and project files", () => {
+    const model = {
+      name: PROJECT,
+      services: {
+        web: {
+          image: "app:dev",
+          build: { context: WS, dockerfile: "Dockerfile" },
+          env_file: [],
+          label_file: [],
+          ports: [{ mode: "ingress", target: 80, published: "8080", protocol: "tcp" }],
+        },
+        db: { image: "postgres:16" },
+      },
+      secrets: { token: { name: `${PROJECT}_token`, file: `${WS}/token` } },
+      configs: { app: { name: `${PROJECT}_app`, file: `${WS}/conf/app.ini` } },
+    };
+    const before = structuredClone(model);
+    const { model: out, builtServices, projectFiles } = rewriteResolvedModel(model, rewriteOpts);
+    expect((out as Doc).services.web).toEqual({ image: "app:dev", build: { context: WS, dockerfile: "Dockerfile" } });
+    expect(builtServices).toEqual(["web"]);
+    expect(projectFiles).toEqual([
+      { kind: "secrets", name: "token", file: `${WS}/token` },
+      { kind: "configs", name: "app", file: `${WS}/conf/app.ini` },
+    ]);
+    expect(model).toEqual(before);
   });
 });
 
@@ -1975,7 +2067,7 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
   });
 });
 
-describe("writeComposeOverride", () => {
+describe("writeRootOnlyFile", () => {
   let tmpDir: string;
 
   function setup() {
@@ -1987,46 +2079,36 @@ describe("writeComposeOverride", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes the override into the given directory", () => {
-    const dir = setup();
-    const content = "services: {}\n";
-    const result = writeComposeOverride(dir, content);
-    expect(result).toBe(path.join(dir, "compose.override.yml"));
-    expect(fs.readFileSync(result, "utf-8")).toBe(content);
+  it("writes the content to the given file", () => {
+    const file = path.join(setup(), "override.yml");
+    expect(writeRootOnlyFile(file, "services: {}\n")).toBe(file);
+    expect(fs.readFileSync(file, "utf-8")).toBe("services: {}\n");
   });
 
-  it("writes the override 0600, including over a pre-existing looser file", () => {
-    const dir = setup();
-    const target = path.join(dir, "compose.override.yml");
-    fs.writeFileSync(target, "stale", { mode: 0o644 });
-    writeComposeOverride(dir, "services: {}\n");
-    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+  it("writes the file 0600, including over a pre-existing looser file", () => {
+    const file = path.join(setup(), "override.yml");
+    fs.writeFileSync(file, "stale", { mode: 0o644 });
+    writeRootOnlyFile(file, "services: {}\n");
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it("creates the target directory if it doesn't exist", () => {
-    const dir = setup();
-    const target = path.join(dir, "state");
-    writeComposeOverride(target, "test");
-    expect(fs.existsSync(path.join(target, "compose.override.yml"))).toBe(true);
+    const file = path.join(setup(), "state", "compose", "override.yml");
+    writeRootOnlyFile(file, "test");
+    expect(fs.existsSync(file)).toBe(true);
   });
 
-  it("never creates a .shipit directory in the caller's tree", () => {
-    const dir = setup();
-    writeComposeOverride(path.join(dir, "state"), "services: {}\n");
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
-  });
-
-  it("does not chown the override, even with the worker-uid flag set", () => {
+  it("does not chown the file, even with the worker-uid flag set", () => {
     const myUid = process.getuid?.();
     if (myUid === undefined) return;
     const orig = process.env.SHIPIT_SESSION_WORKER_UID;
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
     try {
-      const dir = setup();
-      const result = writeComposeOverride(dir, "services: {}\n");
-      const before = fs.lstatSync(result).uid;
-      writeComposeOverride(dir, "services: {}\n");
-      expect(fs.lstatSync(result).uid).toBe(before);
+      const file = path.join(setup(), "override.yml");
+      writeRootOnlyFile(file, "services: {}\n");
+      const before = fs.lstatSync(file).uid;
+      writeRootOnlyFile(file, "services: {}\n");
+      expect(fs.lstatSync(file).uid).toBe(before);
     } finally {
       if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
       else process.env.SHIPIT_SESSION_WORKER_UID = orig;
@@ -2494,7 +2576,7 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
 
   it("bind-mounts the wrapper from its absolute staged path, even with a workspace volume", () => {
     const override = generateComposeOverride(
-      [{ name: "api", secrets: ["DATABASE_URL"], volumes: [".:/app"] }],
+      [{ name: "api", secrets: ["DATABASE_URL"], workspaceMounts: [{ relPath: "", target: "/app" }] }],
       {
         ...baseOpts,
         workspaceVolume: "shipit-dev_workspace",
@@ -2552,17 +2634,15 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   const NM = { depDir: "node_modules", volumeName: "shipit-sess123abcde_overlay-aaaa1111" };
 
-  it("appends a nested overlay mount for a root workspace mount, keeping the workspace mount", () => {
+  const ROOT = [{ relPath: "", target: "/app" }];
+
+  it("appends a nested overlay mount for a root workspace mount", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts, workspaceSubpath: "sessions/abc/workspace", overlayDepDirs: [NM] },
     );
     const doc = overrideDoc(override);
-    const vols = doc.services.web.volumes ?? [];
-    expect(vols).toContainEqual(
-      expect.objectContaining({ source: "shipit-workspace", target: "/app" }),
-    );
-    expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/app/node_modules" });
+    expect(doc.services.web.volumes).toContainEqual({ type: "volume", source: NM.volumeName, target: "/app/node_modules" });
     expect(doc.volumes?.[NM.volumeName]).toEqual({ name: NM.volumeName, external: true });
   });
 
@@ -2572,7 +2652,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
       { depDir: "packages/api/node_modules", volumeName: "vol-api" },
     ];
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts, overlayDepDirs: dirs },
     );
     const vols = overrideDoc(override).services.web.volumes ?? [];
@@ -2586,7 +2666,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("maps dep dirs through a subdir mount and skips dep dirs outside it", () => {
     const override = generateComposeOverride(
-      [{ name: "api", volumes: ["./backend:/srv"] }],
+      [{ name: "api", workspaceMounts: [{ relPath: "backend", target: "/srv" }] }],
       {
         ...baseOpts,
         overlayDepDirs: [
@@ -2605,7 +2685,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("targets the overlay volume root (no subpath) and never an overlay-base/ or storage subpath", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts, workspaceSubpath: "sessions/abc/workspace", overlayDepDirs: [NM] },
     );
     const mount = (overrideDoc(override).services.web.volumes ?? []).find(
@@ -2618,7 +2698,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("adds no overlay mounts to a service without a workspace mount", () => {
     const override = generateComposeOverride(
-      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
+      [{ name: "db" }],
       { ...baseOpts, overlayDepDirs: [NM] },
     );
     const doc = overrideDoc(override);
@@ -2629,15 +2709,15 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("emits nothing overlay-related when overlayDepDirs is absent (non-overlay session unchanged)", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts },
     );
     expect(override).not.toContain("overlay");
   });
 
-  it("replaces a direct dep-dir mount with the overlay volume (no duplicate target)", () => {
+  it("mounts one overlay at a dep dir that is also mounted directly (no duplicate target)", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app", "./node_modules:/app/node_modules"] }],
+      [{ name: "web", workspaceMounts: [...ROOT, { relPath: "node_modules", target: "/app/node_modules" }] }],
       { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
     );
     const vols = overrideDoc(override).services.web.volumes ?? [];
@@ -2647,29 +2727,38 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     ]);
   });
 
-  it("drops an anonymous volume at a dep dir rather than declaring two mounts there", () => {
+  it("leaves anonymous volumes in the snapshot and mounts only the overlay at a dep dir", () => {
+    const WS = "/workspace/sessions/abc/workspace";
+    const anonymous = [
+      { type: "volume", target: "/app/node_modules", volume: {} },
+      { type: "volume", target: "/app/.cache", volume: {} },
+    ];
+    const { model, workspaceMounts } = rewriteResolvedModel(
+      { services: { web: { image: "node:20", volumes: [{ type: "bind", source: WS, target: "/app" }, ...anonymous] } } },
+      { sessionId: baseOpts.sessionId, workspaceDir: WS, workspaceVolume: "shipit-ws", workspaceSubpath: "s/w" },
+    );
+    const snapshot = (model as { services: { web: { volumes: unknown[] } } }).services.web.volumes;
+    for (const mount of anonymous) expect(snapshot).toContainEqual(mount);
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app", "/app/node_modules"] }],
+      [{ name: "web", workspaceMounts: workspaceMounts.get("web") }],
       { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
     );
-    const vols = overrideDoc(override).services.web.volumes ?? [];
-    expect(vols.filter((v) => (isObj(v) ? v.target : v) === "/app/node_modules")).toEqual([
+    expect(overrideDoc(override).services.web.volumes).toEqual([
       { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
     ]);
-    expect(vols).toContainEqual(expect.objectContaining({ source: "shipit-workspace", target: "/app" }));
-  });
-
-  it("keeps an anonymous volume that is not at a dep dir", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app", "/app/.cache"] }],
-      { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
-    );
-    expect(overrideDoc(override).services.web.volumes ?? []).toContain("/app/.cache");
   });
 
   it("nests dep-dir overlays through a subdir mount written with a trailing slash", () => {
+    const WS = "/workspace/sessions/abc/workspace";
+    const { model, workspaceMounts } = rewriteResolvedModel(
+      { services: { game: { image: "node:20", volumes: [{ type: "bind", source: `${WS}/game/`, target: "/app" }] } } },
+      { sessionId: baseOpts.sessionId, workspaceDir: WS, workspaceVolume: "shipit-ws", workspaceSubpath: "s/w", workspaceDevice: baseOpts.workspaceDevice },
+    );
+    expect((model as { services: { game: { volumes: unknown[] } } }).services.game.volumes).toContainEqual(
+      expect.objectContaining({ source: "shipit-session-workspace", target: "/app", volume: { subpath: "game" } }),
+    );
     const override = generateComposeOverride(
-      [{ name: "game", volumes: ["./game/:/app"] }],
+      [{ name: "game", workspaceMounts: workspaceMounts.get("game") }],
       {
         ...baseOpts,
         workspaceSubpath: "s/w",
@@ -2678,9 +2767,6 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     );
     const vols = overrideDoc(override).services.game.volumes ?? [];
     expect(vols).toContainEqual({ type: "volume", source: "vol-game", target: "/app/node_modules" });
-    expect(vols).toContainEqual(
-      expect.objectContaining({ source: "shipit-session-workspace", target: "/app", volume: { subpath: "game" } }),
-    );
   });
 
   describe("plugin services (docs/262)", () => {
@@ -2850,9 +2936,10 @@ describe("the `persist` volume (docs/317)", () => {
     return parseComposeFile(file, { dockerSocket: false, ...opts });
   }
 
-  const baseOpts = {
+  const WS = "/workspace/sessions/s1/workspace";
+  const rewriteOpts = {
     sessionId: "0123456789abcdef-session",
-    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+    workspaceDir: WS,
     persist: { device: "/var/lib/docker/volumes/ws/_data/sessions/s1/scratch" },
   };
 
@@ -2866,8 +2953,11 @@ describe("the `persist` volume (docs/317)", () => {
     }>;
   }
 
-  function override(services: ReturnType<typeof parse>, extra: Record<string, unknown> = {}): PersistDoc {
-    return parseYaml(generateComposeOverride(services, { ...baseOpts, ...extra })) as PersistDoc;
+  function snapshot(content: string, extra: Partial<Parameters<typeof rewriteResolvedModel>[1]> = {}): PersistDoc {
+    parseComposeContent(content, { dockerSocket: false });
+    const model = fakeResolvedModel(content, { workspaceDir: WS, project: PROJECT });
+    validateResolvedModel(model, { dockerSocket: false, project: PROJECT, workspaceDir: WS });
+    return rewriteResolvedModel(model, { ...rewriteOpts, ...extra }).model as PersistDoc;
   }
 
   it("records which part of /persist each service mounts, in every declaration form", () => {
@@ -2933,18 +3023,18 @@ services:
   });
 
   it("mounts /persist through a bind-backed volume of the session's own scratch directory", () => {
-    const doc = override(parse(`
+    const doc = snapshot(`
 services:
   api:
     image: x
     volumes: ["persist/verseshot:/data"]
-`), { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace", stackName: "shipit-a" });
+`, { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace", stackName: "shipit-a" });
 
     expect(doc.volumes?.persist).toEqual({
       name: "shipit-0123456789ab_shipit-persist",
       driver: "local",
-      driver_opts: { type: "none", o: "bind", device: baseOpts.persist.device },
-      labels: { "shipit-managed": "true", "shipit-session": baseOpts.sessionId, "shipit-stack": "shipit-a" },
+      driver_opts: { type: "none", o: "bind", device: rewriteOpts.persist.device },
+      labels: { "shipit-managed": "true", "shipit-session": rewriteOpts.sessionId, "shipit-stack": "shipit-a" },
     });
     // A subpath of the shared workspace volume is confined only to that volume, which holds
     // every session; the subpath must be resolved against the scratch directory instead.
@@ -2954,7 +3044,7 @@ services:
   });
 
   it("rewrites every form, keeping read-only and long-form options", () => {
-    const doc = override(parse(`
+    const doc = snapshot(`
 services:
   api:
     image: x
@@ -2968,7 +3058,7 @@ services:
         volume:
           subpath: cache
           nocopy: false
-`), { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace" });
+`, { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace" });
 
     expect(doc.services.api.volumes).toEqual([
       { type: "volume", source: "persist", target: "/data", read_only: true, volume: { nocopy: true } },
@@ -2981,42 +3071,307 @@ services:
   });
 
   it("rewrites persist mounts when the workspace is a bind mount too", () => {
-    const doc = override(parse(`
+    const doc = snapshot(`
 services:
   api:
     image: x
     volumes: [".:/app", "persist/verseshot:/data"]
-`));
+`);
     expect(doc.services.api.volumes).toEqual([
-      ".:/app",
+      expect.objectContaining({ type: "bind", source: WS, target: "/app" }),
       { type: "volume", source: "persist", target: "/data", volume: { nocopy: true, subpath: "verseshot" } },
     ]);
-    expect(doc.volumes?.persist?.driver_opts?.device).toBe(baseOpts.persist.device);
+    expect(doc.volumes?.persist?.driver_opts?.device).toBe(rewriteOpts.persist.device);
   });
 
   it("replaces a declared top-level `persist` volume even when no service mounts it", () => {
-    const doc = override(parse(`
+    const doc = snapshot(`
 services:
   api:
     image: x
 volumes:
   persist:
   pgdata:
-`), { userNamedVolumes: [{ name: "persist" }, { name: "pgdata" }] });
+`);
     expect(doc.volumes?.persist?.driver_opts?.o).toBe("bind");
     expect(doc.volumes?.pgdata).toEqual({
-      labels: { "shipit-managed": "true", "shipit-session": baseOpts.sessionId },
+      name: `${PROJECT}_pgdata`,
+      labels: { "shipit-managed": "true", "shipit-session": rewriteOpts.sessionId },
     });
   });
 
   it("declares nothing when no service uses /persist", () => {
-    const doc = override(parse(`services:\n  api:\n    image: x\n    volumes: [".:/app"]\n`));
+    const doc = snapshot(`services:\n  api:\n    image: x\n    volumes: [".:/app"]\n`);
     expect(doc.volumes?.persist).toBeUndefined();
   });
 
   it("fails rather than emit a mount it has no directory for", () => {
-    const services = parse(`services:\n  api:\n    image: x\n    volumes: ["persist:/data"]\n`);
-    expect(() => generateComposeOverride(services, { ...baseOpts, persist: undefined }))
+    expect(() => snapshot(`services:\n  api:\n    image: x\n    volumes: ["persist:/data"]\n`, { persist: undefined }))
       .toThrow(/could not be located/);
+    expect(() => snapshot(`services:\n  api:\n    image: x\nvolumes:\n  persist:\n`, { persist: undefined }))
+      .toThrow(/could not be located/);
+  });
+});
+
+describe("validateResolvedModel on Compose's resolved output (docs/318)", () => {
+  const WS = "/workspace/sessions/s1/workspace";
+  const SOCKET = "/var/run/docker.sock";
+  const ctx = { dockerSocket: false, project: PROJECT, workspaceDir: WS };
+
+  function resolved(web: Record<string, unknown>, top: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      name: PROJECT,
+      services: { web: { image: "node:20", networks: { default: null }, ...web } },
+      networks: { default: { name: `${PROJECT}_default` } },
+      ...top,
+    };
+  }
+  const mounts = (...volumes: unknown[]) => resolved({ volumes });
+  const bindAt = (source: string) => ({ type: "bind", source, target: "/app", bind: { create_host_path: true } });
+
+  const OPS_CONFIG = `name: ${PROJECT}
+services:
+  docker-socket-proxy:
+    environment:
+      AUTH: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      CONTAINERS: "1"
+      DISTRIBUTION: "0"
+      EVENTS: "1"
+      EXEC: "0"
+      GRPC: "0"
+      IMAGES: "1"
+      INFO: "1"
+      NETWORKS: "1"
+      NODES: "0"
+      PING: "1"
+      PLUGINS: "0"
+      POST: "0"
+      SECRETS: "0"
+      SERVICES: "0"
+      SESSION: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      TASKS: "0"
+      VERSION: "1"
+      VOLUMES: "1"
+    image: ${TRUSTED_OPS_PROXY_IMAGE}
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: true
+    x-shipit-depends-on-install: false
+    x-shipit-preview: auto
+networks:
+  default:
+    name: ${PROJECT}_default
+`;
+
+  it("passes a ./sub stack, and the rewrite declares the session volume", () => {
+    const model = mounts(bindAt(`${WS}/sub`));
+    expect(() => validateResolvedModel(model, ctx)).not.toThrow();
+    const device = "/var/lib/docker/volumes/ws/_data/sessions/s1/workspace";
+    const { model: out } = rewriteResolvedModel(model, {
+      sessionId: "s1",
+      workspaceDir: WS,
+      workspaceVolume: "ws",
+      workspaceSubpath: "sessions/s1/workspace",
+      workspaceDevice: device,
+    });
+    expect(out.volumes).toEqual({
+      "shipit-session-workspace": {
+        driver: "local",
+        driver_opts: { type: "none", o: "bind", device },
+        labels: { "shipit-managed": "true", "shipit-session": "s1" },
+      },
+    });
+  });
+
+  it("passes the ops template's proxy in an ops session", () => {
+    for (const containEgress of [false, true]) {
+      const check = validateResolvedModel(parseYaml(OPS_CONFIG), {
+        ...ctx, dockerSocket: true, containEgress, trustedOpsProxy: true,
+      });
+      expect([...check.trustedOpsProxies]).toEqual(["docker-socket-proxy"]);
+    }
+  });
+
+  it("refuses a bind source that resolved outside the workspace", () => {
+    for (const source of ["/", "/workspace/sessions/other/workspace", "/workspace/sessions/s1", `${WS}-b`]) {
+      expect(() => validateResolvedModel(mounts(bindAt(source)), ctx), source)
+        .toThrow("outside this session's workspace");
+    }
+  });
+
+  it("refuses a reserved named volume", () => {
+    const mount = { type: "volume", source: "shipit-workspace", target: "/b", volume: { subpath: "sessions/other/workspace" } };
+    expect(() => validateResolvedModel(mounts(mount), ctx)).toThrow("reserved for ShipIt");
+  });
+
+  it("refuses an undeclared named volume", () => {
+    const mount = { type: "volume", source: "data", target: "/data", volume: {} };
+    expect(() => validateResolvedModel(mounts(mount), ctx)).toThrow("`data` is not declared");
+    const declared = resolved({ volumes: [mount] }, { volumes: { data: { name: `${PROJECT}_data` } } });
+    expect(() => validateResolvedModel(declared, ctx)).not.toThrow();
+  });
+
+  it("refuses volumes_from a container", () => {
+    expect(() => validateResolvedModel(resolved({ volumes_from: ["container:x"] }), ctx))
+      .toThrow("`volumes_from: container:x` is not allowed");
+  });
+
+  it("refuses provider", () => {
+    const model = resolved({ provider: { type: "model", options: { model: "ai/smollm2" } } });
+    expect(() => validateResolvedModel(model, ctx)).toThrow("`provider` is not allowed");
+  });
+
+  it("refuses a name: other than Compose's own on a volume, network or secret", () => {
+    const cases: [string, Record<string, unknown>][] = [
+      ["Volume `data`", { volumes: { data: { name: "data" } } }],
+      ["Network `backend`", { networks: { default: { name: `${PROJECT}_default` }, backend: { name: "shipit-session-x" } } }],
+      ["Secret `token`", { secrets: { token: { name: "token", file: `${WS}/token` } } }],
+    ];
+    for (const [what, top] of cases) {
+      expect(() => validateResolvedModel(resolved({}, top), ctx), what).toThrow(new RegExp(`^${what}: .*name`));
+    }
+  });
+
+  it("refuses a secret file outside the workspace", () => {
+    for (const file of ["/etc/shadow", "/workspace/sessions/other/workspace/token"]) {
+      const model = resolved({}, { secrets: { token: { name: `${PROJECT}_token`, file } } });
+      expect(() => validateResolvedModel(model, ctx), file).toThrow("outside this session's workspace");
+    }
+  });
+
+  it("refuses an env_file or label_file Compose did not inline", () => {
+    expect(() => validateResolvedModel(resolved({ env_file: [{ path: `${WS}/.env`, required: true }] }), ctx))
+      .toThrow("did not resolve `env_file`");
+    expect(() => validateResolvedModel(resolved({ label_file: [`${WS}/labels`] }), ctx))
+      .toThrow("did not resolve `label_file`");
+  });
+
+  it("refuses a leftover extends", () => {
+    expect(() => validateResolvedModel(resolved({ extends: { service: "base" } }), ctx))
+      .toThrow("left `extends` unresolved");
+  });
+
+  it("refuses an unknown mount field", () => {
+    expect(() => validateResolvedModel(mounts({ ...bindAt(WS), image: { subpath: "x" } }), ctx))
+      .toThrow("the mount field `image` is not supported");
+  });
+
+  it("refuses a mount type other than bind, volume and tmpfs", () => {
+    for (const type of ["image", "npipe", "cluster"]) {
+      expect(() => validateResolvedModel(mounts({ type, source: "x", target: "/x" }), ctx), type)
+        .toThrow(`mount type \`${type}\` is not supported`);
+    }
+  });
+
+  it("refuses a short-form mount", () => {
+    expect(() => validateResolvedModel(mounts("./data:/data"), ctx)).toThrow("left the mount `./data:/data` unresolved");
+  });
+
+  it("refuses a $ in a bind source", () => {
+    expect(() => validateResolvedModel(mounts(bindAt(`${WS}/$HOME`)), ctx)).toThrow("left the bind mount source");
+  });
+
+  it("accepts persist and persist/<sub> without a declaration", () => {
+    const model = mounts(
+      { type: "volume", source: "persist", target: "/data", volume: {} },
+      { type: "volume", source: "persist/renders", target: "/renders", volume: {} },
+    );
+    expect(() => validateResolvedModel(model, ctx)).not.toThrow();
+  });
+
+  it("accepts the exact socket path with the grant", () => {
+    const model = mounts({ type: "bind", source: SOCKET, target: SOCKET, bind: { create_host_path: true } });
+    expect(() => validateResolvedModel(model, { ...ctx, dockerSocket: true, dockerSocketGrant: "granted" })).not.toThrow();
+    expect(() => validateResolvedModel(model, ctx)).toThrow("compose.docker-socket");
+  });
+
+  it("accepts anonymous volumes and tmpfs", () => {
+    const model = mounts(
+      { type: "volume", target: "/cache", volume: {} },
+      { type: "tmpfs", target: "/scratch", tmpfs: { size: 1048576 } },
+    );
+    expect(() => validateResolvedModel(model, ctx)).not.toThrow();
+  });
+});
+
+describe("serializeComposeModel", () => {
+  it("doubles $ in values, not keys, and round-trips through a YAML parse", () => {
+    const model = {
+      services: {
+        web: {
+          image: "node:20",
+          command: ["sh", "-c", `echo $HOME \${USER:-me}`],
+          environment: { "A$B": "p$ss", PORT: "3000" },
+          labels: { "x.note": "a ".repeat(100) },
+        },
+      },
+    };
+    expect(parseYaml(serializeComposeModel(model))).toEqual({
+      services: {
+        web: {
+          image: "node:20",
+          command: ["sh", "-c", `echo $$HOME $\${USER:-me}`],
+          environment: { "A$B": "p$$ss", PORT: "3000" },
+          labels: { "x.note": "a ".repeat(100) },
+        },
+      },
+    });
+  });
+});
+
+describe("pluginStubModel", () => {
+  it("carries each plugin service's name and image only", () => {
+    const stubs = pluginStubModel([
+      {
+        name: "probe",
+        definition: {
+          image: "node:22-alpine",
+          entrypoint: ["/plugin/bin/serve"],
+          environment: { FAL_KEY: "sk-live" },
+          volumes: [{ type: "volume", source: "shipit-workspace", target: "/project" }],
+          labels: { "shipit-plugin": "probe" },
+        },
+      },
+      { name: "built", definition: { build: { context: "/plugin" } } },
+    ]);
+    expect(stubs).toEqual({ services: { probe: { image: "node:22-alpine" }, built: { image: "shipit-plugin-stub" } } });
+  });
+});
+
+describe("composeBuildModel", () => {
+  it("names project files by their workspace paths and adds the plugin stubs", () => {
+    const WS = "/workspace/sessions/s1/workspace";
+    const snapshot = {
+      name: PROJECT,
+      services: {
+        web: {
+          image: "app:dev",
+          build: { context: WS, dockerfile: "Dockerfile", secrets: [{ source: "token" }] },
+          depends_on: { probe: { condition: "service_started", required: true } },
+        },
+      },
+      secrets: { token: { name: `${PROJECT}_token`, file: "/srv/shipit/sessions/s1/state/compose/secrets/token" } },
+    };
+    const before = structuredClone(snapshot);
+    const model = composeBuildModel(
+      snapshot,
+      [{ kind: "secrets", name: "token", file: `${WS}/token` }],
+      pluginStubModel([{ name: "probe", definition: { image: "node:22-alpine" } }]),
+    );
+    expect(model.secrets).toEqual({ token: { name: `${PROJECT}_token`, file: `${WS}/token` } });
+    expect(model.services).toEqual({ probe: { image: "node:22-alpine" }, web: snapshot.services.web });
+    expect(snapshot).toEqual(before);
   });
 });

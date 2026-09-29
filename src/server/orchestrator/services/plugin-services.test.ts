@@ -6,6 +6,7 @@ import path from "node:path";
 import { readProjectServices, resolveSessionPluginServices } from "./plugin-services.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { getPluginServiceFailures } from "./plugin-activation.js";
+import { localProjectComposeAccess } from "../compose-test-helpers.js";
 import {
   claimGenerationDeletion,
   generationHoldCount,
@@ -96,7 +97,10 @@ plugins:
 `;
 
 const resolve = (): Promise<Awaited<ReturnType<typeof resolveSessionPluginServices>>> =>
-  resolveSessionPluginServices(SESSION_ID, workspaceDir, { containEgress: false });
+  resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+    containEgress: false,
+    projectCompose: localProjectComposeAccess(workspaceDir),
+  });
 
 describe("resolveSessionPluginServices", () => {
   it("surfaces a self-declared plugin's services on the port the project named", async () => {
@@ -332,40 +336,40 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
 
 describe("readProjectServices carries why the name domain is unknown", () => {
   const read = (containEgress: boolean): ReturnType<typeof readProjectServices> =>
-    readProjectServices(workspaceDir, resolveShipitConfig(workspaceDir), containEgress);
+    readProjectServices(resolveShipitConfig(workspaceDir), containEgress, localProjectComposeAccess(workspaceDir));
 
   function declareStack(body: string): void {
     writeConfig("compose: docker-compose.yml\n");
     fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), body);
   }
 
-  it("reports a file it cannot parse as malformed, with where the parse gave up", () => {
+  it("reports a file it cannot parse as malformed, with where the parse gave up", async () => {
     declareStack("services: [oh: : no\n");
-    const project = read(false);
+    const project = await read(false);
 
     expect(project.unknown).toBe(true);
     expect(project.failure?.kind).toBe("malformed");
     expect(project.failure?.message).toContain("not valid YAML");
   });
 
-  it("reports a file the containment rules refuse as refused, naming the fix", () => {
+  it("reports a file the containment rules refuse as refused, naming the fix", async () => {
     declareStack(`
 services:
   web:
     image: node:22-alpine
-    user: "0"
+    label_file: ./labels.env
 `);
-    const project = read(true);
+    const project = await read(true);
 
     expect(project.unknown).toBe(true);
     expect(project.failure?.kind).toBe("refused");
-    expect(project.failure?.message).toContain("`user:`");
-    const open = read(false);
+    expect(project.failure?.message).toContain("`label_file`");
+    const open = await read(false);
     expect(open).toMatchObject({ names: ["web"], unknown: false });
     expect(open.failure).toBeUndefined();
   });
 
-  it("says nothing when the project's stack reads cleanly", () => {
+  it("says nothing when the project's stack reads cleanly", async () => {
     declareStack(`
 services:
   web:
@@ -373,9 +377,45 @@ services:
     ports:
       - "3000:3000"
 `);
-    const project = read(false);
+    const project = await read(false);
 
     expect(project).toMatchObject({ names: ["web"], unknown: false });
     expect(project.failure).toBeUndefined();
+  });
+
+  it("claims no names for a declared file that does not exist yet", async () => {
+    writeConfig("compose: docker-compose.yml\n");
+    expect(await read(false)).toEqual({ names: [], unknown: false });
+  });
+
+  it("reads the file through its reader each time, never on its own", async () => {
+    declareStack("services:\n  web:\n    image: node:22-alpine\n");
+    const reads: string[] = [];
+    const access = {
+      readProjectFile: (file: string) => { reads.push(file); return fs.promises.readFile(path.join(workspaceDir, file)); },
+      dockerSocketGrant: () => "not_granted" as const,
+      opsSession: false,
+    };
+    await readProjectServices(resolveShipitConfig(workspaceDir), false, access);
+    await readProjectServices(resolveShipitConfig(workspaceDir), false, access);
+    expect(reads).toEqual(["docker-compose.yml", "docker-compose.yml"]);
+  });
+
+  it("does not refuse a granted socket service in the name read", async () => {
+    writeConfig("compose:\n  file: docker-compose.yml\n  docker-socket: true\n");
+    fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"),
+      "services:\n  tool:\n    image: docker:cli\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n");
+    const project = await readProjectServices(
+      resolveShipitConfig(workspaceDir),
+      false,
+      localProjectComposeAccess(workspaceDir, { dockerSocketGrant: () => "granted" }),
+    );
+    expect(project).toMatchObject({ names: ["tool"], unknown: false });
+  });
+
+  it("marks the names unknown when it has no reader", async () => {
+    declareStack("services:\n  web:\n    image: node:22-alpine\n");
+    const project = await readProjectServices(resolveShipitConfig(workspaceDir), false, undefined);
+    expect(project.unknown).toBe(true);
   });
 });

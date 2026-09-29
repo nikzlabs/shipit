@@ -3,11 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { parse as parseYaml } from "yaml";
-import { ServiceManager } from "./service-manager.js";
-import { sessionStateDirForWorkspace } from "./session-state-dir.js";
-import { COMPOSE_OVERRIDE_FILE } from "../shared/fs-constants.js";
+import { recordedSnapshot, testServiceManager } from "./compose-test-helpers.js";
 
-interface OverrideDoc {
+interface SnapshotDoc {
   services: Record<string, { volumes?: unknown[] }>;
   volumes?: Record<string, { driver_opts?: Record<string, string> }>;
 }
@@ -27,7 +25,7 @@ describe("ServiceManager mounts the session's /persist into a service (docs/317)
     fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), compose);
     const scratchDir = path.join(tmpDir, "scratch");
     const translated: string[] = [];
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir,
       serviceEnvDir: path.join(tmpDir, "service-env"),
@@ -42,22 +40,21 @@ describe("ServiceManager mounts the session's /persist into a service (docs/317)
       composeQuery: async () => "",
       pollIntervalMs: 0,
     });
-    const readOverride = (): OverrideDoc => parseYaml(fs.readFileSync(
-      path.join(sessionStateDirForWorkspace(workspaceDir), COMPOSE_OVERRIDE_FILE),
-      "utf-8",
-    )) as OverrideDoc;
-    return { mgr, scratchDir, translated, readOverride };
+    const readSnapshot = (service: string): SnapshotDoc =>
+      parseYaml(recordedSnapshot(workspaceDir, service)) as SnapshotDoc;
+    return { mgr, scratchDir, translated, readSnapshot };
   }
 
   const API = "services:\n  api:\n    image: node:24-slim\n    x-shipit-preview: manual\n"
     + "    volumes: ['persist/verseshot:/data']\n";
 
   it("points the volume at this session's scratch directory, the one the agent sees at /persist", async () => {
-    const { mgr, scratchDir, translated, readOverride } = makeManager(API);
+    const { mgr, scratchDir, translated, readSnapshot } = makeManager(API);
     await mgr.start();
+    await mgr.startService("api");
 
     expect(translated).toEqual([scratchDir]);
-    const doc = readOverride();
+    const doc = readSnapshot("api");
     expect(doc.volumes?.persist?.driver_opts).toEqual({ type: "none", o: "bind", device: `/daemon${scratchDir}` });
     expect(doc.services.api.volumes).toEqual([
       { type: "volume", source: "persist", target: "/data", volume: { nocopy: true, subpath: "verseshot" } },
@@ -69,6 +66,7 @@ describe("ServiceManager mounts the session's /persist into a service (docs/317)
   it("recreates a mounted subdirectory the agent deleted before the service starts again", async () => {
     const { mgr, scratchDir } = makeManager(API);
     await mgr.start();
+    await mgr.startService("api");
     fs.rmSync(path.join(scratchDir, "verseshot"), { recursive: true });
 
     await mgr.restartService("api");
@@ -78,13 +76,14 @@ describe("ServiceManager mounts the session's /persist into a service (docs/317)
   });
 
   it("touches nothing under /persist for a project that does not use it", async () => {
-    const { mgr, scratchDir, translated, readOverride } = makeManager(
+    const { mgr, scratchDir, translated, readSnapshot } = makeManager(
       "services:\n  web:\n    image: x\n    x-shipit-preview: manual\n    volumes: ['.:/app']\n",
     );
     await mgr.start();
+    await mgr.startService("web");
     expect(translated).toEqual([]);
     expect(fs.existsSync(scratchDir)).toBe(false);
-    expect(readOverride().volumes?.persist).toBeUndefined();
+    expect(readSnapshot("web").volumes?.persist).toBeUndefined();
     await mgr.stop();
   });
 });

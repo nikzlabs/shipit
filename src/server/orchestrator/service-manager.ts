@@ -1,8 +1,11 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
 import net from "node:net";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { ComposeServiceOriginView } from "../shared/types/ws-server-messages/service.js";
 import { killChild } from "../shared/kill-child.js";
@@ -10,29 +13,41 @@ import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
   classifyComposeFailure,
+  composeBuildModel,
+  ComposeValidationError,
   extractContainerPort,
-  parseComposeFile,
-  DEFAULT_STOP_GRACE_PERIOD_MS,
-  parseUserNamedVolumes,
   generateComposeOverride,
-  writeComposeOverride,
-  PERSIST_VOLUME,
+  normalizedUser,
+  parseComposeContent,
+  pluginStubModel,
+  resolvedPersistUse,
+  rewriteResolvedModel,
+  serializeComposeModel,
+  validateResolvedModel,
+  writeRootOnlyFile,
+  DEFAULT_STOP_GRACE_PERIOD_MS,
   type ComposeFailure,
   type ComposeOverrideOptions,
+  type ComposeParseOptions,
   type ComposeService,
   type ComposeServiceOrigin,
   type DockerSocketGrant,
   type OverlayDepDirVolume,
   type PersistVolume,
+  type SnapshotRewrite,
 } from "./compose-generator.js";
 import { preparePersistDir } from "./compose-persist.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
 import {
   COMPOSE_OVERRIDE_FILE,
+  composeStateDirForWorkspace,
   sessionScratchDirForWorkspace,
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
+import { ComposeHelperError, ConfinedCompose, type ConfinedComposeApi } from "./compose-helper.js";
+import { ComposeStartRecord } from "./compose-start-record.js";
+import { composeProjectName } from "./compose-stack-reaper.js";
 import {
   ServiceSecretsResolver,
   type SecretsStatusInternalSnapshot,
@@ -47,9 +62,11 @@ import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-re
 import {
   ComposeCli,
   composeSpawnEnv,
+  type ComposeBuild,
   type ComposeRunner,
   type ComposeQuery,
   type ComposeOutputSink,
+  type ComposeStartModel,
 } from "./compose-cli.js";
 
 export type {
@@ -206,6 +223,13 @@ export interface ServiceManagerOptions {
   logStore?: LogStore;
   /** Maps the session's /persist directory to the daemon's path for it; identity when absent. */
   persistDevicePath?: (hostPath: string) => Promise<string>;
+  /**
+   * Runs the Compose commands that read project files, confined to this session
+   * (docs/318-compose-remaining-escapes, Mechanism 1).
+   */
+  confinedCompose?: ConfinedComposeApi;
+  /** Docker-host path of a file in the session's state directory; identity when absent. */
+  composeFileDaemonPath?: (orchestratorPath: string) => Promise<string>;
 }
 
 export interface ServiceManagerEvents {
@@ -237,8 +261,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly resolveWorkspaceDevice?: () => Promise<string>;
   private overlayDepDirs: OverlayDepDirVolume[];
   private pluginServices: PluginComposeService[] = [];
-  private _overrideProjectServices: string | null = null;
-  // Preserve start()'s admission decision during a mid-session override refresh.
+  // The project parse the service-env files were last written for.
+  private _syncedProjectServices: string | null = null;
+  // Preserve start()'s admission decision for every later start.
   private _overrideAdmittedPlugins: PluginComposeService[] = [];
   private pendingPortRefusals: { service: string; message: string }[] = [];
   private portRefusals = new Map<string, string>();
@@ -257,9 +282,16 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly ensureSessionNetworkModeFn?: (internal: boolean) => Promise<void>;
   private prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
   private readonly serviceEnvDir: string;
-  private readonly overrideDir: string;
+  private readonly stateDir: string;
+  private readonly composeStateDir: string;
   private readonly secretsInternalDir?: string;
   private readonly persistDevicePath: (hostPath: string) => Promise<string>;
+  private readonly confined: ConfinedComposeApi;
+  private readonly composeFileDaemonPath: (orchestratorPath: string) => Promise<string>;
+  private readonly startRecord: ComposeStartRecord;
+  // Starts between their resolve and their end; their files are not pruned.
+  private readonly startsInFlight = new Set<string>();
+  private legacyOverrideRemoved = false;
 
   private readonly secrets: ServiceSecretsResolver;
   private readonly poller: ServicePoller;
@@ -315,13 +347,22 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
-    this.overrideDir = sessionStateDirForWorkspace(opts.workspaceDir);
+    this.stateDir = sessionStateDirForWorkspace(opts.workspaceDir);
+    this.composeStateDir = composeStateDirForWorkspace(opts.workspaceDir);
+    this.confined = opts.confinedCompose ?? new ConfinedCompose({
+      sessionId: opts.sessionId,
+      workspaceDir: opts.workspaceDir,
+      ...(opts.workspaceVolume ? { workspaceVolume: opts.workspaceVolume } : {}),
+      daemonPath: (p) => Promise.resolve(p),
+      ...(opts.stackName ? { stackName: opts.stackName } : {}),
+    });
+    this.composeFileDaemonPath = opts.composeFileDaemonPath ?? ((p) => Promise.resolve(p));
+    this.startRecord = new ComposeStartRecord(this.composeStateDir);
     this.compose = new ComposeCli({
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
-      composeFile: opts.composeConfig.file,
-      overrideFile: path.join(this.overrideDir, COMPOSE_OVERRIDE_FILE),
-      ...(opts.noProjectCompose ? { noProjectFile: true } : {}),
+      confined: this.confined,
+      composeStateDir: this.composeStateDir,
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
       ...(opts.onTopologyChange ? { onTopologyChange: opts.onTopologyChange } : {}),
@@ -371,9 +412,10 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.poller = new ServicePoller({
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
+      queryCwd: () => this.compose.modelFreeDir(),
       composeQuery: this.compose.query,
       pollIntervalMs: opts.pollIntervalMs ?? 5_000,
-      composeArgs: (...extra) => this.compose.args(...extra),
+      composeArgs: (...extra) => this.compose.modelFreeArgs(...extra),
       isGated: (name) => this.gatedServices.has(name),
       getService: (name) => this.services.get(name),
       listServices: () => [...this.services.values()],
@@ -638,7 +680,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     }
 
     const tail = Number.isFinite(lines) && lines > 0 ? String(Math.floor(lines)) : "2000";
-    const args = this.compose.args("logs", "--no-log-prefix", "--tail", tail, name);
+    const args = this.compose.modelFreeArgs("logs", "--no-log-prefix", "--tail", tail, name);
 
     return new Promise<string>((resolve) => {
       let settled = false;
@@ -652,7 +694,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       };
       try {
         const proc = spawn("docker", args, {
-          cwd: this.workspaceDir,
+          cwd: this.compose.modelFreeDir(),
           env: composeSpawnEnv(),
           stdio: ["ignore", "pipe", "pipe"],
         });
@@ -804,8 +846,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
     }
 
-    const composePath = path.join(this.workspaceDir, this.composeConfig.file);
-
     if (this.noProjectCompose) this._projectComposeFailure = null;
 
     if (this.noProjectCompose && this.pluginServices.length === 0) {
@@ -814,9 +854,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       return;
     }
 
-    const parsedServices = this.noProjectCompose
-      ? []
-      : this.parseProjectCompose(composePath);
+    const parsedServices = this.noProjectCompose ? [] : await this.readProjectCompose();
 
     // Judge port collisions against this parse; the service map can still contain old rows.
     this.portRefusals.clear();
@@ -859,7 +897,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         },
       });
     }
-    await this.writeOverrideFor(parsedServices, admittedPlugins);
+    await this.syncSecrets(parsedServices, admittedPlugins);
+    this._overrideAdmittedPlugins = admittedPlugins;
 
     const autoServices = [...this.services.values()].filter(s => s.preview === "auto");
     for (const svc of autoServices) {
@@ -890,13 +929,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       // Compose starts every service when given no names; skip an empty batch.
       const autoNames = startNow.map(s => s.name);
       if (autoNames.length > 0) {
-        await this.withUpInFlight(autoNames, async () => {
-          await this.prepareContainedStartFn?.(autoNames);
-          this.armLogFollowerSince(autoNames);
-          await this.compose.up(autoNames, this.composeLogSink(autoNames));
-          markStackUp(this.sessionId, startNow);
+        await this.withUpInFlight(autoNames, async (start, names) => {
+          await this.prepareContainedStartFn?.(names);
+          this.armLogFollowerSince(names);
+          await this.buildAndUp(start, names);
+          markStackUp(this.sessionId, startNow.filter((svc) => names.includes(svc.name)));
           await this.containServicesFn?.([...this.services.keys()]);
-        });
+        }, { removeOrphans: true });
       }
       this._started = true;
 
@@ -944,10 +983,10 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
     try {
-      await this.withUpInFlight([name], async () => {
-        await this.prepareContainedStartFn?.([name]);
-        this.armLogFollowerSince([name]);
-        await this.compose.upService(name, this.composeLogSink([name]));
+      await this.withUpInFlight([name], async (start, names) => {
+        await this.prepareContainedStartFn?.(names);
+        this.armLogFollowerSince(names);
+        await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
       });
       // A later Stop owns the result of this start.
@@ -971,13 +1010,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
     try {
-      await this.compose.stop(name);
+      await this.stopContainer(name);
       // A Stop during the shutdown wait has no in-flight up to chase; check before starting one.
       if (this.stoppedByUser.has(name)) return;
-      await this.withUpInFlight([name], async () => {
-        await this.prepareContainedStartFn?.([name]);
-        this.armLogFollowerSince([name]);
-        await this.compose.upService(name, this.composeLogSink([name]));
+      await this.withUpInFlight([name], async (start, names) => {
+        await this.prepareContainedStartFn?.(names);
+        this.armLogFollowerSince(names);
+        await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
       });
       if (this.stoppedByUser.has(name)) return;
@@ -1000,7 +1039,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     // Capture before awaiting stop; a start that settles during it removes its own entry.
     const pendingUps = [...(this.upSettled.get(name) ?? [])];
     try {
-      await this.compose.stop(name);
+      await this.stopContainer(name);
       this.updateServiceStatus(name, "stopped");
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
@@ -1015,7 +1054,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (this._disposed) return;
     if (!this.stoppedByUser.has(name)) return;
     try {
-      await this.compose.stop(name);
+      await this.stopContainer(name);
       this.updateServiceStatus(name, "stopped");
     } catch (err) {
       console.warn(
@@ -1043,9 +1082,16 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       ? (since ? ["--since", since, "--tail", "1000"] : ["--tail", "0"])
       : ["--tail", "1000"];
 
-    const args = this.compose.args("logs", "-f", ...window, "--no-log-prefix", name);
+    const args = this.compose.modelFreeArgs("logs", "-f", ...window, "--no-log-prefix", name);
+    let cwd: string;
+    try {
+      cwd = this.compose.modelFreeDir();
+    } catch (err) {
+      console.warn(`[compose:${this.sessionId}] log follower for ${name} not started:`, (err as Error).message);
+      return () => {};
+    }
     const proc = spawn("docker", args, {
-      cwd: this.workspaceDir,
+      cwd,
       env: composeSpawnEnv(),
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1102,7 +1148,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (!changed) return false;
     this.composeConfig = next;
     this.noProjectCompose = noProjectCompose;
-    this.compose.setComposeFile(next.file, noProjectCompose);
     // The old failure describes a different file or policy; clear it before queued reconciliation.
     this._projectComposeFailure = null;
     return true;
@@ -1147,14 +1192,17 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       this.logProcesses.delete(name);
     }
 
+    await this.stopRunningServices();
     try {
-      await this.compose.down({ removeVolumes: opts.removeVolumes ?? false });
+      await this.compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
+      this.startRecord.clear(this.startsInFlight);
     } catch {
       // Best-effort cleanup
     }
 
     if (opts.removeVolumes) {
       removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
+      fs.rmSync(this.projectFileCopiesDir(), { recursive: true, force: true });
     }
 
     if (opts.removeVolumes && this.secretsInternalDir) {
@@ -1172,38 +1220,23 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   async refreshSecretsStatus(): Promise<void> {
     let parsedServices: ComposeService[];
     try {
-      parsedServices = this.noProjectCompose
-        ? []
-        : this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+      parsedServices = this.noProjectCompose ? [] : await this.readProjectCompose();
     } catch {
       // An empty sync would delete env files belonging to services still running.
       return;
     }
-    await this.secrets.sync(parsedServices, this.pluginServices);
+    await this.syncSecrets(parsedServices, this.pluginServices);
   }
 
   async refreshSecrets(): Promise<void> {
     let parsedServices: ComposeService[];
     try {
-      parsedServices = this.noProjectCompose
-        ? []
-        : this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+      parsedServices = this.noProjectCompose ? [] : await this.readProjectCompose();
     } catch {
       return;
     }
-    await this.secrets.sync(parsedServices, this.pluginServices);
-
-    // Docker-secret declarations and plugin credential values live in the override itself.
-    const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
-    if (dockerSecretsBuild || this.pluginServices.length > 0) {
-      const overrideContent = generateComposeOverride(
-        [...parsedServices, ...this.pluginServices.map(toComposeService)],
-        this.buildOverrideOptions(await this.preparePersist(parsedServices), await this.workspaceDevice()),
-      );
-      writeComposeOverride(this.overrideDir, overrideContent);
-      // Record only the project parse: this path uses all plugins, not the admitted set.
-      this._overrideProjectServices = JSON.stringify(parsedServices);
-    }
+    // Each start writes its own override from the resolver's values.
+    await this.syncSecrets(parsedServices, this.pluginServices);
 
     if (!this._started) return;
     // Manual services retain their old values until explicitly restarted.
@@ -1212,35 +1245,18 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       .map(s => s.name);
     if (autoNames.length === 0) return;
     try {
-      await this.withUpInFlight(autoNames, async () => {
-        await this.prepareContainedStartFn?.(autoNames);
-        this.armLogFollowerSince(autoNames);
-        await this.compose.up(autoNames, this.composeLogSink(autoNames));
+      await this.withUpInFlight(autoNames, async (start, names) => {
+        await this.prepareContainedStartFn?.(names);
+        this.armLogFollowerSince(names);
+        await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      });
+      }, { removeOrphans: true });
       await this.poller.pollOnce();
       for (const name of autoNames) this.ensureLogFollower(name);
       this.disarmLogFollowerSince(autoNames);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
     }
-  }
-
-  // Before every up: a volume subpath must exist when mounted, and the agent can delete one.
-  private preparePersistDirs(projectServices: ComposeService[]): string | undefined {
-    const subpaths = projectServices.flatMap((svc) => svc.persistSubpaths ?? []);
-    const declared = !this.noProjectCompose && parseUserNamedVolumes(
-      path.join(this.workspaceDir, this.composeConfig.file),
-    ).some((v) => v.name === PERSIST_VOLUME);
-    if (subpaths.length === 0 && !declared) return undefined;
-    const scratchDir = sessionScratchDirForWorkspace(this.workspaceDir);
-    preparePersistDir(scratchDir, subpaths);
-    return scratchDir;
-  }
-
-  private async preparePersist(projectServices: ComposeService[]): Promise<PersistVolume | undefined> {
-    const scratchDir = this.preparePersistDirs(projectServices);
-    return scratchDir === undefined ? undefined : { device: await this.persistDevicePath(scratchDir) };
   }
 
   // A failure matters only to a stack that mounts a workspace subdirectory, so the generator decides.
@@ -1259,10 +1275,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   // Share every override option across writers; resolver reads are not an atomic snapshot.
   private buildOverrideOptions(
-    persist: PersistVolume | undefined,
     workspaceDevice: string | undefined,
+    builtServices: readonly string[],
   ): ComposeOverrideOptions {
-    const composePath = path.join(this.workspaceDir, this.composeConfig.file);
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
     const serviceEnvFiles = this.secrets.getServiceEnvFiles();
     const pluginServiceEnv = this.secrets.getPluginServiceEnv();
@@ -1273,11 +1288,10 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       workspaceSubpath: this.workspaceSubpath,
       ...(workspaceDevice ? { workspaceDevice } : {}),
       stackName: this.stackName,
-      userNamedVolumes: parseUserNamedVolumes(composePath),
-      ...(persist ? { persist } : {}),
       ...(this.containServicesFn ? { containEgress: true } : {}),
       ...(this.containServiceDns ? { containDns: true } : {}),
       ...(this.containServiceProxy ? { containProxy: true } : {}),
+      ...(builtServices.length > 0 ? { builtServices } : {}),
       ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
       ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
       ...(pluginServiceEnv ? { pluginServiceEnv } : {}),
@@ -1285,102 +1299,334 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     };
   }
 
-  // Validate before every up: workspace writers can change the file after the initial start.
-  private parseProjectCompose(composePath: string): ComposeService[] {
+  private parseOptions(): ComposeParseOptions {
+    return {
+      dockerSocket: this.composeConfig.dockerSocket,
+      dockerSocketGrant: this.dockerSocketGrant(),
+      containEgress: Boolean(this.containServicesFn),
+      trustedOpsProxy: this.opsSession,
+    };
+  }
+
+  // A fresh confined read for each operation: the agent can change the file at any time.
+  private async readProjectCompose(): Promise<ComposeService[]> {
+    let raw: Buffer;
     try {
-      const parsed = parseComposeFile(composePath, {
-        dockerSocket: this.composeConfig.dockerSocket,
-        dockerSocketGrant: this.dockerSocketGrant(),
-        containEgress: Boolean(this.containServicesFn),
-        trustedOpsProxy: this.opsSession,
-      });
-      this._projectComposeFailure = null;
-      return parsed;
+      raw = await this.confined.readProjectFile(this.composeConfig.file);
     } catch (err) {
-      // List readers need the reason too; throwing only informs the initiating caller.
-      this._projectComposeFailure = classifyComposeFailure(err);
+      throw this.recordComposeFailure(projectFileError(err));
+    }
+    return this.parseProjectCompose(raw, this.parseOptions());
+  }
+
+  private parseProjectCompose(raw: Buffer, opts: ComposeParseOptions): ComposeService[] {
+    const parsed = this.checked(() => parseComposeContent(raw, opts));
+    this._projectComposeFailure = null;
+    return parsed;
+  }
+
+  // List readers need the reason too; throwing only informs the initiating caller.
+  private recordComposeFailure(err: unknown): unknown {
+    this._projectComposeFailure = classifyComposeFailure(err);
+    return err;
+  }
+
+  private checked<T>(check: () => T): T {
+    try {
+      return check();
+    } catch (err) {
+      throw this.recordComposeFailure(err);
+    }
+  }
+
+  // Sync even with no secrets declared, to clear obsolete env files.
+  private async syncSecrets(
+    projectServices: ComposeService[],
+    plugins: readonly PluginComposeService[],
+  ): Promise<void> {
+    await this.secrets.sync(projectServices, plugins);
+    this._syncedProjectServices = JSON.stringify(projectServices);
+  }
+
+  /**
+   * The before-`up` sequence (docs/318-compose-remaining-escapes, Mechanism 2): a confined `config`
+   * of the named project services, the raw gate on the bytes it read, validation and rewrite of the
+   * resolved model, and this start's snapshot and override. A start of plugin services only, and a
+   * stack with no project file, start from the override alone.
+   */
+  private async prepareStart(names: string[]): Promise<PreparedStart> {
+    const admitted = this._overrideAdmittedPlugins;
+    const pluginNames = new Set(admitted.map((svc) => svc.name));
+    const projectNames = names.filter((name) => !pluginNames.has(name));
+    const files = this.startRecord.allocate();
+    this.startsInFlight.add(files.id);
+    try {
+      this.removeLegacyOverride();
+      if (this.noProjectCompose || projectNames.length === 0) {
+        await this.writeStartOverride(files.overrideFile, admitted.map(toComposeService), []);
+        return {
+          id: files.id,
+          model: { overrideFile: files.overrideFile },
+          snapshotServices: [],
+          ...(this.noProjectCompose ? { projectServiceNames: [] } : {}),
+          ...this.serviceEnvMount(),
+        };
+      }
+
+      const opts = this.parseOptions();
+      const stubs = pluginStubModel(admitted);
+      let resolved: { stdout: string; projectFile: Buffer };
+      try {
+        resolved = await this.confined.config({
+          projectFile: this.composeConfig.file,
+          services: projectNames,
+          ...(admitted.length > 0 ? { stdin: serializeComposeModel(stubs) } : {}),
+        });
+      } catch (err) {
+        // The raw gate's refusal is clearer than Compose's failure on the same bytes.
+        if (err instanceof ComposeHelperError && err.projectFile) this.parseProjectCompose(err.projectFile, opts);
+        throw this.recordComposeFailure(projectFileError(err));
+      }
+      const projectServices = this.parseProjectCompose(resolved.projectFile, opts);
+      const clash = projectServices.find((svc) => pluginNames.has(svc.name));
+      if (clash) {
+        throw this.recordComposeFailure(new ComposeValidationError(
+          `Service \`${clash.name}\` has the name of an imported plugin service. Rename the project's service.`,
+        ));
+      }
+      const model = this.checked(() => parseResolvedModel(resolved.stdout));
+      // `up` gets the real plugin services from the override.
+      const services = Object.fromEntries(Object.entries(model.services as Record<string, Record<string, unknown>>)
+        .filter(([name]) => !pluginNames.has(name)));
+      model.services = services;
+      const check = this.checked(() => validateResolvedModel(model, {
+        ...opts,
+        project: composeProjectName(this.sessionId),
+        workspaceDir: this.workspaceDir,
+      }));
+
+      const persistUse = this.checked(() => resolvedPersistUse(model));
+      let persist: PersistVolume | undefined;
+      if (persistUse.used) {
+        // A volume subpath must exist when mounted, and the agent can delete one.
+        const scratchDir = sessionScratchDirForWorkspace(this.workspaceDir);
+        preparePersistDir(scratchDir, persistUse.subpaths);
+        persist = { device: await this.persistDevicePath(scratchDir) };
+      }
+      const workspaceDevice = await this.workspaceDevice();
+      const rewrite = rewriteResolvedModel(model, {
+        sessionId: this.sessionId,
+        workspaceDir: this.workspaceDir,
+        ...(this.workspaceVolume ? { workspaceVolume: this.workspaceVolume } : {}),
+        ...(this.workspaceSubpath ? { workspaceSubpath: this.workspaceSubpath } : {}),
+        ...(workspaceDevice ? { workspaceDevice } : {}),
+        ...(persist ? { persist } : {}),
+        ...(this.stackName ? { stackName: this.stackName } : {}),
+      });
+      const buildModel = serializeComposeModel(composeBuildModel(rewrite.model, rewrite.projectFiles, stubs));
+      await this.copyProjectFiles(rewrite);
+      writeRootOnlyFile(files.snapshotFile, serializeComposeModel(rewrite.model));
+
+      if (JSON.stringify(projectServices) !== this._syncedProjectServices) {
+        console.log(`[compose:${this.sessionId}] compose file changed since the last start — refreshing service secrets`);
+        await this.syncSecrets(projectServices, admitted);
+      }
+      const snapshotServices = Object.keys(services);
+      const overrideServices = snapshotServices.map((name) => {
+        const raw = projectServices.find((svc) => svc.name === name) ?? { name };
+        const { volumes: _volumes, persistSubpaths: _persistSubpaths, ...rest } = raw;
+        const mounts = rewrite.workspaceMounts.get(name);
+        return {
+          ...rest,
+          user: normalizedUser(services[name]?.user),
+          trustedOpsProxy: check.trustedOpsProxies.has(name),
+          ...(mounts ? { workspaceMounts: mounts } : {}),
+        };
+      });
+      await this.writeStartOverride(
+        files.overrideFile,
+        [...overrideServices, ...admitted.map(toComposeService)],
+        rewrite.builtServices,
+      );
+      return {
+        id: files.id,
+        model: { snapshotFile: files.snapshotFile, overrideFile: files.overrideFile },
+        ...(rewrite.builtServices.length > 0
+          ? { build: { model: buildModel, services: rewrite.builtServices } }
+          : {}),
+        snapshotServices,
+        projectServiceNames: projectServices.map((svc) => svc.name),
+        ...this.serviceEnvMount(),
+      };
+    } catch (err) {
+      this.startsInFlight.delete(files.id);
+      this.startRecord.discard(files.id);
       throw err;
     }
   }
 
-  // Sync before generation, even with no secrets declared, to clear obsolete env files.
-  private async writeOverrideFor(
-    projectServices: ComposeService[],
-    admittedPlugins: PluginComposeService[],
+  private async writeStartOverride(
+    file: string,
+    services: ComposeService[],
+    builtServices: readonly string[],
   ): Promise<void> {
-    await this.secrets.sync(projectServices, admittedPlugins);
-    const overrideServices = [...projectServices, ...admittedPlugins.map(toComposeService)];
-    const persist = await this.preparePersist(projectServices);
-    writeComposeOverride(
-      this.overrideDir,
-      generateComposeOverride(overrideServices, this.buildOverrideOptions(persist, await this.workspaceDevice())),
-    );
-    this._overrideProjectServices = JSON.stringify(projectServices);
-    this._overrideAdmittedPlugins = admittedPlugins;
+    const options = this.buildOverrideOptions(await this.workspaceDevice(), builtServices);
+    writeRootOnlyFile(file, generateComposeOverride(services, options));
   }
 
-  private assertProjectComposeStillValid(): ComposeService[] | null {
-    if (this.noProjectCompose) return null;
-    return this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+  private serviceEnvMount(): { serviceEnvDir?: string } {
+    const files = this.secrets.getServiceEnvFiles();
+    return files && Object.keys(files).length > 0
+      ? { serviceEnvDir: path.join(this.serviceEnvDir, this.sessionId) }
+      : {};
   }
 
-  // Refresh executed config before up; only reconcile rebuilds the service map and lifecycle state.
-  private overrideIsStaleFor(parsed: ComposeService[] | null): boolean {
-    if (parsed === null) return false;
-    if (this._overrideProjectServices === null) return false;
-    return JSON.stringify(parsed) !== this._overrideProjectServices;
+  private projectFileCopiesDir(): string {
+    return path.join(this.composeStateDir, "secrets");
   }
 
-  private async withUpInFlight<T>(names: string[], fn: () => Promise<T>): Promise<T> {
-    // Keep validation synchronous; a rejected parse must not acquire a polling exemption.
-    const parsed = this.assertProjectComposeStillValid();
-    const staleParse = this.overrideIsStaleFor(parsed) ? parsed : null;
-    for (const name of names) {
-      this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
-      // Do not publish the outgoing container's address while its replacement starts.
-      this.clearContainerIp(name);
-      this.upLastOutputAt.set(name, Date.now());
+  // The daemon would bind a project secret or config from the workspace on the Docker host, where
+  // it follows symlinks; it binds ShipIt's copy instead, read through the confined helper.
+  private async copyProjectFiles(rewrite: SnapshotRewrite): Promise<void> {
+    if (rewrite.projectFiles.length === 0) return;
+    const dir = this.projectFileCopiesDir();
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
+    for (const ref of rewrite.projectFiles) {
+      const kind = ref.kind === "secrets" ? "Secret" : "Config";
+      if (!PROJECT_FILE_KEY.test(ref.name)) {
+        throw this.recordComposeFailure(new ComposeValidationError(
+          `${kind} \`${ref.name}\`: ShipIt copies a \`file:\` only for a name of letters, digits, \`.\`, \`_\`, and \`-\`. Rename it.`,
+        ));
+      }
+      const bytes = await this.confined.readWorkspaceFile(ref.file);
+      const copy = path.join(dir, `${ref.kind}-${ref.name}`);
+      const tmp = `${copy}.${randomBytes(4).toString("hex")}`;
+      // The directory is root-only; the file keeps a mode a service's own user can read.
+      fs.writeFileSync(tmp, bytes, { mode: 0o644 });
+      fs.renameSync(tmp, copy);
+      const block = rewrite.model[ref.kind] as Record<string, Record<string, unknown>>;
+      block[ref.name].file = await this.composeFileDaemonPath(copy);
     }
-    let settled: Promise<void> | undefined;
+  }
+
+  // The override lived in the state directory before each start wrote its own; it holds credentials.
+  private removeLegacyOverride(): void {
+    if (this.legacyOverrideRemoved) return;
+    this.legacyOverrideRemoved = true;
+    fs.rmSync(path.join(this.stateDir, COMPOSE_OVERRIDE_FILE), { force: true });
+  }
+
+  /**
+   * Resolves the start before counting it as in flight, so a refused start gets no polling
+   * exemption; registers it with `upSettled` first, so a Stop during the resolve follows it.
+   */
+  private async withUpInFlight(
+    names: string[],
+    fn: (start: PreparedStart, names: string[]) => Promise<void>,
+    opts: { removeOrphans?: boolean } = {},
+  ): Promise<void> {
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    for (const name of names) {
+      const pending = this.upSettled.get(name) ?? new Set<Promise<void>>();
+      pending.add(settled);
+      this.upSettled.set(name, pending);
+    }
+    let counted: string[] = [];
+    let start: PreparedStart | null = null;
     try {
-      if (staleParse) {
-        console.log(
-          `[compose:${this.sessionId}] compose file changed since the override was generated — regenerating`,
-        );
-        await this.writeOverrideFor(staleParse, this._overrideAdmittedPlugins);
-      } else if (parsed) {
-        this.preparePersistDirs(parsed);
+      start = await this.prepareStart(names);
+      const live = names.filter((name) => !this.stoppedByUser.has(name));
+      if (live.length === 0) {
+        console.log(`[compose:${this.sessionId}] ${names.join(", ")} stopped while the start resolved — not starting`);
+        return;
       }
-      const call = fn();
-      // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form
-      settled = call.then(() => {}, () => {});
-      for (const name of names) {
-        const pending = this.upSettled.get(name) ?? new Set<Promise<void>>();
-        pending.add(settled);
-        this.upSettled.set(name, pending);
+      for (const name of live) {
+        this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
+        // Do not publish the outgoing container's address while its replacement starts.
+        this.clearContainerIp(name);
+        this.upLastOutputAt.set(name, Date.now());
       }
-      return await call;
+      counted = live;
+      if (opts.removeOrphans && start.projectServiceNames) {
+        const keep = new Set([...start.projectServiceNames, ...this._overrideAdmittedPlugins.map((svc) => svc.name)]);
+        try {
+          await this.compose.removeOrphanContainers(keep);
+        } catch (err) {
+          console.warn(`[compose:${this.sessionId}] orphan removal failed:`, (err as Error).message);
+        }
+      }
+      await fn(start, live);
     } finally {
-      for (const name of names) {
+      for (const name of counted) {
         const next = (this.upInFlight.get(name) ?? 1) - 1;
         if (next > 0) this.upInFlight.set(name, next);
         else {
           this.upInFlight.delete(name);
           this.upLastOutputAt.delete(name);
         }
+      }
+      for (const name of names) {
         const pending = this.upSettled.get(name);
-        if (pending && settled) {
-          pending.delete(settled);
-          if (pending.size === 0) this.upSettled.delete(name);
-        }
+        if (!pending) continue;
+        pending.delete(settled);
+        if (pending.size === 0) this.upSettled.delete(name);
+      }
+      settle();
+      if (start) {
+        this.startsInFlight.delete(start.id);
+        this.startRecord.prune(this.startsInFlight);
       }
       // Give the network join and first poll a full window after up settles.
-      for (const name of names) {
+      for (const name of counted) {
         if (!this.upInFlight.has(name) && this.services.get(name)?.status === "starting") {
           this.armStartingWatchdog(name);
         }
       }
     }
+  }
+
+  private async buildAndUp(start: PreparedStart, names: string[]): Promise<void> {
+    const sink = this.composeLogSink(names);
+    await this.compose.build(start.build, sink);
+    // Before `up`: a failed `up` can still have created containers, which `stop` must find.
+    this.startRecord.record(
+      [...new Set([...start.snapshotServices, ...names])],
+      { id: start.id, snapshot: start.model.snapshotFile !== undefined },
+    );
+    await this.compose.up(names, start, sink);
+  }
+
+  /** From the model the service was started from, so Compose runs its `pre_stop` hook. */
+  private async stopContainer(name: string): Promise<void> {
+    const recorded = this.startRecord.lookup(name);
+    if (recorded.recorded) {
+      await this.compose.stopFrom(name, recorded.model);
+      return;
+    }
+    if (!(await this.compose.hasContainer(name))) {
+      console.log(`[compose:${this.sessionId}] ${name} has no container — recorded the stop only`);
+      return;
+    }
+    await this.compose.stopFrom(name, null);
+  }
+
+  private async stopRunningServices(): Promise<void> {
+    let running: string[];
+    try {
+      running = await this.compose.runningServices();
+    } catch (err) {
+      console.warn(`[compose:${this.sessionId}] could not list running services before down:`, (err as Error).message);
+      return;
+    }
+    await Promise.all(running.map(async (name) => {
+      try {
+        await this.stopContainer(name);
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] stopping ${name} before down failed:`, (err as Error).message);
+      }
+    }));
   }
 
   private bufferServiceLog(name: string, text: string): void {
@@ -1428,10 +1674,10 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (!svc) return;
     if (this.stoppedByUser.has(name)) return;
     try {
-      await this.withUpInFlight([name], async () => {
-        await this.prepareContainedStartFn?.([name]);
-        this.armLogFollowerSince([name]);
-        await this.compose.upService(name, this.composeLogSink([name]));
+      await this.withUpInFlight([name], async (start, names) => {
+        await this.prepareContainedStartFn?.(names);
+        this.armLogFollowerSince(names);
+        await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
       });
       await this.joinSessionNetwork();
@@ -1551,13 +1797,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const names = requested.filter(n => this.services.has(n) && !this.stoppedByUser.has(n));
     if (names.length === 0) return;
     try {
-      await this.withUpInFlight(names, async () => {
-        await this.prepareContainedStartFn?.(names);
-        this.armLogFollowerSince(names);
-        await this.compose.up(names, this.composeLogSink(names));
-        markStackUp(this.sessionId, names.flatMap(n => this.services.get(n) ?? []));
+      await this.withUpInFlight(names, async (start, live) => {
+        await this.prepareContainedStartFn?.(live);
+        this.armLogFollowerSince(live);
+        await this.buildAndUp(start, live);
+        markStackUp(this.sessionId, live.flatMap(n => this.services.get(n) ?? []));
         await this.containServicesFn?.([...this.services.keys()]);
-      });
+      }, { removeOrphans: true });
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
       this.disarmLogFollowerSince(names);
@@ -1624,7 +1870,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       if (this._disposed) return;
       const timeoutMs = this.gatedTeardownTimeoutMs(name);
       try {
-        const outcome = await settleOrTimeout(this.compose.stop(name), timeoutMs);
+        const outcome = await settleOrTimeout(this.stopContainer(name), timeoutMs);
         if (outcome === "timeout") {
           console.warn(
             `[compose:${this.sessionId}] gated teardown: 'compose stop ${name}' still running after ` +
@@ -1747,6 +1993,49 @@ function hasLiveAddress(svc: ManagedService): svc is ManagedService & { containe
     !!svc.port &&
     (svc.status === "running" || svc.status === "starting")
   );
+}
+
+/** One start's files, from the before-`up` sequence (docs/318-compose-remaining-escapes, Mechanism 2). */
+interface PreparedStart {
+  id: string;
+  model: ComposeStartModel;
+  build?: ComposeBuild;
+  /** The services the snapshot holds: the named project services and their dependencies. */
+  snapshotServices: string[];
+  /** Every service of the project file, for orphan removal; absent when this start did not read it. */
+  projectServiceNames?: string[];
+  serviceEnvDir?: string;
+}
+
+function isMapping(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// Compose's own rule for a secret or config key; the copy is named after it.
+const PROJECT_FILE_KEY = /^[A-Za-z0-9._-]+$/;
+
+// Compose could not read or resolve the project file: the start is refused with its message (req 6).
+function projectFileError(err: unknown): unknown {
+  if (err instanceof ComposeHelperError && err.kind === "failed") {
+    return new ComposeValidationError(err.message, "malformed");
+  }
+  return err;
+}
+
+function parseResolvedModel(stdout: string): Record<string, unknown> {
+  let model: unknown;
+  try {
+    model = parseYaml(stdout);
+  } catch (err) {
+    throw new ComposeValidationError(
+      `ShipIt could not read the model Compose resolved: ${(err as Error).message}`,
+      "malformed",
+    );
+  }
+  if (!isMapping(model) || !isMapping(model.services)) {
+    throw new ComposeValidationError("Compose's resolved model has no `services` section.", "malformed");
+  }
+  return model;
 }
 
 function describeExit(exitCode: number, oomKilled?: boolean): string {

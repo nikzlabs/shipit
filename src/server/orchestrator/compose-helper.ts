@@ -325,6 +325,11 @@ interface HelperSpec extends RunOptions {
   maxStdoutBytes?: number;
 }
 
+export type ConfinedComposeApi = Pick<
+  ConfinedCompose,
+  "config" | "readProjectFile" | "readWorkspaceFile" | "build" | "up"
+>;
+
 export class ConfinedCompose {
   private readonly sessionId: string;
   private readonly project: string;

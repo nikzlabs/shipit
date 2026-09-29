@@ -7,12 +7,13 @@ import { parse as parseYaml } from "yaml";
 import {
   PLUGIN_PORT_PROBE_ATTEMPTS,
   PLUGIN_PORT_PROBE_DELAY_MS,
-  ServiceManager,
+  type ServiceManager,
   type ComposeQuery,
   type ComposeRunner,
 } from "./service-manager.js";
 import type { PluginComposeService } from "./plugin-compose.js";
-import { COMPOSE_OVERRIDE_FILE, SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
+import { recordedOverride, testServiceManager } from "./compose-test-helpers.js";
+import { SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
 
 let sessionDir: string;
 
@@ -58,7 +59,7 @@ function createManager(
     accountEnv?: Record<string, string>;
   } = {},
 ): ServiceManager {
-  return new ServiceManager({
+  return testServiceManager({
     sessionId: "11111111-2222-3333-4444-555555555555",
     workspaceDir,
     serviceEnvDir: path.join(sessionDir, "service-env"),
@@ -72,9 +73,8 @@ function createManager(
   });
 }
 
-function readOverride(workspaceDir: string): { services: Record<string, Record<string, unknown>> } {
-  const overridePath = path.join(workspaceDir, "..", SESSION_STATE_SUBDIR, COMPOSE_OVERRIDE_FILE);
-  return parseYaml(fs.readFileSync(overridePath, "utf-8")) as {
+function readOverride(workspaceDir: string, service: string): { services: Record<string, Record<string, unknown>> } {
+  return parseYaml(recordedOverride(workspaceDir, service)) as {
     services: Record<string, Record<string, unknown>>;
   };
 }
@@ -104,7 +104,7 @@ describe("plugin services in the compose stack", () => {
     mgr.setPluginServices([pluginService()]);
     await mgr.start();
 
-    const probe = readOverride(workspaceDir).services.probe;
+    const probe = readOverride(workspaceDir, "probe").services.probe;
     expect(probe.image).toBe("node:22-alpine");
     expect(probe.labels).toMatchObject({ "shipit-service-name": "probe" });
     await mgr.stop();
@@ -159,8 +159,8 @@ describe("plugin services in the compose stack", () => {
       await mgr.start();
 
       expect(upCalls.flat()).not.toContain("probe");
-      expect(readOverride(workspaceDir).services.probe).toBeUndefined();
-      expect(readOverride(workspaceDir).services.web).toBeDefined();
+      expect(readOverride(workspaceDir, "web").services.probe).toBeUndefined();
+      expect(readOverride(workspaceDir, "web").services.web).toBeDefined();
       const refused = mgr.getService("probe");
       expect(refused?.status).toBe("error");
       expect(refused?.error).toContain("web");
@@ -247,7 +247,7 @@ describe("plugin services in the compose stack", () => {
       expect(again?.status).not.toBe("error");
       expect(again?.error).toBeUndefined();
       expect(again?.port).toBe(4310);
-      expect(readOverride(workspaceDir).services.probe).toBeDefined();
+      expect(readOverride(workspaceDir, "probe").services.probe).toBeDefined();
       await mgr.stop();
     } finally {
       warn.mockRestore();
@@ -529,7 +529,7 @@ describe("plugin services in the compose stack", () => {
 
 describe("plugin credential delivery, end to end (req 23)", () => {
   function envOf(workspaceDir: string, service = "probe"): Record<string, string> {
-    return (readOverride(workspaceDir).services[service].environment ?? {}) as Record<string, string>;
+    return (readOverride(workspaceDir, service).services[service].environment ?? {}) as Record<string, string>;
   }
 
   it("puts the project's stored value into the plugin service the daemon creates", async () => {
@@ -556,12 +556,12 @@ describe("plugin credential delivery, end to end (req 23)", () => {
     mgr.setPluginServices([pluginService({ credentials: ["OPENAI_API_KEY"] })]);
     await mgr.start();
 
-    expect(JSON.stringify(readOverride(workspaceDir))).not.toContain("platform-token");
+    expect(JSON.stringify(readOverride(workspaceDir, "probe"))).not.toContain("platform-token");
     await mgr.stop();
   });
 
   it("leaves the project's own services untouched", async () => {
-    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    x-shipit-preview: auto\n");
     const mgr = createManager(workspaceDir, { userSecrets: () => ({ FAL_KEY: "sk-live" }) });
     mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY"] })]);
     await mgr.start();
@@ -593,19 +593,19 @@ describe("plugin credential delivery, end to end (req 23)", () => {
   });
 
   it("a secret save does not delete the plugin services from the stack", async () => {
-    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    x-shipit-preview: auto\n");
     const mgr = createManager(workspaceDir, { userSecrets: () => ({}) });
     mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY"] })]);
     await mgr.start();
 
     await mgr.refreshSecrets();
-    expect(Object.keys(readOverride(workspaceDir).services).sort()).toEqual(["probe", "web"]);
+    expect(Object.keys(readOverride(workspaceDir, "probe").services).sort()).toEqual(["probe", "web"]);
     await mgr.stop();
   });
 
   it("a secret save keeps every project service's env_file — the plugin path must not strip it", async () => {
     const workspaceDir = setup(
-      "services:\n  web:\n    image: node:20\n    x-shipit-secrets:\n      - GITHUB_TOKEN\n",
+      "services:\n  web:\n    image: node:20\n    x-shipit-preview: auto\n    x-shipit-secrets:\n      - GITHUB_TOKEN\n",
     );
     let stored: Record<string, string> = { GITHUB_TOKEN: "ghp_old" };
     const mgr = createManager(workspaceDir, { userSecrets: () => stored });
@@ -613,14 +613,14 @@ describe("plugin credential delivery, end to end (req 23)", () => {
     await mgr.start();
 
     const envFile = path.join(sessionDir, "service-env", "11111111-2222-3333-4444-555555555555", ".env.web");
-    expect(readOverride(workspaceDir).services.web.env_file).toEqual([envFile]);
+    expect(readOverride(workspaceDir, "web").services.web.env_file).toEqual([envFile]);
     expect(envOf(workspaceDir).FAL_KEY).toBeUndefined();
 
     stored = { GITHUB_TOKEN: "ghp_new", FAL_KEY: "sk-live" };
     await mgr.refreshSecrets();
 
     expect(envOf(workspaceDir).FAL_KEY).toBe("sk-live");
-    expect(readOverride(workspaceDir).services.web.env_file).toEqual([envFile]);
+    expect(readOverride(workspaceDir, "web").services.web.env_file).toEqual([envFile]);
     expect(fs.readFileSync(envFile, "utf-8")).toContain("GITHUB_TOKEN=ghp_new");
     await mgr.stop();
   });

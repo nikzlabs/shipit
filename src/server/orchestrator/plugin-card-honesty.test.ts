@@ -10,6 +10,7 @@ import { egressHostReach } from "./egress-host-reach.js";
 import { resolvePluginHosts } from "../shared/plugin-hosts.js";
 import { buildPluginReposSnapshot, parsePluginRepos } from "../shared/plugin-repos.js";
 import { createStagedGenerationGate } from "./services/plugin-preflight.js";
+import { localProjectComposeAccess } from "./compose-test-helpers.js";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
 import type { ApiDeps } from "./api-routes.js";
@@ -187,7 +188,7 @@ describe("the card is not optimistic about a COMPOSE FILE (planning#377)", () =>
     );
     fs.writeFileSync(
       path.join(workspaceDir, "docker-compose.yml"),
-      'services:\n  web:\n    image: node:22-alpine\n    user: "0"\n',
+      "services:\n  web:\n    image: node:22-alpine\n    label_file: ./labels.env\n",
     );
   });
   afterEach(() => {
@@ -195,23 +196,27 @@ describe("the card is not optimistic about a COMPOSE FILE (planning#377)", () =>
   });
 
   const gate = (containEgress: boolean) =>
-    createStagedGenerationGate({ workspaceDir, containEgress: () => containEgress })({
+    createStagedGenerationGate({
+      workspaceDir,
+      containEgress: () => containEgress,
+      projectCompose: localProjectComposeAccess(workspaceDir),
+    })({
       repoName: "tools",
       source: "acme/tools",
       commit: "a".repeat(40),
       stagingDir: path.join(sessionDir, SESSION_STATE_SUBDIR, "staging"),
     });
 
-  it("says it REFUSED the file it read, never that it could not read it", () => {
-    const verdict = gate(true);
+  it("says it REFUSED the file it read, never that it could not read it", async () => {
+    const verdict = await gate(true);
     expect(verdict.ok).toBe(false);
     const reason = verdict.ok ? "" : verdict.reason;
     expect(reason).toContain("refuses this project's own compose file");
     expect(reason).not.toContain("could not read");
-    expect(reason).toContain("`user:`");
+    expect(reason).toContain("`label_file`");
   });
 
-  it("does not refuse the same file where the rule does not apply", () => {
-    expect(gate(false)).toEqual({ ok: true });
+  it("does not refuse the same file where the rule does not apply", async () => {
+    expect(await gate(false)).toEqual({ ok: true });
   });
 });
