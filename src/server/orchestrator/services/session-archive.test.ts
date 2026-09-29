@@ -5,6 +5,8 @@ import { archiveSession } from "./session.js";
 import { SessionManager } from "../sessions.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { createTestDatabaseManager } from "../integration_tests/test-helpers.js";
+import { pluginStateDir } from "../plugin-state.js";
+import { sessionStateDir } from "../session-state-dir.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
 let tmpDir: string;
@@ -118,6 +120,28 @@ describe("archiveSession container teardown", () => {
     expect(fs.existsSync(workspaceDir)).toBe(false);
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
     expect(fs.existsSync(uploadFile)).toBe(true);
+  });
+
+  it("docs/262: keeps each plugin import's /plugin-state while reclaiming state/", async () => {
+    const sessionRoot = path.join(tmpDir, "sess-plugin");
+    const workspaceDir = path.join(sessionRoot, "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const sessionStateFile = path.join(sessionStateDir(sessionRoot), "marker");
+    fs.mkdirSync(path.dirname(sessionStateFile), { recursive: true });
+    fs.writeFileSync(sessionStateFile, "regenerable");
+    const pluginStateFile = path.join(pluginStateDir(sessionRoot, "reqs"), "db.json");
+    fs.mkdirSync(path.dirname(pluginStateFile), { recursive: true });
+    fs.writeFileSync(pluginStateFile, "plugin state");
+
+    const sessionId = "sess-plugin";
+    sessionManager.track(sessionId, "Plugin session", workspaceDir);
+    sessionManager.setRemoteUrl(sessionId, remoteUrl);
+
+    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, sessionId);
+
+    expect(fs.existsSync(workspaceDir)).toBe(false);
+    expect(fs.existsSync(sessionStateFile)).toBe(false);
+    expect(fs.readFileSync(pluginStateFile, "utf-8")).toBe("plugin state");
   });
 
   it("removes the session's durable logs (docs/192), even for a local-only session", async () => {

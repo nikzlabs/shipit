@@ -6,6 +6,7 @@ import { execSync } from "node:child_process";
 import { unarchiveSession } from "./session.js";
 import { computeResetBlocker } from "./pre-turn-reset.js";
 import type { GitManager } from "../../shared/git.js";
+import { pluginStateDir } from "../plugin-state.js";
 import { RepoGit } from "../repo-git.js";
 import { SessionManager } from "../sessions.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -86,6 +87,25 @@ describe("unarchiveSession restore freshness (docs/161)", () => {
     const originMain = execSync("git rev-parse origin/main", { cwd: workspaceDir }).toString().trim();
     expect(branchTip).toBe(advancedHead);
     expect(originMain).toBe(advancedHead);
+  });
+});
+
+describe("unarchiveSession keeps plugin state (docs/262)", () => {
+  it("re-clones the workspace without touching /plugin-state", async () => {
+    const id = "sess-plugin";
+    const sessionRoot = path.join(tmpDir, "sess-plugin");
+    const workspaceDir = path.join(sessionRoot, "workspace");
+    const pluginStateFile = path.join(pluginStateDir(sessionRoot, "reqs"), "db.json");
+    fs.mkdirSync(path.dirname(pluginStateFile), { recursive: true });
+    fs.writeFileSync(pluginStateFile, "plugin state");
+    sessionManager.track(id, "Plugin session", workspaceDir);
+    sessionManager.setRemoteUrl(id, remoteUrl);
+    dbManager.db.prepare("UPDATE sessions SET user_archived = 1, disk_tier = 'evicted' WHERE id = ?").run(id);
+
+    await unarchiveSession(sessionManager, createRepoGit, () => cacheDir, githubAuthManager, repoStore, id);
+
+    expect(fs.existsSync(path.join(workspaceDir, "README.md"))).toBe(true);
+    expect(fs.readFileSync(pluginStateFile, "utf-8")).toBe("plugin state");
   });
 });
 
