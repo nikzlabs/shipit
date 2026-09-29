@@ -567,10 +567,11 @@ describe("harnesses", () => {
 
 describe("the harness\u00d7service join", () => {
   it("leads with the harness's own vendor, in the order the picker had", () => {
-    expect(catalogueModelIdsForHarness("claude").slice(0, 5)).toEqual([
+    expect(catalogueModelIdsForHarness("claude").slice(0, 6)).toEqual([
       "claude-opus-5",
       "claude-opus-5-5",
       "claude-sonnet-5",
+      "claude-sonnet-5-5",
       "haiku",
       "claude-fable-5-1",
     ]);
@@ -611,6 +612,28 @@ describe("the harness\u00d7service join", () => {
     }
     expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
     expect(MODEL_ID_ALIASES["claude-opus-5-5"]).toBe("claude-opus-5.5");
+  });
+
+  it("offers Sonnet 5.5 under both Anthropic billing modes without replacing the default", () => {
+    for (const billingMode of ["sub", "key"] as const) {
+      const selection = { serviceId: "anthropic", billingMode, modelId: "claude-sonnet-5-5" };
+      expect(getModel(selection)).toMatchObject({
+        label: "Sonnet 5.5", canonicalModelKey: "claude-sonnet-5.5", family: "claude",
+        contextWindow: { default: 1_000_000 },
+        price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+      });
+      expect(resolveSpawnShaping("claude", selection)?.style).toBe("anthropic-messages");
+      expect(visionSupportFor(selection)).toBe("yes");
+      expect(reasoningOptionsFor("claude", selection).map((option) => option.value))
+        .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      if (billingMode === "key") {
+        expect(reasoningOptionsFor("opencode", selection).map((option) => option.value))
+          .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      }
+      expect(resolveSpawnShaping("codex", selection)).toBeUndefined();
+    }
+    expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
+    expect(MODEL_ID_ALIASES["claude-sonnet-5-5"]).toBe("claude-sonnet-5.5");
   });
 
   it("offers GPT-6 Astra through both OpenAI billing modes without making it the default", () => {
@@ -1054,8 +1077,8 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   it("prices OpenCode's models as OpenCode, not as the vendors that make them", () => {
     const zen = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "key", modelId });
     const go = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "sub", modelId });
-    expect(zen("claude-sonnet-5")!.price.input).toBeLessThan(
-      getModel({ serviceId: "anthropic", billingMode: "key", modelId: "claude-sonnet-5" })!.price.input,
+    expect(zen("grok-4.6")!.price.cacheWrite).toBeLessThan(
+      getModel({ serviceId: "xai", billingMode: "key", modelId: "grok-4.6" })!.price.cacheWrite,
     );
     // On Go: Zen lists no V4.1 row, so the vendor comparison is stated there.
     expect(go("deepseek-flash")!.price.input).not.toBe(

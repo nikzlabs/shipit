@@ -14,7 +14,10 @@ const ANTHROPIC_PRICES = {
   // Anthropic Opus 5.5 pricing, 2026-09-22; cache reads cost 5% of input.
   opus55: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
   opus5: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  sonnet5: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  // Pricing page, 2026-09-29: the planned rise to $3/$15 was cancelled; $2/$10 is standard.
+  sonnet5: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  // Anthropic Sonnet 5.5 model page and pricing, 2026-09-29.
+  sonnet55: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   haiku45: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   fable5: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   // Pricing page, 2026-09-01: Fable 5.1 uses a 0.025× cache-read multiplier.
@@ -161,6 +164,7 @@ export const SERVICES = [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "claude-opus-5-5", label: "Opus 5.5", ...MODEL_IDENTITIES.opus55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
+          { id: "claude-sonnet-5-5", label: "Sonnet 5.5", ...MODEL_IDENTITIES.sonnet55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           // The row id is Claude Code's alias; the Messages API takes the vendor id.
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
@@ -176,6 +180,7 @@ export const SERVICES = [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "claude-opus-5-5", label: "Opus 5.5", ...MODEL_IDENTITIES.opus55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
+          { id: "claude-sonnet-5-5", label: "Sonnet 5.5", ...MODEL_IDENTITIES.sonnet55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           // The row id is Claude Code's alias; the Messages API takes the vendor id.
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
