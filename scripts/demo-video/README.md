@@ -11,7 +11,10 @@ its `plan.md`; this file is only how to run what exists). Phase 1 pieces:
 | `make-demo-repo.sh` | The phase-1 demo repo as a deterministic local bare repo (plan §8) |
 | `reset-demo-repo.sh` | Before a phase-2 take: close PRs, delete branches, force-reset `main` to the pin (plan §6) |
 | `host/reset-demo-instance.sh` | On the demo host: fresh workspace volume, credentials kept (plan §9) |
-| `host/demo-proxy-image.sh` | On the demo host: the proxy as the image the demo repo's `demo-proxy` service runs — `build record\|replay <cassette>`, `extract <cassette>` (plan §2, §9) |
+| `host/demo-proxy-image.sh` | On the demo host: the proxy as the image the demo repo's `demo-proxy` service runs — `build record\|replay <scenario>`, `extract <scenario> <dir>` (plan §2, §9) |
+| `sync-to-host.sh` | Copies this directory to the demo host as `~/shipit-demo/pipeline` (plan §9) |
+| `host/demo-take.sh` | On the demo host: one whole take — images, resets, driver, cut — into `~/shipit-demo/takes/<take>/` (plan §9) |
+| `host/demo-tools.Dockerfile` | The tools image a take runs in on the host: node, the pinned Playwright + Chromium, ffmpeg |
 | `scenarios/<name>/storyboard.json` | Beats, repo pin, viewport, pace (plan §3) |
 | `cut-plan.mjs` | Slice math: beat log + storyboard + anchor to ffmpeg trim/concat filter (plan §5) |
 | `cut.sh` | ffmpeg wrapper around `cut-plan.mjs`: blackdetect anchor, muted VP9 webm + h264 mp4 |
@@ -71,44 +74,64 @@ is the repo's `.claude/settings.json`'s business.
 
 ### Phase 2: the demo instance (plan §9)
 
-Against the dedicated instance the demo repo is on GitHub and the proxy is one
+Against the dedicated instance the demo repo is on GitHub, the proxy is one
 of the demo session's own Compose services (the repo's `docker-compose.yml`
-declares `demo-proxy` with `image: demo-proxy:current`; plan §2). So steps 1
-and 2 become: build the proxy image for the take's mode, reset the instance,
-reset the repo.
+declares `demo-proxy` with `image: demo-proxy:current`; plan §2), and the whole
+take runs **on the demo host**: a session is not allowed to reach the instance
+over the tailnet, only the host's SSH port (plan §9). Two commands from the
+checkout, then one to fetch the result:
 
 ```sh
-# On the demo host (ssh services), in ~/shipit-demo beside proxy.mjs and
-# cassettes/. The mode and the cassette are baked into the image, so a mode
-# switch is a rebuild.
-DOCKER="sudo docker" bash demo-proxy-image.sh build replay website-hero
-#   record:  … build record website-hero     (move an old cassettes/website-hero aside first)
-#   after a record take, before any rebuild:  … extract website-hero
+# 1. This checkout's scripts/demo-video, whole, as ~/shipit-demo/pipeline on the host.
+scripts/demo-video/sync-to-host.sh services
 
-# Between takes: stop.sh, drop shipit-prod_workspace (credentials kept),
-# shipit_build_and_up. Refuses unless the install's Compose project is
-# shipit-prod and the demo marker names this host. --dry-run prints the commands.
-bash ~/shipit-demo/reset-demo-instance.sh --dry-run
+# 2. The take. On the host: tools image (node, the pinned Playwright and its
+#    Chromium, ffmpeg — built once per demo-tools.Dockerfile), proxy image for
+#    the mode, instance reset, repo reset, driver, cut. --dry-run prints the
+#    steps. Refuses a take name that exists.
+ssh services 'bash ~/shipit-demo/pipeline/host/demo-take.sh replay website-hero <take> \
+  --instance http://100-81-125-94.sslip.io:4123'
+#    record instead of replay: the recorded cassette lands in the take as cassette/.
 
-# Once the instance answers: close every open PR, delete every non-default
-# branch, force-reset main to the storyboard's repo.commit. PRs close through
-# the instance (its own GitHub credential); branches and main need GITHUB_TOKEN
-# in the environment — the instance has no route for those. --dry-run does the
-# reads and prints each write.
-GITHUB_TOKEN=ghp_... scripts/demo-video/reset-demo-repo.sh \
-  --scenario scripts/demo-video/scenarios/website-hero \
-  --instance http://100-81-125-94.sslip.io:4123 --dry-run
+# 3. Everything the take made: take.log, recording.webm, beats.json, run.json,
+#    hero.mp4, hero.webm (and cassette/ after a record take).
+scp -r services:shipit-demo/takes/<take> /persist/demo-video/
 ```
 
-Then steps 3–4 as above. The storyboard's `proxy { service, port }` tells the
-driver to start that service on the repo's warm session during setup (it is a
+A take outlasts a foreground command: start step 2 with `nohup … &` on the host
+and read `takes/<take>/take.log`. After a record take, scrub the fetched
+`cassette/` (`node scripts/demo-video/proxy.mjs --scrub <dir>`), commit it as
+the scenario's `cassette/`, and sync again before the replay — the replay image
+is built from the synced tree, and the driver refuses a proxy whose cassette
+digest is not the synced one.
+
+What `demo-take.sh` runs, for when one step is needed alone (all on the host,
+from `~/shipit-demo/pipeline`):
+
+- `host/demo-proxy-image.sh build record|replay <scenario>` — the proxy image;
+  `… extract <scenario> <dir>` copies a recorded take out of the session's
+  proxy container (before any rebuild: it finds the container by the image).
+- `host/reset-demo-instance.sh [--dry-run]` — `stop.sh`, drop
+  `shipit-prod_workspace` (credentials kept), `shipit_build_and_up`. Refuses
+  unless the install's Compose project is `shipit-prod` and the demo marker
+  names this host.
+- `reset-demo-repo.sh --scenario <dir> --instance <url> [--dry-run]` — close
+  every open PR, delete every non-default branch, force-reset `main` to the
+  storyboard's `repo.commit`. Needs curl, node and `GITHUB_TOKEN`, so
+  `demo-take.sh` runs it in the tools container with the host's root-only env
+  file.
+
+The driver itself does not care where it runs: steps 3–4 of the phase-1 recipe
+work from any machine that reaches the instance.
+
+The storyboard's `proxy { service, port }` tells the driver to start that service on the repo's warm session during setup (it is a
 `manual` service, so the Preview pane never picks it), to ask it for its mode
 through the instance's preview address for the port
 (`{sessionId}--8787.<instance host>`) before the browser opens, and to read its
 counters there after the take. A replay proxy must declare the digest of the
 committed cassette and the storyboard's pace, so an image built from an older
-take of the same name is refused; a record take that saved nothing fails. The storyboard's
-`permissionMode: "auto"` is verified on the composer after the session is
+take of the same name is refused; a record take that saved nothing fails. The
+storyboard's `permissionMode: "auto"` is verified on the composer after the session is
 claimed, and a wait that finds a pending permission prompt in the session's
 history aborts the take (exit 4) naming the tool and path — a take never waits
 on a human.
