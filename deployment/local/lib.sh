@@ -40,7 +40,12 @@ shipit_sync_checkout() {
   echo "==> Syncing $SHIPIT_HOME to channel '$channel' (ref $ref)..."
   git -C "$SHIPIT_HOME" fetch origin --tags --prune
   git -C "$SHIPIT_HOME" fetch origin "${ref#origin/}"
-  git -C "$SHIPIT_HOME" reset --hard "$ref"
+  git -C "$SHIPIT_HOME" reset --hard "$ref" || return
+  # A caller that sourced an older lib.sh (a fresh install sources main's, then syncs
+  # to stable) must continue with the synced functions (planning#628). Bash finishes
+  # this call with the body it started, so redefining it here is safe.
+  # shellcheck source=/dev/null
+  . "$SHIPIT_HOME/deployment/local/lib.sh"
 }
 
 SHIPIT_ENV_FILE="${SHIPIT_ENV_FILE:-$SHIPIT_HOME/.shipit.env}"
