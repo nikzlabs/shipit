@@ -14,9 +14,17 @@ import type { GitRemoteCredentialResolver } from "../../shared/git-remote-creden
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
   const actual = await importOriginal<typeof import("../session-worker-uid.js")>();
-  return { ...actual, handWorkspaceBackToWorker: vi.fn() };
+  return {
+    ...actual,
+    handWorkspaceBackToWorker: vi.fn(),
+    chownTreeToSessionWorker: vi.fn(actual.chownTreeToSessionWorker),
+    chownWorkspaceGitToSessionWorker: vi.fn(actual.chownWorkspaceGitToSessionWorker),
+  };
 });
-vi.mock("../git-lfs.js", () => ({
+import { chownTreeToSessionWorker, chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
+vi.mock("../git-lfs.js", async (importOriginal) => ({
+  // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
+  ...await importOriginal<typeof import("../git-lfs.js")>(),
   restoreLfsAfterTreeRewrite: vi.fn(() =>
     Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false }),
   ),
@@ -411,6 +419,7 @@ describe("session-fork-merge: forkSession reports unresolved LFS content (planni
     parentDir: string,
     remoteUrl: string,
     resolveRemoteCredential?: GitRemoteCredentialResolver,
+    bareCacheDir = path.join(tmpDir, "no-such-cache"),
   ) {
     const rows = new Map<string, Row>([[
       "parent-id",
@@ -437,7 +446,7 @@ describe("session-fork-merge: forkSession reports unresolved LFS content (planni
     const result = await forkSession(
       manager,
       (dir) => ({ dir }) as never,
-      () => path.join(tmpDir, "no-such-cache"),
+      () => bareCacheDir,
       sessionsRoot,
       { authenticated: false, configureGitCredentials: () => {} },
       { init: () => {} },
@@ -506,6 +515,62 @@ describe("session-fork-merge: forkSession reports unresolved LFS content (planni
       expect(notices, `status ${result.status} must stay silent`).toEqual([]);
       expect(warnings).toEqual([]);
     }
+  });
+
+  it("links its LFS objects from the shared store, so its pull downloads nothing (docs/232-shared-lfs-object-store)", async () => {
+    const { parentDir, remoteUrl } = setupParent("seed");
+    // The orchestrator's git skips smudge (docs/231-git-lfs-support §2).
+    execSync('git config --global filter.lfs.smudge "git-lfs smudge --skip -- %f"', { stdio: "pipe" });
+    execSync('git config --global filter.lfs.process "git-lfs filter-process --skip"', { stdio: "pipe" });
+    fs.writeFileSync(path.join(parentDir, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    // Nothing listens here, so a pull that needed any object would fail.
+    fs.writeFileSync(path.join(parentDir, ".lfsconfig"), "[lfs]\n\turl = http://127.0.0.1:9/lfs\n");
+    const content = Buffer.from("binary asset\n");
+    fs.writeFileSync(path.join(parentDir, "art.bin"), content);
+    execSync("git add -A && git commit -q -m art", { cwd: parentDir, stdio: "pipe" });
+    const pointer = execSync("git cat-file -p HEAD:art.bin", { cwd: parentDir }).toString();
+    const oid = /oid sha256:([0-9a-f]{64})/.exec(pointer)?.[1] ?? "";
+    const objectIn = (lfsObjects: string) => path.join(lfsObjects, oid.slice(0, 2), oid.slice(2, 4), oid);
+
+    const cacheDir = path.join(tmpDir, "seed", "cache.git");
+    execSync(`git clone -q --bare ${remoteUrl} ${cacheDir}`, { stdio: "pipe" });
+    const cacheObject = objectIn(path.join(cacheDir, "lfs", "objects"));
+    fs.mkdirSync(path.dirname(cacheObject), { recursive: true });
+    fs.copyFileSync(objectIn(path.join(parentDir, ".git", "lfs", "objects")), cacheObject);
+
+    // eslint-disable-next-line no-restricted-syntax -- vitest's importActual generic requires an inline import() type
+    const actualUid = await vi.importActual<typeof import("../session-worker-uid.js")>("../session-worker-uid.js");
+    const objectPresentAt: { call: string; target: string; present: boolean }[] = [];
+    const record = (call: string, target: string) => objectPresentAt.push({
+      call, target, present: fs.existsSync(objectIn(path.join(target, ".git", "lfs", "objects"))),
+    });
+    vi.mocked(chownTreeToSessionWorker).mockImplementationOnce((target, owner) => {
+      record("full chown", target);
+      actualUid.chownTreeToSessionWorker(target, owner);
+    });
+    vi.mocked(chownWorkspaceGitToSessionWorker).mockImplementationOnce((target, deps) => {
+      record("git handback", target);
+      actualUid.chownWorkspaceGitToSessionWorker(target, deps);
+    });
+    // eslint-disable-next-line no-restricted-syntax -- vitest's importActual generic requires an inline import() type
+    const actualLfs = await vi.importActual<typeof import("../git-lfs.js")>("../git-lfs.js");
+    vi.mocked(materializeLfsWithWarning).mockImplementationOnce(actualLfs.materializeLfsWithWarning);
+
+    const { result, notices, warnings } = await forkWithReport(parentDir, remoteUrl, undefined, cacheDir);
+
+    const forkDir = result.session.workspaceDir ?? "";
+    // A recursive chown after the link would take the shared store's inodes, and without the
+    // handback the fork could not write into the fanout directories the link created
+    // (docs/272-shared-cache-ownership).
+    expect(objectPresentAt).toEqual([
+      { call: "full chown", target: forkDir, present: false },
+      { call: "git handback", target: forkDir, present: true },
+    ]);
+    expect(fs.statSync(objectIn(path.join(forkDir, ".git", "lfs", "objects"))).ino)
+      .toBe(fs.statSync(cacheObject).ino);
+    expect(fs.readFileSync(path.join(forkDir, "art.bin"))).toEqual(content);
+    expect(warnings).toEqual([]);
+    expect(notices).toEqual([]);
   });
 
   it("resolves a credential for its `fetch origin`, scoped to its own workspace", async () => {

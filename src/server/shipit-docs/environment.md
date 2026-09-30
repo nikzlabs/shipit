@@ -362,9 +362,12 @@ what to use when you estimate LFS download volume:
   commits, all with a link count above 1 and older than the workspace. The
   session's own `git lfs pull` then downloads only what its checkout needs and
   the store lacked: objects on its branch but not on the default-branch tip.
-- **What a fork gets.** Nothing from the store. A fork clones from its parent's
-  workspace, which does not carry `.git/lfs`, so its `git lfs pull` downloads
-  every object at its HEAD from the LFS server.
+- **What a fork gets.** The same links as a new session: the fork's clone of its
+  parent's workspace hardlinks every object the store holds, and its
+  `git lfs pull` downloads the rest. It gets nothing from the parent's own
+  `.git/lfs`, so an object the parent committed but has not pushed yet stays a
+  pointer stub in the fork until the parent pushes and the fork runs
+  `git lfs pull`.
 - **Objects a session creates** are uploaded by its push. Each host downloads
   them once more when they reach the default branch.
 - **How long objects stay.** An object leaves the store only when no workspace
