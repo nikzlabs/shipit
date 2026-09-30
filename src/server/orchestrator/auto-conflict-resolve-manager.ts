@@ -1,4 +1,5 @@
 import type { PrStatusSummary, PrMergeableState } from "../shared/types/github-types.js";
+import type { WsAutoResolveResult } from "../shared/types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { residentBackgroundWork } from "./turn-admission.js";
 import { getErrorMessage } from "./validation.js";
@@ -188,6 +189,20 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     }
   }
 
+  /**
+   * fireAttempt announced this attempt, so the banner needs a terminator every time — a
+   * deduplicated one left "Rebasing onto main…" up, with Sync disabled, on every repeat of
+   * the same deferral. Only a flow that ended the banner itself (`rebase_complete`) opts out.
+   */
+  private emitResult(
+    sessionId: string,
+    result: AutoResolveResult,
+    fields: Omit<WsAutoResolveResult, "type" | "sessionId">,
+  ): void {
+    if (result.outcome === "deferred" && result.suppressEmit === true) return;
+    this.cfg.getRunner(sessionId)?.emitMessage({ type: "auto_resolve_result", sessionId, ...fields });
+  }
+
   private writeBack(sessionId: string, result: AutoResolveResult, attempt: number): void {
     const state = this.states.get(sessionId);
     if (!state) {
@@ -195,6 +210,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       this.releaseClaim(sessionId, {
         pushed: result.outcome === "success" && result.forcePushed,
       });
+      this.emitResult(sessionId, result, { outcome: result.outcome, attempt });
       return;
     }
 
@@ -254,27 +270,12 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
 
     this.onChange(sessionId);
 
-    const runner = this.cfg.getRunner(sessionId);
-    const suppressEmit = !this.cfg.isGlobalEnabled()
-      || (result.outcome === "deferred" && "suppressEmit" in result && result.suppressEmit === true);
-    if (result.outcome === "deferred" && state.lastEmittedDeferred === (result.lastError ?? "")) {
-      // Suppress duplicate deferred events.
-    } else if (!suppressEmit) {
-      runner?.emitMessage({
-        type: "auto_resolve_result",
-        sessionId,
-        outcome: emitOutcome,
-        attempt,
-        ...(emitForcePushed !== undefined ? { forcePushed: emitForcePushed } : {}),
-        ...(emitLastError !== undefined ? { lastError: emitLastError } : {}),
-      });
-    }
-
-    if (result.outcome === "deferred") {
-      state.lastEmittedDeferred = result.lastError ?? "";
-    } else {
-      delete state.lastEmittedDeferred;
-    }
+    this.emitResult(sessionId, result, {
+      outcome: emitOutcome,
+      attempt,
+      ...(emitForcePushed !== undefined ? { forcePushed: emitForcePushed } : {}),
+      ...(emitLastError !== undefined ? { lastError: emitLastError } : {}),
+    });
 
     // User activity resets the budget even if this attempt exhausted it.
     this.applyPendingReset(sessionId, state);

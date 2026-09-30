@@ -67,7 +67,6 @@ export interface AutoConflictResolveState {
   lastError?: string;
   nextEligibleAt?: number;
   pendingReset?: boolean;
-  lastEmittedDeferred?: string;
 }
 
 export class AutoConflictResolveManager {
@@ -161,11 +160,13 @@ This is what makes the dropped-WS-emit case above non-lossy: the runner may be e
 
 The wrapper's `AutoResolveResult` carries an explicit `didWork: boolean` field so the manager knows whether real work was done (an agent turn was kicked off, or a force-push was attempted). The wrapper itself does NOT touch `attemptCount` — all increment/decrement logic lives in `writeBack`, which keeps the state-machine writes in one place and avoids the ordering race where `up_to_date` and 409 outcomes arrive *after* a wrapper-side increment but before `writeBack` could see them.
 
-Detection rules inside the wrapper. The wrapper returns one of three shapes — `{ outcome: "success", forcePushed, didWork: true }`, `{ outcome: "error", lastError, didWork: true }`, or `{ outcome: "deferred", lastError?, didWork: false }`. There is intentionally no `{ outcome: "error", didWork: false }` shape: pre-flight failures (couldn't even start) are deferred, not errored, so the failure banner doesn't flash up on transient pre-flight conditions like a dirty tree the user is about to clean up.
+Detection rules inside the wrapper. The wrapper returns one of three shapes — `{ outcome: "success", forcePushed, didWork: true }`, `{ outcome: "error", lastError, didWork: true }`, or `{ outcome: "deferred", lastError?, didWork: false }`. There is intentionally no `{ outcome: "error", didWork: false }` shape: pre-flight failures (couldn't even start) are deferred, not errored, so the failure banner doesn't flash up on transient pre-flight conditions like a dirty tree the user is about to clean up. The one exception is a **deterministic git refusal** (see "A refusal git repeats every time" below), which returns `{ outcome: "error", didWork: true }` even though no agent ran.
 
 **Cooldown after deferred outcomes.** Pre-flight failures (dirty tree, stale rebase, no-auth, `up_to_date` race) re-run on every 15s poll while the failing condition holds — each runs `verifyRunningState()` (HTTP roundtrip for container runners), constructs `RebaseDriverDeps`, invokes the wrapper, runs the pre-flight checks. To bound this cost, `writeBack` sets a shorter cooldown on deferred outcomes than on error outcomes: `nextEligibleAt = now() + AUTO_RESOLVE_DEFERRED_COOLDOWN_MS` (default 60s). Subsequent polls within that window short-circuit at step 10 *before* the verify HTTP call or the wrapper invocation — they pay only the cheap state-map lookup. After 60s the cooldown expires; if the deferred condition is still there, we re-check (and re-cooldown). The dirty-tree case stops costing per-15s polls and starts costing per-60s polls.
 
-  Deferred outcomes do NOT count against the attempt cap (didWork: false), so a chronically-deferred session won't exhaust on its own. The dedup mechanism is also still useful for the WS-emit volume: `writeBack` skips the `auto_resolve_result` emit when the new deferred outcome is identical to the last (compare `lastError`); state writes still happen. Implementation: store `lastEmittedDeferred?: string` on the per-session state.
+  Deferred outcomes do NOT count against the attempt cap (didWork: false), so a chronically-deferred session won't exhaust on its own.
+
+  **Every announced attempt gets its terminator.** `fireAttempt` emits `auto_resolve_started` before the wrapper runs, and the client holds the rebase banner (and disables Sync) until an `auto_resolve_result`, `rebase_complete` or `rebase_aborted` arrives. So `writeBack` emits `auto_resolve_result` for every attempt — including a repeat of the same deferral, an attempt whose state was deleted while it ran, and one that finished after the setting was switched off. The only opt-out is `suppressEmit`, where the flow already ended the banner with `rebase_complete`. An earlier `lastEmittedDeferred` dedup suppressed repeats of an identical deferral; every retry after the first then opened the banner and never closed it, and the turn-event buffer replayed that open start on every reconnect (2026-09-30, PR #3040's session).
 
 1. **Pre-flight stage** (before calling `runRebaseFlow`): dirty tree, stale rebase, no GitHub auth (see "No GitHub auth pre-flight" below), resident background work (see "The one deferral that is not transient" below) → `{ outcome: "deferred", lastError: "<reason>", didWork: false }`. Pre-flight is "we couldn't even start"; it's a defer (try again later, maybe the user fixes it), not an error against the per-session budget.
 2. **Cheap entry checks** (before triggering an agent turn or a force-push): the wrapper inspects `runRebaseFlow`'s return for `{ status: "up_to_date" }` → `{ outcome: "deferred", didWork: false }`; catches `ServiceError(409)` from the running-guard → `{ outcome: "deferred", didWork: false }`.
@@ -176,6 +177,16 @@ The boundary between (2) and (3) is "did `runRebaseResolutionTurn` start an agen
 A specific case worth noting: `runRebaseFlow` throws `ServiceError(500, "Too many conflict iterations (>10) — rebase aborted")` after `MAX_REBASE_ITERATIONS` (`services/rebase-driver.ts:146-150`). The throw lands in the wrapper's `.catch` *after* multiple agent spawns — `didWork: true` is correct here, and this counts as one outer attempt against `MAX_AUTO_RESOLVE_ATTEMPTS`. Also: before throwing, `runRebaseFlow` already called `rebaseAbort()` and emitted `rebase_aborted` itself, so the wrapper must NOT call its timeout-teardown `rebase_aborted` emit again on this path. The timeout teardown (which DOES emit `rebase_aborted`) is for the wrapper-owned wall-clock timeout case only.
 
 Another case worth being explicit about: `runRebaseFlow` calls `git.fetch("origin")` as its very first step (`rebase-driver.ts:106`), before any agent turn fires. A network failure here throws into the wrapper's `.catch` and would currently be classified `didWork: true`, burning a budget attempt for zero work. Special-case fetch failures (and any other throws *before* `runRebaseResolutionTurn` first spawns the agent) into `{ outcome: "deferred", lastError: "network", didWork: false }`.
+
+#### A refusal git repeats every time
+
+A free deferral is only safe for a condition that can clear by itself. A git refusal over untracked files — files a checkout would overwrite, or a directory that holds untracked files and must become a file or symlink — comes back identically on every retry, so deferring it retried every 60s for as long as the PR stayed CONFLICTING, fetching and attempting a rebase each time, and logged only once. `isUntrackedFilesRefusal` (`services/git.ts`) classifies those messages, and the wrapper returns `{ outcome: "error", lastError: <git's summary>, didWork: true }` for them. They then take the 5-minute error cooldown, exhaust after `MAX_AUTO_RESOLVE_ATTEMPTS`, and put git's summary on the PR card's failure banner. Everything else that throws before a spawn (a fetch failure, a lock file) stays deferred. `could not detach HEAD` is deliberately not a signal: git appends it to any failed checkout, including index-lock contention, which clears by itself.
+
+ShipIt's own plugin-skill copies were one such refusal, and the flow now clears them itself — see docs/262-plugins, "Rebasing across a skills root that changes shape".
+
+#### Reconnect reconcile
+
+The turn-event buffer that a reconnecting viewer is replayed is cleared only at turn end, so any start whose terminator was lost is replayed on every connect. As a safety net, `attachToRunner` (`route-registry.ts`) sends that viewer a `rebase_aborted` (no reason) when the replay contained `auto_resolve_started`, `rebase_started` or `rebase_conflicts` and the runner is neither `running` nor holding `systemTurnInProgress` — every rebase flow holds one or the other from its first step to its `finally`. It is sent to the one viewer and changes no server state.
 
 #### The one deferral that is not transient (nikzlabs/shipit#2751)
 
