@@ -59,6 +59,7 @@ import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace
 import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { denyAbandonedPermissionCards } from "./permission-cards.js";
 import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -1398,6 +1399,8 @@ export async function executeAgentTurn(
           runner.setAgent(null);
           if (useStreaming) runner.isStreamingActive = false;
           runner.clearBackgroundTasks();
+          await postTurnStep("deny-abandoned-permissions", () =>
+            denyAbandonedPermissionCards(runner, sessionId, deps.listenerDeps));
         }
       }
 
