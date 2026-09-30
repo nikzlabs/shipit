@@ -5,6 +5,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import type Docker from "dockerode";
 import {
+  DEFAULT_PLUGIN_CLI_MEMORY_BYTES,
   mapWorkingDir,
   runPluginCommand,
   PLUGIN_CLI_LABEL,
@@ -149,6 +150,7 @@ function fakeDocker(opts: {
   stderr?: string;
   vanishNamedVolumesOnCreate?: boolean;
   removeError?: string;
+  oomKilled?: boolean;
 } = {}) {
   const containers: Created[] = [];
   const started: string[] = [];
@@ -214,6 +216,10 @@ function fakeDocker(opts: {
         },
         start: async () => { started.push(id); },
         wait: async () => ({ StatusCode: opts.exit ?? 0 }),
+        inspect: async () => {
+          if (removedContainers.includes(id)) notFound();
+          return { State: { OOMKilled: opts.oomKilled ?? false } };
+        },
         kill: async () => undefined,
         remove: async () => {
           if (opts.removeError) throw new Error(opts.removeError);
@@ -693,6 +699,71 @@ exports:
       } finally {
         warn.mockRestore();
       }
+    });
+  });
+
+  describe("the memory limit", () => {
+    const memoryOf = (created: Record<string, unknown>): unknown =>
+      (created.HostConfig as { Memory: unknown }).Memory;
+
+    it("defaults to 2 GiB", async () => {
+      declareConsumer();
+      publishGeneration();
+      const fake = fakeDocker();
+
+      await runPluginCommand(deps(fake.docker), call);
+
+      expect(DEFAULT_PLUGIN_CLI_MEMORY_BYTES).toBe(2 * 1024 ** 3);
+      expect(memoryOf(fake.containers[0].opts)).toBe(DEFAULT_PLUGIN_CLI_MEMORY_BYTES);
+    });
+
+    it("takes the consuming project's `overrides.commands.<cmd>.memory`, read at call time", async () => {
+      declareConsumer(`${CONSUMER}      overrides:
+        commands:
+          reqs: { memory: 6g }
+`);
+      publishGeneration();
+      const fake = fakeDocker();
+
+      const result = await runPluginCommand(deps(fake.docker), call);
+      declareConsumer(`${CONSUMER}      overrides:
+        commands:
+          reqs: { memory: 3584m }
+`);
+      await runPluginCommand(deps(fake.docker), call);
+
+      expect(result.error).toBeUndefined();
+      expect(memoryOf(fake.containers[0].opts)).toBe(6 * 1024 ** 3);
+      expect(memoryOf(fake.containers[1].opts)).toBe(3584 * 1024 ** 2);
+    });
+
+    it("names the limit and the field to raise it when Docker reports an OOM kill", async () => {
+      declareConsumer(`${CONSUMER}      overrides:
+        commands:
+          reqs: { memory: 3g }
+`);
+      publishGeneration();
+      const fake = fakeDocker({ exit: 1, stderr: "blender: Killed\n", oomKilled: true });
+
+      const result = await runPluginCommand(deps(fake.docker), call);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toBe("blender: Killed\n");
+      expect(result.error).toContain("ran out of memory");
+      expect(result.error).toContain("3 GiB");
+      expect(result.error).toContain("`reqs`");
+      expect(result.error).toContain("overrides.commands.reqs.memory");
+    });
+
+    it("says nothing about memory for a failure Docker does not attribute to it", async () => {
+      declareConsumer();
+      publishGeneration();
+      const fake = fakeDocker({ exit: 2 });
+
+      const result = await runPluginCommand(deps(fake.docker), call);
+
+      expect(result.exitCode).toBe(2);
+      expect(result.error).toBeUndefined();
     });
   });
 });

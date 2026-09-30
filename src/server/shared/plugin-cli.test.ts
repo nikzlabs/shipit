@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { planPluginCommands, RESERVED_PLUGIN_COMMANDS } from "./plugin-cli.js";
-import type { PluginExport, PluginUse } from "./plugin-repos.js";
+import type { PluginCommandOverride, PluginExport, PluginUse } from "./plugin-repos.js";
 
 function exported(name: string, cli: Record<string, string>): PluginExport {
   return { name, cli, installInputs: [], depDirs: [], credentials: [], hosts: [], settings: {} };
@@ -10,7 +10,7 @@ function use(
   alias: string,
   plugin: string,
   from: string,
-  commands: Record<string, { as?: string }> = {},
+  commands: Record<string, PluginCommandOverride> = {},
 ): PluginUse {
   return { plugin, from, alias, overrides: { services: {}, commands, settings: {} } };
 }
@@ -41,6 +41,27 @@ describe("planPluginCommands", () => {
     expect(plan.commands.map((c) => c.name)).toEqual(["rt-reqs"]);
     expect(plan.commands[0].declared).toBe("reqs");
     expect(plan.issues.size).toBe(0);
+  });
+
+  it("carries the consumer's memory limit onto the command it names, and no other", () => {
+    const plan = planPluginCommands(
+      [use("gen", "assetgen", "tools", { BAKE: { memoryBytes: 4 * 1024 ** 3 } })],
+      table({ gen: { repo: "tools", exported: exported("assetgen", { bake: "cli/bake", list: "cli/list" }) } }),
+    );
+
+    expect(plan.commands.find((c) => c.declared === "bake")?.memoryBytes).toBe(4 * 1024 ** 3);
+    expect(plan.commands.find((c) => c.declared === "list")).not.toHaveProperty("memoryBytes");
+    expect(plan.issues.size).toBe(0);
+  });
+
+  it("reports a memory limit set for a command the plugin does not export", () => {
+    const plan = planPluginCommands(
+      [use("gen", "assetgen", "tools", { nope: { memoryBytes: 4 * 1024 ** 3 } })],
+      table({ gen: { repo: "tools", exported: exported("assetgen", { bake: "cli" }) } }),
+    );
+
+    expect(plan.commands.map((c) => c.name)).toEqual(["bake"]);
+    expect(plan.issues.get("tools")?.join("\n")).toContain("`nope` is not a command");
   });
 
   it("reports a rename for a command the plugin does not export", () => {

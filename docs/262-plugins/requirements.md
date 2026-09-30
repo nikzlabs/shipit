@@ -311,6 +311,10 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     repository and the exact commit being run are always shown (req 19), and
     removing the declaration removes everything it brought — and it does not
     claim to make an untrusted plugin safe to declare.
+30. A consuming project can change the **memory limit** of the container a
+    plugin's companion-CLI command runs in, from its own `shipit.yaml`
+    declaration of that plugin. The default limit, and how to change it, are
+    documented in the plugin documentation.
 
 ## Out of scope (v1)
 
@@ -378,7 +382,9 @@ materialized skills under their namespaced directory names. Requirement 29
 compromised, the agent may call in it container and give it all access"* —
 and from the answer that followed: the plugin's code is contained, its
 influence on the agent is not, and the documents said the first without
-ever saying the second.
+ever saying the second. Requirement 30 (a project-set memory limit for plugin
+commands) restates the user's request of 2026-09-30, raised from the plugin
+repository `nicolasalt/assetgen` (its issue #271).
 
 ## Open questions
 
@@ -386,6 +392,17 @@ ever saying the second.
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-09-30 — May a consuming project give a plugin's command more
+  memory?** Stated directly by the user: *"Allow a project to change the
+  memory limit of a plugin's command container in its own `shipit.yaml`, for
+  example in `plugins.use[].overrides`"*, and *"Also document the limit in the
+  plugin docs."* A command ran under a fixed 2 GiB `memory.max` that nothing
+  could change, so a CLI that starts a heavy child program — a Blender bake
+  that needs about 2 GB — was OOM-killed in its container while the same work
+  passed in the session shell. → req 30 added. That the value is set per
+  command, under `overrides.commands.<cmd>.memory`, is the agent's choice and
+  is recorded in `plan.md` §1a.
 
 - **2026-09-03 — May a plugin declare a host or a credential it does not
   need?** Stated directly by the user, from a live session running a plugin
