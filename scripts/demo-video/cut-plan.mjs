@@ -142,6 +142,9 @@ export function keptSeconds(slices) {
   return Number(slices.reduce((sum, s) => sum + (s.end - s.start), 0).toFixed(3));
 }
 
+/** A frame or two of rounding between the clocks; more than this is not the same moment. */
+const ANCHOR_FRAME_SLACK_S = 0.1;
+
 /**
  * How far the driver's clock runs ahead of the video's, in seconds.
  *
@@ -151,7 +154,10 @@ export function keptSeconds(slices) {
  * `anchorWall` and flips the splash white itself before navigating anywhere,
  * and the first non-black frame (`anchorVideo`, from ffmpeg's blackdetect) is
  * that flip on the video's clock. It must be the driver's own paint: the
- * instance's first paint lands up to a second later (docs/296 plan §4 item 6). `wallDuration − videoDuration` is
+ * instance's first paint lands up to a second later (docs/296 plan §4 item 6).
+ * The video's clock starts after the driver's, so the anchor can never be
+ * later in the video than on the driver's clock; when it is, blackdetect
+ * missed the splash and found the instance's own dark loading frame. `wallDuration − videoDuration` is
  * the fallback only: Playwright ends the file `max(time since the last frame,
  * 1 s)` after the last frame (`videoRecorder.ts` `_stop()`), so a blinking
  * caret makes the tail up to a second long and the difference off by as much.
@@ -159,6 +165,11 @@ export function keptSeconds(slices) {
 export function anchorOffset({ anchorWall, anchorVideo, wallDuration, videoDuration } = {}) {
   if (Number.isFinite(anchorWall) && Number.isFinite(anchorVideo)) {
     if (anchorVideo < 0) throw new Error(`anchor in the video (${anchorVideo}s) is negative`);
+    if (anchorVideo > anchorWall + ANCHOR_FRAME_SLACK_S) {
+      throw new Error(
+        `the anchor is ${anchorVideo}s into the video but ${anchorWall}s on the driver's clock, and the driver's clock starts first: the edge found in the file is not the driver's splash but a later dark frame (the instance loading), so the splash itself was not seen as black. Retake.`,
+      );
+    }
     return { offset: anchorWall - anchorVideo, method: "blackdetect" };
   }
   if (Number.isFinite(wallDuration) && Number.isFinite(videoDuration)) {

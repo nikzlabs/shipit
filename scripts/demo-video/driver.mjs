@@ -68,8 +68,15 @@ const GLIDE_STEPS = 24;
  * costs nothing, since nothing before the first beat's action is kept.
  */
 const SPLASH_MS = 500;
+/**
+ * The black splash is painted this many times over SPLASH_MS. The recorder's
+ * first frames can predate the window reaching the viewport's size — a smaller
+ * black rectangle on grey, which blackdetect does not call black — and a page
+ * that does not repaint is not captured again.
+ */
+const SPLASH_REPAINTS = 5;
 /** How long the white splash stays before the navigation, so the flip is a clean edge in the footage. */
-const ANCHOR_HOLD_MS = 300;
+const ANCHOR_HOLD_MS = 500;
 /** Storyboard pane names; `transcript` and `pr-card` are the chat pane, the rest are right-pane tabs. */
 const PANES = new Set(["transcript", "pr-card", ...Object.keys(S.paneTabLabels)]);
 
@@ -933,8 +940,13 @@ export async function run(opts) {
     // navigating without the flip anchors on the instance's first paint,
     // up to a second late.
     await page.setContent('<body style="margin:0;background:#000"></body>');
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-    await page.waitForTimeout(SPLASH_MS);
+    for (let i = 0; i < SPLASH_REPAINTS; i++) {
+      await page.evaluate((color) => {
+        document.body.style.background = color;
+        return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      }, i % 2 === 0 ? "#010101" : "#000");
+      await page.waitForTimeout(SPLASH_MS / SPLASH_REPAINTS);
+    }
     anchorWallAt = driver.t();
     await page.evaluate(() => { document.body.style.background = "#fff"; });
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
