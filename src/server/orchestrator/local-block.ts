@@ -202,8 +202,8 @@ export async function assertLoopbackOnlyWithoutBlock(
   throw new Error(
     `ShipIt refuses to start: it is published on ${bindings.join(", ")}, but ${state.reason}, `
     + "so a session could reach ShipIt through that address as if it were you. "
-    + "Publish ShipIt on loopback only (unset SHIPIT_BIND_ADDR and SHIPIT_TAILNET_BIND in the install's "
-    + ".shipit.env, then run update.sh), or run it on a host that can run the egress sidecar. "
+    + "Publish ShipIt on loopback only (unset SHIPIT_BIND_ADDR and SHIPIT_TAILNET_BIND in the "
+    + "install's .shipit.env, then run update.sh), or run it on a host that can run the egress sidecar. "
     + "See docs/319-api-reach-through-host.",
   );
 }
