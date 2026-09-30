@@ -445,6 +445,17 @@ describe("reconcileAdoptedFirewalls — a kept contained agent's sidecars", () =
     });
   });
 
+  it("replaces them with the policy as it is after the inspection, not before", async () => {
+    let hosts = ["revoked.example"];
+    staleEgressSidecars.mockImplementation(async () => {
+      hosts = [];
+      return { resolver: true, proxy: true };
+    });
+    const manager = await buildManager(() => ({ contained: true, extraHosts: [...hosts] }));
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(reloadEgressSidecars.mock.calls[0][0]).toMatchObject({ extraHosts: [] });
+  });
+
   it("leaves current sidecars alone, as after a plain restart, and still updates ShipIt's address", async () => {
     const manager = await buildManager({ contained: true, extraHosts: [] });
     await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });

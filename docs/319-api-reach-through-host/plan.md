@@ -169,9 +169,9 @@ Containers that the previous build started and that ShipIt keeps across the upda
 A kept contained agent must also find ShipIt by name after ShipIt is recreated (planning#626):
 
 - The worker tries `SHIPIT_HOST`, then the fallback names, and the resolver forwards both from one list (`shared/orchestrator-hosts.ts`), so the default `shipit` is always forwarded.
-- At start, the same background pass replaces an agent's resolver where it lacks one of the current names, and its proxy where its decision URL is not this process's (`staleEgressSidecars`, then the existing `reloadEgressSidecars`). A plain restart keeps the hostname, so it replaces nothing. An adopted agent records from its own `DOCKER_HOST` whether it is an ops session, so the new resolver keeps the Docker proxy's name.
+- At start, the same background pass replaces an agent's resolver where it lacks one of the current names, and its proxy where its decision URL is not this process's (`staleEgressSidecars`, then the existing `reloadEgressSidecars`). A plain restart keeps the hostname, so once the sidecars carry the current names it replaces nothing. The policy is read after the inspection, so an allowlist change made meanwhile is not undone. An adopted agent records from its own `DOCKER_HOST` whether it is an ops session, so the new resolver keeps the Docker proxy's name.
 
-An update must start the orchestrator with every image it built. `deployment/local/update.sh` runs the synced copy of itself after the checkout sync, and `setup.sh` loads the synced `lib.sh` again; the VPS updater already runs the synced `deploy.sh` in a new process. Both installs start the orchestrator with `--force-recreate`, because it reads the other images only at start. An install on a version before this change still runs its old `update.sh` once.
+An update must start the orchestrator with every image it built. `deployment/local/update.sh` runs the synced copy of itself after the checkout sync, and `setup.sh` loads the synced `lib.sh` again; the VPS updater already runs the synced `deploy.sh` in a new process. Both installs start the orchestrator with `--force-recreate`, because it reads the other images only at start. An install on a version before this change still runs its old `update.sh`: that shell keeps the functions it loaded before the sync, so no change in the new checkout can reach it. From a version before PR #3022, that first run needs a second one.
 
 Tests start session workers in-process, and a worker opens `SSH_AUTH_SOCK` and removes it on stop; inside a session that is the live socket, so `server-test-setup.ts` unsets it.
 
@@ -227,6 +227,6 @@ On the test machine (Linux, Docker 29, egress limits off, tailnet binding), befo
 6. In a session with Docker access, a container started through the proxy is refused the same destinations, and the agent reaches it by name.
 7. With the probe forced to fail, the orchestrator refuses to start while a tailnet binding exists, and `update.sh` starts it on loopback only.
 8. A kept contained session reaches ShipIt by name after the orchestrator is recreated, and after a plain restart (planning#626).
-9. One `update.sh` run builds every image and restarts the orchestrator with them, even when only another image changed (planning#626).
+9. From a version with planning#626's change, one `update.sh` run builds every image and restarts the orchestrator with them, even when only another image changed.
 
 Not testable on that machine: Docker Desktop (§8).

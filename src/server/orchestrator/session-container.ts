@@ -516,7 +516,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         console.log(`[egress:${sc.sessionId}] reinstalled a firewall from before docs/319 (${policy})`);
       });
       if (contained && (egressDnsEnabled() || egressProxyEnabled())) {
-        await retry(`[${sc.sessionId}] egress sidecars`, () => this.refreshStaleEgressSidecars(sc, cfg, sidecarImage));
+        await retry(`[${sc.sessionId}] egress sidecars`, () => this.refreshStaleEgressSidecars(sc, sidecarImage));
       }
     }
     if (!egressEnforceEnabled() && !localBlockActive()) return;
@@ -537,11 +537,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * still name the old one, so its worker could not find ShipIt by name
    * (planning#626). Replace the ones that differ from what this process starts.
    */
-  private async refreshStaleEgressSidecars(
-    sc: SessionContainer,
-    cfg: ResolvedEgressConfig,
-    sidecarImage: string,
-  ): Promise<void> {
+  private async refreshStaleEgressSidecars(sc: SessionContainer, sidecarImage: string): Promise<void> {
     const stale = await staleEgressSidecars(this.docker, {
       sessionId: sc.sessionId,
       agentContainerId: sc.id,
@@ -549,6 +545,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       ...(egressProxyEnabled() ? { decisionUrl: agentEgressDecisionUrl() } : {}),
     });
     if (!stale.resolver && !stale.proxy) return;
+    // Read after the inspection, so an allowlist change made meanwhile is not undone.
+    const cfg = this.resolveEgressConfig?.(sc.sessionId) ?? { contained: true, extraHosts: [] };
     await reloadEgressSidecars({
       docker: this.docker,
       agentContainerId: sc.id,
