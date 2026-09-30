@@ -19,6 +19,17 @@ export const DOCKER_UNREACHABLE_MESSAGE =
 // Preserve unknown and paused states; containment owns the paused transition.
 const INCONCLUSIVE_CONTAINER_STATES = new Set(["created", "removing"]);
 
+/**
+ * `ps -a` also lists the containers `docker compose run` leaves. Compose joins a row's labels
+ * with unescaped commas, so a value can mimic the label; every Compose container carries it,
+ * and a service's own `False` wins.
+ */
+function isOneOff(labels: unknown): boolean {
+  if (typeof labels !== "string") return false;
+  const pairs = labels.split(",");
+  return pairs.includes("com.docker.compose.oneoff=True") && !pairs.includes("com.docker.compose.oneoff=False");
+}
+
 export interface ServicePollerOptions {
   sessionId: string;
   workspaceDir: string;
@@ -126,12 +137,13 @@ export class ServicePoller {
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let entry: { Service?: string; ID?: string; Name?: string; State?: string; ExitCode?: number };
+      let entry: { Service?: string; ID?: string; Name?: string; State?: string; ExitCode?: number; Labels?: unknown };
       try {
         entry = JSON.parse(trimmed) as typeof entry;
       } catch {
         continue;
       }
+      if (isOneOff(entry.Labels)) continue;
       const svc = entry.Service ? this.getService(entry.Service) : undefined;
       if (!svc) continue;
       if (!INCONCLUSIVE_CONTAINER_STATES.has(entry.State ?? "")) seen.add(svc.name);

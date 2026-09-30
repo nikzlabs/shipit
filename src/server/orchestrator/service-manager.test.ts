@@ -3461,6 +3461,28 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
     expect(url()).toBe("http://172.16.0.42:3000/");
   });
 
+  it("keeps a running service and its URL when `docker compose run` left an exited container", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, setPsResponse, url } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    expect(url()).toBe("http://172.16.0.9:3000/");
+
+    setPsResponse([
+      runningPs,
+      JSON.stringify({
+        Service: "web", ID: "run1", State: "exited", ExitCode: 0,
+        Labels: "com.docker.compose.oneoff=True,com.docker.compose.service=web",
+      }),
+    ].join("\n"));
+    await (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce();
+    expect(mgr.getService("web")?.status).toBe("running");
+    expect(url()).toBe("http://172.16.0.9:3000/");
+  });
+
   it("gives the watchdog a fresh window once the compose up finishes", async () => {
     vi.useFakeTimers();
     const dir = setup();

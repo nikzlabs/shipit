@@ -777,3 +777,69 @@ describe("ServicePoller — the listed address", () => {
     expect(ips.get("web")).toBe("172.20.0.2");
   });
 });
+
+describe("ServicePoller — containers left by `docker compose run`", () => {
+  const SERVICE_LABELS =
+    "com.docker.compose.depends_on=db:service_started:false,cache:service_started:false," +
+    "com.docker.compose.oneoff=False,com.docker.compose.service=web";
+  const ONE_OFF_LABELS = "com.docker.compose.oneoff=True,com.docker.compose.service=web";
+
+  function oneOffPoller(status: PollerService["status"], rows: object[]) {
+    const svc: PollerService = { name: "web", preview: "auto", status };
+    const inspected: string[] = [];
+    const ips = new Map<string, string | undefined>();
+    const updateServiceStatus = vi.fn();
+    const onLeftRunning = vi.fn();
+    const onExitedWithError = vi.fn();
+    const poller = buildPoller({
+      composeQuery: async (args) => {
+        if (args.includes("ps")) return rows.map((row) => JSON.stringify(row)).join("\n");
+        inspected.push(args[1]);
+        const nets = args[1] === "c1" ? { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } }
+          : args[1] === "run2" ? { "shipit-session-sess-1": { IPAddress: "172.20.0.7" } }
+          : {};
+        return JSON.stringify([{ State: { OOMKilled: false }, NetworkSettings: { Networks: nets } }]);
+      },
+      getService: (name) => (name === svc.name ? svc : undefined),
+      listServices: () => [svc],
+      setContainerIp: (name, ip) => { ips.set(name, ip); },
+      updateServiceStatus,
+      onLeftRunning,
+      onExitedWithError,
+    });
+    return { poller, inspected, ips, updateServiceStatus, onLeftRunning, onExitedWithError };
+  }
+
+  it("reads a running service's status and address from its own container only", async () => {
+    const { poller, inspected, ips, updateServiceStatus, onLeftRunning, onExitedWithError } = oneOffPoller("running", [
+      { Service: "web", ID: "c1", State: "running", ExitCode: 0, Labels: SERVICE_LABELS },
+      { Service: "web", ID: "run1", State: "exited", ExitCode: 1, Labels: ONE_OFF_LABELS },
+      { Service: "web", ID: "run2", State: "running", ExitCode: 0, Labels: ONE_OFF_LABELS },
+    ]);
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+    expect(onLeftRunning).not.toHaveBeenCalled();
+    expect(onExitedWithError).not.toHaveBeenCalled();
+    expect([...ips]).toEqual([["web", "172.20.0.2"]]);
+    expect(inspected).toEqual(["c1"]);
+  });
+
+  it("does not skip a service whose other label value contains the one-off label", async () => {
+    const { poller, ips } = oneOffPoller("running", [{
+      Service: "web", ID: "c1", State: "running", ExitCode: 0,
+      Labels: `note=x,com.docker.compose.oneoff=True,y,${SERVICE_LABELS}`,
+    }]);
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+  });
+
+  it("does not report a stopped service running because a `run` shell of it is", async () => {
+    const { poller, ips, updateServiceStatus } = oneOffPoller("stopped", [
+      { Service: "web", ID: "c0", State: "exited", ExitCode: 0, Labels: SERVICE_LABELS },
+      { Service: "web", ID: "run2", State: "running", ExitCode: 0, Labels: ONE_OFF_LABELS },
+    ]);
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+    expect(ips.get("web")).toBeUndefined();
+  });
+});
