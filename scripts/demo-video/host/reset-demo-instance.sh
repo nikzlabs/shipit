@@ -3,13 +3,13 @@
 # host (`ssh services`), never from a session: it drives the local install's
 # own scripts and Docker directly.
 #
-#   demo-proxy project down   (compose down cannot remove the shipit-prod
-#                              network while the proxy is attached to it)
 #   stop.sh                   (compose down, volumes kept; session containers removed)
 #   docker volume rm shipit-prod_workspace   (sessions, repo cache, .shipit.db)
 #   keep shipit-prod_credentials             (provider keys + the GitHub token)
 #   shipit_build_and_up       (cached build, .shipit.env, tailnet overlay, up)
-#   demo-proxy project up
+#
+# The demo proxy needs no step here: it is a Compose service of each demo
+# session (host/demo-proxy-image.sh), so it goes with the session containers.
 #
 # Idempotent: every step tolerates its state already being the case. Refuses to
 # run unless (a) the install's Compose project is `shipit-prod` and (b) the demo
@@ -18,23 +18,20 @@
 # pass on any ordinary ShipIt host and wipe its workspace; the marker is placed
 # by the operator on the demo host only (plan §9).
 #
-# Usage: reset-demo-instance.sh [--dry-run] [--shipit-home DIR] [--proxy-compose FILE]
+# Usage: reset-demo-instance.sh [--dry-run] [--shipit-home DIR]
 #   --dry-run prints each command instead of running it.
-#   SHIPIT_HOME (default ~/.shipit) and DEMO_PROXY_COMPOSE
-#   (default ~/shipit-demo/demo-proxy.compose.yml) are the env equivalents.
+#   SHIPIT_HOME (default ~/.shipit) is the env equivalent.
 set -euo pipefail
 
 EXPECTED_STACK="shipit-prod"
 SHIPIT_HOME="${SHIPIT_HOME:-$HOME/.shipit}"
-PROXY_COMPOSE="${DEMO_PROXY_COMPOSE:-$HOME/shipit-demo/demo-proxy.compose.yml}"
 DRY_RUN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --shipit-home) SHIPIT_HOME="$2"; shift 2 ;;
-    --proxy-compose) PROXY_COMPOSE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "reset-demo-instance: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -68,17 +65,10 @@ MARKER_HOST="$(tr -d '[:space:]' < "$MARKER")"
 WORKSPACE_VOLUME="${EXPECTED_STACK}_workspace"
 CREDENTIALS_VOLUME="${EXPECTED_STACK}_credentials"
 
-# 1. demo-proxy down — its own project, attached to the instance's network.
-if [ -f "$PROXY_COMPOSE" ]; then
-  run sudo docker compose -f "$PROXY_COMPOSE" down
-else
-  log "no demo-proxy compose file at $PROXY_COMPOSE; skipping the proxy steps"
-fi
-
-# 2. Stop the instance; stop.sh keeps both volumes and removes session containers.
+# 1. Stop the instance; stop.sh keeps both volumes and removes session containers.
 run "$SHIPIT_HOME/deployment/local/stop.sh"
 
-# 3. Drop the workspace volume, keep credentials.
+# 2. Drop the workspace volume, keep credentials.
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ docker volume rm $WORKSPACE_VOLUME   (if present)"
 elif docker volume inspect "$WORKSPACE_VOLUME" > /dev/null 2>&1; then
@@ -90,14 +80,9 @@ if [ "$DRY_RUN" -eq 0 ] && ! docker volume inspect "$CREDENTIALS_VOLUME" > /dev/
   log "warning: $CREDENTIALS_VOLUME is missing — the instance will boot to the GitHub modal (plan §9)"
 fi
 
-# 4. Up, via the recipe's own function: loads .shipit.env, refreshes the
+# 3. Up, via the recipe's own function: loads .shipit.env, refreshes the
 #    tailnet overlay, cached build, `up -d`. Not update.sh — that also re-syncs
 #    the checkout to origin/main, which moves the instance under a pinned take.
 run env "SHIPIT_HOME=$SHIPIT_HOME" bash -c '. "$SHIPIT_HOME/deployment/local/lib.sh" && shipit_build_and_up'
-
-# 5. demo-proxy up, now that the network exists again.
-if [ -f "$PROXY_COMPOSE" ]; then
-  run sudo docker compose -f "$PROXY_COMPOSE" up -d
-fi
 
 if [ "$DRY_RUN" -eq 1 ]; then log "done (dry run)"; else log "done"; fi

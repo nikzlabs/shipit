@@ -10,7 +10,8 @@ its `plan.md`; this file is only how to run what exists). Phase 1 pieces:
 | `selectors.mjs` | Every selector the driver uses, one map |
 | `make-demo-repo.sh` | The phase-1 demo repo as a deterministic local bare repo (plan §8) |
 | `reset-demo-repo.sh` | Before a phase-2 take: close PRs, delete branches, force-reset `main` to the pin (plan §6) |
-| `host/reset-demo-instance.sh` | On the demo host: fresh workspace volume, credentials kept, proxy re-attached (plan §9) |
+| `host/reset-demo-instance.sh` | On the demo host: fresh workspace volume, credentials kept (plan §9) |
+| `host/demo-proxy-image.sh` | On the demo host: the proxy as the image the demo repo's `demo-proxy` service runs — `build record\|replay <cassette>`, `extract <cassette>` (plan §2, §9) |
 | `scenarios/<name>/storyboard.json` | Beats, repo pin, viewport, pace (plan §3) |
 | `cut-plan.mjs` | Slice math: beat log + storyboard + anchor to ffmpeg trim/concat filter (plan §5) |
 | `cut.sh` | ffmpeg wrapper around `cut-plan.mjs`: blackdetect anchor, muted VP9 webm + h264 mp4 |
@@ -47,8 +48,8 @@ node scripts/demo-video/proxy.mjs --record scripts/demo-video/scenarios/<name>/c
 node scripts/demo-video/proxy.mjs --replay scripts/demo-video/scenarios/<name>/cassette \
   --pace-chars-per-second 120 &
 
-# 3. The take. --mode replay refuses to start unless the storyboard's proxyUrl
-#    answers HEAD /api/hello; both modes refuse unless the repo pin matches.
+# 3. The take. The storyboard's proxy (proxyUrl here) must answer HEAD
+#    /api/hello in the take's mode; both modes refuse unless the repo pin matches.
 node scripts/demo-video/driver.mjs \
   --instance http://172.16.37.2:3000 \
   --scenario scripts/demo-video/scenarios/<name> \
@@ -70,37 +71,53 @@ is the repo's `.claude/settings.json`'s business.
 
 ### Phase 2: the demo instance (plan §9)
 
-Against the dedicated instance the demo repo is on GitHub, so step 1 is a
-reset instead of a build, and the instance itself is reset between takes:
+Against the dedicated instance the demo repo is on GitHub and the proxy is one
+of the demo session's own Compose services (the repo's `docker-compose.yml`
+declares `demo-proxy` with `image: demo-proxy:current`; plan §2). So steps 1
+and 2 become: build the proxy image for the take's mode, reset the instance,
+reset the repo.
 
 ```sh
-# On the demo host (ssh services), between takes: demo-proxy down, stop.sh,
-# drop shipit-prod_workspace (credentials kept), shipit_build_and_up, proxy up.
-# Refuses unless the install's Compose project is shipit-prod. --dry-run prints
-# the commands.
+# On the demo host (ssh services), in ~/shipit-demo beside proxy.mjs and
+# cassettes/. The mode and the cassette are baked into the image, so a mode
+# switch is a rebuild.
+DOCKER="sudo docker" bash demo-proxy-image.sh build replay website-hero
+#   record:  … build record website-hero     (move an old cassettes/website-hero aside first)
+#   after a record take, before any rebuild:  … extract website-hero
+
+# Between takes: stop.sh, drop shipit-prod_workspace (credentials kept),
+# shipit_build_and_up. Refuses unless the install's Compose project is
+# shipit-prod and the demo marker names this host. --dry-run prints the commands.
 bash ~/shipit-demo/reset-demo-instance.sh --dry-run
 
-# From the driver host: close every open PR, delete every non-default branch,
-# force-reset main to the storyboard's repo.commit. PRs close through the
-# instance (its own GitHub credential); branches and main need GITHUB_TOKEN in
-# the environment — the instance has no route for those. --dry-run does the
+# Once the instance answers: close every open PR, delete every non-default
+# branch, force-reset main to the storyboard's repo.commit. PRs close through
+# the instance (its own GitHub credential); branches and main need GITHUB_TOKEN
+# in the environment — the instance has no route for those. --dry-run does the
 # reads and prints each write.
 GITHUB_TOKEN=ghp_... scripts/demo-video/reset-demo-repo.sh \
   --scenario scripts/demo-video/scenarios/website-hero \
   --instance http://100-81-125-94.sslip.io:4123 --dry-run
 ```
 
-Then steps 2–4 as above. The storyboard's `permissionMode: "auto"` is verified
-on the composer after the session is claimed, and a wait that finds a pending
-permission prompt in the session's history aborts the take (exit 4) naming the
-tool and path — a take never waits on a human.
+Then steps 3–4 as above. The storyboard's `proxy { service, port }` tells the
+driver to start that service on the repo's warm session during setup (it is a
+`manual` service, so the Preview pane never picks it), to ask it for its mode
+through the instance's preview address for the port
+(`{sessionId}--8787.<instance host>`) before the browser opens, and to read its
+counters there after a replay. The storyboard's
+`permissionMode: "auto"` is verified on the composer after the session is
+claimed, and a wait that finds a pending permission prompt in the session's
+history aborts the take (exit 4) naming the tool and path — a take never waits
+on a human.
 
 ## Add a scenario
 
 1. `mkdir scripts/demo-video/scenarios/<name>` and write `storyboard.json`
    (plan §3): `repo { url, commit }` (a full SHA), `viewport`, `pace {
-   textCharsPerSecond, typingCharsPerSecond }`, optional `proxyUrl` (required
-   for replay), `settings` (applied with `PUT /api/settings` before the take),
+   textCharsPerSecond, typingCharsPerSecond }`, `proxy { service, port }` (the proxy is a manual
+   Compose service of the demo session) or `proxyUrl` (an absolute address); a
+   replay needs one, `settings` (applied with `PUT /api/settings` before the take),
    `model` (pins the warm session), `permissionMode` (`"auto"` only — the
    composer's default and the one mode whose allowlisted tools never prompt;
    verified on the composer control), `waitCeilingSeconds` (how long one wait
@@ -169,8 +186,9 @@ a ShipIt session, since the baked `/opt/playwright-browsers` holds a build the
 pinned package will not launch), `DEMO_CHROMIUM` (an executable override).
 
 Before recording it verifies the repo pin (`git ls-remote <url> HEAD` must
-equal `repo.commit`) and, in replay mode, that `HEAD <proxyUrl>/api/hello`
-answers 200. It then paints a black splash, stamps `anchor.wallAt` into
+equal `repo.commit`); the proxy the storyboard names must answer `HEAD
+/api/hello` in the take's mode before the browser opens — a `proxy` service after the
+driver has started it on the warm session. It then paints a black splash, stamps `anchor.wallAt` into
 `run.json`, navigates, and runs the beats — typing at
 `pace.typingCharsPerSecond`, waiting on state, and after each beat recording,
 still, until `max(actionAt + lead, readyAt + hold)` so every hold is real
