@@ -107,7 +107,7 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     || ensureGitExcludedBlock(
       opts.workspaceDir,
       PLUGIN_SKILL_EXCLUDE_BLOCK,
-      pluginSkillExcludeEntries(names),
+      pluginSkillExcludeEntries(opts.workspaceDir, names),
     );
 
   if (!excluded) {
