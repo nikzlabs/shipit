@@ -32,7 +32,8 @@ export interface ServicePollerOptions {
   getService: (name: string) => PollerService | undefined;
   listServices: () => PollerService[];
   isStartInFlight?: (name: string) => boolean;
-  setContainerIp: (serviceName: string, ip: string) => void;
+  /** Undefined clears the address. */
+  setContainerIp: (serviceName: string, ip: string | undefined) => void;
   updateServiceStatus: (
     name: string,
     status: "stopped" | "starting" | "running" | "error",
@@ -69,7 +70,7 @@ export class ServicePoller {
   private readonly getService: (name: string) => PollerService | undefined;
   private readonly listServices: () => PollerService[];
   private readonly isStartInFlight: (name: string) => boolean;
-  private readonly setContainerIp: (serviceName: string, ip: string) => void;
+  private readonly setContainerIp: (serviceName: string, ip: string | undefined) => void;
   private readonly updateServiceStatus: ServicePollerOptions["updateServiceStatus"];
   private readonly onRunning: (name: string) => void;
   private readonly onLeftRunning: (name: string) => void;
@@ -80,6 +81,8 @@ export class ServicePoller {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private readonly missingSince = new Map<string, number>();
   private psFailingSince: number | null = null;
+  /** The container each service's current address was read from. */
+  private readonly addressSource = new Map<string, string>();
 
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
@@ -267,6 +270,8 @@ export class ServicePoller {
   ): Promise<Map<string, boolean>> {
     const networkName = `shipit-session-${this.sessionId}`;
     const oomFlags = new Map<string, boolean>();
+    const found = new Map<string, string>();
+    const unread = new Set<string>();
 
     for (const [containerName, serviceName] of containerNames) {
       try {
@@ -295,19 +300,27 @@ export class ServicePoller {
           }
         }
 
-        if (!nets) continue;
-
-        let ip = nets[networkName]?.IPAddress;
-        if (!ip) {
-          for (const net of Object.values(nets)) {
-            if (net.IPAddress) { ip = net.IPAddress; break; }
-          }
-        }
-        if (ip) {
-          this.setContainerIp(serviceName, ip);
+        // Only the session network is shared with the agent and the preview proxy.
+        const ip = nets?.[networkName]?.IPAddress;
+        if (ip && !found.has(serviceName)) {
+          found.set(serviceName, ip);
+          this.addressSource.set(serviceName, containerName);
         }
       } catch (err) {
         console.warn(`[compose:${this.sessionId}] docker inspect ${containerName} failed:`, (err as Error).message);
+        if (this.addressSource.get(serviceName) === containerName) unread.add(serviceName);
+      }
+    }
+
+    // One service can have several containers (replicas), so decide per service.
+    for (const serviceName of new Set(containerNames.values())) {
+      const ip = found.get(serviceName);
+      if (ip) {
+        this.setContainerIp(serviceName, ip);
+      } else if (!unread.has(serviceName)) {
+        // A container that could not be read keeps its address; a replacement does not inherit it.
+        this.addressSource.delete(serviceName);
+        this.setContainerIp(serviceName, undefined);
       }
     }
 

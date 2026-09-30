@@ -25,9 +25,12 @@ function makeStubs(): Stubs {
   const record = `echo "$(basename "$0") $*" >> "${log}"`;
   stub("iptables", `${record}
 case "$*" in
+  "-t nat -S OUTPUT") [ "\${STUB_TIER_C:-0}" = 1 ] && echo "-A OUTPUT -p tcp -m tcp --dport 443 -m owner ! --uid-owner 1002 -j REDIRECT --to-ports 15001" ;;
   "-S SHIPIT-LOCAL") printf '%s\\n' "\${STUB_LOCAL_RULES:-}" ;;
   *"-L SHIPIT-"*) [ "\${STUB_CHAIN_EXISTS:-0}" = 1 ] || exit 1 ;;
   *" -C "*|"-C "*|*"-t nat -C"*|*"-t nat -D"*) exit 1 ;;
+  *"-t nat -I OUTPUT"*) [ "\${STUB_NAT_FAIL:-0}" = 1 ] && exit 1 ;;
+  "-A SHIPIT-LOCAL -d "*" -j ACCEPT") [ "\${STUB_ACCEPT_FAIL:-0}" = 1 ] && exit 1 ;;
 esac
 exit 0`);
   stub("ip6tables", `${record}
@@ -255,6 +258,51 @@ describe("allow-subnet.sh — later network joins", () => {
       expect(code).toBe(0);
       expect(removals(calls)).toEqual([]);
     });
+  });
+
+  it("exempts the subnet's HTTPS from the Tier C redirect", async () => {
+    const { code, calls } = await runScript(stubs, "allow-subnet.sh", {
+      STUB_CHAIN_EXISTS: "1",
+      STUB_TIER_C: "1",
+      EGRESS_ALLOW_SUBNETS: "172.20.0.0/24",
+    });
+    expect(code).toBe(0);
+    indexOf(calls, "iptables -t nat -I OUTPUT 1 -d 172.20.0.0/24 -p tcp --dport 443 -j RETURN");
+  });
+
+  it("adds no exemption without the redirect, so a nat failure cannot stop an open-policy start", async () => {
+    const { code, calls } = await runScript(stubs, "allow-subnet.sh", {
+      STUB_CHAIN_EXISTS: "1",
+      STUB_NAT_FAIL: "1",
+      EGRESS_ALLOW_SUBNETS: "172.20.0.0/24",
+    });
+    expect(code).toBe(0);
+    expect(calls.some((c) => c.startsWith("iptables -t nat -I"))).toBe(false);
+    indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.20.0.0/24 -j ACCEPT");
+  });
+
+  // A failed exemption used to skip the accept and still exit 0: the agent timed out on its services.
+  it("still opens every subnet when the HTTPS exemption fails, and exits 1 so the caller reports it", async () => {
+    const { code, stdout, calls } = await runScript(stubs, "allow-subnet.sh", {
+      STUB_CHAIN_EXISTS: "1",
+      STUB_TIER_C: "1",
+      STUB_NAT_FAIL: "1",
+      EGRESS_ALLOW_SUBNETS: "172.20.0.0/24 172.21.0.0/24",
+    });
+    expect(code).toBe(1);
+    indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.20.0.0/24 -j ACCEPT");
+    indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.21.0.0/24 -j ACCEPT");
+    expect(stdout).toContain("WARN: could not exempt HTTPS for 172.20.0.0/24");
+  });
+
+  it("exits 1 when an accept fails, after it tries the other subnets", async () => {
+    const { code, calls } = await runScript(stubs, "allow-subnet.sh", {
+      STUB_CHAIN_EXISTS: "1",
+      STUB_ACCEPT_FAIL: "1",
+      EGRESS_ALLOW_SUBNETS: "172.20.0.0/24 172.21.0.0/24",
+    });
+    expect(code).toBe(1);
+    indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.21.0.0/24 -j ACCEPT");
   });
 
   it("keeps the pre-docs/319 behaviour in a namespace without the chain", async () => {
