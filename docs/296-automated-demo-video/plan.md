@@ -266,6 +266,7 @@ The frames at each hold are the intended ones in both cuts — idle composer ove
 | `replay-9` | the right typeface; a mis-anchored cut, every slice 0.55 s off (§4 item 6) — refused by the cut since |
 | `replay-10` | anchor 0.679 s on the driver's clock / 0.52 s in the video, a clean black-then-white edge; preview pane SSIM ≥ 0.992 against the session-driven replay-7 |
 | `replay-11` | anchor 0.68 / 0.40; preview pane SSIM ≥ 0.998 against `replay-10` inside every hold — two host takes repeat each other (req 3) |
+| `replay-12` | after the review fixes (own-instance check, lock, whole-take log, `paintedAt`): anchor 0.685 stamped / 0.698 painted / 0.52 in the video; preview pane SSIM ≥ 0.998 against `replay-11`. A wrong `--instance` and a second take started during it were both refused with nothing touched |
 
 A take is about 3 min 15 s of wall time: one minute for the two resets, 100 s for the replayed session, the rest for the cut.
 
