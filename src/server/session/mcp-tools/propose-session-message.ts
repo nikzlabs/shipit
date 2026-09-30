@@ -15,9 +15,11 @@ const TOOL_DESCRIPTION = [
   "asked to report a result back to a session you cannot message. ShipIt checks",
   "the session id when you call, so you find out now rather than the user",
   "finding out on the click. Approval delivers this one message and nothing",
-  "more: it starts a turn there, it grants you no further access, and you will",
-  "not hear back — put everything the reader needs in the message. Your own",
-  "children and your parent are refused as targets; reach them directly.",
+  "more: it starts a turn there, it grants you no further access, and no reply",
+  "comes back to you — put everything the reader needs in the message. The user",
+  "can also decline the card. Either way ShipIt tells you what they did at the",
+  "start of your next turn, so do not ask them. Your own children and your",
+  "parent are refused as targets; reach them directly.",
 ].join(" ");
 
 const inputSchema = {
@@ -86,16 +88,19 @@ export const proposeSessionMessageTool: ToolDescriptor = {
           isError: true,
         };
       }
-      const target = body.targetTitle ?? pre.sessionId;
+      // Another session's agent can rename it, so its title is quoted data here.
+      const target = body.targetTitle
+        ? `"${body.targetTitle.replace(/\s+/g, " ").replace(/["[\]]/g, "").trim().slice(0, 200)}"`
+        : pre.sessionId;
       return {
         content: [
           {
             type: "text",
             text:
               `Posted a card proposing a message to ${target}. `
-              + "The user approves it with one click, and it is delivered once — you will not hear "
-              + "back, and you cannot send another without proposing another card. Do not repeat the "
-              + "message in prose.",
+              + "The user sends or declines it from the card, and ShipIt tells you which at the start "
+              + "of your next turn. It is delivered once — no reply comes back to you, and you cannot "
+              + "send another without proposing another card. Do not repeat the message in prose.",
           },
         ],
       };

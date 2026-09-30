@@ -18,6 +18,7 @@ import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-rese
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
 import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
+import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
@@ -490,7 +491,13 @@ async function composeAndRunAgentTurn(
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareRepoSessionOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
       : null;
-  const noticeDeliveries = [settingsOutcome, repoSessionOutcome].filter((d) => d !== null);
+  // docs/314-session-message-proposal req 14 — the same again.
+  const sessionMessageOutcome =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? prepareSessionMessageOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
+      : null;
+  const noticeDeliveries = [settingsOutcome, repoSessionOutcome, sessionMessageOutcome]
+    .filter((d) => d !== null);
 
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
@@ -511,6 +518,7 @@ async function composeAndRunAgentTurn(
     bugOutcomeNotice,
     settingsOutcome?.notice,
     repoSessionOutcome?.notice,
+    sessionMessageOutcome?.notice,
     resetAgentPrefix,
     dependencyPrefix,
     statusContext,

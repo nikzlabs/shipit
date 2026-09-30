@@ -49,7 +49,7 @@ export function pendingRepoSessionOutcomes(
  * Text the agent or an error supplied, kept inside its quotes: stripping the
  * delimiters means it cannot close the quote and go on in ShipIt's voice.
  */
-function asQuotedData(value: string): string {
+export function asQuotedData(value: string): string {
   return `"${renderOwn(value).slice(0, FIELD_MAX).replace(/["[\]]/g, "")}"`;
 }
 

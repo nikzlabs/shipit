@@ -77,6 +77,23 @@ describe("handleSessionMessageProposalUpdate", () => {
     expect(useSessionStore.getState().messages[0].sessionMessageProposal?.state).toBe("delivered");
   });
 
+  it("marks the card declined", () => {
+    handleSessionMessageProposalUpdate(
+      ctx,
+      update({ state: "declined", declinedAt: "2026-09-22T10:01:00.000Z" }),
+    );
+    expect(useSessionStore.getState().messages[0].sessionMessageProposal).toMatchObject({
+      state: "declined",
+      declinedAt: "2026-09-22T10:01:00.000Z",
+    });
+  });
+
+  it("never reopens a declined card", () => {
+    handleSessionMessageProposalUpdate(ctx, update({ state: "declined" }));
+    handleSessionMessageProposalUpdate(ctx, update({ state: "delivering" }));
+    expect(useSessionStore.getState().messages[0].sessionMessageProposal?.state).toBe("declined");
+  });
+
   it("ignores an update for a card that is not in the transcript", () => {
     handleSessionMessageProposalUpdate(ctx, update({ cardId: "smp-other", state: "delivered" }));
     expect(useSessionStore.getState().messages[0].sessionMessageProposal?.state).toBeUndefined();

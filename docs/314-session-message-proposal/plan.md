@@ -88,13 +88,19 @@ Three guards, because each covers what the others cannot:
 3. Dispatch is the point of no return: once `deliverSessionMessage` returns, a
    later throw (persisting the terminal state, say) must NOT mark the card
    failed, because `failed` offers a *Try again* that would deliver it twice.
-   The route answers 500 with `delivered: true` and leaves the card alone.
+   The route answers 500 with `delivered: true` and leaves the card alone. It
+   still tells the viewer `delivered`, because that is true, and it remembers the
+   card in a process-lived set that makes the deliver and decline routes refuse
+   it — the stored card still reads `delivering`, so without that a reload would
+   offer a second send, or a decline over a message that already landed.
 
-The residual is an orchestrator that stops between the dispatch and the write.
-The card is then left `delivering`, which is deliberately retryable — a card
-that spins forever is worse than one the user can re-send — so that window
-trades once-only for liveness. Closing it needs a target-side delivery identity
-to reconcile against, which is more machinery than the case is worth.
+The residual is an orchestrator that stops between the dispatch and the write,
+or restarts after a failed write. The card is then left `delivering`, which is
+deliberately retryable — a card that spins forever is worse than one the user
+can re-send — so that window trades once-only for liveness. The same leftover
+can also be declined, and the agent is then told "declined" about a message
+that may have landed. Closing it needs a target-side delivery identity to
+reconcile against, which is more machinery than the case is worth.
 
 ## Reporting what actually happened
 
@@ -144,6 +150,56 @@ gains a sentence pointing at `propose_session_message`. It is also corrected:
 it says "not a descendant of this parent" and the check is one hop, so it now
 says *direct child*.
 
+## Declining, and telling the agent (reqs 13, 14)
+
+The same shape as `docs/303-cross-repo-session-proposal` reqs 10 and 11, so the
+two cards cannot drift apart in how they treat the user's choice.
+
+```
+user clicks "Decline"
+  → POST    /api/sessions/:sessionId/session-message-proposals/:cardId/decline
+            (NOT container-accessible, like deliver)
+            refused while a delivery is in flight, or once delivered
+            patch state=declined + declinedAt   (persist, then emit)
+
+next turn of the proposing session (any kind but compaction)
+  → prepareSessionMessageOutcomeNotice: cards whose state is delivered / failed /
+    declined and differs from agentNotifiedState
+  → "[ShipIt] Since your last turn, the user acted on a card you posted…"
+  → on the agent's result: agentNotifiedState = the state the notice carried
+```
+
+**Declined is terminal.** The deliver route refuses a declined card, and the
+card offers nothing more. Nothing reaches the target (req 7 is unchanged).
+
+**Every transition is persisted before it is emitted.** A viewer shown a state
+that was never stored would lose it on reload, and the agent would never be told
+of it. The deliver route used to emit first; it now shares the decline route's
+order.
+
+**The notice is a second module, not a second kind of line in the first.**
+`services/session-message-outcome-notice.ts` mirrors
+`services/repo-session-outcome-notice.ts` and reuses its quoting helper. Both
+are at-least-once through the turn's `NoticeDelivery` receipt, and both ride
+every turn but compaction, on the WebSocket path (`agent-execution.ts`) and the
+dispatch path (`dispatched-turn.ts`). The reasoning is in
+`docs/303-cross-repo-session-proposal` `plan.md`, and it applies here unchanged.
+
+**What reaches the agent in ShipIt's voice.** The target session's id, whether
+a delivery was queued, and fixed text. The target's title and a failure reason
+are quoted as data, flattened to one line, with their quote and bracket
+characters stripped. The message itself is never carried: the agent wrote it.
+The notice says a queued delivery runs when that session is free, not why it
+was queued — a merge hold queues one on an idle session too.
+
+The tool result and the propose route's refusals quote the target's title the
+same way. Another session's agent can rename that session, so its title is
+text this agent must not read as ShipIt speaking.
+
+**A second failed delivery is not reported again**, for the reason given in
+`docs/303-cross-repo-session-proposal` `plan.md` → *Known limitations*: the
+agent already heard that the delivery failed and that a retry is possible.
+
 ## Files
 
 New:
@@ -155,6 +211,8 @@ New:
   deliver routes.
 - `src/client/components/SessionMessageProposalCard.tsx` — the card.
 - `src/client/hooks/message-handlers/session-message-proposal.ts` — WS handlers.
+- `src/server/orchestrator/services/session-message-outcome-notice.ts` — the
+  next-turn notice and its delivery receipt (req 14).
 
 Changed:
 
@@ -163,7 +221,10 @@ Changed:
   `SessionMessageOrigin.relation` gains `"proposed"`.
 - `shared/types/ws-server-messages/cards.ts` — the two WS messages.
 - `shared/database.ts` — `session_message_proposal` column + migration.
-- `orchestrator/chat-history.ts` — field, `toRow`/`fromRow`, `find…`/`update…`.
+- `orchestrator/chat-history.ts` — field, `toRow`/`fromRow`, `find…`/`list…`/`update…`.
+- `orchestrator/ws-handlers/agent-execution.ts`, `orchestrator/dispatched-turn.ts`,
+  `orchestrator/runner-registry-factory.ts`, `orchestrator/session-runner.ts` —
+  the notice on both prompt paths.
 - `client/components/visual-elements.ts` — `CARD_MESSAGE_FIELDS`.
 - `client/components/MessageList/types.ts`, `.../cards/MessageCards.tsx`,
   `.../row-context.tsx`, `.../MessageList.tsx`, `.../TranscriptRow.tsx`,
@@ -197,6 +258,12 @@ the card rehydrates from its owner's history.
   refused; a target archived after the card fails the card, not the request; the
   reported `queued` matches the dispatch's admission; and a persistence failure
   **after** dispatch leaves the card un-retryable while the message still lands.
+  Declining: recorded and emitted, refused once delivered, a declined card is
+  never delivered, and a decline that could not be stored tells the viewer
+  nothing. The WebSocket prompt path carries the outcome once.
+- `services/session-message-outcome-notice.test.ts` — what is owed, the text,
+  quoting, and the receipt. `integration_tests/repo-session-outcome-notice.test.ts`
+  covers the dispatch prompt path for both cards.
 - `child-sessions.test.ts` — `sendChildMessage` still refuses a non-child after
   the extraction (the guard that the split did not widen the scope).
 - `chat-history.test.ts` / `visual-elements.test.ts` — the two self-enforcing
