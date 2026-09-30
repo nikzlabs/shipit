@@ -96,22 +96,30 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
     fs.rmSync(repoDir, { recursive: true, force: true });
   });
 
-  function setup(opts: { postTurn?: "none"; systemTurn?: boolean } = {}) {
+  function setup(opts: { postTurn?: "none"; systemTurn?: boolean; settleInStep?: boolean } = {}) {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const events: string[] = [];
     const seen: { turn: RequestedRestartTurn; commits: number; ownsHold: boolean; current: boolean }[] = [];
     runner.on("idle", () => events.push("idle"));
+    const onTurnComplete = vi.fn();
     const agent = makeFakeAgent(() => fs.writeFileSync(path.join(repoDir, "file.txt"), "the turn's work\n"));
 
     const deps: SystemTurnDeps = {
       agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
       autoCommit: realAutoCommit,
-      scheduleAutoPush: () => { events.push("push-armed"); },
+      scheduleAutoPush: vi.fn(),
+      // Production's commit defers the push arm until the PR flow's own push is done.
+      commitTurn: async ({ sessionDir, summary, deferPushArm }) => {
+        const r = await realAutoCommit(sessionDir, summary);
+        if (r.commitHash) deferPushArm?.(() => { events.push("push-armed"); });
+        return r.commitHash;
+      },
       postTurnPrFlow: async () => { events.push("pr-flow"); },
       listenerDeps: makeListenerDeps(),
       buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
       runRequestedRestart: async (turn) => {
         events.push("requested-restart");
+        if (opts.settleInStep) turn.settle();
         seen.push({
           turn,
           commits: commitCount(),
@@ -138,9 +146,10 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
         emitErrorOnNoResult: true,
         ...(opts.postTurn ? { postTurn: opts.postTurn } : {}),
         ...(opts.systemTurn ? { systemTurn: true } : {}),
+        onTurnComplete,
       });
 
-    return { runner, agent, events, seen, start };
+    return { runner, agent, events, seen, start, onTurnComplete };
   }
 
   it("runs after the commit, the PR flow and the push, and before idle", async () => {
@@ -151,11 +160,27 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
     agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => events.includes("idle"), "idle");
 
-    expect(events).toEqual(["push-armed", "pr-flow", "requested-restart", "idle"]);
+    expect(events).toEqual(["pr-flow", "push-armed", "requested-restart", "idle"]);
     expect(seen).toHaveLength(1);
     expect(seen[0]!.commits).toBe(2);
     expect(seen[0]!.current).toBe(true);
     expect(seen[0]!.turn.runner).toBe(runner);
+    runner.dispose({ force: true });
+  });
+
+  it("the step's settle reports the turn once, with its real outcome", async () => {
+    const { runner, agent, seen, start, onTurnComplete } = setup({ settleInStep: true });
+    await start(false);
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agent.emit("done", 0);
+    await waitFor(() => seen.length === 1, "requested-restart step");
+    await flush();
+    await flush();
+
+    expect(onTurnComplete).toHaveBeenCalledTimes(1);
+    expect(onTurnComplete.mock.calls[0]![0]).toMatchObject({ status: "completed" });
     runner.dispose({ force: true });
   });
 

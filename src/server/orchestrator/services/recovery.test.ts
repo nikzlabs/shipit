@@ -664,7 +664,37 @@ describe("restartAgent carryQueue — queued messages survive an agent-requested
     expect(replacement!.messageQueue.map((m) => m.text)).toEqual(["first", "second"]);
     expect(counts.dropped).toBe(0);
     expect(replacement!.systemTurnInProgress).toBe(true);
-    expect(result.held).toEqual({ runner: replacement, seq: replacement!.systemHoldSeq });
+    // Leased too: the idle enforcer must not reclaim the runner holding the carried queue.
+    expect(replacement!.postTurnWorkInFlight).toBe(true);
+    expect(result.held?.runner).toBe(replacement);
+
+    result.held!.release();
+    result.held!.release();
+    expect(replacement!.systemTurnInProgress).toBe(false);
+    expect(replacement!.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("carries a message sent while no runner was registered, which queued on the held old runner", async () => {
+    const registry = new SessionRunnerRegistry();
+    const old = registry.getOrCreate("rescue-1", "/tmp/ws", "claude");
+    old.systemTurnInProgress = true;
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+    const destroy = cm.destroyAgentContainer.bind(cm);
+    (cm as unknown as { destroyAgentContainer: (id: string) => Promise<void> }).destroyAgentContainer =
+      async (id: string) => {
+        // The chat path resolves the socket's attached runner while the registry is empty.
+        expect(registry.get("rescue-1")).toBeUndefined();
+        old.enqueue({ text: "sent in the gap", execution: "interactive" });
+        await destroy(id);
+      };
+
+    await restartAgent(
+      { sessionManager, containerManager: cm, runnerRegistry: registry, defaultAgentId: "claude" as never },
+      "rescue-1",
+      { carryQueue: true },
+    );
+
+    expect(registry.get("rescue-1")!.messageQueue.map((m) => m.text)).toEqual(["sent in the gap"]);
   });
 
   it("the Restart agent container button, which does not ask, still drops the queue", async () => {

@@ -69,7 +69,8 @@ export async function wakeSessionWithTurn(
     const stale = runnerRegistry.get(session.id);
     const sc = containerManager.get(session.id);
     const live = !!sc && (sc.status === "running" || sc.status === "starting");
-    if (stale && !live) runnerRegistry.dispose(session.id, { force: true });
+    // A create still in preflight has no container record yet; it is not stale.
+    if (stale && !live && !stale.awaitingContainer) runnerRegistry.dispose(session.id, { force: true });
   }
 
   const runner = runnerRegistry.getOrCreate(
@@ -108,10 +109,7 @@ export async function wakeSessionWithTurn(
     throw new Error(`session ${session.id} container could not be resumed; wake-turn not delivered`);
   }
 
-  const hold = opts.releaseHold;
-  if (hold?.runner === runner && runner.systemHoldSeq === hold.seq) {
-    runner.systemTurnInProgress = false;
-  }
+  opts.releaseHold?.release();
 
   // The callback preserves synchronous settlement; awaiting the handle adds a microtask.
   const onSettled = opts.onSettled;

@@ -85,32 +85,44 @@ for a turn that may never come (req 1).
 A turn that ended by **Stop** or by an error still ended, so the restart and the
 continuation happen (req 2, req 5).
 
-**4. No message is lost during the restart.** In the same synchronous step as the
-checks, the step sets `systemTurnInProgress` on the runner (this also takes over
-the ending turn's own hold, so `finishTurn` does not release it). Both entry
-points then queue instead of starting a turn: `dispatchOnRunner` and the chat send
-path (`ws-handlers/send-message.ts`). `restartAgent` gains an opt-in `carryQueue`:
-just before its forced dispose — which drops the queue — it takes the queued
-entries, and in the same synchronous step that creates the replacement runner it
-holds the replacement and puts the entries back in its queue. It returns the hold
-(`held`: the runner and its `systemHoldSeq`). The wake releases that hold just
-before its dispatch (`wakeSessionWithTurn` option `releaseHold`), so the wake
-turn is admitted first and the carried messages drain at its end, as they would
-after any turn. The **Restart agent container** button does not pass the option
-and keeps today's behaviour.
+**4. No message is lost during the restart.** The step first clears the note, so a
+failed write leaves nothing held. Then, in the same synchronous step as the checks,
+it takes a hold on the runner (`takeQueueHold`, `services/recovery.ts`), which also
+takes over the ending turn's own hold, so `finishTurn` does not release it. Both
+entry points then queue instead of starting a turn: `dispatchOnRunner`, and the
+chat send path (`ws-handlers/send-message.ts`), whose final check after its awaits
+now includes `systemTurnInProgress` as its first check did. `restartAgent` gains an
+opt-in `carryQueue`:
 
-**5. The restart and the wake.** The step clears the note and awaits
-`restartAgent` (`services/recovery.ts`) without the OOM breaker or the loop
-detector, so a restart the agent asks for does not reset them as the button does.
-It then starts `wakeSessionWithTurn` (`wake-session.ts`) without awaiting it: a
-system turn built from `prompts/post-restart-followup.md` (the note, and "do that
-now, or say it no longer applies"), activity "Continuing after the restart…". The
-ending turn's terminal sequence therefore waits for the container swap, which
-must finish before `idle`, but not for the new worker, which can take 30 s.
-`wakeSessionWithTurn` keeps a runner whose container is `starting` and waits for
-the worker, so it works straight after `restartAgent`. The viewer's "Restarting
-agent…" state clears through the health-strip poll (`useContainerHealthPoll`),
-which already does this without an HTTP caller.
+- Just before its forced dispose, which drops the queue, it takes the queued
+  entries.
+- In the same synchronous step that creates the replacement runner, it holds the
+  replacement with a post-turn lease as well, so the idle enforcer cannot reclaim
+  it and drop the queue while the container starts (invariant 5). It also takes
+  anything that queued on the old runner in the gap while no runner was
+  registered: the chat path falls back to the socket's attached runner, which is
+  still held.
+- It returns the hold (`held`). The wake releases it just before its dispatch
+  (`wakeSessionWithTurn` option `releaseHold`), so the wake turn is admitted
+  first and the carried messages drain at its end, as they would after any turn.
+
+The **Restart agent container** button does not pass the option and keeps
+today's behaviour.
+
+**5. The restart and the wake.** The step settles the ending turn first
+(`settle`, which is the executor's `finishTurn`). Otherwise the dispose settles a
+finished dispatched turn as interrupted, and the executor settles it a second
+time as completed. It then awaits `restartAgent` without the OOM breaker or the
+loop detector, so a restart the agent asks for does not reset them as the button
+does. It starts `wakeSessionWithTurn` without awaiting it: a system turn built
+from `prompts/post-restart-followup.md` (the note, and "do that now, or say it no
+longer applies"), activity "Continuing after the restart…". The ending turn's
+terminal sequence therefore waits for the container swap, which must finish
+before `idle`, but not for the new worker, which can take 30 s.
+`wakeSessionWithTurn` keeps a runner whose container is `starting`, and now also
+one still `awaitingContainer` (a create in preflight has no container record yet;
+disposing it would drop the carried queue). The viewer's "Restarting agent…"
+state clears through the health-strip poll (`useContainerHealthPoll`).
 
 **6. Failure.** A throw from `restartAgent`, a replacement that could not be
 created (`newContainerState: "missing"`), or a wake that throws parks the note
@@ -121,6 +133,25 @@ still owns, so held messages run. A wake that settles without reaching the agent
 `services/rebase-followup.ts`) parks the follow-up prompt itself. The next turn
 starts with the parked notice. `restartAgent` already shows a failed restart on
 the health strip.
+
+## Known limits
+
+These came from the independent review. Each is rare, and each fix would add
+machinery that no requirement asks for, so the request waits instead:
+
+- **A request with no later trigger.** When the step finds the session held by a
+  merge or another flow, or the turn was a rebase-resolution step
+  (`postTurn: "none"`), the request waits for the next turn's end. If no turn
+  follows, it waits until the user sends a message.
+- **A Stop with no terminal event.** If a stopped streaming process sends neither
+  `done` nor a result, the interrupt fallback commits the work
+  (`post-interrupt-commit.ts`), but the step does not run until the next turn's
+  end.
+- **An orchestrator restart during the swap.** The note is cleared when the step
+  starts, so a ShipIt restart in the seconds before the wake is dispatched loses
+  the follow-up turn.
+- **A quota stand-down in the same turn.** The quota continuation can queue a
+  second continuation turn behind the restart's.
 
 ## Rejected alternatives
 
@@ -156,8 +187,9 @@ the health strip.
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `POST /api/sessions/:id/restart-after-turn` |
 | `src/server/shared/database.ts`, `src/server/orchestrator/sessions.ts` | `pending_restart_note` column and accessors |
 | `src/server/orchestrator/services/agent-restart-request.ts` | The request, and the step: checks, hold, restart, wake, failure parking |
-| `src/server/orchestrator/services/recovery.ts` | `restartAgent` option `carryQueue`, and the `QueueHold` it returns |
-| `src/server/orchestrator/wake-session.ts` | Option `releaseHold` |
+| `src/server/orchestrator/services/recovery.ts` | `takeQueueHold`, and `restartAgent` option `carryQueue` |
+| `src/server/orchestrator/wake-session.ts` | Option `releaseHold`; keep a runner still awaiting its container |
+| `src/server/orchestrator/ws-handlers/send-message.ts` | The final admission check includes the system hold |
 | `src/server/orchestrator/turn-executor.ts` | Call the step at the end of `runCommitAndPr`, after `armPendingPush` |
 | `src/server/orchestrator/session-runner.ts` | The `SystemTurnDeps.runRequestedRestart` seam |
 | `src/server/orchestrator/bootstrap-managers.ts`, `runner-registry-factory.ts` | Build the step (it resolves the registry lazily) and wire it into dispatched turns |

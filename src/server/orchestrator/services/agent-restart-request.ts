@@ -8,7 +8,7 @@ import { releaseQueuedTurn } from "../queue-drain.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
 import { getErrorMessage } from "../validation.js";
-import { restartAgent, type QueueHold } from "./recovery.js";
+import { restartAgent, takeQueueHold, type QueueHold } from "./recovery.js";
 import { shouldRepark } from "./rebase-followup.js";
 import { ServiceError } from "./types.js";
 
@@ -55,6 +55,11 @@ export interface RequestedRestartTurn {
   turnIsCurrent: () => boolean;
   /** This turn took the runner's system hold and still owns it. */
   ownsSystemHold: () => boolean;
+  /**
+   * Settles the turn with its real outcome. Without it the restart's dispose settles a
+   * finished dispatched turn as interrupted, and the executor then settles it again.
+   */
+  settle: () => void;
 }
 
 export function buildRestartFollowupPrompt(note: string): string {
@@ -65,7 +70,7 @@ export function buildRestartFollowupPrompt(note: string): string {
  * Runs at the end of every turn's commit-and-PR step. Does nothing unless the agent asked for
  * a restart; leaves the request pending while another turn or flow has the session, so the
  * next turn's end retries it. Resolves once the container is replaced, without waiting for
- * the follow-up turn. Never throws.
+ * the follow-up turn. Throws only if the note cannot be cleared, before anything is held.
  */
 export async function runRequestedRestart(
   deps: WakeSessionDeps,
@@ -84,15 +89,20 @@ export async function runRequestedRestart(
     return;
   }
 
+  // Before the hold: if this write throws, nothing is held and the next turn's end retries.
+  deps.sessionManager.setPendingRestartNote(sessionId, null);
   // In the same synchronous step as the checks: from here new messages queue, and the
   // restart carries them to the new runner. Taking the hold also ends this turn's own.
-  runner.systemTurnInProgress = true;
-  const oldHold: QueueHold = { runner, seq: runner.systemHoldSeq };
-  deps.sessionManager.setPendingRestartNote(sessionId, null);
+  const oldHold = takeQueueHold(runner, { lease: false });
   console.log(`[agent-restart] restarting the agent container of ${sessionId}, as the agent asked`);
 
   let held: QueueHold | undefined;
   try {
+    try {
+      turn.settle();
+    } catch (err) {
+      console.error(`[agent-restart] settling the ending turn of ${sessionId} threw:`, getErrorMessage(err));
+    }
     // No OOM breaker or loop detector: a restart the agent asked for must not reset them.
     const result = await restartAgent(
       {
@@ -162,9 +172,9 @@ function failRestart(
 }
 
 function releaseHold(hold: QueueHold | undefined): void {
-  if (!hold || hold.runner.disposed || hold.runner.systemHoldSeq !== hold.seq) return;
-  hold.runner.systemTurnInProgress = false;
-  releaseQueuedTurn(hold.runner);
+  if (!hold) return;
+  hold.release();
+  if (!hold.runner.disposed) releaseQueuedTurn(hold.runner);
 }
 
 // Append, never set: a branch notice recorded meanwhile must survive this.

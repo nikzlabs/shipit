@@ -1138,7 +1138,7 @@ export async function executeAgentTurn(
     const runRequestedRestart = deps.runRequestedRestart;
     if (runner && runRequestedRestart) {
       await postTurnStep("requested-restart", () =>
-        runRequestedRestart({ sessionId, runner, turnIsCurrent, ownsSystemHold }));
+        runRequestedRestart({ sessionId, runner, turnIsCurrent, ownsSystemHold, settle: finishTurn }));
     }
   };
 

@@ -535,8 +535,8 @@ async function decideAndRunSend(
   // queue itself can still refuse it, so each branch accepts after its own
   // dispatch has been taken.
   const turnRunner = resolveRunner(ctx);
-  // A turn or merge can start during the awaits above.
-  if (turnRunner?.mergeHold || turnRunner?.running) {
+  // A turn, merge or system hold (docs/321's restart) can start during the awaits above.
+  if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.systemTurnInProgress) {
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
