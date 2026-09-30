@@ -112,6 +112,27 @@ still find them when ShipIt is not storing them outside the clone, which is not
 something your service can detect or rely on — so work that needs the project's
 installed dependencies belongs in a command.
 
+### Your command runs under a 2 GiB memory limit
+
+Each call to one of your commands runs in its own container with a **2 GiB
+memory limit**. That is not the session's limit, so a program that passes when
+you run it directly in your shell can be killed when it runs as your command.
+`repo: self` runs the command in the same kind of container with the same
+limit, so test the command through its wrapper on `PATH`, not only the program
+it starts.
+
+Your manifest cannot raise the limit. The consuming project sets it, for one
+command, with `overrides.commands.<cmd>.memory` — see
+[plugins.md → A plugin command's memory limit](plugins.md#a-plugin-commands-memory-limit).
+Your own repository's `use` entry can set it the same way under `repo: self`.
+So if a command needs more memory:
+
+- **Say which command, and how much**, where a consumer's agent reads: your
+  README and the skill that drives the command.
+- **Say it in the failure too.** ShipIt names the field only when Docker
+  reports the container as OOM-killed. When your command outlives a child
+  that was killed by signal 9, print which limit to raise before you exit.
+
 ### Your service does not choose its port
 
 An exported compose fragment **must not declare `ports:`**. A fragment that does

@@ -23,9 +23,15 @@ export interface PluginServiceOverride {
   port?: number;
 }
 
+export interface PluginCommandOverride {
+  as?: string;
+  /** Replaces the command container's default memory limit. */
+  memoryBytes?: number;
+}
+
 export interface PluginUseOverrides {
   services: Record<string, PluginServiceOverride>;
-  commands: Record<string, { as?: string }>;
+  commands: Record<string, PluginCommandOverride>;
   settings: Record<string, string | number | boolean>;
 }
 
@@ -126,7 +132,27 @@ const KNOWN_REPO_KEYS = new Set(["repo", "name", "branch", "pin"]);
 const KNOWN_USE_KEYS = new Set(["plugin", "from", "alias", "overrides"]);
 const KNOWN_OVERRIDE_KEYS = new Set(["services", "commands", "settings"]);
 const KNOWN_SERVICE_OVERRIDE_KEYS = new Set(["autostart", "as", "port"]);
-const KNOWN_COMMAND_OVERRIDE_KEYS = new Set(["as"]);
+const KNOWN_COMMAND_OVERRIDE_KEYS = new Set(["as", "memory"]);
+
+const MEMORY_UNITS: Readonly<Record<string, number>> = { k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+const MEMORY_SIZE_RE = /^(\d+(?:\.\d+)?)\s*([kmg])(?:i?b)?$/i;
+// Docker refuses to create a container with a smaller limit.
+const MIN_MEMORY_BYTES = 6 * 1024 ** 2;
+
+/** Docker-style size with a required unit (`4g`, `3584m`, `4GiB`); a bare number is refused as ambiguous. */
+export function parseMemorySize(raw: unknown): number | undefined {
+  if (typeof raw !== "string") return undefined;
+  const match = MEMORY_SIZE_RE.exec(raw.trim());
+  if (!match) return undefined;
+  const bytes = Math.floor(Number(match[1]) * MEMORY_UNITS[match[2].toLowerCase()]);
+  return bytes >= MIN_MEMORY_BYTES ? bytes : undefined;
+}
+
+export function formatMemorySize(bytes: number): string {
+  const gib = bytes / 1024 ** 3;
+  if (gib >= 1) return `${Number(gib.toFixed(2))} GiB`;
+  return `${Math.round(bytes / 1024 ** 2)} MiB`;
+}
 
 function isMapping(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -429,7 +455,7 @@ function parseOverrides(
     }
   }
 
-  const commands: Record<string, { as?: string }> = {};
+  const commands: Record<string, PluginCommandOverride> = {};
   if (raw.commands !== undefined && raw.commands !== null) {
     if (!isMapping(raw.commands)) return fail("overrides.commands", "must be a mapping keyed by command name");
     for (const [cmd, val] of Object.entries(raw.commands)) {
@@ -440,11 +466,18 @@ function parseOverrides(
           warnings.push(`Unknown key \`plugins.use[${useIndex}].${field}.${key}\` in shipit.yaml.`);
         }
       }
-      const out: { as?: string } = {};
+      const out: PluginCommandOverride = {};
       if (val.as !== undefined && val.as !== null) {
         const as = parseAlias(val.as);
         if (!as) return fail(`${field}.as`, "must be letters, digits, `.`, `_` or `-`");
         out.as = as;
+      }
+      if (val.memory !== undefined && val.memory !== null) {
+        const memoryBytes = parseMemorySize(val.memory);
+        if (memoryBytes === undefined) {
+          return fail(`${field}.memory`, "must be a size with a unit, like `4g` or `3072m`, of at least `6m`");
+        }
+        out.memoryBytes = memoryBytes;
       }
       commands[cmd] = out;
     }

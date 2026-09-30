@@ -78,6 +78,7 @@ plugins:
         commands:
           reqs:
             as: rt-reqs           # command alias on collision (req 20)
+            memory: 4g            # req 30 — the command container's memory limit
         settings:                 # req 26 — values for plugin-declared settings
           root: docs
 ```
@@ -143,6 +144,17 @@ Rules (review findings, both rounds):
 - **Startup** (req 16): the plugin's compose fragment owns per-service
   defaults via the existing `x-shipit-preview` vocabulary; the consumer
   overrides per service. No plugin-level boolean exists.
+- **Command memory** (req 30): `overrides.commands.<cmd>.memory` replaces the
+  2 GiB default for that one command's container. Per command, like `as`,
+  because the heavy one is usually one command of several. The value is a
+  Docker-style size with a required unit (`4g`, `3584m`, `4GiB`): a bare
+  number is refused, because Compose reads it as bytes and a reader would
+  read it as MiB. There is no upper bound, only Docker's 6 MiB floor — a
+  plugin service's own `mem_limit` has none either, and the value is the
+  consuming project's, which is more trusted than the plugin. A plugin cannot raise its
+  own limit; the manifest has no such key. This is a deliberate exception to
+  docs/229-auto-resource-sizing, which removed repo-set session sizes: the
+  2 GiB here is not host-derived, so without the field nothing could move it.
 - **Fail-closed grammar**: unknown keys warn; an unknown `from:` reference,
   an unknown `plugin:` selector, or `branch`+`pin` together drop the entry
   with a warning; setting values are scalars. Within one repository, a selected export that fails validation
@@ -1285,6 +1297,21 @@ instead of a repeat.
   one shared with install through `plugin-container.ts`, because "not the
   session's network" is not enough and a second, slightly different copy of a
   security control is how the two drift.
+
+  **The memory ceiling is 2 GiB unless the consuming project sets
+  `overrides.commands.<cmd>.memory`** (req 30, §1a). It is read from the
+  declaration on every call, like the rest of the run boundary, so an edit
+  applies to the next call with no refresh. The planner (`shared/plugin-cli.ts`)
+  carries it on the surfaced command, so the case-insensitive match and the
+  "names it more than once" refusal are the same ones `as` has. When a call
+  exits non-zero and Docker reports the container as OOM-killed, the result's
+  `error` names the limit and the exact field to raise; the shim prints it to
+  stderr after the command's own output. That is the only place a heavy
+  command's failure can point at the fix, because the command itself only sees
+  `Killed`. Docker does not always report a child killed while the CLI lived
+  on, so the docs tell the agent to read an unexplained `Killed` the same way.
+  `install` keeps its own fixed 2 GiB: it is shared across projects through
+  the dependency store, so one project's value would have no clear owner.
 
   Three smaller decisions, each of which had a wrong-looking cheaper option.
   The agent's **cwd is carried across**: a cwd inside `/workspace` becomes the
