@@ -245,6 +245,26 @@ describe("preparePlugins — skills (req 22)", () => {
       .toContain(".claude/skills/mine/SKILL.md");
   });
 
+  it("keeps the copies out of git when a skills root is a symlink inside the workspace", () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workspaceDir });
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
+    });
+    fs.mkdirSync(path.join(workspaceDir, ".agents", "skills", "mine"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, ".agents", "skills", "mine", "SKILL.md"), "---\nname: mine\n---\n");
+    fs.mkdirSync(path.join(workspaceDir, ".claude"), { recursive: true });
+    fs.symlinkSync(path.join("..", ".agents", "skills"), path.join(workspaceDir, ".claude", "skills"));
+
+    expect(preparePlugins(opts()).skills).toEqual([namespacedName("probe", "probe")]);
+    expect(fs.existsSync(path.join(workspaceDir, ".agents", "skills", namespacedName("probe", "probe")))).toBe(true);
+    execFileSync("git", ["add", "-A"], { cwd: workspaceDir });
+    const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: workspaceDir }).toString();
+
+    expect(staged).toContain(".agents/skills/mine/SKILL.md");
+    expect(staged).not.toContain(namespacedName("probe", "probe"));
+  });
+
   it("materializes nothing when it cannot keep the copies out of git", () => {
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workspaceDir });
     declare();

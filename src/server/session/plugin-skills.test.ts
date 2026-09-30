@@ -1,5 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -367,22 +368,94 @@ describe("namespacedName", () => {
 });
 
 describe("pluginSkillExcludeEntries", () => {
+  const NAME = "plugins--tools--probe-abc123";
+
   it("covers every harness root and only this module's namespace", () => {
-    const entries = pluginSkillExcludeEntries(["plugins--tools--probe-abc123"]);
-    expect(entries).toContain("/.claude/skills/plugins--tools--probe-abc123/");
-    expect(entries).toContain("/.codex/skills/plugins--tools--probe-abc123/");
-    expect(entries).toContain("/.opencode/skills/plugins--tools--probe-abc123/");
-    expect(entries).toContain("/.grok/skills/plugins--tools--probe-abc123/");
+    const entries = pluginSkillExcludeEntries(workspaceDir, [NAME]);
+    expect(entries).toContain(`/.claude/skills/${NAME}/`);
+    expect(entries).toContain(`/.codex/skills/${NAME}/`);
+    expect(entries).toContain(`/.opencode/skills/${NAME}/`);
+    expect(entries).toContain(`/.grok/skills/${NAME}/`);
     for (const entry of entries.filter((e) => e.includes("probe"))) {
       expect(entry).not.toContain("*");
     }
     expect(entries).toContain("/.claude/skills/.plugins--*.staging-*/");
-    expect(pluginSkillExcludeEntries([])).toEqual([
+    expect(pluginSkillExcludeEntries(workspaceDir, [])).toEqual([
       "/.claude/skills/.plugins--*.staging-*/",
       "/.codex/skills/.plugins--*.staging-*/",
       "/.opencode/skills/.plugins--*.staging-*/",
       "/.grok/skills/.plugins--*.staging-*/",
     ]);
+  });
+
+  it("also excludes where a symlinked root really resolves inside the workspace", () => {
+    fs.mkdirSync(path.join(workspaceDir, ".agents", "skills"), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, ".claude"), { recursive: true });
+    fs.symlinkSync(path.join("..", ".agents", "skills"), path.join(workspaceDir, ".claude", "skills"));
+
+    const entries = pluginSkillExcludeEntries(workspaceDir, [NAME]);
+
+    expect(entries).toContain(`/.claude/skills/${NAME}/`);
+    expect(entries).toContain(`/.agents/skills/${NAME}/`);
+    expect(entries).toContain("/.agents/skills/.plugins--*.staging-*/");
+  });
+
+  it("resolves a symlinked ancestor before the skills directory exists", () => {
+    fs.mkdirSync(path.join(workspaceDir, ".agents"), { recursive: true });
+    fs.symlinkSync(".agents", path.join(workspaceDir, ".codex"));
+
+    expect(pluginSkillExcludeEntries(workspaceDir, [NAME])).toContain(`/.agents/skills/${NAME}/`);
+  });
+
+  it("lists a directory two roots share only once", () => {
+    fs.mkdirSync(path.join(workspaceDir, ".agents", "skills"), { recursive: true });
+    for (const dir of [".claude", ".codex"]) {
+      fs.mkdirSync(path.join(workspaceDir, dir), { recursive: true });
+      fs.symlinkSync(path.join("..", ".agents", "skills"), path.join(workspaceDir, dir, "skills"));
+    }
+
+    const entries = pluginSkillExcludeEntries(workspaceDir, [NAME]);
+
+    expect(entries.filter((e) => e === `/.agents/skills/${NAME}/`)).toHaveLength(1);
+  });
+
+  it("adds nothing for a root that resolves outside the workspace", () => {
+    fs.mkdirSync(path.join(tmp, "elsewhere"), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, ".claude"), { recursive: true });
+    fs.symlinkSync(path.join(tmp, "elsewhere"), path.join(workspaceDir, ".claude", "skills"));
+
+    expect(pluginSkillExcludeEntries(workspaceDir, [NAME])).toHaveLength(8);
+  });
+
+  it("escapes glob characters in a resolved path", () => {
+    execFileSync("git", ["init", "-q"], { cwd: workspaceDir });
+    const real = path.join(workspaceDir, "skills[x]*");
+    fs.mkdirSync(path.join(real, NAME), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, "skillsx-other", NAME), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, ".claude"), { recursive: true });
+    fs.symlinkSync(real, path.join(workspaceDir, ".claude", "skills"));
+    fs.writeFileSync(
+      path.join(workspaceDir, ".git", "info", "exclude"),
+      `${pluginSkillExcludeEntries(workspaceDir, [NAME]).join("\n")}\n`,
+    );
+    const ignored = (rel: string): boolean => {
+      try {
+        execFileSync("git", ["check-ignore", "-q", rel], { cwd: workspaceDir });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    expect(ignored(`skills[x]*/${NAME}/`)).toBe(true);
+    expect(ignored(`skillsx-other/${NAME}/`)).toBe(false);
+  });
+
+  it("uses a root-level pattern for a root that resolves to the workspace itself", () => {
+    fs.mkdirSync(path.join(workspaceDir, ".claude"), { recursive: true });
+    fs.symlinkSync("..", path.join(workspaceDir, ".claude", "skills"));
+
+    expect(pluginSkillExcludeEntries(workspaceDir, [NAME])).toContain(`/${NAME}/`);
   });
 });
 

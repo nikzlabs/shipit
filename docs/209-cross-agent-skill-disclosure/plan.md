@@ -43,9 +43,11 @@ Verified on 2026-09-30 with Claude Code 2.1.284, in `-p` mode with `Edit` allowe
 Claude still discovers every skill through the symlinked `.claude/skills`.
 
 ShipIt copies plugin skills into `.claude/skills/`, so the copies land in
-`.agents/skills/`. Their `.git/info/exclude` entries name `.claude/skills/…`, and
-git does not look through a symlink, so `.gitignore` also ignores
-`/.agents/skills/plugins--*/`.
+`.agents/skills/`. Git does not look through a symlink, so ShipIt also writes
+`.git/info/exclude` entries for the resolved `.agents/skills/…` path
+(`pluginSkillExcludeEntries`, docs/262-plugins). ShipIt builds without that fix
+exclude only `.claude/skills/…`, so this repo's `.gitignore` also ignores
+`/.agents/skills/plugins--*/` until every session runs a build that has it.
 
 ## The key finding (verified empirically, 2026-06-15)
 
