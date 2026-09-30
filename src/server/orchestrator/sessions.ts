@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { doneSessionTest, isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
@@ -484,6 +485,13 @@ export class SessionManager {
     if (!card?.fresh) return false;
     this.setSessionStatus(id, { ...card, fresh: false });
     return true;
+  }
+
+  remoteUrlForWorkspaceDir(workspaceDir: string): string | null {
+    const row = this.db
+      .prepare("SELECT remote_url FROM sessions WHERE workspace_dir = ? AND remote_url IS NOT NULL LIMIT 1")
+      .get(path.resolve(workspaceDir)) as { remote_url: string } | undefined;
+    return row?.remote_url ?? null;
   }
 
   // This URL is later written into agent-readable clone configs.

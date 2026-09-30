@@ -246,6 +246,22 @@ describe("materializeLfsContent", () => {
     expect(result.warning).toMatch(/could not present a credential/);
   });
 
+  it("reports why a declared LFS host got no credential, even when the pull succeeded", async () => {
+    const refusal = "the secret `LFS_CREDENTIAL` is for `other.example.com`";
+    const pull = (code: number) => materializeLfsContent(lfsRepo(), {
+      isAvailable: () => Promise.resolve(true),
+      resolveCredential: () => Promise.resolve({ origin: "https://github.com", lfsHostRefusal: refusal }),
+      spawnGit: () => Promise.resolve({ code, stdout: "", stderr: code ? "batch response: 401" : "", timedOut: false }),
+    });
+
+    const ok = await pull(0);
+    expect(ok.status).toBe("materialized");
+    expect(ok.warning).toBe(refusal);
+    const failed = await pull(2);
+    expect(failed.status).toBe("failed");
+    expect(failed.warning).toContain(refusal);
+  });
+
   it("reports a refused credential as an access problem, not a plumbing one", async () => {
     const result = await materializeLfsContent(lfsRepo(), {
       isAvailable: () => Promise.resolve(true),

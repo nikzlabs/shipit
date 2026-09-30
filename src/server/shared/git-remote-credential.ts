@@ -5,10 +5,37 @@ export interface GitRemoteCredential {
   origin: string;
   /** Omitted clears inherited helpers without supplying a replacement credential. */
   token?: { username: string; password: string };
+  /** A declared LFS host that is not the remote's (docs/320-lfs-host-credential). */
+  lfsHost?: LfsHostCredential;
+  /** Why a declared LFS host got no credential; reported by the operation that needed it. */
+  lfsHostRefusal?: string;
+}
+
+export interface LfsHostCredential {
+  /** `https://<host>[:port]`, the only origin the credential is offered to. */
+  origin: string;
+  username: string;
+  password: string;
+}
+
+/** `host` is the declared host a refusal is about, so it is reported only where that host was asked for. */
+export type LfsHostResolution = { credential: LfsHostCredential } | { refusal: string; host?: string };
+
+// The repository behind a tree comes from ShipIt: a provisioning caller names it, or
+// the resolver finds ShipIt's record. Never from the tree's editable `origin`.
+export type LfsHostCredentialResolver = (dir: string, repoUrl?: string) => Promise<LfsHostResolution | null>;
+
+// Registered once at boot, beside the SecretStore it reads.
+let lfsHostCredentialResolver: LfsHostCredentialResolver | undefined;
+
+export function configureLfsHostCredentialResolver(resolve: LfsHostCredentialResolver | undefined): void {
+  lfsHostCredentialResolver = resolve;
 }
 
 const CREDENTIAL_ENV_USERNAME = "SHIPIT_GIT_CRED_USERNAME";
 const CREDENTIAL_ENV_PASSWORD = "SHIPIT_GIT_CRED_PASSWORD";
+const LFS_CREDENTIAL_ENV_USERNAME = "SHIPIT_LFS_CRED_USERNAME";
+const LFS_CREDENTIAL_ENV_PASSWORD = "SHIPIT_LFS_CRED_PASSWORD";
 const SAFE_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/;
 
 // Keep intentional GIT_CONFIG_GLOBAL and GIT_EDITOR; scrub other executable overrides.
@@ -37,14 +64,26 @@ function assertSafeOrigin(origin: string): void {
   if (!SAFE_ORIGIN.test(origin)) throw new Error(`Refusing to build a git credential helper for origin "${origin}"`);
 }
 
+function envHelper(usernameVar: string, passwordVar: string): string {
+  return `!f() { echo "username=$${usernameVar}"; echo "password=$${passwordVar}"; }; f`;
+}
+
 export function gitCredentialConfig(credential: GitRemoteCredential): string[] {
-  const { origin } = credential;
+  const { origin, lfsHost } = credential;
   assertSafeOrigin(origin);
-  if (!credential.token) return ["credential.helper="];
-  const helper = `!f() { echo "username=$${CREDENTIAL_ENV_USERNAME}"; echo "password=$${CREDENTIAL_ENV_PASSWORD}"; }; f`;
-  // Reset the multi-valued helper list before adding an origin-scoped helper.
-  // Only variable names enter argv; the secret stays in the child environment.
-  return ["credential.helper=", `credential.${origin}.helper=${helper}`];
+  // Reset the multi-valued helper list before adding origin-scoped helpers.
+  // Only variable names enter argv; the secrets stay in the child environment.
+  const config = ["credential.helper="];
+  if (credential.token) {
+    config.push(`credential.${origin}.helper=${envHelper(CREDENTIAL_ENV_USERNAME, CREDENTIAL_ENV_PASSWORD)}`);
+  }
+  if (lfsHost) {
+    assertSafeOrigin(lfsHost.origin);
+    config.push(
+      `credential.${lfsHost.origin}.helper=${envHelper(LFS_CREDENTIAL_ENV_USERNAME, LFS_CREDENTIAL_ENV_PASSWORD)}`,
+    );
+  }
+  return config;
 }
 
 export function gitCredentialSpawnOverrides(
@@ -60,11 +99,20 @@ export function gitCredentialSpawnOverrides(
 // Apply after sanitizeGitEnv. extraHeader authenticates the first request;
 // helpers alone wait for a 401. Environment config keeps secrets out of argv and files.
 export function gitCredentialEnv(credential: GitRemoteCredential): Record<string, string> {
-  if (!credential.token) return {};
+  const env: Record<string, string> = {};
+  // The LFS host gets no preemptive header: git-lfs asks the helper after its first 401.
+  if (credential.lfsHost) {
+    assertSafeOrigin(credential.lfsHost.origin);
+    env[LFS_CREDENTIAL_ENV_USERNAME] = credential.lfsHost.username;
+    env[LFS_CREDENTIAL_ENV_PASSWORD] = credential.lfsHost.password;
+    env.GIT_TRACE_REDACT = "1";
+  }
+  if (!credential.token) return env;
   assertSafeOrigin(credential.origin);
   const { username, password } = credential.token;
   const basic = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
   return {
+    ...env,
     [CREDENTIAL_ENV_USERNAME]: username,
     [CREDENTIAL_ENV_PASSWORD]: password,
     GIT_CONFIG_COUNT: "1",
@@ -95,13 +143,26 @@ export async function withPreemptiveAuthFallback<T>(
     const result = await run(credential);
     if (!rejected?.(result)) return result;
     warnRetryingUnauthenticated(what, credential.origin);
-    return await run(null);
+    return await run(withoutRemoteToken(credential));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (!AUTH_REJECTED.test(message)) throw err;
     warnRetryingUnauthenticated(what, credential.origin);
-    return run(null);
+    return run(withoutRemoteToken(credential));
   }
+}
+
+// The anonymous retry drops the remote's token, not a declared LFS host's credential.
+function withoutRemoteToken(credential: GitRemoteCredential): GitRemoteCredential | null {
+  const { lfsHost, lfsHostRefusal } = credential;
+  if (!lfsHost && !lfsHostRefusal) return null;
+  return { origin: credential.origin, ...(lfsHost ? { lfsHost } : {}), ...(lfsHostRefusal ? { lfsHostRefusal } : {}) };
+}
+
+// A ref push or fetch never talks to the LFS host, so it does not carry its secret.
+export function withoutLfsHost(credential: GitRemoteCredential | null): GitRemoteCredential | null {
+  if (!credential?.token) return null;
+  return { origin: credential.origin, token: credential.token };
 }
 
 function warnRetryingUnauthenticated(what: string, origin: string): void {
@@ -158,14 +219,28 @@ export type GitRemoteCredentialResolver = (
   remote: RemoteOrigin,
 ) => Promise<{ username: string; password: string } | null>;
 
+export async function resolveLfsHost(dir: string, repoUrl?: string): Promise<LfsHostResolution | null> {
+  if (!lfsHostCredentialResolver) return null;
+  try {
+    return await lfsHostCredentialResolver(dir, repoUrl);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { refusal: `ShipIt could not read the declared LFS host credential: ${message}` };
+  }
+}
+
 // Resolution failures preserve the inherited git path instead of aborting the operation.
+// `lfsHost` asks for a declared LFS host's credential too; only LFS transfers need it.
+// `repoUrl` is for a caller provisioning a tree ShipIt has not recorded yet.
 export async function resolveTreeRemoteCredential(
   dir: string,
   remote: string,
   resolve: GitRemoteCredentialResolver | undefined,
   readRemoteUrl?: () => Promise<string | undefined>,
+  opts?: { lfsHost?: boolean; repoUrl?: string },
 ): Promise<GitRemoteCredential | null> {
-  if (!resolve) return null;
+  const wantsLfs = opts?.lfsHost === true && lfsHostCredentialResolver !== undefined;
+  if (!resolve && !wantsLfs) return null;
 
   let url: string | undefined;
   try {
@@ -174,19 +249,29 @@ export async function resolveTreeRemoteCredential(
     return null;
   }
   const origin = parseRemoteOrigin(url);
-  if (!origin) return null;
+  const lfs = wantsLfs ? await resolveLfsHost(dir, opts?.repoUrl) : null;
+  const lfsFields = !lfs
+    ? {}
+    : "credential" in lfs ? { lfsHost: lfs.credential } : { lfsHostRefusal: lfs.refusal };
 
-  try {
-    const token = await resolve(origin);
-    return token ? { origin: origin.origin, token } : null;
-  } catch (err) {
-    console.warn(
-      `[git] resolving a remote credential for ${origin.origin} failed; `
-      + "falling back to the inherited helpers:",
-      err instanceof Error ? err.message : String(err),
-    );
-    return null;
+  let token: { username: string; password: string } | null = null;
+  if (origin && resolve) {
+    try {
+      token = await resolve(origin);
+    } catch (err) {
+      console.warn(
+        `[git] resolving a remote credential for ${origin.origin} failed; `
+        + "falling back to the inherited helpers:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
+  if (token && origin) return { origin: origin.origin, token, ...lfsFields };
+  // No remote token, but a declared LFS host: still reset inherited helpers, so a helper
+  // written into the workspace config cannot answer for that host (req 8).
+  const lfsOrigin = !lfs ? undefined : "credential" in lfs ? lfs.credential.origin : lfs.host && `https://${lfs.host}`;
+  if (lfsOrigin) return { origin: origin?.origin ?? lfsOrigin, ...lfsFields };
+  return null;
 }
 
 async function defaultReadRemoteUrl(dir: string, remote: string): Promise<string | undefined> {

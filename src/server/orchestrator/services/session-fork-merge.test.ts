@@ -462,6 +462,14 @@ describe("session-fork-merge: forkSession reports unresolved LFS content (planni
     return { result, notices, warnings };
   }
 
+  // The fork has no row when it pulls; its secret must not be looked up by its origin.
+  it("names the parent's repository to the pull, for a declared LFS host's secret", async () => {
+    const { parentDir, remoteUrl } = setupParent();
+    await forkWithReport(parentDir, remoteUrl);
+    const call = vi.mocked(materializeLfsWithWarning).mock.calls.at(-1);
+    expect(call?.[3]).toEqual({ repoUrl: remoteUrl });
+  });
+
   it("parks a notice on the NEW session when the pull left stubs behind", async () => {
     const { parentDir, remoteUrl } = setupParent();
     vi.mocked(materializeLfsWithWarning).mockResolvedValueOnce({

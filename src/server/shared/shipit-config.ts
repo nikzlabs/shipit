@@ -51,10 +51,18 @@ export interface IssuesConfig {
   trackers: DeclaredTracker[];
 }
 
+/** A Git LFS server that is not GitHub, and the name of the secret that authenticates to it. */
+export interface LfsHostConfig {
+  /** Exact host, optionally with a port, e.g. `lfs.example.com` or `lfs.example.com:8443`. */
+  host: string;
+  credential: string;
+}
+
 export interface ShipitConfig {
   version?: number;
   agent: AgentConfig;
   compose?: ComposeConfig;
+  lfs?: LfsHostConfig;
   hostMounts: HostMount[];
   release?: ReleaseConfig;
   issues: IssuesConfig;
@@ -87,6 +95,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "x-shipit-host-mounts",
   "plugins",
   "exports",
+  "lfs",
 ]);
 const KNOWN_AGENT_KEYS = new Set(["install", "dep-dirs", "install-inputs"]);
 
@@ -165,7 +174,56 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
 
   const hostMounts = parseHostMounts(raw["x-shipit-host-mounts"]);
 
-  return { version, agent, compose, release, issues, plugins, pluginExports, hostMounts, warnings };
+  const lfs = parseLfsHostConfig(raw.lfs, warnings);
+
+  return {
+    version, agent, compose, release, issues, plugins, pluginExports, hostMounts,
+    ...(lfs ? { lfs } : {}),
+    warnings,
+  };
+}
+
+const KNOWN_LFS_KEYS = new Set(["host", "credential"]);
+// One exact host: no scheme, path, wildcard or trailing dot (`github.com.` is github.com).
+const LFS_HOST_RE = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:\d+)?$/;
+// The name rule compose and plugin credentials use: a name outside it is a secret
+// the agent cannot otherwise reach, and the session's credential helper would hand it over.
+const LFS_CREDENTIAL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function parseLfsHostConfig(raw: unknown, warnings: string[]): LfsHostConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push("`lfs` must be a mapping with `host` and `credential`; ignoring it.");
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_LFS_KEYS.has(key)) warnings.push(`Unknown key \`lfs.${key}\` in shipit.yaml.`);
+  }
+  const { host, credential } = obj;
+  if (typeof host !== "string" || typeof credential !== "string" || !credential.trim()) {
+    warnings.push("`lfs` needs both `host` and `credential` as strings; ignoring it.");
+    return undefined;
+  }
+  if (!LFS_CREDENTIAL_NAME_RE.test(credential.trim())) {
+    warnings.push(
+      `\`lfs.credential\` must be a secret name of letters, digits and underscores (got \`${credential}\`); ignoring \`lfs\`.`,
+    );
+    return undefined;
+  }
+  if (!LFS_HOST_RE.test(host)) {
+    warnings.push(
+      `\`lfs.host\` must be one exact host name, optionally with a port (got \`${host}\`); `
+      + "a scheme, a path or a wildcard is refused. Ignoring `lfs`.",
+    );
+    return undefined;
+  }
+  if (host.toLowerCase().split(":")[0] === "github.com") {
+    warnings.push("`lfs.host` is github.com, which ShipIt already authenticates; ignoring `lfs`.");
+    return undefined;
+  }
+  // https's default port, spelled the way the secret's URL reads back.
+  return { host: host.toLowerCase().replace(/:443$/, ""), credential: credential.trim() };
 }
 
 const KNOWN_ISSUES_KEYS = new Set(["trackers"]);
@@ -562,6 +620,16 @@ function parseComposeConfig(raw: unknown): ComposeConfig | undefined {
   throw new ShipitConfigError("`compose` must be a string or object with a `file` field");
 }
 
+export function parseShipitConfigText(content: string): ShipitConfig {
+  try {
+    return parseShipitConfig(parseYaml(content));
+  } catch (err) {
+    if (err instanceof ShipitConfigError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new ShipitConfigError(`Failed to parse shipit.yaml: ${message}`);
+  }
+}
+
 export function resolveShipitConfig(dir: string): ShipitConfig {
   const yamlPath = path.join(dir, "shipit.yaml");
 
@@ -582,14 +650,7 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
   }
 
   if (content !== undefined) {
-    try {
-      const parsed: unknown = parseYaml(content);
-      config = parseShipitConfig(parsed);
-    } catch (err) {
-      if (err instanceof ShipitConfigError) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      throw new ShipitConfigError(`Failed to parse shipit.yaml: ${message}`);
-    }
+    config = parseShipitConfigText(content);
   } else {
     config ??= {
       agent: { ...AGENT_DEFAULTS, install: [] },

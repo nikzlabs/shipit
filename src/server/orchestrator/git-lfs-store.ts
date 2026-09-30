@@ -72,7 +72,9 @@ export async function fetchLfsIntoCache(
       return false;
     }
     const startedAt = Date.now();
-    const credential = await resolveTreeRemoteCredential(bareRepoDir, "origin", opts?.resolveCredential);
+    const credential = await resolveTreeRemoteCredential(
+      bareRepoDir, "origin", opts?.resolveCredential, undefined, { lfsHost: true },
+    );
     const res = await withPreemptiveAuthFallback(credential, "cache LFS fetch", (cred) => {
       const overrides = gitCredentialSpawnOverrides(cred);
       return runGit(
@@ -85,9 +87,10 @@ export async function fetchLfsIntoCache(
     const durationMs = Date.now() - startedAt;
     if (res.code !== 0) {
       const detail = (res.stderr || res.stdout).trim().split("\n").slice(-2).join(" ").slice(0, 200);
+      const refusal = credential?.lfsHostRefusal ? ` ${credential.lfsHostRefusal}` : "";
       console.warn(
         `[git-lfs-store] Cache LFS fetch failed for ${bareRepoDir} ` +
-          `(${res.timedOut ? "timed out" : `exit ${res.code ?? "abnormal"}`})${detail ? `: ${detail}` : ""}` +
+          `(${res.timedOut ? "timed out" : `exit ${res.code ?? "abnormal"}`})${detail ? `: ${detail}` : ""}${refusal}` +
           ` — sessions will download their own objects`,
       );
       return false;

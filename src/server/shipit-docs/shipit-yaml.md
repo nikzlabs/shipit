@@ -445,6 +445,42 @@ Issues enabled — there is no connect step at which to check. Note that on a
 **public** code repository, a declaration discloses what it declares in a
 committed file.
 
+### `lfs` (optional)
+
+Names the Git LFS server of a repository whose LFS objects do not live on
+GitHub (a committed `.lfsconfig` sets `lfs.url` to it), and the secret that
+authenticates to it.
+
+```yaml
+lfs:
+  host: lfs.example.com        # one exact host, optionally with :port
+  credential: LFS_CREDENTIAL   # a secret in Project Settings → Secrets
+```
+
+The secret's value is one line in git's credential-store format:
+`https://<username>:<password>@lfs.example.com`. Percent-encode `@`, `:` and `/`
+in the username or password. ShipIt presents that username and password only to
+the host inside the secret, and only while it equals `lfs.host`. So editing
+this file can never send the secret to another server; changing the host means
+editing the secret.
+
+ShipIt presents it on every LFS transfer it runs itself (the upload before each
+push, the pulls when it creates, forks or rewrites a workspace, the shared LFS
+store's fill, the diff viewer), and the session's `git` gets it through
+ShipIt's credential helper. The value is never written into the repository or
+into the workspace's git config.
+
+Refused, with a warning, and the whole section ignored: a wildcard, a scheme or
+a path in `host`; `github.com` (ShipIt already authenticates it); a `credential`
+that is not letters, digits and underscores. When the secret is missing, is not
+an `https://` credential line, or names another host, ShipIt presents nothing
+and says why: in the push-refusal notice, in the LFS warning after a pull, and on
+stderr from `shipit-git-credential` when your own `git lfs` asks.
+
+Declaring the host opens no network access. Your session reaches it only if the
+user allows it (and the storage host its server redirects downloads to) in the
+egress settings. ShipIt's own push and pull are not affected.
+
 ## Config resolution
 
 1. **shipit.yaml with `compose`** — use the referenced compose file

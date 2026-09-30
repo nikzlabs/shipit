@@ -381,11 +381,27 @@ what to use when you estimate LFS download volume:
 A deployment can turn sharing off (`SHIPIT_GIT_LFS_SHARED_STORE=off`); then every
 session downloads its own objects.
 
-**ShipIt presents its GitHub credential to `github.com` only.** A repository
-whose committed `.lfsconfig` sets `lfs.url` to another host gets no credential
-from ShipIt for that host. If that LFS server requires authentication, ShipIt's
-uploads to it and downloads from it fail, and the push refusal above is how you
-see it.
+**An LFS server that is not GitHub needs an `lfs` declaration.** ShipIt
+presents its GitHub credential to `github.com` only. A repository whose
+committed `.lfsconfig` sets `lfs.url` to another host gets a credential for that
+host only when `shipit.yaml` declares it:
+
+```yaml
+lfs:
+  host: lfs.example.com
+  credential: LFS_CREDENTIAL
+```
+
+The user stores the secret `LFS_CREDENTIAL` in **Project Settings → Secrets**
+as one credential-store line, `https://<username>:<password>@lfs.example.com`.
+ShipIt then presents it on its own uploads and downloads, and your `git lfs`
+gets it through ShipIt's credential helper. Details and the refusal rules are in
+`/shipit-docs/shipit-yaml.md` § `lfs`. The session reaches the host only if the
+user allows it, and the storage host its server redirects downloads to (for
+Cloudflare R2, the bucket's `r2.cloudflarestorage.com` or custom-domain host),
+in the egress settings. Without the declaration, or when the secret names
+another host, an LFS server that requires authentication fails ShipIt's uploads
+and downloads, and the push refusal above says why.
 
 ## Session container lifecycle — idle containers are destroyed, not paused
 

@@ -63,6 +63,21 @@ describe("runGitCredential: get", () => {
     expect(code()).toBe(0);
   });
 
+  it("prints the broker's warning to stderr, and no credential, for a refused LFS host", async () => {
+    const { io, out, err, code } = makeIO("protocol=https\nhost=lfs.example.com\n\n");
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "No credential available for host", warning: "the secret is for another host" }), {
+        status: 404,
+      }),
+    ) as unknown as typeof fetch;
+
+    await runGitCredential(["get"], { io, fetchImpl });
+
+    expect(out.join("")).toBe("");
+    expect(err.join("")).toBe("shipit-git-credential: the secret is for another host\n");
+    expect(code()).toBe(0);
+  });
+
   it("prints nothing (exit 0) when the worker is unreachable", async () => {
     const { io, out, code } = makeIO("protocol=https\nhost=github.com\n\n");
     const fetchImpl = vi.fn(async () => {

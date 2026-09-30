@@ -14,6 +14,7 @@ import {
   type GitRemoteCredentialResolver,
   credentialledGit,
   resolveTreeRemoteCredential,
+  withoutLfsHost,
   withPreemptiveAuthFallback,
 } from "./git-remote-credential.js";
 import { gitSpawnOverridesForTree, projectHooksAllowed } from "./git-tree-uid.js";
@@ -265,7 +266,7 @@ export class GitManager {
     return options ? safeSimpleGit(this.workspaceDir, options) : this.git;
   }
 
-  private remoteCredential(remote: string): Promise<GitRemoteCredential | null> {
+  private remoteCredential(remote: string, opts?: { lfsHost?: boolean }): Promise<GitRemoteCredential | null> {
     return resolveTreeRemoteCredential(
       this.workspaceDir,
       remote,
@@ -275,6 +276,7 @@ export class GitManager {
         const match = remotes.find((r) => r.name === remote);
         return match?.refs.push || match?.refs.fetch || undefined;
       },
+      opts,
     );
   }
 
@@ -654,16 +656,17 @@ export class GitManager {
     if (outcome.status === "pushed") {
       console.log(`[git] Uploaded Git LFS objects for ${remote}/${ref}`);
     } else if (outcome.status === "failed") {
-      throw new LfsUploadError(remote, ref, outcome.detail);
+      const refusal = credential?.lfsHostRefusal;
+      throw new LfsUploadError(remote, ref, refusal ? `${refusal} ${outcome.detail}` : outcome.detail);
     }
   }
 
   async push(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
     assertPlainBranchName(currentBranch);
-    const credential = await this.remoteCredential(remote);
+    const credential = await this.remoteCredential(remote, { lfsHost: true });
     await this.uploadLfsObjects(credential, remote, currentBranch);
-    await this.gitWith(credential).push(remote, currentBranch, ["--set-upstream"]);
+    await this.gitWith(withoutLfsHost(credential)).push(remote, currentBranch, ["--set-upstream"]);
     const msg = `Pushed to ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -1176,9 +1179,9 @@ export class GitManager {
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];
-    const credential = await this.remoteCredential(remote);
+    const credential = await this.remoteCredential(remote, { lfsHost: true });
     await this.uploadLfsObjects(credential, remote, branch);
-    await this.gitWith(credential).push(remote, branch, args);
+    await this.gitWith(withoutLfsHost(credential)).push(remote, branch, args);
     const msg = `Force pushed to ${remote}/${branch}`;
     console.log("[git]", msg);
     return msg;
@@ -1294,10 +1297,10 @@ export class GitManager {
     const args = ["tag", "-a", tag, "-m", message, ...(ref ? [ref] : [])];
     await this.git.raw(args);
     try {
-      const credential = await this.remoteCredential(remote);
+      const credential = await this.remoteCredential(remote, { lfsHost: true });
       // An rc tag can name a commit no branch push has published.
       await this.uploadLfsObjects(credential, remote, tag);
-      await this.gitWith(credential).push(remote, tag);
+      await this.gitWith(withoutLfsHost(credential)).push(remote, tag);
     } catch (err) {
       // A tag left behind fails the retry at creation, and the planner skips to the next rc.
       try {
