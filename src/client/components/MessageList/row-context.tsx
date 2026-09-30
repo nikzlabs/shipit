@@ -35,6 +35,7 @@ export interface RowHandlers {
   onStartRepoSession?: (cardId: string) => Promise<void>;
   onDeclineRepoSession?: (cardId: string) => Promise<void>;
   onDeliverSessionMessage?: (cardId: string) => Promise<void>;
+  onDeclineSessionMessage?: (cardId: string) => Promise<void>;
   onOpenIssue?: (ref: {
     tracker: TrackerId;
     id?: string;
@@ -69,6 +70,7 @@ const CALLBACK_KEY_SET: Record<CallbackKey, true> = {
   onStartRepoSession: true,
   onDeclineRepoSession: true,
   onDeliverSessionMessage: true,
+  onDeclineSessionMessage: true,
   onOpenIssue: true,
   onResumeSession: true,
   onReleaseConfirm: true,

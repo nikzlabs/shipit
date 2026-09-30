@@ -11,6 +11,7 @@ import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
 import type { RepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
+import type { SessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace, CommitHookFailure } from "../shared/git.js";
@@ -415,6 +416,8 @@ export interface SystemTurnDeps {
   settingsOutcomeNotice?: (sessionId: string) => SettingsOutcomeNotice | null;
   /** At-least-once, like `settingsOutcomeNotice` (docs/303-cross-repo-session-proposal req 11). */
   repoSessionOutcomeNotice?: (sessionId: string) => RepoSessionOutcomeNotice | null;
+  /** At-least-once, like `settingsOutcomeNotice` (docs/314-session-message-proposal req 14). */
+  sessionMessageOutcomeNotice?: (sessionId: string) => SessionMessageOutcomeNotice | null;
   /**
    * Consumes the role's first-turn instructions; subsequent calls return an empty string.
    * The returned `repark` hands the take back when the turn never reaches an agent.

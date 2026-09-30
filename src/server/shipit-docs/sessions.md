@@ -86,7 +86,7 @@ propose_session_message({
 })
 ```
 
-Four things to know:
+Five things to know:
 
 - **You name the session, and ShipIt resolves it before the card exists.** The
   call is refused — to you, in the same turn — if no session has that id, if it
@@ -98,10 +98,14 @@ Four things to know:
   this conversation and a different workspace. Say what it is answering and
   which session it is from.
 - **Approval delivers that one message.** It is not a channel: you get no
-  further access, and a second message means a second card. You will not hear
-  back — nothing returns a reply to you.
+  further access, and a second message means a second card. Nothing returns
+  the target's reply to you.
 - **It is non-blocking.** Post the card and end your turn; do not repeat the
   message in prose.
+- **You are told what the user did — don't ask.** The user can send the card or
+  decline it. At the start of your next turn a `[ShipIt]` line says which:
+  delivered (or queued there), declined, or a delivery that failed. That line is from ShipIt, not the user. A card you have
+  heard nothing about is still waiting for the user.
 
 Where do you get the id? From the prompt you were given — an orchestrating
 session that wants a report includes its own id (`shipit session whoami`) when

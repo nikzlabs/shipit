@@ -105,6 +105,7 @@ export function MessageList({
   onStartRepoSession,
   onDeclineRepoSession,
   onDeliverSessionMessage,
+  onDeclineSessionMessage,
   onOpenIssue,
   onResumeSession,
   onReleaseConfirm,
@@ -138,6 +139,7 @@ export function MessageList({
   onStartRepoSession?: (cardId: string) => Promise<void>;
   onDeclineRepoSession?: (cardId: string) => Promise<void>;
   onDeliverSessionMessage?: (cardId: string) => Promise<void>;
+  onDeclineSessionMessage?: (cardId: string) => Promise<void>;
 
   onOpenIssue?: (ref: {
     tracker: TrackerId;
@@ -349,6 +351,7 @@ export function MessageList({
     onStartRepoSession,
     onDeclineRepoSession,
     onDeliverSessionMessage,
+    onDeclineSessionMessage,
     onOpenIssue,
     onResumeSession,
     onReleaseConfirm,

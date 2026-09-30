@@ -5,6 +5,7 @@ import { emitChatCard, persistCardTransition } from "./chat-card-persistence.js"
 import type { SessionInfo, SessionMessageProposalCard } from "../shared/types.js";
 import { validateSessionMessageProposal } from "../shared/session-message-proposal-validation.js";
 import { deliverSessionMessage, ServiceError } from "./services/index.js";
+import { asQuotedData } from "./services/repo-session-outcome-notice.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -13,11 +14,11 @@ import type { SessionManager } from "./sessions.js";
  * docs/314 — the agent proposes a message for a session it cannot address; the
  * user's click is what delivers it.
  *
- * The two routes here are deliberately asymmetric. The propose route is
- * `containerAccessible` and writes nothing but a card. The deliver route is NOT
- * container-accessible, so the only way a message reaches a session that is not
- * the caller's direct child is a human clicking (req 7). Nothing in this file
- * relaxes `assertChildOfParent`.
+ * The routes here are deliberately asymmetric. The propose route is
+ * `containerAccessible` and writes nothing but a card. The deliver and decline
+ * routes are NOT container-accessible, so the only way a message reaches a
+ * session that is not the caller's direct child is a human clicking (req 7).
+ * Nothing in this file relaxes `assertChildOfParent`.
  */
 
 /** Refuse at CALL time, so a bad address fails back to the agent (req 8). */
@@ -28,6 +29,8 @@ function resolveTarget(
   targetSessionId: string,
 ): { session: SessionInfo } | { error: string; code: number } {
   const target = sessionManager.get(targetSessionId);
+  // Another session's agent can rename it, so the title is quoted data here.
+  const title = target ? asQuotedData(target.title) : "";
   if (!target) {
     return {
       code: 404,
@@ -47,7 +50,7 @@ function resolveTarget(
     return {
       code: 400,
       error:
-        `${target.title} is a session you spawned, so you can already reach it directly: `
+        `${title} is a session you spawned, so you can already reach it directly: `
         + `run \`shipit session message ${targetSessionId} -m "…"\`. `
         + "A proposal card is for a session you cannot address.",
     };
@@ -59,7 +62,7 @@ function resolveTarget(
     return {
       code: 400,
       error:
-        `${target.title} is the session that spawned you, so you can already reach it directly: `
+        `${title} is the session that spawned you, so you can already reach it directly: `
         + "run `shipit session report --body-file -`. "
         + "A proposal card is for a session you cannot address.",
     };
@@ -75,13 +78,13 @@ function resolveTarget(
   if (target.archived || target.userArchived) {
     return {
       code: 400,
-      error: `${target.title} is archived and cannot take a turn, so there is nothing to approve.`,
+      error: `${title} is archived and cannot take a turn, so there is nothing to approve.`,
     };
   }
   if (!target.workspaceDir) {
     return {
       code: 400,
-      error: `${target.title} has no workspace and cannot take a turn, so there is nothing to approve.`,
+      error: `${title} has no workspace and cannot take a turn, so there is nothing to approve.`,
     };
   }
   // The same admission `dispatch` applies (`assertSessionCanDispatch`). Without
@@ -92,7 +95,7 @@ function resolveTarget(
     return {
       code: 403,
       error:
-        `${target.title} is on a repository the user has not trusted, so no turn can start there. `
+        `${title} is on a repository the user has not trusted, so no turn can start there. `
         + "Tell the user to trust it in ShipIt before this message can be delivered.",
     };
   }
@@ -166,6 +169,36 @@ export async function registerProposeSessionMessageRoutes(
    * stopped mid-delivery leaves one behind and the card must not spin forever.
    */
   const deliveriesInFlight = new Set<string>();
+  /**
+   * Dispatched, but the `delivered` write failed, so the stored card still reads
+   * `delivering`. Refusing these keeps a reload from sending the message twice
+   * or recording it as declined — for this process's lifetime, which is the
+   * residual `plan.md` names.
+   */
+  const deliveredUnrecorded = new Set<string>();
+
+  const patcher = (sessionId: string, cardId: string) => {
+    const runner = deps.runnerRegistry.get(sessionId);
+    const announce = (fields: Partial<SessionMessageProposalCard>): void => {
+      runner?.emitMessage({
+        type: "session_message_proposal_update",
+        sessionId,
+        cardId,
+        state: fields.state ?? "delivering",
+        ...(fields.deliveredAt ? { deliveredAt: fields.deliveredAt } : {}),
+        ...(fields.declinedAt ? { declinedAt: fields.declinedAt } : {}),
+        ...(fields.queued !== undefined ? { queued: fields.queued } : {}),
+        ...(fields.errorMessage ? { errorMessage: fields.errorMessage } : {}),
+      });
+    };
+    const patch = (fields: Partial<SessionMessageProposalCard>): void => {
+      // Persist first: a viewer shown a terminal state that was never stored
+      // would lose it on reload, and the agent would never be told of it.
+      persistSessionMessageProposalTransition(deps, runner, sessionId, cardId, fields);
+      announce(fields);
+    };
+    return { patch, announce };
+  };
 
   // The user's click. Not container-accessible: the agent proposes, the user delivers.
   app.post<{ Params: { sessionId: string; cardId: string } }>(
@@ -184,32 +217,21 @@ export async function registerProposeSessionMessageRoutes(
         return;
       }
       // Delivery is once (req 5): a second click would start a second turn.
-      if (card.state === "delivered") {
+      if (card.state === "delivered" || deliveredUnrecorded.has(cardId)) {
         reply.code(409).send({ error: "That message was already delivered." });
         return;
       }
+      if (card.state === "declined") {
+        reply.code(409).send({ error: "That message was declined." });
+        return;
+      }
 
-      const runner = deps.runnerRegistry.get(sessionId);
-
-      const patch = (fields: Partial<SessionMessageProposalCard>): void => {
-        if (runner) {
-          runner.emitMessage({
-            type: "session_message_proposal_update",
-            sessionId,
-            cardId,
-            state: fields.state ?? "delivering",
-            ...(fields.deliveredAt ? { deliveredAt: fields.deliveredAt } : {}),
-            ...(fields.queued !== undefined ? { queued: fields.queued } : {}),
-            ...(fields.errorMessage ? { errorMessage: fields.errorMessage } : {}),
-          });
-        }
-        persistSessionMessageProposalTransition(deps, runner, sessionId, cardId, fields);
-      };
+      const { patch, announce } = patcher(sessionId, cardId);
 
       deliveriesInFlight.add(cardId);
       // Dispatch is the point of no return: once it has happened the message is
       // in the target, so a later throw must never mark the card retryable.
-      let dispatched = false;
+      let delivered: Partial<SessionMessageProposalCard> | undefined;
       try {
         patch({ state: "delivering", errorMessage: undefined });
 
@@ -241,26 +263,28 @@ export async function registerProposeSessionMessageRoutes(
           deps.providerAccountManager,
           deps.containerManager,
         );
-        dispatched = true;
-
         // The dispatch's own admission, not a guess from the runner's state: a
         // steered message reaches a RUNNING target immediately, and an idle one
         // under a merge hold is queued.
         const queued = result.admitted === "queued";
         const deliveredAt = new Date().toISOString();
-        patch({ state: "delivered", deliveredAt, queued });
+        delivered = { state: "delivered", deliveredAt, queued };
+        patch(delivered);
         return { ok: true, deliveredAt, queued, queuePosition: result.queuePosition };
       } catch (err) {
         const message = err instanceof ServiceError
           ? err.message
           : `Could not deliver the message to ${card.targetTitle}: ${getErrorMessage(err)}`;
-        if (dispatched) {
+        if (delivered) {
           // The message landed and only the acknowledgement failed. Marking this
-          // failed would offer a Try again that delivers it a second time.
+          // failed would offer a Try again that delivers it a second time; the
+          // viewer is still told the truth.
           console.error(
             `[session-message-proposal] ${cardId} was delivered but could not be acknowledged:`,
             err,
           );
+          deliveredUnrecorded.add(cardId);
+          announce(delivered);
           reply.code(500).send({ error: message, delivered: true });
           return;
         }
@@ -275,6 +299,36 @@ export async function registerProposeSessionMessageRoutes(
       } finally {
         deliveriesInFlight.delete(cardId);
       }
+    },
+  );
+
+  // docs/314 req 13. The agent hears of it on its next turn (req 14), from the card.
+  app.post<{ Params: { sessionId: string; cardId: string } }>(
+    "/api/sessions/:sessionId/session-message-proposals/:cardId/decline",
+    async (request, reply: FastifyReply) => {
+      const { sessionId, cardId } = request.params;
+
+      if (deliveriesInFlight.has(cardId)) {
+        reply.code(409).send({ error: "That message is already being delivered." });
+        return;
+      }
+
+      const card = deps.chatHistoryManager.findSessionMessageProposalCard(sessionId, cardId);
+      if (!card) {
+        reply.code(404).send({ error: "That proposal is no longer in this session's history." });
+        return;
+      }
+      if (card.state === "delivered" || deliveredUnrecorded.has(cardId)) {
+        reply.code(409).send({ error: "That message was already delivered." });
+        return;
+      }
+      if (card.state === "declined") {
+        return { ok: true, declinedAt: card.declinedAt };
+      }
+
+      const declinedAt = new Date().toISOString();
+      patcher(sessionId, cardId).patch({ state: "declined", declinedAt, errorMessage: undefined });
+      return { ok: true, declinedAt };
     },
   );
 }

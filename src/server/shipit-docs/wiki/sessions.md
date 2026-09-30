@@ -334,12 +334,13 @@ a session that handed an agent a prompt without spawning it.
 
 For that case the agent posts a **"Message for another session"** card naming
 the target session and showing the whole message. The user reads it and sends
-it; that click is what delivers it, and it starts a turn there just as typing
-it would. Approving one card sends one message — the agent gets no continuing
-access, so a second message means a second card. The receiving session's
-transcript marks the message "From another session, approved by you", with the
-sender's name, and the card stays in the sender's transcript recording that it
-was delivered.
+it or declines it; the send is what delivers it, and it starts a turn there just
+as typing it would. Approving one card sends one message — the agent gets no
+continuing access, so a second message means a second card. The receiving
+session's transcript marks the message "From another session, approved by you",
+with the sender's name, and the card stays in the sender's transcript recording
+whether it was delivered or declined. Either way, a `[ShipIt]` line at the start
+of the sender's next turn says what the user did, so the agent never asks.
 
 ## Kinds of session
 
