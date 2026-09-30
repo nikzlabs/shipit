@@ -216,7 +216,10 @@ function fakeDocker(opts: {
         },
         start: async () => { started.push(id); },
         wait: async () => ({ StatusCode: opts.exit ?? 0 }),
-        inspect: async () => ({ State: { OOMKilled: opts.oomKilled ?? false } }),
+        inspect: async () => {
+          if (removedContainers.includes(id)) notFound();
+          return { State: { OOMKilled: opts.oomKilled ?? false } };
+        },
         kill: async () => undefined,
         remove: async () => {
           if (opts.removeError) throw new Error(opts.removeError);
@@ -723,9 +726,15 @@ exports:
       const fake = fakeDocker();
 
       const result = await runPluginCommand(deps(fake.docker), call);
+      declareConsumer(`${CONSUMER}      overrides:
+        commands:
+          reqs: { memory: 3584m }
+`);
+      await runPluginCommand(deps(fake.docker), call);
 
       expect(result.error).toBeUndefined();
       expect(memoryOf(fake.containers[0].opts)).toBe(6 * 1024 ** 3);
+      expect(memoryOf(fake.containers[1].opts)).toBe(3584 * 1024 ** 2);
     });
 
     it("names the limit and the field to raise it when Docker reports an OOM kill", async () => {

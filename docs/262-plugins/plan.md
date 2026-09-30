@@ -151,7 +151,9 @@ Rules (review findings, both rounds):
   number is refused, because Compose reads it as bytes and a reader would
   read it as MiB. There is no upper bound, only Docker's 6 MiB floor — a
   plugin service's own `mem_limit` has none either, and the value is the
-  consuming project's, which is more trusted than the plugin. A plugin cannot raise its
+  consuming project's, which is more trusted than the plugin. A value too large
+  to be a safe integer is refused all the same: it would serialize as `null`,
+  which Docker reads as no limit. A plugin cannot raise its
   own limit; the manifest has no such key. This is a deliberate exception to
   docs/229-auto-resource-sizing, which removed repo-set session sizes: the
   2 GiB here is not host-derived, so without the field nothing could move it.

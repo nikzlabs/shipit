@@ -145,13 +145,14 @@ export function parseMemorySize(raw: unknown): number | undefined {
   const match = MEMORY_SIZE_RE.exec(raw.trim());
   if (!match) return undefined;
   const bytes = Math.floor(Number(match[1]) * MEMORY_UNITS[match[2].toLowerCase()]);
-  return bytes >= MIN_MEMORY_BYTES ? bytes : undefined;
+  // An overflowed value serializes as null, which Docker reads as no limit at all.
+  return Number.isSafeInteger(bytes) && bytes >= MIN_MEMORY_BYTES ? bytes : undefined;
 }
 
 export function formatMemorySize(bytes: number): string {
   const gib = bytes / 1024 ** 3;
-  if (gib >= 1) return `${Number(gib.toFixed(2))} GiB`;
-  return `${Math.round(bytes / 1024 ** 2)} MiB`;
+  if (gib >= 1 && Number.isInteger(gib * 100)) return `${gib} GiB`;
+  return `${Number((bytes / 1024 ** 2).toFixed(2))} MiB`;
 }
 
 function isMapping(v: unknown): v is Record<string, unknown> {

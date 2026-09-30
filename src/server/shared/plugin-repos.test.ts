@@ -788,13 +788,21 @@ describe("parseMemorySize", () => {
   it.each([4096, "4096", "4 x", "-1g", "g", "5m", "0g", true, null])("refuses %j", (raw) => {
     expect(parseMemorySize(raw)).toBeUndefined();
   });
+
+  it("refuses a value too large to send, which would otherwise reach Docker as no limit", () => {
+    expect(parseMemorySize(`1${"0".repeat(309)}g`)).toBeUndefined();
+    expect(parseMemorySize("99999999999g")).toBeUndefined();
+  });
 });
 
 describe("formatMemorySize", () => {
   it.each([
     [2 * 1024 ** 3, "2 GiB"],
     [2.5 * 1024 ** 3, "2.5 GiB"],
+    [3584 * 1024 ** 2, "3.5 GiB"],
     [512 * 1024 ** 2, "512 MiB"],
+    [6.5 * 1024 ** 2, "6.5 MiB"],
+    [3000 * 1024 ** 2, "3000 MiB"],
   ])("formats %d as %s", (bytes, text) => {
     expect(formatMemorySize(bytes)).toBe(text);
   });
