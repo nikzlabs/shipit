@@ -59,15 +59,20 @@ import {
   containComposeServices as applyComposeServiceEgress,
   invalidateComposeServiceContainment,
 } from "./compose-service-egress.js";
-import { egressDnsEnabled, orchestratorCallbackHost } from "./egress-dns-install.js";
-import { egressProxyEnabled, EGRESS_PROXY_UID, EGRESS_PROXY_PORT } from "./egress-proxy-install.js";
+import { egressDnsEnabled, orchestratorCallbackHost, sessionInternalNames } from "./egress-dns-install.js";
+import {
+  agentEgressDecisionUrl,
+  egressProxyEnabled,
+  EGRESS_PROXY_UID,
+  EGRESS_PROXY_PORT,
+} from "./egress-proxy-install.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import {
   kernelRuntime,
   resolveSeccompSecurityOpt,
   readonlyRootfsEnabled,
 } from "./container-hardening.js";
-import { reloadEgressSidecars } from "./egress-reload.js";
+import { reloadEgressSidecars, staleEgressSidecars } from "./egress-reload.js";
 import { listEgressAllowedHosts } from "./egress-policy.js";
 import type { PluginEgressPolicy } from "./plugin-egress.js";
 import { STACK_LABEL } from "./stack-label.js";
@@ -452,7 +457,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * the resolver's pinned addresses. A namespace from before docs/319 has no
    * such chain and is reinstalled whole, and Compose services still on an old
    * session network are contained again (their start stops them if the network
-   * cannot hold them). Runs in the background; each step is retried.
+   * cannot hold them). A contained agent's resolver and proxy are replaced where
+   * they name a previous ShipIt host. Runs in the background; each step is retried.
    */
   async reconcileAdoptedFirewalls(opts: { attempts?: number; retryDelayMs?: number } = {}): Promise<void> {
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
@@ -509,6 +515,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         await this.reopenJoinedSessionEgress(sc.sessionId);
         console.log(`[egress:${sc.sessionId}] reinstalled a firewall from before docs/319 (${policy})`);
       });
+      if (contained && (egressDnsEnabled() || egressProxyEnabled())) {
+        await retry(`[${sc.sessionId}] egress sidecars`, () => this.refreshStaleEgressSidecars(sc, cfg, sidecarImage));
+      }
     }
     if (!egressEnforceEnabled() && !localBlockActive()) return;
     const running = await this.docker.listContainers({ filters: { label: ["shipit-parent-session", "shipit-service-name"] } });
@@ -521,6 +530,41 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       if (info.Internal && info.Options?.["com.docker.network.bridge.inhibit_ipv4"] === "true") continue;
       await retry(`[${sessionId}] Compose services`, () => this.containComposeServices(sessionId, [], true));
     }
+  }
+
+  /**
+   * A recreated ShipIt has a new hostname, and a kept agent's resolver and proxy
+   * still name the old one, so its worker could not find ShipIt by name
+   * (planning#626). Replace the ones that differ from what this process starts.
+   */
+  private async refreshStaleEgressSidecars(
+    sc: SessionContainer,
+    cfg: ResolvedEgressConfig,
+    sidecarImage: string,
+  ): Promise<void> {
+    const stale = await staleEgressSidecars(this.docker, {
+      sessionId: sc.sessionId,
+      agentContainerId: sc.id,
+      ...(egressDnsEnabled() ? { internalNames: sessionInternalNames({ opsSession: sc.opsSession }) } : {}),
+      ...(egressProxyEnabled() ? { decisionUrl: agentEgressDecisionUrl() } : {}),
+    });
+    if (!stale.resolver && !stale.proxy) return;
+    await reloadEgressSidecars({
+      docker: this.docker,
+      agentContainerId: sc.id,
+      sessionId: sc.sessionId,
+      sidecarImage,
+      opsSession: sc.opsSession ?? false,
+      extraHosts: cfg.extraHosts,
+      ...(cfg.base ? { base: cfg.base } : {}),
+      ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
+      baseLabels: this.baseLabels(),
+      reloadResolver: stale.resolver,
+      reloadProxy: stale.proxy,
+    });
+    console.log(
+      `[egress:${sc.sessionId}] replaced sidecars that named ShipIt's previous host (resolver: ${stale.resolver}, proxy: ${stale.proxy})`,
+    );
   }
 
   isEgressDnsContained(sessionId: string): boolean {

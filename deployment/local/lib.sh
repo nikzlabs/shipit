@@ -223,7 +223,8 @@ shipit_build_and_up() {
   local compose_files=()
   while IFS= read -r arg; do compose_files+=("$arg"); done < <(shipit_compose_files)
   echo "==> Starting ShipIt (detached)..."
-  docker compose "${compose_files[@]}" up -d --no-build shipit
+  # Recreate even an unchanged orchestrator: it pins the other images only at start.
+  docker compose "${compose_files[@]}" up -d --no-build --force-recreate shipit
 }
 
 # Stack-scoped: every container and session network ShipIt creates carries the stack

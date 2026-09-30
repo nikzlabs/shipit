@@ -31,6 +31,8 @@ Each fact below was read at the source on 2026-09-29.
 - The VPS stack publishes only on `127.0.0.1` (`deployment/vps/docker-compose.yml:22-24`); its tailnet access is a host `socat` forwarder (`deployment/vps/tailscale.sh:208`). The local stack publishes on `${SHIPIT_BIND_ADDR:-127.0.0.1}` plus an optional tailnet overlay (`docker/local/prod/compose.yml:25-26`, `deployment/local/lib.sh:128-131`).
 - The orchestrator's address changes when it is replaced, so the VPS stack reaches it by service name (`deployment/vps/docker-compose.yml:43-45`). A rule cannot pin that address.
 - After an update, ShipIt replaces idle containers of the previous build and keeps those with live work or an always-on preview (`restart-turn-reattach.ts:60-110`).
+- A recreated orchestrator also has a new hostname. A kept worker keeps its `SHIPIT_HOST` and then tries `shipit` (`orchestrator-client.ts`); its contained resolver forwarded only the names it was started with (`egress-dns-install.ts`), and the local stack sets no stable name (`docker/local/prod/compose.yml`). Its proxy keeps the decision URL it was started with (`egress-proxy-install.ts`). Found by the post-deploy checks (planning#626).
+- The orchestrator pins the Compose helper image, the worker image and the probe result only at start (`app-lifecycle.ts`), and `up -d` does not recreate an unchanged orchestrator.
 - On the test machine (Docker 29.7.2): a container on an `internal: true` network still reaches the host's services through that network's gateway; with `com.docker.network.bridge.inhibit_ipv4=true` the bridge has no host address and the container reaches no host address at all, while containers on it still reach each other by name. A TCP connect that an `OUTPUT` drop refuses hangs rather than failing, while a UDP send fails at once with EPERM.
 
 ## Design
@@ -164,6 +166,13 @@ Build steps of a Compose `build:`, and of `docker build` through the Docker prox
 
 Containers that the previous build started and that ShipIt keeps across the update (live work, always-on preview) are brought up to date at start, in the background, each step retried: an agent from before this change gets its firewall reinstalled whole, and Compose services still on an old session network are contained again — which stops them where that network cannot hold them, so their next start uses the new set-up. A Docker-access network from before the update that still has containers stays as it is, and the proxy refuses new starts on it until it is empty.
 
+A kept contained agent must also find ShipIt by name after ShipIt is recreated (planning#626):
+
+- The worker tries `SHIPIT_HOST`, then the fallback names, and the resolver forwards both from one list (`shared/orchestrator-hosts.ts`), so the default `shipit` is always forwarded.
+- At start, the same background pass replaces an agent's resolver where it lacks one of the current names, and its proxy where its decision URL is not this process's (`staleEgressSidecars`, then the existing `reloadEgressSidecars`). A plain restart keeps the hostname, so it replaces nothing. An adopted agent records from its own `DOCKER_HOST` whether it is an ops session, so the new resolver keeps the Docker proxy's name.
+
+An update must start the orchestrator with every image it built. `deployment/local/update.sh` runs the synced copy of itself after the checkout sync, and `setup.sh` loads the synced `lib.sh` again; the VPS updater already runs the synced `deploy.sh` in a new process. Both installs start the orchestrator with `--force-recreate`, because it reads the other images only at start. An install on a version before this change still runs its old `update.sh` once.
+
 Tests start session workers in-process, and a worker opens `SSH_AUTH_SOCK` and removes it on stop; inside a session that is the live socket, so `server-test-setup.ts` unsets it.
 
 ## Every install and access option (req 3)
@@ -191,6 +200,7 @@ Tests start session workers in-process, and a worker opens `SSH_AUTH_SOCK` and r
 - A long cache of the host's addresses, or a loop that watches them: 60 seconds covers a burst of starts; §5 states what a later change does.
 - A router container per session: a larger change than per-container rules, for the same result.
 - Keeping open-mode Compose features that let a service run without its block (restart policies, `NET_ADMIN`, project bridge networks): req 4 applies in open mode too.
+- Setting `SHIPIT_ORCHESTRATOR_HOST=shipit` in the local stack, as the VPS stack does, so the callback host never changes: Compose services use the same callback host, and they reach ShipIt through the session network, which ShipIt joins with no `shipit` alias. The start-up pass above covers the agent instead.
 
 ## Key files
 
@@ -202,6 +212,7 @@ Tests start session workers in-process, and a worker opens `SSH_AUTH_SOCK` and r
 - `docker-proxy.ts`, `docker-proxy-sanitize.ts`, `docker-proxy-auth.ts`, and a new `docker-proxy-egress.ts` (§3a).
 - New `local-block.ts`: the probe, the Docker Desktop check, and the startup refusal.
 - `deployment/local/lib.sh`, `deployment/local/tailscale.sh`, `deployment/vps/tailscale.sh`, `deployment/vps/deploy.sh`, `deployment/vps/cloudflare.sh`, `deployment/vps/setup.sh`.
+- Rollout (planning#626): `src/server/shared/orchestrator-hosts.ts`, `egress-reload.ts` (`staleEgressSidecars`), `container-discovery.ts` (ops sessions), `deployment/local/update.sh`, `deployment/local/setup.sh`.
 - `.github/workflows/ci.yml`: a job that installs the open policy in a real network namespace and checks what it refuses.
 
 ## Deployment checks
@@ -215,5 +226,7 @@ On the test machine (Linux, Docker 29, egress limits off, tailnet binding), befo
 5. Before its firewall is in place, a service on the internal session network cannot reach the host through that network's gateway.
 6. In a session with Docker access, a container started through the proxy is refused the same destinations, and the agent reaches it by name.
 7. With the probe forced to fail, the orchestrator refuses to start while a tailnet binding exists, and `update.sh` starts it on loopback only.
+8. A kept contained session reaches ShipIt by name after the orchestrator is recreated, and after a plain restart (planning#626).
+9. One `update.sh` run builds every image and restarts the orchestrator with them, even when only another image changed (planning#626).
 
 Not testable on that machine: Docker Desktop (§8).

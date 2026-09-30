@@ -170,6 +170,17 @@ describe("installers describe their own questions (docs/276)", () => {
     expect(build).toBeGreaterThan(persist);
   });
 
+  it("builds with the lib.sh its own sync brought in (planning#626)", () => {
+    // Re-run over an older clone, the lib.sh sourced before the sync is the old one.
+    const src = fs.readFileSync(LOCAL_SETUP, "utf8");
+    const sync = src.indexOf("\nshipit_sync_checkout\n");
+    const reload = src.indexOf('. "$SHIPIT_HOME/deployment/local/lib.sh"', sync);
+    const build = src.indexOf("\nshipit_build_and_up");
+    expect(sync).toBeGreaterThan(0);
+    expect(reload).toBeGreaterThan(sync);
+    expect(build).toBeGreaterThan(reload);
+  });
+
   it("keeps the shared block byte-identical between the two installers", () => {
     // Both scripts must work before a library is available to source.
     expect(sharedBlock(LOCAL_SETUP)).toBe(sharedBlock(VPS_SETUP));

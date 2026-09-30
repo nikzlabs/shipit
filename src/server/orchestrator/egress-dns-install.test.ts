@@ -44,8 +44,8 @@ describe("orchestratorInternalNames", () => {
     expect(names).toContain("orch2");
     expect(names).not.toContain("10.0.0.5");
   });
-  it("falls back to os.hostname() when *_ORCHESTRATOR_* is unset, matching SHIPIT_HOST", () => {
-    expect(orchestratorInternalNames({} as NodeJS.ProcessEnv)).toEqual([os.hostname()]);
+  it("uses os.hostname() and the worker's default fallback when *_ORCHESTRATOR_* is unset (planning#626)", () => {
+    expect(orchestratorInternalNames({} as NodeJS.ProcessEnv)).toEqual([os.hostname(), "shipit"]);
   });
 });
 

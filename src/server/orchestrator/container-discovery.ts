@@ -6,7 +6,7 @@ import {
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import { stackLabelFilters } from "./stack-label.js";
-import { cleanupSessionDockerResources } from "./container-lifecycle.js";
+import { cleanupSessionDockerResources, OPS_DOCKER_HOST } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { overlayDepDirsFromMounts } from "./overlay-session.js";
 import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
@@ -80,6 +80,11 @@ async function reconcileAdoptedCpuPolicy(
   }
 }
 
+/** From the container's own Docker endpoint: a resolver reload must keep that name (planning#626). */
+function isOpsContainer(env: string[] | undefined): boolean {
+  return env?.includes(`DOCKER_HOST=${OPS_DOCKER_HOST}`) ?? false;
+}
+
 function logAdoptedWorkerBuild(
   sessionId: string,
   containerId: string,
@@ -143,6 +148,7 @@ export async function rediscoverContainers(
           workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
+          opsSession: isOpsContainer(info.Config?.Env),
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
           bootedLimits,
@@ -206,6 +212,7 @@ export async function adoptRunningContainer(
           workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
+          opsSession: isOpsContainer(info.Config?.Env),
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
           bootedLimits,

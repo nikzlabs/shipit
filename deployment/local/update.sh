@@ -15,7 +15,11 @@ fi
 # shellcheck source=/dev/null
 . "$SHIPIT_HOME/deployment/local/lib.sh"
 
-shipit_sync_checkout
+# The sync can replace these scripts, so the build runs from the synced copy of this one.
+if [ "${SHIPIT_UPDATE_SYNCED:-}" != "1" ]; then
+  shipit_sync_checkout
+  SHIPIT_UPDATE_SYNCED=1 exec bash "$SHIPIT_HOME/deployment/local/update.sh"
+fi
 shipit_build_and_up
 
 echo ""
