@@ -54,6 +54,34 @@ describe("planPluginCommands", () => {
     expect(plan.issues.size).toBe(0);
   });
 
+  describe("a manifest's default memory (req 31)", () => {
+    const GIB = 1024 ** 3;
+    const heavy = (): PluginExport => ({
+      ...exported("assetgen", { bake: "cli/bake", list: "cli/list" }),
+      cliMemoryBytes: { bake: 6 * GIB },
+    });
+    const memoryOf = (commands: Record<string, PluginCommandOverride> = {}) => {
+      const plan = planPluginCommands(
+        [use("gen", "assetgen", "tools", commands)],
+        table({ gen: { repo: "tools", exported: heavy() } }),
+      );
+      return Object.fromEntries(plan.commands.map((c) => [c.declared, c.memoryBytes]));
+    };
+
+    it("applies to its own command when the project sets nothing", () => {
+      expect(memoryOf()).toEqual({ bake: 6 * GIB, list: undefined });
+    });
+
+    it("is replaced by the project's value, higher or lower (req 30)", () => {
+      expect(memoryOf({ bake: { memoryBytes: 8 * GIB } }).bake).toBe(8 * GIB);
+      expect(memoryOf({ BAKE: { memoryBytes: 3 * GIB } }).bake).toBe(3 * GIB);
+    });
+
+    it("survives a project override that only renames the command", () => {
+      expect(memoryOf({ bake: { as: "bake-assets" } }).bake).toBe(6 * GIB);
+    });
+  });
+
   it("reports a memory limit set for a command the plugin does not export", () => {
     const plan = planPluginCommands(
       [use("gen", "assetgen", "tools", { nope: { memoryBytes: 4 * 1024 ** 3 } })],

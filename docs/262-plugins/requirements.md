@@ -315,6 +315,13 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     plugin's companion-CLI command runs in, from its own `shipit.yaml`
     declaration of that plugin. The default limit, and how to change it, are
     documented in the plugin documentation.
+31. A plugin's manifest can declare a **default memory limit** for one of its
+    companion-CLI commands, so that a plugin author can say a heavy command
+    needs more than ShipIt's default, and projects that use it do not each
+    repeat the value. Req 30 still holds: a consuming project's own value
+    replaces the manifest's. ShipIt puts no maximum on the manifest's value,
+    the same as on a plugin service's own memory limit; a project that wants
+    less sets its own value.
 
 ## Out of scope (v1)
 
@@ -384,7 +391,10 @@ and from the answer that followed: the plugin's code is contained, its
 influence on the agent is not, and the documents said the first without
 ever saying the second. Requirement 30 (a project-set memory limit for plugin
 commands) restates the user's request of 2026-09-30, raised from the plugin
-repository `nicolasalt/assetgen` (its issue #271).
+repository `nicolasalt/assetgen` (its issue #271). Requirement 31 (a manifest
+default for that limit) is the agent's follow-up offer of 2026-09-30, which the
+user approved: with req 30 alone, every project that uses a heavy command has
+to set the same value, which is the repetition req 5 rules out.
 
 ## Open questions
 
@@ -392,6 +402,18 @@ repository `nicolasalt/assetgen` (its issue #271).
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-09-30 — Is there a maximum for a manifest's default memory limit
+  (req 31)?** Asked because a plugin is less trusted than the project that
+  uses it (req 29), and its manifest can change with each new commit and no
+  approval (req 19). The options were no maximum, a cap at the session
+  container's own limit, or a fixed 8 GiB cap. The user chose **"No
+  maximum"**, the recommended option: a plugin service's compose `mem_limit`
+  has no maximum either (`plugin-compose.ts` allows it and does not check the
+  value), a limit is a ceiling rather than a reservation, and the consuming
+  project can always set a lower value (req 30). → req 31 states it. That a
+  consumer's value replaces the manifest's in both directions was not asked:
+  req 30 already says the project can change the limit.
 
 - **2026-09-30 — May a consuming project give a plugin's command more
   memory?** Stated directly by the user: *"Allow a project to change the

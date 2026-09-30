@@ -282,6 +282,42 @@ describe("parsePluginExports", () => {
     expect(optedOut!.depDirs).toEqual([]);
   });
 
+  it("takes a command's default memory from the mapping form, beside bare-string commands (req 31)", () => {
+    const warnings: string[] = [];
+    const [exported] = parsePluginExports(
+      {
+        plugins: {
+          assetgen: {
+            cli: {
+              bake: { entry: "cli/bake.mjs", memory: "4g", extra: 1 },
+              list: "cli/list.mjs",
+              plain: { entry: "./cli/plain.mjs" },
+            },
+          },
+        },
+      },
+      warnings,
+    );
+    expect(exported.cli).toEqual({ bake: "cli/bake.mjs", list: "cli/list.mjs", plain: "cli/plain.mjs" });
+    expect(exported.cliMemoryBytes).toEqual({ bake: 4 * 1024 ** 3 });
+    expect(warnings).toEqual(["Unknown key `exports.plugins.assetgen.cli.bake.extra` in shipit.yaml."]);
+  });
+
+  it("puts no maximum on a manifest's default (req 31)", () => {
+    const [exported] = parsePluginExports({ plugins: { p: { cli: { run: { entry: "cli", memory: "512g" } } } } }, []);
+    expect(exported.cliMemoryBytes).toEqual({ run: 512 * 1024 ** 3 });
+  });
+
+  it.each([
+    ["an invalid memory", { run: { entry: "cli", memory: 4096 } }, "`cli.run.memory` must be a size"],
+    ["a mapping with no entry", { run: { memory: "4g" } }, "`cli.run` needs an entrypoint path"],
+    ["an entry outside the repository", { run: { entry: "../x" } }, "cli.run.entry` must stay inside"],
+  ])("drops the whole export for %s", (_label, cli, mentions) => {
+    const warnings: string[] = [];
+    expect(parsePluginExports({ plugins: { p: { cli } } }, warnings)).toEqual([]);
+    expect(warnings.join("\n")).toContain(mentions);
+  });
+
   it("drops a plugin whose dep-dirs escape the repository", () => {
     const warnings: string[] = [];
     expect(parsePluginExports({ plugins: { bad: { "dep-dirs": ["../outside"] } } }, warnings)).toEqual([]);

@@ -58,7 +58,7 @@ export const PLUGIN_CLI_NETWORK = "shipit-plugin-cli";
 export const PLUGIN_CLI_LABEL = "shipit-plugin-cli";
 export const DEFAULT_PLUGIN_CLI_TIMEOUT_MS = 15 * 60_000;
 
-// A project replaces it per command: `plugins.use[].overrides.commands.<cmd>.memory`.
+// Replaced per command by the manifest's `cli.<cmd>.memory`, then the project's `overrides.commands.<cmd>.memory`.
 export const DEFAULT_PLUGIN_CLI_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 const CLI_PIDS_LIMIT = 512;
 const MAX_STREAM_BYTES = 8 * 1024 * 1024;
