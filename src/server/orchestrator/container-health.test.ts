@@ -484,7 +484,7 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   }
 
   it("reports a project compose service, by name", () => {
-    die({ [PARENT]: "sess-1", "shipit-service-name": "dev" });
+    die({ [PARENT]: "sess-1", "shipit-service-name": "dev", "com.docker.compose.oneoff": "False" });
 
     expect(serviceExited).toHaveBeenCalledWith("sess-1", {
       serviceName: "dev", containerId: "c1", exitCode: 137, oom: false,
@@ -502,12 +502,29 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("reports a service the SESSION brought up through the Docker proxy", () => {
-    die({ [PARENT]: "sess-1", "com.docker.compose.service": "worker" });
+    die({ [PARENT]: "sess-1", "com.docker.compose.service": "worker", "com.docker.compose.oneoff": "False" });
 
     expect(serviceExited).toHaveBeenCalledWith("sess-1", {
       serviceName: "worker", containerId: "c1", exitCode: 137, oom: false,
     });
     expect(childExited).not.toHaveBeenCalled();
+  });
+
+  it("does NOT report a container left by `docker compose run` as its service exiting", () => {
+    const runLabels = {
+      [PARENT]: "sess-1",
+      "shipit-service-name": "web",
+      "com.docker.compose.service": "web",
+      "com.docker.compose.oneoff": "True",
+    };
+    die({ ...runLabels, exitCode: "0" });
+    die(runLabels, "oom");
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited.mock.calls).toEqual([
+      ["sess-1", { containerId: "c1", exitCode: 0, oom: false, egressSidecar: false }],
+      ["sess-1", { containerId: "c1", exitCode: 137, oom: true, egressSidecar: false }],
+    ]);
   });
 
   it("keeps a sidecar out of the service path even if it carries a compose label", () => {
