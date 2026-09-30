@@ -5,5 +5,12 @@
     "version": "2.1.284",
     "reason": "User explicitly approved Claude Code 2.1.284 on 2026-09-29 for Sonnet 5.5 support. It is the first release whose model catalog describes claude-sonnet-5-5; 2.1.280 reports that model's cost with an unknown basis (about 1.9x list in a measured turn), which ShipIt records as metered spend on API-key turns.",
     "expires": "2026-10-05"
+  },
+  {
+    "manifest": "docker/agent-cli/package.json",
+    "package": "@openai/codex",
+    "version": "0.159.2",
+    "reason": "Nik explicitly asked on 2026-09-30 to update Codex CLI to the latest stable release with an override of the seven-day wait. 0.159.2 was published 2026-09-30; the waiver names only this exact first-party OpenAI package version.",
+    "expires": "2026-10-07"
   }
 ]
