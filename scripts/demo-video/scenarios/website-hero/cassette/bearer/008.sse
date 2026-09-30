@@ -2,50 +2,218 @@ HTTP/1.1 200
 content-type: text/event-stream; charset=utf-8
 
 event: message_start
-data: {"type":"message_start","message":{"model":"claude-opus-5","id":"msg_011Cf8cxdmb74yK8BbJfuTzm","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":185,"cache_read_input_tokens":71946,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":185},"output_tokens":8,"service_tier":"standard","inference_geo":"not_available"},"context_management":null}       }
+data: {"type":"message_start","message":{"model":"claude-opus-5-5","id":"msg_011CfZdWLPJtdp1YHdP1MyYe","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":649,"cache_read_input_tokens":75623,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":649},"output_tokens":8,"service_tier":"standard","inference_geo":"not_available"},"diagnostics":null,"context_management":null}  }
 
 event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}          }
 
 event: ping
 data: {"type": "ping"}
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":null}}
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":null}     }
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAISuQIKpgEIERgCKkDbgSqhw710tR93+vOBGi4zhxmLHNvxAFJEe+EzM3XwMKPiUUpF6KNc+tgsWoCBNncDI20k9GvhCb7xQ5rAuPG1Mg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiQzYmU3MzcyYy1iZjMyLTQwMzQtYTQ3ZS05OWU3NmY2YzUxNjdyEAdkjCcrCFkzhPv087n8T/iIAQGoAb2urtUGsAECEgxqXX2LcNrWu0xYZv4aDCqQ265f8dfkkVwaUCIwURHEsoHPcrG6phor/fBBBt8SEQfEVj3vwRtQw8bY+FANPYHq1JM4X+dOc5gsd2HMKkDPpoG/EgT2NqxrgOJvVa634/qRV1oJ24ox2duDMCEFyeHsWQ0JER9MIdpkZym7uePfVTwcGfnLdfHWU8Rwt+MoGAE="} }
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQSlwcKEAgSGAI4AUIIdGhpbmtpbmcSDDsimsGvSNNcc2V4wRoMWMB9z4RY2VrFtiweIjBMWT7VSndjH/iwY+R+NUjq200dPCHBeSqNKM0bTwkHtwTgcHeKE4buA32gyglqy7UqtAaV100G/ityZVaicjcjfBQ3FZewA13n98ELopWgpUGFbfEv9M2mJyrgU/so4SgS53cDrYqG2uwOtGKInwlm1baImfSiv8DEqGb/8SwdpwFlBBw9mu1kyjq/qHLD4LmpNo8B+NMOwM0A7XpyIuc7Em5qNVBvXCig6Z+/4Qr2VlYjN7jpWN0ivu2v+4eAAFHu7ydxVogeMTSnKNPdgvE4a8qb1fLxnmttxH67XUwwp4IMJhg93Khho39OkAXr95Zf0OEPLsduaNV0qG9jro5ouAckCwkVRpxWeGqWrjQQ9eBuNcu29CutgF7s//jdVijaoB33LaN1hW8/vMiCze0bgBGjBo7X5SNQq3L35vC+OTl9Jrfw2gaIj3PMhzJAxc1eXnR+6MAInVRw4GNzlqQMp2FzuLfDeO079/BOl117U4utqU7JQ0Fy1kdBV0mR58Z+vsM7rK6Z5fcWGbkxwgao0V0YUqQeGNPpmEkooyizgS+m/y4jmkz1xCzcPjGqjRaWa75YpgFCqfEYXQ6dOMPNxsgXIFZaTbsomfeZth9J5Z8EJkq7Qx/GDUQ+HL17EewGDYa2WGTA6H/KdfN8VJSKZMl8EOEOWYoSAmeyceKjdSqCtGvnPuTDJYVavrOl52EgO+QWthVuyq7sy/xxvSfopDBmFkb2DXaRxK5p0F7QAUiWPvXHbQqva8AGlQkzXIsG3bPQPAtWEOflQmyG9ir4HRaiUph6GroRXLJ5wrBXbtCJNPm7Fgyq4kaESNIt+sz0MaT1BayuFDMw547lYi9Z9UFB+fYGvJ/jinY1LwF/sGbX9RgQkzqSTfewNFGtvPTC9RKAxM5D5Xmz1QUHTJq9aDdkRfjdrvQKzJZQO0BPAdFc+4EkZJHGZ6t1ITEua86z6snOIfRCbo3DupIhxKgfkU15Deg34YcON0EJI1PTgLruT/WB0LzXaFs/O//8vbDCMc5Jndxo3DUs5X5Xt1tUOVrc3YPpkHCjzJBW7katbPXmld+9z/jQd6eo+ag8GN4D4PwGfMePRj8EqPzr+jNTUsPWMWQyhJNrzXQiXHwUPXXhmz8NlIOWOYW38J5fUDR+zpu3M/KJGAE="}            }
 
 event: content_block_stop
-data: {"type":"content_block_stop","index":0           }
+data: {"type":"content_block_stop","index":0      }
 
 event: content_block_start
-data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_015NCE2ZSiT6X6oybxAhi9Rb","name":"mcp__playwright__browser_resize","input":{},"caller":{"type":"direct"}}             }
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}       }
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}               }
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The habit t"}             }
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"width"}      }
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"racker is built and show"}   }
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\": 900"}              }
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ing in the preview. It has"} }
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":", \"heig"} }
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" a light theme and three example"}              }
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ht\": 70"}          }
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" habits:"}          }
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"0}"}    }
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\n-"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" Drink 8 glasses"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" of water — 🔥 "}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"4 days\n- Read for"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 20 minutes — "}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"🔥 2 days"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n- Go for a walk —"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 🔥 0 days"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nEach habit has a round"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" check button. Checking a"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" habit turns its"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" row green, adds one day"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" to its streak, and upd"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ates the \"N of "}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"3 done today\" line at"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" the top. Clicking the"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" button again un"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"checks it and takes the"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" day back off"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":", so a"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" mis"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"-click is"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" easy to undo. I t"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ested this in the pre"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"view: checking \"Go for"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" a walk\" ra"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ised its streak from 0 "}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"to 1 "}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"day"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":". The code also"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" pass"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"es the type check."}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nTwo limits to"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" know about:"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n- **"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Nothing is saved."}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"** Checks and streaks"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" reset when"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" you reload the page.\n-"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" **No new"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"-day hand"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ling.** Checks don't"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" clear at midnight, and"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" a miss"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ed day doesn't reset"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" a streak.\n\nI"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" can add either one if you want."} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" The chang"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"es are in `src/App."}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"tsx`"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" and the new `src/App."}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"css`, and they"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"'re in PR #8: https"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"://github.com/nicol"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"asalt-shipit/"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"shipit-demo-app"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"/pull/8"}      }
 
 event: content_block_stop
-data: {"type":"content_block_stop","index":1    }
+data: {"type":"content_block_stop","index":1}
 
 event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":2,"cache_creation_input_tokens":185,"cache_read_input_tokens":71946,"output_tokens":102,"output_tokens_details":{"thinking_tokens":23},"iterations":[{"input_tokens":2,"output_tokens":102,"cache_read_input_tokens":71946,"cache_creation_input_tokens":185,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":185},"type":"message"}]},"context_management":{"applied_edits":[]}            }
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":2,"cache_creation_input_tokens":649,"cache_read_input_tokens":75623,"output_tokens":401,"output_tokens_details":{"thinking_tokens":37},"iterations":[{"input_tokens":2,"output_tokens":401,"cache_read_input_tokens":75623,"cache_creation_input_tokens":649,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":649},"type":"message"}]},"context_management":{"applied_edits":[]}        }
 
 event: message_stop
-data: {"type":"message_stop"         }
+data: {"type":"message_stop"          }
 
