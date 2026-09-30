@@ -250,8 +250,10 @@ edge is its own paint, not the instance's first one — and passes
 which shifts the slices by the difference and clips them to the file.
 `clock-probe.mjs <out-dir>` records a stamped sequence of repaints for checking
 how far the video's clock sits from the driver's (measured: a steady 0.1 s,
-varying by one frame). A `run.json` with an anchor that cannot be found in the file
-fails the cut; `CUT_UNANCHORED=1` overrides, falling back to `wallDuration −
+varying by one frame). An anchor later in the video than on the driver's clock
+is refused — the video's clock starts second, so that edge is not the splash
+but a later dark frame; retake. A `run.json` with an anchor that cannot be
+found in the file fails the cut; `CUT_UNANCHORED=1` overrides, falling back to `wallDuration −
 duration` with a warning. `FFPROBE=<path>` overrides the probe (default: beside
 `$FFMPEG`, else on PATH).
 
