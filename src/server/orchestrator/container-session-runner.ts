@@ -18,6 +18,7 @@ import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPos
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import { adoptInFlightTurn } from "./turn-adoption.js";
+import { reconcilePermissionCards } from "./permission-cards.js";
 import { originView, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
@@ -786,25 +787,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   // Adopt live turns before replay; skip completed turns to avoid persisting them twice.
-  private async reconcileWorkerTurnBeforeFirstConnect(): Promise<void> {
-    if (this.sse.isConnected) return;
+  private async reconcileWorkerTurnBeforeFirstConnect(): Promise<WorkerAgentStatus | null> {
+    if (this.sse.isConnected) return null;
     let status: WorkerAgentStatus;
     try {
       status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
     } catch {
-      return;
+      return null;
     }
 
     if (status.turnActive === true && !this._agent && !this._isRunning) {
-      if (await this.adoptWorkerTurn(status)) return;
-      return;
+      await this.adoptWorkerTurn(status);
+      return status;
     }
 
-    if (status.turnActive === true) return;
+    if (status.turnActive === true) return status;
     // Legacy workers cannot distinguish an active turn from an idle resident process.
-    if (status.turnActive === undefined && status.running) return;
+    if (status.turnActive === undefined && status.running) return status;
 
     this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+    return status;
   }
 
   private async adoptWorkerTurn(status: WorkerAgentStatus): Promise<boolean> {
@@ -875,9 +877,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   private async _doStartWorkerResources(): Promise<void> {
-    await this.reconcileWorkerTurnBeforeFirstConnect();
+    // A container still being created holds none of the requests saved cards refer to.
+    const newContainer = this.workerUrl === PLACEHOLDER_WORKER_URL;
+    const status = await this.reconcileWorkerTurnBeforeFirstConnect();
+    this.reconcileSavedPermissionCards(newContainer ? [] : status?.pendingPermissionIds);
     await this.connectEventStream();
     if (!this._disposed) void this.startWorkerResources();
+  }
+
+  // Uses adoption's status reading, so the two cannot disagree, and runs before the first
+  // SSE connect, so no card can be saved while this reads them (docs/193).
+  private reconcileSavedPermissionCards(workerPendingIds: string[] | undefined): void {
+    const deps = this._systemTurnDeps?.listenerDeps;
+    // No reading, or an older worker image that cannot say which requests still wait.
+    if (!deps || !workerPendingIds) return;
+    try {
+      // With no agent here, nothing relays the user's answer to the worker or the worker's result back.
+      reconcilePermissionCards(this, this.sessionId, deps, this._agent ? workerPendingIds : []);
+    } catch (err) {
+      console.error(`[container-runner:${this.sessionId}] reconciling permission cards failed:`, err);
+    }
   }
 
   async startAgentOnWorker(agentId: AgentId, params: AgentRunParams): Promise<ProxyAgentProcess> {

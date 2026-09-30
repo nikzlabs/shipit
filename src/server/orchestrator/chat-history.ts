@@ -261,6 +261,7 @@ export class ChatHistoryManager {
   private stmtLoadBugReportRows;
   private stmtLoadSettingsProposalRows;
   private stmtLoadRepoSessionProposalRows;
+  private stmtLoadPermissionRows;
   private stmtLoadById;
   private stmtLoadSubAgentCards;
   private stmtLoadByToolUseId;
@@ -291,6 +292,9 @@ export class ChatHistoryManager {
     );
     this.stmtLoadRepoSessionProposalRows = this.db.prepare(
       "SELECT id, repo_session_proposal FROM messages WHERE session_id = ? AND repo_session_proposal IS NOT NULL ORDER BY id",
+    );
+    this.stmtLoadPermissionRows = this.db.prepare(
+      "SELECT id, permission_prompt FROM messages WHERE session_id = ? AND permission_prompt IS NOT NULL ORDER BY id",
     );
     this.stmtLoadById = this.db.prepare("SELECT * FROM messages WHERE id = ?");
     // Include in-progress rows: consults can finish before their owning turn.
@@ -635,6 +639,20 @@ export class ChatHistoryManager {
       }
       return null;
     })();
+  }
+
+  pendingPermissionRequestIds(sessionId: string): string[] {
+    const rows = this.stmtLoadPermissionRows.all(sessionId) as { id: number; permission_prompt: string }[];
+    const ids: string[] = [];
+    for (const row of rows) {
+      try {
+        const card = JSON.parse(row.permission_prompt) as PersistedPermissionRequest;
+        if (card.phase === "pending") ids.push(card.requestId);
+      } catch {
+        console.error(`[chat-history] skipping unparseable permission_prompt on message ${row.id}`);
+      }
+    }
+    return ids;
   }
 
   updatePermissionCard(

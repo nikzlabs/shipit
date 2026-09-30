@@ -918,6 +918,17 @@ describe("ChatHistoryManager", () => {
       expect(mgr.updatePermissionCard("sess-1", "missing", { phase: "approved" })).toBe(false);
     });
 
+    it("lists the session's cards still waiting for an answer, in-progress rows included", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingCard("perm-1"));
+      mgr.append("sess-1", pendingCard("perm-2"));
+      mgr.updatePermissionCard("sess-1", "perm-2", { phase: "denied" });
+      mgr.replaceInProgress("sess-1", [{ ...pendingCard("perm-3"), inProgress: true }]);
+      mgr.append("sess-2", pendingCard("perm-other"));
+
+      expect(mgr.pendingPermissionRequestIds("sess-1")).toEqual(["perm-1", "perm-3"]);
+    });
+
     it("a later in-progress rebuild clobbers a DB-only patch, but a rebuild from the patched card survives", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", { role: "user", text: "add a line to .npmrc" });

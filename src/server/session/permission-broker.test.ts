@@ -334,6 +334,20 @@ describe("PermissionBroker", () => {
     expect(broker.pendingCount).toBe(0);
   });
 
+  it("lists only the requests still waiting for an answer", () => {
+    const { broker } = makeBroker();
+    const waiting = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "tu-1" });
+    const answered = broker.openRequest({ toolName: "Bash", input: { command: "curl y" }, toolUseId: "tu-2" });
+    broker.openRequest({ toolName: "Bash", input: { command: "curl z" }, toolUseId: "tu-3" });
+
+    broker.resolve(answered.requestId!, { behavior: "allow" });
+    broker.endToolUse("tu-3");
+
+    // The answered one stays held until its poll collects the decision.
+    expect(broker.pendingCount).toBe(2);
+    expect(broker.unansweredIds).toEqual([waiting.requestId]);
+  });
+
   it("auto-allows ShipIt-handled interrupt tools without surfacing a card", async () => {
     for (const toolName of ["AskUserQuestion", "ExitPlanMode"]) {
       const { broker, events } = makeBroker();

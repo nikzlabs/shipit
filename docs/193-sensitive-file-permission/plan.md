@@ -171,11 +171,25 @@ Key properties:
   uses `persistCardTransition`, so a card settled after its turn finished is
   patched in its row instead of rewriting that finished turn as in-progress.
 
-  Known gap: the backstop knows a request only through the in-memory
-  `awaitingPermissionIds`. An orchestrator restart empties it, so a worker that
-  dies after the restart, or an adopted turn whose request fell outside the
-  bounded SSE replay, can still leave a card pending. Closing it means
-  reconciling persisted pending cards against the worker on adoption.
+  **Saved cards are checked against the worker when a runner first reaches it.**
+  The backstop knows a request only through the in-memory
+  `awaitingPermissionIds`, which an orchestrator restart empties, and a new
+  container holds none of its predecessor's requests. So `/agent/status` reports
+  `pendingPermissionIds` (the broker's unanswered requests), and
+  `ContainerSessionRunner` `reconcileSavedPermissionCards` uses the status reading
+  that turn adoption already made — one reading, so adoption and this check
+  cannot disagree — before the first SSE connect, so no card can be saved while it
+  runs. A runner whose container is still being created uses an empty list: that
+  container has never held a request. Then `reconcilePermissionCards` compares
+  the list with the session's saved pending cards (`pendingPermissionRequestIds`):
+  a card the worker still waits on goes back into `awaitingPermissionIds` and
+  re-sends the attention signal, so the backstop covers a worker that dies later;
+  every other card is denied through `settlePermissionCard`. Without an agent in
+  the runner (no turn was adopted), nothing can relay the user's answer or the
+  worker's result, so every saved card is denied. When the runner has no running
+  turn, the in-progress rows are finalized, for the same reason as
+  `turn_abandoned`. The check is skipped when the status probe fails or the worker
+  image predates the field; the next runner or container checks again.
 
   Cards left pending by builds before this rule are denied once by a database
   migration (`STALE_PERMISSION_CARD_MIGRATION`) — only those older than Claude's
@@ -286,7 +300,7 @@ mid-turn card in that position reproduced it, not just this one.
 
 **Worker / agent-agnostic core**
 - `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`.
-- `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits.
+- `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`.
 - `src/server/session/mcp-permission-bridge.ts` — Claude's `--permission-prompt-tool`. `createPermissionBridgeServer()` factory; open + bounded `/await` poll loop with retry/backoff (Thread B).
 - `src/server/session/session-worker.ts` — broker construction, `/agent-ops/permission/request` (now non-blocking) + `/agent-ops/permission/await` (Thread B) + `/agent/permission/resolve`, `permissionBridgePaths`, Codex requester injection, reject-all on teardown.
 - `src/server/session/agents/claude/{adapter,process}.ts` — register `shipit-permission`; pass `--permission-prompt-tool`.
@@ -296,14 +310,14 @@ mid-turn card in that position reproduced it, not just this one.
 **Orchestrator**
 - `src/server/orchestrator/proxy-agent-process.ts` + `container-session-runner.ts` — `resolvePermission` → `/agent/permission/resolve`.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — `agent_permission_request` → emitChatCard + `session_attention` (Thread C); `agent_permission_resolved` → `settlePermissionCard`; an agent `error` denies the cards its process left.
-- `src/server/orchestrator/permission-cards.ts` — `settlePermissionCard` (patch the recorded card mid-turn via `persistCardTransition`, else the DB row; `permission_resolved`; clear attention with the last id) and `denyAbandonedPermissionCards`, called from `turn-executor.ts` (exit), `runner-registry-factory.ts` (`turn_abandoned`) and `startup-tasks.ts` (`handleContainerExited`).
+- `src/server/orchestrator/permission-cards.ts` — `settlePermissionCard` (patch the recorded card mid-turn via `persistCardTransition`, else the DB row; `permission_resolved`; clear attention with the last id) and `denyAbandonedPermissionCards`, called from `turn-executor.ts` (exit), `runner-registry-factory.ts` (`turn_abandoned`) and `startup-tasks.ts` (`handleContainerExited`); `reconcilePermissionCards`, called from `container-session-runner.ts` `reconcileSavedPermissionCards`.
 - `src/server/orchestrator/chat-card-persistence.ts` — `updateRecordedCard` (patch a recorded card in place for a transition that lands within its own turn, without re-emitting it); `emitChatCard` advances `lastPersistedBufferIndex` past the buffer after persisting (the switch/reconnect overlap fix that kept a pending card from vanishing).
 - `src/client/hooks/message-handlers/agent-event.ts` — the streaming-assistant merge excludes card-carrying messages (`CARD_MESSAGE_FIELDS`) as merge targets, so a replayed event can't rebuild a card message and drop its card field; `agent_tool_result` routes each result to the message whose `toolUse` holds the id (`indexOfToolUse` / `fallbackResultTarget`), so a card between a call and its result can't orphan the tool row.
 - `src/server/orchestrator/{session-runner,container-session-runner}.ts` — `awaitingPermissionIds` per-runner set (Thread C).
 - `src/server/orchestrator/index.ts` — `session_attention` connect snapshot.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — `handleAnswerQuestion` forwards the session's permission mode so a clarifying answer stays in plan mode (Thread A).
 - `src/server/orchestrator/ws-handlers/permission-handlers.ts` — `handleResolvePermission` (new); dispatch in `index.ts`.
-- `src/server/orchestrator/chat-history.ts` + `src/server/shared/database.ts` — `permissionPrompt` field/column + migration + `updatePermissionCard`.
+- `src/server/orchestrator/chat-history.ts` + `src/server/shared/database.ts` — `permissionPrompt` field/column + migration + `updatePermissionCard` + `pendingPermissionRequestIds`.
 - WS types: `ws-client-messages.ts` (`WsResolvePermission`), `ws-server-messages.ts` (`WsPermissionRequestCard`, `WsPermissionResolved`).
 
 **Client**
@@ -327,10 +341,11 @@ mid-turn card in that position reproduced it, not just this one.
 ## Tests
 
 - `permission-broker.test.ts` — request/resolve/remember/no-timeout/unknown-id; plus `openRequest`/`poll` long-poll, `toolUseId` idempotency, post-resolution poll consumption (Thread B); the abandoned-request deny from `endToolUse`, `clearPending` and an aborted `signal`, and that none re-announces an answered request.
-- `agent-controller.test.ts` — a gated call's `tool_result` (the Claude idle-timeout shape) and an agent exit each broadcast the deny.
+- `agent-controller.test.ts` — a gated call's `tool_result` (the Claude idle-timeout shape) and an agent exit each broadcast the deny; `/agent/status` reports the unanswered ids.
 - `codex/adapter.test.ts` — `serverRequest/resolved` aborts the pending request and sends no response.
 - `database.test.ts` — the migration denies legacy pending cards and leaves answered cards and unreadable JSON alone.
-- `permission-cards.test.ts` — mid-turn vs. finished-turn persistence, attention cleared only with the last id, the abandoned-card deny.
+- `permission-cards.test.ts` — mid-turn vs. finished-turn persistence, attention cleared only with the last id, the abandoned-card deny, and the reconcile against the worker's live ids.
+- `restart-turn-adoption.test.ts` (integration) — after a restart, a saved card the adopted worker still waits on stays pending and needs attention, an older one is denied, and a card no adopted turn can relay, or one from a replaced container, is denied.
 - `agent-listeners.test.ts` — an agent error denies its cards; a replaced process's late error does not; the worker's deny settles the card.
 - `turn-crash-commit.test.ts` — an exit with a pending card denies it and still commits; `runner-registry-factory.test.ts` — `turn_abandoned`; `container-exit-logging.test.ts` — a container exit denies the card and saves the turn with it denied.
 - `mcp-permission-bridge.test.ts` — open→poll→allow envelope, inline pre-approval, `pending` loop, transient-failure retry, sustained-failure fail-closed, 4xx no-retry (Thread B).

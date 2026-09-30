@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { SessionWorker } from "../../session/session-worker.js";
-import { ContainerSessionRunner } from "../container-session-runner.js";
+import { ContainerSessionRunner, PLACEHOLDER_WORKER_URL } from "../container-session-runner.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
@@ -110,12 +110,12 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  function makeRunner(statusCard = false): ContainerSessionRunner {
+  function makeRunner(statusCard = false, url = workerUrl): ContainerSessionRunner {
     const runner = new ContainerSessionRunner({
       sessionId: SESSION_ID,
       sessionDir: "/tmp/restart-session",
       defaultAgentId: "claude",
-      workerUrl,
+      workerUrl: url,
     });
     const deps: SystemTurnDeps = {
       agentFactory: (agentId) => runner.createAgent(agentId),
@@ -168,6 +168,28 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
       content: [{ type: "text", text: "MIDTURN_TEXT" }],
     });
   }
+
+  async function openWorkerPermissionRequest(): Promise<string> {
+    const res = await fetch(`${workerUrl}/agent-ops/permission/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolName: "Bash", input: { command: "curl example.com" }, toolUseId: "toolu_live" }),
+    });
+    const { requestId } = await res.json() as { requestId: string };
+    return requestId;
+  }
+
+  function savePendingCard(requestId: string, inProgress = false): void {
+    chatHistoryManager.append(SESSION_ID, {
+      role: "assistant",
+      text: "",
+      permissionPrompt: { requestId, phase: "pending", toolName: "Bash", createdAt: new Date().toISOString() },
+      ...(inProgress ? { inProgress: true } : {}),
+    });
+  }
+
+  const cardPhase = (requestId: string) =>
+    chatHistoryManager.load(SESSION_ID).find((m) => m.permissionPrompt?.requestId === requestId)?.permissionPrompt?.phase;
 
   function seedPreCrashHistory(): void {
     chatHistoryManager.append(SESSION_ID, { role: "user", text: "refactor the parser" });
@@ -284,6 +306,45 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     await new Promise((r) => setTimeout(r, 200));
     expect(runner.accumulatedText).toBe("");
     expect(commits).toHaveLength(0);
+  });
+
+  it("keeps a saved card the adopted worker still waits on and denies one it no longer holds (docs/193)", async () => {
+    savePendingCard("perm_from_an_older_turn");
+    await startPreRestartTurn();
+    const liveId = await openWorkerPermissionRequest();
+    seedPreCrashHistory();
+    savePendingCard(liveId, true);
+
+    const runner = makeRunner();
+    expect(await runner.resumeInFlightTurn()).toBe(true);
+
+    expect(cardPhase("perm_from_an_older_turn")).toBe("denied");
+    expect(runner.awaitingPermissionIds.has(liveId)).toBe(true);
+    expect(sseEvents).toContainEqual({ event: "session_attention", data: { sessionId: SESSION_ID, awaitingPermission: true } });
+    await waitFor(() => cardPhase(liveId) === "pending", 3000, "replayed live card");
+  });
+
+  it("denies a saved card when no adopted turn can relay the answer (docs/193)", async () => {
+    const orphanId = await openWorkerPermissionRequest();
+    savePendingCard(orphanId, true);
+
+    const runner = makeRunner();
+    expect(await runner.resumeInFlightTurn()).toBe(false);
+
+    expect(cardPhase(orphanId)).toBe("denied");
+    expect(runner.awaitingPermissionIds.size).toBe(0);
+    // Finalized, so the next turn's in-progress rewrite keeps the card.
+    expect(chatHistoryManager.load(SESSION_ID).some((m) => m.inProgress)).toBe(false);
+  });
+
+  it("denies a saved card when the session gets a new container (docs/193)", async () => {
+    savePendingCard("perm_from_the_old_container", true);
+
+    const runner = makeRunner(false, PLACEHOLDER_WORKER_URL);
+    runner.attachViewer();
+
+    await waitFor(() => cardPhase("perm_from_the_old_container") === "denied", 3000, "card denied");
+    expect(runner.awaitingPermissionIds.size).toBe(0);
   });
 
   it("does not adopt a turn a live runner already owns (no double-wiring)", async () => {
