@@ -1,7 +1,7 @@
 import type { AgentId, RescuePhase } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
-import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
+import type { QueuedMessage, SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "../loop-detector.js";
@@ -246,10 +246,50 @@ export async function restartContainer(
   return { ok: true, noContainer, newContainerState, error };
 }
 
+/** A hold that keeps new messages queued on a runner. Release is idempotent. */
+export interface QueueHold {
+  runner: SessionRunnerInterface;
+  release(): void;
+}
+
+/**
+ * Takes `systemTurnInProgress` on the runner, and with `lease` a post-turn lease too, so
+ * the idle enforcer cannot reclaim the runner and drop its queue (invariant 5). Release
+ * clears the hold only while it is still this one.
+ */
+export function takeQueueHold(
+  runner: SessionRunnerInterface,
+  opts: { lease: boolean },
+): QueueHold {
+  runner.systemTurnInProgress = true;
+  const seq = runner.systemHoldSeq;
+  if (opts.lease) runner.beginPostTurnWork();
+  let released = false;
+  return {
+    runner,
+    release: () => {
+      if (released) return;
+      released = true;
+      if (opts.lease) runner.endPostTurnWork();
+      if (!runner.disposed && runner.systemHoldSeq === seq) runner.systemTurnInProgress = false;
+    },
+  };
+}
+
+export interface RestartAgentOpts {
+  /**
+   * Move queued messages to the replacement runner instead of dropping them, and hold it
+   * so a message sent while the container starts queues behind them. The caller must
+   * release `held` (docs/321-agent-requested-restart).
+   */
+  carryQueue?: boolean;
+}
+
 export async function restartAgent(
   deps: RecoveryDeps,
   sessionId: string,
-): Promise<RestartContainerResult> {
+  opts: RestartAgentOpts = {},
+): Promise<RestartContainerResult & { held?: QueueHold }> {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
 
@@ -316,6 +356,12 @@ export async function restartAgent(
     }
   }
 
+  // Dispose settles every queued entry as dropped, so take them first.
+  const carried: QueuedMessage[] = [];
+  if (opts.carryQueue && runner) {
+    for (let next = runner.dequeue(); next; next = runner.dequeue()) carried.push(next);
+  }
+
   // The disposed handler leaves the ServiceManager alive for the replacement to adopt.
   if (runner) runner.preserveComposeOnDispose = true;
   deps.runnerRegistry.dispose(sessionId, { force: true });
@@ -347,7 +393,25 @@ export async function restartAgent(
 
   // reapOrphans would remove the Compose containers this restart preserves.
   emit("creating_container");
-  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, session.agentId ?? deps.defaultAgentId);
+  const replacement = deps.runnerRegistry.getOrCreate(
+    sessionId,
+    session.workspaceDir,
+    session.agentId ?? deps.defaultAgentId,
+  );
+  let held: QueueHold | undefined;
+  if (opts.carryQueue) {
+    // Synchronous with the creation, so no message can start a turn ahead of the carried ones.
+    held = takeQueueHold(replacement, { lease: true });
+    // Dispose keeps the caller's hold on the old runner, so a message sent while no runner
+    // was registered queued there; nothing else would ever run it.
+    if (runner && runner !== replacement) {
+      for (let next = runner.dequeue(); next; next = runner.dequeue()) carried.push(next);
+    }
+    for (const entry of carried) replacement.enqueue(entry);
+    if (carried.length > 0) {
+      replacement.emitMessage({ type: "queue_updated", queue: replacement.getQueueSnapshot() });
+    }
+  }
 
   const { newContainerState, error } = await waitForContainerReady(
     deps.containerManager,
@@ -375,7 +439,7 @@ export async function restartAgent(
     });
   }
 
-  return { ok: true, noContainer, newContainerState, error };
+  return { ok: true, noContainer, newContainerState, error, ...(held ? { held } : {}) };
 }
 
 async function waitForContainerReady(

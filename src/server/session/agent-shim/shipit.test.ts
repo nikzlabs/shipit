@@ -1590,6 +1590,61 @@ describe("shipit session continue-after-rebase (docs/303)", () => {
   });
 });
 
+describe("shipit session restart (docs/321)", () => {
+  const REQUESTED = { status: 200, body: { requested: true } };
+
+  it("posts the note to the self-scoped route and says the restart waits for the turn's end", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "restart", "--note", "check node -v"],
+      { "POST /agent-ops/session/restart": REQUESTED },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/session/restart",
+      body: { note: "check node -v" },
+    });
+    expect(out.stdout).toContain("requested");
+  });
+
+  it("requires --note: the note is what the agent continues from", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--note");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects a positional session id rather than restarting another session", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart", "ses_other", "--note", "x"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("surfaces the orchestrator's refusal when there is no container to restart", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart", "--note", "x"], {
+      "POST /agent-ops/session/restart": {
+        status: 503,
+        body: { error: "This ShipIt runs sessions without containers" },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("without containers");
+  });
+
+  it("rejects unsupported flags, including a request for Restart all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart", "--note", "x", "--all"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported flag for shipit session restart");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
 describe("shipit session report", () => {
   const DELIVERED = {
     status: 200,

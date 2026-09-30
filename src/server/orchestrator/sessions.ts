@@ -457,6 +457,18 @@ export class SessionManager {
     })();
   }
 
+  // docs/321-agent-requested-restart — one restart per request: a later note replaces this one.
+  setPendingRestartNote(id: string, note: string | null): void {
+    this.db.prepare("UPDATE sessions SET pending_restart_note = ? WHERE id = ?").run(note, id);
+  }
+
+  getPendingRestartNote(id: string): string | undefined {
+    const row = this.db.prepare(
+      "SELECT pending_restart_note FROM sessions WHERE id = ?",
+    ).get(id) as { pending_restart_note: string | null } | undefined;
+    return row?.pending_restart_note ?? undefined;
+  }
+
   // Read-and-clear prevents repeats; a crash before delivery can lose the notice.
   consumePendingAgentNotice(id: string): string | undefined {
     let notice: string | undefined;

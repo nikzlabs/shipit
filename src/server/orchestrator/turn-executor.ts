@@ -1134,6 +1134,12 @@ export async function executeAgentTurn(
     } finally {
       armPendingPush();
     }
+    // Before idle, whose listeners use the container the restart replaces (docs/321).
+    const runRequestedRestart = deps.runRequestedRestart;
+    if (runner && runRequestedRestart) {
+      await postTurnStep("requested-restart", () =>
+        runRequestedRestart({ sessionId, runner, turnIsCurrent, ownsSystemHold, settle: finishTurn }));
+    }
   };
 
   const runPostTurnFlows = async (): Promise<void> => {

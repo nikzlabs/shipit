@@ -63,6 +63,7 @@ import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
+import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -622,6 +623,25 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const settingsProposals = new SettingsProposalStore(databaseManager);
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
+  const restoreWorkspace = (sessionId: string) =>
+    restoreSessionWorkspace(
+      sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
+    );
+  // Resolves the registry at call time: it is built below, with this step wired into it.
+  const runRequestedRestartForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
+    const registry = registryHolder.ref;
+    if (!registry) return;
+    await runRequestedRestart({
+      sessionManager,
+      runnerRegistry: registry,
+      defaultAgentId,
+      credentialsDir,
+      credentialStore,
+      providerAccountManager,
+      containerManager,
+      restoreWorkspace,
+    }, turn);
+  };
 
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
@@ -632,6 +652,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     usageManager, runParamsPreps,
     markSessionAccountExhausted,
     getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
+    runRequestedRestart: runRequestedRestartForTurn,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -1065,6 +1086,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     drainQueueForSession,
     mergeWatchManager,
     quotaContinuationManager,
+    runRequestedRestartForTurn,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,

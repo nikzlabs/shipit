@@ -522,6 +522,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
   "POST /api/sessions/:sessionId/notify-on-merge-self",
   "POST /api/sessions/:sessionId/continue-after-rebase",
+  // docs/321 — agent container only; Restart all stays a user action.
+  "POST /api/sessions/:sessionId/restart-after-turn",
   "POST /api/sessions/:id/branch/reset-to-base",
   // docs/305 — the agent may ask for its own session's identities and
   // signatures. Every check is on the orchestrator side of these two, because

@@ -102,7 +102,7 @@ export function buildFollowupPrompt(followup: RebaseFollowup): string {
  */
 const REPARK_STATUSES = new Set(["refused", "dropped"]);
 
-function shouldRepark(outcome: TurnOutcome): boolean {
+export function shouldRepark(outcome: TurnOutcome): boolean {
   if (REPARK_STATUSES.has(outcome.status)) return true;
   return outcome.status === "errored" && (outcome.detail?.startsWith(DISPATCH_SETUP_FAILURE) ?? false);
 }

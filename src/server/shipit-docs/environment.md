@@ -217,8 +217,8 @@ health strip) under "Node runtime", which is where the user can see it too. It i
 never silently ignored — if `node -v` surprises you, that panel says why.
 
 Changing `.nvmrc` mid-session does not re-provision; the pin is resolved once at
-container start. To pick up a new pin, the user clicks **Restart agent
-container** — see [Asking the user for a restart](#asking-the-user-for-a-restart).
+container start. To pick up a new pin, restart the agent container — see
+[Restarting your agent container](#restarting-your-agent-container).
 
 ## Automatic behaviors
 
@@ -515,20 +515,27 @@ So data that must last goes in `/persist`, and a service that must keep data
 mounts `persist` instead of declaring a named volume. There is no per-session
 reset: only Full reset, which deletes every session's data, clears `/persist`.
 
-### Asking the user for a restart
+### Restarting your agent container
 
-You cannot restart your own container: the restart ends your turn. When a
-change applies only from the next container start, ask the user, and name the
-button and where it is. Never say only "restart the container" — the user
-cannot tell which control that means. The buttons are on the health strip at
-the top of the **Terminal** tab:
+When a change applies only from the next container start, restart the agent
+container yourself — do not ask the user to:
 
-- **Restart agent container** — recreates only the agent container; the
-  preview services keep running. Ask for this one first.
-- **Restart all** — stops the Compose stack, recreates the agent container, and
-  starts the `auto` services again; `manual` services stay stopped until
-  started. For a wedged session, or when **Restart agent container** did not
-  help.
+```bash
+shipit session restart --note "check that node -v prints 22, then run the tests"
+```
+
+That records the request; ShipIt restarts the agent container **after your
+turn ends**, so the turn that asked is not cut off. The preview services keep
+running. ShipIt then starts a new turn on the new container with your note, so
+write in it what to check or do next. Say in your reply what you restart and
+why. See [sessions.md](sessions.md) → `shipit session restart`.
+
+You cannot ask for **Restart all** (it also stops and restarts the Compose
+stack). When a session is wedged, or restarting the agent container did not
+help, ask the user, and name the button and where it is: **Restart all**, on
+the health strip at the top of the **Terminal** tab. Never say only "restart
+the container" — the user cannot tell which control that means. To restart a
+single preview service, use `shipit service restart <name>`.
 
 Where ShipIt shows a **Restart to apply now** button next to the change itself
 (Session settings, a plugin host grant card), point the user to that button

@@ -84,6 +84,23 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(409);
   });
 
+  it("POST /agent-ops/session/restart forwards the note to /restart-after-turn (docs/321)", async () => {
+    client.setResponse("POST", "/restart-after-turn", {
+      ok: true, status: 200, body: { requested: true },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/restart",
+      payload: { note: "check node -v" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0]).toMatchObject({
+      method: "POST", path: "/restart-after-turn", body: { note: "check node -v" },
+    });
+  });
+
   it("POST /agent-ops/session-status forwards the delta to /session-status", async () => {
     client.setResponse("POST", "/session-status", {
       ok: true, status: 200,

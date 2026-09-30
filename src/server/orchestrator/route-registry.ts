@@ -205,6 +205,7 @@ export async function registerRoutes(
     runnerRegistry, repoPrefetcher, mergeWatchManager,
     refreshPluginReposForSession, runPluginCommandForSession, projectComposeAccess,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
+    runRequestedRestartForTurn,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId, version,
   } = rt;
@@ -996,6 +997,7 @@ export async function registerRoutes(
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         releaseStatusPoller,
+        runRequestedRestart: runRequestedRestartForTurn,
         recordAgentRateLimits,
         markSessionAccountExhausted,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},

@@ -636,6 +636,11 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/continue-after-rebase", request.body ?? {}, reply),
   );
 
+  app.post<{ Body: { note?: string } }>(
+    "/agent-ops/session/restart",
+    async (request, reply) => relay("POST", "/restart-after-turn", request.body ?? {}, reply),
+  );
+
   app.post<{ Body: { title?: string } }>(
     "/agent-ops/session/rename",
     async (request, reply) => relay("POST", "/rename", request.body ?? {}, reply),

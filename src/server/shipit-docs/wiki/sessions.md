@@ -133,9 +133,14 @@ for a wedged session is on it, in increasing order of violence:
 | **Restart agent container** | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine |
 | **Restart all** | Stops the Compose stack, destroys the agent container, rebuilds it and starts the `auto` services again. `manual` services stay stopped until started |
 
+The agent restarts its own agent container: when a change applies only from the
+next container start, run `shipit session restart --note "…"`. The restart
+happens after the turn ends, and the note comes back as a new turn on the new
+container, so the user clicks nothing. **Restart all** stays the user's.
+
 When the user has to restart, name the button and say where it is: "click
-**Restart agent container** on the health strip in the Terminal tab". "Restart
-the container" alone does not tell them which control to use.
+**Restart all** on the health strip in the Terminal tab". "Restart the
+container" alone does not tell them which control to use.
 
 Read the diagnostics before reaching for a restart, and say what they show. A
 restart that fixes nothing twice is worth a bug report rather than a third.

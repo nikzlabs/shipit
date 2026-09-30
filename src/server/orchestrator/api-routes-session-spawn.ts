@@ -5,6 +5,7 @@ import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { prepareShipitFixSpawn } from "./api-routes-shipit-fix.js";
 import { SpawnClaims } from "./services/spawn-idempotency.js";
+import { recordRestartRequest } from "./services/agent-restart-request.js";
 
 import {
   getGitLog,
@@ -547,6 +548,27 @@ export async function registerSessionSpawnRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to arm the post-rebase follow-up: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // docs/321 — records the request only; the restart runs after the agent's turn ends.
+  app.post<{ Params: { sessionId: string }; Body: { note?: string } }>(
+    "/api/sessions/:sessionId/restart-after-turn",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        return recordRestartRequest(
+          { sessionManager, containerManager: deps.containerManager ?? null },
+          request.params.sessionId,
+          request.body?.note,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to record the restart request: ${getErrorMessage(err)}` });
       }
     },
   );
