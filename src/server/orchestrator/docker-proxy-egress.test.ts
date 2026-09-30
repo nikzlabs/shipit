@@ -198,7 +198,8 @@ describe("containProxyContainer", () => {
 
     expect(events).toEqual(["pause", `connect:${EGRESS}`, "firewall", "allow", "unpause"]);
     expect(fake.connect).toHaveBeenCalledWith(EGRESS, { Container: "c-full-id", EndpointConfig: { GwPriority: 1 } });
-    expect(readHostAddresses).toHaveBeenCalledWith(fake.docker, "egress:test");
+    // A cached read can still list the gateway of a removed network whose range this one reuses.
+    expect(readHostAddresses).toHaveBeenCalledWith(fake.docker, "egress:test", { fresh: true });
     expect(installFirewall).toHaveBeenCalledWith(fake.docker, expect.objectContaining({
       agentContainerId: "c-full-id",
       sidecarImage: "egress:test",

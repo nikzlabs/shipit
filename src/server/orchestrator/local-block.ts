@@ -135,13 +135,20 @@ export function parseHostAddresses(output: string): string[] {
  * The host's own addresses, read in the host network namespace. Throws when
  * they cannot be read: a firewall without them would leave the host's public
  * address open, so the caller fails closed.
+ *
+ * They include every Docker bridge's gateway, and Docker reuses a removed
+ * network's range, so `fresh` skips the cached read where a session subnet is
+ * about to be opened.
  */
 export async function hostAddresses(
   docker: Docker,
   sidecarImage: string,
-  now: () => number = Date.now,
+  opts: { fresh?: boolean; now?: () => number } = {},
 ): Promise<string[]> {
-  if (hostAddressCache && now() - hostAddressCache.at < HOST_ADDRESS_TTL_MS) return hostAddressCache.addresses;
+  const now = opts.now ?? Date.now;
+  if (!opts.fresh && hostAddressCache && now() - hostAddressCache.at < HOST_ADDRESS_TTL_MS) {
+    return hostAddressCache.addresses;
+  }
   const { code, output } = await runHelper(docker, {
     image: sidecarImage,
     entrypoint: ["ip", "-o", "addr", "show"],

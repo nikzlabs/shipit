@@ -427,10 +427,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /** The Docker host's own addresses, for the local block (docs/319). */
-  async hostAddresses(): Promise<string[]> {
+  async hostAddresses(opts: { fresh?: boolean } = {}): Promise<string[]> {
     const image = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     if (!image) return [];
-    return readHostAddresses(this.docker, image);
+    return readHostAddresses(this.docker, image, opts);
   }
 
   private orchestratorAddress?: string;
@@ -654,7 +654,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         sidecarImage,
         config: { ...config, contained },
         policy,
-        hostAddresses: await readHostAddresses(this.docker, sidecarImage),
+        // Fresh: the session network may hold a range whose gateway the cached read still lists.
+        hostAddresses: await readHostAddresses(this.docker, sidecarImage, { fresh: true }),
         serviceNames,
         dnsEnabled: contained && egressDnsEnabled(),
         proxyEnabled: contained && egressProxyEnabled(),
@@ -1005,11 +1006,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         console.warn(`[egress:${sessionId}] no IPAM subnet found for ${networkName}; preview may be unreachable from the agent browser`);
         return;
       }
+      const hostAddresses = localBlockActive() ? await this.currentHostAddresses(sessionId) : undefined;
       const allowed = await allowEgressToSubnets(this.docker, {
         agentContainerId,
         sidecarImage,
         subnets,
         gateways: extractNetworkGateways(info),
+        ...(hostAddresses ? { hostAddresses } : {}),
         labels: { ...this.baseLabels(), "shipit-parent-session": sessionId },
       });
       console.log(`[egress:${sessionId}] opened agent egress to session subnet(s) ${allowed.join(", ")} (${networkName})`);
@@ -1018,6 +1021,23 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         `[egress:${sessionId}] failed to open egress to ${networkName} (preview may be unreachable from the agent browser):`,
         err instanceof Error ? err.message : String(err),
       );
+    }
+  }
+
+  /**
+   * The agent's host drops date from its firewall install; a session network
+   * can reuse a range whose gateway was the host's then, and its first address
+   * is a service. Undefined when unreadable: every drop then stays.
+   */
+  private async currentHostAddresses(sessionId: string): Promise<string[] | undefined> {
+    try {
+      return await this.hostAddresses({ fresh: true });
+    } catch (err) {
+      console.warn(
+        `[egress:${sessionId}] could not read the host's addresses; stale host drops stay in place:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
     }
   }
 

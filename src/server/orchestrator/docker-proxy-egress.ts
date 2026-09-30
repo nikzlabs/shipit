@@ -193,7 +193,8 @@ export async function containProxyContainer(target: ProxyEgressTarget): Promise<
   }
 
   try {
-    const addresses = await hostAddresses(docker, sidecarImage);
+    // Fresh: this container's network may hold a range whose gateway the cached read still lists.
+    const addresses = await hostAddresses(docker, sidecarImage, { fresh: true });
     const network = await ensureEgressNetwork(docker, sessionId, target.labels);
     try {
       await network.connect({

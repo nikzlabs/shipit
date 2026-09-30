@@ -25,6 +25,7 @@ function makeStubs(): Stubs {
   const record = `echo "$(basename "$0") $*" >> "${log}"`;
   stub("iptables", `${record}
 case "$*" in
+  "-S SHIPIT-LOCAL") printf '%s\\n' "\${STUB_LOCAL_RULES:-}" ;;
   *"-L SHIPIT-"*) [ "\${STUB_CHAIN_EXISTS:-0}" = 1 ] || exit 1 ;;
   *" -C "*|"-C "*|*"-t nat -C"*|*"-t nat -D"*) exit 1 ;;
 esac
@@ -206,6 +207,54 @@ describe("allow-subnet.sh — later network joins", () => {
   it("tells the caller to reinstall when a namespace predates ShipIt's own chain", async () => {
     const { code } = await runScript(stubs, "allow-subnet.sh", { EGRESS_LOCAL_TCP: "172.18.0.3/32:4123" });
     expect(code).toBe(3);
+  });
+
+  // The service listed at 172.16.44.1 timed out: the drop dated from when that was a host gateway.
+  describe("host drops older than the opened subnet", () => {
+    const RULES = [
+      "-N SHIPIT-LOCAL",
+      "-A SHIPIT-LOCAL -m addrtype --dst-type BROADCAST -j DROP",
+      "-A SHIPIT-LOCAL -d 203.0.113.7/32 -j DROP",
+      "-A SHIPIT-LOCAL -d 172.16.44.1/32 -j DROP",
+      "-A SHIPIT-LOCAL -d 172.16.44.9/32 -j DROP",
+      "-A SHIPIT-LOCAL -d 172.16.45.1/32 -j DROP",
+    ].join("\n");
+    const removals = (calls: string[]) => calls.filter((c) => c.startsWith("iptables -D SHIPIT-LOCAL"));
+
+    it("removes a drop inside the subnet for an address the host no longer holds, before the accept", async () => {
+      const { code, calls } = await runScript(stubs, "allow-subnet.sh", {
+        STUB_CHAIN_EXISTS: "1",
+        STUB_LOCAL_RULES: RULES,
+        EGRESS_ALLOW_SUBNETS: "172.16.44.0/24",
+        EGRESS_HOST_ADDRS: "203.0.113.7 172.16.44.9",
+      });
+      expect(code).toBe(0);
+      // 172.16.44.9 is still the host's; 172.16.45.1 is outside the subnet, where the block refuses it anyway.
+      expect(removals(calls)).toEqual(["iptables -D SHIPIT-LOCAL -d 172.16.44.1/32 -j DROP"]);
+      expect(indexOf(calls, "iptables -D SHIPIT-LOCAL -d 172.16.44.1/32 -j DROP"))
+        .toBeLessThan(indexOf(calls, "iptables -A SHIPIT-LOCAL -d 172.16.44.0/24 -j ACCEPT"));
+    });
+
+    it("keeps the drop for the network's own gateway", async () => {
+      const { calls } = await runScript(stubs, "allow-subnet.sh", {
+        STUB_CHAIN_EXISTS: "1",
+        STUB_LOCAL_RULES: RULES,
+        EGRESS_ALLOW_SUBNETS: "172.16.44.0/24",
+        EGRESS_BLOCK_ADDRS: "172.16.44.1",
+        EGRESS_HOST_ADDRS: "203.0.113.7 172.16.44.9",
+      });
+      expect(removals(calls)).toEqual([]);
+    });
+
+    it("removes nothing when the caller did not read the host's addresses", async () => {
+      const { code, calls } = await runScript(stubs, "allow-subnet.sh", {
+        STUB_CHAIN_EXISTS: "1",
+        STUB_LOCAL_RULES: RULES,
+        EGRESS_ALLOW_SUBNETS: "172.16.44.0/24",
+      });
+      expect(code).toBe(0);
+      expect(removals(calls)).toEqual([]);
+    });
   });
 
   it("keeps the pre-docs/319 behaviour in a namespace without the chain", async () => {

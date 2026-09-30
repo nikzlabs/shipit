@@ -5,6 +5,8 @@
 # Inputs (env, space-separated):
 #   EGRESS_ALLOW_SUBNETS  CIDRs to allow (e.g. "172.19.0.0/16")
 #   EGRESS_BLOCK_ADDRS    those networks' gateways: the Docker host, always refused
+#   EGRESS_HOST_ADDRS     when set, the host's addresses NOW: a drop inside an
+#                         allowed subnet for any other address is removed
 #   EGRESS_LOCAL_TCP      when set, replaces SHIPIT-CORE: ShipIt's own address:port pairs
 #
 # Idempotent and best effort: failure affects preview access, not containment.
@@ -30,6 +32,45 @@ block_one() {
     || "$tool" -I "$chain" 1 -d "$addr" -j DROP \
     || { log "WARN: could not refuse $addr"; return 1; }
   log "refused $addr"
+}
+
+ip4_int() {
+  local IFS=. a b c d
+  read -r a b c d <<<"$1"
+  echo $(((a << 24) | (b << 16) | (c << 8) | d))
+}
+
+in_subnet4() {
+  local bits="${2#*/}" addr net mask
+  addr="$(ip4_int "$1")" net="$(ip4_int "${2%/*}")"
+  mask=$((bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF))
+  (((addr & mask) == (net & mask)))
+}
+
+# The host drops are a snapshot from install time. Docker reuses a removed
+# network's range, and a network with no host address gives its first address
+# to a container, so a snapshot drop can hide one of this session's services.
+# IPv4 only: a network with no host address has IPv6 off.
+prune_stale_drops() {
+  [[ -n "${EGRESS_HOST_ADDRS+set}" ]] || return 0
+  [[ "$(chain_for iptables)" == "SHIPIT-LOCAL" ]] || return 0
+  local keep=" ${EGRESS_HOST_ADDRS} ${EGRESS_BLOCK_ADDRS:-} " rule addr cidr
+  while read -r rule; do
+    [[ "$rule" =~ ^-A\ SHIPIT-LOCAL\ -d\ ([0-9.]+)/32\ -j\ DROP$ ]] || continue
+    addr="${BASH_REMATCH[1]}"
+    [[ "$keep" == *" $addr "* ]] && continue
+    for cidr in ${EGRESS_ALLOW_SUBNETS:-}; do
+      [[ "$cidr" == */* && "$cidr" != *:* ]] || continue
+      if in_subnet4 "$addr" "$cidr"; then
+        if iptables -D SHIPIT-LOCAL -d "$addr/32" -j DROP; then
+          log "no longer refused $addr: the host no longer holds it"
+        else
+          log "WARN: could not remove the stale drop for $addr"
+        fi
+        break
+      fi
+    done
+  done < <(iptables -S SHIPIT-LOCAL)
 }
 
 allow_one() {
@@ -70,6 +111,8 @@ fi
 for addr in ${EGRESS_BLOCK_ADDRS:-}; do
   block_one "$addr" || exit 1
 done
+
+prune_stale_drops
 
 for cidr in ${EGRESS_ALLOW_SUBNETS:-}; do
   allow_one "$cidr"

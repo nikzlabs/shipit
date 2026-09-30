@@ -23,7 +23,7 @@ vi.mock("./compose-service-egress.js", async (importActual) => {
 });
 
 import { SessionContainerManager } from "./session-container.js";
-import { _setLocalBlockForTest } from "./local-block.js";
+import { _setLocalBlockForTest, hostAddresses as readHostAddresses } from "./local-block.js";
 import { LegacyEgressNamespaceError } from "./egress-firewall-install.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { OPS_DOCKER_HOST } from "./container-lifecycle.js";
@@ -90,6 +90,15 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
     const manager = await buildManager({ contained: true, extraHosts: ["fal.run"] });
     await expect(manager.reloadEgress(SESSION_ID)).resolves.toBe(true);
     expect(reloadEgressSidecars).toHaveBeenCalledTimes(1);
+  });
+
+  it("contains Compose services with a fresh read of the host's addresses", async () => {
+    const manager = await buildManager({ contained: true, extraHosts: [] });
+    vi.mocked(readHostAddresses).mockClear();
+    await manager.containComposeServices(SESSION_ID, ["web"]);
+    // A cached read can list the gateway of a removed network whose range the session network reuses.
+    expect(readHostAddresses).toHaveBeenCalledWith(expect.anything(), "shipit-egress-sidecar:test", { fresh: true });
+    expect(containComposeServices).toHaveBeenCalledWith(expect.objectContaining({ hostAddresses: ["203.0.113.7"] }));
   });
 
   it("reports false when the agent container is not running, service refresh notwithstanding", async () => {

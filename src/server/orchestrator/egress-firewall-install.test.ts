@@ -319,4 +319,29 @@ describe("allowEgressToSubnets — gateways (docs/319)", () => {
     });
     expect(created[0]!.Env).toEqual(["EGRESS_ALLOW_SUBNETS=172.20.0.0/24", "EGRESS_BLOCK_ADDRS=172.20.0.1"]);
   });
+
+  it("passes the host's current addresses only when the caller read them", async () => {
+    const created: { Env?: string[] }[] = [];
+    const docker = {
+      createContainer: async (spec: { Env?: string[] }) => {
+        created.push(spec);
+        return { start: async () => {}, wait: async () => ({ StatusCode: 0 }), remove: async () => {} };
+      },
+    } as unknown as Docker;
+    await allowEgressToSubnets(docker, {
+      agentContainerId: "agent",
+      sidecarImage: "sidecar:test",
+      subnets: ["172.20.0.0/24"],
+      hostAddresses: ["203.0.113.7", "garbage"],
+    });
+    expect(created[0]!.Env).toContain("EGRESS_HOST_ADDRS=203.0.113.7");
+    // Empty is a real answer the script acts on, so it must still be passed.
+    await allowEgressToSubnets(docker, {
+      agentContainerId: "agent",
+      sidecarImage: "sidecar:test",
+      subnets: ["172.20.0.0/24"],
+      hostAddresses: [],
+    });
+    expect(created[1]!.Env).toContain("EGRESS_HOST_ADDRS=");
+  });
 });
