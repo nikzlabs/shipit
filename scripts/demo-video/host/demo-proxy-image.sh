@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# The demo proxy as an image on the demo host — docs/296 plan §2, §9. Runs ON
-# the demo host (`ssh services`), beside proxy.mjs, demo-proxy-entrypoint.sh
-# and cassettes/ in ~/shipit-demo.
-#
-# The demo repo's docker-compose.yml declares `demo-proxy` with
-# `image: demo-proxy:current`, so a demo session runs its own proxy as one of
-# its Compose services: a session's agent may reach its own services
-# and nothing else on the machine (docs/319-api-reach-through-host req 4). The
-# image exists only in this host's Docker; the mode and the cassette are baked
-# in, so switching either is a rebuild.
+# The demo proxy as the image `demo-proxy:current` in the demo host's Docker,
+# which the demo repo's `demo-proxy` Compose service runs (docs/296 plan §2,
+# §9). Runs ON the demo host, beside proxy.mjs, demo-proxy-entrypoint.sh and
+# cassettes/. The mode, the cassette and the pace are baked in, so switching
+# any of them is a rebuild.
 #
 #   demo-proxy-image.sh build replay <cassette>   cassettes/<cassette> copied in
 #   demo-proxy-image.sh build record <cassette>   empty /cassettes/<cassette>
@@ -29,7 +24,7 @@ read -r -a DOCKER_CMD <<<"${DOCKER:-docker}"
 PACE="${DEMO_PROXY_PACE:-120}"
 
 die() { echo "demo-proxy-image: $*" >&2; exit 1; }
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 valid_name() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "cassette name must be lowercase letters, digits, '.', '_' or '-': $1"; }
 

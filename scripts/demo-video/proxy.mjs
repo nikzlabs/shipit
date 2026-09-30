@@ -30,9 +30,11 @@
 // Prints the bound port on stdout once listening; everything else goes to
 // stderr, one line per request: mode, lane, n, path, status, ms. `/api/hello`
 // (HEAD or GET) answers 200 with `x-demo-proxy-mode` and `x-demo-proxy-cassette`
+// (a replay adds `x-demo-proxy-cassette-digest` and `x-demo-proxy-pace`)
 // so the driver can tell which proxy it is talking to; `GET /api/demo/stats`
 // is the run's counters as JSON, which the driver checks at the end of a replay.
 
+import crypto from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
@@ -249,6 +251,28 @@ export function scrubCassette(dir) {
     }
   }
   return { rewritten, removed: [...removed].sort() };
+}
+
+/**
+ * One digest for a recorded take: `fingerprints.jsonl` and every
+ * `<lane>/NNN.sse`, by relative path and bytes. A replay proxy reports it and
+ * the driver compares it with the committed cassette — the cassette's name
+ * alone does not say which take an image was built from.
+ */
+export function cassetteDigest(dir) {
+  // A cassette from before the fingerprint log has none; it still replays.
+  const files = fs.existsSync(path.join(dir, "fingerprints.jsonl")) ? ["fingerprints.jsonl"] : [];
+  for (const lane of [LANE_API_KEY, LANE_BEARER]) {
+    const laneDir = path.join(dir, lane);
+    if (!fs.existsSync(laneDir)) continue;
+    for (const f of fs.readdirSync(laneDir).filter((f) => /^\d{3}\.sse$/.test(f)).sort()) files.push(`${lane}/${f}`);
+  }
+  const hash = crypto.createHash("sha256");
+  for (const rel of files) {
+    const bytes = fs.readFileSync(path.join(dir, rel));
+    hash.update(`${rel}\0${bytes.length}\0`).update(bytes);
+  }
+  return hash.digest("hex");
 }
 
 // ── SSE pacing ───────────────────────────────────────────────────────────────
@@ -570,6 +594,10 @@ export function createServer(opts) {
   // key is a drift key; both are exposed so a reader need not know that.
   const stats = { served: 0, drift: 0, fallback: 0, unused: () => 0 };
   const handleMessages = opts.mode === "record" ? createRecorder(opts, stats) : createReplayer(opts, stats);
+  // What a replay plays and how fast, read once: the cassette does not change under a running replay.
+  const replayIdentity = opts.mode === "replay"
+    ? { "x-demo-proxy-cassette-digest": cassetteDigest(opts.cassetteDir), "x-demo-proxy-pace": String(opts.charsPerSecond) }
+    : {};
 
   const server = http.createServer((req, res) => {
     res.on("error", () => {
@@ -578,7 +606,7 @@ export function createServer(opts) {
     const startedAt = Date.now();
     const route = routeOf(req);
     if (route === "hello") {
-      res.writeHead(200, { "x-demo-proxy-mode": opts.mode, "x-demo-proxy-cassette": cassette, "content-length": 0 });
+      res.writeHead(200, { "x-demo-proxy-mode": opts.mode, "x-demo-proxy-cassette": cassette, ...replayIdentity, "content-length": 0 });
       res.end();
       log(`${opts.mode} lane=- n=- ${req.method} ${req.url} 200 ${Date.now() - startedAt}ms`);
       return;
