@@ -366,6 +366,7 @@ export class AgentController {
       selfWakeActive: this.selfWakeActive,
       terminalActive: this.deps.otherWorkerLiveness?.().terminalActive ?? false,
       installRunning: this.deps.otherWorkerLiveness?.().installRunning ?? false,
+      pendingPermissionIds: this.deps.permissionBroker.unansweredIds,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),

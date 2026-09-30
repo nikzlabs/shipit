@@ -234,4 +234,9 @@ export class PermissionBroker {
   get pendingCount(): number {
     return this.pending.size;
   }
+
+  // Answered requests can wait here for their poll; only unanswered ones still need the user.
+  get unansweredIds(): string[] {
+    return [...this.pending].filter(([, entry]) => !entry.settled).map(([id]) => id);
+  }
 }

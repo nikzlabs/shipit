@@ -372,4 +372,74 @@ describe("reattachInFlightTurns", () => {
     const h = makeHarness([]);
     expect(await reattachInFlightTurns({ ...h.deps, containerManager: null })).toBe(0);
   });
+
+  describe("unfinished turn rows", () => {
+    function history(sessionsWithRows: string[]) {
+      const finalized: string[] = [];
+      return {
+        finalized,
+        chatHistoryManager: {
+          sessionsWithInProgressRows: () => sessionsWithRows,
+          finalizeInheritedInProgress: (id: string) => { finalized.push(id); },
+        },
+      };
+    }
+
+    it("finalizes the rows of a turn its worker reports as ended", async () => {
+      const idle = await worker({ running: true, turnActive: false });
+      const legacyStopped = await worker({ running: false });
+      const stale = await worker({ running: false, turnActive: false });
+      const h = makeHarness([
+        { sessionId: "ended", workerUrl: idle, workerBuildId: "current-build" },
+        { sessionId: "legacy-stopped", workerUrl: legacyStopped, workerBuildId: "current-build" },
+        { sessionId: "reclaimed", workerUrl: stale, workerBuildId: "old-build" },
+      ]);
+      const { finalized, chatHistoryManager } = history(["ended", "legacy-stopped", "reclaimed"]);
+
+      await reattachInFlightTurns({ ...h.deps, chatHistoryManager });
+
+      expect(h.destroyed).toEqual(["reclaimed"]);
+      expect(finalized.sort()).toEqual(["ended", "legacy-stopped", "reclaimed"]);
+    });
+
+    // Discovery can miss a live container; the runner that later gets a new container finalizes.
+    it("leaves the rows of a session whose worker it did not reach", async () => {
+      const idle = await worker({ running: true, turnActive: false });
+      const h = makeHarness(
+        [{ sessionId: "exited", workerUrl: idle, status: "exited" }],
+        { sessions: new Set(["exited", "no-container"]) },
+      );
+      const { finalized, chatHistoryManager } = history(["exited", "no-container"]);
+
+      await reattachInFlightTurns({ ...h.deps, chatHistoryManager });
+
+      expect(finalized).toEqual([]);
+    });
+
+    it("leaves the rows of a turn that is, or may be, still in flight", async () => {
+      const live = await worker({ running: true, turnActive: true });
+      const legacyRunning = await worker({ running: true });
+      const started = await worker({ running: true, turnActive: false }, { running: true, turnActive: true });
+      const h = makeHarness([
+        { sessionId: "live", workerUrl: live },
+        { sessionId: "legacy-running", workerUrl: legacyRunning },
+        { sessionId: "unreachable", workerUrl: "http://127.0.0.1:1" },
+        { sessionId: "started-between-probes", workerUrl: started, workerBuildId: "old-build" },
+      ]);
+      const { finalized, chatHistoryManager } = history(["live", "legacy-running", "unreachable", "started-between-probes"]);
+
+      await reattachInFlightTurns({ ...h.deps, chatHistoryManager });
+
+      expect(finalized).toEqual([]);
+    });
+
+    it("finalizes every session's rows without a container manager, where no agent outlives a restart", async () => {
+      const h = makeHarness([]);
+      const { finalized, chatHistoryManager } = history(["s1", "s2"]);
+
+      await reattachInFlightTurns({ ...h.deps, containerManager: null, chatHistoryManager });
+
+      expect(finalized).toEqual(["s1", "s2"]);
+    });
+  });
 });

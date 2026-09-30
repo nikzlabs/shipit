@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { assertSessionCanDispatch, createRunnerRegistry } from "./runner-registry-factory.js";
+import { ContainerSessionRunner, PLACEHOLDER_WORKER_URL } from "./container-session-runner.js";
 
 describe("assertSessionCanDispatch", () => {
   it.each(["ops", "sandbox"] as const)(
@@ -155,6 +156,51 @@ describe("createRunnerRegistry — background-work marker wiring", () => {
     runner.dispose({ force: true });
 
     expect(attention().at(-1)).toEqual({ sessionId: "s1", backgroundTasks: [] });
+  });
+});
+
+describe("createRunnerRegistry — a runner with a new container keeps the old turn's rows (docs/240)", () => {
+  function runnerFor(workerUrl: string) {
+    const finalizeInheritedInProgress = vi.fn();
+    const registry = createRunnerRegistry({
+      effectiveRunnerFactory: (o) => new ContainerSessionRunner({
+        sessionId: o.sessionId, sessionDir: o.sessionDir, defaultAgentId: o.defaultAgentId, workerUrl,
+      }),
+      sessionManager: { get: () => undefined, getPrStatus: () => undefined } as never,
+      repoStore: { isTrusted: () => true } as never,
+      createGitManager: (() => ({})) as never,
+      githubAuthManager: { authenticated: false } as never,
+      agentFactory: undefined,
+      chatHistoryManager: { finalizeInheritedInProgress } as never,
+      autoPushScheduler: {
+        schedule: () => {}, cancel: () => {}, cancelAll: () => {}, pending: () => false,
+      },
+      sseBroadcast: () => {},
+      enforceIdleContainerLimit: () => {},
+      getDepCacheDir: () => "",
+      serviceManagers: new Map(),
+      composeStopPromises: new Map(),
+      composeWarnings: new Map(),
+      composeNotConfigured: new Set(),
+      containerManager: null,
+      serviceEnvDir: "/tmp/service-env",
+      runtimeMode: "containerized",
+      broadcastLog: () => {},
+      usageManager: {} as never,
+    });
+    return { runner: registry.getOrCreate("s1", "/tmp/s1", "claude"), finalizeInheritedInProgress };
+  }
+
+  it("finalizes the session's inherited in-progress rows before its first turn", () => {
+    const { runner, finalizeInheritedInProgress } = runnerFor(PLACEHOLDER_WORKER_URL);
+    expect(finalizeInheritedInProgress).toHaveBeenCalledWith("s1");
+    runner.dispose({ force: true });
+  });
+
+  it("leaves them to the worker's answer when it reconnects to a running container", () => {
+    const { runner, finalizeInheritedInProgress } = runnerFor("http://127.0.0.1:1");
+    expect(finalizeInheritedInProgress).not.toHaveBeenCalled();
+    runner.dispose({ force: true });
   });
 });
 

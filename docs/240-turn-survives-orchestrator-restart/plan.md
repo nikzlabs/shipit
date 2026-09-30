@@ -124,8 +124,9 @@ live turn. Runner creation then runs the identical adopt path
 (`resumeInFlightTurn`). Idle sessions are deliberately never *woken* — creating a
 runner starts compose stacks and installs, which must not happen for sessions
 the user never opened. Wired from `bootstrap-managers.ts` (where both the
-container manager and the runner registry are in scope), fire-and-forget, with
-each probe independently guarded.
+container manager and the runner registry are in scope), awaited there before
+`buildApp` returns — so before the server listens — with each probe
+independently guarded.
 
 Since docs/242 the same sweep also *reclaims* a stale idle worker — destroying
 its agent container and not recreating it, so an update frees the memory it was
@@ -142,6 +143,46 @@ writing the rebuilt turn. So a replayed turn lands in history exactly once no
 matter how much of it was already persisted before the crash — no dedup logic
 needed, and the guarantee is the same one that already protects an interrupted
 turn.
+
+### 5. A turn that ended during the restart keeps its saved rows
+
+Adoption covers a turn that is still running. A turn that *ended* while no
+orchestrator listened is not adopted: its events are skipped with the completed
+turn, so nothing finalizes the rows the previous orchestrator saved as
+`in_progress=1`, and the next turn's `replaceInProgress` deleted them — the same
+loss as the incident, by another path. The same holds when the session's worker
+is gone (container exited, reclaimed, or never running at boot), and in local
+mode, where no agent outlives the process.
+
+Rows are finalized only where a worker says its turn has ended
+(`workerReportsNoTurn`: `turnActive === false`, or a legacy worker with no agent
+process), or where the session gets a new container. And only rows an earlier
+orchestrator process wrote: `ChatHistoryManager.finalizeInheritedInProgress`
+does nothing once this process has written the session's in-progress rows.
+`replaceInProgress` replaces a session's in-progress rows as a whole, so once a
+turn here has written, the old rows are already gone and the in-progress rows are
+that turn's. This is what lets each point act while a new turn is already running:
+
+- **The boot sweep** finalizes the sessions whose worker answered that way (on
+  the confirming probe too, for a stale worker). It does not touch a session
+  whose worker it did not reach: Docker discovery can miss a live container,
+  which the orphan check (`adoptRunningContainer`) adopts later, and adoption must
+  still replace those rows. In local mode, where no agent outlives the process,
+  it finalizes every session. A sweep that throws finalizes nothing.
+- **A runner's first connect** (`_doStartWorkerResources`) finalizes when the
+  worker says the turn has ended. This covers a worker whose boot probe failed,
+  also when a message reaches the session before anyone opens it: the new turn's
+  first rows arrive over the event stream, which opens after this step.
+- **A runner created for a new container** (`awaitingContainer`, in
+  `runner-registry-factory.ts` `onRunnerCreated`) finalizes at once: a new
+  container holds no earlier turn, and no turn has run in this runner yet. This
+  covers a session whose container is gone. It acts before the new container is
+  up; if that container never starts while a live old one that discovery missed
+  keeps running, its rows are kept as they were saved, and nothing adopts that
+  old turn into this runner later.
+
+The rows keep only what the previous orchestrator saved; the events after that
+are still skipped.
 
 ## Known limit: a turn longer than the replay buffer
 
@@ -165,11 +206,14 @@ auto-commit — which is what almost every turn needs anyway.
 | `src/server/session/agent-controller.ts` | Tracks `turnActive` / `turnStartSseSeq` / spawn metadata; publishes them on `GET /agent/status` |
 | `src/server/session/sse-broadcaster.ts` | `oldestSeq` getter (partial-replay detection) |
 | `src/server/shared/types/agent-types.ts` | `WorkerAgentStatus` — the shared wire shape |
-| `src/server/orchestrator/container-session-runner.ts` | `reconcileWorkerTurnBeforeFirstConnect`, `adoptWorkerTurn`, `resumeInFlightTurn`, serialized worker-resource start |
+| `src/server/orchestrator/container-session-runner.ts` | `reconcileWorkerTurnBeforeFirstConnect`, `adoptWorkerTurn`, `resumeInFlightTurn`, serialized worker-resource start; finalizes an ended turn's rows at the first connect |
 | `src/server/orchestrator/turn-adoption.ts` | Wires an already-running worker turn into a runner + proxy via `executeAgentTurn` |
 | `src/server/orchestrator/turn-executor.ts` | `TurnInput.adopt` — skip env-prep + spawn, keep everything else |
 | `src/server/orchestrator/proxy-agent-process.ts` | Optional `runToken` so an adopting proxy inherits the worker's spawn epoch |
-| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones — and (docs/242) reclaim the stale idle ones |
+| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones — and (docs/242) reclaim the stale idle ones; then finalize the rows of turns their worker reports as ended (`workerReportsNoTurn`) |
+| `src/server/orchestrator/chat-history.ts` | `sessionsWithInProgressRows`, and `finalizeInheritedInProgress` (only rows an earlier process wrote) |
+| `src/server/orchestrator/runner-registry-factory.ts` | Finalizes the rows when a runner is created for a new container |
 | `src/server/orchestrator/bootstrap-managers.ts` | Fires the sweep after the runner registry exists |
-| `src/server/orchestrator/integration_tests/restart-turn-adoption.test.ts` | Real worker + fresh runner: adoption, exactly-once persistence, post-turn flow, run-token correlation, and the two must-not-adopt cases |
-| `src/server/orchestrator/restart-turn-reattach.test.ts` | Sweep: adopts live turns, never wakes idle/standby/archived sessions, survives one dead worker |
+| `src/server/orchestrator/integration_tests/restart-turn-adoption.test.ts` | Real worker + fresh runner: adoption, exactly-once persistence, post-turn flow, run-token correlation, and the two must-not-adopt cases; a turn that ended during the restart keeps its rows past the next turn (through the boot sweep, and through the first connect, also when a message arrives first), and a live one is saved once |
+| `src/server/orchestrator/restart-turn-reattach.test.ts` | Sweep: adopts live turns, never wakes idle/standby/archived sessions, survives one dead worker; finalizes only the rows of turns their worker reports as ended |
+| `src/server/orchestrator/runner-registry-factory.test.ts` | A runner for a new container finalizes the rows; one that reconnects does not |

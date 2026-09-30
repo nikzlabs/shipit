@@ -528,4 +528,6 @@ export interface WorkerAgentStatus {
   /** A PTY exists; does not imply it is doing work. */
   terminalActive?: boolean;
   installRunning?: boolean;
+  /** Permission requests still waiting for the user; absent on workers from before docs/193's restart reconcile. */
+  pendingPermissionIds?: string[];
 }

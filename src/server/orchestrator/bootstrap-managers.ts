@@ -975,7 +975,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // Adopt surviving turns before merge automation can mistake the empty registry for idle sessions.
   try {
     await reattachInFlightTurns({
-      containerManager, runnerRegistry, sessionManager, defaultAgentId,
+      containerManager, runnerRegistry, sessionManager, defaultAgentId, chatHistoryManager,
       orchestratorBuildId: process.env.SHIPIT_BUILD_ID,
     });
   } catch (err: unknown) {
