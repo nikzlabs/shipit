@@ -220,7 +220,7 @@ jobs:
           docker network create shipit-ci-agent-net >/dev/null
           docker network create --internal -o com.docker.network.bridge.inhibit_ipv4=true shipit-ci-session >/dev/null
           subnet=$(docker network inspect shipit-ci-session --format '{{(index .IPAM.Config 0).Subnet}}')
-          docker run -d --name shipit-ci-service --network shipit-ci-session --entrypoint sleep "$image" 300 >/dev/null
+          docker run -d --name shipit-ci-service --network shipit-ci-session busybox:1.37 httpd -f -p 3000 >/dev/null
           service=$(docker inspect shipit-ci-service --format '{{(index .NetworkSettings.Networks "shipit-ci-session").IPAddress}}')
           docker run -d --name shipit-ci-agent --network shipit-ci-agent-net --entrypoint sleep "$image" 300 >/dev/null
           docker run --rm --network container:shipit-ci-agent --cap-add NET_ADMIN \
@@ -230,7 +230,10 @@ jobs:
           docker run --rm --network container:shipit-ci-agent --cap-add NET_ADMIN \
             --entrypoint /usr/local/bin/allow-subnet.sh \
             -e EGRESS_ALLOW_SUBNETS="$subnet" -e EGRESS_HOST_ADDRS="$(hostname -I)" "$image"
-          if refused "$service" 3000; then echo "the session's service at $service is still refused"; exit 1; fi
+          # Any HTTP status proves the connection; 000 is a timeout or a refusal.
+          code=$(docker run --rm --network container:shipit-ci-agent --entrypoint curl "$image" \
+            -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$service:3000/" || true)
+          if [ -z "$code" ] || [ "$code" = 000 ]; then echo "the session's service at $service did not answer"; exit 1; fi
           if ! refused "$(hostname -I | awk '{print $1}')" 22; then echo "the host is no longer refused"; exit 1; fi
           docker rm -f shipit-ci-agent shipit-ci-service >/dev/null
           docker network rm shipit-ci-session shipit-ci-agent-net >/dev/null

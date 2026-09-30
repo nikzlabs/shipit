@@ -25,7 +25,7 @@ const SESSION_ID = "sess-redisc-1";
 const NETWORK = "shipit-test";
 const COMPOSE_NETWORK = `shipit-session-${SESSION_ID}`;
 
-function createMockDocker() {
+function createMockDocker(agentNetworks: string[] = []) {
   const connect = vi.fn(async () => {});
   const docker = {
     ping: vi.fn(async () => true),
@@ -38,7 +38,12 @@ function createMockDocker() {
     ]),
     getContainer: vi.fn(() => ({
       inspect: vi.fn(async () => ({
-        NetworkSettings: { Networks: { [NETWORK]: { IPAddress: "172.18.0.7" } } },
+        NetworkSettings: {
+          Networks: {
+            [NETWORK]: { IPAddress: "172.18.0.7" },
+            ...Object.fromEntries(agentNetworks.map((name) => [name, { IPAddress: "172.19.0.2" }])),
+          },
+        },
       })),
     })),
     getNetwork: vi.fn(() => ({
@@ -52,8 +57,9 @@ function createMockDocker() {
 
 async function buildRediscoveredManager(
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig,
+  agentNetworks: string[] = [],
 ) {
-  const docker = createMockDocker();
+  const docker = createMockDocker(agentNetworks);
   const manager = new SessionContainerManager({
     docker: docker as any,
     imageName: "shipit-session-worker:test",
@@ -181,6 +187,17 @@ describe("connectToNetwork — egress allow ordered after the Tier-A install (do
 
     await manager.reopenJoinedSessionEgress(SESSION_ID);
 
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    expect(allowEgressToSubnets).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentContainerId: "agent-container-1", subnets: ["172.19.0.0/16"] }),
+    );
+  });
+
+  // A reinstall (an SSH grant change) flushes the accepts; an adopted agent must still reopen its network.
+  it("reopenJoinedSessionEgress reopens the session network an adopted agent was already on", async () => {
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }), [COMPOSE_NETWORK]);
+    await manager.reopenJoinedSessionEgress(SESSION_ID);
     expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
     expect(allowEgressToSubnets).toHaveBeenCalledWith(
       expect.anything(),

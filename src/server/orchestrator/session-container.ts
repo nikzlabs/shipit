@@ -508,10 +508,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         sc.firewallPolicy = policy;
         sc.appliedSshCidrs = contained ? [...(cfg.extraCidrs ?? [])] : [];
         sc.appliedSshTargets = sshTargetKeys(cfg.sshTargets);
-        const info = await this.docker.getContainer(sc.id).inspect();
-        for (const name of Object.keys(info.NetworkSettings?.Networks ?? {})) {
-          if (name.startsWith("shipit-session-")) (sc.joinedSessionNetworks ??= new Set()).add(name);
-        }
         await this.reopenJoinedSessionEgress(sc.sessionId);
         console.log(`[egress:${sc.sessionId}] reinstalled a firewall from before docs/319 (${policy})`);
       });
