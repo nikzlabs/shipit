@@ -176,7 +176,7 @@ describe("the HTTP dispatch path carries and spends it too", () => {
     });
   });
 
-  it("docs/321: an automatic dispatch says so and draws no bubble, since it may wait for the user's answer", async () => {
+  it("docs/322: an automatic dispatch says so and draws no bubble, since it may wait for the user's answer", async () => {
     const { dispatchAgentMessage } = await import("./dispatch-agent-message.js");
     const bodies: unknown[] = [];
     const apiPost = vi.fn(async (_path: string, body?: unknown) => {

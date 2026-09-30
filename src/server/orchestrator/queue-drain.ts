@@ -27,8 +27,8 @@ export function takeRunnableQueuedTurn(
     : null;
   if (held) {
     holdQueuedAutomaticTurns(runner, held);
-    // docs/321 req 6 — the user's own entries do not wait behind held automatic work,
-    // including one the store could not take.
+    // docs/322-question-holds-automatic-turns req 6 — the user's own entries do not wait behind
+    // held automatic work, including one the store could not take.
     const index = queue.findIndex((m) => m.automatic !== true);
     if (index === -1) return undefined;
     return takeIfUnblocked(runner, index);
@@ -40,7 +40,10 @@ export function takeRunnableQueuedTurn(
   return takeIfUnblocked(runner, userIndex === -1 ? 0 : userIndex);
 }
 
-/** docs/321 req 8 — automatic entries behind a question move out of memory into the saved hold. */
+/**
+ * docs/322-question-holds-automatic-turns req 8 — automatic entries behind a question move out
+ * of memory into the saved hold.
+ */
 function holdQueuedAutomaticTurns(runner: SessionRunnerInterface, reason: string): void {
   const queue = runner.messageQueue;
   const saved = queue.filter(

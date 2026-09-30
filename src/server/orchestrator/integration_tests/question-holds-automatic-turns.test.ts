@@ -26,7 +26,7 @@ import { stoppedByUser } from "../turn-stop-request.js";
 
 const WAKE_TEXT = "Child PR #42 merged: child (child-id).";
 
-describe("Integration: a question holds automatic turns (docs/321)", () => {
+describe("Integration: a question holds automatic turns (docs/322)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;

@@ -1,9 +1,10 @@
 import type { AnswerHoldStore, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 
 /**
- * docs/321 req 8 — automatic turns held for the user's answer live in the database, not
- * in a runner's queue, so a stopped container or a restart cannot lose them. They go back
- * into the queue when the user starts a turn, and their row is forgotten when the turn starts.
+ * docs/322-question-holds-automatic-turns req 8 — automatic turns held for the user's answer
+ * live in the database, not in a runner's queue, so a stopped container or a restart cannot
+ * lose them. They go back into the queue when the user starts a turn, and their row is
+ * forgotten when the turn starts.
  */
 
 /** False when there is nowhere to keep it; the caller then queues it in memory as before. */

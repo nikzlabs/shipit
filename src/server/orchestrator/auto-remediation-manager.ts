@@ -13,13 +13,13 @@ export interface RemediationState {
   settleUntil?: number;
   postPushSettledHeadSha?: string;
   postPushSettledBaseSha?: string;
-  /** docs/321 — a Retry the user clicked that had to wait; the attempt stays theirs. */
+  /** docs/322 — a Retry the user clicked that had to wait; the attempt stays theirs. */
   byUser?: boolean;
 }
 
 export type SignalKind = "fire" | "resolved" | "ignore";
 
-/** docs/321 — the user asked for this attempt by hand, so a question the agent asked does not hold it. */
+/** docs/322 — the user asked for this attempt by hand, so a question the agent asked does not hold it. */
 export interface FireOptions {
   byUser?: boolean;
 }
@@ -32,7 +32,7 @@ export interface RemediationManagerConfig {
   ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   isGlobalEnabled: () => boolean;
   isSessionEnabled?: (sessionId: string) => boolean;
-  /** docs/321 — the agent waits for the user's answer, and automatic work waits with it. */
+  /** docs/322 — the agent waits for the user's answer, and automatic work waits with it. */
   isAwaitingAnswer?: (sessionId: string) => boolean;
   now: () => number;
   arbiter?: RemediationArbiter;

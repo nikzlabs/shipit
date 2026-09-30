@@ -8,7 +8,7 @@
 interface TurnPhase {
   submitted: boolean;
   stopRequested: boolean;
-  /** docs/321 — the user pressed Stop, which a question's own interrupt is not. */
+  /** docs/322 — the user pressed Stop, which a question's own interrupt is not. */
   stoppedByUser: boolean;
 }
 

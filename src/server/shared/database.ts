@@ -1012,8 +1012,9 @@ const MIGRATIONS: Migration[] = [
     addSessionColumnIfMissing(db, "pending_restart_note");
   },
 
-  // docs/321 — the agent's last turn ended waiting for the user's answer, and the
-  // automatic turns held until the user replies (req 8: they outlive a restart).
+  // docs/322-question-holds-automatic-turns — the agent's last turn ended waiting for the
+  // user's answer, and the automatic turns held until the user replies (req 8: they
+  // outlive a restart).
   (db) => {
     const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
     if (!columns.some((c) => c.name === "awaiting_answer")) {

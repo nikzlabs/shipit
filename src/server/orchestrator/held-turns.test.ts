@@ -5,7 +5,7 @@ import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { QueuedMessage } from "./session-runner.js";
 
-describe("restoreHeldTurns (docs/321 req 8)", () => {
+describe("restoreHeldTurns (docs/322-question-holds-automatic-turns req 8)", () => {
   let dbManager: DatabaseManager;
   afterEach(() => dbManager.close());
 

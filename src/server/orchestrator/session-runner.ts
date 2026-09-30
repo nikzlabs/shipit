@@ -115,7 +115,7 @@ export interface SteeredMessage {
   images?: { data: string; mediaType: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
-  /** A re-queued steer keeps its dispatch's docs/321 class. */
+  /** A re-queued steer keeps its dispatch's docs/322 class. */
   automatic?: boolean;
   /** In-memory replay-ack key. Without an ack at turn end, this steer is re-queued. */
   assembledPrompt?: string;
@@ -166,11 +166,14 @@ export interface AgentDispatchOptions {
   /** Blocks live steering into this turn. */
   systemTurn?: boolean;
   /**
-   * docs/321 — not started by this session's user: ShipIt's automation or another
+   * docs/322 — not started by this session's user: ShipIt's automation or another
    * session. Held while the agent waits for the user's answer; any other turn clears that.
    */
   automatic?: boolean;
-  /** docs/321 req 8 — the saved row of a held turn; deleted when the turn starts, not before. */
+  /**
+   * docs/322-question-holds-automatic-turns req 8 — the saved row of a held turn; deleted when
+   * the turn starts, not before.
+   */
   heldId?: number;
   /** Prefer the returned TurnHandle for new completion consumers. */
   onTurnComplete?: (outcome: TurnOutcome) => void;
@@ -245,8 +248,8 @@ export function dispatchOnRunner(
     }
     settlement.noteAdmission("queued");
     const entry = toQueuedMessage(withSettlement(opts, settlement));
-    // docs/321 req 8 — whichever gate stopped it, held automatic work is saved rather than
-    // queued, so a stopped container or a restart cannot lose it.
+    // docs/322-question-holds-automatic-turns req 8 — whichever gate stopped it, held automatic
+    // work is saved rather than queued, so a stopped container or a restart cannot lose it.
     const held = automaticTurnHeldForAnswer(runner, opts.automatic);
     if (held && holdTurn(runner.answerHoldStore, runner.sessionId, entry)) {
       console.log(`[dispatch] held the automatic dispatch for ${runner.sessionId} — ${held} (${reason})`);
@@ -263,7 +266,7 @@ export function dispatchOnRunner(
   };
 
   if (runner.running) {
-    // docs/321 — a turn that is ending on a question is not one to steer automatic work into.
+    // docs/322 — a turn that is ending on a question is not one to steer automatic work into.
     const endingOnQuestion = opts.automatic === true
       && (runner.awaitingUserAnswer || runner.answerHold);
     // A refusing caller wants its own turn or nothing; steering delivers into someone else's.
@@ -386,7 +389,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   return queued;
 }
 
-/** docs/321 — the "agent waits for the user's answer" mark, and the turns it holds. */
+/** docs/322 — the "agent waits for the user's answer" mark, and the turns it holds. */
 export type AnswerHoldStore = Pick<
   SessionManager,
   "isAwaitingAnswer" | "setAwaitingAnswer" | "holdTurn" | "heldTurns" | "forgetHeldTurn" | "hasHeldDelivery"
@@ -606,7 +609,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly systemHoldSeq: number;
   /** Separate from systemTurnInProgress so a turn's cleanup cannot release an in-flight merge. */
   mergeHold: boolean;
-  /** docs/321 — the agent waits for the user's answer, so automatic turns are held. */
+  /** docs/322 — the agent waits for the user's answer, so automatic turns are held. */
   readonly answerHold: boolean;
   readonly answerHoldStore?: AnswerHoldStore;
   /** Restores a saved delivery's settlement after a restart lost its callback. */

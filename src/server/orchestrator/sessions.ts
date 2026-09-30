@@ -845,7 +845,7 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
   }
 
-  /** docs/321 — the agent's last turn ended waiting for the user, so automatic turns wait too. */
+  /** docs/322 — the agent's last turn ended waiting for the user, so automatic turns wait too. */
   isAwaitingAnswer(id: string): boolean {
     const row = this.db.prepare("SELECT awaiting_answer FROM sessions WHERE id = ?").get(id) as
       { awaiting_answer: number } | undefined;
@@ -857,9 +857,10 @@ export class SessionManager {
   }
 
   /**
-   * docs/321 req 8 — keep an automatic turn held for the user's answer. The row outlives
-   * the runner and the process; the completion callback lives only as long as this process,
-   * as its caller does. A second hold of the same turn or delivery keeps the one row.
+   * docs/322-question-holds-automatic-turns req 8 — keep an automatic turn held for the user's
+   * answer. The row outlives the runner and the process; the completion callback lives only as
+   * long as this process, as its caller does. A second hold of the same turn or delivery keeps
+   * the one row.
    */
   holdTurn(sessionId: string, entry: QueuedMessage): number {
     const existing = entry.heldId !== undefined && this.heldTurnExists(entry.heldId)

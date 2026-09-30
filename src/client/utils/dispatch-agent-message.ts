@@ -25,7 +25,7 @@ export interface DispatchAgentMessageOptions {
    */
   userInitiated?: boolean;
   /**
-   * docs/321 — sent by the browser's own automation. The server may hold it until the
+   * docs/322 — sent by the browser's own automation. The server may hold it until the
    * user answers the agent, so no bubble is drawn now: the turn's echo draws it when it runs.
    */
   automatic?: boolean;

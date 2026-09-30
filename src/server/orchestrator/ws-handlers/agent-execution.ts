@@ -88,7 +88,7 @@ export async function drainNextQueuedMessage(
     runner.systemTurnInProgress = false;
     if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
   }
-  // A stop discards the queue. docs/321 — a question's own interrupt does not: what the
+  // A stop discards the queue. docs/322 — a question's own interrupt does not: what the
   // user queued is their reply, and the take below holds the automatic entries.
   const questionInterrupt = runner.awaitingUserAnswer && !stoppedByUser(runner);
   if (runner.wasInterrupted && !questionInterrupt && !compactionTurn) {

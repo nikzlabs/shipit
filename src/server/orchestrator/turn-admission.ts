@@ -30,7 +30,7 @@ export function writeAnswerHold(
   }
 }
 
-/** docs/321 — why an automatic turn cannot start now, or null. Read by dispatch and by the drain. */
+/** docs/322 — why an automatic turn cannot start now, or null. Read by dispatch and by the drain. */
 export function automaticTurnHeldForAnswer(
   runner: Pick<SessionRunnerInterface, "answerHold">,
   automatic: boolean | undefined,

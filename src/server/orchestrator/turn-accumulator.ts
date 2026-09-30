@@ -85,7 +85,8 @@ export class TurnAccumulator {
   }
 
   reset(): void {
-    // Held turns are saved and come back with the next runner (docs/321 req 8).
+    // Held turns are saved and come back with the next runner
+    // (docs/322-question-holds-automatic-turns req 8).
     settleDroppedQueueEntries(withoutHeldEntries(this._messageQueue), "runner disposed");
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];

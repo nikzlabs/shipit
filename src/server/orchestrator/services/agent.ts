@@ -50,7 +50,7 @@ export interface DispatchAgentMessageInput {
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
-  /** docs/321 — sent by the browser's own automation (the preview auto-fix), not by a click. */
+  /** docs/322 — sent by the browser's own automation (the preview auto-fix), not by a click. */
   automatic?: boolean;
 }
 

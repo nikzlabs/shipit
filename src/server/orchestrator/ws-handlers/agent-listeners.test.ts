@@ -1562,7 +1562,7 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
   });
 });
 
-describe("wireAgentListeners — a CLI-started turn while the agent waits for an answer (docs/321 req 7)", () => {
+describe("wireAgentListeners — a CLI-started turn while the agent waits for an answer (docs/322-question-holds-automatic-turns req 7)", () => {
   function wireHeld(held: boolean) {
     const agent = new FakeAgent();
     const interrupt = vi.spyOn(agent, "interrupt");

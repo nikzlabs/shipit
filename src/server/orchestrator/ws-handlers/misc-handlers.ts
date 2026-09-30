@@ -21,7 +21,7 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
       removed = queue.splice(idx, 1);
     }
   }
-  // docs/321 — a held turn the user cancels must not come back from its saved row.
+  // docs/322 — a held turn the user cancels must not come back from its saved row.
   forgetHeldEntries(runner?.answerHoldStore, removed);
   ctx.send({
     type: "queue_updated",

@@ -613,7 +613,7 @@ export async function registerGitRoutes(
           reviewDecision: "none" as const,
           autoMergeEnabled: false,
         };
-        // docs/321 — the user's click, so a question the agent is waiting on does not hold it.
+        // docs/322 — the user's click, so a question the agent is waiting on does not hold it.
         manager.handleTransition(sessionId, pollSummary, baseBranch, headSha, undefined, { byUser: true })
           .catch((err: unknown) => {
             console.error(`[auto-resolve] retry handleTransition error for ${sessionId}:`, err);

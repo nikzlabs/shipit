@@ -325,7 +325,7 @@ export class MergeWatchManager {
   private isDeliveryInFlight(childSessionId: string, watch: SessionMergeWatch): boolean {
     if (this.dispatching.has(childSessionId)) return true;
     if (!watch.deliveryId) return false;
-    // docs/321 — a wake held for the user's answer is saved, with or without a runner.
+    // docs/322 — a wake held for the user's answer is saved, with or without a runner.
     if (hasHeldDelivery(this.deps.sessionManager, watch.parentSessionId, watch.deliveryId)) return true;
     const runner = this.deps.runnerRegistry.get(watch.parentSessionId);
     if (!runner || runner.disposed) return false;

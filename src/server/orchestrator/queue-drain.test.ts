@@ -172,7 +172,7 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
   });
 });
 
-describe("a question holds automatic entries (docs/321)", () => {
+describe("a question holds automatic entries (docs/322)", () => {
   function fakeHeldRunner(queue: QueuedMessage[], held: boolean) {
     return {
       sessionId: "s1",

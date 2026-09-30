@@ -572,7 +572,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(assistantMsg?.text).toContain("Resolved shared.txt");
   });
 
-  it("docs/321: a resolution turn that asks the user stops the flow instead of prompting again", async () => {
+  it("docs/322: a resolution turn that asks the user stops the flow instead of prompting again", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createConflictingDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });

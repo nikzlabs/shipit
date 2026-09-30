@@ -311,7 +311,7 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(1);
   });
 
-  it("docs/321 — waits while the agent waits for an answer, without booting a runner; the idle after the reply fires it", async () => {
+  it("docs/322 — waits while the agent waits for an answer, without booting a runner; the idle after the reply fires it", async () => {
     let ensured = 0;
     fx = makeFixture({ awaitingAnswer: true, ensureRunner: async () => { ensured++; return makeRunner(false); } });
     fx.setRunner(undefined);

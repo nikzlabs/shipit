@@ -308,7 +308,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("docs/321: while the agent waits for an answer, an automatic dispatch is held and the user's is not", async () => {
+  it("docs/322: while the agent waits for an answer, an automatic dispatch is held and the user's is not", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const deps = steerDeps({ liveSteering: false });
     const saved: QueuedMessage[] = [];
@@ -345,7 +345,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("docs/321 req 8: automatic work stopped by any gate while the agent waits is saved, not queued", () => {
+  it("docs/322-question-holds-automatic-turns req 8: automatic work stopped by any gate while the agent waits is saved, not queued", () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const deps = steerDeps({ liveSteering: true });
     const saved: string[] = [];
@@ -376,7 +376,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("docs/321: automatic work is not steered into a turn that is ending on a question", () => {
+  it("docs/322: automatic work is not steered into a turn that is ending on a question", () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
     const sent: string[] = [];

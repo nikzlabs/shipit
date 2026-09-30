@@ -189,7 +189,7 @@ describe("SessionManager", () => {
     expect(new SessionManager(dbManager).get("sess-1")!.autoFixCiPaused).toBeUndefined();
   });
 
-  it("docs/321: the answer hold defaults to off and survives a new manager (req 5)", () => {
+  it("docs/322: the answer hold defaults to off and survives a new manager (req 5)", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Asks");
     expect(mgr.isAwaitingAnswer("sess-1")).toBe(false);
@@ -202,7 +202,7 @@ describe("SessionManager", () => {
     expect(mgr.isAwaitingAnswer("no-such-session")).toBe(false);
   });
 
-  it("docs/321 req 8: held turns are saved in order, survive a new manager, and keep one row per delivery", () => {
+  it("docs/322-question-holds-automatic-turns req 8: held turns are saved in order, survive a new manager, and keep one row per delivery", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Asks");
     const settled: string[] = [];

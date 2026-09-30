@@ -66,7 +66,7 @@ export async function wakeSessionWithTurn(
     defaultAgentId,
   } = deps;
 
-  // docs/321 — nothing may run before the user replies, so nothing is booted to wait.
+  // docs/322 — nothing may run before the user replies, so nothing is booted to wait.
   if (readAnswerHold({ answerHold: sessionManager }, session.id)) {
     const settlement = createTurnSettlement();
     const entry = toQueuedMessage(withSettlement(wakeDispatch(session.id, opts), settlement));

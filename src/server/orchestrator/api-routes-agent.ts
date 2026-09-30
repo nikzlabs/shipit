@@ -47,7 +47,7 @@ export async function registerAgentRoutes(
        */
       resetMergedBranch?: boolean;
       compactContext?: boolean;
-      /** docs/321 — the browser's own automation sent this, so it waits for the user's answer. */
+      /** docs/322 — the browser's own automation sent this, so it waits for the user's answer. */
       automatic?: boolean;
     };
   }>(

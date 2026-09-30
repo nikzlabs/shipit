@@ -614,7 +614,7 @@ describe("AutoConflictResolveManager", () => {
   });
 });
 
-describe("AutoConflictResolveManager — a question holds it (docs/321)", () => {
+describe("AutoConflictResolveManager — a question holds it (docs/322)", () => {
   function heldManager() {
     const state = { awaiting: true };
     const runner = makeRunner(false);
