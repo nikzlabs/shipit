@@ -356,7 +356,8 @@ async function createContainerForRunner(opts: CreateContainerForRunnerOpts): Pro
   const { mgr, runner, sessionId } = opts;
 
   if (opts.oomBreaker?.isTripped(sessionId)) {
-    const errMsg = `Session disabled — agent container OOM-killed too many times. Increase \`agent.memory\` in shipit.yaml and use "Restart all" on the health strip in the Terminal tab to retry.`;
+    const errMsg = "Session disabled — agent container OOM-killed too many times. Use \"Restart all\" on the health strip in the Terminal tab to retry. "
+      + "Session memory is sized from host capacity; to give sessions more, raise `DEFAULT_SESSION_MEMORY_MB` on the ShipIt host.";
     console.warn(`[container] Refusing to create container for ${sessionId}: OOM circuit breaker tripped`);
     mgr.recordCreateError(sessionId, errMsg);
     opts.broadcastLog?.(sessionId, "server", errMsg);

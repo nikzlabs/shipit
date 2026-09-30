@@ -38,7 +38,7 @@ export function DiagnosticsPanel({
           recreating the container after repeated agent-container OOM
           kills. Without this banner the user only sees a stuck spinner
           plus a buried Logs entry; with it they get the actionable retry
-          path (raise `agent.memory` + Restart all) up front. Cleared
+          path (Restart all) up front. Cleared
           automatically when the container is running again (which happens
           after Restart all resets the breaker). */}
       {memoryExhausted && (
@@ -49,7 +49,7 @@ export function DiagnosticsPanel({
           <span className="flex-1 text-(--color-text-primary)">
             <strong className="text-(--color-error)">Session disabled — agent container OOM-killed {memoryExhausted.countInWindow} times.</strong>
             <span className="ml-1 text-(--color-text-secondary)">
-              Increase <code className="px-1 rounded bg-(--color-surface-2)">agent.memory</code> in <code className="px-1 rounded bg-(--color-surface-2)">shipit.yaml</code>, then use <strong>Restart all</strong> to retry.
+              Use <strong>Restart all</strong> to retry. Session memory is sized from host capacity; to give sessions more, raise <code className="px-1 rounded bg-(--color-surface-2)">DEFAULT_SESSION_MEMORY_MB</code> on the ShipIt host.
             </span>
           </span>
           <button
