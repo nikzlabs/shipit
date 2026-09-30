@@ -27,7 +27,7 @@ function once<T>(emitter: ProxyAgentProcess, event: "error" | "log"): Promise<T>
 }
 
 describe("ProxyAgentProcess WorkerTimeoutError translation", () => {
-  it("run(): wraps WorkerTimeoutError on /agent/start with rescue-session guidance", async () => {
+  it("run(): wraps WorkerTimeoutError on /agent/start with Restart all guidance", async () => {
     const runner = makeRunner({
       _startAgentViaProxy: () => Promise.reject(new WorkerTimeoutError("/agent/start", 10_000)),
     });
@@ -36,7 +36,7 @@ describe("ProxyAgentProcess WorkerTimeoutError translation", () => {
     proxy.run({ initialPrompt: "x" } as never);
     const err = await errorPromise;
     expect(err.message).toContain("agent container is not responding");
-    expect(err.message).toContain("Rescue session");
+    expect(err.message).toContain("Restart all on the health strip in the Terminal tab");
     expect(err.cause).toBeInstanceOf(WorkerTimeoutError);
   });
 

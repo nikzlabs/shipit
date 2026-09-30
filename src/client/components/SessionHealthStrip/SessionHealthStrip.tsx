@@ -103,7 +103,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
 
   return (
     <div className="flex flex-col bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs">
-      <div className="flex items-center justify-between gap-3 px-3 py-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-1.5">
         <HealthSummary
           health={health}
           isRestarting={isRestarting}

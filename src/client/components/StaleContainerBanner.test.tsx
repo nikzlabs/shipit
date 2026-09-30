@@ -40,7 +40,7 @@ describe("StaleContainerBanner", () => {
     });
     render(<StaleContainerBanner sessionId="session one" />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart agent container" }));
 
     await waitFor(() => {
       expect(post).toHaveBeenCalledWith("/api/sessions/session%20one/agent/container/restart");

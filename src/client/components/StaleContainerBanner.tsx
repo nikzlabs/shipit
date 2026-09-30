@@ -47,9 +47,9 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
     } catch (error) {
       const message = error instanceof ApiError ? error.message : String(error instanceof Error ? error.message : error);
-      setRecoveryActionError(`Restart agent failed: ${message}`);
+      setRecoveryActionError(`Restart agent container failed: ${message}`);
       setRescueState({ phase: "failed", reason: "request_error", message, startedAt });
-      useUiStore.getState().setToast({ message: `Failed to restart agent: ${message}` });
+      useUiStore.getState().setToast({ message: `Failed to restart the agent container: ${message}` });
     } finally {
       setRequesting(false);
     }
@@ -83,7 +83,7 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
           {restarting
             ? <Spinner size={ICON_SIZE.XS} />
             : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
-          {turnRunning ? "Restart after turn" : "Restart agent"}
+          {turnRunning ? "Restart after turn" : "Restart agent container"}
         </Button>
       </Banner>
     </div>

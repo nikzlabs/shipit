@@ -38,9 +38,9 @@ export function DiagnosticsPanel({
           recreating the container after repeated agent-container OOM
           kills. Without this banner the user only sees a stuck spinner
           plus a buried Logs entry; with it they get the actionable retry
-          path (raise `agent.memory` + Rescue session) up front. Cleared
+          path (raise `agent.memory` + Restart all) up front. Cleared
           automatically when the container is running again (which happens
-          after Rescue resets the breaker). */}
+          after Restart all resets the breaker). */}
       {memoryExhausted && (
         <div
           role="status"
@@ -49,7 +49,7 @@ export function DiagnosticsPanel({
           <span className="flex-1 text-(--color-text-primary)">
             <strong className="text-(--color-error)">Session disabled — agent container OOM-killed {memoryExhausted.countInWindow} times.</strong>
             <span className="ml-1 text-(--color-text-secondary)">
-              Increase <code className="px-1 rounded bg-(--color-surface-2)">agent.memory</code> in <code className="px-1 rounded bg-(--color-surface-2)">shipit.yaml</code>, then use <strong>Rescue session</strong> to retry.
+              Increase <code className="px-1 rounded bg-(--color-surface-2)">agent.memory</code> in <code className="px-1 rounded bg-(--color-surface-2)">shipit.yaml</code>, then use <strong>Restart all</strong> to retry.
             </span>
           </span>
           <button
@@ -91,7 +91,7 @@ export function DiagnosticsPanel({
         </div>
       )}
       {/* Non-blocking interrupt-error toast — best-effort kill failures
-          (Rescue session pre-destroy kill, Interrupt on a wedged worker)
+          (Restart all pre-destroy kill, Interrupt on a wedged worker)
           land here so the user gets feedback without a hard error block.
           See docs/124-session-rescue-and-diagnostics §1.4. */}
       {interruptError && (
@@ -112,8 +112,8 @@ export function DiagnosticsPanel({
         </div>
       )}
       {/* Phased recovery failure — deep-links to the diagnostics panel
-          so the user can see *which* phase hung. Shared between Rescue
-          session and Restart agent (both surface phased progress via
+          so the user can see *which* phase hung. Shared between Restart
+          all and Restart agent container (both surface phased progress via
           `container_restarting` / `rescueState`); copy stays neutral so
           it makes sense for either action's failure. */}
       {rescueState?.phase === "failed" && (

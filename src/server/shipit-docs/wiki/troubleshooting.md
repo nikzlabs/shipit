@@ -71,7 +71,7 @@ wedged session, and it summarises itself: *Agent running* / *Idle* / *Events
 stale* / *Agent state out of sync* / *Worker unreachable* / *Container
 \<state\>*. Read it and say what it shows before anyone restarts anything. Its
 controls, in increasing order of violence — **Diagnostics**, **Kill agent**,
-**Restart agent**, **Rescue session** — are covered in
+**Restart agent container**, **Restart all** — are covered in
 [sessions.md](sessions.md). All four are always on the strip, but **Kill agent**
 is greyed out unless the worker is reachable *and* reports an agent actually
 running, and all of them grey out while a restart is in progress. A greyed
@@ -259,7 +259,7 @@ Three distinct causes, each with its own banner:
 
 **Session disabled — agent container OOM-killed N times.** A circuit breaker:
 the orchestrator stopped recreating a container that keeps being killed for
-memory. **Rescue session** on the health strip resets the breaker and retries —
+memory. **Restart all** on the health strip resets the breaker and retries —
 that click is theirs. The banner's own advice to raise `agent.memory` in
 `shipit.yaml` is stale: that field was removed and is ignored with a warning.
 Session memory is now sized automatically from host capacity, and the only
@@ -271,8 +271,8 @@ overrides are the deployment env vars `DEFAULT_SESSION_MEMORY_MB` and
 strip. Read the error; it is usually the host — disk, image, or network space.
 
 **Update available for this session.** Not a failure at all: the session's agent
-container predates the running ShipIt build. **Restart agent** on that banner
-recreates just the agent container and leaves the Compose stack up. While a turn
+container predates the running ShipIt build. **Restart agent container** on that
+banner recreates just the agent container and leaves the Compose stack up. While a turn
 is running the button is **disabled** and reads *Restart after turn* — that is a
 label, not a promise: nothing is queued, and someone has to press it once the
 turn ends.
@@ -440,7 +440,7 @@ before anything is sent.
 
 | The user does | You do |
 |---|---|
-| Clicks **Rescue session**, **Restart agent**, **Kill agent** | Read the health strip and diagnostics first, and say what they show |
+| Clicks **Restart all**, **Restart agent container**, **Kill agent** | Read the health strip and diagnostics first, and say what they show |
 | Reconnects a provider or GitHub account | Name which account, and which panel it is in |
 | Decides an egress host, once, on the card | Say which host and why, in one line |
 | Trusts a repository | Nothing — this one is consent, not configuration |

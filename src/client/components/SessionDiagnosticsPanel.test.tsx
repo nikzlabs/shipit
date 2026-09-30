@@ -246,7 +246,7 @@ describe("SessionDiagnosticsPanel", () => {
       screen.getByText((_content, node) => {
         if (node?.tagName !== "P") return false;
         const text = node.textContent ?? "";
-        return text.includes("DEFAULT_SESSION_MEMORY_MB") && text.includes("Rescue session");
+        return text.includes("DEFAULT_SESSION_MEMORY_MB") && text.includes("Restart all");
       }),
     ).toBeTruthy();
   });

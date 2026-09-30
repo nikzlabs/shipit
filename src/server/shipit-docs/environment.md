@@ -217,7 +217,8 @@ health strip) under "Node runtime", which is where the user can see it too. It i
 never silently ignored — if `node -v` surprises you, that panel says why.
 
 Changing `.nvmrc` mid-session does not re-provision; the pin is resolved once at
-container start. Restart the container to pick up a new pin.
+container start. To pick up a new pin, the user clicks **Restart agent
+container** — see [Asking the user for a restart](#asking-the-user-for-a-restart).
 
 ## Automatic behaviors
 
@@ -501,7 +502,7 @@ lifecycle. A project's own named volumes are different:
 
 | Event | `/persist`, and `persist` mounts in services | The project's named Compose volumes |
 |---|---|---|
-| Container restart (idle reclaim, a ShipIt update, Rescue session, Restart agent) | Kept | Kept |
+| Container restart (idle reclaim, a ShipIt update, Restart all, Restart agent container) | Kept | Kept |
 | Idle reclaim that also stops the preview stack | Kept | Kept |
 | 24 hours idle | Kept | Can be deleted |
 | Checkout reclaim, then a fresh clone | Kept | Kept |
@@ -513,6 +514,25 @@ lifecycle. A project's own named volumes are different:
 So data that must last goes in `/persist`, and a service that must keep data
 mounts `persist` instead of declaring a named volume. There is no per-session
 reset: only Full reset, which deletes every session's data, clears `/persist`.
+
+### Asking the user for a restart
+
+You cannot restart your own container: the restart ends your turn. When a
+change applies only from the next container start, ask the user, and name the
+button and where it is. Never say only "restart the container" — the user
+cannot tell which control that means. The buttons are on the health strip at
+the top of the **Terminal** tab:
+
+- **Restart agent container** — recreates only the agent container; the
+  preview services keep running. Ask for this one first.
+- **Restart all** — stops the Compose stack, recreates the agent container, and
+  starts the `auto` services again; `manual` services stay stopped until
+  started. For a wedged session, or when **Restart agent container** did not
+  help.
+
+Where ShipIt shows a **Restart to apply now** button next to the change itself
+(Session settings, a plugin host grant card), point the user to that button
+instead.
 
 **If something needs to keep running or run on every (re)start, declare it —
 don't start it at runtime:**

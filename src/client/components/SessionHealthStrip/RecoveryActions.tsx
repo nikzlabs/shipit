@@ -82,7 +82,7 @@ export function RecoveryActions({
           }, 1500);
         }
       } else if (result.newContainerState === "missing" && result.error) {
-        setActionError(`Rescue failed: ${result.error}`);
+        setActionError(`Restart all failed: ${result.error}`);
         setRescueState({
           phase: "failed",
           reason: "create_failed",
@@ -93,7 +93,7 @@ export function RecoveryActions({
       void poll();
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : String(e);
-      setActionError(`Rescue failed: ${msg}`);
+      setActionError(`Restart all failed: ${msg}`);
       setRescueState({
         phase: "failed",
         reason: "request_error",
@@ -124,7 +124,7 @@ export function RecoveryActions({
           }, 1500);
         }
       } else if (result.newContainerState === "missing" && result.error) {
-        setActionError(`Restart agent failed: ${result.error}`);
+        setActionError(`Restart agent container failed: ${result.error}`);
         setRescueState({
           phase: "failed",
           reason: "create_failed",
@@ -135,7 +135,7 @@ export function RecoveryActions({
       void poll();
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : String(e);
-      setActionError(`Restart agent failed: ${msg}`);
+      setActionError(`Restart agent container failed: ${msg}`);
       setRescueState({
         phase: "failed",
         reason: "request_error",
@@ -146,7 +146,7 @@ export function RecoveryActions({
   }, [api, sessionId, onReconnectWs, poll, setRescueState, setActionError]);
 
   return (
-    <div className="flex items-center gap-2 shrink-0">
+    <div className="flex flex-wrap items-center gap-2 min-w-0">
       <button
         type="button"
         onClick={onToggleDetails}
@@ -189,7 +189,7 @@ export function RecoveryActions({
         {isRestarting
           ? <Spinner size={ICON_SIZE.XS} />
           : <CpuIcon size={ICON_SIZE.XS} />}
-        Restart agent
+        Restart agent container
       </Button>
       <Button
         variant="secondary"
@@ -201,7 +201,7 @@ export function RecoveryActions({
         {isRestarting
           ? <Spinner size={ICON_SIZE.XS} />
           : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
-        Rescue session
+        Restart all
       </Button>
     </div>
   );
