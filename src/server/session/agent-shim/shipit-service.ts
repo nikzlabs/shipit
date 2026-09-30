@@ -150,7 +150,12 @@ function serviceError(
   }
   const message = formatError(res, fallback);
   if (/No compose stack/i.test(message)) {
-    return `${message}\n\nThis project has no docker-compose.yml (or shipit.yaml doesn't point at one). See /shipit-docs/compose.md to add one.`;
+    return (
+      `${message}\n\nShipIt uses a compose file only when shipit.yaml names it; it does not auto-detect one. ` +
+      "If shipit.yaml has no `compose:` key, write the compose file if there is none, then add " +
+      "`compose: docker-compose.yml` to shipit.yaml. If it already has the key, shipit.yaml may be invalid " +
+      "(see /shipit-docs/shipit-yaml.md). Compose reference: /shipit-docs/compose.md."
+    );
   }
   if (/Unknown service/i.test(message)) {
     return `${message}\n\nRun \`shipit service list\` to see the services defined in docker-compose.yml.`;

@@ -7,8 +7,9 @@ automatically as you edit files.
 
 ## How it works
 
-1. ShipIt reads `shipit.yaml` for the compose file path (or auto-detects
-   `docker-compose.yml` / `compose.yml` at the workspace root).
+1. ShipIt reads `shipit.yaml` for the compose file path (the `compose` key).
+   It does not auto-detect a compose file: without the key, ShipIt starts no
+   project services.
 2. If `agent.install` commands are specified, they run in the agent container.
    By default, every `auto` preview service **waits for install to finish**
    before it starts — it is held in `starting` ("waiting for install") rather

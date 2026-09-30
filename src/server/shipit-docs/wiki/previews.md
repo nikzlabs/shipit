@@ -76,9 +76,10 @@ A session has services because the repository declares them, in two files:
 
 **ShipIt does not go looking for a compose file.** A `docker-compose.yml` that
 `shipit.yaml` does not name is never read, and the project contributes no
-services at all. So "there's a docker-compose.yml, why is there no preview" has
-a real answer, and adding the `compose:` key is your job, not something to
-explain. (A project can also get services from a **plugin** it uses, with no
+services at all — nor declared-secret rows in Project Settings → Secrets for
+its `x-shipit-secrets`. So "there's a docker-compose.yml, why is there no
+preview" has a real answer, and adding the `compose:` key is your job, not
+something to explain. (A project can also get services from a **plugin** it uses, with no
 `compose:` key of its own — see `/shipit-docs/plugins.md`. `shipit service list`
 shows everything either way.)
 
@@ -261,7 +262,7 @@ about itself and each says so in the pane; only the last two are the app.
    fetching changes, installing dependencies, starting the dev server — with
    timings and live log lines. Read them before calling anything broken.
 4. **The project declares no services.** The *"Your app can run here"* invite.
-   Write the compose file.
+   Write the compose file and name it in `shipit.yaml`'s `compose:` key.
 5. **The stack failed to come up.** The Docker Compose error card, above.
 6. **The service the pane is parked on is not running.** The preview remembers
    its service by name and waits for it rather than jumping to something else,

@@ -4,9 +4,10 @@ Place `shipit.yaml` at the workspace root (`/workspace/shipit.yaml`) to
 configure the agent container, install commands, the compose file path, and the
 issue trackers the repository declares.
 
-If no `shipit.yaml` exists, ShipIt auto-detects `docker-compose.yml` or
-`compose.yml` at the workspace root. If no compose file is found, the
-preview panel shows an onboarding UI.
+ShipIt reads a compose file only when `shipit.yaml` names it in the `compose`
+key. It does not auto-detect `docker-compose.yml` or `compose.yml`, so a project
+with a compose file and no `compose` key (or no `shipit.yaml`) contributes no
+project services. See "Config resolution" below.
 
 ## Full example
 
@@ -358,8 +359,8 @@ compose:
 | `file` | string | required | Path to compose file |
 | `docker-socket` | boolean | false | Grant Docker socket access to compose services |
 
-When `compose` is omitted, ShipIt auto-detects `docker-compose.yml`,
-`docker-compose.yaml`, `compose.yml`, or `compose.yaml` at the workspace root.
+When `compose` is omitted, ShipIt uses no compose file, even one at the
+workspace root. Services then come only from plugins the project uses.
 
 #### `docker-socket`
 
@@ -484,9 +485,24 @@ egress settings. ShipIt's own push and pull are not affected.
 ## Config resolution
 
 1. **shipit.yaml with `compose`** — use the referenced compose file
-2. **shipit.yaml without `compose`** — auto-detect compose file at workspace root
-3. **No shipit.yaml** — same auto-detection as (2)
-4. **No compose file found** — preview panel shows onboarding UI
+2. **shipit.yaml without `compose`** — no project compose file is used. ShipIt
+   does **not** auto-detect one: it starts no services from a
+   `docker-compose.yml` at the workspace root that `shipit.yaml` does not name.
+   The project gets services only from plugins it uses (/shipit-docs/plugins.md).
+3. **No shipit.yaml** — same as (2)
+4. **No `compose` key and no plugins in use** — preview panel shows onboarding UI
+
+ShipIt also reads no `x-shipit-secrets` from a compose file that is not named:
+its names get no declared-secret rows in **Project Settings → Secrets**, and
+`agent: true` values do not reach the agent. So when you write a compose file,
+add the key in the same change:
+
+```yaml
+compose: docker-compose.yml
+```
+
+ShipIt applies the new key at once, without a container restart (see "Config
+changes at runtime" below). `shipit service list` then shows the services.
 
 ## Onboarding a repository
 

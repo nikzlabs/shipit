@@ -7,6 +7,12 @@ secret store. Declare what each service needs in its compose definition with
 **Project Settings → Secrets** panel; the values are then auto-loaded into every
 session for that repo and survive container restarts.
 
+ShipIt reads these declarations only from the compose file that `shipit.yaml`
+names (`compose: docker-compose.yml`). In a file it does not name, they do
+nothing: the panel shows no declared-secret row for them and ShipIt injects no
+value. See
+[shipit-yaml.md](shipit-yaml.md) → "Config resolution".
+
 ## Why declare secrets?
 
 - **Self-describing projects.** When you list `STRIPE_KEY` in the compose
