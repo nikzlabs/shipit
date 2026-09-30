@@ -5,13 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import type Docker from "dockerode";
 
-const { installEgressFirewall, buildTierAEgressInputs } = vi.hoisted(() => ({
+const { installEgressFirewall, buildTierAEgressInputs, launchEgressResolver } = vi.hoisted(() => ({
   installEgressFirewall: vi.fn(async () => {}),
   buildTierAEgressInputs: vi.fn(async () => ({ hosts: [], cidrs: [] })),
+  launchEgressResolver: vi.fn(async (_docker: unknown, _opts: { configB64: string }) => "resolver-id"),
 }));
 vi.mock("./egress-firewall-install.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, installEgressFirewall, buildTierAEgressInputs };
+});
+vi.mock("./egress-dns-install.js", async (importActual) => {
+  const actual = (await importActual()) as Record<string, unknown>;
+  return { ...actual, launchEgressResolver };
 });
 
 import { createContainer, type LifecycleDeps } from "./container-lifecycle.js";
@@ -147,6 +152,19 @@ describe("createContainer — the applied egress exclusion it records", () => {
     );
 
     expect(sc.egressUserHostsExcluded).toBe(false);
+  });
+});
+
+describe("createContainer — the agent's resolver", () => {
+  it("lets a contained agent look up its session's Compose services by name", async () => {
+    launchEgressResolver.mockClear();
+    await createWith(
+      { contained: true, extraHosts: [] },
+      { egressEnforce: true, egressSidecarImage: "shipit-egress-sidecar:test", egressDns: true } as Partial<LifecycleDeps>,
+    );
+    expect(launchEgressResolver).toHaveBeenCalledTimes(1);
+    const config = Buffer.from(launchEgressResolver.mock.calls[0]![1].configB64, "base64").toString("utf-8");
+    expect(config.split("\n")).toContain("server=//127.0.0.11");
   });
 });
 

@@ -281,7 +281,8 @@ verify your work:
   Do **not** use the `{sessionId}--{port}.<host>` subdomain form — that origin is
   for the user's preview pane (served by the orchestrator proxy) and does not
   resolve from the agent's browser. (Egress containment allows the agent to reach
-  its own session's service containers by IP; reaching the dev server this way is
+  its own session's service containers by IP or by a Compose service name
+  without a dot; reaching the dev server this way is
   expected and supported.)
 - **browser_snapshot** — read page content as an accessibility tree (preferred
   for understanding layout)

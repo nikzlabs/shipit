@@ -269,6 +269,10 @@ const ORIGIN_INDEX_IDLE_STOP_MS = 60_000;
 const SESSION_RANGE_REFRESH_MS = 30_000;
 const SESSION_RANGE_TIMEOUT_MS = 10_000;
 
+interface StaleSidecarDecision {
+  stale?: { resolver: boolean; proxy: boolean };
+}
+
 function toIpv4(value: string): number | null {
   const parts = value.split(".").map(Number);
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
@@ -427,10 +431,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /** The Docker host's own addresses, for the local block (docs/319). */
-  async hostAddresses(): Promise<string[]> {
+  async hostAddresses(opts: { fresh?: boolean } = {}): Promise<string[]> {
     const image = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     if (!image) return [];
-    return readHostAddresses(this.docker, image);
+    return readHostAddresses(this.docker, image, opts);
   }
 
   private orchestratorAddress?: string;
@@ -508,15 +512,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         sc.firewallPolicy = policy;
         sc.appliedSshCidrs = contained ? [...(cfg.extraCidrs ?? [])] : [];
         sc.appliedSshTargets = sshTargetKeys(cfg.sshTargets);
-        const info = await this.docker.getContainer(sc.id).inspect();
-        for (const name of Object.keys(info.NetworkSettings?.Networks ?? {})) {
-          if (name.startsWith("shipit-session-")) (sc.joinedSessionNetworks ??= new Set()).add(name);
-        }
         await this.reopenJoinedSessionEgress(sc.sessionId);
         console.log(`[egress:${sc.sessionId}] reinstalled a firewall from before docs/319 (${policy})`);
       });
       if (contained && (egressDnsEnabled() || egressProxyEnabled())) {
-        await retry(`[${sc.sessionId}] egress sidecars`, () => this.refreshStaleEgressSidecars(sc, sidecarImage));
+        const decided: StaleSidecarDecision = {};
+        await retry(`[${sc.sessionId}] egress sidecars`, () => this.refreshStaleEgressSidecars(sc, sidecarImage, decided));
       }
     }
     if (!egressEnforceEnabled() && !localBlockActive()) return;
@@ -536,14 +537,21 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * A recreated ShipIt has a new hostname, and a kept agent's resolver and proxy
    * still name the old one, so its worker could not find ShipIt by name
    * (planning#626). Replace the ones that differ from what this process starts.
+   * `decided` outlives a retry: a failed replacement has already removed the old
+   * sidecar, and inspecting again would find nothing stale and leave DNS down.
    */
-  private async refreshStaleEgressSidecars(sc: SessionContainer, sidecarImage: string): Promise<void> {
-    const stale = await staleEgressSidecars(this.docker, {
+  private async refreshStaleEgressSidecars(
+    sc: SessionContainer,
+    sidecarImage: string,
+    decided: StaleSidecarDecision,
+  ): Promise<void> {
+    decided.stale ??= await staleEgressSidecars(this.docker, {
       sessionId: sc.sessionId,
       agentContainerId: sc.id,
       ...(egressDnsEnabled() ? { internalNames: sessionInternalNames({ opsSession: sc.opsSession }) } : {}),
       ...(egressProxyEnabled() ? { decisionUrl: agentEgressDecisionUrl() } : {}),
     });
+    const stale = decided.stale;
     if (!stale.resolver && !stale.proxy) return;
     // Read after the inspection, so an allowlist change made meanwhile is not undone.
     const cfg = this.resolveEgressConfig?.(sc.sessionId) ?? { contained: true, extraHosts: [] };
@@ -561,7 +569,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       reloadProxy: stale.proxy,
     });
     console.log(
-      `[egress:${sc.sessionId}] replaced sidecars that named ShipIt's previous host (resolver: ${stale.resolver}, proxy: ${stale.proxy})`,
+      `[egress:${sc.sessionId}] replaced stale egress sidecars (resolver: ${stale.resolver}, proxy: ${stale.proxy})`,
     );
   }
 
@@ -654,7 +662,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         sidecarImage,
         config: { ...config, contained },
         policy,
-        hostAddresses: await readHostAddresses(this.docker, sidecarImage),
+        // Fresh: the session network may hold a range whose gateway the cached read still lists.
+        hostAddresses: await readHostAddresses(this.docker, sidecarImage, { fresh: true }),
         serviceNames,
         dnsEnabled: contained && egressDnsEnabled(),
         proxyEnabled: contained && egressProxyEnabled(),
@@ -1005,11 +1014,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         console.warn(`[egress:${sessionId}] no IPAM subnet found for ${networkName}; preview may be unreachable from the agent browser`);
         return;
       }
+      const hostAddresses = localBlockActive() ? await this.currentHostAddresses(sessionId) : undefined;
       const allowed = await allowEgressToSubnets(this.docker, {
         agentContainerId,
         sidecarImage,
         subnets,
         gateways: extractNetworkGateways(info),
+        ...(hostAddresses ? { hostAddresses } : {}),
         labels: { ...this.baseLabels(), "shipit-parent-session": sessionId },
       });
       console.log(`[egress:${sessionId}] opened agent egress to session subnet(s) ${allowed.join(", ")} (${networkName})`);
@@ -1018,6 +1029,23 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         `[egress:${sessionId}] failed to open egress to ${networkName} (preview may be unreachable from the agent browser):`,
         err instanceof Error ? err.message : String(err),
       );
+    }
+  }
+
+  /**
+   * The agent's host drops date from its firewall install; a session network
+   * can reuse a range whose gateway was the host's then, and its first address
+   * is a service. Undefined when unreadable: every drop then stays.
+   */
+  private async currentHostAddresses(sessionId: string): Promise<string[] | undefined> {
+    try {
+      return await this.hostAddresses({ fresh: true });
+    } catch (err) {
+      console.warn(
+        `[egress:${sessionId}] could not read the host's addresses; stale host drops stay in place:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
     }
   }
 

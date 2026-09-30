@@ -439,6 +439,34 @@ the agent to reach previews from its browser at the service registry's `url`
 > present for ops, absent + no bare `server=` for non-ops) and `egress-reload.test.ts` (the reload
 > re-emits the rule for an ops session, omits it otherwise).
 
+### The agent's resolver forwards single-label names (Compose services by name)
+
+> **Resolved 2026-09-30 — a contained agent could not resolve its own Compose service (`dev`).**
+>
+> `environment.md` and docs/319 promise that the agent reaches its session's services by name,
+> and `compose.md` has it dial the Android emulator's `adb` by service name. The agent's resolver
+> forwarded only `sessionInternalNames()`, so `getent hosts dev` was REFUSED. A Compose service's
+> own resolver already forwarded single-label names (`server=//127.0.0.11`, `unqualifiedInternalNames`).
+>
+> **Fix.** `buildAgentResolverConfigB64` (`egress-dns-install.ts`) is now the one builder for the
+> agent's resolver, at create (`createContainer`) and at reload (`reloadEgressSidecars`), and it
+> sets `unqualifiedInternalNames`. A service name is never emitted as a domain (`server=/dev/…`
+> would also forward `*.dev`). `staleEgressSidecars` treats a resolver without the rule as stale,
+> so a kept agent's resolver is replaced at the next orchestrator start.
+>
+> **Trade-off, accepted by the user on 2026-09-30.** Unlisted names with a dot stay REFUSED, so a
+> query never reaches a DNS server an attacker's domain delegates to. But Docker's embedded DNS
+> passes a single-label name it does not know on to the host's upstream resolver, so code in the
+> session can put data into such a query, and whoever can read that upstream's traffic or logs can
+> see it. Compose services have had the same path since their containment. A dotted service name
+> (`dev.local`) is still REFUSED; only single-label names resolve. Regression coverage:
+> `egress-dns-install.test.ts`, `egress-reload.test.ts`, `container-lifecycle-egress-record.test.ts`.
+>
+> The migration replaces every kept contained agent's resolver once, and the replacement removes
+> the old resolver first. `reconcileAdoptedFirewalls` therefore decides "stale" once per agent and
+> keeps that decision across its retries: an inspection after a failed launch finds no resolver,
+> which reads as "not stale", and would leave the agent with no DNS.
+
 ### Services API now hands the agent a ready-to-use `url` (GH #1509)
 
 The agent and its in-netns Playwright browser still had to *construct*

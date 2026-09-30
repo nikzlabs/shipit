@@ -155,6 +155,7 @@ export async function rediscoverContainers(
           // Use actual mounts; workspace configuration may have changed since creation.
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
           otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
+          joinedSessionNetworks: sessionNetworksOf(info.NetworkSettings?.Networks),
         });
         // Do not restore standby status: the immutable label survives a claim.
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
@@ -218,6 +219,7 @@ export async function adoptRunningContainer(
           bootedLimits,
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
           otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
+          joinedSessionNetworks: sessionNetworksOf(info.NetworkSettings?.Networks),
         });
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         return true;
@@ -409,4 +411,9 @@ export function containerAddresses(
     }
   }
   return [...out];
+}
+
+/** An adopted agent's session networks, so a firewall reinstall reopens them. */
+function sessionNetworksOf(networks: Record<string, unknown> | undefined): Set<string> {
+  return new Set(Object.keys(networks ?? {}).filter((name) => name.startsWith("shipit-session-")));
 }

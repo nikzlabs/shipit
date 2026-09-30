@@ -55,6 +55,24 @@ export function buildResolverConfigB64(opts: ResolverConfigOpts = {}): string {
   return Buffer.from(config, "utf-8").toString("base64");
 }
 
+/**
+ * The agent's resolver, at create and at every reload. Single-label names go to
+ * Docker DNS so the agent finds its session's Compose services by name, as
+ * `environment.md` promises; a Compose service's resolver does the same.
+ */
+export function buildAgentResolverConfigB64(opts: {
+  opsSession?: boolean;
+  extraHosts?: string[];
+  base?: readonly string[];
+}): string {
+  return buildResolverConfigB64({
+    internalDomains: sessionInternalNames({ opsSession: opts.opsSession }),
+    unqualifiedInternalNames: true,
+    ...(opts.extraHosts ? { extraDomains: opts.extraHosts } : {}),
+    ...(opts.base ? { base: opts.base } : {}),
+  });
+}
+
 export interface LaunchResolverOpts {
   agentContainerId: string;
   sidecarImage: string;

@@ -7,6 +7,7 @@ import {
   sessionInternalNames,
   OPS_DOCKER_PROXY_DNS_NAME,
   orchestratorCallbackHost,
+  buildAgentResolverConfigB64,
   buildResolverConfigB64,
   launchEgressResolver,
   EGRESS_DNS_DEFAULT_UPSTREAMS,
@@ -94,6 +95,24 @@ describe("buildResolverConfigB64", () => {
     expect(cfg).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
     expect(cfg).not.toMatch(/^server=[^/]/m);
     expect(cfg).toContain("no-resolv");
+  });
+});
+
+describe("buildAgentResolverConfigB64", () => {
+  const decode = (b64: string) => Buffer.from(b64, "base64").toString("utf-8").split("\n");
+
+  // environment.md: the agent reaches its session's services by name, e.g. `dev`.
+  it("forwards single-label names to Docker DNS, and no other unlisted name", () => {
+    const lines = decode(buildAgentResolverConfigB64({ extraHosts: ["fal.run"] }));
+    expect(lines).toContain("server=//127.0.0.11");
+    expect(lines.some((l) => /^server=[^/]/.test(l))).toBe(false);
+    expect(lines).toContain(`server=/fal.run/${EGRESS_DNS_DEFAULT_UPSTREAMS[0]}`);
+    for (const name of sessionInternalNames()) expect(lines).toContain(`server=/${name}/127.0.0.11`);
+  });
+
+  it("keeps the docker-socket-proxy name for an ops session", () => {
+    expect(decode(buildAgentResolverConfigB64({ opsSession: true })))
+      .toContain(`server=/${OPS_DOCKER_PROXY_DNS_NAME}/127.0.0.11`);
   });
 });
 

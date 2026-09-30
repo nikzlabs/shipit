@@ -56,6 +56,8 @@ Because the block comes before the allowlist, an allowlisted name that resolves 
 
 The installer sets the policy to `DROP` before it flushes the chain, and sets `ACCEPT` last in open mode. A reinstall therefore never leaves a moment with no block. Drops are inserted at the top of `SHIPIT-LOCAL` and accepts are appended, so a later network join can never put an accept in front of a drop.
 
+The host's addresses are a snapshot from install time, and they include every Docker bridge's gateway. Docker reuses a removed network's range, and a network with no host address gives its first address to a container. So an agent could keep a drop for an address that is now its own service's, and every connection to the service's listed URL timed out (a drop hangs a TCP connect). When the agent joins a session network, ShipIt therefore reads the host's addresses again, uncached, and `allow-subnet.sh` removes each IPv4 drop inside the joined subnets that names neither a current host address nor a gateway of those networks. If the read fails, every drop stays. A Compose service and a container started through the Docker proxy get a fresh read at their install, because their network already exists then. An agent that ShipIt adopts after a restart records the session networks it is on, so that a later reinstall (an SSH grant change) opens them again.
+
 The open policy uses only plain `iptables`/`ip6tables` rules, with no `ipset`. If IPv6 rules cannot be installed on a kernel with IPv6, the install fails: a later network join could give the namespace an IPv6 path, so today's addresses do not decide it. Networks that ShipIt or the Docker proxy create have IPv6 off.
 
 ### 2. One install path, two policies (req 1, req 2)

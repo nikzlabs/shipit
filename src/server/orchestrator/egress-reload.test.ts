@@ -54,7 +54,10 @@ describe("reloadEgressSidecars", () => {
     expect(cfg.HostConfig?.NetworkMode).toBe("container:agent1");
     expect(cfg.Labels?.[EGRESS_RESOLVER_LABEL]).toBe("s1");
     const b64 = (cfg.Env ?? []).find((e) => e.startsWith("EGRESS_DNSMASQ_CONFIG_B64="))?.split("=")[1] ?? "";
-    expect(Buffer.from(b64, "base64").toString("utf-8")).toContain("new.example.com");
+    const config = Buffer.from(b64, "base64").toString("utf-8");
+    expect(config).toContain("new.example.com");
+    // The reloaded resolver still finds the session's Compose services by name.
+    expect(config.split("\n")).toContain("server=//127.0.0.11");
   });
 
   it("re-emits the docker-socket-proxy resolver rule for an ops session (planning#92)", async () => {
@@ -118,8 +121,10 @@ describe("staleEgressSidecars", () => {
     return docker as unknown as Docker & { listContainers: ReturnType<typeof vi.fn> };
   }
 
-  const resolverEnv = (names: string[]) => [
-    `EGRESS_DNSMASQ_CONFIG_B64=${buildResolverConfigB64({ internalDomains: names, extraDomains: ["fal.run"] })}`,
+  const resolverEnv = (names: string[], unqualifiedInternalNames = true) => [
+    `EGRESS_DNSMASQ_CONFIG_B64=${buildResolverConfigB64({
+      internalDomains: names, extraDomains: ["fal.run"], unqualifiedInternalNames,
+    })}`,
   ];
   const check = (docker: Docker, overrides: { internalNames?: string[]; decisionUrl?: string } = {}) =>
     staleEgressSidecars(docker, {
@@ -138,6 +143,11 @@ describe("staleEgressSidecars", () => {
   it("finds a resolver that lacks the worker's fallback name", async () => {
     const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["new-host"]) }]);
     await expect(check(docker)).resolves.toMatchObject({ resolver: true });
+  });
+
+  it("finds a resolver that cannot look up the session's Compose services by name", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["new-host", "shipit"], false) }]);
+    await expect(check(docker)).resolves.toEqual({ resolver: true, proxy: false });
   });
 
   it("accepts a resolver that forwards every current name, as after a plain restart", async () => {

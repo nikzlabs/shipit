@@ -8,6 +8,7 @@
 - [x] Script tests with stubbed tools (rule order, open policy uses no `ipset`)
 - [x] CI job: both policies in a real network namespace
 - [x] Host address discovery, 60 s reuse, fail closed
+- [x] A host drop older than a session network no longer hides the agent's own service: fresh read at each join, stale drops inside the joined subnets removed; fresh read at Compose and Docker-proxy installs; an adopted agent records its session networks so a reinstall opens them again
 - [x] SSH destinations carry their port into the SSH chain
 - [x] Agent container: firewall in both modes; open policy runs no resolver or proxy; orchestrator ports only on the shared network
 - [x] Compose: internal topology and open-policy containment when the block is active; `NET_ADMIN`, restart policies and reserved labels refused

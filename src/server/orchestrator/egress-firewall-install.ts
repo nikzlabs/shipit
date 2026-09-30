@@ -225,6 +225,11 @@ export interface AllowEgressToSubnetsOpts {
   subnets: string[];
   /** The networks' gateways: the host, refused before their subnets open. */
   gateways?: string[];
+  /**
+   * The host's addresses read just now. When set, a host drop inside `subnets`
+   * that names none of them is removed: the address has since gone to a container.
+   */
+  hostAddresses?: readonly string[];
   /** When set, replaces the namespace's accepts for ShipIt's own address. */
   localTcp?: readonly LocalTcpAccept[];
   labels?: Record<string, string>;
@@ -252,6 +257,9 @@ export async function allowEgressToSubnets(
     Env: [
       `EGRESS_ALLOW_SUBNETS=${subnets.join(" ")}`,
       `EGRESS_BLOCK_ADDRS=${gateways.join(" ")}`,
+      ...(opts.hostAddresses
+        ? [`EGRESS_HOST_ADDRS=${opts.hostAddresses.filter((a) => isValidIp(a)).join(" ")}`]
+        : []),
       ...(localTcp.length > 0 ? [`EGRESS_LOCAL_TCP=${localTcp.join(" ")}`] : []),
     ],
   });

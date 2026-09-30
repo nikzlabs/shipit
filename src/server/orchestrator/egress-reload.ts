@@ -1,9 +1,8 @@
 import type Docker from "dockerode";
 import { agentEgressDecisionUrl, buildProxyAllowed, launchEgressProxy, EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import {
-  buildResolverConfigB64,
+  buildAgentResolverConfigB64,
   launchEgressResolver,
-  sessionInternalNames,
   EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
 import { DOCKER_EMBEDDED_DNS } from "./egress-dns.js";
@@ -71,7 +70,8 @@ function envValue(env: string[], key: string): string | undefined {
 /**
  * Which of an agent's sidecars name ShipIt differently from this process. Each
  * keeps the names it was started with, so after ShipIt is recreated a kept agent
- * could not find it by name (planning#626). A missing sidecar is not stale.
+ * could not find it by name (planning#626). A resolver from before agents could
+ * look up their Compose services by name is stale too. A missing sidecar is not.
  */
 export async function staleEgressSidecars(
   docker: Docker,
@@ -83,6 +83,7 @@ export async function staleEgressSidecars(
       const config = Buffer.from(envValue(env, "EGRESS_DNSMASQ_CONFIG_B64") ?? "", "base64").toString("utf-8");
       const forwarded = new Set(config.split("\n"));
       if (opts.internalNames.some((name) => !forwarded.has(`server=/${name}/${DOCKER_EMBEDDED_DNS}`))) resolver = true;
+      if (!forwarded.has(`server=//${DOCKER_EMBEDDED_DNS}`)) resolver = true;
     }
   }
   let proxy = false;
@@ -100,9 +101,9 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
 
   if (opts.reloadResolver) {
     await removeByLabel(docker, `${EGRESS_RESOLVER_LABEL}=${sessionId}`, agentContainerId);
-    const configB64 = buildResolverConfigB64({
-      internalDomains: sessionInternalNames({ opsSession: opts.opsSession }),
-      extraDomains: extraHosts,
+    const configB64 = buildAgentResolverConfigB64({
+      opsSession: opts.opsSession,
+      extraHosts,
       ...(base ? { base } : {}),
     });
     await launchEgressResolver(docker, {

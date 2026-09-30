@@ -121,13 +121,23 @@ describe("hostAddresses", () => {
   it("reads them in the host network namespace, and reuses a read for a minute", async () => {
     const { docker, created } = helperDocker({ output: IP_OUTPUT });
     let now = 1_000;
-    await hostAddresses(docker, "sidecar:test", () => now);
+    await hostAddresses(docker, "sidecar:test", { now: () => now });
     now += 30_000;
-    await hostAddresses(docker, "sidecar:test", () => now);
+    await hostAddresses(docker, "sidecar:test", { now: () => now });
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ HostConfig: { NetworkMode: "host" } });
     now += 31_000;
-    await hostAddresses(docker, "sidecar:test", () => now);
+    await hostAddresses(docker, "sidecar:test", { now: () => now });
+    expect(created).toHaveLength(2);
+  });
+
+  it("reads again when asked for a fresh read, and caches that read", async () => {
+    const { docker, created } = helperDocker({ output: IP_OUTPUT });
+    const now = () => 5_000_000;
+    await hostAddresses(docker, "sidecar:test", { now });
+    await hostAddresses(docker, "sidecar:test", { now, fresh: true });
+    expect(created).toHaveLength(2);
+    await hostAddresses(docker, "sidecar:test", { now });
     expect(created).toHaveLength(2);
   });
 
