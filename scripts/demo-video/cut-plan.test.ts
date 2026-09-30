@@ -207,6 +207,15 @@ describe("anchoring", () => {
   ];
   const story = { beats: [{ id: "a", lead: 0, hold: 1 }, { id: "b", lead: 0, hold: 3 }] };
 
+  it("refuses an anchor that is later in the video than on the driver's clock — the splash was missed", () => {
+    // The host take of 2026-09-30: the splash's frames were not black enough,
+    // so the first black edge in the file was the instance's dark loading
+    // frame, 1.08 s in, against a flip the driver stamped at 0.626 s.
+    expect(() => buildPlan(log, story, { anchorWall: 0.626, anchorVideo: 1.08, videoDuration: 90 })).toThrow(/is not the driver's splash/);
+    // One frame of rounding is not that.
+    expect(() => buildPlan(log, story, { anchorWall: 0.44, anchorVideo: 0.48, videoDuration: 90 })).not.toThrow();
+  });
+
   it("shifts the slices by anchorWall − anchorVideo: the splash ended at 1.9 s on the driver's clock and 0.48 s into the file", () => {
     const plan = buildPlan(log, story, { anchorWall: 1.9, anchorVideo: 0.48, videoDuration: 90 });
     expect(plan.anchor).toEqual({ method: "blackdetect", offset: 1.42 });
