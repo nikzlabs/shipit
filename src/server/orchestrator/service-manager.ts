@@ -428,7 +428,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       isStartInFlight: (name) => this.upInFlight.has(name),
       setContainerIp: (name, ip) => {
         const svc = this.services.get(name);
-        if (svc) svc.containerIp = ip;
+        if (!svc) return;
+        if (ip) svc.containerIp = ip;
+        else delete svc.containerIp;
       },
       updateServiceStatus: (name, status, error) =>
         this.updateServiceStatus(name, status, error),
