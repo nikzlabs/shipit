@@ -5,6 +5,7 @@ import {
   describePermissionRequest,
   describePermissionDetails,
   PERMISSION_DETAILS_CHARS,
+  toolResultIds,
 } from "./permission-broker.js";
 import type { AgentEvent } from "../shared/types.js";
 
@@ -29,6 +30,22 @@ describe("describePermissionRequest", () => {
     expect(describePermissionRequest("Write", ".npmrc", {})).toBe("Write .npmrc");
     expect(describePermissionRequest("Bash", undefined, { command: "rm -rf x\nmore" })).toBe("Bash: rm -rf x");
     expect(describePermissionRequest("Tool", undefined, undefined)).toBe("Tool");
+  });
+});
+
+describe("toolResultIds", () => {
+  it("returns the ids of tool_result blocks only", () => {
+    expect(toolResultIds([
+      { type: "tool_result", tool_use_id: "a" },
+      { type: "text", text: "x" },
+      { type: "tool_result" },
+      null,
+      { type: "tool_result", tool_use_id: "b" },
+    ])).toEqual(["a", "b"]);
+  });
+
+  it("has none for non-array content", () => {
+    expect(toolResultIds("plain text")).toEqual([]);
   });
 });
 
@@ -158,19 +175,101 @@ describe("PermissionBroker", () => {
     expect(broker.pendingCount).toBe(1);
   });
 
-  it("clearPending settles held promises on teardown WITHOUT broadcasting (card stays pending)", async () => {
+  it("clearPending denies every unanswered request and broadcasts it, so no card stays answerable", async () => {
     const { broker, events } = makeBroker();
     const a = broker.request({ toolName: "Write", input: { file_path: "a" } });
     const b = broker.request({ toolName: "Write", input: { file_path: "b" } });
-    const eventsBefore = events.length;
+    const ids = events.map((e) => (e as { requestId: string }).requestId);
 
     broker.clearPending();
 
     await expect(a).resolves.toMatchObject({ behavior: "deny" });
     await expect(b).resolves.toMatchObject({ behavior: "deny" });
     expect(broker.pendingCount).toBe(0);
+    expect(events.filter((e) => e.type === "agent_permission_resolved")).toEqual(
+      ids.map((requestId) => ({ type: "agent_permission_resolved", requestId, behavior: "deny" })),
+    );
+  });
+
+  it("clearPending does not re-announce a request the user already answered", () => {
+    const { broker, events } = makeBroker();
+    const opened = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "tu" });
+    broker.resolve(opened.requestId!, { behavior: "allow" });
+
+    broker.clearPending();
+
+    expect(events.filter((e) => e.type === "agent_permission_resolved")).toEqual([
+      { type: "agent_permission_resolved", requestId: opened.requestId, behavior: "allow" },
+    ]);
+  });
+
+  // Claude's MCP idle timeout ends the gate call with a tool_result but never cancels it.
+  it("endToolUse denies the request once the gated call has a result, and a later poll fails closed", async () => {
+    const { broker, events } = makeBroker();
+    const opened = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+
+    broker.endToolUse("toolu_1");
+
+    expect(events[1]).toEqual({ type: "agent_permission_resolved", requestId: opened.requestId, behavior: "deny" });
+    expect(broker.pendingCount).toBe(0);
+    await expect(broker.poll(opened.requestId!, 5000)).resolves.toEqual({
+      settled: true,
+      decision: { behavior: "deny" },
+    });
+    expect(broker.resolve(opened.requestId!, { behavior: "allow" })).toBe(false);
+  });
+
+  it("endToolUse wakes a poll already holding for the answer", async () => {
+    const { broker } = makeBroker();
+    const opened = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+    const poll = broker.poll(opened.requestId!, 5000);
+
+    broker.endToolUse("toolu_1");
+
+    await expect(poll).resolves.toEqual({ settled: true, decision: { behavior: "deny" } });
+  });
+
+  it("endToolUse leaves other calls' requests and an answered request alone", async () => {
+    const { broker, events } = makeBroker();
+    const answered = broker.openRequest({ toolName: "Write", input: { file_path: "a" }, toolUseId: "tu-a" });
+    broker.openRequest({ toolName: "Write", input: { file_path: "b" }, toolUseId: "tu-b" });
+    broker.resolve(answered.requestId!, { behavior: "allow" });
+    const eventsBefore = events.length;
+
+    broker.endToolUse("tu-a");
+    broker.endToolUse("tu-unrelated");
+
     expect(events).toHaveLength(eventsBefore);
-    expect(events.some((e) => e.type === "agent_permission_resolved")).toBe(false);
+    expect(broker.pendingCount).toBe(2);
+    await expect(broker.poll(answered.requestId!, 5000)).resolves.toEqual({
+      settled: true,
+      decision: { behavior: "allow" },
+    });
+  });
+
+  it("request() denies and broadcasts when its signal aborts (the agent withdrew it)", async () => {
+    const { broker, events } = makeBroker();
+    const withdrawn = new AbortController();
+    const decision = broker.request({ toolName: "shell", input: { command: "curl x" }, signal: withdrawn.signal });
+    const requestId = (events[0] as { requestId: string }).requestId;
+
+    withdrawn.abort();
+
+    await expect(decision).resolves.toEqual({ behavior: "deny" });
+    expect(events[1]).toEqual({ type: "agent_permission_resolved", requestId, behavior: "deny" });
+    expect(broker.pendingCount).toBe(0);
+  });
+
+  it("an abort after the user answered changes nothing", async () => {
+    const { broker, events } = makeBroker();
+    const withdrawn = new AbortController();
+    const decision = broker.request({ toolName: "shell", input: { command: "curl x" }, signal: withdrawn.signal });
+    broker.resolve((events[0] as { requestId: string }).requestId, { behavior: "allow" });
+
+    withdrawn.abort();
+
+    await expect(decision).resolves.toEqual({ behavior: "allow" });
+    expect(events.filter((e) => e.type === "agent_permission_resolved")).toHaveLength(1);
   });
 
   it("resolve() returns false for an unknown id (stale card)", () => {

@@ -157,3 +157,72 @@ describe("createRunnerRegistry — background-work marker wiring", () => {
     expect(attention().at(-1)).toEqual({ sessionId: "s1", backgroundTasks: [] });
   });
 });
+
+describe("createRunnerRegistry — a turn abandoned by its worker denies its permission cards (docs/193)", () => {
+  function makeRegistry(chatHistoryManager: Record<string, unknown>) {
+    const sseBroadcast = vi.fn();
+    const registry = createRunnerRegistry({
+      effectiveRunnerFactory: undefined,
+      sessionManager: { get: () => undefined, getPrStatus: () => undefined } as never,
+      repoStore: { isTrusted: () => true } as never,
+      createGitManager: (() => ({})) as never,
+      githubAuthManager: { authenticated: false } as never,
+      agentFactory: undefined,
+      chatHistoryManager: chatHistoryManager as never,
+      autoPushScheduler: {
+        schedule: () => {}, cancel: () => {}, cancelAll: () => {}, pending: () => false,
+      },
+      sseBroadcast,
+      enforceIdleContainerLimit: () => {},
+      getDepCacheDir: () => "",
+      serviceManagers: new Map(),
+      composeStopPromises: new Map(),
+      composeWarnings: new Map(),
+      composeNotConfigured: new Set(),
+      containerManager: null,
+      serviceEnvDir: "/tmp/service-env",
+      runtimeMode: "local",
+      broadcastLog: () => {},
+      usageManager: {} as never,
+    });
+    return { runner: registry.getOrCreate("s1", "/tmp/s1", "claude"), sseBroadcast };
+  }
+
+  it("denies each card still awaiting an answer, keeps its rows past the next turn, and clears attention", () => {
+    const updatePermissionCard = vi.fn();
+    const finalizeInProgress = vi.fn();
+    const { runner, sseBroadcast } = makeRegistry({ updatePermissionCard, finalizeInProgress, hasInProgress: () => true });
+    runner.awaitingPermissionIds.add("perm_1");
+
+    runner.emit("turn_abandoned");
+
+    expect(updatePermissionCard).toHaveBeenCalledWith("s1", "perm_1", { phase: "denied" });
+    expect(finalizeInProgress).toHaveBeenCalledWith("s1");
+    expect(sseBroadcast).toHaveBeenCalledWith("session_attention", { sessionId: "s1", awaitingPermission: false });
+    expect(runner.awaitingPermissionIds.size).toBe(0);
+    runner.dispose({ force: true });
+  });
+
+  it("leaves an abandoned turn with no card to its existing handling", () => {
+    const finalizeInProgress = vi.fn();
+    const { runner } = makeRegistry({ updatePermissionCard: vi.fn(), finalizeInProgress });
+
+    runner.emit("turn_abandoned");
+
+    expect(finalizeInProgress).not.toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
+  it("does not throw into the runner when the card write fails", () => {
+    const { runner } = makeRegistry({
+      updatePermissionCard: () => { throw new Error("database is locked"); },
+      finalizeInProgress: vi.fn(),
+    });
+    runner.awaitingPermissionIds.add("perm_1");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(() => runner.emit("turn_abandoned")).not.toThrow();
+    logged.mockRestore();
+    runner.dispose({ force: true });
+  });
+});

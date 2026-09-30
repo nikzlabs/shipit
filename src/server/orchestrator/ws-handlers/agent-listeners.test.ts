@@ -1633,3 +1633,95 @@ describe("wireAgentListeners — tool-call time", () => {
     runner.dispose({ force: true });
   });
 });
+
+describe("wireAgentListeners — permission cards no agent can answer (docs/193)", () => {
+  function wireForPermission() {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({
+      sessionId: "session-perm",
+      sessionDir: "/tmp/session-perm",
+      defaultAgentId: "claude",
+    });
+    runner.setAgent(agent as unknown as AgentProcess);
+    const d = deps();
+    const updatePermissionCard = vi.fn();
+    Object.assign(d.chatHistoryManager, { updatePermissionCard, hasInProgress: () => false });
+    const emitted: { type?: string; requestId?: string; phase?: string }[] = [];
+    runner.on("message", (m) => emitted.push(m as { type?: string }));
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-perm",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    agent.emit("event", {
+      type: "agent_permission_request",
+      requestId: "perm_1",
+      toolName: "Bash",
+      summary: "Bash: curl x",
+    } satisfies AgentEvent);
+    const attention = () =>
+      vi.mocked(d.sseBroadcast).mock.calls.filter(([e]) => e === "session_attention").map(([, data]) => data);
+    const denied = () => emitted.filter((m) => m.type === "permission_resolved" && m.phase === "denied");
+    return { agent, runner, updatePermissionCard, denied, attention };
+  }
+
+  it("denies the card and clears attention when the agent process errors out", () => {
+    const { agent, runner, updatePermissionCard, denied, attention } = wireForPermission();
+    expect(attention()).toEqual([{ sessionId: "session-perm", awaitingPermission: true }]);
+
+    agent.emit("error", new Error("process died"));
+
+    expect(denied().map((m) => m.requestId)).toEqual(["perm_1"]);
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-perm", "perm_1", { phase: "denied" });
+    expect(attention().at(-1)).toEqual({ sessionId: "session-perm", awaitingPermission: false });
+    expect(runner.awaitingPermissionIds.size).toBe(0);
+    runner.dispose({ force: true });
+  });
+
+  it("still runs the error path's drain and commit when the card write fails", async () => {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({ sessionId: "session-perm", sessionDir: "/tmp/session-perm", defaultAgentId: "claude" });
+    runner.setAgent(agent as unknown as AgentProcess);
+    const d = deps();
+    Object.assign(d.chatHistoryManager, {
+      updatePermissionCard: () => { throw new Error("database is locked"); },
+      hasInProgress: () => false,
+    });
+    const onError = vi.fn(async () => {});
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-perm",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+      onError,
+    });
+    agent.emit("event", { type: "agent_permission_request", requestId: "perm_1", toolName: "Bash" } satisfies AgentEvent);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    agent.emit("error", new Error("process died"));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+
+    logged.mockRestore();
+    runner.dispose({ force: true });
+  });
+
+  it("leaves the card to the process that now holds the slot", () => {
+    const { agent, runner, denied } = wireForPermission();
+    runner.setAgent(new FakeAgent("claude") as unknown as AgentProcess);
+
+    agent.emit("error", new Error("late error from a replaced process"));
+
+    expect(denied()).toEqual([]);
+    expect(runner.awaitingPermissionIds.has("perm_1")).toBe(true);
+    runner.dispose({ force: true });
+  });
+
+  it("settles the card from the worker's own deny", () => {
+    const { agent, runner, denied, attention } = wireForPermission();
+
+    agent.emit("event", { type: "agent_permission_resolved", requestId: "perm_1", behavior: "deny" } satisfies AgentEvent);
+
+    expect(denied().map((m) => m.requestId)).toEqual(["perm_1"]);
+    expect(attention().at(-1)).toEqual({ sessionId: "session-perm", awaitingPermission: false });
+    runner.dispose({ force: true });
+  });
+});

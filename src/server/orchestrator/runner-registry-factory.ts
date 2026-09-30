@@ -64,6 +64,7 @@ import { goalAgentFor, refreshAgentGoalAfterTurn } from "./services/agent-goal.j
 import { residentRouteNeedsRelease} from "./service-routing.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { sessionStatusTurnContext } from "./services/session-status.js";
+import { denyAbandonedPermissionCards } from "./permission-cards.js";
 
 export interface RunnerRegistryDeps {
   effectiveRunnerFactory: SessionRunnerFactory | undefined;
@@ -219,6 +220,19 @@ export function createRunnerRegistry(
         // The release re-enters dispatch, preserving the entry's settlement callback, and
         // leaves it queued in order if another gate (a system hold) still holds.
         if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
+      });
+      // The worker reports no agent, so nothing can answer a request the lost one raised.
+      // A throw here would stop verifyRunningState before it releases the queue.
+      runner.on("turn_abandoned", () => {
+        if (runner.awaitingPermissionIds.size === 0) return;
+        try {
+          denyAbandonedPermissionCards(runner, runner.sessionId, { chatHistoryManager, sseBroadcast });
+          // Nothing else finalizes an abandoned turn, and the next turn's replaceInProgress
+          // would delete the denied card with the rest of its rows.
+          chatHistoryManager.finalizeInProgress(runner.sessionId);
+        } catch (err) {
+          console.error(`[permission] denying abandoned cards for ${runner.sessionId} failed:`, err);
+        }
       });
       wireResetEligibleOnFileChange(
         {

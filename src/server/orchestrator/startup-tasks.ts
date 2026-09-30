@@ -22,6 +22,7 @@ import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
 import { reclaimRegenerableSessionDirs } from "./disk-utils.js";
 import { hasUrlCredentials, repoUrlToHash, stripRemoteUrlCredentials } from "./git-utils.js";
+import { denyAbandonedPermissionCards } from "./permission-cards.js";
 
 export interface StartupDeps {
   repoStore: RepoStore;
@@ -352,6 +353,7 @@ export function handleContainerExited(
   runnerRegistry: SessionRunnerRegistry,
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void,
   chatHistoryManager?: ChatHistoryManager,
+  sseBroadcast?: (event: string, data: unknown) => void,
 ): void {
   console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
   const exitDetail = error
@@ -364,6 +366,14 @@ export function handleContainerExited(
   }
   const runner = runnerRegistry.get(sessionId);
   if (runner) {
+    // The worker died with its requests, so it cannot deny them itself.
+    if (chatHistoryManager && sseBroadcast) {
+      try {
+        denyAbandonedPermissionCards(runner, sessionId, { chatHistoryManager, sseBroadcast });
+      } catch (err) {
+        console.error(`[container] Failed to deny permission cards for ${sessionId}:`, err);
+      }
+    }
     if (chatHistoryManager) {
       preservePartialTurnOnWorkerLoss(
         sessionId,
@@ -417,6 +427,7 @@ export function setupContainerHealthMonitoring(
   oomBreaker?: SessionOomCircuitBreaker,
   chatHistoryManager?: ChatHistoryManager,
   onContainerExited?: (sessionId: string) => void,
+  sseBroadcast?: (event: string, data: unknown) => void,
 ): void {
   const emitBreakerTrip = (
     trip: { justTripped: boolean; countInWindow: number; windowMs: number; threshold: number },
@@ -451,7 +462,7 @@ export function setupContainerHealthMonitoring(
         `agent container OOM-killed ${trip.countInWindow} times in last ${windowLabel}`,
       );
     }
-    handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog, chatHistoryManager);
+    handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog, chatHistoryManager, sseBroadcast);
     onContainerExited?.(sessionId);
   });
 

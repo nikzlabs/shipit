@@ -632,6 +632,94 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
   });
 });
 
+describe("AgentController — a permission request the agent stopped waiting for is denied (docs/193)", () => {
+  let app: FastifyInstance;
+  let agents: FakeAgent[];
+  let workspace: string;
+  let broker: PermissionBroker;
+  let brokerEvents: { type: string; requestId?: string; behavior?: string }[];
+
+  async function startTurn(): Promise<FakeAgent> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "hi", cwd: workspace } },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return agents.at(-1)!;
+  }
+
+  const denials = () => brokerEvents.filter((e) => e.type === "agent_permission_resolved");
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-perm-"));
+    agents = [];
+    brokerEvents = [];
+    resetNodeRuntimeForTests();
+    broker = new PermissionBroker({ broadcast: (e) => brokerEvents.push(e) });
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const a = new FakeAgent();
+        agents.push(a);
+        return a as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: broker,
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  // The shape the Claude CLI emits when its MCP idle timeout ends the gate call.
+  it("denies the request when the gated tool call gets its result", async () => {
+    const agent = await startTurn();
+    const { requestId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+    const { requestId: otherId } = broker.openRequest({ toolName: "Bash", input: { command: "curl y" }, toolUseId: "toolu_2" });
+
+    agent.emit("event", {
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "sent no response or progress for 1800s; aborting." }],
+    });
+
+    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId, behavior: "deny" }]);
+    expect(denials().some((e) => e.requestId === otherId)).toBe(false);
+  });
+
+  it("denies every unanswered request when the agent process exits", async () => {
+    const agent = await startTurn();
+    const { requestId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+
+    agent.emit("done", 143);
+
+    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId, behavior: "deny" }]);
+  });
+
+  it("denies a killed agent's requests at the kill, and its late exit leaves the replacement's alone", async () => {
+    const killed = await startTurn();
+    const { requestId: oldId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_old" });
+    const kill = await app.inject({ method: "POST", url: "/agent/kill", payload: {} });
+    expect(kill.statusCode).toBe(200);
+    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId: oldId, behavior: "deny" }]);
+
+    await startTurn();
+    const { requestId: newId } = broker.openRequest({ toolName: "Bash", input: { command: "curl y" }, toolUseId: "toolu_new" });
+    killed.emit("done", 143);
+    killed.emit("error", new Error("late"));
+
+    expect(denials().some((e) => e.requestId === newId)).toBe(false);
+    expect(broker.pendingCount).toBe(1);
+  });
+});
+
 describe("AgentController — the orchestrator's model list (docs/318)", () => {
   let app: FastifyInstance;
   let workspace: string;

@@ -349,6 +349,7 @@ export async function startStartupMonitors(
       oomBreaker,
       chatHistoryManager,
       keepPreviewSupervisor.handleUnexpectedExit,
+      sseBroadcast,
     );
     app.addHook("onClose", async () => keepPreviewSupervisor.dispose());
   }
