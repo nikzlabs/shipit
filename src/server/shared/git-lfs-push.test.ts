@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
+import net from "node:net";
 import { execSync } from "node:child_process";
 import { GitManager } from "./git.js";
 import { pushLfsObjects, lfsDeclarationGrepArgs, LfsUploadError } from "./git-lfs-push.js";
-import { safeSimpleGit } from "./git-hooks-guard.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
 describe("pushLfsObjects", () => {
@@ -30,13 +31,14 @@ describe("pushLfsObjects", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
     else delete process.env.GIT_CONFIG_GLOBAL;
     fs.rmSync(root, { recursive: true, force: true });
   });
 
   it("runs nothing on a repo that tracks nothing with LFS", async () => {
-    const outcome = await pushLfsObjects((o) => safeSimpleGit(workDir, o), "origin", "main");
+    const outcome = await pushLfsObjects(workDir, null, "origin", "main");
     expect(outcome.status).toBe("not-an-lfs-repo");
   });
 
@@ -44,7 +46,7 @@ describe("pushLfsObjects", () => {
     fs.writeFileSync(path.join(workDir, ".gitattributes"), "*.md text eol=lf\n");
     run("git add -A && git commit -m attrs", workDir);
 
-    const outcome = await pushLfsObjects((o) => safeSimpleGit(workDir, o), "origin", "main");
+    const outcome = await pushLfsObjects(workDir, null, "origin", "main");
     expect(outcome.status).toBe("not-an-lfs-repo");
   });
 
@@ -62,7 +64,7 @@ describe("pushLfsObjects", () => {
     run("git init --bare -b main", bare);
     run(`git remote add origin ${bare}`, workDir);
 
-    const outcome = await pushLfsObjects((o) => safeSimpleGit(workDir, o), "origin", "main");
+    const outcome = await pushLfsObjects(workDir, null, "origin", "main");
     expect(outcome.status).not.toBe("not-an-lfs-repo");
   });
 
@@ -72,9 +74,9 @@ describe("pushLfsObjects", () => {
     run("git add -A && git commit -m attrs", workDir);
     run("git checkout -q main", workDir);
 
-    expect((await pushLfsObjects((o) => safeSimpleGit(workDir, o), "origin", "main")).status)
+    expect((await pushLfsObjects(workDir, null, "origin", "main")).status)
       .toBe("not-an-lfs-repo");
-    expect((await pushLfsObjects((o) => safeSimpleGit(workDir, o), "origin", "assets")).status)
+    expect((await pushLfsObjects(workDir, null, "origin", "assets")).status)
       .not.toBe("not-an-lfs-repo");
   });
 
@@ -82,14 +84,14 @@ describe("pushLfsObjects", () => {
     fs.writeFileSync(path.join(workDir, ".gitattributes"), "*.png filter=lfs diff=lfs merge=lfs -text\n");
     run("git add -A && git commit -m attrs", workDir);
 
-    expect((await pushLfsObjects((o) => safeSimpleGit(workDir, o), "origin", "no-such-branch")).status)
+    expect((await pushLfsObjects(workDir, null, "origin", "no-such-branch")).status)
       .not.toBe("not-an-lfs-repo");
   });
 
   it("reports a failed upload instead of throwing", async () => {
     fs.writeFileSync(path.join(workDir, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     run("git add -A && git commit -m attrs", workDir);
-    const outcome = await pushLfsObjects((o) => safeSimpleGit(workDir, o), "nope", "main");
+    const outcome = await pushLfsObjects(workDir, null, "nope", "main");
     expect(outcome.status).toBe("failed");
     if (outcome.status === "failed") expect(outcome.detail).not.toBe("");
   });
@@ -102,17 +104,13 @@ describe("pushLfsObjects", () => {
     const noLfs = path.join(root, "no-lfs-bin");
     fs.mkdirSync(noLfs);
     fs.symlinkSync(run("command -v git", workDir).trim(), path.join(noLfs, "git"));
-    // simple-git refuses an inherited GIT_CONFIG_GLOBAL / GIT_EDITOR, so start from nothing.
-    const outcome = await pushLfsObjects(
-      (o) => safeSimpleGit(workDir, o).env({ PATH: noLfs, HOME: root }),
-      "origin",
-      "main",
-    );
+    vi.stubEnv("PATH", noLfs);
+    const outcome = await pushLfsObjects(workDir, null, "origin", "main");
     expect(outcome.status).toBe("failed");
     if (outcome.status === "failed") expect(outcome.detail).toContain("not a git command");
   });
 
-  // git-lfs prints this failure on stdout, which simple-git alone resolves as success.
+  // git-lfs prints this failure on stdout, not stderr.
   it("reports an object that exists neither locally nor on the LFS server", async () => {
     fs.writeFileSync(path.join(workDir, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     const pointer = run(
@@ -127,7 +125,7 @@ describe("pushLfsObjects", () => {
     run("git init --bare -b main", bare);
     run(`git remote add origin ${bare}`, workDir);
 
-    const outcome = await pushLfsObjects((o) => safeSimpleGit(workDir, o), "origin", "main");
+    const outcome = await pushLfsObjects(workDir, null, "origin", "main");
 
     expect(outcome.status).toBe("failed");
     if (outcome.status === "failed") {
@@ -140,7 +138,7 @@ describe("pushLfsObjects", () => {
     const empty = path.join(root, "empty");
     fs.mkdirSync(empty);
     run("git init -b main", empty);
-    const outcome = await pushLfsObjects((o) => safeSimpleGit(empty, o), "origin", "main");
+    const outcome = await pushLfsObjects(empty, null, "origin", "main");
     expect(outcome.status).toBe("not-an-lfs-repo");
   });
 
@@ -211,6 +209,7 @@ describe("GitManager.push in a repository that tracks files with Git LFS", () =>
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
     else delete process.env.GIT_CONFIG_GLOBAL;
     fs.rmSync(root, { recursive: true, force: true });
@@ -237,6 +236,37 @@ describe("GitManager.push in a repository that tracks files with Git LFS", () =>
     await expect(push).rejects.toThrow(/127\.0\.0\.1:1/);
     expect(remoteTip()).toBeNull();
   });
+
+  it("stops an upload the LFS server never answers, and does not push the ref", async () => {
+    const open = new Set<net.Socket>();
+    let connections = 0;
+    const server = http.createServer(() => {});
+    server.on("connection", (socket) => {
+      connections++;
+      open.add(socket);
+      socket.on("close", () => open.delete(socket));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as net.AddressInfo;
+      fs.writeFileSync(path.join(workDir, ".lfsconfig"), `[lfs]\n\turl = http://127.0.0.1:${port}/lfs\n`);
+      run("git add -A && git commit -q -m lfsconfig", workDir);
+      commitAsset();
+      vi.stubEnv("SHIPIT_GIT_LFS_TIMEOUT_MS", "2000");
+
+      const push = new GitManager(workDir).push("origin", "main");
+
+      await expect(push).rejects.toBeInstanceOf(LfsUploadError);
+      await expect(push).rejects.toThrow("did not finish within 2s (SHIPIT_GIT_LFS_TIMEOUT_MS)");
+      expect(remoteTip()).toBeNull();
+      expect(connections).toBeGreaterThan(0);
+      // git-lfs holds the connection, so it closes only if the whole process tree was killed.
+      await vi.waitFor(() => expect(open.size).toBe(0), { timeout: 5_000 });
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  }, 30_000);
 
   it("refuses when a committed `.lfsconfig` allows an incomplete push and an object exists nowhere", async () => {
     fs.writeFileSync(path.join(workDir, ".lfsconfig"), "[lfs]\n\tallowincompletepush = true\n");

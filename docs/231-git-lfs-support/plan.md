@@ -436,12 +436,27 @@ fixed and both pinned by a test that fails without its fix:
   stdout.** simple-git rejects only a non-zero exit that also wrote to stderr.
   An object absent both locally and on the server exits 2 with the message on
   stdout, so `raw()` resolved and the upload read as `pushed`. The upload now
-  runs on an instance whose `errors` option rejects any non-zero exit
-  (`pushLfsObjects` takes a factory, so a caller cannot hand it a lenient one).
+  runs through `runGit` (`shared/run-git.ts`), which reads the exit code itself,
+  and quotes stdout and stderr both.
 - **`lfs.allowincompletepush` is honoured from a committed `.lfsconfig`.** Set to
   true there, the same missing object exits 0. The upload passes
   `-c lfs.allowincompletepush=false`, which outranks `.lfsconfig`. An object
   missing locally that the server already has still succeeds, as by default.
+
+**The upload has a deadline.** A server that accepts the connection and never
+answers held the upload, and the push after it, with no end: simple-git sets no
+deadline, and the auto-push and PR creation wait on the push. `git lfs push` now
+runs under `SHIPIT_GIT_LFS_TIMEOUT_MS`, the ceiling the pull already had. One
+setting bounds both transfers, because an operator who raises it for large assets
+needs both raised. On expiry `runGit` kills the whole process tree, not only the
+`git` wrapper: the wrapper's `git-lfs` child holds the pipes and the connection,
+and would outlive a pid-only kill (planning#615). The result is a failed upload
+whose detail names the limit, so the ref push does not run, as for any other
+failed upload. A retry loses little: the next push's batch request finds the
+objects that finished uploading on the server and does not send them again. The
+test uses a local HTTP server that never answers; it checks that the ref did not
+reach the remote and that the server saw git-lfs's connection close, which fails
+with a pid-only kill.
 
 Two edges of the path, each also pinned by a test:
 
@@ -501,7 +516,7 @@ gets its own credential, declared in `shipit.yaml`
 | Env var | Default | Effect |
 |---|---|---|
 | `SHIPIT_GIT_LFS` | unset (on) | `off` → detect and warn, but skip the download. The issue's fallback position for deployments where the bandwidth/storage cost of asset-heavy repos isn't wanted. A manual `git lfs pull` still works. |
-| `SHIPIT_GIT_LFS_TIMEOUT_MS` | `300000` | Ceiling on a single `git lfs pull`. The claim slow-path is on the user's critical path, so an unbounded pull on a multi-gigabyte repo would look like a hung session. On expiry the result is `failed` with a warning naming the timeout. |
+| `SHIPIT_GIT_LFS_TIMEOUT_MS` | `300000` | Ceiling on a single `git lfs pull` or `git lfs push`. The claim slow-path is on the user's critical path, so an unbounded pull on a multi-gigabyte repo would look like a hung session; an unbounded upload holds the push forever (§8). On expiry a pull is `failed` with a warning naming the timeout, and an upload is a failed upload, so the ref push does not run. |
 
 Both are read from the **orchestrator's own process env**, so both need an
 explicit passthrough in `deployment/vps/docker-compose.yml` — without it,
@@ -587,8 +602,10 @@ binary is present.
   explicit repo-scoped credential and its fail-closed decline (§7)
 - `src/server/orchestrator/egress-allowlist.ts` — LFS transfer host
 - `src/server/shared/git-lfs-push.ts`, `src/server/shared/git.ts`
-  (`uploadLfsObjects`) — the upload before every branch push, and the refusal
-  when it fails (§8)
+  (`uploadLfsObjects`) — the upload before every branch push, its deadline, and
+  the refusal when it fails (§8)
+- `src/server/shared/run-git.ts` — `runGit`, the bounded git spawn the pull and
+  the upload share; a timeout kills the whole process tree (planning#615)
 - `src/server/orchestrator/services/auto-push-scheduler.ts`
   (`formatLfsUploadNotice`), `services/git.ts` (`lfs-upload` class) — how the
   refusal is reported (§8)

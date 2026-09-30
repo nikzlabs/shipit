@@ -44,7 +44,7 @@ export function formatLfsUploadNotice(err: unknown): string {
   const upload = err instanceof LfsUploadError ? err : null;
   const target = upload ? `${upload.remote}/${upload.ref}` : "the remote";
   const said = upload
-    ? `\`git lfs push ${upload.remote} ${upload.ref}\` said: ${upload.detail}`
+    ? `\`git lfs push ${upload.remote} ${upload.ref}\` failed: ${upload.detail}`
     : `Git said: ${getErrorMessage(err)}`;
   const why =
     `Not pushed — uploading this branch's Git LFS objects failed, so ShipIt did not push its `

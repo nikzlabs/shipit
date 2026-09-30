@@ -1,8 +1,5 @@
-import { spawn } from "node:child_process";
-import { killProcessTree } from "../shared/kill-child.js";
-import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
-import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
-import { lfsDeclarationGrepArgs } from "../shared/git-lfs-push.js";
+import { runGit } from "../shared/run-git.js";
+import { lfsDeclarationGrepArgs, lfsTransferTimeoutMs } from "../shared/git-lfs-push.js";
 import {
   type GitRemoteCredential,
   type GitRemoteCredentialResolver,
@@ -16,8 +13,6 @@ import {
 // Orchestrator smudge is disabled: clone --local initially points at the bare cache.
 // Pull after the final checkout and credential setup, before ownership handback.
 const LFS_MODE_ENV = "SHIPIT_GIT_LFS";
-const DEFAULT_PULL_TIMEOUT_MS = 300_000;
-const PULL_TIMEOUT_ENV = "SHIPIT_GIT_LFS_TIMEOUT_MS";
 export const PROBE_TIMEOUT_MS = 15_000;
 
 export type LfsStatus =
@@ -35,56 +30,6 @@ export interface LfsResult {
   failure?: LfsFailure;
   warning?: string;
   durationMs?: number;
-}
-
-export interface RunResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-}
-
-export function runGit(
-  args: string[],
-  cwd: string,
-  timeoutMs: number,
-  // Replaces process.env so callers can remove inherited credential overrides.
-  env?: NodeJS.ProcessEnv,
-): Promise<RunResult> {
-  return new Promise((resolve) => {
-    let proc;
-    try {
-      proc = spawn("git", gitArgsWithHooksDisabled(args), {
-        cwd,
-        env: { ...(env ?? process.env), GIT_TERMINAL_PROMPT: "0" },
-        stdio: ["ignore", "pipe", "pipe"],
-        ...gitSpawnOverridesForTree(cwd),
-      });
-    } catch (err) {
-      resolve({ code: null, stdout: "", stderr: String(err), timedOut: false });
-      return;
-    }
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    const append = (buf: string, chunk: Buffer) => (buf + chunk.toString()).slice(-8192);
-    proc.stdout.on("data", (c: Buffer) => (stdout = append(stdout, c)));
-    proc.stderr.on("data", (c: Buffer) => (stderr = append(stderr, c)));
-    // `close` waits on any descendant still holding these pipes, so killing the `git`
-    // wrapper alone leaves this promise waiting on the runaway `git lfs` (planning#615).
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killProcessTree(proc, "SIGKILL", { label: "git" });
-    }, timeoutMs);
-    proc.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ code: null, stdout, stderr: stderr + String(err), timedOut });
-    });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
-    });
-  });
 }
 
 // Registered once so every provisioning and rewrite path receives credentials.
@@ -136,11 +81,6 @@ function failureAdvice(failure: LfsFailure): string {
     default:
       return `${stubs} — re-run \`git lfs pull\` in the terminal.`;
   }
-}
-
-function pullTimeoutMs(): number {
-  const raw = Number(process.env[PULL_TIMEOUT_ENV]);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_PULL_TIMEOUT_MS;
 }
 
 function lfsDownloadsDisabled(): boolean {
@@ -198,7 +138,7 @@ export async function materializeLfsContent(
     return (opts?.spawnGit ?? runGit)(
       [...cred.args, "lfs", "pull"],
       workspaceDir,
-      pullTimeoutMs(),
+      lfsTransferTimeoutMs(),
       usedCredential ? { ...sanitizeGitEnv(process.env), ...cred.env } : undefined,
     );
   }, (r) => r.code !== 0 && looksLikeAuthRejection(r.stderr || r.stdout));
@@ -214,7 +154,7 @@ export async function materializeLfsContent(
   const output = res.stderr || res.stdout;
   const detail = output.trim().split("\n").slice(-3).join(" ").slice(0, 300);
   const reason = res.timedOut
-    ? `timed out after ${Math.round(pullTimeoutMs() / 1000)}s`
+    ? `timed out after ${Math.round(lfsTransferTimeoutMs() / 1000)}s`
     : `exited ${res.code ?? "abnormally"}${detail ? `: ${detail}` : ""}`;
   const failure = res.timedOut ? "timeout" : classifyPullFailure(output);
   console.warn(`[git-lfs] git lfs pull failed for ${workspaceDir} — ${reason}`);

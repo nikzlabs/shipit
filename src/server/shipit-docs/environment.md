@@ -337,7 +337,10 @@ branch. If that upload fails, the branch is **not pushed**: without its objects
 the remote would name LFS files that no store holds, and every other clone would
 get pointer stubs with a clean `git status`. The commits stay in the session's
 local history, a notice in the chat quotes git-lfs's error, and every later push
-retries the upload first. A branch that adds no new LFS objects still pushes
+retries the upload first. An upload still running after ShipIt's LFS time limit
+(five minutes unless the deployment changed it) is stopped and counts as failed;
+the notice then names the limit instead of an error. Objects that finished
+uploading are not sent again. A branch that adds no new LFS objects still pushes
 while the LFS server is down. To investigate, run `git lfs push origin <branch>`
 and read its error. Do not get around it by pushing with the LFS upload skipped
 (`--no-verify`, `GIT_LFS_SKIP_PUSH`); that publishes exactly the stubs this

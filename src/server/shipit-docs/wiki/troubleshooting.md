@@ -194,11 +194,13 @@ Two neighbouring causes that look the same:
 - **A GitHub token that expired.** See the next entry — the same token pushes
   and opens pull requests.
 - **A Git LFS upload that failed.** A chat notice says the branch was not pushed
-  because its LFS objects could not be uploaded, and quotes git-lfs. ShipIt
-  withholds the whole push on purpose: without the objects, every other clone
-  gets pointer stubs. Run `git lfs push origin <branch>` to read the cause. An LFS
-  server on a host other than `github.com` gets no credential from ShipIt, so one
-  that requires authentication fails this way. Details: the Git LFS section of
+  because its LFS objects could not be uploaded, and quotes git-lfs, or says the
+  upload did not finish within ShipIt's time limit. ShipIt withholds the whole
+  push on purpose: without the objects, every other clone gets pointer stubs. Run
+  `git lfs push origin <branch>` to read the cause. An LFS server on a host other
+  than `github.com` gets a credential from ShipIt only when `shipit.yaml` declares
+  that host (`lfs.host` and `lfs.credential`), so an undeclared one that requires
+  authentication fails this way. Details: the Git LFS section of
   `/shipit-docs/environment.md`.
 
 Never reach for `git rebase` or `git reset --hard` on a published branch to
