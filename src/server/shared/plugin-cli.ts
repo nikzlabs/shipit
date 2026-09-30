@@ -8,7 +8,7 @@ export interface SurfacedPluginCommand {
   declared: string;
   /** Relative to the plugin repository root. */
   entry: string;
-  /** The consuming project's `overrides.commands.<declared>.memory`. */
+  /** The consuming project's `overrides.commands.<declared>.memory`, else the manifest's default. */
   memoryBytes?: number;
 }
 
@@ -96,6 +96,7 @@ export function planPluginCommands(
         );
         continue;
       }
+      const memoryBytes = override.memoryBytes ?? exported.cliMemoryBytes?.[declared];
       claims.push({
         name: override.as ?? declared,
         alias: use.alias,
@@ -103,7 +104,7 @@ export function planPluginCommands(
         plugin: exported.name,
         declared,
         entry,
-        ...(override.memoryBytes !== undefined ? { memoryBytes: override.memoryBytes } : {}),
+        ...(memoryBytes !== undefined ? { memoryBytes } : {}),
         issueKey,
       });
     }

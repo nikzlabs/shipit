@@ -737,6 +737,57 @@ exports:
       expect(memoryOf(fake.containers[1].opts)).toBe(3584 * 1024 ** 2);
     });
 
+    const HEAVY_MANIFEST = MANIFEST.replace("reqs: cli/index.mjs", "reqs: { entry: cli/index.mjs, memory: 5g }");
+
+    it("takes the live generation's manifest default when the project sets none (req 31)", async () => {
+      declareConsumer();
+      publishGeneration(HEAVY_MANIFEST);
+      const fake = fakeDocker();
+
+      const result = await runPluginCommand(deps(fake.docker), call);
+
+      expect(result.error).toBeUndefined();
+      expect(fake.containers[0].opts.Entrypoint).toEqual(["/plugin/cli/index.mjs"]);
+      expect(memoryOf(fake.containers[0].opts)).toBe(5 * 1024 ** 3);
+    });
+
+    it("takes a `repo: self` manifest default from the working tree's own exports (req 31)", async () => {
+      declareConsumer(`
+plugins:
+  repos:
+    - repo: self
+      name: here
+  use:
+    - plugin: probe
+      from: here
+exports:
+  plugins:
+    probe:
+      cli:
+        probe: { entry: tools/probe, memory: 5g }
+`);
+      const fake = fakeDocker();
+
+      const result = await runPluginCommand(deps(fake.docker), { alias: "probe", command: "probe", args: [] });
+
+      expect(result.error).toBeUndefined();
+      expect(fake.containers[0].opts.Entrypoint).toEqual(["/plugin/tools/probe"]);
+      expect(memoryOf(fake.containers[0].opts)).toBe(5 * 1024 ** 3);
+    });
+
+    it("lets the project's value replace the manifest default, even downwards (req 30)", async () => {
+      declareConsumer(`${CONSUMER}      overrides:
+        commands:
+          reqs: { memory: 1g }
+`);
+      publishGeneration(HEAVY_MANIFEST);
+      const fake = fakeDocker();
+
+      await runPluginCommand(deps(fake.docker), call);
+
+      expect(memoryOf(fake.containers[0].opts)).toBe(1024 ** 3);
+    });
+
     it("names the limit and the field to raise it when Docker reports an OOM kill", async () => {
       declareConsumer(`${CONSUMER}      overrides:
         commands:

@@ -45,7 +45,8 @@ is what makes the service reachable in the Preview pane. A plugin service you
 name no port for still runs; it just is not previewable. Two services given one
 port is refused, naming both: change one of them.
 
-A command's `memory` replaces its container's 2 GiB default — see
+A command's `memory` replaces its container's limit — ShipIt's 2 GiB, or the
+plugin's own default — see
 [A plugin command's memory limit](#a-plugin-commands-memory-limit).
 
 **`overrides` is the consumer's whole say**, and it is one level deeper than it
@@ -70,6 +71,7 @@ exports:
       compose: plugins/requirements/docker-compose.yml
       cli:
         reqs: plugins/requirements/cli
+        bake: { entry: plugins/requirements/bake, memory: 4g }
       skills: plugins/requirements/skills
       install: npm ci
       install-inputs: [package-lock.json]
@@ -175,13 +177,14 @@ dependencies as working by accident, and put work that needs them in a command.
 ## A plugin command's memory limit
 
 **Each call to a plugin's command runs in a container with a 2 GiB memory
-limit.** That is not your container's limit, so work that passes in your own
-shell can be killed when the same work runs through the plugin's command. The
-usual case is a command that starts a heavy child program — a Blender bake, a
-model, a large build.
+limit**, unless the plugin's manifest declares a different default for that
+command (`cli.<cmd>.memory` — read the manifest to see it). That is not your
+container's limit, so work that passes in your own shell can be killed when the
+same work runs through the plugin's command. The usual case is a command that
+starts a heavy child program — a Blender bake, a model, a large build.
 
-The consuming project sets a different limit for one command, under
-`overrides.commands`:
+The consuming project sets its own limit for one command, under
+`overrides.commands`. It replaces the plugin's default, higher or lower:
 
 ```yaml
 plugins:
@@ -199,7 +202,8 @@ plugins:
   binary. A bare number is refused, because it is not clear if it means bytes
   or MiB. The minimum is `6m`. There is no maximum, but the machine must have
   the memory.
-- **The next call uses it.** No refresh or restart is necessary.
+- **The next call uses it.** No refresh or restart is necessary. A plugin's
+  own default changes with the plugin's version, like the rest of its manifest.
 - **An invalid value drops the whole `use` entry**, the same as any other
   invalid override: the plugin's commands, services and skills go away, and
   the Plugins card and `shipit plugin status` say which field is wrong.

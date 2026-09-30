@@ -59,6 +59,8 @@ export interface PluginExport {
   name: string;
   compose?: string;
   cli: Record<string, string>;
+  /** Manifest default per command in `cli`; a consumer's `overrides.commands.<cmd>.memory` replaces it. */
+  cliMemoryBytes?: Record<string, number>;
   skills?: string;
   install?: string;
   installInputs: string[];
@@ -513,6 +515,8 @@ const KNOWN_EXPORT_KEYS = new Set([
   "settings",
 ]);
 
+const KNOWN_CLI_KEYS = new Set(["entry", "memory"]);
+
 /** Duplicate the config default to avoid its filesystem imports. */
 export const DEFAULT_PLUGIN_DEP_DIRS: readonly string[] = ["node_modules"];
 
@@ -639,11 +643,30 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
   }
 
   const cli: Record<string, string> = {};
+  const cliMemoryBytes: Record<string, number> = {};
   if (entry.cli !== undefined && entry.cli !== null) {
     if (!isMapping(entry.cli)) return drop("`cli` must be a mapping of command name → entrypoint path");
-    for (const [cmd, p] of Object.entries(entry.cli)) {
+    for (const [cmd, val] of Object.entries(entry.cli)) {
       if (!PLUGIN_NAME_RE.test(cmd)) return drop(`command name \`${cmd}\` must be letters, digits, \`.\`, \`_\` or \`-\``);
-      const rel = optionalRelPath(p, `exports.plugins.${name}.cli.${cmd}`);
+      let p: unknown = val;
+      let pathLabel = `exports.plugins.${name}.cli.${cmd}`;
+      if (isMapping(val)) {
+        for (const key of Object.keys(val)) {
+          if (!KNOWN_CLI_KEYS.has(key)) {
+            warnings.push(`Unknown key \`exports.plugins.${name}.cli.${cmd}.${key}\` in shipit.yaml.`);
+          }
+        }
+        p = val.entry;
+        pathLabel = `${pathLabel}.entry`;
+        if (val.memory !== undefined && val.memory !== null) {
+          const memoryBytes = parseMemorySize(val.memory);
+          if (memoryBytes === undefined) {
+            return drop(`\`cli.${cmd}.memory\` must be a size with a unit, like \`4g\` or \`3072m\`, of at least \`6m\``);
+          }
+          cliMemoryBytes[cmd] = memoryBytes;
+        }
+      }
+      const rel = optionalRelPath(p, pathLabel);
       if (rel === undefined || typeof rel === "object") {
         return drop(typeof rel === "object" ? rel.error : `\`cli.${cmd}\` needs an entrypoint path`);
       }
@@ -718,6 +741,7 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     name,
     ...(compose !== undefined ? { compose } : {}),
     cli,
+    ...(Object.keys(cliMemoryBytes).length > 0 ? { cliMemoryBytes } : {}),
     ...(skills !== undefined ? { skills } : {}),
     ...(install !== undefined ? { install } : {}),
     installInputs,

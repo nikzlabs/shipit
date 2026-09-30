@@ -122,9 +122,12 @@ What an activated plugin gives this project, all from its manifest:
   **manual**: it exists, and something has to start it (`shipit service start`,
   which is yours to run).
 - **Commands** on your `PATH`, which run the plugin's code in its own container.
-  That container has a 2 GiB memory limit, which this project can raise for
-  one command in its `plugins.use` entry — when a heavy command is killed for
-  memory, that is your edit to make, not the plugin author's.
+  That container has a 2 GiB memory limit unless the plugin's manifest
+  declares a different default for that command, and this project can set its
+  own value, higher or lower, for one command in its `plugins.use` entry —
+  when a heavy command is killed for
+  memory, that edit is yours to make here, without waiting for the plugin's
+  author.
 - **Skills**, which reach you and not the composer's menu.
 - **Settings** the consuming project sets, and a state directory of the
   plugin's own.

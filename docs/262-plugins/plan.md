@@ -153,10 +153,12 @@ Rules (review findings, both rounds):
   plugin service's own `mem_limit` has none either, and the value is the
   consuming project's, which is more trusted than the plugin. A value too large
   to be a safe integer is refused all the same: it would serialize as `null`,
-  which Docker reads as no limit. A plugin cannot raise its
-  own limit; the manifest has no such key. This is a deliberate exception to
-  docs/229-auto-resource-sizing, which removed repo-set session sizes: the
-  2 GiB here is not host-derived, so without the field nothing could move it.
+  which Docker reads as no limit. A plugin's manifest may declare a default
+  for the command (req 31, §1b); the consumer's value replaces it, higher or
+  lower, because req 30 gives the project the last word. This is a deliberate
+  exception to docs/229-auto-resource-sizing, which removed repo-set session
+  sizes: the 2 GiB here is not host-derived, so without the field nothing
+  could move it.
 - **Fail-closed grammar**: unknown keys warn; an unknown `from:` reference,
   an unknown `plugin:` selector, or `branch`+`pin` together drop the entry
   with a warning; setting values are scalars. Within one repository, a selected export that fails validation
@@ -331,6 +333,7 @@ exports:
 
       cli:
         reqs: plugins/requirements/cli                  # command name → entry (req 17)
+        bake: { entry: plugins/requirements/bake, memory: 4g } # default limit (req 31)
       skills: plugins/requirements/skills               # dir shipped to sessions (req 22)
       install: npm --prefix . ci                        # see Install contract (req 7)
       install-inputs: [package-lock.json]                 # files whose content re-triggers install
@@ -1301,11 +1304,22 @@ instead of a repeat.
   security control is how the two drift.
 
   **The memory ceiling is 2 GiB unless the consuming project sets
-  `overrides.commands.<cmd>.memory`** (req 30, §1a). It is read from the
-  declaration on every call, like the rest of the run boundary, so an edit
-  applies to the next call with no refresh. The planner (`shared/plugin-cli.ts`)
-  carries it on the surfaced command, so the case-insensitive match and the
-  "names it more than once" refusal are the same ones `as` has. When a call
+  `overrides.commands.<cmd>.memory`** (req 30, §1a) **or the plugin's
+  manifest declares `cli.<cmd>.memory`** (req 31) — the project's value first.
+  It is read from the declaration on every call, like the rest of the run
+  boundary, so an edit applies to the next call with no refresh; a manifest
+  default comes from the pinned generation, so it moves with the plugin's
+  version. The planner (`shared/plugin-cli.ts`) resolves both onto the
+  surfaced command, so the case-insensitive match and the "names it more than
+  once" refusal are the same ones `as` has.
+
+  **The manifest grammar is a widening**, the same shape as `credentials` and
+  `hosts` in §1b: a bare string is still the entry path, and a mapping
+  `{ entry, memory }` adds the default. The parsed `cli` stays a plain map of
+  entry paths, with the defaults beside it in `cliMemoryBytes`, so nothing that
+  reads `cli` had to change. An invalid `memory` drops the whole export, as any
+  invalid manifest field does. There is no maximum (req 31, the user's answer
+  of 2026-09-30), the same as a plugin service's own `mem_limit`. When a call
   exits non-zero and Docker reports the container as OOM-killed, the result's
   `error` names the limit and the exact field to raise; the shim prints it to
   stderr after the command's own output. That is the only place a heavy
