@@ -1,6 +1,6 @@
 ---
 issue: planning#158
-description: How each agent backend discovers and auto-discloses project skills — Claude and Codex both read .claude/skills/, the rule for trimming CLAUDE.md, and how to verify a new backend (Cursor CLI, etc.) before relying on it.
+description: How each agent backend discovers and auto-discloses project skills — the files live in .agents/skills/, Claude and Codex both read them through .claude/skills/, the rule for trimming CLAUDE.md, and how to verify a new backend (Cursor CLI, etc.) before relying on it.
 ---
 
 # 209 — Cross-agent skill disclosure
@@ -24,6 +24,29 @@ architectural knowledge for one backend. It also defines the rule for what may
 be **demoted** out of `CLAUDE.md` into skills (to keep `CLAUDE.md` under the
 ~40k-char performance cap) without favoring either agent.
 
+## Where the skill files live
+
+The files live in **`.agents/skills/`**, and **`.claude/skills` is a committed
+symlink** to `../.agents/skills`. Edit a skill at its `.agents/skills/` path.
+
+The reason is Claude Code's sensitive-path check. Claude Code asks for approval
+before it writes any path with a `.claude` segment, and it checks the path as
+written and the path a symlink resolves to. The `Edit(.claude/skills/**)` allow
+rules in `.claude/settings.json` did not change this, so they were removed.
+Verified on 2026-09-30 with Claude Code 2.1.284, in `-p` mode with `Edit` allowed:
+
+| Layout | Edit through `.agents/skills/…` | Edit through `.claude/skills/…` |
+|---|---|---|
+| files in `.claude/skills/`, `.agents/skills` symlink (before) | approval (resolves into `.claude`) | approval |
+| files in `.agents/skills/`, `.claude/skills` symlink (now) | **no approval** | approval (resolves *from* `.claude`) |
+
+Claude still discovers every skill through the symlinked `.claude/skills`.
+
+ShipIt copies plugin skills into `.claude/skills/`, so the copies land in
+`.agents/skills/`. Their `.git/info/exclude` entries name `.claude/skills/…`, and
+git does not look through a symlink, so `.gitignore` also ignores
+`/.agents/skills/plugins--*/`.
+
 ## The key finding (verified empirically, 2026-06-15)
 
 **In ShipIt, the Codex agent auto-discloses the skills in `.claude/skills/` —
@@ -45,7 +68,7 @@ the Codex *model mid-task*, not merely as a user-typed `$skill-name` command.
 
 ### What this means for trimming `CLAUDE.md`
 
-- **Reference-grade detail may be demoted into `.claude/skills/`** (or into the
+- **Reference-grade detail may be demoted into `.agents/skills/`** (or into the
   `docs/NNN-*` it already cites — `docs/` is read by both backends on demand via
   the filesystem). Both backends pick it up. **No symlink, no `.codex/skills/`,
   no duplicated copy is needed.**
@@ -79,7 +102,7 @@ silently break this:
   change it.
 
 If a Codex-CLI upgrade ever stops surfacing `.claude/skills/`, the fix is a
-one-line committed symlink `.codex/skills → ../.claude/skills` (the repo already
+one-line committed symlink `.codex/skills → ../.agents/skills` (the repo already
 commits the analogous `AGENTS.md → CLAUDE.md` symlink, and the scanner —
 `fs.readdir` in `shared/skill-scan.ts` — follows a symlinked directory
 transparently). That keeps a single source of truth with zero duplication.
@@ -108,7 +131,7 @@ backend, **verify its disclosure behavior empirically** — don't assume:
    - **Auto-discloses from `.claude/skills/`** (like Codex): nothing to do —
      skills and demoted detail already reach it.
    - **Reads only its own `<skillsDirName>/skills`**: add a committed symlink
-     `<dir>/skills → ../.claude/skills` so it shares the single skill set.
+     `<dir>/skills → ../.agents/skills` so it shares the single skill set.
    - **Does not auto-disclose** (only user-invoked): treat skills as *not*
      reaching that backend's model mid-task. Keep anything it must know in
      `CLAUDE.md`, and don't demote backend-critical detail into skills for it.
@@ -129,8 +152,8 @@ backend, **verify its disclosure behavior empirically** — don't assume:
   bundled `~/.codex/skills/**` system skills (separate from project skills).
 - `AGENTS.md` → `CLAUDE.md` — the committed symlink that shares the always-on
   instruction file across backends.
-- `.claude/skills/**` — the single project-skills source both Claude and Codex
-  read.
+- `.agents/skills/**` — the single project-skills source; Claude and Codex read
+  it through the `.claude/skills` symlink.
 
 ## Related
 

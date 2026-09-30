@@ -124,7 +124,7 @@ src/
     └── themes/             # Theme CSS files
 ```
 
-For the full module-level map and the per-subsystem skills (server architecture, client architecture, session lifecycle, git architecture, etc.), see [`CLAUDE.md`](CLAUDE.md) and `.claude/skills/`.
+For the full module-level map and the per-subsystem skills (server architecture, client architecture, session lifecycle, git architecture, etc.), see [`CLAUDE.md`](CLAUDE.md) and `.agents/skills/`.
 
 ## External contributions
 

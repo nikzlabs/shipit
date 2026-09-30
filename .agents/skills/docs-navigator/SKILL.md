@@ -12,7 +12,7 @@ ShipIt has feature docs in `docs/NNN-feature-name/plan.md`. Each describes how a
 
 1. Run the index script to get the current list of docs with their status and title:
    ```bash
-   bash .claude/skills/docs-navigator/index.sh
+   bash .agents/skills/docs-navigator/index.sh
    ```
 2. Find the relevant doc(s) from the output
 3. Read its `plan.md` for design details
@@ -31,11 +31,11 @@ The index script accepts an optional filter argument to narrow results:
 
 ```bash
 # Show only planned/in-progress docs
-bash .claude/skills/docs-navigator/index.sh active
+bash .agents/skills/docs-navigator/index.sh active
 
 # Show only docs matching a keyword
-bash .claude/skills/docs-navigator/index.sh git
-bash .claude/skills/docs-navigator/index.sh deploy
+bash .agents/skills/docs-navigator/index.sh git
+bash .agents/skills/docs-navigator/index.sh deploy
 ```
 
 ## Writing docs: folder layout
