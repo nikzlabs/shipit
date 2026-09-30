@@ -233,22 +233,22 @@ Order matters in one place: a take is extracted **before** the next build. `extr
 
 **A cassette belongs to the ShipIt version it was recorded on.** Measured the same day: take 2's cassette, replayed on the updated instance, drifted on the first request — the instance now asks for `claude-opus-5-5` where the cassette holds `claude-opus-5`, and the turn's main request arrived where the recording had the side call — and the driver's replay check would have failed the take on it. The path was proven by that run (the agent reached its session's proxy by name, the driver read its mode and counters through the session address, the first response was served); the cassette had to be recorded again (take 3, below).
 
-**Take 3 and its replay, on the session-service proxy** (2026-09-30, `/persist/demo-video/hero-record-3/` session `bbe5cc95`, `hero-replay-6/` session `776f6981`; instance at `8036fd5e`, which carries docs/319). The driver started `demo-proxy` on the warm session, read `x-demo-proxy-mode` through the session address before the browser opened, and the claimed session was that one both times.
+**Take 3 and its replay, on the session-service proxy** (2026-09-30, `/persist/demo-video/hero-record-3/` session `bbe5cc95`, `hero-replay-6/` session `776f6981`, `hero-replay-7/` session `53d3f0ff`; instance at `8036fd5e`, which carries docs/319). The driver started `demo-proxy` on the warm session, read `x-demo-proxy-mode` through the session address before the browser opened, and the claimed session was that one both times.
 
-| | take 3 (record) | replay-6 |
-|---|---|---|
-| recording / wall | 112.48 s / 110.49 s | 90.60 s / 88.42 s |
-| anchor: `wallAt` / `black_end` | 0.568 / 0.44 | 0.574 / 0.48 |
-| kept → `hero.mp4` | 36.000 → 36.000 | 36.000 → 36.000 |
-| 0 new-session: action / ready | 1.23 / 4.43 | 1.31 / 4.41 |
-| 1 build: action / sent / ready | 5.44 / 14.02 / 14.29 | 5.41 / 13.89 / 14.13 |
-| 2 agent-works: ready (turn 1, from send) | 56.11 (42.1 s) | 39.71 (25.8 s) |
-| 3 dark-mode: action / sent / ready (turn 2) | 62.11 / 67.56 / 94.86 (27.3 s) | 45.72 / 51.17 / 73.30 (22.1 s) |
-| 4 merge: action / ready | 100.86 / 106.39 | 79.30 / 84.35 |
-| proxy, `bearer` lane | 12 recorded, all 200, `claude-opus-5-5` | 12 served in order, 0 drift, 0 fallback, 0 unused |
-| cut boundaries, output clock (s) | 0–1 · 1–5 · 5–12 · 12–18 · 18–23 · 23–29 · 29–32 · 32–36 | identical |
+| | take 3 (record) | replay-6 | replay-7 |
+|---|---|---|---|
+| recording / wall | 112.48 s / 110.49 s | 90.60 s / 88.42 s | 94.44 s / 92.4 s |
+| anchor: `wallAt` / `black_end` | 0.568 / 0.44 | 0.574 / 0.48 | 0.568 / 0.48 |
+| kept → `hero.mp4` | 36.000 → 36.000 | 36.000 → 36.000 | 36.000 → 36.000 |
+| 0 new-session: action / ready | 1.23 / 4.43 | 1.31 / 4.41 | 1.07 / 4.14 |
+| 1 build: action / sent / ready | 5.44 / 14.02 / 14.29 | 5.41 / 13.89 / 14.13 | 5.14 / 13.57 / 13.80 |
+| 2 agent-works: ready (turn 1, from send) | 56.11 (42.1 s) | 39.71 (25.8 s) | 38.40 (24.8 s) |
+| 3 dark-mode: action / sent / ready (turn 2) | 62.11 / 67.56 / 94.86 (27.3 s) | 45.72 / 51.17 / 73.30 (22.1 s) | 44.41 / 49.86 / 75.21 (25.4 s) |
+| 4 merge: action / ready | 100.86 / 106.39 | 79.30 / 84.35 | 81.22 / 88.37 |
+| proxy, `bearer` lane | 12 recorded, all 200, `claude-opus-5-5` | 12 served in order, 0 drift, 0 fallback, 0 unused | same; cassette digest and pace checked |
+| cut boundaries, output clock (s) | 0–1 · 1–5 · 5–12 · 12–18 · 18–23 · 23–29 · 29–32 · 32–36 | identical | identical |
 
-The frames at each hold are the intended ones in both cuts — idle composer over "Hello React", the file tree while the agent works, a light "Daily Habits" list with streaks of 4, 2 and 0 beside the PR card, the violet "Streaks" page, "Merged" — and the preview pane compared between the two cuts inside every hold (0.5, 5.5, 14, 17.5, 25, 28.5, 33, 35.5 s) is SSIM ≥ 0.997. The turns are shorter than take 2's (12 requests against 21): the current model does the same work in fewer round trips. `cassette/` on the branch is take 3.
+The frames at each hold are the intended ones in both cuts — idle composer over "Hello React", the file tree while the agent works, a light "Daily Habits" list with streaks of 4, 2 and 0 beside the PR card, the violet "Streaks" page, "Merged" — and the preview pane compared between the two cuts inside every hold (0.5, 5.5, 14, 17.5, 25, 28.5, 33, 35.5 s) is SSIM ≥ 0.997, and ≥ 0.999 between the two replays (req 3). Replay-7 ran after the review fixes (digest and pace check, `start_service` always sent, record counters) on the image rebuilt with them. The turns are shorter than take 2's (12 requests against 21): the current model does the same work in fewer round trips. `cassette/` on the branch is take 3.
 
 **A limit to know about: the driver host must reach the instance.** The driver runs in a ShipIt session and reaches the demo instance at its tailnet address. That works only while the instance *hosting that session* does not itself carry docs/319's block, which refuses the tailnet to every session; the one exception is a granted SSH destination on its SSH port. An SSH port forward is not a way round it: the key ShipIt installs for a grant carries `no-port-forwarding` (measured 2026-09-30: `channel open failed: administratively prohibited`). When that day comes the driver has to run where the instance is reachable — on the demo host itself, in a container with node, the pinned Playwright and a Chromium, reaching the instance as `localhost` (`*.localhost` resolves to loopback, so preview addresses work) — started over SSH. Not built.
 
