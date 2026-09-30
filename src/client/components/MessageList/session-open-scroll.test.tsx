@@ -4,6 +4,7 @@ import { MessageList } from "./MessageList.js";
 import type { ChatMessage } from "./types.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { usePrStore } from "../../stores/pr-store.js";
 import type { SessionInfo, SessionStatus } from "../../../server/shared/types.js";
 
 /**
@@ -161,6 +162,7 @@ afterEach(() => {
   cleanup();
   useSessionStore.setState({ sessionId: undefined, sessions: [], activeRunnerSessions: new Set<string>() });
   useSettingsStore.setState({ sessionStatusCard: false });
+  usePrStore.setState({ cardBySession: {} });
 });
 
 /**
@@ -277,5 +279,32 @@ describe("opening a session with a status card", () => {
     settleFrame(scroller);
 
     expect(scroller.scrollTop).toBe(400);
+  });
+});
+
+describe("the displayed session's PR merges (docs/303-session-status-card req 47)", () => {
+  function setPhase(phase: "open" | "merged"): void {
+    act(() => {
+      usePrStore.setState({ cardBySession: { s1: { cardId: "pr-card-s1", phase } } });
+    });
+  }
+
+  it("brings a reader who scrolled up to the end, where the card's follow-ups are", () => {
+    show("s1");
+    setPhase("open");
+    const { container } = render(<MessageList messages={transcript("s1", 40)} isLoading={false} />);
+    const scroller = container.querySelector<HTMLElement>("[data-chat-transcript]")!;
+    installLayout(scroller);
+    settleFrame(scroller);
+
+    act(() => {
+      scroller.scrollTop = 400;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    setPhase("merged");
+    settleFrame(scroller);
+
+    expect(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight).toBe(0);
   });
 });

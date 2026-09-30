@@ -127,6 +127,9 @@ export function useMessageScroll(
   isLoading: boolean,
   currentMatch: SearchMatch | undefined,
   sessionId: string | null,
+  // Whether the displayed session's pull request has merged; `undefined` while
+  // it has no pull request card.
+  prMerged?: boolean,
 ): {
   containerRef: React.RefObject<HTMLDivElement | null>;
   contentRef: React.RefObject<HTMLDivElement | null>;
@@ -148,6 +151,7 @@ export function useMessageScroll(
   const lastGestureAtRef = useRef(-Infinity);
 
   const shownSessionRef = useRef<string | null>(sessionId);
+  const prMergedRef = useRef(prMerged);
 
   /**
    * planning#595 — until when is the session still OPENING?
@@ -382,6 +386,15 @@ export function useMessageScroll(
       && messages.length > previousMessageCount
       && latestMessage?.role === "user";
 
+    // docs/303-session-status-card req 47 — a merge brings the status card's
+    // follow-ups into view wherever the reader was, as a sent message does.
+    // Only a PR seen unmerged first counts, so a card that arrives already
+    // merged does not move the view.
+    const wasMerged = prMergedRef.current;
+    prMergedRef.current = prMerged;
+    const prJustMerged = wasMerged === false && prMerged === true;
+    const forceFollow = appendedUserMessage || prJustMerged;
+
     const hadRowsLastCommit = renderedCountRef.current > 0;
     renderedCountRef.current = messages.length;
 
@@ -408,9 +421,9 @@ export function useMessageScroll(
     // No `opening` term here on purpose: an open begins with `autoScrollRef`
     // true and the one path that clears it ends the open in the same breath, so
     // "opening and not following" cannot happen.
-    if (!autoScrollRef.current && !appendedUserMessage) return;
+    if (!autoScrollRef.current && !forceFollow) return;
 
-    if (appendedUserMessage) {
+    if (forceFollow) {
       touchDraggingRef.current = false;
       lastGestureAtRef.current = -Infinity;
     } else if (userIsDriving(touchDraggingRef, lastGestureAtRef)) {
@@ -439,7 +452,7 @@ export function useMessageScroll(
       cancel();
       if (cancelSettleRef.current === cancel) cancelSettleRef.current = null;
     };
-  }, [messages, isLoading, sessionId]);
+  }, [messages, isLoading, sessionId, prMerged]);
 
   // auto` sits on GROUPS of 20 rows, and a group that has never been on screen
 
