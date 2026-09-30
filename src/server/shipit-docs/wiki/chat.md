@@ -167,7 +167,7 @@ Three things stop and wait for an answer, and they look different on purpose.
 
 | Card | Appears when | The user can |
 |---|---|---|
-| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. There is no timeout; it waits |
+| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. ShipIt sets no deadline, but the agent can stop waiting — Claude Code gives up on an unanswered prompt after 30 minutes, and Stop ends it too. The card then reads **Denied** and the session no longer asks for attention |
 | **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn |
 | **Plan ready** | You end plan mode with `ExitPlanMode` — the card hangs off that tool call, so plan-shaped prose alone does not produce one | Accept, accept guarded, or suggest changes (above) |
 

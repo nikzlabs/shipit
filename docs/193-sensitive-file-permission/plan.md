@@ -123,12 +123,38 @@ Key properties:
   question/plan card.
 - **Remember** is a per-session, per-path allow-set in the broker: an approved
   "remember" auto-allows later requests for the same file with no card.
-- **No ShipIt-imposed deadline.** A permission decision is the user's, so the
-  broker has **no timeout** — a pending prompt stays answerable for as long as
-  the backend holds the call open (you can step away and come back). There is no
-  "expired" state: if a turn is abandoned before the prompt is answered, the
-  worker settles the held promise internally (so it doesn't leak) but broadcasts
-  nothing, leaving the card in its honest pending form.
+- **No ShipIt-imposed deadline, but no card outlives the agent's wait.** A
+  permission decision is the user's, so the broker has **no timeout** — a
+  pending prompt stays answerable for as long as the backend holds the call open.
+  The backend can stop waiting on its own, though, and then the card becomes
+  **Denied** and the session stops asking for attention: the worker settles the
+  request as deny and broadcasts `agent_permission_resolved`, which the
+  orchestrator handles exactly like a user's Deny. Three signals, one per way the
+  wait ends:
+  - **The gated call gets a result** (`PermissionBroker.endToolUse`, called by
+    `agent-controller.ts` for every `tool_result` id). This is the Claude
+    timeout: the CLI ends an MCP call that sends no response or progress for
+    `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (30 min for stdio), emits an error
+    `tool_result` for the gated `tool_use`, and **never sends
+    `notifications/cancelled`** — verified against Claude Code 2.1.284 with a
+    never-answering `--permission-prompt-tool`. The bridge therefore kept
+    polling, and the card stayed Approve/Deny forever, holding the session in
+    "Needs your approval". Stop takes the same path: a streaming-mode interrupt
+    also yields the gated call's `tool_result` (verified the same way).
+  - **Codex clears its own request** (`serverRequest/resolved` for a JSON-RPC id
+    still awaiting the broker). The Codex handler aborts the `signal` it passed
+    in `PermissionRequestInput`, and does not answer a request Codex already
+    dropped.
+  - **The agent process exits** (`clearPending`, on `done`/`error`).
+
+  A request the user already answered is never re-announced. The broker is
+  shared by successive agent processes, so an exit clears it only while the
+  exiting process still holds the slot; a kill clears it at the kill, before a
+  replacement can open a request that a late exit event would otherwise deny.
+  Cards left pending by builds before this rule are denied once by a database
+  migration (`STALE_PERMISSION_CARD_MIGRATION`) — only those older than Claude's
+  30-minute idle timeout, since a session worker outlives an orchestrator
+  restart and a younger card may still be answerable.
 - **Fail-safe.** The Claude bridge fails *closed* (a broker/transport error → a
   deny envelope, never an unconfirmed proceed). Codex falls back to its historical
   auto-accept only when no broker is wired or the broker path throws (never hangs
@@ -232,11 +258,12 @@ mid-turn card in that position reproduced it, not just this one.
 ## Key files
 
 **Worker / agent-agnostic core**
-- `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await), `resolve()`/`clearPending()`.
+- `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`.
+- `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits.
 - `src/server/session/mcp-permission-bridge.ts` — Claude's `--permission-prompt-tool`. `createPermissionBridgeServer()` factory; open + bounded `/await` poll loop with retry/backoff (Thread B).
 - `src/server/session/session-worker.ts` — broker construction, `/agent-ops/permission/request` (now non-blocking) + `/agent-ops/permission/await` (Thread B) + `/agent/permission/resolve`, `permissionBridgePaths`, Codex requester injection, reject-all on teardown.
 - `src/server/session/agents/claude/{adapter,process}.ts` — register `shipit-permission`; pass `--permission-prompt-tool`.
-- `src/server/session/agents/codex/adapter.ts` — `setPermissionRequester` + `resolveApproval` routing (replaces unconditional auto-accept); `buildCodexPermissionInput`.
+- `src/server/session/agents/codex/adapter.ts` — `setPermissionRequester` + `resolveApproval` routing (replaces unconditional auto-accept); `buildCodexPermissionInput`. `codex-event-handler.ts` withdraws a request on `serverRequest/resolved`.
 - `src/server/shared/types/agent-types.ts` — `AgentPermissionRequestEvent`, `AgentPermissionResolvedEvent`, `PermissionDecision`, `PermissionRequester`, `AgentMcpPermissionBridge`, `AgentProcess.{resolvePermission,setPermissionRequester}`.
 
 **Orchestrator**
@@ -271,7 +298,10 @@ mid-turn card in that position reproduced it, not just this one.
 
 ## Tests
 
-- `permission-broker.test.ts` — request/resolve/remember/no-timeout/clearPending(silent)/unknown-id; plus `openRequest`/`poll` long-poll, `toolUseId` idempotency, post-resolution poll consumption (Thread B).
+- `permission-broker.test.ts` — request/resolve/remember/no-timeout/unknown-id; plus `openRequest`/`poll` long-poll, `toolUseId` idempotency, post-resolution poll consumption (Thread B); the abandoned-request deny from `endToolUse`, `clearPending` and an aborted `signal`, and that none re-announces an answered request.
+- `agent-controller.test.ts` — a gated call's `tool_result` (the Claude idle-timeout shape) and an agent exit each broadcast the deny.
+- `codex/adapter.test.ts` — `serverRequest/resolved` aborts the pending request and sends no response.
+- `database.test.ts` — the migration denies legacy pending cards and leaves answered cards and unreadable JSON alone.
 - `mcp-permission-bridge.test.ts` — open→poll→allow envelope, inline pre-approval, `pending` loop, transient-failure retry, sustained-failure fail-closed, 4xx no-retry (Thread B).
 - `session-worker.test.ts` (integration) — open returns requestId + await-then-resolve round-trip, and duplicate-open idempotency (Thread B).
 - `ask-user-question.test.ts` (integration) — answering a question in plan mode re-pins plan mode on resume (Thread A).

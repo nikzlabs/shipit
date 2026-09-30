@@ -992,6 +992,20 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "allow_docker_socket")) return;
     db.exec("ALTER TABLE repos ADD COLUMN allow_docker_socket INTEGER NOT NULL DEFAULT 0");
   },
+
+  // docs/193 — permission cards stuck pending by builds before the worker denied abandoned
+  // requests. Past Claude's 30-minute MCP idle timeout no agent still waits; a younger card
+  // may be live in a worker that outlived this restart. CASE keeps bad JSON from failing boot.
+  (db) => {
+    db.exec(`
+      UPDATE messages SET permission_prompt = json_set(permission_prompt, '$.phase', 'denied')
+      WHERE CASE WHEN json_valid(permission_prompt) THEN
+        json_extract(permission_prompt, '$.phase') = 'pending'
+        AND COALESCE(json_extract(permission_prompt, '$.createdAt'), '')
+          < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 minutes')
+      END
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1011,6 +1025,8 @@ export const USAGE_ATTRIBUTION_MIGRATION = 69;
 export const CODEX_ROLLUP_REPAIR_MIGRATION = 73;
 
 export const INSTALL_LEVEL_USAGE_MIGRATION = 91;
+
+export const STALE_PERMISSION_CARD_MIGRATION = 101;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
