@@ -15,6 +15,7 @@ import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-pol
 import { ShipitPointerSessionProvider } from "../message-markdown.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { usePrStore } from "../../stores/pr-store.js";
 import { ChatQuoteReply } from "../ChatQuoteReply.js";
 import { SessionStatusCard } from "../SessionStatusCard.js";
 import { extractTurnProse, hasSpeakableProse } from "../../voice/extract-turn-prose.js";
@@ -168,11 +169,15 @@ export function MessageList({
   );
   const messages = deferred.messages;
 
+  const prMerged = usePrStore((s) => {
+    const phase = deferred.sessionId ? s.cardBySession[deferred.sessionId]?.phase : undefined;
+    return phase === undefined ? undefined : phase === "merged";
+  });
   // The DEFERRED session id, so the reset lands in the same commit as the rows
   // it is about: the two travel in one memo, and keying the scroll state on the
   // live id would clear the reader's position while the outgoing transcript is
   // still the one on screen.
-  const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor, canPreserveAcrossCardMove } = useMessageScroll(messages, isLoading, currentMatch, deferred.sessionId ?? null);
+  const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor, canPreserveAcrossCardMove } = useMessageScroll(messages, isLoading, currentMatch, deferred.sessionId ?? null, prMerged);
 
   const sessionStatusCardEnabled = useSettingsStore((s) => s.sessionStatusCard);
   const sessionStatus = useSessionStore((s) =>

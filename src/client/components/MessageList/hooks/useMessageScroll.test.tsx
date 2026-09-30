@@ -604,6 +604,65 @@ describe("useMessageScroll", () => {
   });
 });
 
+describe("useMessageScroll — the session's PR merges (docs/303-session-status-card req 47)", () => {
+  const messages: ChatMessage[] = [{ role: "assistant", text: "done" }];
+
+  function MergeHarness({ prMerged }: { prMerged: boolean | undefined }) {
+    const { containerRef, contentRef } = useMessageScroll(messages, false, undefined, "s1", prMerged);
+    return (
+      <div ref={containerRef} data-testid="scroller">
+        <div ref={contentRef} data-testid="content" />
+      </div>
+    );
+  }
+
+  function mountScrolledUp(prMerged: boolean | undefined) {
+    const state = { height: 2000, client: 500, scrollTop: 0 };
+    const view = render(<MergeHarness prMerged={prMerged} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => state.height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => state.client });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => state.scrollTop,
+      set: (v: number) => { state.scrollTop = Math.min(Math.max(v, 0), state.height - state.client); },
+    });
+    advancePastOpen();
+    act(() => { div.dispatchEvent(new Event("scroll")); });
+    const fromBottom = () => state.height - state.scrollTop - state.client;
+    return { view, div, state, fromBottom };
+  }
+
+  it("brings a reader who scrolled up to the end, and keeps following as the composer grows", () => {
+    const { view, state, fromBottom } = mountScrolledUp(false);
+
+    act(() => { view.rerender(<MergeHarness prMerged={true} />); });
+    expect(fromBottom()).toBe(0);
+
+    // The reset controls appear under the composer later and shorten the view.
+    state.client = 350;
+    resizeContainer();
+    expect(fromBottom()).toBe(0);
+  });
+
+  it("outranks a scroll gesture still in its grace window", () => {
+    const { view, div, fromBottom } = mountScrolledUp(false);
+    act(() => { div.dispatchEvent(new Event("wheel")); });
+
+    act(() => { view.rerender(<MergeHarness prMerged={true} />); });
+
+    expect(fromBottom()).toBe(0);
+  });
+
+  it("leaves the view alone when the PR card arrives already merged", () => {
+    const { view, state } = mountScrolledUp(undefined);
+
+    act(() => { view.rerender(<MergeHarness prMerged={true} />); });
+
+    expect(state.scrollTop).toBe(0);
+  });
+});
+
 describe("useMessageScroll — search jump settles (planning#491)", () => {
   function setup(): { calls: { block?: string; behavior?: string }[]; setHeight: (h: number) => void; view: ReturnType<typeof render> } {
     const calls: { block?: string; behavior?: string }[] = [];

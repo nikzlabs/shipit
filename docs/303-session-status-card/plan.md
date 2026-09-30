@@ -1022,6 +1022,18 @@ was at the scroller's bottom with no rows and unchanged when 40 rows landed, and
 a scroll to the top made in the gap was discarded, the session opening at the end
 of its conversation.
 
+### In view when the pull request merges (req 47)
+
+`MessageList` reads the displayed session's PR card phase and hands
+`useMessageScroll` a `prMerged` flag. A change from `false` to `true` takes the
+same path as a sent message: it clears the gesture state, re-arms auto-follow and
+pins to the end. Re-arming is what keeps the view there afterwards, because the
+composer's reset controls arrive with a later `reset_eligible` and shrink the
+scroller, and the observer only corrects that while auto-follow is on. A card
+that arrives already merged (`undefined` to `true`) does not count, and a session
+switch needs no rule of its own, since opening a session already lands at the
+end. A live text selection still stands it down, as for a sent message.
+
 ### A card that waits for an answer goes last (req 32)
 
 The status card is not moved for this; the **answer card is lifted out of the
@@ -1597,7 +1609,7 @@ tests.
 - `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx`, `src/client/components/message-markdown.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation, and the markdown every field renders through.
 - `src/client/utils/local-storage.ts` — `getSavedStatusCardCollapsed` / `saveStatusCardCollapsed`, the per-session collapsed state (req 42).
 - `src/client/components/MessageList/pending-answer.ts` — which elements render a card the user answers, and which one the conversation ends with (req 32).
-- `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595).
+- `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595) and re-armed when its PR merges (req 47).
 
 ## Rejected alternatives
 
