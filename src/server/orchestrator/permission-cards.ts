@@ -75,6 +75,4 @@ export function reconcilePermissionCards(
   if (waiting.length > 0) {
     deps.sseBroadcast("session_attention", { sessionId, awaitingPermission: true });
   }
-  // No turn owns these rows, and the next turn's replaceInProgress would delete the denied card.
-  if (stale.length > 0 && !runner.running) deps.chatHistoryManager.finalizeInProgress(sessionId);
 }

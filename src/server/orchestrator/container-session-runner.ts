@@ -19,6 +19,7 @@ import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import { adoptInFlightTurn } from "./turn-adoption.js";
 import { reconcilePermissionCards } from "./permission-cards.js";
+import { workerReportsNoTurn } from "./restart-turn-reattach.js";
 import { originView, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
@@ -881,6 +882,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const newContainer = this.workerUrl === PLACEHOLDER_WORKER_URL;
     const status = await this.reconcileWorkerTurnBeforeFirstConnect();
     this.reconcileSavedPermissionCards(newContainer ? [] : status?.pendingPermissionIds);
+    // The boot sweep skips a worker it could not probe (docs/240-turn-survives-orchestrator-restart).
+    if (status && workerReportsNoTurn(status)) {
+      try {
+        this._systemTurnDeps?.listenerDeps.chatHistoryManager.finalizeInheritedInProgress(this.sessionId);
+      } catch (err) {
+        console.error(`[container-runner:${this.sessionId}] finalizing an ended turn's rows failed:`, err);
+      }
+    }
     await this.connectEventStream();
     if (!this._disposed) void this.startWorkerResources();
   }

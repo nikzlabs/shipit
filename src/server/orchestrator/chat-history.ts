@@ -279,6 +279,8 @@ export class ChatHistoryManager {
   private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
   private stmtTranscriptRevision;
+  // Sessions whose in-progress rows this process has written (docs/240-turn-survives-orchestrator-restart).
+  private readonly inProgressWrittenHere = new Set<string>();
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -473,6 +475,7 @@ export class ChatHistoryManager {
   }
 
   append(sessionId: string, message: PersistedMessage): number {
+    if (message.inProgress) this.inProgressWrittenHere.add(sessionId);
     return this.stmtInsert.run(this.toRow(sessionId, message)).lastInsertRowid as number;
   }
 
@@ -525,6 +528,13 @@ export class ChatHistoryManager {
 
   hasInProgress(sessionId: string): boolean {
     return this.stmtHasInProgress.get(sessionId) !== undefined;
+  }
+
+  sessionsWithInProgressRows(): string[] {
+    const rows = this.db.prepare("SELECT DISTINCT session_id FROM messages WHERE in_progress = 1").all() as {
+      session_id: string;
+    }[];
+    return rows.map((r) => r.session_id);
   }
 
   getBugReportCard(sessionId: string, cardId: string): PersistedBugReport | undefined {
@@ -946,6 +956,7 @@ export class ChatHistoryManager {
   }
 
   saveMessages(sessionId: string, messages: PersistedMessage[]): void {
+    if (messages.some((m) => m.inProgress)) this.inProgressWrittenHere.add(sessionId);
     this.db.transaction(() => {
       this.stmtDeleteBySession.run(sessionId);
       for (const msg of messages) {
@@ -1023,6 +1034,7 @@ export class ChatHistoryManager {
 
   /** Preserve consults absent from the rebuild; deduplicate finalized notices and consults. */
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void {
+    this.inProgressWrittenHere.add(sessionId);
     this.db.transaction(() => {
       const batchCardIds = new Set<string>();
       for (const msg of messages) {
@@ -1100,6 +1112,13 @@ export class ChatHistoryManager {
   }
 
   finalizeInProgress(sessionId: string): void {
+    this.stmtFinalizeInProgress.run(sessionId);
+  }
+
+  // Only rows an earlier orchestrator process left: once this process writes a session's
+  // in-progress rows, they belong to a turn here, and replaceInProgress replaces them whole.
+  finalizeInheritedInProgress(sessionId: string): void {
+    if (this.inProgressWrittenHere.has(sessionId)) return;
     this.stmtFinalizeInProgress.run(sessionId);
   }
 

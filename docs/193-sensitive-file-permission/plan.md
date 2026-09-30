@@ -186,10 +186,12 @@ Key properties:
   re-sends the attention signal, so the backstop covers a worker that dies later;
   every other card is denied through `settlePermissionCard`. Without an agent in
   the runner (no turn was adopted), nothing can relay the user's answer or the
-  worker's result, so every saved card is denied. When the runner has no running
-  turn, the in-progress rows are finalized, for the same reason as
-  `turn_abandoned`. The check is skipped when the status probe fails or the worker
-  image predates the field; the next runner or container checks again.
+  worker's result, so every saved card is denied. A denied card in the rows of a
+  turn that ended during the restart stays in history because those rows are
+  finalized when the worker reports the turn ended or the session gets a new
+  container (docs/240-turn-survives-orchestrator-restart, section 5).
+  The check is skipped when the status probe fails or the worker image predates
+  the field; the next runner or container checks again.
 
   Cards left pending by builds before this rule are denied once by a database
   migration (`STALE_PERMISSION_CARD_MIGRATION`) — only those older than Claude's

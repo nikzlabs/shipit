@@ -32,7 +32,6 @@ function setup(opts: { running: boolean; inProgressRows: boolean; ids: string[];
     hasInProgress: () => opts.inProgressRows,
     replaceInProgress: vi.fn(),
     updatePermissionCard: vi.fn(),
-    finalizeInProgress: vi.fn(),
     pendingPermissionRequestIds: () => opts.savedPending ?? [],
   };
   const sseBroadcast = vi.fn();
@@ -113,29 +112,26 @@ describe("reconcilePermissionCards", () => {
     expect(emitted.map((m) => m.type === "permission_resolved" && m.requestId)).toEqual(["gone"]);
     expect([...runner.awaitingPermissionIds]).toEqual(["live"]);
     expect(attention().at(-1)).toEqual({ sessionId: "s1", awaitingPermission: true });
-    // The running turn owns its in-progress rows.
-    expect(chatHistoryManager.finalizeInProgress).not.toHaveBeenCalled();
   });
 
-  it("keeps a denied card from an unowned turn past the next turn's rewrite", () => {
+  it("denies every saved card when the worker waits on none, without asking for attention", () => {
     const { runner, deps, chatHistoryManager, attention } = setup({
-      running: false, inProgressRows: true, ids: [], savedPending: ["gone"],
+      running: false, inProgressRows: false, ids: [], savedPending: ["gone"],
     });
 
     reconcilePermissionCards(runner, "s1", deps, []);
 
-    expect(chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("s1");
+    expect(chatHistoryManager.updatePermissionCard).toHaveBeenCalledWith("s1", "gone", { phase: "denied" });
     expect(attention()).not.toContainEqual({ sessionId: "s1", awaitingPermission: true });
   });
 
   it("changes nothing when no saved card is pending", () => {
-    const { runner, deps, emitted, attention, chatHistoryManager } = setup({ running: false, inProgressRows: false, ids: [] });
+    const { runner, deps, emitted, attention } = setup({ running: false, inProgressRows: false, ids: [] });
 
     reconcilePermissionCards(runner, "s1", deps, ["live"]);
 
     expect(emitted).toEqual([]);
     expect(attention()).toEqual([]);
     expect(runner.awaitingPermissionIds.size).toBe(0);
-    expect(chatHistoryManager.finalizeInProgress).not.toHaveBeenCalled();
   });
 });

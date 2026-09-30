@@ -1,6 +1,7 @@
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import type { ChatHistoryManager } from "./chat-history.js";
 import { holdsActiveReservation } from "./sessions.js";
 import type { AgentId, WorkerAgentStatus } from "../shared/types.js";
 import { workerGet } from "./worker-http.js";
@@ -13,6 +14,7 @@ export interface ReattachDeps {
   runnerRegistry: SessionRunnerRegistry;
   sessionManager: SessionManager;
   defaultAgentId: AgentId;
+  chatHistoryManager?: Pick<ChatHistoryManager, "sessionsWithInProgressRows" | "finalizeInheritedInProgress">;
   orchestratorBuildId?: string;
   confirmDelayMs?: number;
 }
@@ -43,8 +45,40 @@ export const unprobedAfterRestart = new Set<string>();
 // Preserve Compose stacks serving work that this sweep kept without creating a runner.
 export const liveWorkAfterRestart = new Set<string>();
 
+// A legacy worker without turnActive has no turn only when no agent process runs.
+export function workerReportsNoTurn(status: WorkerAgentStatus): boolean {
+  return status.turnActive === false || (status.turnActive === undefined && !status.running);
+}
+
+// A turn's rows stay in progress until the orchestrator sees it end, and the next turn's
+// replaceInProgress deletes them, so a turn that ended while no orchestrator listened is finalized.
+function finalizeEndedTurnRows(deps: ReattachDeps, ended: ReadonlySet<string> | null): void {
+  const { chatHistoryManager } = deps;
+  if (!chatHistoryManager) return;
+  try {
+    const sessionIds = chatHistoryManager.sessionsWithInProgressRows()
+      .filter((id) => ended === null || ended.has(id));
+    for (const sessionId of sessionIds) chatHistoryManager.finalizeInheritedInProgress(sessionId);
+    if (sessionIds.length > 0) {
+      console.log(`[turn-reattach] Finalized the saved rows of ${sessionIds.length} turn(s) that ended during the restart`);
+    }
+  } catch (err) {
+    console.error(`[turn-reattach] finalizing ended turn rows failed: ${getErrorMessage(err)}`);
+  }
+}
+
 // Boot-only adoption and stale-worker reclamation; Compose stacks are reaped separately.
 export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number> {
+  // Only sessions whose worker answered: discovery can miss a live container, which a later
+  // runner then adopts, and a session with no container finalizes when it gets a new one.
+  const ended = new Set<string>();
+  const adopted = await reattach(deps, ended);
+  // Without containers, no agent outlives the restart.
+  finalizeEndedTurnRows(deps, deps.containerManager ? ended : null);
+  return adopted;
+}
+
+async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number> {
   const {
     containerManager, runnerRegistry, sessionManager, defaultAgentId,
     orchestratorBuildId = process.env.SHIPIT_BUILD_ID,
@@ -74,6 +108,7 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
       }
       const session = sessionManager.get(c.sessionId);
       if (!session?.workspaceDir) return false;
+      if (workerReportsNoTurn(status)) ended.add(c.sessionId);
       if (status.turnActive !== true) {
         // Record live work before freshness filtering: current workers also need their stacks.
         const liveWork = staleIdleHoldReason(status);
@@ -94,6 +129,7 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
             ) as WorkerAgentStatus;
           } catch (err) {
             liveWorkAfterRestart.add(c.sessionId);
+            ended.delete(c.sessionId);
             console.log(
               `[worker-reclaim] Keeping stale container for ${c.sessionId}`
               + ` — its confirming probe failed: ${getErrorMessage(err)}`,
@@ -102,6 +138,7 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
           }
           if (confirm.turnActive === true) {
             liveWorkAfterRestart.add(c.sessionId);
+            ended.delete(c.sessionId);
             console.log(
               `[worker-reclaim] Keeping stale container for ${c.sessionId}`
               + ` — a turn started between the two probes`,

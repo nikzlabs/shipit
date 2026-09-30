@@ -6,7 +6,10 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { DatabaseManager } from "../../shared/database.js";
-import type { SystemTurnDeps } from "../session-runner.js";
+import type { SessionRunnerRegistry, SystemTurnDeps } from "../session-runner.js";
+import type { SessionContainerManager } from "../session-container.js";
+import { reattachInFlightTurns } from "../restart-turn-reattach.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 import type {
   AgentProcess,
   AgentProcessEvents,
@@ -70,6 +73,8 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
+  // Writes what the orchestrator before the restart saved.
+  let earlierProcess: ChatHistoryManager;
   let usageManager: UsageManager;
   let runners: ContainerSessionRunner[];
   let commits: { summary: string }[];
@@ -99,6 +104,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     dbManager = new DatabaseManager(":memory:");
     sessionManager = new SessionManager(dbManager);
     chatHistoryManager = new ChatHistoryManager(dbManager);
+    earlierProcess = new ChatHistoryManager(dbManager);
     usageManager = new UsageManager(dbManager);
     sessionManager.track(SESSION_ID, "Restarted session", "/tmp/restart-session");
   });
@@ -180,7 +186,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
   }
 
   function savePendingCard(requestId: string, inProgress = false): void {
-    chatHistoryManager.append(SESSION_ID, {
+    earlierProcess.append(SESSION_ID, {
       role: "assistant",
       text: "",
       permissionPrompt: { requestId, phase: "pending", toolName: "Bash", createdAt: new Date().toISOString() },
@@ -192,8 +198,8 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     chatHistoryManager.load(SESSION_ID).find((m) => m.permissionPrompt?.requestId === requestId)?.permissionPrompt?.phase;
 
   function seedPreCrashHistory(): void {
-    chatHistoryManager.append(SESSION_ID, { role: "user", text: "refactor the parser" });
-    chatHistoryManager.append(SESSION_ID, {
+    earlierProcess.append(SESSION_ID, { role: "user", text: "refactor the parser" });
+    earlierProcess.append(SESSION_ID, {
       role: "assistant",
       text: "MIDTURN_TEXT",
       inProgress: true,
@@ -333,7 +339,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
 
     expect(cardPhase(orphanId)).toBe("denied");
     expect(runner.awaitingPermissionIds.size).toBe(0);
-    // Finalized, so the next turn's in-progress rewrite keeps the card.
+    // Finalized, so the next turn's in-progress rewrite keeps the denied card.
     expect(chatHistoryManager.load(SESSION_ID).some((m) => m.inProgress)).toBe(false);
   });
 
@@ -345,6 +351,63 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
 
     await waitFor(() => cardPhase("perm_from_the_old_container") === "denied", 3000, "card denied");
     expect(runner.awaitingPermissionIds.size).toBe(0);
+  });
+
+  function restartSweep(): Promise<number> {
+    return reattachInFlightTurns({
+      containerManager: {
+        getAll: () => [{ sessionId: SESSION_ID, workerUrl, status: "running", workerBuildId: "current-build" }],
+        isStandby: () => false,
+        destroyAgentContainer: async () => {},
+      } as unknown as SessionContainerManager,
+      runnerRegistry: { get: () => undefined, getOrCreate: () => makeRunner() } as unknown as SessionRunnerRegistry,
+      sessionManager,
+      defaultAgentId: "claude",
+      chatHistoryManager,
+      orchestratorBuildId: "current-build",
+    });
+  }
+
+  // The last two cases skip the sweep, as when its probe of this worker failed.
+  it.each([
+    ["the boot sweep", "sweep"],
+    ["the first connect, when a viewer opens the session", "view"],
+    ["the first connect, when a message arrives first", "dispatch"],
+  ])("keeps the saved part of a turn that finished while the orchestrator was down, through %s", async (_label, path) => {
+    await startPreRestartTurn();
+    lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+    lastAgent.emit("done", 0);
+    seedPreCrashHistory();
+
+    if (path === "sweep") expect(await restartSweep()).toBe(0);
+    const runner = makeRunner();
+    if (path === "view") expect(await runner.resumeInFlightTurn()).toBe(false);
+    runner.dispatch(testDispatch({ text: "next task" }));
+    await waitFor(() => allAgents.length === 2 && allAgents[1]!.runCalled, 3000, "next turn started");
+    allAgents[1]!.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "NEXT_TEXT" }] });
+    allAgents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+    await waitFor(() => !runner.running, 3000, "next turn finished");
+
+    const history = chatHistoryManager.load(SESSION_ID);
+    const text = history.map((m) => m.text ?? "").join("\n");
+    expect(text).toContain("NEXT_TEXT");
+    expect(text).toContain("MIDTURN_TEXT");
+    expect(history.some((m) => m.inProgress)).toBe(false);
+  });
+
+  it("leaves a live turn's saved rows to adoption, which saves the turn once", async () => {
+    await startPreRestartTurn();
+    seedPreCrashHistory();
+
+    expect(await restartSweep()).toBe(1);
+    const runner = runners.at(-1)!;
+    await waitFor(() => runner.accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
+    lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+    await waitFor(() => !runner.running, 3000, "turn finished");
+
+    const history = chatHistoryManager.load(SESSION_ID);
+    expect(history.map((m) => m.text ?? "").join("\n").split("MIDTURN_TEXT")).toHaveLength(2);
+    expect(history.some((m) => m.inProgress)).toBe(false);
   });
 
   it("does not adopt a turn a live runner already owns (no double-wiring)", async () => {
