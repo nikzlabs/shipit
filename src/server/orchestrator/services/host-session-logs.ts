@@ -39,9 +39,13 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     pattern: /^Auto-push rejected: the remote refused the push because its Git LFS objects were not uploaded \(GH008\)\. The commit stays in this session's local history\. Run `git lfs push origin HEAD` in the terminal, then push again\.$/,
   },
   {
+    producer: "auto-push-scheduler: LFS upload failed, refs not pushed",
+    pattern: /^Auto-push stopped: uploading this branch's Git LFS objects failed, so its commits were not pushed\. The commit stays in this session's local history, and the next push retries the upload\.$/,
+  },
+  {
     // Enumerate classes; a generic slug would also admit a secret embedded in this format.
     producer: "auto-push-scheduler: failure class",
-    pattern: /^Auto-push failed \((?:non-fast-forward|invalid-refspec|auth|lfs|remote-rejected|network|unknown)\)\. The commit stays in this session's local history\.$/,
+    pattern: /^Auto-push failed \((?:non-fast-forward|invalid-refspec|auth|lfs-upload|lfs|remote-rejected|network|unknown)\)\. The commit stays in this session's local history\.$/,
   },
   {
     producer: "auto-push-scheduler: deferred for a rewrite",

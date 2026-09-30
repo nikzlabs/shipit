@@ -398,6 +398,102 @@ the sweep **declines loudly** when no credential can be resolved rather than
 pushing into a username prompt nobody can answer. Its failure log now names which
 shape happened.
 
+### 8. A failed upload stops the push
+
+Orchestrator git runs with hooks disabled (planning#384), so the git-lfs
+`pre-push` hook never runs there. `shared/git-lfs-push.ts` runs
+`git lfs push <remote> <ref>` before every ref push instead: `push`,
+`forcePushWithLease` and `createAndPushTag` in `shared/git.ts`, so the
+auto-push, PR creation, the sync force-push, the merged-branch reset, release
+prepare and an rc tag all go through it. An rc tag can name a commit that no
+branch push has published, which is why the tag path is covered too.
+
+That upload was first shipped as **best-effort**: a failure was logged and the
+refs were pushed anyway, on the reasoning that the auto-push must not gain a new
+way to fail and that GitHub rejects the result with GH008. The second half only
+holds for GitHub LFS. With a committed `.lfsconfig` whose `lfs.url` names another
+server, nothing rejects the push: the commit reaches the remote naming objects
+no store holds, and every other session, fork and clone gets ~130-byte pointers
+with a clean `git status`. A later default `git lfs push` never repairs it,
+because it only scans commits the remote does not have yet. Measured against
+git-lfs 3.3.0: an unreachable `lfs.url` fails the upload with exit 2, and the
+plain ref push that followed succeeded. The first half never held either: a push
+that does not happen loses nothing, since the commit stays local and the next
+push retries.
+
+So a failed upload now throws `LfsUploadError`, and the ref push does not run.
+Only two outcomes push: `not-an-lfs-repo`, and a successful upload, which
+includes a range that adds no objects (git-lfs exits 0 without contacting the
+server then, measured with the server unreachable). A missing `git-lfs` binary
+is a failed upload too. Every ShipIt image installs it (§1), and the session
+container, which has it, can stage pointers that an orchestrator without it
+cannot upload.
+
+Two ways the upload used to report success while an object was missing, both
+fixed and both pinned by a test that fails without its fix:
+
+- **simple-git reads failure from stderr, git-lfs reports missing objects on
+  stdout.** simple-git rejects only a non-zero exit that also wrote to stderr.
+  An object absent both locally and on the server exits 2 with the message on
+  stdout, so `raw()` resolved and the upload read as `pushed`. The upload now
+  runs on an instance whose `errors` option rejects any non-zero exit
+  (`pushLfsObjects` takes a factory, so a caller cannot hand it a lenient one).
+- **`lfs.allowincompletepush` is honoured from a committed `.lfsconfig`.** Set to
+  true there, the same missing object exits 0. The upload passes
+  `-c lfs.allowincompletepush=false`, which outranks `.lfsconfig`. An object
+  missing locally that the server already has still succeeds, as by default.
+
+Two edges of the path, each also pinned by a test:
+
+- **Detection covers the unpushed range, not just the tip.** Whether to run
+  git-lfs at all is decided from the committed `.gitattributes` (one `git grep`),
+  so a repo that does not use LFS never reaches the LFS locks API. A range that
+  adds a pointer and then drops the LFS line would read as "not LFS" at its tip,
+  so any commit the remote lacks whose `.gitattributes` diff touches
+  `filter=lfs` (`git log -G`) also counts.
+- **A failed rc tag push deletes the local tag.** `createAndPushTag` creates the
+  tag before it uploads. Left behind, the tag fails a retry at creation, and the
+  prerelease planner counts it and proposes the next rc number.
+
+The refusal is its own push-failure class, `lfs-upload`, matched on the fixed
+`LFS_UPLOAD_REFUSAL` phrase so a caller that wraps the message keeps the class.
+It is checked first because the message quotes git-lfs, whose output can contain
+`401`, `[rejected]` or `GH008`. The auto-push handles it before its GitHub-auth
+check for the same reason: a 401 from an LFS host that is not GitHub must not
+mark the GitHub token invalid. The auto-push reports it as the other failures
+are, an ops-safe log line plus git-lfs's text on a separate `Git said:` line,
+and adds a chat notice (`formatLfsUploadNotice`), posted once per failure
+episode and again after a push lands. Other callers throw the message to their
+own surface (the PR-creation error, the sync's push result). git-lfs's `hint:`
+lines are dropped from the quoted detail, because they suggest turning off the
+very check that failed.
+
+Not covered, deliberately: a commit that moves `lfs.url` to a new, empty server
+and adds no LFS file pushes normally, because the range has nothing to upload.
+That matches a hooks-enabled `git push`. Moving LFS storage is a migration,
+done with `git lfs push --all origin`, and the agent-facing docs say so.
+
+### 9. The GitHub credential is offered to github.com only
+
+The orchestrator's global credential helper (`git-config.ts`
+`setGlobalCredentialHelper`) `cat`s the GitHub token for any host that asked. Root
+git reads it: the bare caches under `repo-cache/`, and the unauthenticated retry
+of `withPreemptiveAuthFallback`, which drops the `credential.helper=` reset along
+with the scoped credential. `fetchLfsIntoCache` takes exactly that path when a
+committed `.lfsconfig` names an LFS host that answers 401: the scoped credential
+has nothing for that host, the retry runs as root, and the helper hands the
+host the GitHub token. Measured with a local server answering 401: the next
+request carried `Authorization: Basic` of `x-access-token:<token>`. This is the
+docs/172-agent-containment Gap 2 shape, closed there for the session's helper
+but not for the orchestrator's.
+
+The helper is now installed as `credential.https://github.com.helper`, so git
+asks it only for github.com. `setGlobalCredentialHelper` removes the unscoped
+key an older build wrote, and `checkCredentials` calls it at every boot, so an
+upgrade repairs existing installs on its first start. Nothing ShipIt does needs
+the GitHub token on another host: the broker (`getRepoScopedGitCredential`) and
+the resolver already answer for github.com only.
+
 ## Configuration
 
 | Env var | Default | Effect |
@@ -488,6 +584,13 @@ binary is present.
 - `src/server/orchestrator/startup-janitor.ts` — the orphan-branch sweep's
   explicit repo-scoped credential and its fail-closed decline (§7)
 - `src/server/orchestrator/egress-allowlist.ts` — LFS transfer host
+- `src/server/shared/git-lfs-push.ts`, `src/server/shared/git.ts`
+  (`uploadLfsObjects`) — the upload before every branch push, and the refusal
+  when it fails (§8)
+- `src/server/orchestrator/services/auto-push-scheduler.ts`
+  (`formatLfsUploadNotice`), `services/git.ts` (`lfs-upload` class) — how the
+  refusal is reported (§8)
+- `src/server/orchestrator/git-config.ts` — the github.com-scoped global helper (§9)
 - `docker/Dockerfile{.prod,.dev,.dogfood,.session-worker.prod,.session-worker.dev}`
 - `src/server/shipit-docs/environment.md` — agent-facing "it's a stub, not a
   broken renderer" guidance
