@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  discardQueueAfterInterrupt,
   queuedMessageToDispatchOptions,
   releaseQueuedTurn,
   startQueuedMessage,
@@ -85,6 +86,7 @@ describe("queue drain routing (planning#257)", () => {
       compactContext: false,
       postTurn: "none",
       systemTurn: true,
+      automatic: true,
       onTurnComplete,
       deliveryId: "watch-1:1",
       dictated: true,
@@ -167,6 +169,76 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
     const { runner } = fakeQueueRunner({ queue });
 
     expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
+  });
+});
+
+describe("a question holds automatic entries (docs/321)", () => {
+  function fakeHeldRunner(queue: QueuedMessage[], held: boolean, awaitingUserAnswer = false) {
+    return {
+      sessionId: "s1",
+      messageQueue: queue,
+      answerHold: held,
+      awaitingUserAnswer,
+      dequeue: () => queue.shift(),
+      clearQueue: () => { queue.length = 0; },
+      getAgent: () => null,
+      backgroundWorkDescriptions: [],
+    } as unknown as SessionRunnerInterface;
+  }
+
+  const automaticEntry = (text = "[ci-fix] CI failed"): QueuedMessage => ({
+    text,
+    execution: "dispatched",
+    systemTurn: true,
+    automatic: true,
+  });
+
+  it("leaves automatic entries queued while the agent waits for the answer", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const queue = [automaticEntry(), automaticEntry("Child PR #42 merged")];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, true))).toBeUndefined();
+    expect(queue.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+    vi.restoreAllMocks();
+  });
+
+  it("takes the user's entry from behind held automatic ones, and keeps their order (req 6)", () => {
+    const queue: QueuedMessage[] = [
+      automaticEntry(),
+      { text: "typed by the user", execution: "interactive" },
+      automaticEntry("Child PR #42 merged"),
+    ];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, true))?.text).toBe("typed by the user");
+    expect(queue.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+  });
+
+  it("takes the automatic head once the user has answered (req 4)", () => {
+    const queue = [automaticEntry()];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, false))?.text).toBe("[ci-fix] CI failed");
+    expect(queue).toHaveLength(0);
+  });
+
+  it("keeps automatic entries when a turn ends on a question, and settles the rest as dropped", () => {
+    const dropped = vi.fn();
+    const queue: QueuedMessage[] = [
+      automaticEntry(),
+      { text: "typed before the question", execution: "interactive", onTurnComplete: dropped },
+    ];
+
+    discardQueueAfterInterrupt(fakeHeldRunner(queue, true, true));
+
+    expect(queue.map((m) => m.text)).toEqual(["[ci-fix] CI failed"]);
+    expect(dropped).toHaveBeenCalledWith(expect.objectContaining({ status: "dropped" }));
+  });
+
+  it("discards everything after a stop, automatic entries included", () => {
+    const queue: QueuedMessage[] = [automaticEntry(), { text: "typed", execution: "interactive" }];
+
+    discardQueueAfterInterrupt(fakeHeldRunner(queue, false, false));
+
+    expect(queue).toHaveLength(0);
   });
 });
 

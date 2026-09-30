@@ -29,6 +29,7 @@ export interface AgentDispatchInit {
   permissionMode: PermissionMode | undefined;
   postTurn: "commit-push" | "none" | undefined;
   systemTurn: boolean | undefined;
+  automatic: boolean | undefined;
   onTurnComplete: ((outcome: TurnOutcome) => void) | undefined;
   deliveryId: string | undefined;
   dictated: boolean | undefined;
@@ -58,6 +59,7 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   permissionMode: true,
   postTurn: true,
   systemTurn: true,
+  automatic: true,
   onTurnComplete: true,
   deliveryId: true,
   dictated: true,
@@ -92,6 +94,7 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     permissionMode: next.permissionMode,
     postTurn: next.postTurn,
     systemTurn: next.systemTurn,
+    automatic: next.automatic,
     onTurnComplete: next.onTurnComplete,
     deliveryId: next.deliveryId,
     dictated: next.dictated,

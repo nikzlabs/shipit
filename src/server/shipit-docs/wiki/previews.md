@@ -224,7 +224,8 @@ message to you.
 **Auto-fix** is the switch beside it, **off** until the user turns it on. While
 it is on, newly reported errors are sent to you without the user asking — but
 not unconditionally: errors that arrive while you are already working are
-skipped rather than queued, and there is a short cooldown between sends. It
+skipped rather than queued, and there is a short cooldown between sends. While
+a question or plan card of yours waits, a send is held until the user replies. It
 compares the whole collected set against the previous send, and after three
 rounds that come back the same it turns itself off. So "it stopped trying" has
 more than one cause; check whether the switch is still on before assuming the

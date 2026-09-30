@@ -154,6 +154,7 @@ export class PrStatusPoller {
     });
 
     const onSessionChange = (sessionId: string) => this.broadcastSessionStatus(sessionId);
+    const isAwaitingAnswer = (sessionId: string) => this.sessionManager.isAwaitingAnswer(sessionId);
     this.autoFix = new AutoFixManager(
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
@@ -163,6 +164,7 @@ export class PrStatusPoller {
       this.remediationArbiter,
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
       opts.ensureRunner,
+      isAwaitingAnswer,
     );
     this.autoMerge = new AutoMergeManager(
       this.githubAuth,
@@ -187,6 +189,7 @@ export class PrStatusPoller {
         undefined,
         this.remediationArbiter,
         opts.ensureRunner,
+        isAwaitingAnswer,
       );
     }
 

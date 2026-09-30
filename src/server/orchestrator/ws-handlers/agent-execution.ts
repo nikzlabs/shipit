@@ -21,7 +21,7 @@ import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcom
 import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
-import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
+import { discardQueueAfterInterrupt, startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
 import {
   agentEnvTurnArgs,
   prepareSessionAgentEnvironment,
@@ -89,8 +89,8 @@ export async function drainNextQueuedMessage(
   }
   if (runner.wasInterrupted && !compactionTurn) {
     if (messageQueue.length > 0) {
-      runner.clearQueue();
-      emit({ type: "queue_updated", queue: [] });
+      discardQueueAfterInterrupt(runner);
+      emit({ type: "queue_updated", queue: runner.getQueueSnapshot() });
     }
     return;
   }
@@ -574,6 +574,7 @@ async function composeAndRunAgentTurn(
   };
 
   const deps: SystemTurnDeps = {
+    answerHold: ctx.sessionManager,
     agentFactory: (id) => ctx.agentFactory(id),
     ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
     autoCommit: async (sessionDir, summary) => {

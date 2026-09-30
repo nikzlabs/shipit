@@ -24,28 +24,41 @@ export interface DispatchAgentMessageOptions {
    * inside an agent-built page — which follows the global setting (req 13).
    */
   userInitiated?: boolean;
+  /**
+   * docs/321 — sent by the browser's own automation. The server may hold it until the
+   * user answers the agent, so no bubble is drawn now: the turn's echo draws it when it runs.
+   */
+  automatic?: boolean;
 }
 
 export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): Promise<void> {
-  const { sessionId, text, activity, apiPost, agentInterface, userInitiated } = opts;
+  const { sessionId, text, activity, apiPost, agentInterface, userInitiated, automatic } = opts;
   const intent = userInitiated ? mergeContinueFrameFields(sessionId) : {};
   const session = useSessionStore.getState();
   const requestId = randomId();
 
-  session.setMessages((prev) => [...prev, {
-    role: "user",
-    text,
-    pendingDispatch: true,
-    clientRequestId: requestId,
-    ...(agentInterface ? { agentInterface } : {}),
-  }]);
-  session.setIsLoading(true);
-  session.setActivity({ label: activity });
+  if (!automatic) {
+    session.setMessages((prev) => [...prev, {
+      role: "user",
+      text,
+      pendingDispatch: true,
+      clientRequestId: requestId,
+      ...(agentInterface ? { agentInterface } : {}),
+    }]);
+    session.setIsLoading(true);
+    session.setActivity({ label: activity });
+  }
 
   try {
     await apiPost<{ ok: true; queued: boolean }>(
       `/api/sessions/${sessionId}/agent/dispatch`,
-      { text, activity, ...(agentInterface ? { agentInterface } : {}), ...intent },
+      {
+        text,
+        activity,
+        ...(agentInterface ? { agentInterface } : {}),
+        ...intent,
+        ...(automatic ? { automatic: true } : {}),
+      },
     );
     // Only a dispatch the server accepted spends the untick.
     // Spend exactly what this request carried: the user may have unticked again
@@ -53,10 +66,12 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
     if (userInitiated) consumeMergeContinueIntent(sessionId, intent);
   } catch (err) {
 
-    useSessionStore.getState().setMessages((prev) =>
-      prev.filter((message) => message.clientRequestId !== requestId));
-    useSessionStore.getState().setIsLoading(false);
-    useSessionStore.getState().setActivity(undefined);
+    if (!automatic) {
+      useSessionStore.getState().setMessages((prev) =>
+        prev.filter((message) => message.clientRequestId !== requestId));
+      useSessionStore.getState().setIsLoading(false);
+      useSessionStore.getState().setActivity(undefined);
+    }
 
     const message = err instanceof Error ? err.message : "Failed to send to agent";
     useUiStore.getState().setToast({ message });

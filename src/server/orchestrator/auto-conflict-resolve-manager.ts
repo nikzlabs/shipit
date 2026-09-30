@@ -55,6 +55,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     now: () => number = () => Date.now(),
     arbiter?: RemediationArbiter,
     ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
+    isAwaitingAnswer?: (sessionId: string) => boolean,
   ) {
     super({
       name: "auto-resolve",
@@ -65,6 +66,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       now,
       ...(arbiter ? { arbiter } : {}),
       ...(ensureRunner ? { ensureRunner } : {}),
+      ...(isAwaitingAnswer ? { isAwaitingAnswer } : {}),
     });
     this.rebaseAndResolveCb = rebaseAndResolveCb;
   }

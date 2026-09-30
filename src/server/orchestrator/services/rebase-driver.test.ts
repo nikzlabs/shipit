@@ -9,7 +9,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { SessionRunner, SessionRunnerRegistry, resetRunnerTurnState } from "../session-runner.js";
 import { createIdleEnforcer } from "../idle-enforcer.js";
 import { POST_TURN_HOLD_MAX_MS } from "../post-turn-hold.js";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { DockerMemoryStats } from "../../shared/types.js";
 import {
@@ -97,6 +97,32 @@ class FakeRebaseAgent extends EventEmitter {
   writeStdin(): void { /* no-op */ }
   interrupt(): void { /* no-op */ }
   kill(): void { /* no-op */ }
+}
+
+/** A resolution turn that ends on a question card instead of resolving anything. */
+class AskingRebaseAgent extends FakeRebaseAgent {
+  override run(params: AgentRunParams): void {
+    setImmediate(() => {
+      this.emit("event", {
+        type: "agent_assistant",
+        content: [{
+          type: "tool_use",
+          id: "ask-1",
+          name: "AskUserQuestion",
+          input: {
+            questions: [{
+              question: "Keep which edit?",
+              header: "Conflict",
+              options: [{ label: "Ours", description: "The feature edit" }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      } as AgentEvent);
+      this.emit("event", { type: "agent_result", status: "success", sessionId: params.sessionId } as AgentEvent);
+      this.emit("done", 0);
+    });
+  }
 }
 
 function setupRepoWithRemote(tmpDir: string) {
@@ -206,8 +232,12 @@ function makeStubUsageManager(): UsageManager {
 
 
 // Without this the runner has no system-turn deps, and a dispatch never starts a turn.
-function wireSystemTurnDeps(deps: Parameters<typeof runRebaseFlow>[0]): void {
+function wireSystemTurnDeps(
+  deps: Parameters<typeof runRebaseFlow>[0],
+  extra: Pick<SystemTurnDeps, "answerHold"> = {},
+): void {
   deps.runner.setSystemTurnDeps({
+    ...extra,
     agentFactory: deps.agentFactory!,
     autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null, hookFailure: null }),
     scheduleAutoPush: () => { /* postTurn: "none" skips this for rebase turns */ },
@@ -540,6 +570,43 @@ describe("rebase-driver: runRebaseFlow", () => {
     const assistantMsg = captured.find((m) => m.role === "assistant");
     expect(userMsg?.text).toContain("Rebasing onto");
     expect(assistantMsg?.text).toContain("Resolved shared.txt");
+  });
+
+  it("docs/321: a resolution turn that asks the user stops the flow instead of prompting again", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    let awaiting = false;
+    let agentInvocations = 0;
+    const deps: Parameters<typeof runRebaseFlow>[0] = {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => {
+        agentInvocations++;
+        return new AskingRebaseAgent(() => "") as unknown as AgentProcess;
+      },
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+    wireSystemTurnDeps(deps, {
+      answerHold: {
+        isAwaitingAnswer: () => awaiting,
+        setAwaitingAnswer: (_id, v) => { awaiting = v; },
+      },
+    });
+
+    await expect(runRebaseFlow(deps, "main")).rejects.toMatchObject({ statusCode: 409 });
+
+    expect(agentInvocations).toBe(1);
+    expect(awaiting).toBe(true);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(fs.readFileSync(path.join(workDir, "shared.txt"), "utf-8")).toBe("feature edit\n");
+    expect(runner.systemTurnInProgress).toBe(false);
   });
 
   it("conflicts — preserves tool calls and splits assistant messages at tool-result boundary", async () => {

@@ -268,6 +268,7 @@ export async function createHeadlessSession(
     permissionMode: undefined,
     postTurn: undefined,
     systemTurn: undefined,
+    automatic: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: opts.dictated,

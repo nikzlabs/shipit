@@ -119,6 +119,7 @@ export async function wakeSessionWithTurn(
     messageOrigin: opts.messageOrigin,
     activity: opts.activity,
     systemTurn: true,
+    automatic: true,
     ...(onSettled
       ? {
           onTurnComplete: (outcome: TurnOutcome) => {

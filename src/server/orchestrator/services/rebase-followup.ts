@@ -131,6 +131,7 @@ export function deliverRebaseFollowup(deps: RebaseFollowupDeps, followup: Rebase
       // ordinary edits that must be committed and pushed.
       postTurn: undefined,
       systemTurn: true,
+      automatic: true,
       execution: undefined,
       images: undefined,
       files: undefined,

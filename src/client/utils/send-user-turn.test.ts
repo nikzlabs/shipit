@@ -176,6 +176,25 @@ describe("the HTTP dispatch path carries and spends it too", () => {
     });
   });
 
+  it("docs/321: an automatic dispatch says so and draws no bubble, since it may wait for the user's answer", async () => {
+    const { dispatchAgentMessage } = await import("./dispatch-agent-message.js");
+    const bodies: unknown[] = [];
+    const apiPost = vi.fn(async (_path: string, body?: unknown) => {
+      bodies.push(body);
+      return { ok: true, queued: true } as never;
+    });
+    await dispatchAgentMessage({
+      sessionId: "s1", text: "Fix these preview errors", activity: "Fixing preview errors…", apiPost, automatic: true,
+    });
+    expect(bodies[0]).toMatchObject({ automatic: true });
+    expect(useSessionStore.getState().messages).toEqual([]);
+    expect(useSessionStore.getState().isLoading).toBe(false);
+
+    await dispatchAgentMessage({ sessionId: "s1", text: "Create a PR", activity: "Creating…", apiPost });
+    expect(bodies[1]).not.toHaveProperty("automatic");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["Create a PR"]);
+  });
+
   it("keeps the untick when the dispatch failed", async () => {
     const { dispatchAgentMessage } = await import("./dispatch-agent-message.js");
     untick("s1");

@@ -3,7 +3,8 @@ import type {
   SessionRunnerInterface,
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
-import { systemTurnBlockedByResidentWork } from "./turn-admission.js";
+import { automaticTurnHeldForAnswer, systemTurnBlockedByResidentWork } from "./turn-admission.js";
+import { settleDroppedQueueEntries } from "./turn-settlement.js";
 
 export { queuedMessageToDispatchOptions };
 
@@ -19,16 +20,47 @@ export { queuedMessageToDispatchOptions };
 export function takeRunnableQueuedTurn(
   runner: SessionRunnerInterface,
 ): QueuedMessage | undefined {
-  const head = runner.messageQueue[0];
+  const queue = runner.messageQueue;
+  const head = queue[0];
   if (!head) return undefined;
-  const blocked = systemTurnBlockedByResidentWork(runner, head.systemTurn);
+  const held = automaticTurnHeldForAnswer(runner, head.automatic);
+  if (held) {
+    // docs/321 req 6 — the user's own entries do not wait behind held automatic work.
+    const index = queue.findIndex((m) => m.automatic !== true);
+    if (index === -1) {
+      console.log(`[queue] holding ${queue.length} automatic turn(s) for ${runner.sessionId} — ${held}`);
+      return undefined;
+    }
+    return takeIfUnblocked(runner, index);
+  }
+  return takeIfUnblocked(runner, 0);
+}
+
+function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedMessage | undefined {
+  const blocked = systemTurnBlockedByResidentWork(runner, runner.messageQueue[index]?.systemTurn);
   if (blocked) {
     console.warn(
       `[queue] holding the queued system turn for ${runner.sessionId} — ${blocked}`,
     );
     return undefined;
   }
-  return runner.dequeue();
+  return index === 0 ? runner.dequeue() : runner.messageQueue.splice(index, 1)[0];
+}
+
+/**
+ * An interrupted turn discards what was queued behind it. docs/321 — a turn that ended on a
+ * question keeps its automatic entries: they are held for the user's answer, not cancelled.
+ */
+export function discardQueueAfterInterrupt(runner: SessionRunnerInterface): void {
+  if (!runner.awaitingUserAnswer) {
+    runner.clearQueue();
+    return;
+  }
+  const queue = runner.messageQueue;
+  const dropped = queue.filter((m) => m.automatic !== true);
+  if (dropped.length === 0) return;
+  queue.splice(0, queue.length, ...queue.filter((m) => m.automatic === true));
+  settleDroppedQueueEntries(dropped, "queue cleared");
 }
 
 // The tagged executor preserves callbacks and system-turn options across queue drains.

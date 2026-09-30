@@ -626,6 +626,10 @@ export async function runRebaseFlow(
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
         await runRebaseResolutionTurn(deps, prompt, hold, systemHold);
+        // docs/321 — the next resolution prompt would land on the agent's question.
+        if (runner.answerHold) {
+          throw new ServiceError(409, "the agent asked a question and is waiting for your answer");
+        }
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -892,6 +896,8 @@ function dispatchRebaseResolutionTurn(
       // Rebase owns the commits, push, and queue drain.
       postTurn: "none",
       systemTurn: true,
+      // docs/321 — the manual Sync's turns are the user's; the automatic resolver's are not.
+      automatic: deps.recordSyncCard !== true,
       execution: undefined,
       images: undefined,
       files: undefined,

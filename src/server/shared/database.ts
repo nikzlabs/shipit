@@ -1011,6 +1011,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "pending_restart_note");
   },
+
+  // docs/321 — the agent's last turn ended waiting for the user's answer.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "awaiting_answer")) return;
+    db.exec("ALTER TABLE sessions ADD COLUMN awaiting_answer INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

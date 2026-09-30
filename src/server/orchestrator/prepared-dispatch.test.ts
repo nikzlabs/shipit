@@ -23,6 +23,7 @@ const FULL_INIT: AgentDispatchInit = {
   permissionMode: "plan",
   postTurn: "none",
   systemTurn: true,
+  automatic: true,
   onTurnComplete: () => {},
   deliveryId: "watch-1:1",
   dictated: true,

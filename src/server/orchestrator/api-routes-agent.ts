@@ -47,6 +47,8 @@ export async function registerAgentRoutes(
        */
       resetMergedBranch?: boolean;
       compactContext?: boolean;
+      /** docs/321 — the browser's own automation sent this, so it waits for the user's answer. */
+      automatic?: boolean;
     };
   }>(
     "/api/sessions/:id/agent/dispatch",
@@ -100,6 +102,7 @@ export async function registerAgentRoutes(
             ...(body.uploads !== undefined ? { uploads: body.uploads } : {}),
             ...(body.resetMergedBranch !== undefined ? { resetMergedBranch: body.resetMergedBranch } : {}),
             ...(body.compactContext !== undefined ? { compactContext: body.compactContext } : {}),
+            ...(body.automatic === true ? { automatic: true } : {}),
           },
         );
         reply.send(result);

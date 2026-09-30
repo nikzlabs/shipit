@@ -825,6 +825,17 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
   }
 
+  /** docs/321 — the agent's last turn ended waiting for the user, so automatic turns wait too. */
+  isAwaitingAnswer(id: string): boolean {
+    const row = this.db.prepare("SELECT awaiting_answer FROM sessions WHERE id = ?").get(id) as
+      { awaiting_answer: number } | undefined;
+    return row?.awaiting_answer === 1;
+  }
+
+  setAwaitingAnswer(id: string, awaiting: boolean): void {
+    this.db.prepare("UPDATE sessions SET awaiting_answer = ? WHERE id = ?").run(awaiting ? 1 : 0, id);
+  }
+
   setProviderRoute(id: string, kind: ProviderRouteKind, routeId: string): void {
     const session = this.get(id);
     this.db.prepare(

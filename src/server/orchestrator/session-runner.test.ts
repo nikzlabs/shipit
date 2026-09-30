@@ -307,6 +307,56 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("docs/321: while the agent waits for an answer, an automatic dispatch is held and the user's is not", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const deps = steerDeps({ liveSteering: false });
+    deps.answerHold = { isAwaitingAnswer: () => true, setAwaitingAnswer: vi.fn() };
+    runner.setSystemTurnDeps(deps);
+    const ran = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue();
+
+    const held = runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", systemTurn: true, automatic: true }));
+    expect(held.admitted).toBe("queued");
+    expect(runner.queueLength).toBe(1);
+    expect(runner.running).toBe(false);
+
+    const refused = runner.dispatch(
+      testDispatch({ text: "resolve conflicts", systemTurn: true, automatic: true, postTurn: "none" }),
+      { whenBusy: "refuse" },
+    );
+    expect(refused.admitted).toBe("refused");
+    expect((await refused.settled).detail).toContain("waiting for the user's answer");
+
+    const answer = runner.dispatch(testDispatch({ text: "Redis" }));
+    expect(answer.admitted).toBe("started");
+    expect(ran).toHaveBeenCalledTimes(1);
+    expect(ran.mock.calls[0]![0].text).toBe("Redis");
+
+    runner.dispose({ force: true });
+  });
+
+  it("docs/321: automatic work is not steered into a turn that is ending on a question", () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+    runner.awaitingUserAnswer = true;
+
+    runner.dispatch(testDispatch({
+      text: "from the parent session",
+      automatic: true,
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    }));
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+
+    runner.dispatch(testDispatch({ text: "typed by the user" }));
+    expect(sent).toEqual(["typed by the user"]);
+
+    runner.dispose({ force: true });
+  });
+
   it("dispatch enqueues when the turn is not streaming (no resident streaming process to steer) (docs/163)", () => {
     const runner = new SessionRunner({
       sessionId: "s1",

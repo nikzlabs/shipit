@@ -910,6 +910,7 @@ export function createPrStatusPoller(
         agentInterface: undefined,
         activity: "Auto-fixing CI...",
         systemTurn: true,
+        automatic: true,
         onTurnComplete: undefined,
         execution: undefined,
         images: undefined,

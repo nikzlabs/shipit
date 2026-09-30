@@ -189,6 +189,19 @@ describe("SessionManager", () => {
     expect(new SessionManager(dbManager).get("sess-1")!.autoFixCiPaused).toBeUndefined();
   });
 
+  it("docs/321: the answer hold defaults to off and survives a new manager (req 5)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Asks");
+    expect(mgr.isAwaitingAnswer("sess-1")).toBe(false);
+
+    mgr.setAwaitingAnswer("sess-1", true);
+    expect(new SessionManager(dbManager).isAwaitingAnswer("sess-1")).toBe(true);
+
+    mgr.setAwaitingAnswer("sess-1", false);
+    expect(new SessionManager(dbManager).isAwaitingAnswer("sess-1")).toBe(false);
+    expect(mgr.isAwaitingAnswer("no-such-session")).toBe(false);
+  });
+
   it("docs/150: persists provider route kind and id", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Route me");

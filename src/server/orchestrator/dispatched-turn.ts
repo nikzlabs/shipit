@@ -131,6 +131,8 @@ async function runDispatchedTurnInner(
       permissionMode: opts.permissionMode,
       postTurn: undefined,
       systemTurn: true,
+      // The prelude of the entry above, so it releases the answer hold only if that would.
+      automatic: opts.automatic,
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: undefined,
@@ -390,6 +392,7 @@ async function runDispatchedTurnInner(
       ...(isCompactRequest ? { compact: true } : {}),
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
+      ...(opts.automatic !== undefined ? { automatic: opts.automatic } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),

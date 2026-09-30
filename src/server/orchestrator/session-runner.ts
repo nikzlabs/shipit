@@ -27,7 +27,11 @@ import { getAgentDisplayName } from "../shared/agent-registry.js";
 import { runDispatchedTurn } from "./dispatched-turn.js";
 export { runDispatchedTurn };
 
-import { systemTurnBlockedByResidentWork } from "./turn-admission.js";
+import {
+  automaticTurnHeldForAnswer,
+  readAnswerHold,
+  systemTurnBlockedByResidentWork,
+} from "./turn-admission.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 import {
@@ -103,6 +107,8 @@ export interface SteeredMessage {
   images?: { data: string; mediaType: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
+  /** A re-queued steer keeps its dispatch's docs/321 class. */
+  automatic?: boolean;
   /** In-memory replay-ack key. Without an ack at turn end, this steer is re-queued. */
   assembledPrompt?: string;
   delivered?: boolean;
@@ -127,6 +133,7 @@ export interface QueuedMessage {
   permissionMode?: PermissionMode;
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
+  automatic?: boolean;
   onTurnComplete?: (outcome: TurnOutcome) => void;
   deliveryId?: string;
   dictated?: boolean;
@@ -149,6 +156,11 @@ export interface AgentDispatchOptions {
   postTurn?: "commit-push" | "none";
   /** Blocks live steering into this turn. */
   systemTurn?: boolean;
+  /**
+   * docs/321 — not started by this session's user: ShipIt's automation or another
+   * session. Held while the agent waits for the user's answer; any other turn clears that.
+   */
+  automatic?: boolean;
   /** Prefer the returned TurnHandle for new completion consumers. */
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /** Persisted to the worker so delivery settlement can be rebound after orchestrator restart. */
@@ -232,8 +244,11 @@ export function dispatchOnRunner(
   };
 
   if (runner.running) {
+    // docs/321 — a turn that is ending on a question is not one to steer automatic work into.
+    const endingOnQuestion = opts.automatic === true
+      && (runner.awaitingUserAnswer || runner.answerHold);
     // A refusing caller wants its own turn or nothing; steering delivers into someone else's.
-    if (admission?.whenBusy !== "refuse") {
+    if (admission?.whenBusy !== "refuse" && !endingOnQuestion) {
       // Test steering before attaching settlement: a completion callback makes a dispatch unsteerable.
       if (deps && trySteerDispatch(runner, opts, deps)) {
         settlement.noteAdmission("steered");
@@ -251,6 +266,9 @@ export function dispatchOnRunner(
   }
 
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
+
+  const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
+  if (answerHeld) return enqueueOrRefuse(answerHeld);
 
   // System turns replace the resident process, which would destroy its background work.
   const residentWorkBlock = systemTurnBlockedByResidentWork(runner, opts.systemTurn);
@@ -335,6 +353,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.permissionMode !== undefined) queued.permissionMode = opts.permissionMode;
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
   if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
+  if (opts.automatic !== undefined) queued.automatic = opts.automatic;
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;
   if (opts.dictated !== undefined) queued.dictated = opts.dictated;
@@ -344,8 +363,15 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   return queued;
 }
 
+/** docs/321 — where the "agent waits for the user's answer" mark is kept. */
+export interface AnswerHoldStore {
+  isAwaitingAnswer(sessionId: string): boolean;
+  setAwaitingAnswer(sessionId: string, awaiting: boolean): void;
+}
+
 export interface SystemTurnDeps {
   authorizeDispatch?: (sessionId: string) => void;
+  answerHold?: AnswerHoldStore;
   agentFactory: (agentId: AgentId) => AgentProcess;
   autoCommit: (
     sessionDir: string,
@@ -557,6 +583,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly systemHoldSeq: number;
   /** Separate from systemTurnInProgress so a turn's cleanup cannot release an in-flight merge. */
   mergeHold: boolean;
+  /** docs/321 — the agent waits for the user's answer, so automatic turns are held. */
+  readonly answerHold: boolean;
   wasInterrupted: boolean;
   turnEpoch: number;
   guardedUnavailable: boolean;
@@ -752,6 +780,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
+  get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }

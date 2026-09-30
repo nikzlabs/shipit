@@ -25,6 +25,8 @@ export interface RemediationManagerConfig {
   ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   isGlobalEnabled: () => boolean;
   isSessionEnabled?: (sessionId: string) => boolean;
+  /** docs/321 — the agent waits for the user's answer, and automatic work waits with it. */
+  isAwaitingAnswer?: (sessionId: string) => boolean;
   now: () => number;
   arbiter?: RemediationArbiter;
 }
@@ -76,6 +78,17 @@ export abstract class AutoRemediationManager<TSignal> {
   protected abstract fireAttempt(sessionId: string, signal: TSignal, attempt: number): void;
 
   protected onDelete(_sessionId: string): void { /* override to clear caches */ }
+
+  /** A failed read counts as not held, as the dispatch gate reads it. */
+  protected heldForAnswer(sessionId: string): boolean {
+    if (!this.cfg.isAwaitingAnswer) return false;
+    try {
+      return this.cfg.isAwaitingAnswer(sessionId);
+    } catch (err) {
+      console.error(`[${this.cfg.name}] reading the answer hold for ${sessionId} failed:`, err);
+      return false;
+    }
+  }
 
   protected isStaleFire(_sessionId: string, _signal: TSignal): boolean {
     return false;
@@ -181,6 +194,13 @@ export abstract class AutoRemediationManager<TSignal> {
 
     if (state.nextEligibleAt !== undefined && this.now() < state.nextEligibleAt) return;
 
+    // Deferred as a running agent is, and before a runner is made: the idle that ends the
+    // user's reply re-fires it.
+    if (this.heldForAnswer(sessionId)) {
+      this.defer(sessionId, state);
+      return;
+    }
+
     let runner = this.cfg.getRunner(sessionId);
     if (!runner && this.cfg.ensureRunner) runner = await this.cfg.ensureRunner(sessionId);
     if (!runner) {
@@ -225,6 +245,7 @@ export abstract class AutoRemediationManager<TSignal> {
       return;
     }
     if (state.nextEligibleAt !== undefined && this.now() < state.nextEligibleAt) return;
+    if (this.heldForAnswer(sessionId)) return;
 
     let runner = this.cfg.getRunner(sessionId);
     if (!runner && this.cfg.ensureRunner) runner = await this.cfg.ensureRunner(sessionId);

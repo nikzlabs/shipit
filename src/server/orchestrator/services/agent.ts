@@ -50,6 +50,8 @@ export interface DispatchAgentMessageInput {
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
+  /** docs/321 — sent by the browser's own automation (the preview auto-fix), not by a click. */
+  automatic?: boolean;
 }
 
 export interface DispatchAgentMessageResult {
@@ -184,6 +186,7 @@ export async function dispatchAgentMessage(
     execution: undefined,
     postTurn: undefined,
     systemTurn: undefined,
+    automatic: input.automatic === true ? true : undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
