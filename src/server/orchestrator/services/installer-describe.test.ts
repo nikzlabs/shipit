@@ -171,7 +171,8 @@ describe("installers describe their own questions (docs/276)", () => {
   });
 
   it("builds with the lib.sh its own sync brought in (planning#626)", () => {
-    // Re-run over an older clone, the lib.sh sourced before the sync is the old one.
+    // A fresh install clones main and syncs to stable, and a re-run syncs an older clone:
+    // either way the lib.sh sourced before the sync is not the checkout's.
     const src = fs.readFileSync(LOCAL_SETUP, "utf8");
     const sync = src.indexOf("\nshipit_sync_checkout\n");
     const reload = src.indexOf('. "$SHIPIT_HOME/deployment/local/lib.sh"', sync);
