@@ -214,7 +214,7 @@ export interface SessionContainerManagerEvents {
     exitCode: number;
     oom: boolean;
   }];
-  /** Operator signal; platform sidecar exits are not project service failures. */
+  /** Operator signal; platform sidecar and `docker compose run` exits are not project service failures. */
   session_child_exited: [sessionId: string, info: {
     containerId: string;
     exitCode: number;

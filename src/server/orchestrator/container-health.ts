@@ -14,6 +14,7 @@ import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 const COMPOSE_PARENT_SESSION_LABEL = "shipit-parent-session";
 const COMPOSE_SERVICE_NAME_LABEL = "shipit-service-name";
 const DOCKER_COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
+const DOCKER_COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff";
 
 export interface HealthDeps {
   docker: Docker;
@@ -160,7 +161,9 @@ export async function startHealthMonitor(
               || attrs[EGRESS_RESOLVER_LABEL]
               || attrs[EGRESS_PROXY_LABEL],
           );
-          const serviceName = egressSidecar
+          // A `docker compose run` container carries its service's labels but is not the service.
+          const oneOff = attrs[DOCKER_COMPOSE_ONEOFF_LABEL] === "True";
+          const serviceName = egressSidecar || oneOff
             ? undefined
             : attrs[COMPOSE_SERVICE_NAME_LABEL] || attrs[DOCKER_COMPOSE_SERVICE_LABEL];
           if (serviceName) {
