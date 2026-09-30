@@ -912,6 +912,7 @@ export function createPrStatusPoller(
         activity: "Auto-fixing CI...",
         systemTurn: true,
         automatic: true,
+        heldId: undefined,
         onTurnComplete: undefined,
         execution: undefined,
         images: undefined,

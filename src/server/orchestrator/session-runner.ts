@@ -49,7 +49,7 @@ import {
 import { takeRunnableQueuedTurn } from "./queue-drain.js";
 import {
   forgetHeldEntries,
-  hasHeldDelivery,
+  forgetHeldTurn,
   holdTurn,
   withoutHeldEntries,
 } from "./held-turns.js";
@@ -142,7 +142,6 @@ export interface QueuedMessage {
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
   automatic?: boolean;
-  /** docs/321 req 8 — its saved row while it waits for the user's answer; forgotten when it runs. */
   heldId?: number;
   onTurnComplete?: (outcome: TurnOutcome) => void;
   deliveryId?: string;
@@ -171,6 +170,8 @@ export interface AgentDispatchOptions {
    * session. Held while the agent waits for the user's answer; any other turn clears that.
    */
   automatic?: boolean;
+  /** docs/321 req 8 — the saved row of a held turn; deleted when the turn starts, not before. */
+  heldId?: number;
   /** Prefer the returned TurnHandle for new completion consumers. */
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /** Persisted to the worker so delivery settlement can be rebound after orchestrator restart. */
@@ -243,7 +244,15 @@ export function dispatchOnRunner(
       return settlement;
     }
     settlement.noteAdmission("queued");
-    const position = runner.enqueue(toQueuedMessage(withSettlement(opts, settlement)));
+    const entry = toQueuedMessage(withSettlement(opts, settlement));
+    // docs/321 req 8 — whichever gate stopped it, held automatic work is saved rather than
+    // queued, so a stopped container or a restart cannot lose it.
+    const held = automaticTurnHeldForAnswer(runner, opts.automatic);
+    if (held && holdTurn(runner.answerHoldStore, runner.sessionId, entry)) {
+      console.log(`[dispatch] held the automatic dispatch for ${runner.sessionId} — ${held} (${reason})`);
+      return settlement;
+    }
+    const position = runner.enqueue(entry);
     // A queued system dispatch looks delivered to its caller; say that no turn started.
     console.log(
       `[dispatch] queued the ${opts.systemTurn ? "system " : ""}dispatch for ${runner.sessionId} `
@@ -278,16 +287,7 @@ export function dispatchOnRunner(
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
 
   const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
-  if (answerHeld) {
-    if (admission?.whenBusy === "refuse") return enqueueOrRefuse(answerHeld);
-    // docs/321 req 8 — saved rather than queued, so a stopped container cannot lose it.
-    if (holdTurn(runner.answerHoldStore, runner.sessionId, toQueuedMessage(withSettlement(opts, settlement)))) {
-      settlement.noteAdmission("queued");
-      console.log(`[dispatch] held the automatic dispatch for ${runner.sessionId} — ${answerHeld}`);
-      return settlement;
-    }
-    return enqueueOrRefuse(answerHeld);
-  }
+  if (answerHeld) return enqueueOrRefuse(answerHeld);
 
   // System turns replace the resident process, which would destroy its background work.
   const residentWorkBlock = systemTurnBlockedByResidentWork(runner, opts.systemTurn);
@@ -342,6 +342,8 @@ export function dispatchOnRunner(
     );
     if (opts.systemTurn) runner.systemTurnInProgress = false;
     runner.running = false;
+    // Told it errored, the caller owns any retry; a saved copy would run it a second time.
+    forgetHeldTurn(runner.answerHoldStore, opts);
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
@@ -374,6 +376,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
   if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   if (opts.automatic !== undefined) queued.automatic = opts.automatic;
+  if (opts.heldId !== undefined) queued.heldId = opts.heldId;
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;
   if (opts.dictated !== undefined) queued.dictated = opts.dictated;
@@ -606,6 +609,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** docs/321 — the agent waits for the user's answer, so automatic turns are held. */
   readonly answerHold: boolean;
   readonly answerHoldStore?: AnswerHoldStore;
+  /** Restores a saved delivery's settlement after a restart lost its callback. */
+  readonly rebindDelivery?: SystemTurnDeps["rebindDelivery"];
   wasInterrupted: boolean;
   turnEpoch: number;
   guardedUnavailable: boolean;
@@ -803,6 +808,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
   get answerHoldStore(): AnswerHoldStore | undefined { return this._systemTurnDeps?.answerHold; }
+  get rebindDelivery(): SystemTurnDeps["rebindDelivery"] { return this._systemTurnDeps?.rebindDelivery; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }
@@ -934,8 +940,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   dequeue(): QueuedMessage | undefined { return this._messageQueue.shift(); }
   hasDelivery(deliveryId: string): boolean {
     if (this.activeDeliveryId === deliveryId) return true;
-    if (this._messageQueue.some((m) => m.deliveryId === deliveryId)) return true;
-    return hasHeldDelivery(this.answerHoldStore, this.sessionId, deliveryId);
+    return this._messageQueue.some((m) => m.deliveryId === deliveryId);
   }
   clearQueue(): void {
     forgetHeldEntries(this.answerHoldStore, this._messageQueue);

@@ -22,6 +22,7 @@ import { prepareSessionMessageOutcomeNotice } from "../services/session-message-
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
+import { stoppedByUser } from "../turn-stop-request.js";
 import {
   agentEnvTurnArgs,
   prepareSessionAgentEnvironment,
@@ -87,9 +88,10 @@ export async function drainNextQueuedMessage(
     runner.systemTurnInProgress = false;
     if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
   }
-  // A stop discards the queue. docs/321 — a question does not: what the user queued is
-  // their reply, and the take below holds the automatic entries.
-  if (runner.wasInterrupted && !runner.awaitingUserAnswer && !compactionTurn) {
+  // A stop discards the queue. docs/321 — a question's own interrupt does not: what the
+  // user queued is their reply, and the take below holds the automatic entries.
+  const questionInterrupt = runner.awaitingUserAnswer && !stoppedByUser(runner);
+  if (runner.wasInterrupted && !questionInterrupt && !compactionTurn) {
     if (messageQueue.length > 0) {
       runner.clearQueue();
       emit({ type: "queue_updated", queue: [] });

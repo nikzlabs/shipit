@@ -144,6 +144,7 @@ function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatc
     activity: opts.activity,
     systemTurn: true,
     automatic: true,
+    heldId: undefined,
     ...(onSettled
       ? {
           onTurnComplete: (outcome: TurnOutcome) => {

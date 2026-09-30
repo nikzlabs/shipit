@@ -8,13 +8,15 @@
 interface TurnPhase {
   submitted: boolean;
   stopRequested: boolean;
+  /** docs/321 — the user pressed Stop, which a question's own interrupt is not. */
+  stoppedByUser: boolean;
 }
 
 const phases = new WeakMap<object, TurnPhase>();
 
 /** `running` went from false to true: a new turn is setting up. */
 export function beginTurnSetup(runner: object): void {
-  phases.set(runner, { submitted: false, stopRequested: false });
+  phases.set(runner, { submitted: false, stopRequested: false, stoppedByUser: false });
 }
 
 /**
@@ -46,4 +48,13 @@ export function consumeSetupStop(runner: object): boolean {
   if (!phase?.stopRequested) return false;
   phase.stopRequested = false;
   return true;
+}
+
+export function noteUserStop(runner: object): void {
+  const phase = phases.get(runner);
+  if (phase) phase.stoppedByUser = true;
+}
+
+export function stoppedByUser(runner: object): boolean {
+  return phases.get(runner)?.stoppedByUser === true;
 }

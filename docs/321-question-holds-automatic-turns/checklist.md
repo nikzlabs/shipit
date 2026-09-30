@@ -13,5 +13,6 @@
 - [x] Review fixes: queued reply kept, setup-failure take, stale remediation check, Retry by user
 - [x] Stop a turn the agent's CLI starts by itself while held (req 7)
 - [x] Save held turns in the database; restore at a user turn; wake-ups saved without booting (req 8)
+- [x] Second review: save at every busy gate, keep the row until the turn starts, rebind a restarted delivery, user first after restore, cancel forgets the row, user Stop still discards, deferred Retry stays the user's
 - [x] Tests
 - [x] Wiki

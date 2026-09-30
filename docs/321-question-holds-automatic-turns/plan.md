@@ -67,19 +67,24 @@ question.
 
 1. **Dispatch admission** (`dispatchOnRunner`): an automatic dispatch that meets
    the mark is saved (below), or refused for a `whenBusy: "refuse"` caller
-   (req 1, 4). While a turn runs, automatic work is not steered into it
+   (req 1, 4). The saving sits in `enqueueOrRefuse`, the one exit every busy
+   gate shares, so automatic work stopped by a running turn — the question
+   winding down, a CLI turn being stopped — is saved too, not queued in memory. While a turn runs, automatic work is not steered into it
    once the turn has asked (`runner.awaitingUserAnswer`), so it queues instead.
    An interrupted interactive turn discards its queue — the Stop button's
    meaning. A question also interrupts the CLI, and used to discard the queue
    the same way, dropping even a reply the user typed as the card appeared. The
    interactive drain now discards only after a stop; after a question it goes on
    to the take below, which runs the user's own entry and holds the automatic
-   ones (req 3, 6).
+   ones (req 3, 6). A Stop the user presses as the question lands still
+   discards: `noteUserStop` (`turn-stop-request.ts`) tells it from the
+   question's own interrupt.
 2. **Queue take** (`takeRunnableQueuedTurn`): while the mark is set, every
    automatic entry in the queue — one that queued behind the asking turn — is
    saved and leaves the queue, and the first entry the user queued is taken.
    Every drain, `releaseQueuedTurn` and the dispatch setup-failure recovery take
-   through it (req 4, 6).
+   through it (req 4, 6). Once released, a restored held turn still lets a
+   message the user queued meanwhile go first.
 3. **Remediation** (`AutoRemediationManager`): a held session defers exactly as
    a running one does, before any runner is created, so no container boots
    for it, and again after the awaits just before the attempt is claimed, since
@@ -105,7 +110,8 @@ Work the user starts by hand passes every gate and clears the mark when its
 turn starts (req 6): Fix CI is a plain dispatch, and a rebase flow the user
 started — the Sync button, or **Retry** on the auto-resolver — carries
 `userStarted`, so its resolution turns are not automatic. Retry reaches the
-resolver as `handleTransition(…, { byUser: true })`, which skips the hold.
+resolver as `handleTransition(…, { byUser: true })`, which skips the hold; a
+Retry that has to wait keeps that origin on the resolver's state until it fires.
 
 ## Held turns are saved (req 8)
 
@@ -121,10 +127,18 @@ as the process, as its caller does.
   the clear): the rows go back into the queue behind what the user queued
   (req 6), each carrying its `heldId`, and run when that turn ends. If it ends on
   a new question, the take saves them out again.
-- **Forgotten** when the take hands the entry over to run.
+- **Forgotten** when the turn starts (`TurnInput.heldId`, deleted in
+  `executeAgentTurn`) — not when it leaves the queue, since a compaction
+  prelude puts it back and a restart in between would lose it. A dispatch whose
+  setup fails forgets it too: its caller is told, and owns any retry.
 - A runner that goes away while they are back in its queue does not settle them
   (`withoutHeldEntries`); their rows bring them back at the next user turn. A
-  Stop discards them with the rest of the queue (`forgetHeldEntries`).
+  Stop, or cancelling one from the queue, discards it with its row
+  (`forgetHeldEntries`).
+- After a restart the callback is gone. A merge notice gets its settlement back
+  from `rebindDelivery` when it is restored, so the watch is marked delivered and
+  its retry loop does not send it again. merge-watch counts a saved delivery as
+  in flight; nothing else asks.
 
 The accepted cost: after a restart that lands between the reply's start and its
 end, the rows come back at the user's next turn rather than at once.
@@ -135,6 +149,8 @@ end, the rows come back at the user's next turn rather than at once.
 - `src/server/orchestrator/held-turns.ts` — save, restore and forget, all failing open.
 - `src/server/orchestrator/wake-session.ts`, `merge-watch.ts` — wake-ups saved without booting.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — the CLI's own turn stopped.
+- `src/server/orchestrator/turn-stop-request.ts` — a user Stop told apart from a question's interrupt.
+- `src/server/orchestrator/ws-handlers/misc-handlers.ts` — cancelling a queued held turn forgets its row.
 - `src/server/orchestrator/turn-executor.ts` — set at settlement, clear at a user turn's start.
 - `src/server/orchestrator/session-runner.ts` — `automatic` option, `answerHold`, the dispatch gate.
 - `src/server/orchestrator/queue-drain.ts` — the take.

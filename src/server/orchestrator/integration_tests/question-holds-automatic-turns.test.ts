@@ -22,6 +22,7 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import { stoppedByUser } from "../turn-stop-request.js";
 
 const WAKE_TEXT = "Child PR #42 merged: child (child-id).";
 
@@ -223,6 +224,55 @@ describe("Integration: a question holds automatic turns (docs/321)", () => {
     wakeTurn.finish("wake-turn");
     await waitFor(() => outcomes.length > 0, "wake turn settled");
     expect(outcomes).toEqual([TURN_COMPLETED]);
+
+    stop();
+    client.close();
+  });
+
+  it("Stop pressed as the question lands still discards the user's queued message", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const stop = pump(client);
+
+    const asker = await turnThatAsks(client);
+    const runner = runnerFor(client.sessionId);
+    client.send({ type: "send_message", text: "Use Redis" });
+    await waitFor(() => runner.queueLength === 1, "the reply queued");
+    client.send({ type: "interrupt_agent" });
+    await waitFor(() => stoppedByUser(runner), "the stop reached the runner");
+
+    asker.finish("question-turn");
+    await waitFor(() => !runner.running, "question turn settled");
+    await new Promise((r) => setTimeout(r, 150));
+    expect(lastClaude).toBe(asker);
+    expect(runner.queueLength).toBe(0);
+
+    stop();
+    client.close();
+  });
+
+  it("a held turn the user cancels from the queue does not come back from its saved row", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const stop = pump(client);
+
+    const asker = await turnThatAsks(client);
+    asker.finish("question-turn");
+    const runner = runnerFor(client.sessionId);
+    await waitFor(() => !runner.running, "question turn settled");
+    dispatchWake(runner, []);
+
+    client.send({ type: "answer_question", toolUseId: "ask-1", answers: { "0": "Redis" } });
+    const answerTurn = await waitForClaude(() => lastClaude, asker);
+    await waitFor(() => runner.queueLength === 1, "the held wake is back in the queue");
+    client.send({ type: "cancel_queued_message", position: 0 });
+    await waitFor(() => runner.queueLength === 0, "the wake cancelled");
+    expect(sessionManager.heldTurns(client.sessionId)).toEqual([]);
+
+    answerTurn.finish("answer-turn");
+    await waitFor(() => !runner.running, "answer turn settled");
+    await new Promise((r) => setTimeout(r, 150));
+    expect(lastClaude).toBe(answerTurn);
 
     stop();
     client.close();

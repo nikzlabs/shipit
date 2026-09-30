@@ -187,6 +187,7 @@ export async function dispatchAgentMessage(
     postTurn: undefined,
     systemTurn: undefined,
     automatic: input.automatic === true ? true : undefined,
+    heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,

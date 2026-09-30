@@ -345,6 +345,37 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("docs/321 req 8: automatic work stopped by any gate while the agent waits is saved, not queued", () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const deps = steerDeps({ liveSteering: true });
+    const saved: string[] = [];
+    deps.answerHold = {
+      isAwaitingAnswer: () => true,
+      setAwaitingAnswer: vi.fn(),
+      holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry.text); return saved.length; },
+      heldTurns: () => [],
+      forgetHeldTurn: vi.fn(),
+      hasHeldDelivery: () => false,
+    };
+    runner.setSystemTurnDeps(deps);
+    // The asking turn is still winding down, or a CLI-started turn is being stopped.
+    runner.running = true;
+
+    const handle = runner.dispatch(testDispatch({
+      text: "from the parent session",
+      automatic: true,
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    }));
+    expect(handle.admitted).toBe("queued");
+    expect(saved).toEqual(["from the parent session"]);
+    expect(runner.queueLength).toBe(0);
+
+    runner.dispatch(testDispatch({ text: "typed by the user" }));
+    expect(runner.queueLength).toBe(1);
+
+    runner.dispose({ force: true });
+  });
+
   it("docs/321: automatic work is not steered into a turn that is ending on a question", () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));

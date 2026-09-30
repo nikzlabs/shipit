@@ -2,7 +2,9 @@ import type { WsClientMessage } from "../../shared/types.js";
 import type { AppCtx, ConnectionCtx, RunnerCtx } from "./types.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { scheduleInterruptCommit } from "../services/post-interrupt-commit.js";
-import { requestStopDuringSetup } from "../turn-stop-request.js";
+import { noteUserStop, requestStopDuringSetup } from "../turn-stop-request.js";
+import { forgetHeldEntries } from "../held-turns.js";
+import type { QueuedMessage } from "../session-runner.js";
 
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
 type WsPrTabActive = Extract<WsClientMessage, { type: "pr_tab_active" }>;
@@ -10,14 +12,17 @@ type WsPrTabActive = Extract<WsClientMessage, { type: "pr_tab_active" }>;
 export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: WsCancelQueuedMessage): void {
   const runner = resolveRunner(ctx);
   const queue = runner?.messageQueue ?? [];
+  let removed: QueuedMessage[] = [];
   if (msg.position === "all") {
-    queue.length = 0;
+    removed = queue.splice(0, queue.length);
   } else {
     const idx = typeof msg.position === "number" ? msg.position : -1;
     if (idx >= 0 && idx < queue.length) {
-      queue.splice(idx, 1);
+      removed = queue.splice(idx, 1);
     }
   }
+  // docs/321 — a held turn the user cancels must not come back from its saved row.
+  forgetHeldEntries(runner?.answerHoldStore, removed);
   ctx.send({
     type: "queue_updated",
     queue: queue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
@@ -34,6 +39,7 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
   // The turn has not submitted its prompt, and may not have an agent yet: it ends itself.
   if (runner?.running && requestStopDuringSetup(runner)) {
     runner.wasInterrupted = true;
+    noteUserStop(runner);
     ctx.broadcastLog("server", "Agent turn stopped by user before it started");
     runner.emitMessage({ type: "agent_interrupted" });
     return;
@@ -45,6 +51,7 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
   }
 
   runner.wasInterrupted = true;
+  noteUserStop(runner);
   // A resident streaming CLI outlives an interrupt, and a background task it still runs
   // wakes it into a turn the user just stopped. A one-shot CLI's interrupt ends it already.
   const kill = runner.isStreamingActive;

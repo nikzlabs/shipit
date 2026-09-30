@@ -86,6 +86,7 @@ describe("queue drain routing (planning#257)", () => {
       postTurn: "none",
       systemTurn: true,
       automatic: true,
+      heldId: 7,
       onTurnComplete,
       deliveryId: "watch-1:1",
       dictated: true,
@@ -229,10 +230,21 @@ describe("a question holds automatic entries (docs/321)", () => {
     expect(saved).toEqual(["[ci-fix] CI failed"]);
     expect(queue).toHaveLength(0);
 
+    // The row stays until the turn starts: a compaction or a failed setup can put it back.
     const restored: QueuedMessage[] = [{ ...automaticEntry(), heldId: 7 }];
     expect(takeRunnableQueuedTurn(withStore(restored, false))?.heldId).toBe(7);
-    expect(forgotten).toEqual([7]);
+    expect(forgotten).toEqual([]);
     vi.restoreAllMocks();
+  });
+
+  it("a released held turn still lets a message the user queued go first (req 6)", () => {
+    const queue: QueuedMessage[] = [
+      { ...automaticEntry(), heldId: 7 },
+      { text: "queued during the reply", execution: "interactive" },
+    ];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, false))?.text).toBe("queued during the reply");
+    expect(queue.map((m) => m.heldId)).toEqual([7]);
   });
 
   it("takes the automatic head once the user has answered (req 4)", () => {

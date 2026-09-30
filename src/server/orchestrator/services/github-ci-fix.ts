@@ -249,6 +249,7 @@ export async function triggerCIFix(
     postTurn: undefined,
     systemTurn: undefined,
     automatic: undefined,
+    heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,

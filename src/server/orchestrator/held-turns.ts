@@ -3,7 +3,7 @@ import type { AnswerHoldStore, QueuedMessage, SessionRunnerInterface } from "./s
 /**
  * docs/321 req 8 — automatic turns held for the user's answer live in the database, not
  * in a runner's queue, so a stopped container or a restart cannot lose them. They go back
- * into the queue when the user starts a turn, and their row is forgotten when they run.
+ * into the queue when the user starts a turn, and their row is forgotten when the turn starts.
  */
 
 /** False when there is nowhere to keep it; the caller then queues it in memory as before. */
@@ -24,13 +24,15 @@ export function holdTurn(
 
 /** Puts the held turns back behind what the user queued (req 6). Returns how many. */
 export function restoreHeldTurns(
-  runner: Pick<SessionRunnerInterface, "sessionId" | "messageQueue" | "answerHoldStore">,
+  runner: Pick<SessionRunnerInterface, "sessionId" | "messageQueue" | "answerHoldStore" | "rebindDelivery">,
 ): number {
   const store = runner.answerHoldStore;
   if (!store) return 0;
   try {
     const present = new Set(runner.messageQueue.map((m) => m.heldId));
-    const held = store.heldTurns(runner.sessionId).filter((m) => !present.has(m.heldId));
+    const held = store.heldTurns(runner.sessionId)
+      .filter((m) => !present.has(m.heldId))
+      .map((m) => withRestartSettlement(m, runner.rebindDelivery));
     runner.messageQueue.push(...held);
     return held.length;
   } catch (err) {
@@ -39,7 +41,17 @@ export function restoreHeldTurns(
   }
 }
 
-export function forgetHeldTurn(store: AnswerHoldStore | undefined, entry: QueuedMessage): void {
+/** A restart kept the row but not the callback; a delivery its owner can re-bind gets it back. */
+function withRestartSettlement(
+  entry: QueuedMessage,
+  rebind: SessionRunnerInterface["rebindDelivery"],
+): QueuedMessage {
+  if (entry.onTurnComplete || entry.deliveryId === undefined || !rebind) return entry;
+  const onTurnComplete = rebind(entry.deliveryId);
+  return onTurnComplete ? { ...entry, onTurnComplete } : entry;
+}
+
+export function forgetHeldTurn(store: AnswerHoldStore | undefined, entry: { heldId?: number }): void {
   if (!store || entry.heldId === undefined) return;
   try {
     store.forgetHeldTurn(entry.heldId);

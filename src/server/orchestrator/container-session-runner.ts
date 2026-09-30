@@ -32,7 +32,7 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginTurnSetup } from "./turn-stop-request.js";
 import { readAnswerHold } from "./turn-admission.js";
-import { forgetHeldEntries, hasHeldDelivery } from "./held-turns.js";
+import { forgetHeldEntries } from "./held-turns.js";
 import { modelListField } from "../shared/catalogue/model-list.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
@@ -248,6 +248,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
   get answerHoldStore(): AnswerHoldStore | undefined { return this._systemTurnDeps?.answerHold; }
+  get rebindDelivery(): SystemTurnDeps["rebindDelivery"] { return this._systemTurnDeps?.rebindDelivery; }
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
@@ -434,8 +435,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   activeDeliveryId: string | undefined;
   hasDelivery(deliveryId: string): boolean {
     if (this.activeDeliveryId === deliveryId) return true;
-    if (this.turn.messageQueue.some((m) => m.deliveryId === deliveryId)) return true;
-    return hasHeldDelivery(this.answerHoldStore, this.sessionId, deliveryId);
+    return this.turn.messageQueue.some((m) => m.deliveryId === deliveryId);
   }
 
   // A resident process reports running between turns; legacy workers lack turnActive.

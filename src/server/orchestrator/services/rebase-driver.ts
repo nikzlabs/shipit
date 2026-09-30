@@ -899,6 +899,7 @@ function dispatchRebaseResolutionTurn(
       postTurn: "none",
       systemTurn: true,
       automatic: deps.userStarted !== true,
+      heldId: undefined,
       execution: undefined,
       images: undefined,
       files: undefined,

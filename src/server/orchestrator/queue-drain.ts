@@ -4,7 +4,7 @@ import type {
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import { automaticTurnHeldForAnswer, systemTurnBlockedByResidentWork } from "./turn-admission.js";
-import { forgetHeldTurn, holdTurn } from "./held-turns.js";
+import { holdTurn } from "./held-turns.js";
 
 export { queuedMessageToDispatchOptions };
 
@@ -33,7 +33,11 @@ export function takeRunnableQueuedTurn(
     if (index === -1) return undefined;
     return takeIfUnblocked(runner, index);
   }
-  return takeIfUnblocked(runner, 0);
+  // Released, a held turn still waits for a message the user queued after it came back.
+  const userIndex = queue[0]?.heldId === undefined
+    ? -1
+    : queue.findIndex((m) => m.heldId === undefined && m.automatic !== true);
+  return takeIfUnblocked(runner, userIndex === -1 ? 0 : userIndex);
 }
 
 /** docs/321 req 8 — automatic entries behind a question move out of memory into the saved hold. */
@@ -56,9 +60,7 @@ function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedM
     );
     return undefined;
   }
-  const taken = index === 0 ? runner.dequeue() : runner.messageQueue.splice(index, 1)[0];
-  if (taken) forgetHeldTurn(runner.answerHoldStore, taken);
-  return taken;
+  return index === 0 ? runner.dequeue() : runner.messageQueue.splice(index, 1)[0];
 }
 
 // The tagged executor preserves callbacks and system-turn options across queue drains.

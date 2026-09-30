@@ -133,6 +133,7 @@ async function runDispatchedTurnInner(
       systemTurn: true,
       // The prelude of the entry above, so it releases the answer hold only if that would.
       automatic: opts.automatic,
+      heldId: undefined,
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: undefined,
@@ -393,6 +394,7 @@ async function runDispatchedTurnInner(
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.automatic !== undefined ? { automatic: opts.automatic } : {}),
+      ...(opts.heldId !== undefined ? { heldId: opts.heldId } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),

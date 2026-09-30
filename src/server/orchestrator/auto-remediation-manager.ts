@@ -13,6 +13,8 @@ export interface RemediationState {
   settleUntil?: number;
   postPushSettledHeadSha?: string;
   postPushSettledBaseSha?: string;
+  /** docs/321 — a Retry the user clicked that had to wait; the attempt stays theirs. */
+  byUser?: boolean;
 }
 
 export type SignalKind = "fire" | "resolved" | "ignore";
@@ -162,6 +164,8 @@ export abstract class AutoRemediationManager<TSignal> {
 
     if (state.status === "running") return;
     if (state.status === "exhausted") return;
+    if (opts.byUser) state.byUser = true;
+    const byUser = state.byUser === true;
 
     // Our own push must not reset the budget while GitHub still serves a stale verdict.
     if (state.lastHeadSha && headSha && headSha !== state.lastHeadSha) {
@@ -206,7 +210,7 @@ export abstract class AutoRemediationManager<TSignal> {
 
     // Deferred as a running agent is, and before a runner is made: the idle that ends the
     // user's reply re-fires it.
-    if (!opts.byUser && this.heldForAnswer(sessionId)) {
+    if (!byUser && this.heldForAnswer(sessionId)) {
       this.defer(sessionId, state);
       return;
     }
@@ -228,7 +232,7 @@ export abstract class AutoRemediationManager<TSignal> {
       return;
     }
     // Again past the awaits: a turn can have ended on a question meanwhile.
-    if (!opts.byUser && this.heldForAnswer(sessionId)) {
+    if (!byUser && this.heldForAnswer(sessionId)) {
       this.defer(sessionId, state);
       return;
     }
@@ -238,8 +242,9 @@ export abstract class AutoRemediationManager<TSignal> {
       return;
     }
     state.status = "running";
+    delete state.byUser;
     this.onChange(sessionId);
-    this.fireAttempt(sessionId, signal, state.attemptCount + 1, opts);
+    this.fireAttempt(sessionId, signal, state.attemptCount + 1, { byUser });
   }
 
   async onRunnerIdle(sessionId: string): Promise<void> {
@@ -260,7 +265,7 @@ export abstract class AutoRemediationManager<TSignal> {
       return;
     }
     if (state.nextEligibleAt !== undefined && this.now() < state.nextEligibleAt) return;
-    if (this.heldForAnswer(sessionId)) return;
+    if (state.byUser !== true && this.heldForAnswer(sessionId)) return;
 
     let runner = this.cfg.getRunner(sessionId);
     if (!runner && this.cfg.ensureRunner) runner = await this.cfg.ensureRunner(sessionId);
@@ -271,7 +276,8 @@ export abstract class AutoRemediationManager<TSignal> {
     }
 
     if (this.cfg.arbiter?.shouldSuppress(sessionId, state.lastHeadSha)) return;
-    if (this.heldForAnswer(sessionId)) return;
+    const byUser = state.byUser === true;
+    if (!byUser && this.heldForAnswer(sessionId)) return;
 
     const signal = this.rebuildSignalForIdle(sessionId);
     if (!signal) return;
@@ -279,8 +285,9 @@ export abstract class AutoRemediationManager<TSignal> {
 
     if (!this.tryClaim(sessionId, state.lastHeadSha)) return;
     state.status = "running";
+    delete state.byUser;
     this.onChange(sessionId);
-    this.fireAttempt(sessionId, signal, state.attemptCount + 1, {});
+    this.fireAttempt(sessionId, signal, state.attemptCount + 1, { byUser });
   }
 
   protected defer(sessionId: string, state: RemediationState): void {
