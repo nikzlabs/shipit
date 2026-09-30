@@ -330,6 +330,63 @@ every other LFS file keeps its real content.
 A deployment can disable automatic LFS downloads (`SHIPIT_GIT_LFS=off`) to avoid
 the bandwidth cost on asset-heavy repos; a manual `git lfs pull` still works.
 
+**ShipIt's pushes upload LFS objects first, and stop when the upload fails.**
+Every push ShipIt makes for you (the auto-push after a turn, opening a pull
+request, the force-push after a sync) runs `git lfs push` before it pushes the
+branch. If that upload fails, the branch is **not pushed**: without its objects
+the remote would name LFS files that no store holds, and every other clone would
+get pointer stubs with a clean `git status`. The commits stay in the session's
+local history, a notice in the chat quotes git-lfs's error, and every later push
+retries the upload first. A branch that adds no new LFS objects still pushes
+while the LFS server is down. To investigate, run `git lfs push origin <branch>`
+and read its error. Do not get around it by pushing with the LFS upload skipped
+(`--no-verify`, `GIT_LFS_SKIP_PUSH`); that publishes exactly the stubs this
+refusal prevents.
+
+Moving a repository to a new LFS server does not copy the objects already
+pushed. A push uploads only the objects of commits the remote does not have yet,
+so a commit that changes `lfs.url` and adds no LFS file uploads nothing. Copy the
+existing objects with `git lfs push --all origin` after you point `lfs.url` at
+the new server and before that commit reaches other clones.
+
+**LFS objects are shared between sessions on one host.** ShipIt keeps one LFS
+object store per repository per ShipIt host, beside its bare git cache. This is
+what to use when you estimate LFS download volume:
+
+- **What the store downloads.** The objects at the tip of the default branch,
+  and nothing else: no other branch, no history. It fetches in the background
+  every 3 minutes and right after a session's pull request merges, and it
+  downloads only objects it does not hold yet.
+- **What a new session gets.** Its clone hardlinks **every** object the store
+  holds, not only those at its HEAD, so a workspace can show objects from old
+  commits, all with a link count above 1 and older than the workspace. The
+  session's own `git lfs pull` then downloads only what its checkout needs and
+  the store lacked: objects on its branch but not on the default-branch tip.
+- **What a fork gets.** Nothing from the store. A fork clones from its parent's
+  workspace, which does not carry `.git/lfs`, so its `git lfs pull` downloads
+  every object at its HEAD from the LFS server.
+- **Objects a session creates** are uploaded by its push. Each host downloads
+  them once more when they reach the default branch.
+- **How long objects stay.** An object leaves the store only when no workspace
+  on the host links it any more and it was downloaded more than 14 days ago
+  (`DISK_JANITOR_LFS_OBJECT_DAYS`). Because every clone links every object, the
+  store keeps an object while any workspace of that repository on the host exists.
+- **A host with an empty store** (a new host, or one whose repository cache was
+  reclaimed): the first sessions cloned before the store's first fetch link
+  nothing and download every object at their HEAD themselves, and the store then
+  downloads the default-branch tip's objects again. Expect about two full
+  downloads of the tip's objects for the first session on a host, then only
+  what is new.
+
+A deployment can turn sharing off (`SHIPIT_GIT_LFS_SHARED_STORE=off`); then every
+session downloads its own objects.
+
+**ShipIt presents its GitHub credential to `github.com` only.** A repository
+whose committed `.lfsconfig` sets `lfs.url` to another host gets no credential
+from ShipIt for that host. If that LFS server requires authentication, ShipIt's
+uploads to it and downloads from it fail, and the push refusal above is how you
+see it.
+
 ## Session container lifecycle — idle containers are destroyed, not paused
 
 When a session sits idle (no one viewing it and no agent turn running), ShipIt

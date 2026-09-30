@@ -1,4 +1,4 @@
-import { type SimpleGit, type LogResult } from "simple-git";
+import { type SimpleGit, type SimpleGitOptions, type LogResult } from "simple-git";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,7 +17,7 @@ import {
   withPreemptiveAuthFallback,
 } from "./git-remote-credential.js";
 import { gitSpawnOverridesForTree, projectHooksAllowed } from "./git-tree-uid.js";
-import { pushLfsObjects } from "./git-lfs-push.js";
+import { LfsUploadError, pushLfsObjects } from "./git-lfs-push.js";
 
 export interface GitManagerOptions {
   resolveRemoteCredential?: GitRemoteCredentialResolver;
@@ -260,10 +260,9 @@ export class GitManager {
     return this.workspaceDir;
   }
 
-  private async remoteGit(remote: string): Promise<SimpleGit> {
-    const credential = await this.remoteCredential(remote);
-    if (!credential) return this.git;
-    return credentialledGit(this.workspaceDir, credential);
+  private gitWith(credential: GitRemoteCredential | null, options?: Partial<SimpleGitOptions>): SimpleGit {
+    if (credential) return credentialledGit(this.workspaceDir, credential, options);
+    return options ? safeSimpleGit(this.workspaceDir, options) : this.git;
   }
 
   private remoteCredential(remote: string): Promise<GitRemoteCredential | null> {
@@ -280,7 +279,7 @@ export class GitManager {
   }
 
   // A stale credential must not break public reads that worked anonymously.
-  // Pushes use remoteGit: an anonymous receive-pack retry cannot succeed.
+  // Pushes use gitWith directly: an anonymous receive-pack retry cannot succeed.
   private async withRemoteRead<T>(
     remote: string,
     what: string,
@@ -644,24 +643,27 @@ export class GitManager {
   }
 
   // Hooks are disabled, so upload LFS objects explicitly before publishing refs.
-  private async uploadLfsObjects(git: SimpleGit, remote: string, branch: string): Promise<void> {
-    const outcome = await pushLfsObjects(git, remote, branch);
+  // A failed upload stops the ref push; the commits stay local and the next push retries.
+  // Same credential as the ref push: LFS authenticates separately.
+  private async uploadLfsObjects(
+    credential: GitRemoteCredential | null,
+    remote: string,
+    ref: string,
+  ): Promise<void> {
+    const outcome = await pushLfsObjects((options) => this.gitWith(credential, options), remote, ref);
     if (outcome.status === "pushed") {
-      console.log(`[git] Uploaded Git LFS objects for ${remote}/${branch}`);
+      console.log(`[git] Uploaded Git LFS objects for ${remote}/${ref}`);
     } else if (outcome.status === "failed") {
-      console.warn(
-        `[git] git lfs push ${remote} ${branch} failed — the ref push may be rejected `
-        + `with GH008 (unknown Git LFS object): ${outcome.detail}`,
-      );
+      throw new LfsUploadError(remote, ref, outcome.detail);
     }
   }
 
   async push(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
     assertPlainBranchName(currentBranch);
-    const git = await this.remoteGit(remote);
-    await this.uploadLfsObjects(git, remote, currentBranch);
-    await git.push(remote, currentBranch, ["--set-upstream"]);
+    const credential = await this.remoteCredential(remote);
+    await this.uploadLfsObjects(credential, remote, currentBranch);
+    await this.gitWith(credential).push(remote, currentBranch, ["--set-upstream"]);
     const msg = `Pushed to ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -1174,9 +1176,9 @@ export class GitManager {
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];
-    const git = await this.remoteGit(remote);
-    await this.uploadLfsObjects(git, remote, branch);
-    await git.push(remote, branch, args);
+    const credential = await this.remoteCredential(remote);
+    await this.uploadLfsObjects(credential, remote, branch);
+    await this.gitWith(credential).push(remote, branch, args);
     const msg = `Force pushed to ${remote}/${branch}`;
     console.log("[git]", msg);
     return msg;
@@ -1291,7 +1293,20 @@ export class GitManager {
   async createAndPushTag(tag: string, message: string, remote = "origin", ref?: string): Promise<void> {
     const args = ["tag", "-a", tag, "-m", message, ...(ref ? [ref] : [])];
     await this.git.raw(args);
-    await (await this.remoteGit(remote)).push(remote, tag);
+    try {
+      const credential = await this.remoteCredential(remote);
+      // An rc tag can name a commit no branch push has published.
+      await this.uploadLfsObjects(credential, remote, tag);
+      await this.gitWith(credential).push(remote, tag);
+    } catch (err) {
+      // A tag left behind fails the retry at creation, and the planner skips to the next rc.
+      try {
+        await this.git.raw(["tag", "-d", tag]);
+      } catch (deleteErr) {
+        console.warn(`[git] could not delete the unpushed tag ${tag}:`, String(deleteErr));
+      }
+      throw err;
+    }
     console.log("[git] created + pushed tag", tag);
   }
 

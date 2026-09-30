@@ -6,6 +6,7 @@ import { scanFileTree } from "../../shared/file-tree.js";
 import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "../git-lfs-blob.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
 import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
+import { LFS_UPLOAD_REFUSAL } from "../../shared/git-lfs-push.js";
 import { ServiceError } from "./types.js";
 import { findSharedBranchRefusal } from "./push-target-guard.js";
 
@@ -392,6 +393,7 @@ export type PushFailureClass =
   | "non-fast-forward"
   | "invalid-refspec"
   | "auth"
+  | "lfs-upload"
   | "lfs"
   | "remote-rejected"
   | "network"
@@ -399,8 +401,10 @@ export type PushFailureClass =
 
 // Match specific causes first: LFS overlaps remote rejection, and auth overlaps
 // network errors. The generic "failed to push some refs" summary identifies neither.
+// `lfs-upload` is ShipIt's own refusal and embeds git-lfs output, so it goes first.
 const PUSH_FAILURE_PATTERNS: readonly (readonly [PushFailureClass, RegExp])[] = [
-  ["lfs", /GH008|unknown Git LFS object|LFS upload|lfs\.locksverify|missing (?:a few |some )?(?:Git )?LFS object/i],
+  ["lfs-upload", new RegExp(LFS_UPLOAD_REFUSAL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))],
+  ["lfs",/GH008|unknown Git LFS object|LFS upload|lfs\.locksverify|missing (?:a few |some )?(?:Git )?LFS object/i],
   [
     // Require HTTP context: progress counts such as (403/403) are not auth errors.
     "auth",

@@ -6,6 +6,7 @@ import {
   type AutoPushDeps,
 } from "./auto-push-scheduler.js";
 import type { GitManager } from "../../shared/git.js";
+import { LfsUploadError } from "../../shared/git-lfs-push.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { isOpsSafeLine } from "./host-session-logs.js";
 
@@ -484,6 +485,57 @@ describe("auto-push scheduler — a push that cannot happen is never silent", ()
     expect(opsSafe[0]).toContain("Git LFS objects were not uploaded (GH008)");
     expect(opsSafe[0]).not.toContain("/workspace/big.bin");
     expect(lines.some((t) => t.startsWith("Git said: ") && t.includes("/workspace/big.bin"))).toBe(true);
+  });
+
+  describe("an LFS upload that failed, so ShipIt did not push the refs", () => {
+    // The detail names a 401 from an LFS host that is not GitHub.
+    const refusal = (): LfsUploadError => new LfsUploadError(
+      "origin",
+      "shipit/feature",
+      "batch response: Authorization error: https://lfs.example.com/objects/batch 401 Unauthorized",
+    );
+
+    it("says the refs were not pushed, in chat and in the log, and never blames the GitHub token", async () => {
+      const runner = fakeRunner();
+      const deps = makeDeps({ getRunner: () => runner });
+      createAutoPushScheduler(deps).schedule(fakeGit({ push: vi.fn(async () => { throw refusal(); }) }), "s1");
+
+      await fireDebounce();
+
+      expect(deps.githubAuthManager.markTokenInvalid).not.toHaveBeenCalled();
+      const lines = deps.broadcastLog.mock.calls.map((c) => c[2] as string);
+      const opsSafe = lines.filter((t) => isOpsSafeLine(t));
+      expect(opsSafe).toEqual([
+        "Auto-push stopped: uploading this branch's Git LFS objects failed, so its commits were "
+        + "not pushed. The commit stays in this session's local history, and the next push "
+        + "retries the upload.",
+      ]);
+      expect(lines.some((t) => t.startsWith("Git said: ") && t.includes("lfs.example.com"))).toBe(true);
+
+      const notices = appendedNotices(deps);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("did not push its commits to origin/shipit/feature");
+      expect(notices[0]).toContain("`git lfs push origin shipit/feature` said: batch response");
+      expect(runner.emitMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "system_notice", level: "warn" }));
+    });
+
+    it("posts the chat notice once per failure episode, and again after a push lands", async () => {
+      const deps = makeDeps();
+      const failing = fakeGit({ push: vi.fn(async () => { throw refusal(); }) });
+      const scheduler = createAutoPushScheduler(deps);
+
+      scheduler.schedule(failing, "s1");
+      await fireDebounce();
+      scheduler.schedule(failing, "s1");
+      await fireDebounce();
+      expect(appendedNotices(deps)).toHaveLength(1);
+
+      scheduler.schedule(fakeGit(), "s1");
+      await fireDebounce();
+      scheduler.schedule(failing, "s1");
+      await fireDebounce();
+      expect(appendedNotices(deps)).toHaveLength(2);
+    });
   });
 
   it("releases the lease and logs when reporting the outcome itself throws", async () => {

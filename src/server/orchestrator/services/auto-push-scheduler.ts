@@ -1,5 +1,6 @@
 // Keep push work session-keyed so runner disposal cannot cancel it.
 import type { GitManager } from "../../shared/git.js";
+import { LfsUploadError } from "../../shared/git-lfs-push.js";
 import type { LogSource } from "../../shared/types.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
@@ -39,6 +40,23 @@ export interface AutoPushScheduler {
   pending(sessionId: string): boolean;
 }
 
+export function formatLfsUploadNotice(err: unknown): string {
+  const upload = err instanceof LfsUploadError ? err : null;
+  const target = upload ? `${upload.remote}/${upload.ref}` : "the remote";
+  const said = upload
+    ? `\`git lfs push ${upload.remote} ${upload.ref}\` said: ${upload.detail}`
+    : `Git said: ${getErrorMessage(err)}`;
+  const why =
+    `Not pushed — uploading this branch's Git LFS objects failed, so ShipIt did not push its `
+    + `commits to ${target}. Pushed without them, the remote would name LFS objects that no store `
+    + "holds: every other checkout would get ~130-byte pointer files where the content should be, "
+    + "and `git status` there would still be clean.";
+  const next =
+    "The commits stay in this session's local history. Every later push uploads the objects "
+    + "first, so once the LFS server accepts the upload, the next push lands everything.";
+  return `${why}\n\n${next}\n\n${said}`;
+}
+
 export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
   interface ArmedPush {
     timer: ReturnType<typeof setTimeout>;
@@ -48,6 +66,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
   const timers = new Map<string, ArmedPush>();
   // Deduplicate until a successful push. Restart permits another notice.
   const notifiedDiverged = new Set<string>();
+  const notifiedLfsUpload = new Set<string>();
   // Unrelated push failures retain the count, reducing the next rewrite's budget.
   const deferrals = new Map<string, number>();
 
@@ -127,6 +146,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     if (!sessionId) return;
     clearTimer(sessionId);
     notifiedDiverged.delete(sessionId);
+    notifiedLfsUpload.delete(sessionId);
     deferrals.delete(sessionId);
   };
 
@@ -171,6 +191,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         cancel(sessionId);
       }
       notifiedDiverged.clear();
+      notifiedLfsUpload.clear();
       deferrals.clear();
     },
     pending(sessionId: string): boolean {
@@ -229,6 +250,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       });
       if (!branch) return;
       notifiedDiverged.delete(sessionId);
+      notifiedLfsUpload.delete(sessionId);
       deferrals.delete(sessionId);
       const outcome = pending === null
         ? "the commit count could not be measured."
@@ -319,6 +341,39 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         return;
       }
       const errMsg = getErrorMessage(err);
+      // Before the auth check: git-lfs output can name a 401 from an LFS host that is not GitHub.
+      if (failure === "lfs-upload") {
+        report(
+          sessionId,
+          "Auto-push stopped: uploading this branch's Git LFS objects failed, so its commits were "
+          + "not pushed. The commit stays in this session's local history, and the next push "
+          + "retries the upload.",
+        );
+        reportGitText(sessionId, errMsg);
+        if (!notifiedLfsUpload.has(sessionId)) {
+          notifiedLfsUpload.add(sessionId);
+          const runner = deps.getRunner(sessionId);
+          try {
+            emitNoticePostTurn(
+              (m) => {
+                try {
+                  runner?.emitMessage(m);
+                } catch (emitErr) {
+                  console.error(`[auto-push] ${sessionId}: could not emit the LFS upload notice:`, emitErr);
+                }
+              },
+              deps.chatHistory,
+              sessionId,
+              formatLfsUploadNotice(err),
+              "warn",
+            );
+          } catch (noticeErr) {
+            notifiedLfsUpload.delete(sessionId);
+            console.error(`[auto-push] ${sessionId}: LFS upload notice failed:`, noticeErr);
+          }
+        }
+        return;
+      }
       if (isGitAuthError(err)) {
         // Token validation and its listeners can fail; still report the unpushed commit.
         let invalidated = false;
