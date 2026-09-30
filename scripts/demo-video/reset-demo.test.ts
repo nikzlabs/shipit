@@ -202,7 +202,6 @@ describe("reset-demo-repo.sh", () => {
 
 describe("host/reset-demo-instance.sh", () => {
   let home: string;
-  let proxyCompose: string;
 
   beforeAll(() => {
     home = mkdtempSync(join(os.tmpdir(), "reset-inst-"));
@@ -214,8 +213,6 @@ describe("host/reset-demo-instance.sh", () => {
     writeFileSync(join(home, "docker", "local", "prod", "compose.yml"), "name: shipit-prod\nservices: {}\n");
     // The operator's marker: what tells the demo host apart from a standard install.
     writeFileSync(join(home, ".shipit-demo-instance"), `${os.hostname()}\n`);
-    proxyCompose = join(home, "demo-proxy.compose.yml");
-    writeFileSync(proxyCompose, "name: shipit-demo\n");
   });
   afterAll(() => rmSync(home, { recursive: true, force: true }));
 
@@ -224,14 +221,12 @@ describe("host/reset-demo-instance.sh", () => {
   });
 
   it("--dry-run prints the sequence in order and runs nothing", () => {
-    const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", home, "--proxy-compose", proxyCompose], { encoding: "utf8" });
+    const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", home], { encoding: "utf8" });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout.trim().split("\n")).toEqual([
-      `+ sudo docker compose -f ${proxyCompose} down`,
       `+ ${home}/deployment/local/stop.sh`,
       "+ docker volume rm shipit-prod_workspace   (if present)",
       `+ env SHIPIT_HOME=${home} bash -c . "$SHIPIT_HOME/deployment/local/lib.sh" && shipit_build_and_up`,
-      `+ sudo docker compose -f ${proxyCompose} up -d`,
     ]);
     expect(r.stdout).not.toContain("stop-ran");
     expect(r.stdout).not.toContain("credentials");
@@ -242,7 +237,7 @@ describe("host/reset-demo-instance.sh", () => {
     try {
       cpSync(home, other, { recursive: true });
       rmSync(join(other, ".shipit-demo-instance"));
-      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other, "--proxy-compose", proxyCompose], { encoding: "utf8" });
+      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other], { encoding: "utf8" });
       expect(r.status).toBe(1);
       expect(r.stderr).toContain("no demo marker");
       expect(r.stdout).toBe("");
@@ -256,7 +251,7 @@ describe("host/reset-demo-instance.sh", () => {
     try {
       cpSync(home, other, { recursive: true });
       writeFileSync(join(other, ".shipit-demo-instance"), "some-other-box\n");
-      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other, "--proxy-compose", proxyCompose], { encoding: "utf8" });
+      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other], { encoding: "utf8" });
       expect(r.status).toBe(1);
       expect(r.stderr).toContain("names 'some-other-box'");
       expect(r.stdout).toBe("");
@@ -270,7 +265,7 @@ describe("host/reset-demo-instance.sh", () => {
     try {
       cpSync(home, other, { recursive: true });
       writeFileSync(join(other, "docker", "local", "prod", "compose.yml"), "name: shipit-stable\nservices: {}\n");
-      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other, "--proxy-compose", proxyCompose], { encoding: "utf8" });
+      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other], { encoding: "utf8" });
       expect(r.status).toBe(1);
       expect(r.stderr).toContain("refusing");
       expect(r.stdout).toBe("");

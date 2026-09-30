@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -9,9 +11,12 @@ import {
   beatFootageEnd,
   findPendingPermissionPrompt,
   parseArgs,
+  proxyProblem,
   readStoryboard,
   resolveWaitCeilingS,
+  sessionProxyUrl,
   until,
+  verifyProxy,
   verifyRepoPin,
 } from "./driver.mjs";
 
@@ -283,5 +288,59 @@ describe("verifyRepoPin", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the take's proxy", () => {
+  const SID = "dddc2406-f84e-448c-aaee-f5fedf5af5a1";
+
+  it("reaches a session's proxy service through the instance's preview address for its port", () => {
+    expect(sessionProxyUrl("http://100-81-125-94.sslip.io:4123", SID, 8787)).toBe(`http://${SID}--8787.100-81-125-94.sslip.io:4123`);
+    expect(sessionProxyUrl("http://localhost:4123", SID, 8787)).toBe(`http://${SID}--8787.localhost:4123`);
+  });
+
+  it("takes a proxy service or a proxyUrl in a storyboard, never both, and a replay needs one", async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-sb-"));
+    try {
+      const write = (extra: object) => writeFileSync(join(dir, "storyboard.json"), JSON.stringify({
+        repo: { url: "file://localhost/x", commit: SHA }, viewport: { width: 10, height: 10 },
+        beats: [{ id: "a", click: "new-session", lead: 0, hold: 1 }], ...extra,
+      }));
+      write({ proxy: { service: "demo-proxy", port: 8787 } });
+      expect(readStoryboard(dir).proxy).toEqual({ service: "demo-proxy", port: 8787 });
+      write({ proxy: { service: "demo-proxy", port: 8787 }, proxyUrl: "http://x" });
+      expect(() => readStoryboard(dir)).toThrow(/two places for one proxy/);
+      write({ proxy: { service: "demo-proxy", port: "8787" } });
+      expect(() => readStoryboard(dir)).toThrow(/proxy.port must be a port number/);
+      write({ proxy: { port: 8787 } });
+      expect(() => readStoryboard(dir)).toThrow(/proxy.service must name/);
+      await expect(verifyProxy({}, { mode: "replay", scenario: dir })).rejects.toThrow(/needs proxy or proxyUrl/);
+      // A session's proxy is started and asked on the warm session, not here.
+      await expect(verifyProxy({ proxy: { service: "demo-proxy", port: 8787 } }, { mode: "replay", scenario: dir })).resolves.toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tells a proxy that is not there yet from one in the wrong mode or on the wrong cassette", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "x-demo-proxy-mode": "replay", "x-demo-proxy-cassette": "website-hero" }).end();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      expect(await proxyProblem(url, { mode: "replay", scenario: "/x/website-hero" })).toBeNull();
+      expect(await proxyProblem(url, { mode: "record", scenario: "/x/website-hero" })).toEqual({
+        message: expect.stringContaining("is not in record mode: it answered x-demo-proxy-mode=replay"),
+      });
+      expect(await proxyProblem(url, { mode: "replay", scenario: "/x/other" })).toEqual({
+        message: expect.stringContaining("is not replaying the other cassette"),
+      });
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+    expect(await proxyProblem(url, { mode: "replay", scenario: "/x/website-hero" })).toEqual({
+      unreachable: true, message: expect.stringContaining("proxy not reachable"),
+    });
   });
 });

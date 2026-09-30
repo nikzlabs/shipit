@@ -1,9 +1,12 @@
 {
-  "$comment": "docs/296 plan §6: scenario 1, the habit tracker, against the phase-2 demo instance (plan §9). `repo.commit` pins `main` of the demo app: the merge of PR #1, which added the demo-specific files (`.claude/settings.json` redirect — `ANTHROPIC_BASE_URL` only, no key — `x-shipit-preview: auto`, `agent.install: npm ci`) on top of the template scaffold — the driver refuses a take whose `git ls-remote HEAD` differs. `proxyUrl` is the proxy as seen from the driver host (the tailnet publish in `scripts/demo-video/host/demo-proxy.compose.yml`); the demo repo's settings file names the same proxy as `http://demo-proxy:8787`, its name on the instance's network. No `model` pin: the demo instance has one harness (Claude) and its default route is the one to record. `permissionMode: auto` is the only mode whose allowlisted tools never prompt; it is the composer's default and the driver verifies the control reads it after the claim, and aborts any wait on a pending permission prompt (the CLI's sensitive-file gate is outside every ShipIt mode). `pace.typingCharsPerSecond` is the driver's typing rate; `pace.textCharsPerSecond` is passed to the proxy as `--pace-chars-per-second` on replay. Kept time: Σ(lead + hold) = 36 s.",
-  "proxyUrl": "http://100.81.125.94:8787",
+  "$comment": "docs/296 plan §6: scenario 1, the habit tracker, against the phase-2 demo instance (plan §9). `repo.commit` pins `main` of the demo app: the template scaffold plus the demo-specific files (`.claude/settings.json` redirect — `ANTHROPIC_BASE_URL` only, no key — `agent.install: npm ci`, and a `docker-compose.yml` with the `dev` preview service and the `demo-proxy` service, `image: demo-proxy:current`, built on the demo host by `host/demo-proxy-image.sh`) — the driver refuses a take whose `git ls-remote HEAD` differs. `proxy` names that service and its port: it is a `manual` service (so the Preview pane never picks it), the driver starts it on the repo's warm session during setup, the session's Claude CLI reaches it as `http://demo-proxy:8787` (the address in the repo's settings file), and the driver asks it for its mode and counters through the instance's preview address for the port. No `model` pin: the demo instance has one harness (Claude) and its default route is the one to record. `permissionMode: auto` is the only mode whose allowlisted tools never prompt; it is the composer's default and the driver verifies the control reads it after the claim, and aborts any wait on a pending permission prompt (the CLI's sensitive-file gate is outside every ShipIt mode). `pace.typingCharsPerSecond` is the driver's typing rate; `pace.textCharsPerSecond` is the replay pace, given to `demo-proxy-image.sh` as `DEMO_PROXY_PACE` when the image is built (its default is the same 120). Kept time: Σ(lead + hold) = 36 s.",
+  "proxy": {
+    "service": "demo-proxy",
+    "port": 8787
+  },
   "repo": {
     "url": "https://github.com/nicolasalt-shipit/shipit-demo-app",
-    "commit": "af344fbed791e454f6a0b96245b48f377b2d7aa3"
+    "commit": "7d7a525705af05f994042d1854c5e7d24e0a6b24"
   },
   "settings": {
     "autoCreatePr": true

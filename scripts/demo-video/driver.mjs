@@ -17,12 +17,16 @@
 // and <out>/run.json (mode, viewport, `anchor.wallAt` — the moment the cut
 // step finds in the footage to map that clock onto the video's, plan §4).
 //
-// Before anything is recorded, both modes verify the demo repo pin (`git
-// ls-remote <repo.url> HEAD` must equal `repo.commit`); replay mode also
-// requires `proxyUrl` in the storyboard and a 200 from `HEAD <proxyUrl>/api/hello`
-// — a replay against a proxy that is not there would be a live take by
-// accident. Which side of the proxy a take lands on is otherwise the proxy's
-// business (plan §2); `--mode` is written to run.json.
+// Both modes verify the demo repo pin before anything is recorded (`git
+// ls-remote <repo.url> HEAD` must equal `repo.commit`), and the proxy before
+// anything is typed: `HEAD <proxy>/api/hello` must answer 200 in the take's
+// mode — a replay against a proxy that is not there would be a live take by
+// accident. The storyboard names the proxy as `proxy { service, port }` (a
+// manual Compose service of the demo session: the driver starts it on the
+// repo's warm session during setup and asks it through the instance's preview
+// address for that port) or `proxyUrl` (an absolute address); either way it is
+// checked before the browser opens, and replay mode requires one of them
+// (plan §2). `--mode` is written to run.json.
 //
 // A take must never wait on a human. ShipIt's permission mode is a per-send
 // field of the composer (`send_message.permissionMode`, omitted for Auto, the
@@ -132,6 +136,11 @@ export function readStoryboard(scenarioDir) {
   if (cps !== undefined && (typeof cps !== "number" || !(cps > 0))) throw new Error(`${file}: pace.typingCharsPerSecond must be a positive number`);
   const ceiling = sb.waitCeilingSeconds;
   if (ceiling !== undefined && (typeof ceiling !== "number" || !(ceiling > 0))) throw new Error(`${file}: waitCeilingSeconds must be a positive number of seconds`);
+  if (sb.proxy !== undefined) {
+    if (sb.proxyUrl !== undefined) throw new Error(`${file}: proxy and proxyUrl are two places for one proxy; name one`);
+    if (typeof sb.proxy?.service !== "string" || !sb.proxy.service) throw new Error(`${file}: proxy.service must name the demo repo's Compose service`);
+    if (!Number.isInteger(sb.proxy.port) || sb.proxy.port < 1 || sb.proxy.port > 65535) throw new Error(`${file}: proxy.port must be a port number`);
+  }
   if (sb.permissionMode !== undefined && sb.permissionMode !== "auto") {
     throw new Error(`${file}: permissionMode must be "auto" — the one ShipIt mode whose allowlisted tools run without a prompt; Guarded (the CLI classifier) and Plan prompt by design`);
   }
@@ -290,36 +299,61 @@ export function verifyRepoPin(repo) {
 }
 
 /**
- * The proxy must be the one the take assumes before anything is recorded (plan
- * §2): `HEAD /api/hello` → 200 declaring the take's `--mode` in
+ * Where the driver reaches a proxy that runs as a Compose service of the demo
+ * session: the instance's preview address for that session and port.
+ */
+export function sessionProxyUrl(instance, sessionId, port) {
+  const u = new URL(instance);
+  u.hostname = `${sessionId}--${port}.${u.hostname}`;
+  return u.origin;
+}
+
+/**
+ * Why the proxy at `proxyUrl` is not the one the take assumes (plan §2), or
+ * null when it is: `HEAD /api/hello` → 200 declaring the take's `--mode` in
  * `x-demo-proxy-mode` and, for a replay, this scenario in `x-demo-proxy-cassette`.
  * A record proxy under `--mode replay` is a live take that run.json calls a
  * replay; a replay proxy under `--mode record` answers from a cassette while
  * run.json says record; another scenario's cassette answers the wrong prompts.
- * Record mode without a proxyUrl is a take with no proxy in the loop (plan §8).
+ * `unreachable` is set when there was no 200 at all — the one case worth
+ * waiting out for a service that is still starting.
  */
-export async function verifyProxy(sb, opts) {
-  if (!sb.proxyUrl) {
-    if (opts.mode === "replay") throw new Error("--mode replay needs proxyUrl in the storyboard: the address the session's Claude CLI reaches the proxy at");
-    return;
-  }
-  const url = `${sb.proxyUrl.replace(/\/+$/, "")}/api/hello`;
+export async function proxyProblem(proxyUrl, opts) {
+  const url = `${proxyUrl.replace(/\/+$/, "")}/api/hello`;
   let res;
   try {
     res = await fetch(url, { method: "HEAD" });
   } catch (err) {
-    throw new Error(`${opts.mode} proxy not reachable: HEAD ${url}: ${err.cause?.message ?? err.message}`);
+    return { unreachable: true, message: `${opts.mode} proxy not reachable: HEAD ${url}: ${err.cause?.message ?? err.message}` };
   }
-  if (res.status !== 200) throw new Error(`${opts.mode} proxy at ${url} answered ${res.status}, expected 200`);
+  if (res.status !== 200) return { unreachable: true, message: `${opts.mode} proxy at ${url} answered ${res.status}, expected 200` };
   const mode = res.headers.get("x-demo-proxy-mode");
   const cassette = res.headers.get("x-demo-proxy-cassette");
   const seen = `x-demo-proxy-mode=${mode ?? "(absent)"} x-demo-proxy-cassette=${cassette ?? "(absent)"}`;
-  if (mode !== opts.mode) throw new Error(`proxy at ${url} is not in ${opts.mode} mode: it answered ${seen}`);
+  if (mode !== opts.mode) return { message: `proxy at ${url} is not in ${opts.mode} mode: it answered ${seen}` };
   const scenario = path.basename(opts.scenario);
   if (opts.mode === "replay" && cassette !== scenario) {
-    throw new Error(`replay proxy at ${url} is not replaying the ${scenario} cassette: it answered ${seen}`);
+    return { message: `replay proxy at ${url} is not replaying the ${scenario} cassette: it answered ${seen}` };
   }
-  log(`${opts.mode} proxy answering at ${sb.proxyUrl} (${seen})`);
+  log(`${opts.mode} proxy answering at ${proxyUrl} (${seen})`);
+  return null;
+}
+
+/**
+ * The pre-take check for a storyboard with a fixed `proxyUrl`. A `proxy`
+ * service belongs to the session and is started and checked on the warm
+ * session (`startSessionProxy`). Record mode with neither is a take with no
+ * proxy in the loop (plan §8).
+ */
+export async function verifyProxy(sb, opts) {
+  if (!sb.proxyUrl) {
+    if (opts.mode === "replay" && sb.proxy === undefined) {
+      throw new Error("--mode replay needs proxy or proxyUrl in the storyboard: where the driver can ask the proxy what it is replaying");
+    }
+    return;
+  }
+  const problem = await proxyProblem(sb.proxyUrl, opts);
+  if (problem) throw new Error(problem.message);
 }
 
 /**
@@ -381,15 +415,64 @@ async function setup(opts, sb) {
   // on camera. Needed only where the install's first eligible model is not the
   // one the take should run on (phase 1: the dogfood instance's default is an
   // Anthropic subscription route the demo cannot use).
+  const warmSession = () => until(async () => {
+    const res = await api(base, "GET", "/api/repos");
+    const r = (res.body?.repos ?? []).find((x) => canonicalRepoKey(x.url) === key);
+    return r?.warmSessionId ?? null;
+  }, { ceilingMs, what: "a warm session for the repo" });
   if (sb.model) {
-    const warmId = await until(async () => {
-      const res = await api(base, "GET", "/api/repos");
-      const r = (res.body?.repos ?? []).find((x) => canonicalRepoKey(x.url) === key);
-      return r?.warmSessionId ?? null;
-    }, { ceilingMs, what: "a warm session for the repo" });
+    const warmId = await warmSession();
     await pinModel(base, warmId, sb.model, ceilingMs);
     log(`model pinned on warm session ${warmId}: ${JSON.stringify(sb.model)}`);
   }
+  if (sb.proxy) return { proxySessionId: await startSessionProxy(base, await warmSession(), sb, opts, ceilingMs) };
+  return {};
+}
+
+/**
+ * The session's own proxy (plan §2): a manual Compose service, so that it is
+ * never a preview candidate, started here on the warm session the take is
+ * about to claim — the same `start_service` the Services panel sends — and
+ * asked for its mode before the browser opens. Not answering yet is waited
+ * out; the wrong mode or cassette aborts. Returns the session it runs in.
+ */
+async function startSessionProxy(base, sessionId, sb, opts, ceilingMs) {
+  const { service, port } = sb.proxy;
+  const status = async () => {
+    const res = await api(base, "GET", `/api/sessions/${sessionId}/services`);
+    return (res.body?.services ?? []).find((x) => x.name === service)?.status ?? null;
+  };
+  const known = await until(status, { ceilingMs, what: `service ${service} listed on warm session ${sessionId}` });
+  if (known !== "running") await sendSessionMessage(base, sessionId, { type: "start_service", name: service });
+  const url = sessionProxyUrl(base, sessionId, port);
+  await until(async () => {
+    const problem = await proxyProblem(url, opts);
+    if (!problem) return true;
+    if (problem.unreachable) throw new Error(problem.message);
+    throw new TakeAbortError(problem.message);
+  }, { ceilingMs, what: `service ${service} on warm session ${sessionId}` });
+  return sessionId;
+}
+
+/** One client message on a session's WebSocket; resolves once it is sent, rejects on a server `error`. */
+function sendSessionMessage(base, sessionId, message) {
+  const wsUrl = `${base.replace(/^http/, "ws")}/ws/sessions/${sessionId}`;
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    // The server answers a refused message at once; a short linger catches it.
+    let linger;
+    const done = (err) => { clearTimeout(linger); ws.close(); err ? reject(err) : resolve(); };
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify(message));
+      linger = setTimeout(() => done(), 2000);
+    });
+    ws.addEventListener("message", (ev) => {
+      let msg;
+      try { msg = JSON.parse(String(ev.data)); } catch { return; }
+      if (msg.type === "error") done(new Error(`${message.type} refused: ${msg.message}`));
+    });
+    ws.addEventListener("error", () => done(new Error(`WebSocket to ${wsUrl} failed`)));
+  });
 }
 
 /** WS `set_model` on a session; resolves on the server's `model_selection_changed`. */
@@ -462,6 +545,7 @@ class Driver {
     this.cursor = sb.cursor !== false;
     this.pointer = { x: sb.viewport.width / 2, y: sb.viewport.height / 2 };
     this.sessionId = null;
+    this.proxySessionId = null;
     this.claimed = false;
     this.beats = [];
     this.ceilingMs = opts.waitCeilingS * 1000;
@@ -554,6 +638,22 @@ class Driver {
     // AI-generated session title, the one thing that varies between runs.
     await this.collapseSidebar();
     return claim;
+  }
+
+  /** Where the driver reaches the take's proxy, or null when the storyboard names none. */
+  proxyUrl() {
+    if (this.sb.proxyUrl) return this.sb.proxyUrl;
+    if (!this.sb.proxy || !this.proxySessionId) return null;
+    return sessionProxyUrl(this.opts.instance, this.proxySessionId, this.sb.proxy.port);
+  }
+
+  /** The proxy was started on the warm session; a claim that lands anywhere else has none. */
+  async assertProxySession() {
+    if (!this.sb.proxy) return;
+    const id = await this.resolveSessionId();
+    if (id !== this.proxySessionId) {
+      throw new TakeAbortError(`the take claimed session ${id}, but its proxy was started on the warm session ${this.proxySessionId}`);
+    }
   }
 
   /** The merge button on the active session's card, or null; `enabled` says whether it can be clicked. */
@@ -744,6 +844,7 @@ class Driver {
       // The lead the cut keeps is the last `lead` seconds before the send
       // (`beatSlices`), so the prompt being typed is on camera (req 8a)
       // whatever the typing took; `actionAt` is the first keystroke.
+      await this.assertProxySession();
       actionAt = this.t();
       await this.typeAndSend(beat.type, { sendNotBefore: actionAt + beat.lead });
       sentAt = this.t();
@@ -774,7 +875,7 @@ export async function run(opts) {
   opts = { ...opts, waitCeilingS: resolveWaitCeilingS(opts, sb) };
   log(`wait ceiling ${opts.waitCeilingS}s`);
   fs.mkdirSync(opts.out, { recursive: true });
-  await setup(opts, sb);
+  const { proxySessionId } = await setup(opts, sb);
 
   const browser = await chromium.launch({
     headless: !opts.headed,
@@ -789,6 +890,7 @@ export async function run(opts) {
   const recordingStart = Date.now();
   const page = await context.newPage();
   const driver = new Driver(opts, sb, page, recordingStart);
+  driver.proxySessionId = proxySessionId ?? null;
   let video = null;
   let failure = null;
   let anchorWallAt = null;
@@ -834,12 +936,14 @@ export async function run(opts) {
   fs.writeFileSync(beatsFile, JSON.stringify(driver.beats, null, 2) + "\n");
   // A replay is judged by the proxy's counters, not only by the beats: a
   // drifted or fallen-back recording still plays a video.
-  const proxyStats = opts.mode === "replay" ? await fetchProxyStats(sb.proxyUrl) : undefined;
+  const proxyUrl = driver.proxyUrl();
+  const proxyStats = opts.mode === "replay" ? (proxyUrl ? await fetchProxyStats(proxyUrl) : null) : undefined;
   fs.writeFileSync(path.join(opts.out, "run.json"), JSON.stringify({
     scenario: path.basename(opts.scenario),
     mode: opts.mode,
     viewport: sb.viewport,
     recordedAt: new Date(recordingStart).toISOString(),
+    ...(driver.sessionId ? { sessionId: driver.sessionId } : {}),
     ...(anchorWallAt === null ? {} : { anchor: { wallAt: Number(anchorWallAt.toFixed(3)) } }),
     wallDuration: Number(wallDuration.toFixed(3)),
     completed: driver.beats.length === sb.beats.length,
