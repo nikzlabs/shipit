@@ -655,6 +655,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Also call after orchestrator-side rewrites: in-container inotify may miss them. */
   reevaluateWorkspaceConfig?(): void;
   notifyWorkspaceRewritten?(rewrite?: string): void;
+  /** Re-materialize plugin skills in the workspace (docs/262-plugins). */
+  preparePlugins?(): Promise<void>;
   readonly dependencyGap?: DependencyGap | null;
   resumeInFlightTurn?(): Promise<boolean>;
 

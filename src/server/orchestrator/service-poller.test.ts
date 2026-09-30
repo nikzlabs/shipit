@@ -707,3 +707,73 @@ describe("ServicePoller — query working directory (docs/318)", () => {
     expect(new Set(cwds)).toEqual(new Set(["/state/compose/no-model"]));
   });
 });
+
+describe("ServicePoller — the listed address", () => {
+  type Nets = Record<string, { IPAddress?: string }>;
+
+  function addressPoller() {
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const state = {
+      rows: [{ Service: "web", ID: "c1", State: "running", ExitCode: 0 }] as object[],
+      inspect: new Map<string, Nets | Error>(),
+    };
+    const ips = new Map<string, string | undefined>();
+    const poller = buildPoller({
+      composeQuery: async (args) => {
+        if (args.includes("ps")) return state.rows.map((row) => JSON.stringify(row)).join("\n");
+        if (args[0] === "inspect") {
+          const nets = state.inspect.get(args[1]);
+          if (nets instanceof Error) throw nets;
+          return JSON.stringify([{ State: { OOMKilled: false }, NetworkSettings: { Networks: nets ?? {} } }]);
+        }
+        return "";
+      },
+      getService: (name) => (name === svc.name ? svc : undefined),
+      listServices: () => [svc],
+      setContainerIp: (name, ip) => { ips.set(name, ip); },
+    });
+    return { poller, state, ips };
+  }
+
+  it("never lists an address from a network the agent is not on", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+
+    state.inspect.set("c1", { "shipit-egress-sess-1": { IPAddress: "172.30.0.5" } });
+    await poller.pollOnce();
+    expect([...ips]).toEqual([["web", undefined]]);
+  });
+
+  it("does not give a replacement container the address of the one it replaced", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    await poller.pollOnce();
+
+    state.rows = [{ Service: "web", ID: "c2", State: "running", ExitCode: 0 }];
+    state.inspect.set("c2", new Error("No such object: c2"));
+    await poller.pollOnce();
+    expect([...ips]).toEqual([["web", undefined]]);
+  });
+
+  // A slow Docker must not blank a working preview for a poll.
+  it("keeps the address when the same container cannot be read", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    await poller.pollOnce();
+
+    state.inspect.set("c1", new Error("docker inspect did not answer"));
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+  });
+
+  it("does not let a replica with no address yet hide the running one's", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.rows.push({ Service: "web", ID: "c2", State: "created", ExitCode: 0 });
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    state.inspect.set("c2", { "shipit-session-sess-1": { IPAddress: "" } });
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+  });
+});

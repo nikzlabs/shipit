@@ -176,6 +176,12 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
   });
 }
 
+const REBASE_BANNER_OPENERS: ReadonlySet<WsServerMessage["type"]> = new Set([
+  "auto_resolve_started",
+  "rebase_started",
+  "rebase_conflicts",
+]);
+
 export async function registerRoutes(
   app: FastifyInstance,
   rt: OrchestratorRuntime,
@@ -727,8 +733,10 @@ export async function registerRoutes(
             ),
           });
         }
+        let replayedRebaseStart = false;
         // Transcript snapshots, log snapshots, and xterm handle their own replay.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
+          if (REBASE_BANNER_OPENERS.has(buffered.type)) replayedRebaseStart = true;
           if (buffered.type === "agent_event") continue;
           if (buffered.type === "turn_snapshot") continue;
           if (buffered.type === "log_append") continue;
@@ -739,6 +747,11 @@ export async function registerRoutes(
           if (buffered.type === "background_tasks") continue;
           // Keep system_user_message for its activity label; clientRequestId deduplicates it.
           send(buffered);
+        }
+        // Every rebase flow holds the runner, so a replayed start with no hold is one whose
+        // terminator was lost; left alone it keeps the banner up and Sync disabled.
+        if (replayedRebaseStart && !runner.running && !runner.systemTurnInProgress) {
+          send({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
         // An empty queue snapshot clears messages drained while disconnected.
         send({ type: "queue_updated", queue: runner.getQueueSnapshot() });

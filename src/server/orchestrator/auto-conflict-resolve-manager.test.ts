@@ -363,15 +363,51 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.cb.count).toBe(1);
   });
 
-  it("dedup: back-to-back deferred outcomes don't double-emit auto_resolve_result", async () => {
-    fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", lastError: "dirty_tree", didWork: false })) });
-    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
-    await tick();
-    fx.advance(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1);
-    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
-    await tick();
-    const emits = fx.runner!.emitted.filter((m: unknown) => (m as { type?: string }).type === "auto_resolve_result");
-    expect(emits.length).toBe(1);
+  describe("every announced attempt ends the banner it opened", () => {
+    const types = () => fx.runner!.emitted.map((m) => (m as { type: string }).type);
+
+    it("an identical deferral repeated on every retry is terminated every time", async () => {
+      fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", lastError: "dirty_tree", didWork: false })) });
+      for (let i = 0; i < 3; i++) {
+        await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+        await tick();
+        expect(types().at(-1)).toBe("auto_resolve_result");
+        fx.advance(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1);
+      }
+      expect(types()).toEqual([
+        "auto_resolve_started", "auto_resolve_result",
+        "auto_resolve_started", "auto_resolve_result",
+        "auto_resolve_started", "auto_resolve_result",
+      ]);
+    });
+
+    it("is terminated when the PR stopped conflicting while the attempt ran", async () => {
+      let resolveCb: (r: AutoResolveResult) => void = () => { /* set below */ };
+      fx = makeFixture({ cb: recordingCb(() => new Promise<AutoResolveResult>((r) => { resolveCb = r; })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha1");
+      expect(fx.manager.get("s1")).toBeUndefined();
+      resolveCb({ outcome: "deferred", lastError: "dirty_tree", didWork: false });
+      await tick();
+      expect(types()).toEqual(["auto_resolve_started", "auto_resolve_result"]);
+    });
+
+    it("is terminated when the setting was switched off while the attempt ran", async () => {
+      let resolveCb: (r: AutoResolveResult) => void = () => { /* set below */ };
+      fx = makeFixture({ cb: recordingCb(() => new Promise<AutoResolveResult>((r) => { resolveCb = r; })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      fx.setEnabled(false);
+      resolveCb({ outcome: "error", lastError: "boom", didWork: true });
+      await tick();
+      expect(types()).toEqual(["auto_resolve_started", "auto_resolve_result"]);
+    });
+
+    it("adds nothing when the flow already ended the banner with rebase_complete", async () => {
+      fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", didWork: false, suppressEmit: true })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(types()).toEqual(["auto_resolve_started"]);
+    });
   });
 
   it("settle: a successful force-push opens a settle window (settleUntil + cooldown set)", async () => {

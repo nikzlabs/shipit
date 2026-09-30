@@ -443,7 +443,7 @@ web   running  auto     5173  http://172.20.0.3:5173/
 db    stopped  manual   5432
 ```
 
-The `url` column is the **agent-reachable** address (the service's container IP),
+The `url` column is the **agent-reachable** address (the service's IP on this session's network),
 which is what your own `curl` and `browser_navigate` should use. It is not the
 user's preview origin (`{sessionId}--{port}.<host>`), which doesn't resolve from
 inside your container. It is populated only while the service is running.

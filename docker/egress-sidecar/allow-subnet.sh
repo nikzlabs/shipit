@@ -9,7 +9,9 @@
 #                         allowed subnet for any other address is removed
 #   EGRESS_LOCAL_TCP      when set, replaces SHIPIT-CORE: ShipIt's own address:port pairs
 #
-# Idempotent and best effort: failure affects preview access, not containment.
+# Idempotent. A failed IPv4 rule does not stop the other rules, but the script
+# then exits 1 so the caller reports it. Failure affects access to the
+# session's services, not containment.
 # A namespace installed before docs/319 has no SHIPIT-LOCAL chain; its rules
 # go into OUTPUT as they did then.
 
@@ -74,7 +76,7 @@ prune_stale_drops() {
 }
 
 allow_one() {
-  local cidr="$1" chain
+  local cidr="$1" chain failed=0
   [[ -z "$cidr" ]] && return 0
   if [[ "$cidr" == *:* ]]; then
     chain="$(chain_for ip6tables)"
@@ -83,15 +85,19 @@ allow_one() {
       || { log "WARN: could not add ip6 rule for $cidr"; return 0; }
   else
     chain="$(chain_for iptables)"
-    # Exempt session HTTPS before the Tier C redirect.
-    iptables -t nat -C OUTPUT -d "$cidr" -p tcp --dport 443 -j RETURN 2>/dev/null \
-      || iptables -t nat -I OUTPUT 1 -d "$cidr" -p tcp --dport 443 -j RETURN \
-      || { log "WARN: could not exempt HTTPS for $cidr"; return 0; }
+    # Exempt session HTTPS before the Tier C redirect. Without the exemption
+    # only port 443 goes through the proxy, so the accept is still added.
+    if ((tier_c)); then
+      iptables -t nat -C OUTPUT -d "$cidr" -p tcp --dport 443 -j RETURN 2>/dev/null \
+        || iptables -t nat -I OUTPUT 1 -d "$cidr" -p tcp --dport 443 -j RETURN \
+        || { log "WARN: could not exempt HTTPS for $cidr"; failed=1; }
+    fi
     iptables -C "$chain" -d "$cidr" -j ACCEPT 2>/dev/null \
       || iptables -A "$chain" -d "$cidr" -j ACCEPT \
-      || { log "WARN: could not add rule for $cidr"; return 0; }
+      || { log "WARN: could not add rule for $cidr"; return 1; }
   fi
   log "allowed egress to $cidr"
+  return "$failed"
 }
 
 if [[ -n "${EGRESS_LOCAL_TCP:-}" ]]; then
@@ -114,8 +120,20 @@ done
 
 prune_stale_drops
 
+# Every firewall install runs this script again after it, so a later redirect gets its exemptions.
+tier_c=0
+if nat_rules="$(iptables -t nat -S OUTPUT 2>/dev/null)" \
+    && [[ "$nat_rules" == *"--dport 443 "*"-j REDIRECT"* ]]; then
+  tier_c=1
+fi
+
+incomplete=0
 for cidr in ${EGRESS_ALLOW_SUBNETS:-}; do
-  allow_one "$cidr"
+  allow_one "$cidr" || incomplete=1
 done
 
+if ((incomplete)); then
+  log "ERROR: intra-session subnet allow incomplete (${EGRESS_ALLOW_SUBNETS}); see the WARN lines above"
+  exit 1
+fi
 log "intra-session subnet allow complete (${EGRESS_ALLOW_SUBNETS:-<none>})"
