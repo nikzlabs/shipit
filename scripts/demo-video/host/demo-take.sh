@@ -13,12 +13,15 @@
 #   6. record only: the cassette, copied out of the session's proxy container
 #   7. the cut
 #
-# Everything lands in <demo-home>/takes/<take-name>/: take.log, recording.webm,
-# beats.json, run.json, hero.mp4, hero.webm, and cassette/ after a record take.
-# <demo-home> is the directory that holds the pipeline tree. --instance is the
-# instance as the host and a browser on it reach it (previews need a name that
-# carries a wildcard, so not 127.0.0.1). --dry-run prints each step instead of
-# running it.
+# Everything lands in <demo-home>/takes/<take-name>/: take.log (this script's
+# whole output), recording.webm, beats.json, run.json, hero.mp4, hero.webm, and
+# cassette/ after a record take — also after a record take whose driver failed,
+# since the next take's reset would destroy it. <demo-home> is the directory
+# that holds the pipeline tree. --instance is this host's own instance, by the
+# name the host and a browser on it reach it at (previews need a name that
+# carries a wildcard, so not 127.0.0.1); any other instance is refused, because
+# step 3 resets this host's. One take at a time. --dry-run prints each step
+# instead of running it.
 #
 # DEMO_GITHUB_ENV (default /root/shipit-demo-github.env) is the env file that
 # holds GITHUB_TOKEN for step 4. It is handed to `sudo docker run --env-file`;
@@ -33,7 +36,7 @@ BOOT_TIMEOUT_S=300
 
 log() { echo "[demo-take] $*" >&2; }
 die() { log "$*"; exit 1; }
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 DRY_RUN=0
 INSTANCE=""
@@ -86,6 +89,26 @@ wait_for_instance() {
   done
 }
 
+# The reset wipes THIS host's instance; a take pointed anywhere else would
+# reset one instance and film another.
+require_local_instance() {
+  local host addr
+  host=$(printf '%s' "$INSTANCE" | sed -E 's#^[a-z]+://##; s#[:/].*$##')
+  addr=$(getent ahostsv4 "$host" | awk 'NR==1 { print $1 }')
+  [ -n "$addr" ] || die "refusing: cannot resolve $host"
+  ip -o -4 addr show | awk '{ print $4 }' | cut -d/ -f1 | grep -qxF "$addr" \
+    || die "refusing: $INSTANCE resolves to $addr, which is not an address of this host — the reset would wipe this host's instance and the take would film another"
+}
+
+run require_local_instance
+if [ "$DRY_RUN" -eq 0 ]; then
+  # Two takes would reset the instance, the repo and the proxy image under each other.
+  exec 9>"$DEMO_HOME/.demo-take.lock"
+  flock -n 9 || die "another take is running on this host"
+  mkdir -p "$OUT"
+  exec > >(tee "$OUT/take.log") 2>&1
+fi
+
 docker image inspect "$TOOLS_IMAGE" >/dev/null 2>&1 \
   || run docker build -q -t "$TOOLS_IMAGE" -f "$HERE/demo-tools.Dockerfile" "$HERE"
 run bash "$HERE/demo-proxy-image.sh" build "$MODE" "$SCENARIO"
@@ -94,10 +117,13 @@ run wait_for_instance
 run sudo docker run --rm --network host --env-file "$GITHUB_ENV" -v "$PIPELINE:/demo/pipeline:ro" "$TOOLS_IMAGE" \
   bash /demo/pipeline/reset-demo-repo.sh --scenario "$IN_SCENARIO" --instance "$INSTANCE"
 
-[ "$DRY_RUN" -eq 1 ] || mkdir -p "$OUT"
-# The driver's log is part of the take: an abort names its beat there.
-drive() { tools node /demo/pipeline/driver.mjs --instance "$INSTANCE" --scenario "$IN_SCENARIO" --out /out --mode "$MODE" 2>&1 | tee "$OUT/take.log"; }
-run drive
+if ! run tools node /demo/pipeline/driver.mjs --instance "$INSTANCE" --scenario "$IN_SCENARIO" --out /out --mode "$MODE"; then
+  # What a failed record take did record is in a container the next reset removes.
+  if [ "$MODE" = record ]; then
+    bash "$HERE/demo-proxy-image.sh" extract "$SCENARIO" "$OUT/cassette" || log "no cassette to rescue"
+  fi
+  die "the driver failed; see $OUT/take.log"
+fi
 if [ "$MODE" = record ]; then run bash "$HERE/demo-proxy-image.sh" extract "$SCENARIO" "$OUT/cassette"; fi
 run tools env FFMPEG=ffmpeg bash /demo/pipeline/cut.sh /out/recording.webm /out/beats.json "$IN_SCENARIO/storyboard.json" /out/hero
 

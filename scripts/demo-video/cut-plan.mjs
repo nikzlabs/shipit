@@ -29,7 +29,7 @@
 //   node cut-plan.mjs <beats.json> <storyboard.json>            # full plan as JSON
 //   node cut-plan.mjs <beats.json> <storyboard.json> --print filter
 //   node cut-plan.mjs <beats.json> <storyboard.json> --print kept
-//   … [--anchor-wall <s> --anchor-video <s>] [--wall-duration <s>] [--video-duration <s>]
+//   … [--anchor-wall <s> --anchor-video <s> [--anchor-painted <s>]] [--wall-duration <s>] [--video-duration <s>]
 //   … [--allow-partial]
 
 import fs from "node:fs";
@@ -162,12 +162,16 @@ const ANCHOR_FRAME_SLACK_S = 0.1;
  * 1 s)` after the last frame (`videoRecorder.ts` `_stop()`), so a blinking
  * caret makes the tail up to a second long and the difference off by as much.
  */
-export function anchorOffset({ anchorWall, anchorVideo, wallDuration, videoDuration } = {}) {
+export function anchorOffset({ anchorWall, anchorVideo, anchorPainted, wallDuration, videoDuration } = {}) {
   if (Number.isFinite(anchorWall) && Number.isFinite(anchorVideo)) {
     if (anchorVideo < 0) throw new Error(`anchor in the video (${anchorVideo}s) is negative`);
-    if (anchorVideo > anchorWall + ANCHOR_FRAME_SLACK_S) {
+    // The flip is on screen no later than `anchorPainted`, the driver's stamp
+    // after the paint (`anchorWall` is the one before it, for a take that
+    // carries no second stamp).
+    const latest = Number.isFinite(anchorPainted) ? anchorPainted : anchorWall;
+    if (anchorVideo > latest + ANCHOR_FRAME_SLACK_S) {
       throw new Error(
-        `the anchor is ${anchorVideo}s into the video but ${anchorWall}s on the driver's clock, and the driver's clock starts first: the edge found in the file is not the driver's splash but a later dark frame (the instance loading), so the splash itself was not seen as black. Retake.`,
+        `the anchor is ${anchorVideo}s into the video but was painted by ${latest}s on the driver's clock, and the driver's clock starts first: the edge found in the file is not the driver's splash but a later dark frame (the instance loading), so the splash itself was not seen as black. Retake.`,
       );
     }
     return { offset: anchorWall - anchorVideo, method: "blackdetect" };
@@ -204,7 +208,7 @@ export function buildPlan(beatLog, storyboard, anchor = {}, options = {}) {
 
 const USAGE =
   "usage: cut-plan.mjs <beats.json> <storyboard.json> [--print filter|kept]\n" +
-  "       [--anchor-wall <s> --anchor-video <s>] [--wall-duration <s>] [--video-duration <s>] [--allow-partial]\n";
+  "       [--anchor-wall <s> --anchor-video <s> [--anchor-painted <s>]] [--wall-duration <s>] [--video-duration <s>] [--allow-partial]\n";
 
 function main(argv) {
   const allowPartial = argv.includes("--allow-partial");
@@ -223,13 +227,14 @@ function main(argv) {
   const anchor = {
     anchorWall: numeric("--anchor-wall"),
     anchorVideo: numeric("--anchor-video"),
+    anchorPainted: numeric("--anchor-painted"),
     wallDuration: numeric("--wall-duration"),
     videoDuration: numeric("--video-duration"),
   };
   if ((anchor.anchorWall === undefined) !== (anchor.anchorVideo === undefined)) {
     throw new Error("--anchor-wall and --anchor-video go together");
   }
-  const flagNames = new Set(["--print", "--anchor-wall", "--anchor-video", "--wall-duration", "--video-duration"]);
+  const flagNames = new Set(["--print", "--anchor-wall", "--anchor-video", "--anchor-painted", "--wall-duration", "--video-duration"]);
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     if (flagNames.has(argv[i])) { i++; continue; }

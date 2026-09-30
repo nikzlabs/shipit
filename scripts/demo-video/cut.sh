@@ -97,6 +97,7 @@ if [ -f "$RUN_JSON" ]; then
     exit 1
   fi
   ANCHOR_WALL=$(read_run_field anchor.wallAt)
+  ANCHOR_PAINTED=$(read_run_field anchor.paintedAt)
   WALL=$(read_run_field wallDuration)
   VIDEO=""
   if command -v "$FFPROBE" >/dev/null 2>&1; then
@@ -111,6 +112,7 @@ if [ -f "$RUN_JSON" ]; then
 
   if [ -n "$ANCHOR_WALL" ] && [ -n "$ANCHOR_VIDEO" ] && [ -n "$VIDEO" ]; then
     ANCHOR=(--anchor-wall "$ANCHOR_WALL" --anchor-video "$ANCHOR_VIDEO" --video-duration "$VIDEO")
+    [ -z "$ANCHOR_PAINTED" ] || ANCHOR+=(--anchor-painted "$ANCHOR_PAINTED")
     echo "cut: anchor: driver's splash went white at ${ANCHOR_WALL}s, video shows it at ${ANCHOR_VIDEO}s (file ${VIDEO}s)" >&2
   elif [ -n "$ANCHOR_WALL" ] && [ "${CUT_UNANCHORED:-0}" != "1" ]; then
     if [ -z "$VIDEO" ]; then

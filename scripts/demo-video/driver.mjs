@@ -931,6 +931,7 @@ export async function run(opts) {
   let video = null;
   let failure = null;
   let anchorWallAt = null;
+  let anchorPaintedAt = null;
   let wallDuration = null;
   try {
     // The anchor (plan §4 item 6): a black splash, painted and held, then
@@ -948,8 +949,13 @@ export async function run(opts) {
       await page.waitForTimeout(SPLASH_MS / SPLASH_REPAINTS);
     }
     anchorWallAt = driver.t();
-    await page.evaluate(() => { document.body.style.background = "#fff"; });
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await page.evaluate(() => {
+      document.body.style.background = "#fff";
+      return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    });
+    // The flip reached the screen between the two stamps; the cut aligns on
+    // the first and refuses an edge later than the second.
+    anchorPaintedAt = driver.t();
     await page.waitForTimeout(ANCHOR_HOLD_MS);
     await page.goto(opts.instance, { waitUntil: "commit" });
     if (sb.cursor !== false) await page.mouse.move(driver.pointer.x, driver.pointer.y);
@@ -986,7 +992,7 @@ export async function run(opts) {
     viewport: sb.viewport,
     recordedAt: new Date(recordingStart).toISOString(),
     ...(driver.sessionId ? { sessionId: driver.sessionId } : {}),
-    ...(anchorWallAt === null ? {} : { anchor: { wallAt: Number(anchorWallAt.toFixed(3)) } }),
+    ...(anchorWallAt === null ? {} : { anchor: { wallAt: Number(anchorWallAt.toFixed(3)), ...(anchorPaintedAt === null ? {} : { paintedAt: Number(anchorPaintedAt.toFixed(3)) }) } }),
     wallDuration: Number(wallDuration.toFixed(3)),
     completed: driver.beats.length === sb.beats.length,
     ...(proxyStats === undefined ? {} : { proxyStats }),
