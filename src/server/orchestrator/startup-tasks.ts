@@ -435,7 +435,8 @@ export function setupContainerHealthMonitoring(
     summary: string,
   ): void => {
     if (!trip.justTripped) return;
-    const msg = `Session disabled — ${summary}. Increase \`agent.memory\` in shipit.yaml and use "Restart all" on the health strip in the Terminal tab to retry.`;
+    const msg = `Session disabled — ${summary}. Use "Restart all" on the health strip in the Terminal tab to retry. `
+      + "Session memory is sized from host capacity; to give sessions more, raise `DEFAULT_SESSION_MEMORY_MB` on the ShipIt host.";
     console.error(`[oom-breaker] ${msg} (session=${sessionId})`);
     if (broadcastLog) broadcastLog(sessionId, "server", msg);
     const runner = runnerRegistry.get(sessionId);
