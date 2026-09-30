@@ -26,22 +26,30 @@ shouldn't be interrupted by rebase, fix ci, and any other automatic turns".
 6. Work the user starts by hand is not automatic and is not held — for example
    the Sync button or the Fix CI button. A message the user sends or queues never
    waits behind held automatic work.
+7. When the agent's own CLI starts a turn by itself while the agent waits for
+   the user's answer — for example, a background job it started finishes —
+   ShipIt stops that turn as soon as it starts. What the job returned stays in
+   the agent's context, so the agent reads it with the user's reply.
+8. Held automatic turns are saved in ShipIt's database. A held turn is not lost
+   when the session's container is stopped or restarted, or when ShipIt
+   restarts; it still runs after the user's reply.
 
 ## Open questions
 
-- A turn the agent's own CLI starts — a background job it started finishes while
-  the question waits — is not started by ShipIt. Should ShipIt stop that turn as
-  soon as it starts (the job's result stays in the agent's context, and the
-  agent reads it with the user's reply), or accept it as an exception to req 1?
-- A held automatic turn waits in the session's memory. If ShipIt stops the
-  session's container to free memory before the user replies, a held child
-  report, parent message or consult result is lost (req 4). Keep the container
-  running while it holds one, carry the held item into the user's next message
-  instead, or accept the loss?
+None.
 
 ## Resolved questions
 
-None yet. Requirements 2–6 spell out the words of the request: "automatic" is
+- 2026-09-30 — Should ShipIt stop a turn the agent's own CLI starts while the
+  question waits, or accept it as an exception? The user chose to stop it.
+  Recorded as req 7.
+- 2026-09-30 — What happens to a held turn when the container is stopped to
+  free memory before the user replies? The user: "all such turns should be
+  saved in the db, I've had issues with turns getting lost on container
+  restart". Recorded as req 8; it covers a ShipIt restart as well as a stopped
+  or restarted container.
+
+Requirements 2–6 spell out the words of the request: "automatic" is
 the class requirement 2 lists, and "shouldn't be interrupted" is about *when*
 the work runs, so the work is held (req 4) rather than cancelled — the automatic
 features stay on.

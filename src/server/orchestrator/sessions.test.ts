@@ -202,6 +202,37 @@ describe("SessionManager", () => {
     expect(mgr.isAwaitingAnswer("no-such-session")).toBe(false);
   });
 
+  it("docs/321 req 8: held turns are saved in order, survive a new manager, and keep one row per delivery", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Asks");
+    const settled: string[] = [];
+    mgr.holdTurn("sess-1", {
+      text: "[ci-fix] CI failed",
+      execution: "dispatched",
+      systemTurn: true,
+      automatic: true,
+      onTurnComplete: (o) => settled.push(o.status),
+    });
+    mgr.holdTurn("sess-1", { text: "Child PR #42 merged", execution: "dispatched", automatic: true, deliveryId: "watch-1:1" });
+    // A retried delivery is the same held turn.
+    mgr.holdTurn("sess-1", { text: "Child PR #42 merged", execution: "dispatched", automatic: true, deliveryId: "watch-1:1" });
+
+    const held = mgr.heldTurns("sess-1");
+    expect(held.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+    expect(held[0]).toMatchObject({ systemTurn: true, automatic: true });
+    held[0]!.onTurnComplete?.({ status: "completed" } as never);
+    expect(settled).toEqual(["completed"]);
+    expect(mgr.hasHeldDelivery("sess-1", "watch-1:1")).toBe(true);
+
+    // A restart keeps the turns, though not the process-bound callbacks.
+    const restarted = new SessionManager(dbManager).heldTurns("sess-1");
+    expect(restarted.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+    expect(restarted[0]!.onTurnComplete).toBeUndefined();
+
+    mgr.forgetHeldTurn(held[0]!.heldId!);
+    expect(mgr.heldTurns("sess-1").map((m) => m.text)).toEqual(["Child PR #42 merged"]);
+  });
+
   it("docs/150: persists provider route kind and id", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Route me");

@@ -597,6 +597,10 @@ describe("rebase-driver: runRebaseFlow", () => {
       answerHold: {
         isAwaitingAnswer: () => awaiting,
         setAwaitingAnswer: (_id, v) => { awaiting = v; },
+        holdTurn: () => 0,
+        heldTurns: () => [],
+        forgetHeldTurn: () => {},
+        hasHeldDelivery: () => false,
       },
     });
 

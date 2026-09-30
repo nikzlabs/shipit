@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, resetRunnerTurnState, sessionHasLiveAgent } from "./session-runner.js";
+import type { QueuedMessage } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -310,13 +311,23 @@ describe("SessionRunner", () => {
   it("docs/321: while the agent waits for an answer, an automatic dispatch is held and the user's is not", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const deps = steerDeps({ liveSteering: false });
-    deps.answerHold = { isAwaitingAnswer: () => true, setAwaitingAnswer: vi.fn() };
+    const saved: QueuedMessage[] = [];
+    deps.answerHold = {
+      isAwaitingAnswer: () => true,
+      setAwaitingAnswer: vi.fn(),
+      holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry); return saved.length; },
+      heldTurns: () => [],
+      forgetHeldTurn: vi.fn(),
+      hasHeldDelivery: () => false,
+    };
     runner.setSystemTurnDeps(deps);
     const ran = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue();
 
     const held = runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", systemTurn: true, automatic: true }));
     expect(held.admitted).toBe("queued");
-    expect(runner.queueLength).toBe(1);
+    // req 8 — saved, not queued in the runner a stopped container would take with it.
+    expect(saved.map((m) => m.text)).toEqual(["[ci-fix] CI failed"]);
+    expect(runner.queueLength).toBe(0);
     expect(runner.running).toBe(false);
 
     const refused = runner.dispatch(

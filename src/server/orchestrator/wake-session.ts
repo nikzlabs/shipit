@@ -1,7 +1,11 @@
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
-import { prepareDispatch } from "./prepared-dispatch.js";
-import type { TurnHandle, TurnOutcome } from "./turn-settlement.js";
+import { prepareDispatch, withSettlement, type PreparedDispatch } from "./prepared-dispatch.js";
+import { createTurnSettlement, type TurnHandle, type TurnOutcome } from "./turn-settlement.js";
+import { toQueuedMessage } from "./session-runner.js";
+import { readAnswerHold } from "./turn-admission.js";
+import { holdTurn } from "./held-turns.js";
+import { releaseQueuedTurn } from "./queue-drain.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -62,6 +66,22 @@ export async function wakeSessionWithTurn(
     defaultAgentId,
   } = deps;
 
+  // docs/321 — nothing may run before the user replies, so nothing is booted to wait.
+  if (readAnswerHold({ answerHold: sessionManager }, session.id)) {
+    const settlement = createTurnSettlement();
+    const entry = toQueuedMessage(withSettlement(wakeDispatch(session.id, opts), settlement));
+    if (holdTurn(sessionManager, session.id, entry)) {
+      settlement.noteAdmission("queued");
+      console.log(`[wake-session] held a wake for ${session.id} until the user answers`);
+      // No wake runs ahead of what the caller's hold kept queued, so that can go now.
+      if (opts.releaseHold) {
+        opts.releaseHold.release();
+        releaseQueuedTurn(opts.releaseHold.runner);
+      }
+      return settlement;
+    }
+  }
+
   // Recreate reclaimed workspaces before booting a container against them.
   if (deps.restoreWorkspace) await deps.restoreWorkspace(session.id);
 
@@ -111,9 +131,13 @@ export async function wakeSessionWithTurn(
 
   opts.releaseHold?.release();
 
+  return runner.dispatch(wakeDispatch(session.id, opts));
+}
+
+function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatch {
   // The callback preserves synchronous settlement; awaiting the handle adds a microtask.
   const onSettled = opts.onSettled;
-  return runner.dispatch(prepareDispatch({
+  return prepareDispatch({
     text: opts.text,
     agentInterface: undefined,
     messageOrigin: opts.messageOrigin,
@@ -126,7 +150,7 @@ export async function wakeSessionWithTurn(
             try {
               onSettled(outcome);
             } catch (err) {
-              console.error(`[wake-session] settlement handler for ${session.id} threw:`, err);
+              console.error(`[wake-session] settlement handler for ${sessionId} threw:`, err);
             }
           },
         }
@@ -142,5 +166,5 @@ export async function wakeSessionWithTurn(
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-  }));
+  });
 }

@@ -6,7 +6,7 @@ import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
 import type { PresentStore } from "./present-store.js";
 import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, AnswerHoldStore, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
 import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
@@ -32,6 +32,7 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginTurnSetup } from "./turn-stop-request.js";
 import { readAnswerHold } from "./turn-admission.js";
+import { forgetHeldEntries, hasHeldDelivery } from "./held-turns.js";
 import { modelListField } from "../shared/catalogue/model-list.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
@@ -246,6 +247,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
+  get answerHoldStore(): AnswerHoldStore | undefined { return this._systemTurnDeps?.answerHold; }
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
@@ -423,13 +425,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get queueLength(): number { return this.turn.queueLength; }
   enqueue(msg: QueuedMessage): number { return this.turn.enqueue(msg); }
   dequeue(): QueuedMessage | undefined { return this.turn.dequeue(); }
-  clearQueue(): void { this.turn.clearQueue(); }
+  clearQueue(): void {
+    forgetHeldEntries(this.answerHoldStore, this.turn.messageQueue);
+    this.turn.clearQueue();
+  }
   getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
 
   activeDeliveryId: string | undefined;
   hasDelivery(deliveryId: string): boolean {
     if (this.activeDeliveryId === deliveryId) return true;
-    return this.turn.messageQueue.some((m) => m.deliveryId === deliveryId);
+    if (this.turn.messageQueue.some((m) => m.deliveryId === deliveryId)) return true;
+    return hasHeldDelivery(this.answerHoldStore, this.sessionId, deliveryId);
   }
 
   // A resident process reports running between turns; legacy workers lack turnActive.

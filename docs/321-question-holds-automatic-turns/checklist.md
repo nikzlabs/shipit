@@ -10,5 +10,8 @@
 - [x] Remediation managers defer while held
 - [x] Rebase flow stops after a resolution turn asks
 - [x] Preview auto-fix dispatches as automatic
+- [x] Review fixes: queued reply kept, setup-failure take, stale remediation check, Retry by user
+- [x] Stop a turn the agent's CLI starts by itself while held (req 7)
+- [x] Save held turns in the database; restore at a user turn; wake-ups saved without booting (req 8)
 - [x] Tests
 - [x] Wiki

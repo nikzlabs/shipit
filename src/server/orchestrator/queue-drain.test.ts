@@ -210,6 +210,31 @@ describe("a question holds automatic entries (docs/321)", () => {
     expect(queue.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
   });
 
+  it("moves held automatic entries into the saved hold, and forgets a saved one once it runs (req 8)", () => {
+    const saved: string[] = [];
+    const forgotten: number[] = [];
+    const store = {
+      holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry.text); return saved.length; },
+      forgetHeldTurn: (heldId: number) => { forgotten.push(heldId); },
+    };
+    const withStore = (queue: QueuedMessage[], held: boolean) => Object.assign(fakeHeldRunner(queue, held), {
+      answerHoldStore: store,
+      emitMessage: vi.fn(),
+      getQueueSnapshot: () => [],
+    }) as unknown as SessionRunnerInterface;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const queue: QueuedMessage[] = [automaticEntry(), { text: "typed by the user", execution: "interactive" }];
+    expect(takeRunnableQueuedTurn(withStore(queue, true))?.text).toBe("typed by the user");
+    expect(saved).toEqual(["[ci-fix] CI failed"]);
+    expect(queue).toHaveLength(0);
+
+    const restored: QueuedMessage[] = [{ ...automaticEntry(), heldId: 7 }];
+    expect(takeRunnableQueuedTurn(withStore(restored, false))?.heldId).toBe(7);
+    expect(forgotten).toEqual([7]);
+    vi.restoreAllMocks();
+  });
+
   it("takes the automatic head once the user has answered (req 4)", () => {
     const queue = [automaticEntry()];
 

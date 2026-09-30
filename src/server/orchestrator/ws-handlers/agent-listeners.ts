@@ -166,6 +166,15 @@ export function wireAgentListeners(
       }
     }
     console.log(`[cli-turn] runner=${runner.sessionId} adopted a turn the orchestrator did not start (${reason})`);
+    // docs/321 req 7 — the agent is waiting for the user, so a turn its CLI starts on its
+    // own is stopped at once. What woke it stays in its context for the user's reply, and
+    // the turn ends as the question did: still waiting.
+    if (startsTurn && runner.answerHold) {
+      runner.awaitingUserAnswer = true;
+      runner.wasInterrupted = true;
+      agent.interrupt();
+      deps.broadcastLog("server", "Agent interrupted: its own turn started while it waits for the user's answer");
+    }
   };
 
   const persistAgentSessionIdIfReady = (): void => {

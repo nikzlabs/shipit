@@ -20,6 +20,7 @@ import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from 
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import type { PreTurnResetHookResult, PreTurnResetRunner } from "./pre-turn-reset-hook.js";
+import type { SessionManager } from "./sessions.js";
 
 // Dispatch and steering live separately to avoid runtime cycles through agent-listeners.
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
@@ -46,6 +47,12 @@ import {
   type PreparedDispatch,
 } from "./prepared-dispatch.js";
 import { takeRunnableQueuedTurn } from "./queue-drain.js";
+import {
+  forgetHeldEntries,
+  hasHeldDelivery,
+  holdTurn,
+  withoutHeldEntries,
+} from "./held-turns.js";
 import {
   createTurnSettlement,
   settleDroppedQueueEntries,
@@ -135,6 +142,8 @@ export interface QueuedMessage {
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
   automatic?: boolean;
+  /** docs/321 req 8 — its saved row while it waits for the user's answer; forgotten when it runs. */
+  heldId?: number;
   onTurnComplete?: (outcome: TurnOutcome) => void;
   deliveryId?: string;
   dictated?: boolean;
@@ -269,7 +278,16 @@ export function dispatchOnRunner(
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
 
   const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
-  if (answerHeld) return enqueueOrRefuse(answerHeld);
+  if (answerHeld) {
+    if (admission?.whenBusy === "refuse") return enqueueOrRefuse(answerHeld);
+    // docs/321 req 8 — saved rather than queued, so a stopped container cannot lose it.
+    if (holdTurn(runner.answerHoldStore, runner.sessionId, toQueuedMessage(withSettlement(opts, settlement)))) {
+      settlement.noteAdmission("queued");
+      console.log(`[dispatch] held the automatic dispatch for ${runner.sessionId} — ${answerHeld}`);
+      return settlement;
+    }
+    return enqueueOrRefuse(answerHeld);
+  }
 
   // System turns replace the resident process, which would destroy its background work.
   const residentWorkBlock = systemTurnBlockedByResidentWork(runner, opts.systemTurn);
@@ -365,11 +383,11 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   return queued;
 }
 
-/** docs/321 — where the "agent waits for the user's answer" mark is kept. */
-export interface AnswerHoldStore {
-  isAwaitingAnswer(sessionId: string): boolean;
-  setAwaitingAnswer(sessionId: string, awaiting: boolean): void;
-}
+/** docs/321 — the "agent waits for the user's answer" mark, and the turns it holds. */
+export type AnswerHoldStore = Pick<
+  SessionManager,
+  "isAwaitingAnswer" | "setAwaitingAnswer" | "holdTurn" | "heldTurns" | "forgetHeldTurn" | "hasHeldDelivery"
+>;
 
 export interface SystemTurnDeps {
   authorizeDispatch?: (sessionId: string) => void;
@@ -587,6 +605,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   mergeHold: boolean;
   /** docs/321 — the agent waits for the user's answer, so automatic turns are held. */
   readonly answerHold: boolean;
+  readonly answerHoldStore?: AnswerHoldStore;
   wasInterrupted: boolean;
   turnEpoch: number;
   guardedUnavailable: boolean;
@@ -783,6 +802,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
+  get answerHoldStore(): AnswerHoldStore | undefined { return this._systemTurnDeps?.answerHold; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }
@@ -914,9 +934,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   dequeue(): QueuedMessage | undefined { return this._messageQueue.shift(); }
   hasDelivery(deliveryId: string): boolean {
     if (this.activeDeliveryId === deliveryId) return true;
-    return this._messageQueue.some((m) => m.deliveryId === deliveryId);
+    if (this._messageQueue.some((m) => m.deliveryId === deliveryId)) return true;
+    return hasHeldDelivery(this.answerHoldStore, this.sessionId, deliveryId);
   }
   clearQueue(): void {
+    forgetHeldEntries(this.answerHoldStore, this._messageQueue);
     settleDroppedQueueEntries(this._messageQueue, "queue cleared");
     this._messageQueue.length = 0;
   }
@@ -1046,7 +1068,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._subAgentHandles.clear();
     if (this.agent) { this.agent.kill(); this.agent = null; }
     if (this._terminal) { this._terminal.kill(); this._terminal = null; }
-    settleDroppedQueueEntries(this._messageQueue, "runner disposed");
+    settleDroppedQueueEntries(withoutHeldEntries(this._messageQueue), "runner disposed");
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;

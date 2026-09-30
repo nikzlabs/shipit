@@ -146,7 +146,8 @@ describe("Integration: a question holds automatic turns (docs/321)", () => {
     expect(handle.admitted).toBe("queued");
     await new Promise((r) => setTimeout(r, 150));
     expect(lastClaude).toBe(asker);
-    expect(runner.queueLength).toBe(1);
+    expect(runner.queueLength).toBe(0);
+    expect(sessionManager.heldTurns(client.sessionId)).toHaveLength(1);
 
     client.send({ type: "answer_question", toolUseId: "ask-1", answers: { "0": "Redis" } });
     const answerTurn = await waitForClaude(() => lastClaude, asker);
@@ -179,7 +180,8 @@ describe("Integration: a question holds automatic turns (docs/321)", () => {
     await waitFor(() => !runner.running, "question turn settled");
     await new Promise((r) => setTimeout(r, 150));
     expect(lastClaude).toBe(asker);
-    expect(runner.queueLength).toBe(1);
+    expect(runner.queueLength).toBe(0);
+    expect(sessionManager.heldTurns(client.sessionId)).toHaveLength(1);
     expect(outcomes).toEqual([]);
 
     client.send({ type: "send_message", text: "Use Redis" });
@@ -268,7 +270,8 @@ describe("Integration: a question holds automatic turns (docs/321)", () => {
     await waitFor(() => !runner.running && !runner.systemTurnInProgress, "fix turn settled");
     await new Promise((r) => setTimeout(r, 150));
     expect(lastClaude).toBe(fixer);
-    expect(runner.queueLength).toBe(1);
+    expect(runner.queueLength).toBe(0);
+    expect(sessionManager.heldTurns(client.sessionId)).toHaveLength(1);
     expect(sessionManager.isAwaitingAnswer(client.sessionId)).toBe(true);
 
     client.send({ type: "answer_question", toolUseId: "ask-1", answers: { "0": "Redis" } });
@@ -285,7 +288,7 @@ describe("Integration: a question holds automatic turns (docs/321)", () => {
     client.close();
   });
 
-  it("the hold outlives the runner (req 5)", async () => {
+  it("held turns are saved: a new runner still holds them, and they run after the answer (req 5, 8)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
     const stop = pump(client);
@@ -294,15 +297,74 @@ describe("Integration: a question holds automatic turns (docs/321)", () => {
     asker.finish("question-turn");
     const first = runnerFor(client.sessionId);
     await waitFor(() => !first.running, "question turn settled");
+
+    const outcomes: TurnOutcome[] = [];
+    expect(dispatchWake(first, outcomes).admitted).toBe("queued");
+    expect(first.queueLength).toBe(0);
+    expect(sessionManager.heldTurns(client.sessionId).map((m) => m.text)).toEqual([WAKE_TEXT]);
+
+    // A stopped container takes its runner with it; the saved turn stays.
     const sessionDir = first.sessionDir;
     registry().dispose(client.sessionId, { force: true });
-
+    expect(outcomes).toEqual([]);
     const fresh = registry().getOrCreate(client.sessionId, sessionDir, "claude");
     expect(fresh).not.toBe(first);
-    const outcomes: TurnOutcome[] = [];
     expect(dispatchWake(fresh, outcomes).admitted).toBe("queued");
+    expect(sessionManager.heldTurns(client.sessionId)).toHaveLength(2);
     await new Promise((r) => setTimeout(r, 150));
     expect(lastClaude).toBe(asker);
+
+    client.send({ type: "answer_question", toolUseId: "ask-1", answers: { "0": "Redis" } });
+    const answerTurn = await waitForClaude(() => lastClaude, asker);
+    expect(answerTurn.lastPrompt).toBe("Redis");
+    answerTurn.finish("answer-turn");
+
+    const firstWake = await waitForClaude(() => lastClaude, answerTurn);
+    expect(firstWake.lastPrompt).toContain("merged");
+    firstWake.finish("wake-1");
+    const secondWake = await waitForClaude(() => lastClaude, firstWake);
+    expect(secondWake.lastPrompt).toContain("merged");
+    secondWake.finish("wake-2");
+    await waitFor(() => outcomes.length === 2, "both wakes settled");
+    expect(outcomes).toEqual([TURN_COMPLETED, TURN_COMPLETED]);
+    expect(sessionManager.heldTurns(client.sessionId)).toEqual([]);
+
+    stop();
+    client.close();
+  });
+
+  it("a held turn survives its runner going away during the reply, and runs after the next turn (req 8)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const stop = pump(client);
+
+    const asker = await turnThatAsks(client);
+    asker.finish("question-turn");
+    const first = runnerFor(client.sessionId);
+    await waitFor(() => !first.running, "question turn settled");
+    const outcomes: TurnOutcome[] = [];
+    dispatchWake(first, outcomes);
+
+    client.send({ type: "answer_question", toolUseId: "ask-1", answers: { "0": "Redis" } });
+    const answerTurn = await waitForClaude(() => lastClaude, asker);
+    // Back in the queue behind the reply, and still saved.
+    expect(first.queueLength).toBe(1);
+    expect(sessionManager.heldTurns(client.sessionId)).toHaveLength(1);
+
+    registry().dispose(client.sessionId, { force: true });
+    expect(outcomes).toEqual([]);
+    expect(sessionManager.heldTurns(client.sessionId)).toHaveLength(1);
+
+    client.send({ type: "send_message", text: "Carry on" });
+    const next = await waitForClaude(() => lastClaude, answerTurn);
+    next.initSession("next-turn");
+    next.finish("next-turn");
+    const wakeTurn = await waitForClaude(() => lastClaude, next);
+    expect(wakeTurn.lastPrompt).toContain("merged");
+    wakeTurn.finish("wake-turn");
+    await waitFor(() => outcomes.length > 0, "wake turn settled");
+    expect(outcomes).toEqual([TURN_COMPLETED]);
+    expect(sessionManager.heldTurns(client.sessionId)).toEqual([]);
 
     stop();
     client.close();

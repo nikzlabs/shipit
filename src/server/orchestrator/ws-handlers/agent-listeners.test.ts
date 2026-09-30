@@ -1562,6 +1562,56 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
   });
 });
 
+describe("wireAgentListeners — a CLI-started turn while the agent waits for an answer (docs/321 req 7)", () => {
+  function wireHeld(held: boolean) {
+    const agent = new FakeAgent();
+    const interrupt = vi.spyOn(agent, "interrupt");
+    const runner = new SessionRunner({ sessionId: "session-held", sessionDir: "/tmp/session-held", defaultAgentId: "claude" });
+    runner.setSystemTurnDeps({
+      answerHold: {
+        isAwaitingAnswer: () => held,
+        setAwaitingAnswer: vi.fn(),
+        holdTurn: vi.fn(),
+        heldTurns: () => [],
+        forgetHeldTurn: vi.fn(),
+        hasHeldDelivery: () => false,
+      },
+    } as never);
+    runner.setAgent(agent as unknown as AgentProcess);
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
+      capturedSessionId: "session-held",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+      adoptsCliStartedTurns: true,
+      useStreaming: true,
+    });
+    runner.running = true;
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "session-held" } satisfies AgentEvent);
+    return { agent, runner, interrupt };
+  }
+
+  it("stops a turn the CLI starts on its own, and the turn still ends waiting for the user", () => {
+    const { agent, runner, interrupt } = wireHeld(true);
+    runner.running = false;
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" } satisfies AgentEvent);
+
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(runner.awaitingUserAnswer).toBe(true);
+    expect(runner.wasInterrupted).toBe(true);
+  });
+
+  it("leaves it alone when nothing waits for the user", () => {
+    const { agent, runner, interrupt } = wireHeld(false);
+    runner.running = false;
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" } satisfies AgentEvent);
+
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(runner.running).toBe(true);
+  });
+});
+
 describe("wireAgentListeners — tool-call time", () => {
   it("stamps an unstamped tool_use with one time that reaches both the wire and the persisted row", () => {
     const agent = new FakeAgent();

@@ -53,6 +53,7 @@ import {
 } from "./services/session-status.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
 import { writeAnswerHold } from "./turn-admission.js";
+import { restoreHeldTurns } from "./held-turns.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
@@ -435,6 +436,10 @@ export async function executeAgentTurn(
   // restart is not a new start, and an automatic one must not release what holds it.
   if (input.automatic !== true && !input.adopt) {
     writeAnswerHold(deps, sessionId, false);
+    // req 4 — what the hold kept runs after this turn, from the queue it waits in now.
+    if (runner && restoreHeldTurns(runner) > 0) {
+      runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    }
   }
   if (runner) {
     runner.running = true;

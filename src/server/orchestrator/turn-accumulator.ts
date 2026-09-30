@@ -1,6 +1,7 @@
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { QueuedMessage, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import { settleDroppedQueueEntries } from "./turn-settlement.js";
+import { withoutHeldEntries } from "./held-turns.js";
 import { createCommittedBodyIds } from "./transcript-projection.js";
 
 const MAX_QUEUE_SIZE = 50;
@@ -84,7 +85,8 @@ export class TurnAccumulator {
   }
 
   reset(): void {
-    settleDroppedQueueEntries(this._messageQueue, "runner disposed");
+    // Held turns are saved and come back with the next runner (docs/321 req 8).
+    settleDroppedQueueEntries(withoutHeldEntries(this._messageQueue), "runner disposed");
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
   }

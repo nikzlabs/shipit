@@ -4,6 +4,7 @@ import type {
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import { automaticTurnHeldForAnswer, systemTurnBlockedByResidentWork } from "./turn-admission.js";
+import { forgetHeldTurn, holdTurn } from "./held-turns.js";
 
 export { queuedMessageToDispatchOptions };
 
@@ -20,19 +21,31 @@ export function takeRunnableQueuedTurn(
   runner: SessionRunnerInterface,
 ): QueuedMessage | undefined {
   const queue = runner.messageQueue;
-  const head = queue[0];
-  if (!head) return undefined;
-  const held = automaticTurnHeldForAnswer(runner, head.automatic);
+  if (queue.length === 0) return undefined;
+  const held = queue.some((m) => m.automatic === true)
+    ? automaticTurnHeldForAnswer(runner, true)
+    : null;
   if (held) {
-    // docs/321 req 6 — the user's own entries do not wait behind held automatic work.
+    holdQueuedAutomaticTurns(runner, held);
+    // docs/321 req 6 — the user's own entries do not wait behind held automatic work,
+    // including one the store could not take.
     const index = queue.findIndex((m) => m.automatic !== true);
-    if (index === -1) {
-      console.log(`[queue] holding ${queue.length} automatic turn(s) for ${runner.sessionId} — ${held}`);
-      return undefined;
-    }
+    if (index === -1) return undefined;
     return takeIfUnblocked(runner, index);
   }
   return takeIfUnblocked(runner, 0);
+}
+
+/** docs/321 req 8 — automatic entries behind a question move out of memory into the saved hold. */
+function holdQueuedAutomaticTurns(runner: SessionRunnerInterface, reason: string): void {
+  const queue = runner.messageQueue;
+  const saved = queue.filter(
+    (m) => m.automatic === true && holdTurn(runner.answerHoldStore, runner.sessionId, m),
+  );
+  if (saved.length === 0) return;
+  queue.splice(0, queue.length, ...queue.filter((m) => !saved.includes(m)));
+  console.log(`[queue] holding ${saved.length} automatic turn(s) for ${runner.sessionId} — ${reason}`);
+  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
 }
 
 function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedMessage | undefined {
@@ -43,7 +56,9 @@ function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedM
     );
     return undefined;
   }
-  return index === 0 ? runner.dequeue() : runner.messageQueue.splice(index, 1)[0];
+  const taken = index === 0 ? runner.dequeue() : runner.messageQueue.splice(index, 1)[0];
+  if (taken) forgetHeldTurn(runner.answerHoldStore, taken);
+  return taken;
 }
 
 // The tagged executor preserves callbacks and system-turn options across queue drains.

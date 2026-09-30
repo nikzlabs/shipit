@@ -3,6 +3,7 @@ import type { ChatHistoryManager } from "./chat-history.js";
 import type { ChildMergedCard, SessionInfo, SessionMergeWatch, WsServerMessage } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
+import { hasHeldDelivery } from "./held-turns.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
@@ -324,6 +325,8 @@ export class MergeWatchManager {
   private isDeliveryInFlight(childSessionId: string, watch: SessionMergeWatch): boolean {
     if (this.dispatching.has(childSessionId)) return true;
     if (!watch.deliveryId) return false;
+    // docs/321 — a wake held for the user's answer is saved, with or without a runner.
+    if (hasHeldDelivery(this.deps.sessionManager, watch.parentSessionId, watch.deliveryId)) return true;
     const runner = this.deps.runnerRegistry.get(watch.parentSessionId);
     if (!runner || runner.disposed) return false;
     return runner.hasDelivery(watch.deliveryId);
