@@ -966,11 +966,11 @@ Chrome's own choice of when a group paints. Four things were written and then
 short of the bottom only between a growth and the resize that corrects it, and
 those are the same frame), the layout effect's own bypass of a stale gesture and
 the settle loop's (the observer reaches both a frame later), and a `pinnedTopRef`
-reset at the switch that the same effect's pin immediately overwrites. Two
-existing cases in `useMessageScroll.test.tsx` advance the clock past the hold for
-a fixture reason rather than a behavioural one: their geometry is installed after
-mount, so the pin records a 0 that their own "scrolled away" position equals by
-accident.
+reset at the switch that the same effect's pin immediately overwrites. The
+cases in `useMessageScroll.test.tsx` that scroll away go to `SCROLLED_AWAY`
+(300), never 0, for a fixture reason rather than a behavioural one: their
+geometry is installed after mount, so the pin records a 0, and a scroll event at
+the position the hook wrote is its own echo (req 47, below).
 
 **And `session-open-scroll.test.tsx`'s own claim narrowed, which its preamble now
 says.** When the first fix shipped, removing the follow flag or either gesture
@@ -1033,6 +1033,22 @@ scroller, and the observer only corrects that while auto-follow is on. A card
 that arrives already merged (`undefined` to `true`) does not count, and a session
 switch needs no rule of its own, since opening a session already lands at the
 end. A live text selection still stands it down, as for a sent message.
+
+The first version stopped short of the end in the real app, and the unit test
+could not see it. The browser reports a `scroll` event a frame after the write,
+and `handleScroll` read the position against the layout of THAT moment. When
+the reset controls land between the pin and the next frame (a separate task,
+so React does not batch them with the phase change), the view is already
+shorter, so the pin's own position read as "scrolled away": auto-follow turned
+off, and the observer then declined to correct the shrink. Reproduced in the
+real app: the view stopped short by exactly the composer's growth. So
+`handleScroll` now ignores an event that reports the position the hook last
+wrote (`pinnedTopRef`) at every moment, not only while a session is opening. Any
+other position is the reader's and resets `pinnedTopRef`, so a reader who
+scrolls away and comes back to that exact position still re-arms auto-follow.
+Outside the open, a live gesture makes even the written position the reader's:
+browser scroll anchoring can move the view and a wheel can bring it back before
+the event, which then reports only the written position.
 
 ### A card that waits for an answer goes last (req 32)
 
