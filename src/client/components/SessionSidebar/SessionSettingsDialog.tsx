@@ -260,7 +260,7 @@ export function SessionSettingsDialog({
             <ModeOption
               icon={<ShieldSlashIcon size={ICON_SIZE.SM} />}
               title="Open"
-              desc="Unrestricted outbound network access — no allowlist, no prompts."
+              desc="Internet access with no allowlist or prompts — but not this machine, private networks or the tailnet."
               selected={mode === "open"}
               disabled={mode === undefined}
               onSelect={() => net.setMode("open")}

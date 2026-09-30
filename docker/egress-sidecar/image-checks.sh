@@ -105,7 +105,7 @@ killall sni-proxy 2>/dev/null || true
 # --- Shell syntax ----------------------------------------------------------
 echo
 echo "=== script syntax ($(bash --version | head -1)) ==="
-for s in init-firewall.sh run-resolver.sh allow-subnet.sh; do
+for s in init-firewall.sh run-resolver.sh allow-subnet.sh probe-firewall.sh; do
   script="/usr/local/bin/$s"
   if [ ! -x "$script" ]; then
     fail "$s is missing or not executable"

@@ -300,8 +300,9 @@ Adding a destination grants nothing. **The grant is per session**, in that
 session's own settings (the session menu → Session settings → SSH destinations,
 or the composer's permission-mode control → Session settings…, which also works
 on a new session before its first message), and any session kind can hold one — repo-backed, sandbox or ops. Granting one
-writes `~/.ssh/config` for that session and opens its egress to that address;
-revoking removes both, though a connection already authenticated runs until it
+writes `~/.ssh/config` for that session and opens its egress to that address,
+on its SSH port only when the address is this machine, a private network or the
+tailnet; revoking removes both, though a connection already authenticated runs until it
 closes.
 
 A destination can be changed after it is added: **Edit** on its row reopens the

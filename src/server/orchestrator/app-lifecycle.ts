@@ -1,3 +1,4 @@
+import { initLocalBlock, assertLoopbackOnlyWithoutBlock } from "./local-block.js";
 import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import {
   credentialHarnessForLogin,
@@ -179,6 +180,10 @@ export async function setupContainerManager(
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
       await containerManager.ensureNetwork();
+      // docs/319: decide once whether session containers get the local block,
+      // and refuse a non-loopback binding where they cannot.
+      await initLocalBlock(containerManager.getDockerClient());
+      await assertLoopbackOnlyWithoutBlock(containerManager.getDockerClient());
       const helperImage = await resolveComposeHelperImage(
         containerManager.getDockerClient(), process.env[COMPOSE_HELPER_IMAGE_ENV],
       );
@@ -298,6 +303,10 @@ export async function setupContainerManager(
     } catch (err) {
       console.warn(`[server] Docker API proxy setup skipped: ${(err as Error).message}`);
     }
+    // After the Docker proxy: its port is one of ShipIt's own that agents may use.
+    void containerManager.reconcileAdoptedFirewalls().catch((err: unknown) => {
+      console.warn("[egress] reconciling adopted firewalls failed:", err);
+    });
   }
 
   return { containerManager, dockerProxyServer };

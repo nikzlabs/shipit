@@ -7,6 +7,7 @@ import { identityForSession, sessionWorkerUid } from "./session-worker-uid.js";
 import { isSessionUid, SESSION_UID_MIN, SESSION_UID_MAX } from "./session-uid-allocator.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
+import { NO_HOST_ADDRESS_OPTION } from "./egress-firewall.js";
 import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { stackLabel } from "./stack-label.js";
@@ -70,6 +71,8 @@ export interface ComposeOverrideOptions {
   workspaceDevice?: string;
   stackName?: string;
   containEgress?: boolean;
+  /** Services start with no route out and get a firewall first; implied by `containEgress` (docs/319-api-reach-through-host). */
+  isolateNetwork?: boolean;
   containDns?: boolean;
   containProxy?: boolean;
   /** Built by this start's `build`; `up --no-build` must not pull over them. */
@@ -233,6 +236,8 @@ export interface ComposeParseOptions {
   /** Absent means not granted. */
   dockerSocketGrant?: DockerSocketGrant;
   containEgress?: boolean;
+  /** Implied by `containEgress` (docs/319-api-reach-through-host). */
+  isolateNetwork?: boolean;
   trustedOpsProxy?: boolean;
 }
 
@@ -408,6 +413,7 @@ export function validateResolvedModel(model: unknown, ctx: ResolvedModelContext)
   const declaredVolumes = new Set(isMapping(model.volumes) ? Object.keys(model.volumes) : []);
   const socket = socketAccessOf(ctx);
   const containEgress = ctx.containEgress ?? false;
+  const isolateNetwork = ctx.isolateNetwork ?? false;
   const opsSession = ctx.trustedOpsProxy ?? false;
   const trustedOpsProxies = new Set<string>();
   const entries: [string, Record<string, unknown>][] = [];
@@ -417,7 +423,7 @@ export function validateResolvedModel(model: unknown, ctx: ResolvedModelContext)
     }
     entries.push([name, svc]);
     validateClassifiedFields(name, svc);
-    validateServiceSettings(name, svc, socket, containEgress, opsSession);
+    validateServiceSettings(name, svc, socket, containEgress, opsSession, isolateNetwork);
     validateResolvedServiceFiles(name, svc);
     validateResolvedMounts(name, svc.volumes, declaredVolumes, ctx.workspaceDir);
     if (isTrustedOpsProxyService(name, svc, opsSession)) trustedOpsProxies.add(name);
@@ -946,13 +952,17 @@ function validateNamespaces(name: string, svc: Record<string, unknown>): void {
   }
 }
 
+function capabilityName(entry: unknown): string {
+  return typeof entry === "string" ? entry.trim().toUpperCase().replace(/^CAP_/, "") : "";
+}
+
 function validateCapAdd(name: string, capAdd: unknown): void {
   if (capAdd === undefined || capAdd === null) return;
   if (!Array.isArray(capAdd)) {
     throw new ComposeValidationError(`Service \`${name}\`: \`cap_add\` must be a list.`);
   }
   for (const entry of capAdd) {
-    const cap = typeof entry === "string" ? entry.trim().toUpperCase().replace(/^CAP_/, "") : "";
+    const cap = capabilityName(entry);
     if (SAFE_ADDED_CAPABILITIES.has(cap)) continue;
     throw new ComposeValidationError(
       `Service \`${name}\`: \`cap_add: ${showValue(entry)}\` is not allowed. A service may add only `
@@ -1123,10 +1133,11 @@ export function validateServiceSecurity(
   socket: DockerSocketAccess,
   containEgress: boolean,
   trustedOpsProxy: boolean,
+  isolateNetwork = false,
 ): void {
   validateClassifiedFields(name, svc);
   validateContainedInterpolation(name, svc, containEgress);
-  validateServiceSettings(name, svc, socket, containEgress, trustedOpsProxy);
+  validateServiceSettings(name, svc, socket, containEgress, trustedOpsProxy, isolateNetwork);
   validateRawVolumeSources(name, svc.volumes);
 }
 
@@ -1295,7 +1306,9 @@ function validateServiceSettings(
   socket: DockerSocketAccess,
   containEgress: boolean,
   trustedOpsProxy: boolean,
+  isolateNetwork: boolean,
 ): void {
+  const isolate = containEgress || isolateNetwork;
   const trustedProxyShape = isTrustedOpsProxyService(name, svc, trustedOpsProxy);
   if (meansSet(svc.privileged)) {
     throw new ComposeValidationError(
@@ -1320,6 +1333,15 @@ function validateServiceSettings(
     );
   }
   validateCapAdd(name, svc.cap_add);
+  const netAdmin: unknown = isolate && Array.isArray(svc.cap_add)
+    ? svc.cap_add.find((entry) => capabilityName(entry) === "NET_ADMIN")
+    : undefined;
+  if (netAdmin !== undefined) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`cap_add: ${showValue(netAdmin)}\` is not allowed. ShipIt keeps sessions away `
+      + "from this machine and private networks, and a service that adds NET_ADMIN could remove that. Remove it.",
+    );
+  }
   validateSecurityOpt(name, svc.security_opt);
   if (svc.device_cgroup_rules !== undefined && !isEmptyList(svc.device_cgroup_rules)) {
     throw new ComposeValidationError(
@@ -1356,7 +1378,7 @@ function validateServiceSettings(
   const labelKeys = Array.isArray(labels)
     ? labels.map((entry) => typeof entry === "string" ? entry.split("=", 1)[0] : "")
     : labels && typeof labels === "object" ? Object.keys(labels) : [];
-  const reserved = containEgress ? labelKeys.find((key) => key.startsWith("shipit-egress-")) : undefined;
+  const reserved = isolate ? labelKeys.find((key) => key.startsWith("shipit-egress-")) : undefined;
   if (reserved) {
     throw new ComposeValidationError(
       `Service \`${name}\`: label \`${reserved}\` uses ShipIt's reserved egress namespace.`,
@@ -1365,10 +1387,11 @@ function validateServiceSettings(
   const deploy = svc.deploy;
   if (deploy && typeof deploy === "object") {
     const restartPolicy = (deploy as Record<string, unknown>).restart_policy;
-    if (containEgress && restartPolicy !== undefined) {
-      throw new ComposeValidationError(
-        `Service \`${name}\`: \`deploy.restart_policy\` is not allowed for contained services.`,
-      );
+    if (isolate && restartPolicy !== undefined) {
+      throw new ComposeValidationError(containEgress
+        ? `Service \`${name}\`: \`deploy.restart_policy\` is not allowed for contained services.`
+        : `Service \`${name}\`: \`deploy.restart_policy\` is not allowed. A restarted service runs without the `
+          + "firewall that keeps sessions away from this machine and private networks. Remove it.");
     }
     validateDeployDevices(name, deploy as Record<string, unknown>);
   }
@@ -1859,8 +1882,11 @@ export function generateComposeOverride(
   const overrideServices: Record<string, Record<string, unknown>> = {};
   const referencedOverlayVolumes = new Set<string>();
 
+  const isolate = Boolean(opts.containEgress || opts.isolateNetwork);
   for (const svc of services) {
     const applyServiceContainment = Boolean(opts.containEgress && !svc.trustedOpsProxy);
+    // A restart runs the service in a new namespace, without its firewall.
+    const noRestart = isolate && !svc.trustedOpsProxy;
     const mode = resolvePreviewMode(svc);
     const labels: Record<string, string> = {
       "shipit-parent-session": opts.sessionId,
@@ -1882,14 +1908,12 @@ export function generateComposeOverride(
       // this it keeps the default weight and outranks the session it belongs to (docs/229).
       cpu_shares: SESSION_CPU_SHARES,
       // A second bridge would permit egress before containment is installed.
-      networks: opts.containEgress ? "__RESET_NETWORKS__" : ["shipit-session"],
+      networks: isolate ? "__RESET_NETWORKS__" : ["shipit-session"],
       cap_drop: applyServiceContainment ? ["NET_RAW", "SETUID", "SETGID"] : ["NET_RAW"],
       // Internal networks still forward DNS; block it until the controlled resolver is ready.
       ...(opts.containDns ? { dns: "__RESET_DNS__" } : {}),
-      ...(applyServiceContainment ? {
-        restart: "no",
-        security_opt: ["no-new-privileges"],
-      } : {}),
+      ...(noRestart ? { restart: "no" } : {}),
+      ...(applyServiceContainment ? { security_opt: ["no-new-privileges"] } : {}),
       ...(opts.containProxy && !svc.trustedOpsProxy
         ? { sysctls: { "net.ipv4.conf.all.route_localnet": "1" } }
         : {}),
@@ -1979,7 +2003,7 @@ export function generateComposeOverride(
     networks: {
       "shipit-session": {
         name: `shipit-session-${opts.sessionId}`,
-        ...(opts.containEgress ? { internal: true } : {}),
+        ...(isolate ? { internal: true, enable_ipv6: false, driver_opts: { ...NO_HOST_ADDRESS_OPTION } } : {}),
         // The boot sweeps select by the stack label (planning#584); Compose adds none of its own.
         ...(opts.stackName ? { labels: stackLabel(opts.stackName) } : {}),
       },

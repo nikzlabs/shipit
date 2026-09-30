@@ -1,0 +1,28 @@
+# 319 — Checklist
+
+- [x] Open questions in `requirements.md` answered and recorded
+- [x] Plan reviewed, including one "would anyone notice if this were removed?" round
+- [x] `init-firewall.sh`: `EGRESS_POLICY`, `SHIPIT-SSH` / `SHIPIT-LOCAL` / `SHIPIT-BLOCK`, open self-test, `DROP` during a reinstall
+- [x] `allow-subnet.sh`: gateways dropped at the top of `SHIPIT-LOCAL`, subnets appended
+- [x] `probe-firewall.sh` in the sidecar image
+- [x] Script tests with stubbed tools (rule order, open policy uses no `ipset`)
+- [x] CI job: both policies in a real network namespace
+- [x] Host address discovery, 60 s reuse, fail closed
+- [x] SSH destinations carry their port into the SSH chain
+- [x] Agent container: firewall in both modes; open policy runs no resolver or proxy; orchestrator ports only on the shared network
+- [x] Compose: internal topology and open-policy containment when the block is active; `NET_ADMIN`, restart policies and reserved labels refused
+- [x] Plugin holder in both modes, with no local accepts
+- [x] Docker proxy containers: isolated networks only (bridge, Docker-picked range, no host address, IPv6 off), restart policies and egress-network joins refused, containment on start and restart
+- [x] Agent joins its Docker-access network
+- [x] Agent addresses and IPv6 addresses resolve as session containers (planning#506)
+- [x] Startup probe, own-binding refusal, Docker Desktop refusal
+- [x] `deployment/local/lib.sh`, `deployment/local/tailscale.sh`, `deployment/vps/tailscale.sh`, `deployment/vps/deploy.sh`
+- [x] UI copy for open mode
+- [x] Public-install text (req 7) and `project.allowDockerSocket` description (req 9)
+- [x] `src/server/shipit-docs/` and wiki updated
+- [x] Build steps recorded as planning#512's scope (req 10)
+- [x] Implementation reviewed against every requirement (two rounds; findings applied or documented)
+- [x] Adopted containers brought up to date at start
+- [x] Internal session networks give the host no address; IPv6 off on ShipIt's networks
+- [x] Deployment checks run on the test machine (firewall scripts, both policies, Compose set-up); test items removed
+- [ ] After deploy: the checks that need the new orchestrator (PR test plan)

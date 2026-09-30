@@ -20,7 +20,19 @@ The API container guard (`api-container-guard.ts`, docs/201-container-api-trust-
 
 6. On a host that cannot enforce requirement 4 (for example rootless Docker, or a locked-down kernel), ShipIt is reachable only on loopback: it refuses to listen on any other address, and its setup does not install a forwarder to it. Access from the same machine, through Cloudflare Tunnel with Access, and through an SSH tunnel keeps working.
 
+7. An operator can make ShipIt public with no sign-in: the Cloudflare setup's `SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1`, or a bind address that the internet can reach. This opt-out stays. On such an install anyone on the internet has the user's access, so requirement 1 does not apply there. The setup output and the docs say so.
+
+8. Containers that the agent starts through ShipIt's Docker proxy, in a session with Docker access, are that session's containers: requirements 1 and 4 apply to them.
+
+9. A Compose service that the user gives the Docker socket (docs/318-compose-remaining-escapes requirement 8) can control the machine, so requirements 1 and 4 do not hold for it. That is part of what the user accepts with the grant, and ShipIt says so where the user turns the socket on.
+
+10. Image build steps (a Compose `build:`, or `docker build` in a session with Docker access) are not part of this work. planning#512 (docs/291-contained-builds) covers them, and it must also keep Open-mode builds away from the machine, private networks and the tailnet. Until then, docs/319 names this gap.
+
 ## Resolved questions
 
 - 2026-09-29 — How does ShipIt tell the user's own requests apart from a session container's request that arrives on the same host address? The user rejected a one-time browser proof and a host network rule, and asked for networking options. From the eight options listed with the Astra role, the user chose: session containers cannot reach the host or private and tailnet networks in either egress mode, enforced by the existing per-container egress sidecar. The user asked that granted SSH destinations stay reachable. Requirements 4 and 5 were added.
 - 2026-09-29 — On a host that cannot run the egress sidecar, does ShipIt refuse to listen on any address other than loopback, or listen there and show a warning? The user asked what would stop working (access from other devices over the tailnet or LAN, and the VPS Tailscale forwarder, on those hosts only), then chose the recommendation: refuse. Requirement 6 was added.
+- 2026-09-29 — ShipIt made public with no sign-in (the Cloudflare opt-out, or a bind address the internet can reach): keep the opt-out as the operator's explicit choice and say that it sets requirement 1 aside, or remove it? The user chose: keep it, and say so. Requirement 7 was added.
+- 2026-09-29 — Containers that the agent starts through the Docker proxy have no firewall in either mode: contain them like Compose services, accept them under the Docker-access grant, or track them in a follow-up issue? The user chose: contain them. Requirement 8 was added.
+- 2026-09-29 — A Compose service given the Docker socket can control the machine: part of the grant, or refuse the socket? The user chose: part of the grant, and ShipIt says so where the socket is turned on. Requirement 9 was added.
+- 2026-09-29 — Image build steps run in the Docker builder's own sandboxes, which the block does not cover: track them in planning#512, contain builds in this work, or refuse builds until then? The user chose: track them in planning#512, which must also cover Open mode. Requirement 10 was added.

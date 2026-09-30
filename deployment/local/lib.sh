@@ -5,6 +5,7 @@ SHIPIT_HOME="${SHIPIT_HOME:-$HOME/.shipit}"
 COMPOSE_FILE="$SHIPIT_HOME/docker/local/prod/compose.yml"
 CHANNEL_FILE="$SHIPIT_HOME/.release-channel"
 COMPOSE_STACK="shipit-prod"
+EGRESS_SIDECAR_IMAGE="shipit-egress-sidecar:prod"
 
 shipit_channel_ref() {
   local channel
@@ -92,9 +93,49 @@ shipit_tailscale_bin() {
   return 1
 }
 
+# Whether this host can keep sessions away from this machine, private networks
+# and the tailnet (docs/319-api-reach-through-host req 6). Needs the built sidecar image.
+shipit_local_block_probe() {
+  docker run --rm --network none --cap-add NET_ADMIN \
+    --entrypoint /usr/local/bin/probe-firewall.sh "$EGRESS_SIDECAR_IMAGE" >/dev/null 2>&1
+}
+
+shipit_is_loopback_addr() {
+  local ipv4_loopback='^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'
+  [[ "$1" =~ $ipv4_loopback ]] || [ "$1" = "::1" ] || [ "$1" = "[::1]" ]
+}
+
+# Sets SHIPIT_LOCAL_BLOCK to active or unavailable. Unavailable keeps this start
+# on loopback, so it never reaches the orchestrator's refusal of other bindings.
+shipit_apply_local_block() {
+  if shipit_local_block_probe; then
+    SHIPIT_LOCAL_BLOCK=active
+    return 0
+  fi
+  SHIPIT_LOCAL_BLOCK=unavailable
+  local dropped_bind=""
+  if [ -n "${SHIPIT_BIND_ADDR:-}" ] && ! shipit_is_loopback_addr "$SHIPIT_BIND_ADDR"; then
+    dropped_bind="$SHIPIT_BIND_ADDR"
+    SHIPIT_BIND_ADDR=127.0.0.1
+    export SHIPIT_BIND_ADDR
+  fi
+  echo "==> Starting ShipIt on loopback only." >&2
+  echo "    ShipIt's egress sidecar cannot run on this host, so ShipIt cannot keep" >&2
+  echo "    sessions away from this machine, private networks and the tailnet, and" >&2
+  echo "    it listens on no address other than loopback." >&2
+  if [ "${SHIPIT_TAILNET_BIND:-}" = "1" ]; then
+    echo "    Left out of this start: the tailnet binding (SHIPIT_TAILNET_BIND=1)." >&2
+  fi
+  if [ -n "$dropped_bind" ]; then
+    echo "    Left out of this start: SHIPIT_BIND_ADDR=$dropped_bind (127.0.0.1 used instead)." >&2
+  fi
+  echo "    Rootless Docker and locked-down kernels are the usual reason. On a host where" >&2
+  echo "    the egress sidecar can run, the next start (update.sh) listens as configured." >&2
+}
+
 # Recompute the optional tailnet binding before each start. Failures fall back to loopback.
 shipit_refresh_tailnet_bind() {
-  if [ "${SHIPIT_TAILNET_BIND:-}" != "1" ]; then
+  if [ "${SHIPIT_TAILNET_BIND:-}" != "1" ] || [ "${SHIPIT_LOCAL_BLOCK:-}" = "unavailable" ]; then
     shipit_drop_tailnet_overlay
     return 0
   fi
@@ -149,6 +190,10 @@ EOF
 shipit_drop_tailnet_overlay() {
   [ -e "$TAILNET_COMPOSE_FILE" ] || return 0
   if ! rm -f "$TAILNET_COMPOSE_FILE" 2>/dev/null; then
+    # shipit_compose_files leaves it out while the block is unavailable.
+    if [ "${SHIPIT_LOCAL_BLOCK:-}" = "unavailable" ]; then
+      return 0
+    fi
     echo "==> Warning: could not remove $TAILNET_COMPOSE_FILE." >&2
     echo "    ShipIt will keep using the tailnet binding it contains until it is deleted." >&2
   fi
@@ -157,16 +202,13 @@ shipit_drop_tailnet_overlay() {
 
 shipit_compose_files() {
   printf '%s\n' -f "$COMPOSE_FILE"
-  if [ -f "$TAILNET_COMPOSE_FILE" ]; then
+  if [ -f "$TAILNET_COMPOSE_FILE" ] && [ "${SHIPIT_LOCAL_BLOCK:-}" != "unavailable" ]; then
     printf '%s\n' -f "$TAILNET_COMPOSE_FILE"
   fi
 }
 
 shipit_build_and_up() {
   shipit_load_env_file
-  shipit_refresh_tailnet_bind
-  local compose_files=()
-  while IFS= read -r arg; do compose_files+=("$arg"); done < <(shipit_compose_files)
   # Stamp the image with the commit it is built from. Without it the running
   # version falls back to whatever the checkout is at now, so a failed update —
   # which leaves the checkout ahead of the image that restarts — reads as a
@@ -174,7 +216,12 @@ shipit_build_and_up() {
   SHIPIT_BUILD_ID="$(git -C "$SHIPIT_HOME" rev-parse HEAD 2>/dev/null || true)"
   export SHIPIT_BUILD_ID
   echo "==> Building ShipIt images..."
-  docker compose "${compose_files[@]}" build --pull session-worker shipit egress-sidecar compose-helper
+  docker compose -f "$COMPOSE_FILE" build --pull session-worker shipit egress-sidecar compose-helper
+  # The probe runs the sidecar image just built, and decides the bindings below.
+  shipit_apply_local_block
+  shipit_refresh_tailnet_bind
+  local compose_files=()
+  while IFS= read -r arg; do compose_files+=("$arg"); done < <(shipit_compose_files)
   echo "==> Starting ShipIt (detached)..."
   docker compose "${compose_files[@]}" up -d --no-build shipit
 }

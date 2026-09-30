@@ -1489,6 +1489,44 @@ describe("settings that reach outside the service (docs/318 req 7)", () => {
     }
   });
 
+  describe("an Open session with the local block (docs/319-api-reach-through-host)", () => {
+    const isolated = { dockerSocket: false, isolateNetwork: true };
+
+    it("refuses an added NET_ADMIN however it is spelled, and keeps the other safe capabilities", () => {
+      for (const cap of ["NET_ADMIN", "cap_net_admin", "Net_Admin"]) {
+        const p = service(`    cap_add: [SYS_PTRACE, ${cap}]\n`);
+        expect(() => parseComposeFile(p, isolated), cap)
+          .toThrow(`\`cap_add: ${cap}\` is not allowed. ShipIt keeps sessions away from this machine and private networks`);
+        expect(() => parseComposeFile(p, { dockerSocket: false }), cap).not.toThrow();
+      }
+      expect(() => parseComposeFile(service("    cap_add: [SYS_PTRACE, CHOWN]\n"), isolated)).not.toThrow();
+    });
+
+    it("refuses a restart policy and ShipIt's reserved egress labels", () => {
+      const restart = service("    deploy:\n      restart_policy:\n        condition: on-failure\n");
+      expect(() => parseComposeFile(restart, isolated))
+        .toThrow("A restarted service runs without the firewall that keeps sessions away from this machine");
+      expect(() => parseComposeFile(restart, { dockerSocket: false })).not.toThrow();
+      const label = service("    labels:\n      shipit-egress-parent: forged\n");
+      expect(() => parseComposeFile(label, isolated)).toThrow("reserved egress namespace");
+      expect(() => parseComposeFile(label, { dockerSocket: false })).not.toThrow();
+    });
+
+    it("keeps the checks that protect the allowlist's resolver and proxy contained-only", () => {
+      const root = file("services:\n  web:\n    image: node:20\n    user: \"0\"\n");
+      expect(() => parseComposeFile(root, isolated)).not.toThrow();
+      expect(() => parseComposeFile(root, { dockerSocket: false, containEgress: true })).toThrow("numeric, non-root");
+      const hook = service("    post_start:\n      - command: /bin/true\n");
+      expect(() => parseComposeFile(hook, isolated)).not.toThrow();
+      const merge = file("x-base: &base\n  image: node:20\nservices:\n  web:\n    <<: *base\n    user: \"1001\"\n");
+      expect(() => parseComposeFile(merge, isolated)).not.toThrow();
+      expect(() => parseComposeFile(merge, { dockerSocket: false, containEgress: true })).toThrow("merge keys");
+      const socket = service("    volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]\n");
+      expect(() => parseComposeFile(socket, { ...isolated, dockerSocket: true, dockerSocketGrant: "granted" }))
+        .not.toThrow();
+    });
+  });
+
   it("allows only no-new-privileges in security_opt, in every mode", () => {
     for (const value of ["no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"]) {
       const p = service(`    security_opt: ["${value}"]\n`);
@@ -1651,6 +1689,27 @@ describe("generateComposeOverride", () => {
     expect(openOverride).not.toContain("internal: true");
     expect(openOverride).not.toContain("192.0.2.1");
     expect(openOverride).not.toContain("SETUID");
+    expect(openOverride).not.toContain("restart:");
+  });
+
+  it("isolates an Open session's services with no contained-only setting (docs/319)", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }, { name: "docker-socket-proxy", trustedOpsProxy: true }],
+      { ...baseOpts, isolateNetwork: true },
+    );
+    expect(override).toContain("internal: true");
+    // No host address on the bridge, so nothing on it reaches the host before its firewall.
+    expect(override).toContain("com.docker.network.bridge.inhibit_ipv4: \"true\"");
+    expect(override).toContain("networks: !override\n      - shipit-session");
+    const doc = parseYaml(override) as {
+      services: Record<string, { restart?: string; cap_drop: string[]; security_opt?: string[]; dns?: unknown }>;
+    };
+    expect(doc.services.web.restart).toBe("no");
+    expect(doc.services["docker-socket-proxy"].restart).toBeUndefined();
+    expect(doc.services.web.cap_drop).toEqual(["NET_RAW"]);
+    expect(doc.services.web.security_opt).toBeUndefined();
+    expect(doc.services.web.dns).toBeUndefined();
+    expect(override).not.toContain("route_localnet");
   });
 
   it("overrides repository DNS in contained mode", () => {

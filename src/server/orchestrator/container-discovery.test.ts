@@ -846,3 +846,20 @@ describe("isTrackedContainerRunning", () => {
     expect(await isTrackedContainerRunning(deps, "sess-unknown")).toBeUndefined();
   });
 });
+
+describe("getSessionByContainerIp — the agent's other addresses (planning#506)", () => {
+  it("matches an address the agent holds besides its primary one", async () => {
+    const { getSessionByContainerIp: lookup, containerAddresses } = await import("./container-discovery.js");
+    const containers = new Map([["s1", {
+      sessionId: "s1",
+      containerIp: "172.18.0.5",
+      otherAddresses: containerAddresses({
+        "shipit-test": { IPAddress: "172.18.0.5" },
+        "shipit-session-s1": { IPAddress: "172.31.0.2", GlobalIPv6Address: "fd00:31::2" },
+      }, "172.18.0.5"),
+    }]]) as never;
+    expect(lookup(containers, "172.31.0.2")?.sessionId).toBe("s1");
+    expect(lookup(containers, "fd00:31::2")?.sessionId).toBe("s1");
+    expect(lookup(containers, "172.31.0.3")).toBeUndefined();
+  });
+});

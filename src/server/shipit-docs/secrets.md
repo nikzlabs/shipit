@@ -238,10 +238,13 @@ Containment is **on by default and fail-closed** — a session refuses to start 
 a host that can't enforce it — but an operator **can** disable it
 (`SESSION_EGRESS_ENFORCE=0`, e.g. when the host can't run the required NET_ADMIN
 sidecar; the installer detects this and asks). When containment is disabled or
-unenforceable, the old unrestricted-egress exposure returns, so still scope
-`agent: true` to non-sensitive values. The Settings → Network panel shows
-whether containment is actually **enforced** on this deployment (it warns
-"Contained — NOT enforced" when policy says contain but the host can't).
+unenforceable, code in the container can reach any internet host again, so
+still scope `agent: true` to non-sensitive values. (The machine running ShipIt,
+private networks and the tailnet stay out of reach in either case wherever the
+host can run the egress sidecar — see Network in `environment.md`.) The
+Settings → Network panel shows whether containment is actually **enforced** on
+this deployment (it warns "Contained — NOT enforced" when policy says contain
+but the host can't).
 
 ## When secrets change
 

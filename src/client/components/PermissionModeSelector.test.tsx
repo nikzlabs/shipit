@@ -172,7 +172,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     await user.click(screen.getByTestId("permission-mode-selector"));
     const warning = screen.getByTestId("network-enforcement-warning");
 
-    expect(warning).toHaveTextContent(/still runs with open network access/i);
+    expect(warning).toHaveTextContent(/still runs as Open/i);
     expect(warning).toHaveTextContent(/SESSION_EGRESS_ENFORCE=0/);
     expect(warning).not.toHaveTextContent(/will not start/i);
   });

@@ -65,7 +65,8 @@ export const PROJECT_SETTINGS = {
     label: "Give this project's services the Docker socket",
     description:
       "A Compose service holding the Docker socket controls the Docker host: it can reach every "
-      + "container on it, other sessions' included, and mount any file on the host. This takes effect "
+      + "container on it, other sessions' included, and mount any file on the host. Because it controls "
+      + "this machine, ShipIt cannot keep it away from the host or private networks. This takes effect "
       + "only when this repository's shipit.yaml sets compose.docker-socket: true. Off for every "
       + "repository until you turn it on.",
     type: bool({ default: false }),

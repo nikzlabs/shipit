@@ -166,7 +166,11 @@ Two practical notes that come up constantly:
   unauthenticated agent with a shell to that network. Only on a network the user
   controls, and not behind a host firewall they are trusting to contain it —
   Docker's published-port rules bypass `ufw`, and the macOS firewall is off by
-  default.
+  default. On a host that cannot run the egress sidecar, ShipIt refuses a
+  non-loopback binding: setup starts it on loopback, and the orchestrator will
+  not start with one. And if the address is one the internet reaches, anyone —
+  including a session that goes out to the internet and comes back — has the
+  user's access; ShipIt cannot keep a session away from its own API then.
 
 ## Stopping and removing
 

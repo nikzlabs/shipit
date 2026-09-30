@@ -8,6 +8,7 @@ import {
   applyOverlayDepDirsForSession,
   applyShipitConfigChange,
   buildConfinedCompose,
+  buildServiceManager,
   dockerSocketGrantFor,
   emitPluginReposUpdated,
   joinSessionNetworkEndpoints,
@@ -22,6 +23,8 @@ import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionManager } from "./sessions.js";
+import type { SessionContainerManager } from "./session-container.js";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 import type * as ComposeHelperModule from "./compose-helper.js";
 
@@ -841,5 +844,41 @@ describe("the confined Compose runner a session gets (docs/318)", () => {
     expect((await access.readProjectFile("docker-compose.yml")).toString()).toContain("web");
     expect(access.opsSession).toBe(true);
     expect(access.dockerSocketGrant()).toBe("no_repository");
+  });
+});
+
+describe("buildServiceManager egress wiring (docs/319-api-reach-through-host)", () => {
+  const contain = async (): Promise<void> => undefined;
+
+  function build(contained: boolean, isolated: boolean): ServiceManager {
+    const containerManager = {
+      isNetworkIsolated: () => isolated,
+      isEgressContained: () => contained,
+      isEgressDnsContained: () => false,
+      isEgressProxyContained: () => false,
+      getDockerClient: () => ({}),
+    } as unknown as SessionContainerManager;
+    const clone = path.join(tmpDir, "session", "workspace");
+    fs.mkdirSync(clone, { recursive: true });
+    return buildServiceManager({
+      sessionId: "s1",
+      workspaceDir: clone,
+      session: undefined,
+      shipitConfig: resolveShipitConfig(clone),
+      deps: { ...makeDeps(undefined), containerManager },
+    });
+  }
+
+  // No change is reported only when the call matches what the manager was built with.
+  it("wires the open firewall for an open session with the local block", () => {
+    expect(build(false, true).updateEgressContainment(contain, false, false, undefined, "open")).toBe(false);
+  });
+
+  it("keeps the contained firewall for a contained session", () => {
+    expect(build(true, true).updateEgressContainment(contain, false, false, undefined, "contained")).toBe(false);
+  });
+
+  it("wires no firewall when the session is not isolated", () => {
+    expect(build(false, false).updateEgressContainment(undefined, false, false)).toBe(false);
   });
 });

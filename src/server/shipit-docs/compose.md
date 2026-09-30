@@ -618,7 +618,9 @@ services:
   on: read it with `shipit settings get project.allowDockerSocket`, and if the
   work needs it, propose it so the user can accept. An ops session without the
   grant keeps only its read-only socket proxy. A sandbox has no repository, so
-  its services get no socket.
+  its services get no socket. A service with the socket controls this machine,
+  so none of the network limits below hold for it: ShipIt cannot keep it away
+  from the host or private networks. Say so when you propose the grant.
 - **Don't use `network_mode: host`** — use explicit port mappings.
 - **Don't set `privileged: true`** — not allowed for security.
 - **Don't request arbitrary `devices:`** — only `/dev/kvm:/dev/kvm` is permitted
@@ -660,8 +662,10 @@ These rules apply in Open and contained sessions alike:
   refused, and the message names it. Keys that start with `x-` are always
   accepted. If a standard Compose field you need is refused, tell the user.
 - **Added capabilities.** In an Open session, `cap_add` may name only
-  capabilities on ShipIt's short safe list; the refusal names the list. A
-  contained session accepts none.
+  capabilities on ShipIt's short safe list; the refusal names the list. Where
+  this host runs the egress sidecar, `NET_ADMIN` is refused too, because a
+  service holding it could remove the rules that keep it off this machine and
+  private networks (see Network egress below). A contained session accepts none.
 - **`security_opt`** may hold only `no-new-privileges`.
 - **`device_cgroup_rules`** and **`provider`** are refused.
 - **Shared namespaces.** `pid`, `ipc`, `network_mode`, `uts`, `cgroup`, and
@@ -719,19 +723,28 @@ See [shipit-yaml.md](shipit-yaml.md) for the full shipit.yaml reference.
 
 ## Network egress
 
-Compose services follow the owning session's Network setting. In a contained
-session, ShipIt starts services on an internal-only session network, installs
-the standard egress allowlist in each service network namespace, and then gives
-the service its controlled internet route. An unlisted destination is blocked
-from a service in the same way that it is blocked from the agent container.
+Compose services follow the owning session's Network setting. In both modes a
+service cannot reach this machine, private networks (the LAN, `10.0.0.0/8`,
+`172.16.0.0/12`, `192.168.0.0/16`, link-local) or the tailnet; it still reaches
+this session's other services, and ShipIt, on the session network. A service
+given the Docker socket is the exception (see "What not to do" above). A host
+that cannot run the egress sidecar cannot apply this block, so ShipIt listens
+only on loopback there (`/shipit-docs/environment.md`, Network).
+
+In a contained session, ShipIt starts services on an internal-only session
+network, installs the standard egress allowlist in each service network
+namespace, and then gives the service its controlled internet route. An
+unlisted destination is blocked from a service in the same way that it is
+blocked from the agent container, and so is an allowlisted host whose address
+is on a private network.
 Required package or API hosts are added through Settings → Network. Before you
 send the user there, read the network settings yourself —
 `shipit settings list --tab network`, then `shipit settings get
 network.egressContained` — so you can say whether this session is contained at
 all, and whether a change would take effect now or only after the container
 restarts. A session that started open, or a deployment with containment
-explicitly disabled, keeps normal Docker egress and needs no allowlist entry;
-the read says which case you are in (`/shipit-docs/settings.md`).
+explicitly disabled, keeps internet access with no allowlist and needs no
+allowlist entry; the read says which case you are in (`/shipit-docs/settings.md`).
 
 This protection applies to running Compose services, not Dockerfile build
 steps. BuildKit runs build commands in daemon-managed containers before the
@@ -740,8 +753,8 @@ contained session — the allowlist does not reach it. A build step may not ask
 for a *wider* namespace than the builder's default, in any session:
 `build.network` may only be `none` or the default, and a
 `build.privileged: true` or a non-empty `build.entitlements` is rejected.
-ShipIt requires Docker Compose 2.24.4 or newer for contained service network
-replacement.
+ShipIt requires Docker Compose 2.24.4 or newer to replace a service's
+networks.
 
 Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
 request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
@@ -762,9 +775,19 @@ non-root, not 911 or 912, and outside ShipIt's per-session range 2000000–29999
 directly as that user. Use an Open session for images that require root
 initialization or an entrypoint privilege drop.
 
-A contained service first starts on an internal network with no public route.
-ShipIt pauses it, installs the allowlist controls, and then resumes it. Do not
-make the entrypoint depend on public network access before setup completes. Put
-dependency installation in `agent.install` or bake it into the image.
-Contained Compose services require Docker Engine 28 or newer (API 1.48) so
-ShipIt can select the controlled egress bridge as the default route.
+Where this host runs the egress sidecar, an Open session's services start the
+way contained ones do, because a service must not have a route out before its
+rules are in place. So in an Open session too: a service that adds
+`NET_ADMIN`, sets `deploy.restart_policy`, or declares a `shipit-egress-*`
+label is refused; `restart:` is replaced by `"no"`, because a restarted
+container comes back without its rules; and each service keeps only the session
+network, replacing the networks the file declares. Services still reach each
+other by service name there. The other contained-only rules above (the numeric
+`user:`, lifecycle hooks, `dns:`, `extends`) do not apply to Open sessions.
+
+In both cases a service first starts on an internal network with no route out.
+ShipIt pauses it, installs its network rules, and then resumes it. Do not make
+the entrypoint depend on network access before setup completes. Put dependency
+installation in `agent.install` or bake it into the image. This start requires
+Docker Engine 28 or newer (API 1.48) so ShipIt can select the controlled egress
+bridge as the default route.

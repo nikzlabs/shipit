@@ -25,6 +25,7 @@ import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { workspaceVolumeDaemonPath } from "./compose-persist.js";
 import type { DockerSocketGrant } from "./compose-generator.js";
+import type { EgressPolicy } from "./egress-firewall-install.js";
 import { ConfinedCompose, composeHelperDaemonPath } from "./compose-helper.js";
 import type { ProjectComposeAccess } from "./services/plugin-services.js";
 
@@ -178,6 +179,7 @@ export function adoptExistingServiceManager(
     noProjectCompose?: boolean;
     secretsLoader?: () => Promise<Record<string, string>>;
     containServicesFn?: (serviceNames: string[]) => Promise<void>;
+    firewallPolicy?: EgressPolicy;
     containServiceDns?: boolean;
     containServiceProxy?: boolean;
     resetSessionNetwork?: () => Promise<void>;
@@ -216,6 +218,7 @@ export function adoptExistingServiceManager(
         deps.containServiceDns ?? false,
         deps.containServiceProxy ?? false,
         deps.prepareContainedStartFn,
+        deps.firewallPolicy,
       )
     : false;
   // Stop old-policy services before waiting for the worker, then reset their network.
@@ -502,17 +505,18 @@ export function buildServiceManager(args: {
           await containerManager.ensureConnectedToSessionNetwork(sessionId, networkName);
         }
       : undefined,
-    containServicesFn: containerManager?.isEgressContained(sessionId)
+    containServicesFn: containerManager?.isNetworkIsolated(sessionId)
       ? async (serviceNames: string[]) => {
           await containerManager.containComposeServices(sessionId, serviceNames);
         }
       : undefined,
+    firewallPolicy: containerManager?.isEgressContained(sessionId) ? "contained" : "open",
     containServiceDns: containerManager?.isEgressDnsContained(sessionId) ?? false,
     containServiceProxy: containerManager?.isEgressProxyContained(sessionId) ?? false,
     ensureSessionNetworkModeFn: containerManager
       ? async (internal: boolean) => containerManager.ensureSessionNetworkMode(sessionId, internal)
       : undefined,
-    prepareContainedStartFn: containerManager?.isEgressContained(sessionId)
+    prepareContainedStartFn: containerManager?.isNetworkIsolated(sessionId)
       ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(sessionId, serviceNames)
       : undefined,
     // API trust must track new containers even when egress is unrestricted.
@@ -752,7 +756,7 @@ export function setupServiceManager(
 
   const existing = serviceManagers.get(runner.sessionId);
   if (existing) {
-    const containServicesFn = containerManager?.isEgressContained(runner.sessionId)
+    const containServicesFn = containerManager?.isNetworkIsolated(runner.sessionId)
       ? async (serviceNames: string[]) => containerManager.containComposeServices(runner.sessionId, serviceNames)
       : undefined;
     adoptExistingServiceManager(runner, existing, {
@@ -764,12 +768,13 @@ export function setupServiceManager(
       onInstallDecision,
       secretsLoader: createSecretsLoader(runner.sessionId, deps),
       containServicesFn,
+      firewallPolicy: containerManager?.isEgressContained(runner.sessionId) ? "contained" : "open",
       containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
       containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
       resetSessionNetwork: containerManager
         ? async () => containerManager.resetSessionNetwork(runner.sessionId)
         : undefined,
-      prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
+      prepareContainedStartFn: containerManager?.isNetworkIsolated(runner.sessionId)
         ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
         : undefined,
       session,

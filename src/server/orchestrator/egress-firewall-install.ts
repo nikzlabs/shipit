@@ -5,6 +5,7 @@ import {
   parseGitHubMetaCidrs,
   buildIpsetMembers,
   isValidCidr,
+  isValidIp,
 } from "./egress-firewall.js";
 import type { EgressEnforcementStatus } from "../shared/types.js";
 
@@ -92,10 +93,36 @@ export async function buildTierAEgressInputs(opts: TierAInputOpts = {}): Promise
   };
 }
 
+/** `open` installs only the local block (docs/319-api-reach-through-host req 4). */
+export type EgressPolicy = "contained" | "open";
+
+export interface SshEgressTarget {
+  address: string;
+  port: number;
+}
+
+export interface LocalTcpAccept {
+  subnet: string;
+  port: number;
+}
+
+export const NO_TIER_A_INPUTS: TierAEgressInputs = { hosts: [], cidrs: [] };
+
+/** Every firewall sidecar holds NET_ADMIN in a session's namespace; the Docker proxy refuses them. */
+export const EGRESS_SIDECAR_MARKER_LABEL = "shipit-egress-sidecar";
+
 export interface InstallEgressFirewallOpts {
   agentContainerId: string;
   sidecarImage: string;
   inputs: TierAEgressInputs;
+  /** Omitted means contained, the allowlist. */
+  policy?: EgressPolicy;
+  /** The Docker host's own addresses (`local-block.ts`). */
+  hostAddresses?: readonly string[];
+  /** What this container may use on a network other sessions share. */
+  localTcp?: readonly LocalTcpAccept[];
+  /** The one exception to the local block: each on its own port (req 5). */
+  sshTargets?: readonly SshEgressTarget[];
   /** Restrict upstream DNS to this UID; omitted leaves DNS open. */
   resolverUid?: number;
   /** Redirect HTTPS through the proxy, exempting its own UID. */
@@ -104,25 +131,67 @@ export interface InstallEgressFirewallOpts {
   labels?: Record<string, string>;
 }
 
+const HOSTNAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+
+function validPort(port: number): boolean {
+  return Number.isInteger(port) && port > 0 && port <= 65535;
+}
+
+/** `host:port`, or `[v6]:port`; anything the script could misread is dropped. */
+export function formatSshTargets(targets: readonly SshEgressTarget[]): string[] {
+  const out = new Set<string>();
+  for (const { address, port } of targets) {
+    const addr = address.trim();
+    if (!validPort(port)) continue;
+    if (isValidIp(addr)) out.add(addr.includes(":") ? `[${addr}]:${port}` : `${addr}:${port}`);
+    else if (HOSTNAME_RE.test(addr)) out.add(`${addr}:${port}`);
+  }
+  return [...out];
+}
+
+export function formatLocalTcp(accepts: readonly LocalTcpAccept[]): string[] {
+  const out = new Set<string>();
+  for (const { subnet, port } of accepts) {
+    const cidr = subnet.trim();
+    // IPv4 only: the script splits on the last colon.
+    if (isValidCidr(cidr) && !cidr.includes(":") && validPort(port)) {
+      out.add(`${cidr}:${port}`);
+    }
+  }
+  return [...out];
+}
+
+export function buildFirewallEnv(opts: Omit<InstallEgressFirewallOpts, "agentContainerId" | "sidecarImage" | "labels">): string[] {
+  const policy = opts.policy ?? "contained";
+  const contained = policy === "contained";
+  return [
+    `EGRESS_POLICY=${policy}`,
+    `EGRESS_ALLOWED_HOSTS=${contained ? opts.inputs.hosts.join(" ") : ""}`,
+    `EGRESS_ALLOWED_CIDRS=${contained ? opts.inputs.cidrs.join(" ") : ""}`,
+    `EGRESS_HOST_ADDRS=${(opts.hostAddresses ?? []).filter((a) => isValidIp(a)).join(" ")}`,
+    `EGRESS_LOCAL_TCP=${formatLocalTcp(opts.localTcp ?? []).join(" ")}`,
+    `EGRESS_SSH_TARGETS=${formatSshTargets(opts.sshTargets ?? []).join(" ")}`,
+    ...(contained && opts.resolverUid !== undefined ? [`EGRESS_DNS_RESOLVER_UID=${opts.resolverUid}`] : []),
+    ...(contained && opts.proxyUid !== undefined ? [`EGRESS_PROXY_UID=${opts.proxyUid}`] : []),
+    ...(contained && opts.proxyUid !== undefined && opts.proxyPort !== undefined
+      ? [`EGRESS_PROXY_PORT=${opts.proxyPort}`]
+      : []),
+  ];
+}
+
 export async function installEgressFirewall(
   docker: Docker,
   opts: InstallEgressFirewallOpts,
 ): Promise<void> {
   const container = await docker.createContainer({
     Image: opts.sidecarImage,
-    Labels: opts.labels,
+    Labels: { ...opts.labels, [EGRESS_SIDECAR_MARKER_LABEL]: "true" },
     HostConfig: {
       NetworkMode: `container:${opts.agentContainerId}`,
       CapAdd: ["NET_ADMIN"],
       AutoRemove: false, // Read the exit code before removal.
     },
-    Env: [
-      `EGRESS_ALLOWED_HOSTS=${opts.inputs.hosts.join(" ")}`,
-      `EGRESS_ALLOWED_CIDRS=${opts.inputs.cidrs.join(" ")}`,
-      ...(opts.resolverUid !== undefined ? [`EGRESS_DNS_RESOLVER_UID=${opts.resolverUid}`] : []),
-      ...(opts.proxyUid !== undefined ? [`EGRESS_PROXY_UID=${opts.proxyUid}`] : []),
-      ...(opts.proxyUid !== undefined && opts.proxyPort !== undefined ? [`EGRESS_PROXY_PORT=${opts.proxyPort}`] : []),
-    ],
+    Env: buildFirewallEnv(opts),
   });
 
   try {
@@ -147,10 +216,17 @@ export async function installEgressFirewall(
   }
 }
 
+/** The namespace was installed before docs/319 and has no chain to update; reinstall it. */
+export class LegacyEgressNamespaceError extends Error {}
+
 export interface AllowEgressToSubnetsOpts {
   agentContainerId: string;
   sidecarImage: string;
   subnets: string[];
+  /** The networks' gateways: the host, refused before their subnets open. */
+  gateways?: string[];
+  /** When set, replaces the namespace's accepts for ShipIt's own address. */
+  localTcp?: readonly LocalTcpAccept[];
   labels?: Record<string, string>;
 }
 
@@ -160,18 +236,24 @@ export async function allowEgressToSubnets(
   opts: AllowEgressToSubnetsOpts,
 ): Promise<string[]> {
   const subnets = opts.subnets.map((s) => s.trim()).filter((s) => s && isValidCidr(s));
-  if (subnets.length === 0) return [];
+  const localTcp = formatLocalTcp(opts.localTcp ?? []);
+  if (subnets.length === 0 && localTcp.length === 0) return [];
+  const gateways = (opts.gateways ?? []).map((g) => g.trim()).filter((g) => g && isValidIp(g));
 
   const container = await docker.createContainer({
     Image: opts.sidecarImage,
-    Labels: opts.labels,
+    Labels: { ...opts.labels, [EGRESS_SIDECAR_MARKER_LABEL]: "true" },
     Entrypoint: ["/usr/local/bin/allow-subnet.sh"],
     HostConfig: {
       NetworkMode: `container:${opts.agentContainerId}`,
       CapAdd: ["NET_ADMIN"],
       AutoRemove: false,
     },
-    Env: [`EGRESS_ALLOW_SUBNETS=${subnets.join(" ")}`],
+    Env: [
+      `EGRESS_ALLOW_SUBNETS=${subnets.join(" ")}`,
+      `EGRESS_BLOCK_ADDRS=${gateways.join(" ")}`,
+      ...(localTcp.length > 0 ? [`EGRESS_LOCAL_TCP=${localTcp.join(" ")}`] : []),
+    ],
   });
 
   try {
@@ -185,6 +267,7 @@ export async function allowEgressToSubnets(
       } catch {
         /* logs best-effort */
       }
+      if (code === 3) throw new LegacyEgressNamespaceError(`egress namespace predates docs/319${logs ? `:\n${logs}` : ""}`);
       throw new Error(`egress subnet-allow sidecar exited ${code}${logs ? `:\n${logs}` : ""}`);
     }
   } finally {
