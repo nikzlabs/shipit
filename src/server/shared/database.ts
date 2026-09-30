@@ -1006,6 +1006,11 @@ const MIGRATIONS: Migration[] = [
       END
     `);
   },
+
+  // docs/321-agent-requested-restart — persisted so an orchestrator restart keeps the request.
+  (db) => {
+    addSessionColumnIfMissing(db, "pending_restart_note");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

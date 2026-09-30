@@ -1062,6 +1062,49 @@ export async function handleSessionContinueAfterRebase(
   );
 }
 
+export async function handleSessionRestart(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--note": "note", "-n": "note" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session restart: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.positional[0]) {
+    fail(
+      deps.io,
+      "shipit session restart takes no session id — it always restarts this session's own agent "
+      + "container.",
+    );
+  }
+  const note = parsed.values.note?.trim();
+  if (!note) {
+    fail(
+      deps.io,
+      'shipit session restart: --note "..." is required. ShipIt gives the note back to you as the '
+      + "first turn on the new container, so without one there is nothing to continue from.",
+    );
+  }
+
+  const res = await deps.call("POST", "/agent-ops/session/restart", { note }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to request the restart"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  success(
+    deps.io,
+    "restart: requested (agent container)\n"
+    + "when:     after this turn ends. Nothing restarts while you are still working.\n"
+    + "then:     ShipIt gives your note back as a turn on the new container.\n"
+    + "now:      say in your reply what you restart and why — the user sees no button for it.",
+  );
+}
+
 const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];
 const REPORT_TARGETS = ["parent"];
 const MAX_REPORT_BODY_CHARS = 10_000;

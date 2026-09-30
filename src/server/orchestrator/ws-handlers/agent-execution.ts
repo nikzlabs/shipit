@@ -726,6 +726,7 @@ async function composeAndRunAgentTurn(
         console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
       }
     },
+    ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
     postTurnReleaseFlow: async (sessionId, sessionDir, turnText) => {
       await reactToReleaseMarkers({
         deps: {

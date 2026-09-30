@@ -13,6 +13,7 @@ import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.j
 import type { RepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import type { SessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
+import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace, CommitHookFailure } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
@@ -383,6 +384,8 @@ export interface SystemTurnDeps {
     turnText: string,
     emit: (msg: WsServerMessage) => void,
   ) => Promise<void>;
+  /** docs/321 — a restart the agent asked for, run after the push is armed and before idle. */
+  runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
   /** Runs even without a commit: resetting the branch can leave a clean tree. */
   postTurnReArmReset?: (
     sessionId: string,

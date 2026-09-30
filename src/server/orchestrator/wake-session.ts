@@ -9,6 +9,7 @@ import type { AgentId, SessionInfo, SessionMessageOrigin } from "../shared/types
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { prepareSessionAgentEnvironment } from "./session-agent-env.js";
 import { reconcileRunnerAgent } from "./reconcile-runner-agent.js";
+import type { QueueHold } from "./services/recovery.js";
 
 export interface WakeSessionDeps {
   sessionManager: SessionManager;
@@ -29,6 +30,11 @@ export interface WakeTurnOptions {
   onSettled?: (outcome: TurnOutcome) => void;
   /** Worker-persisted identity lets adoption restore settlement after restart. */
   deliveryId?: string;
+  /**
+   * The caller's hold on this runner, released just before the dispatch so the wake runs
+   * ahead of the messages it kept queued (docs/321-agent-requested-restart).
+   */
+  releaseHold?: QueueHold;
 }
 
 // Dispatch also waits for readiness; this wait exposes early boot failures.
@@ -100,6 +106,11 @@ export async function wakeSessionWithTurn(
   }
   if (runner.disposed) {
     throw new Error(`session ${session.id} container could not be resumed; wake-turn not delivered`);
+  }
+
+  const hold = opts.releaseHold;
+  if (hold?.runner === runner && runner.systemHoldSeq === hold.seq) {
+    runner.systemTurnInProgress = false;
   }
 
   // The callback preserves synchronous settlement; awaiting the handle adds a microtask.

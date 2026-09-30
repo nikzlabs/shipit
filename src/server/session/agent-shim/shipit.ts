@@ -19,6 +19,7 @@ import {
   handleSessionNotifyOnMerge,
   handleSessionRename,
   handleSessionReport,
+  handleSessionRestart,
   handleSessionView,
   handleSessionWait,
   handleSessionWhoami,
@@ -100,6 +101,12 @@ Supported subcommands:
                           conflicts. That turn ends BEFORE the rebase does;
                           ShipIt gives your note back as a turn once the rebase
                           concludes. A rebase that is aborted delivers nothing.
+  shipit session restart --note "TEXT" [--json]
+                          Restart THIS session's agent container after your
+                          turn ends, for a change that applies only from the
+                          next container start. ShipIt gives your note back as
+                          a turn on the new container. Say in your reply what
+                          you restart and why.
   shipit session whoami  [--json]
   shipit session rename  --title T [--json]
                           Retitle THIS session (never another). Do it when you
@@ -559,6 +566,7 @@ const SESSION_HANDLERS: Record<
   wait: handleSessionWait,
   "notify-on-merge": handleSessionNotifyOnMerge,
   "continue-after-rebase": handleSessionContinueAfterRebase,
+  restart: handleSessionRestart,
   report: handleSessionReport,
   whoami: handleSessionWhoami,
   rename: handleSessionRename,

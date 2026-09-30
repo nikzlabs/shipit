@@ -439,7 +439,7 @@ before anything is sent.
 
 | The user does | You do |
 |---|---|
-| Clicks **Restart all**, **Restart agent container**, **Kill agent** | Read the health strip and diagnostics first, and say what they show |
+| Clicks **Restart all**, **Kill agent**, and **Restart agent container** when the agent cannot act (a wedged worker) | Read the health strip and diagnostics first, and say what they show. A change that needs a new agent container you apply yourself, with `shipit session restart --note "…"` |
 | Reconnects a provider or GitHub account | Name which account, and which panel it is in |
 | Decides an egress host, once, on the card | Say which host and why, in one line |
 | Trusts a repository | Nothing — this one is consent, not configuration |
