@@ -54,6 +54,9 @@ services:
       dockerfile: docker/Dockerfile.session-worker.prod
       args:
         SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
+        # Becomes the image's shipit-build-id label. Without it every worker's build reads as
+        # unknown, so an update never replaces idle workers from an older build (docs/242).
+        SHIPIT_BUILD_ID: ${SHIPIT_BUILD_ID:-}
     image: shipit-session-worker:prod
     profiles:
       - build-only

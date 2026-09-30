@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { parse as parseYaml } from "yaml";
 
+import { CONTAINER_BUILD_ID_LABEL } from "./session-container.js";
+
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 // Where a compose file that runs the orchestrator can live. Discovered rather than listed, so a
 // fourth deployment stack cannot ship without the shim; anchored on the orchestrator Dockerfiles,
@@ -113,5 +115,80 @@ describe("every deployment builds the Compose helper image (docs/318)", () => {
       .filter((line) => /docker compose\b.*\sbuild\s.*\bshipit\b/.test(line));
     expect(buildLines.length, `${script} has no image build line`).toBeGreaterThan(0);
     for (const line of buildLines) expect(line).toMatch(/\bcompose-helper\b/);
+  });
+});
+
+// A worker whose image has no build id reads as "unknown", never "stale", so an update never
+// replaces it while idle (docs/242). A local install once built its worker without one.
+describe("every deployment stamps its images with the build id", () => {
+  const DEPLOYMENTS = [
+    { compose: "deployment/vps/docker-compose.yml", script: "deployment/vps/deploy.sh" },
+    { compose: "docker/local/dev/compose.yml", script: "docker/local/dev.sh" },
+    { compose: "docker/local/prod/compose.yml", script: "docker/local/prod.sh" },
+    { compose: "docker/local/prod/compose.yml", script: "deployment/local/lib.sh" },
+  ];
+
+  interface Service {
+    build?: { context?: string; dockerfile?: string; args?: Record<string, string> | string[] } | string;
+  }
+
+  const composeArg = (args: Record<string, string> | string[] | undefined, name: string): string | undefined =>
+    Array.isArray(args) ? args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1) : args?.[name];
+
+  const cases = DEPLOYMENTS.flatMap(({ compose, script }) => {
+    const composePath = path.join(REPO_ROOT, compose);
+    const services = (parseYaml(fs.readFileSync(composePath, "utf-8")) as {
+      services: Record<string, Service>;
+    }).services;
+    const buildLines = fs.readFileSync(path.join(REPO_ROOT, script), "utf-8")
+      .split("\n")
+      .filter((line) => /docker compose\b.*\sbuild\s/.test(line));
+    return Object.entries(services).flatMap(([service, def]) => {
+      if (typeof def.build !== "object" || !def.build.dockerfile) return [];
+      const dockerfile = path.resolve(path.dirname(composePath), def.build.context ?? ".", def.build.dockerfile);
+      if (!/^ARG SHIPIT_BUILD_ID\b/m.test(fs.readFileSync(dockerfile, "utf-8"))) return [];
+      const lines = buildLines.filter((line) => new RegExp(`\\s${service}(\\s|$)`).test(line));
+      if (lines.length === 0) return [];
+      return [{
+        compose,
+        script,
+        service,
+        lines,
+        dockerfile: path.relative(REPO_ROOT, dockerfile),
+        arg: composeArg(def.build.args, "SHIPIT_BUILD_ID"),
+      }];
+    });
+  });
+
+  it("covers every orchestrator compose file", () => {
+    expect(new Set(DEPLOYMENTS.map((d) => d.compose))).toEqual(new Set(orchestratorServices().map((s) => s.file)));
+  });
+
+  it("finds the stamped worker image in every deployment that builds it", () => {
+    expect(cases.filter((c) => c.dockerfile === "docker/Dockerfile.session-worker.prod").map((c) => c.script).sort())
+      .toEqual(["deployment/local/lib.sh", "deployment/vps/deploy.sh", "docker/local/prod.sh"]);
+  });
+
+  it("labels the final worker stage with the build id the orchestrator reads", () => {
+    const final = fs.readFileSync(path.join(REPO_ROOT, "docker/Dockerfile.session-worker.prod"), "utf-8")
+      .split(/^FROM\s/m)
+      .at(-1);
+    expect(final).toMatch(/^ARG SHIPIT_BUILD_ID\b/m);
+    expect(final).toMatch(new RegExp(`^LABEL ${CONTAINER_BUILD_ID_LABEL}=\\$\\{SHIPIT_BUILD_ID\\}`, "m"));
+  });
+
+  it.each(cases)("$script gives $service in $compose the build id", ({ script, lines, arg }) => {
+    const src = fs.readFileSync(path.join(REPO_ROOT, script), "utf-8");
+    expect(src, `${script} must take the build id from the commit`)
+      .toMatch(/^\s*SHIPIT_BUILD_ID="\$\(git\b[^\n]*rev-parse HEAD/m);
+    // Directly on the build line, or through an array the line expands, e.g. "${BUILD_ARGS[@]}".
+    const cliArg = `["']?--build-arg["']?\\s+["']?SHIPIT_BUILD_ID=`;
+    const onCommandLine = lines.every((line) =>
+      new RegExp(cliArg).test(line)
+      || [...line.matchAll(/\$\{(\w+)\[@\]\}/g)].some(([, array]) =>
+        new RegExp(`^\\s*${array}\\+?=\\(.*${cliArg}`, "m").test(src)));
+    if (onCommandLine) return;
+    expect(arg, "compose build arg SHIPIT_BUILD_ID").toMatch(/\$\{SHIPIT_BUILD_ID\b/);
+    expect(src, `${script} must export SHIPIT_BUILD_ID for compose to read it`).toMatch(/^\s*export SHIPIT_BUILD_ID\b/m);
   });
 });
