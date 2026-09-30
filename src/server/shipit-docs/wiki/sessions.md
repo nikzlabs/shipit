@@ -127,11 +127,15 @@ for a wedged session is on it, in increasing order of violence:
 
 | Control | Does |
 |---|---|
-| Show diagnostics | Expands the health detail in place |
-| Open the full diagnostics panel | Services, runner state, recent logs — and a copy button that yields the whole payload as JSON, which is what a bug report wants |
-| Force-kill the agent | SIGKILL on the agent process. For when an interrupt did not take |
-| Restart the agent container | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine |
-| Rescue session | Stops the Compose stack, destroys the agent container, rebuilds everything |
+| **details** | Expands the health detail in place |
+| **Diagnostics** | Opens the full diagnostics panel: services, runner state, recent logs — and a copy button that yields the whole payload as JSON, which is what a bug report wants |
+| **Kill agent** | SIGKILL on the agent process. For when an interrupt did not take |
+| **Restart agent container** | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine |
+| **Restart all** | Stops the Compose stack, destroys the agent container, rebuilds it and starts the `auto` services again. `manual` services stay stopped until started |
+
+When the user has to restart, name the button and say where it is: "click
+**Restart agent container** on the health strip in the Terminal tab". "Restart
+the container" alone does not tell them which control to use.
 
 Read the diagnostics before reaching for a restart, and say what they show. A
 restart that fixes nothing twice is worth a bug report rather than a third.

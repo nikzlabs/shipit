@@ -356,7 +356,7 @@ async function createContainerForRunner(opts: CreateContainerForRunnerOpts): Pro
   const { mgr, runner, sessionId } = opts;
 
   if (opts.oomBreaker?.isTripped(sessionId)) {
-    const errMsg = `Session disabled — agent container OOM-killed too many times. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
+    const errMsg = `Session disabled — agent container OOM-killed too many times. Increase \`agent.memory\` in shipit.yaml and use "Restart all" on the health strip in the Terminal tab to retry.`;
     console.warn(`[container] Refusing to create container for ${sessionId}: OOM circuit breaker tripped`);
     mgr.recordCreateError(sessionId, errMsg);
     opts.broadcastLog?.(sessionId, "server", errMsg);
@@ -661,7 +661,8 @@ const VANISHED_NOTICE =
 
 const WEDGED_NOTICE =
   "This session's agent container is running but its worker has stopped responding, so the session is not live. "
-  + "The agent's progress up to this point has been preserved. Restart the agent container to recover it.";
+  + "The agent's progress up to this point has been preserved. To recover it, use Restart agent container "
+  + "on the health strip in the Terminal tab.";
 
 async function probeWorkerHealth(workerUrl: string): Promise<boolean> {
   try {

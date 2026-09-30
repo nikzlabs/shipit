@@ -7,7 +7,7 @@ import { WorkerTimeoutError } from "./worker-http.js";
 function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"): Error {
   if (err instanceof WorkerTimeoutError) {
     const hint = op === "start"
-      ? "The agent container is not responding. Try Rescue session if this persists."
+      ? "The agent container is not responding. If this persists, use Restart all on the health strip in the Terminal tab."
       : op === "interrupt"
         ? "Interrupt request timed out. Try Kill agent."
         : "Failed to send input — the agent container is not responding.";

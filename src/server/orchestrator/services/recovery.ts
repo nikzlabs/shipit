@@ -76,7 +76,7 @@ export async function killAgent(
     } catch (err) {
       throw new ServiceError(
         502,
-        `Worker unreachable — try Restart container. (${(err as Error).message})`,
+        `Worker unreachable — try Restart agent container. (${(err as Error).message})`,
       );
     }
   } else {
