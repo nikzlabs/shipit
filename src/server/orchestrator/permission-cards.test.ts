@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { denyAbandonedPermissionCards, settlePermissionCard, type PermissionCardDeps } from "./permission-cards.js";
+import {
+  denyAbandonedPermissionCards,
+  reconcilePermissionCards,
+  settlePermissionCard,
+  type PermissionCardDeps,
+} from "./permission-cards.js";
 import type { RecordedChatCard } from "./session-runner.js";
 import type { WsServerMessage } from "../shared/types.js";
 
-function setup(opts: { running: boolean; inProgressRows: boolean; ids: string[] }) {
+function setup(opts: { running: boolean; inProgressRows: boolean; ids: string[]; savedPending?: string[] }) {
   const emitted: WsServerMessage[] = [];
   const card = (requestId: string): RecordedChatCard => ({
     afterGroupIndex: 0,
@@ -27,6 +32,7 @@ function setup(opts: { running: boolean; inProgressRows: boolean; ids: string[] 
     hasInProgress: () => opts.inProgressRows,
     replaceInProgress: vi.fn(),
     updatePermissionCard: vi.fn(),
+    pendingPermissionRequestIds: () => opts.savedPending ?? [],
   };
   const sseBroadcast = vi.fn();
   const deps = { chatHistoryManager, sseBroadcast } as unknown as PermissionCardDeps;
@@ -90,5 +96,42 @@ describe("denyAbandonedPermissionCards", () => {
 
     expect(emitted).toEqual([]);
     expect(attention()).toEqual([]);
+  });
+});
+
+describe("reconcilePermissionCards", () => {
+  it("denies saved cards the worker no longer waits on and restores the ones it does", () => {
+    const { runner, deps, emitted, attention, chatHistoryManager } = setup({
+      running: true, inProgressRows: true, ids: [], savedPending: ["gone", "live"],
+    });
+
+    reconcilePermissionCards(runner, "s1", deps, ["live", "unsaved"]);
+
+    expect(chatHistoryManager.updatePermissionCard).toHaveBeenCalledWith("s1", "gone", { phase: "denied" });
+    expect(chatHistoryManager.updatePermissionCard).not.toHaveBeenCalledWith("s1", "live", expect.anything());
+    expect(emitted.map((m) => m.type === "permission_resolved" && m.requestId)).toEqual(["gone"]);
+    expect([...runner.awaitingPermissionIds]).toEqual(["live"]);
+    expect(attention().at(-1)).toEqual({ sessionId: "s1", awaitingPermission: true });
+  });
+
+  it("denies every saved card when the worker waits on none, without asking for attention", () => {
+    const { runner, deps, chatHistoryManager, attention } = setup({
+      running: false, inProgressRows: false, ids: [], savedPending: ["gone"],
+    });
+
+    reconcilePermissionCards(runner, "s1", deps, []);
+
+    expect(chatHistoryManager.updatePermissionCard).toHaveBeenCalledWith("s1", "gone", { phase: "denied" });
+    expect(attention()).not.toContainEqual({ sessionId: "s1", awaitingPermission: true });
+  });
+
+  it("changes nothing when no saved card is pending", () => {
+    const { runner, deps, emitted, attention } = setup({ running: false, inProgressRows: false, ids: [] });
+
+    reconcilePermissionCards(runner, "s1", deps, ["live"]);
+
+    expect(emitted).toEqual([]);
+    expect(attention()).toEqual([]);
+    expect(runner.awaitingPermissionIds.size).toBe(0);
   });
 });

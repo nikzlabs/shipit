@@ -718,6 +718,15 @@ describe("AgentController — a permission request the agent stopped waiting for
     expect(denials().some((e) => e.requestId === newId)).toBe(false);
     expect(broker.pendingCount).toBe(1);
   });
+
+  it("reports the requests still waiting, so a restarted orchestrator can check its saved cards", async () => {
+    await startTurn();
+    const { requestId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+
+    const res = await app.inject({ method: "GET", url: "/agent/status" });
+
+    expect(res.json()).toMatchObject({ pendingPermissionIds: [requestId] });
+  });
 });
 
 describe("AgentController — the orchestrator's model list (docs/318)", () => {

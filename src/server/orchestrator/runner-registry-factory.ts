@@ -196,6 +196,16 @@ export function createRunnerRegistry(
       sseBroadcast("runner_replaced", { sessionId, incarnation });
     },
     onRunnerCreated: (runner) => {
+      // A new container holds no earlier turn, so inherited in-progress rows belong to one
+      // that ended with the old container; the next turn's replaceInProgress would delete
+      // them (docs/240-turn-survives-orchestrator-restart).
+      if (runner.awaitingContainer) {
+        try {
+          chatHistoryManager.finalizeInheritedInProgress(runner.sessionId);
+        } catch (err) {
+          console.error(`[runner] finalizing ${runner.sessionId}'s ended turn rows failed:`, err);
+        }
+      }
       // A merge can start before this runner exists; seed both dispatch and disposal holds.
       if (isAgentMergeInFlight?.(runner.sessionId)) {
         runner.mergeHold = true;
