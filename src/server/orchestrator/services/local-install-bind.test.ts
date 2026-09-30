@@ -3,10 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 const LIB_SH = fileURLToPath(
   new URL("../../../../deployment/local/lib.sh", import.meta.url),
+);
+const SETUP_SH = fileURLToPath(
+  new URL("../../../../deployment/local/setup.sh", import.meta.url),
 );
 const COMPOSE_YML = fileURLToPath(
   new URL("../../../../docker/local/prod/compose.yml", import.meta.url),
@@ -489,6 +492,9 @@ describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs
     git("init --bare -b main .", bare);
     git(`clone ${bare} ${home}`, root);
     fs.writeFileSync(path.join(home, "tracked.txt"), "v1\n");
+    // The sync loads the synced checkout's lib.sh.
+    fs.mkdirSync(path.join(home, "deployment/local"), { recursive: true });
+    fs.copyFileSync(LIB_SH, path.join(home, "deployment/local/lib.sh"));
     git("add -A", home);
     git("commit -m first", home);
     git("push -u origin main", home);
@@ -621,4 +627,129 @@ shipit_build_and_up() { echo "build ${version}" >> "$MARK"; }
 
     expect(fs.readFileSync(mark, "utf8")).toBe("sync\nbuild new\n");
   });
+});
+
+describe("deployment/local/setup.sh — a fresh install builds with the synced lib.sh (planning#628)", () => {
+  const SOURCE_LIB = '. "$SHIPIT_HOME/deployment/local/lib.sh"';
+  let root: string;
+  let bare: string;
+  let home: string;
+  let bin: string;
+  let mark: string;
+  let dockerLog: string;
+
+  const git = (args: string[], cwd: string): string =>
+    execFileSync("git", args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@e",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@e",
+      },
+    }).toString();
+
+  const stub = (name: string, body: string): void => {
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}`);
+    fs.chmodSync(path.join(bin, name), 0o755);
+  };
+
+  // The setup.sh that stable serves sources lib.sh only once, before its sync.
+  const stableShape = (): string => {
+    const src = fs.readFileSync(SETUP_SH, "utf8");
+    const sync = src.indexOf("\nshipit_sync_checkout\n");
+    expect(sync).toBeGreaterThan(0);
+    const tail = src
+      .slice(sync)
+      .split("\n")
+      .filter((line) => line !== SOURCE_LIB)
+      .join("\n");
+    const shaped = src.slice(0, sync) + tail;
+    expect(shaped.split(SOURCE_LIB)).toHaveLength(2);
+    const file = path.join(root, "stable-setup.sh");
+    fs.writeFileSync(file, shaped);
+    return file;
+  };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-setup-"));
+    bare = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    home = path.join(root, "home");
+    bin = path.join(root, "bin");
+    mark = path.join(root, "mark");
+    dockerLog = path.join(root, "docker.log");
+    fs.mkdirSync(bare);
+    fs.mkdirSync(bin);
+    git(["init", "-q", "--bare", "-b", "main", "."], bare);
+    git(["clone", "-q", bare, seed], root);
+
+    // main carries the lib.sh under test; its build names a service stable's Compose file lacks.
+    const libDir = path.join(seed, "deployment/local");
+    fs.mkdirSync(libDir, { recursive: true });
+    fs.copyFileSync(LIB_SH, path.join(libDir, "lib.sh"));
+    git(["add", "-A"], seed);
+    git(["commit", "-qm", "main"], seed);
+    git(["push", "-q", "origin", "main"], seed);
+    git(["checkout", "-qb", "stable"], seed);
+    fs.writeFileSync(
+      path.join(libDir, "lib.sh"),
+      `shipit_persist_env() { echo "persist $1" >> "$MARK"; }\nshipit_build_and_up() { echo "build stable" >> "$MARK"; }\n`,
+    );
+    git(["add", "-A"], seed);
+    git(["commit", "-qm", "stable"], seed);
+    git(["push", "-q", "origin", "stable"], seed);
+
+    stub(
+      "docker",
+      `echo "$*" >> "$DOCKER_LOG"
+case "$*" in
+  "version --format"*) echo 1.51 ;;
+  "compose version --short") echo 2.39.1 ;;
+esac
+`,
+    );
+    // Darwin skips the inotify step, which writes /etc/sysctl.d through sudo.
+    stub("uname", "echo Darwin\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function install(script: string) {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: root,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      SHIPIT_HOME: home,
+      SHIPIT_REPO_URL: bare,
+      SHIPIT_HARNESSES: "claude",
+      MARK: mark,
+      DOCKER_LOG: dockerLog,
+    };
+    delete env.SHIPIT_ENV_FILE;
+    delete env.TAILNET_COMPOSE_FILE;
+    delete env.SHIPIT_EGRESS;
+    delete env.SHIPIT_DESCRIBE;
+    delete env.SHIPIT_DRY_RUN;
+    const r = spawnSync("bash", [script], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const read = (file: string): string => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
+    return { status: r.status, stderr: r.stderr, mark: read(mark), docker: read(dockerLog) };
+  }
+
+  for (const [name, script] of [
+    ["stable's setup.sh", stableShape],
+    ["main's setup.sh", () => SETUP_SH],
+  ] as const) {
+    it(`${name}: clones main, syncs to stable, and runs stable's lib.sh from then on`, () => {
+      const r = install(script());
+
+      expect(r.status, r.stderr).toBe(0);
+      expect(git(["rev-parse", "HEAD"], home)).toBe(git(["rev-parse", "stable"], bare));
+      expect(r.mark).toBe("persist SHIPIT_HARNESSES\nbuild stable\n");
+      expect(r.docker).not.toMatch(/^compose .*\bbuild\b/m);
+    });
+  }
 });

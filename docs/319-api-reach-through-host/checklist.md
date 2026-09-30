@@ -28,3 +28,4 @@
 - [ ] After deploy: the checks that need the new orchestrator (PR test plan)
 - [x] Kept contained agents find ShipIt by name after a recreate: one fallback list for worker and resolver, stale sidecars replaced at start (planning#626)
 - [x] From this version on, one `update.sh` run uses the synced scripts and restarts the orchestrator with every image it built (planning#626)
+- [x] A fresh install from `stable`'s `setup.sh` builds with the synced `lib.sh` once `main` has the fix, with no release (planning#628)
