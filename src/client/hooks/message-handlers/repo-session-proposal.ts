@@ -14,9 +14,9 @@ export const handleRepoSessionProposalCard: Handler<WsRepoSessionProposalCard> =
 };
 
 /**
- * Shared by the WS update and by the decline request's own response: a session
- * whose runner has been reclaimed emits nothing, and the click must still be
- * visible without a reload.
+ * Shared by the WS update and by the start and decline requests' own responses:
+ * a session whose runner has been reclaimed emits nothing, and the click must
+ * still be visible without a reload.
  */
 export function applyRepoSessionProposalUpdate(
   data: Omit<WsRepoSessionProposalUpdate, "type" | "sessionId">,

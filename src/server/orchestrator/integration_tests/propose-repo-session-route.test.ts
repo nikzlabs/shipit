@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -327,6 +327,23 @@ describe("Integration: propose-repo-session route", () => {
 
     it("404s for a card that is not in this session's history", async () => {
       expect((await decline("repo-session-nope")).statusCode).toBe(404);
+    });
+
+    it("tells the viewer nothing when the decline could not be stored", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      await client.drain({ quietMs: 100 });
+      const write = vi
+        .spyOn(ChatHistoryManager.prototype, "updateRepoSessionProposalCard")
+        .mockImplementation(() => { throw new Error("disk full"); });
+
+      try {
+        expect((await decline(cardId)).statusCode).toBe(500);
+        const seen = await client.drain({ quietMs: 200 });
+        expect(seen.some((m) => m.type === "repo_session_proposal_update")).toBe(false);
+      } finally {
+        write.mockRestore();
+      }
+      expect(chatHistory.findRepoSessionProposalCard(sessionId, cardId)?.state).toBeUndefined();
     });
   });
 

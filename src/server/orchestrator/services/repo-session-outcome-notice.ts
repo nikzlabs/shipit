@@ -86,7 +86,6 @@ export function buildRepoSessionOutcomeNotice(outcomes: readonly RepoSessionOutc
 
 export interface RepoSessionOutcomeNotice extends NoticeDelivery {
   readonly notice: string;
-  readonly cardIds: readonly string[];
 }
 
 /**
@@ -112,7 +111,6 @@ export function prepareRepoSessionOutcomeNotice(
   let acknowledged = false;
   return {
     notice,
-    cardIds: outcomes.map((o) => o.card.cardId),
     delivered() {
       if (acknowledged) return;
       try {

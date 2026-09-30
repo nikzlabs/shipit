@@ -105,7 +105,7 @@ describe("prepareRepoSessionOutcomeNotice", () => {
   it("marks nothing until the turn says the agent read it", () => {
     post("rsp-a", { state: "declined" });
     const delivery = prepareRepoSessionOutcomeNotice(deps(), SESSION);
-    expect(delivery?.cardIds).toEqual(["rsp-a"]);
+    expect(delivery?.notice).toContain("DECLINED by the user");
     expect(pendingIds()).toEqual(["rsp-a:declined"]);
 
     delivery!.delivered();

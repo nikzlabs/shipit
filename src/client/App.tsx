@@ -1627,9 +1627,17 @@ export default function App() {
             }
             onStartRepoSession={async (cardId) => {
               if (!sessionId) return;
-              await apiPost(
+              const res = await apiPost<{ startedSessionId?: string; startedAt?: string }>(
                 `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/start`,
               );
+              // Same reason as the decline below: no runner, no WS update.
+              if (!res?.startedSessionId || useSessionStore.getState().sessionId !== sessionId) return;
+              applyRepoSessionProposalUpdate({
+                cardId,
+                state: "started",
+                startedSessionId: res.startedSessionId,
+                ...(res.startedAt ? { startedAt: res.startedAt } : {}),
+              });
             }}
             onDeclineRepoSession={async (cardId) => {
               if (!sessionId) return;

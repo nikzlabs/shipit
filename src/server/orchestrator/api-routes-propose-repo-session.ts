@@ -169,6 +169,9 @@ export async function registerProposeRepoSessionRoutes(
   const patcher = (sessionId: string, cardId: string) => {
     const runner = deps.runnerRegistry.get(sessionId);
     return (fields: Partial<RepoSessionProposalCard>): void => {
+      // Persist first: a viewer shown a terminal state that was never stored
+      // would lose it on reload, and the agent would never be told of it.
+      persistRepoSessionProposalTransition(deps, runner, sessionId, cardId, fields);
       if (runner) {
         runner.emitMessage({
           type: "repo_session_proposal_update",
@@ -181,7 +184,6 @@ export async function registerProposeRepoSessionRoutes(
           ...(fields.errorMessage ? { errorMessage: fields.errorMessage } : {}),
         });
       }
-      persistRepoSessionProposalTransition(deps, runner, sessionId, cardId, fields);
     };
   };
 

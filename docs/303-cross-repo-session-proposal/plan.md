@@ -199,6 +199,11 @@ because they are unknown.
   card says `failed` while a session exists, and a retry creates a second one. The
   duplicate is visible in the sidebar and archivable; persisting the card→target
   association at allocation is the real fix.
+- **A second failed start is not reported again.** The notice compares the
+  card's state with the last state the agent heard, so failed → retry → failed
+  reads as nothing new. The agent already knows the start failed and that a retry
+  is possible, and it is still told when the card finally starts or is declined;
+  an attempt counter was judged more mechanism than that case is worth.
 - **A card left `starting` by a crashed orchestrator is retryable, deliberately.**
   The process-local in-flight set is what refuses a genuine double-start; a
   persisted `starting` that no process is working on is treated as a leftover, on

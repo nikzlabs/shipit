@@ -30,4 +30,5 @@
       stayed local; handler keys are now a `Record` the compiler checks
 - [x] Tests: notice service, decline route, both prompt paths, card, handler, transcript wiring
 - [x] lint:dev + typecheck clean
-- [ ] Independent review against reqs 10 and 11
+- [x] Independent review against reqs 10 and 11 (applied: persist before emit;
+      the start response updates a card with no runner; dropped an unused field)
