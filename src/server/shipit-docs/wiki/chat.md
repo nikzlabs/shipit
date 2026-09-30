@@ -175,6 +175,20 @@ A permission prompt counts as you still working, so the session is not "waiting
 on the user" in the sidebar's sense and cannot be muted — see
 [sessions.md](sessions.md). A question does put the session in that state.
 
+While a question card or a plan card waits, ShipIt starts **no automatic turn**
+in the session: no CI auto-fix, no automatic conflict resolution, no merge
+notice, child report, message from a parent session, finished consult or preview
+auto-fix. They wait, and run after the user's reply turn ends — unless that turn
+ends on a new question. The hold and the held turns are saved, so a stopped or
+restarted container, or a ShipIt restart, loses neither. A turn your own CLI
+starts by itself — a background job of yours finishing — is stopped at once; you
+read what the job returned together with the user's reply. What the user starts
+by hand — **Fix CI**, **Resolve conflicts**, **Retry** on a stopped auto-resolve
+— is not held. A message the user typed while the card appeared runs as their
+reply. If a conflict-resolution turn of yours asks a question, ShipIt aborts
+that rebase instead of prompting you again; the automatic resolver tries again
+after the answer.
+
 Answered cards stay in the transcript and survive a reload. A question keeps the
 answer that was chosen; a plan card reloads as simply resolved, without saying
 which way it went.

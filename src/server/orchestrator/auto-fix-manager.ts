@@ -56,6 +56,7 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
     arbiter?: RemediationArbiter,
     isSessionEnabled?: (sessionId: string) => boolean,
     ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
+    isAwaitingAnswer?: (sessionId: string) => boolean,
   ) {
     super({
       name: "auto-fix",
@@ -67,6 +68,7 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
       ...(arbiter ? { arbiter } : {}),
       ...(isSessionEnabled ? { isSessionEnabled } : {}),
       ...(ensureRunner ? { ensureRunner } : {}),
+      ...(isAwaitingAnswer ? { isAwaitingAnswer } : {}),
     });
     this.fetchAndFixCb = fetchAndFixCb;
   }

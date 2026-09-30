@@ -1,11 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunnerRegistry, type SessionRunnerInterface } from "./session-runner.js";
-import type { SessionManager } from "./sessions.js";
+import { SessionManager } from "./sessions.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionInfo } from "../shared/types.js";
-import { wakeSessionWithTurn } from "./wake-session.js";
+import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import { takeQueueHold } from "./services/recovery.js";
 import { makeDispatchTurnDeps, type FakeAgent } from "./integration_tests/dispatch-test-helpers.js";
+import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
+import type { DatabaseManager } from "../shared/database.js";
 
 const SESSION = { id: "s1", workspaceDir: "/tmp/s1" } as SessionInfo;
 
@@ -71,5 +73,83 @@ describe("wakeSessionWithTurn", () => {
     expect(runner.running).toBe(true);
     expect(runner.messageQueue.map((m) => m.text)).toEqual(["sent while held"]);
     expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+});
+
+describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", () => {
+  let dbManager: DatabaseManager;
+  afterEach(() => dbManager.close());
+
+  function setup(awaiting: boolean) {
+    dbManager = createTestDatabaseManager();
+    const sessionManager = new SessionManager(dbManager);
+    sessionManager.track("parent", "Parent", "/tmp/parent");
+    sessionManager.setAwaitingAnswer("parent", awaiting);
+    const getOrCreate = vi.fn(() => { throw new Error("booted a runner"); });
+    const restoreWorkspace = vi.fn(async () => true);
+    const deps = {
+      sessionManager,
+      runnerRegistry: { get: () => undefined, getOrCreate },
+      defaultAgentId: "claude",
+      restoreWorkspace,
+    } as unknown as WakeSessionDeps;
+    return { deps, sessionManager, getOrCreate, restoreWorkspace };
+  }
+
+  it("saves the wake and boots nothing for it (req 1, 8)", async () => {
+    const { deps, sessionManager, getOrCreate, restoreWorkspace } = setup(true);
+    const session = sessionManager.get("parent")!;
+
+    const handle = await wakeSessionWithTurn(deps, session, {
+      text: "Child PR #42 merged",
+      deliveryId: "watch-1:1",
+      onSettled: () => {},
+    });
+
+    expect(handle.admitted).toBe("queued");
+    expect(getOrCreate).not.toHaveBeenCalled();
+    expect(restoreWorkspace).not.toHaveBeenCalled();
+    expect(sessionManager.heldTurns("parent")).toEqual([
+      expect.objectContaining({
+        text: "Child PR #42 merged",
+        automatic: true,
+        systemTurn: true,
+        deliveryId: "watch-1:1",
+      }),
+    ]);
+  });
+
+  it("goes on to the runner when nothing is held", async () => {
+    const { deps, sessionManager, getOrCreate } = setup(false);
+
+    await expect(wakeSessionWithTurn(deps, sessionManager.get("parent")!, { text: "wake" }))
+      .rejects.toThrow("booted a runner");
+    expect(getOrCreate).toHaveBeenCalled();
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
+  });
+
+  it("releases the caller's hold when the wake is saved, so what it kept queued runs", async () => {
+    dbManager = createTestDatabaseManager();
+    const sessionManager = new SessionManager(dbManager);
+    sessionManager.track("s1", "Session", "/tmp/s1");
+    sessionManager.setAwaitingAnswer("s1", true);
+    const { deps } = makeDispatchTurnDeps([], []);
+    const registry = new SessionRunnerRegistry({ onRunnerCreated: (r) => r.setSystemTurnDeps(deps) });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    const hold = takeQueueHold(runner, { lease: true });
+    runner.enqueue({ text: "sent while held", execution: "interactive" });
+
+    const handle = await wakeSessionWithTurn(
+      { sessionManager, runnerRegistry: registry, defaultAgentId: "claude" },
+      sessionManager.get("s1")!,
+      { text: "continue", releaseHold: hold },
+    );
+
+    expect(handle.admitted).toBe("queued");
+    expect(sessionManager.heldTurns("s1").map((m) => m.text)).toEqual(["continue"]);
+    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.running).toBe(true);
+    expect(runner.messageQueue).toEqual([]);
+    runner.dispose({ force: true });
   });
 });

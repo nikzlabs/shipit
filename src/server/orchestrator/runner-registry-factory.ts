@@ -296,6 +296,7 @@ export function createRunnerRegistry(
         autoPushScheduler.schedule(git, runner.sessionId);
       };
       const systemTurnDeps: SystemTurnDeps = {
+        answerHold: sessionManager,
         authorizeDispatch: (sessionId) => {
           const session = sessionManager.get(sessionId);
           assertSessionCanDispatch(sessionId, session, (remoteUrl) =>

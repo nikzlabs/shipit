@@ -11,6 +11,7 @@ import {
   scheduleInterruptCommit,
   type PostInterruptCommitDeps,
 } from "./post-interrupt-commit.js";
+import { noteUserStop } from "../turn-stop-request.js";
 
 const RECOVERY_WORKER_TIMEOUT_MS = 3000;
 const RESTART_READY_TIMEOUT_MS = 8000;
@@ -69,6 +70,7 @@ export async function killAgent(
   }
 
   runner.wasInterrupted = true;
+  noteUserStop(runner);
 
   if (runner.killAgentOnWorker) {
     try {

@@ -10,6 +10,8 @@ import type { AgentGoal, AgentId } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { allHarnesses, resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
 import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
+import type { QueuedMessage } from "./session-runner.js";
+import type { TurnOutcome } from "./turn-settlement.js";
 
 // Bill by the actual route, which can differ from the session's requested mode.
 export function billingModeForRoute(
@@ -78,6 +80,23 @@ interface SessionRow {
   pr_number: number | null;
   agent_goal: string | null;
   session_status: string | null;
+}
+
+/** A held turn as stored: everything but the process-bound callback and its own row id. */
+function serializeHeldTurn(entry: QueuedMessage): string {
+  const { onTurnComplete: _callback, heldId: _heldId, ...stored } = entry;
+  return JSON.stringify(stored);
+}
+
+function parseHeldTurn(json: string): QueuedMessage | null {
+  try {
+    const parsed = JSON.parse(json) as Partial<QueuedMessage> | null;
+    if (typeof parsed?.text !== "string") return null;
+    if (parsed.execution !== "interactive" && parsed.execution !== "dispatched") return null;
+    return parsed as QueuedMessage;
+  } catch {
+    return null;
+  }
 }
 
 function parseAgentGoal(json: string): AgentGoal | undefined {
@@ -206,6 +225,7 @@ export function filterVisibleInSidebar(
 
 export class SessionManager {
   private db;
+  private readonly heldTurnCallbacks = new Map<number, (outcome: TurnOutcome) => void>();
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -823,6 +843,78 @@ export class SessionManager {
 
   setAutoFixCiPaused(id: string, paused: boolean): void {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
+  }
+
+  /** docs/322 — the agent's last turn ended waiting for the user, so automatic turns wait too. */
+  isAwaitingAnswer(id: string): boolean {
+    const row = this.db.prepare("SELECT awaiting_answer FROM sessions WHERE id = ?").get(id) as
+      { awaiting_answer: number } | undefined;
+    return row?.awaiting_answer === 1;
+  }
+
+  setAwaitingAnswer(id: string, awaiting: boolean): void {
+    this.db.prepare("UPDATE sessions SET awaiting_answer = ? WHERE id = ?").run(awaiting ? 1 : 0, id);
+  }
+
+  /**
+   * docs/322-question-holds-automatic-turns req 8 — keep an automatic turn held for the user's
+   * answer. The row outlives the runner and the process; the completion callback lives only as
+   * long as this process, as its caller does. A second hold of the same turn or delivery keeps
+   * the one row.
+   */
+  holdTurn(sessionId: string, entry: QueuedMessage): number {
+    const existing = entry.heldId !== undefined && this.heldTurnExists(entry.heldId)
+      ? entry.heldId
+      : entry.deliveryId !== undefined
+        ? this.heldDelivery(sessionId, entry.deliveryId)
+        : undefined;
+    const id = existing ?? Number(
+      this.db
+        .prepare("INSERT INTO held_turns (session_id, delivery_id, entry, created_at) VALUES (?, ?, ?, ?)")
+        .run(sessionId, entry.deliveryId ?? null, serializeHeldTurn(entry), new Date().toISOString())
+        .lastInsertRowid,
+    );
+    if (entry.onTurnComplete) this.heldTurnCallbacks.set(id, entry.onTurnComplete);
+    return id;
+  }
+
+  /** Oldest first, each carrying its `heldId` and, within this process, its callback. */
+  heldTurns(sessionId: string): QueuedMessage[] {
+    const rows = this.db
+      .prepare("SELECT id, entry FROM held_turns WHERE session_id = ? ORDER BY id")
+      .all(sessionId) as { id: number; entry: string }[];
+    const turns: QueuedMessage[] = [];
+    for (const row of rows) {
+      const entry = parseHeldTurn(row.entry);
+      if (!entry) {
+        console.error(`[held-turns] dropping unreadable held turn ${row.id} of ${sessionId}`);
+        this.forgetHeldTurn(row.id);
+        continue;
+      }
+      const callback = this.heldTurnCallbacks.get(row.id);
+      turns.push({ ...entry, heldId: row.id, ...(callback ? { onTurnComplete: callback } : {}) });
+    }
+    return turns;
+  }
+
+  forgetHeldTurn(heldId: number): void {
+    this.db.prepare("DELETE FROM held_turns WHERE id = ?").run(heldId);
+    this.heldTurnCallbacks.delete(heldId);
+  }
+
+  hasHeldDelivery(sessionId: string, deliveryId: string): boolean {
+    return this.heldDelivery(sessionId, deliveryId) !== undefined;
+  }
+
+  private heldDelivery(sessionId: string, deliveryId: string): number | undefined {
+    const row = this.db
+      .prepare("SELECT id FROM held_turns WHERE session_id = ? AND delivery_id = ? ORDER BY id LIMIT 1")
+      .get(sessionId, deliveryId) as { id: number } | undefined;
+    return row?.id;
+  }
+
+  private heldTurnExists(heldId: number): boolean {
+    return this.db.prepare("SELECT 1 FROM held_turns WHERE id = ?").get(heldId) !== undefined;
   }
 
   setProviderRoute(id: string, kind: ProviderRouteKind, routeId: string): void {

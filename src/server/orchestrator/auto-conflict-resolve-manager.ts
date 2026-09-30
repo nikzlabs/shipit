@@ -3,7 +3,7 @@ import type { WsAutoResolveResult } from "../shared/types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { residentBackgroundWork } from "./turn-admission.js";
 import { getErrorMessage } from "./validation.js";
-import { AutoRemediationManager } from "./auto-remediation-manager.js";
+import { AutoRemediationManager, type FireOptions } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
 
 export const MAX_AUTO_RESOLVE_ATTEMPTS = 3;
@@ -27,6 +27,7 @@ export type AutoResolveResult =
 export type RebaseAndResolveCb = (
   sessionId: string,
   baseBranch: string,
+  opts?: FireOptions,
 ) => Promise<AutoResolveResult>;
 
 interface ConflictSignal {
@@ -55,6 +56,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     now: () => number = () => Date.now(),
     arbiter?: RemediationArbiter,
     ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
+    isAwaitingAnswer?: (sessionId: string) => boolean,
   ) {
     super({
       name: "auto-resolve",
@@ -65,6 +67,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       now,
       ...(arbiter ? { arbiter } : {}),
       ...(ensureRunner ? { ensureRunner } : {}),
+      ...(isAwaitingAnswer ? { isAwaitingAnswer } : {}),
     });
     this.rebaseAndResolveCb = rebaseAndResolveCb;
   }
@@ -136,16 +139,17 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     baseBranch: string,
     headSha: string,
     baseSha?: string,
+    opts: FireOptions = {},
   ): Promise<void> {
     const signal: ConflictSignal = {
       mergeable: current.mergeable,
       baseBranch,
       ...(baseSha ? { baseSha } : {}),
     };
-    return this.runTransition(sessionId, signal, headSha);
+    return this.runTransition(sessionId, signal, headSha, opts);
   }
 
-  protected fireAttempt(sessionId: string, signal: ConflictSignal, attempt: number): void {
+  protected fireAttempt(sessionId: string, signal: ConflictSignal, attempt: number, opts: FireOptions): void {
     const baseBranch = signal.baseBranch;
     this.baseBranchCache.set(sessionId, baseBranch);
     const cb = this.rebaseAndResolveCb;
@@ -167,7 +171,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       attempt,
     });
 
-    void this.runAttempt(sessionId, baseBranch, attempt, cb);
+    void this.runAttempt(sessionId, baseBranch, attempt, cb, opts);
   }
 
   private async runAttempt(
@@ -175,9 +179,10 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     baseBranch: string,
     attempt: number,
     cb: RebaseAndResolveCb,
+    opts: FireOptions,
   ): Promise<void> {
     try {
-      const result = await cb(sessionId, baseBranch);
+      const result = await cb(sessionId, baseBranch, opts);
       this.writeBack(sessionId, result, attempt);
     } catch (err: unknown) {
       // Count unexpected errors so a failing wrapper cannot retry forever.

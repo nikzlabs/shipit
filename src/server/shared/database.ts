@@ -1011,6 +1011,26 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "pending_restart_note");
   },
+
+  // docs/322-question-holds-automatic-turns — the agent's last turn ended waiting for the
+  // user's answer, and the automatic turns held until the user replies (req 8: they
+  // outlive a restart).
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "awaiting_answer")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN awaiting_answer INTEGER NOT NULL DEFAULT 0");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS held_turns (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        delivery_id TEXT,
+        entry       TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_held_turns_session ON held_turns(session_id, id);
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1066,6 +1086,7 @@ export class DatabaseManager {
       // Delete revisions after messages, whose triggers would recreate them.
       this.db.prepare("DELETE FROM transcript_revisions").run();
       this.db.prepare("DELETE FROM usage_turns").run();
+      this.db.prepare("DELETE FROM held_turns").run();
       this.db.prepare("DELETE FROM sessions").run();
       this.db.prepare("DELETE FROM repos").run();
       this.db.prepare("DELETE FROM secrets").run();

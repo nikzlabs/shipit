@@ -59,6 +59,8 @@ export interface RebaseDriverDeps {
   drainQueue?: () => Promise<void> | void;
   /** Manual sync: persist no-op confirmations and notify the agent of rewrites. */
   recordSyncCard?: boolean;
+  /** docs/322 — the user started this flow (Sync, or Retry on the resolver), so its turns are theirs. */
+  userStarted?: boolean;
   prStatusPoller?: RebasePrStatusPoller | null;
   /** Manual sync only. Hand over the push arm before later commit bookkeeping can throw. */
   commitPendingWork?: (
@@ -626,6 +628,10 @@ export async function runRebaseFlow(
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
         await runRebaseResolutionTurn(deps, prompt, hold, systemHold);
+        // docs/322 — the next resolution prompt would land on the agent's question.
+        if (runner.answerHold) {
+          throw new ServiceError(409, "the agent asked a question and is waiting for your answer");
+        }
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -892,6 +898,8 @@ function dispatchRebaseResolutionTurn(
       // Rebase owns the commits, push, and queue drain.
       postTurn: "none",
       systemTurn: true,
+      automatic: deps.userStarted !== true,
+      heldId: undefined,
       execution: undefined,
       images: undefined,
       files: undefined,
@@ -969,6 +977,11 @@ export async function runAutoResolveAttempt(
   // and aborts under a running agent once per retry (nikzlabs/shipit#2751).
   if (residentBackgroundWork(runner).length > 0) {
     return { outcome: "deferred", lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK, didWork: false };
+  }
+
+  // docs/322 — the tree must not move under a question the agent is waiting on.
+  if (!deps.userStarted && runner.answerHold) {
+    return { outcome: "deferred", didWork: false, suppressEmit: true };
   }
 
   try {

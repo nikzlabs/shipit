@@ -613,3 +613,75 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.manager.get("s1")?.pendingReset).toBeUndefined();
   });
 });
+
+describe("AutoConflictResolveManager — a question holds it (docs/322)", () => {
+  function heldManager() {
+    const state = { awaiting: true };
+    const runner = makeRunner(false);
+    const received: { byUser?: boolean }[] = [];
+    const cb: RebaseAndResolveCb = async (_s, _b, opts) => {
+      received.push(opts ?? {});
+      return { outcome: "success", forcePushed: true, didWork: true };
+    };
+    const manager = new AutoConflictResolveManager(
+      () => {},
+      () => runner as unknown as SessionRunnerInterface,
+      () => true,
+      cb,
+      () => 1_000_000,
+      undefined,
+      undefined,
+      () => state.awaiting,
+    );
+    return { manager, state, received };
+  }
+
+  it("defers the automatic attempt while the agent waits for an answer", async () => {
+    const { manager, received } = heldManager();
+    await manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(received).toEqual([]);
+    expect(manager.get("s1")?.status).toBe("deferred");
+  });
+
+  it("a Retry that had to wait for a running turn is still the user's when it fires (req 6)", async () => {
+    const state = { awaiting: false };
+    const runner = makeRunner(true);
+    const received: { byUser?: boolean }[] = [];
+    const manager = new AutoConflictResolveManager(
+      () => {},
+      () => runner as unknown as SessionRunnerInterface,
+      () => true,
+      async (_s, _b, opts) => {
+        received.push(opts ?? {});
+        return { outcome: "success", forcePushed: true, didWork: true };
+      },
+      () => 1_000_000,
+      undefined,
+      undefined,
+      () => state.awaiting,
+    );
+
+    await manager.handleTransition(
+      "s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1", undefined, { byUser: true },
+    );
+    await tick();
+    expect(manager.get("s1")?.status).toBe("deferred");
+
+    // The running turn ends on a question; the Retry is still the user's work.
+    state.awaiting = true;
+    runner.running = false;
+    await manager.onRunnerIdle("s1");
+    await tick();
+    expect(received).toEqual([{ byUser: true }]);
+  });
+
+  it("a Retry the user clicks is not held, and the flow is told it is theirs (req 6)", async () => {
+    const { manager, received } = heldManager();
+    await manager.handleTransition(
+      "s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1", undefined, { byUser: true },
+    );
+    await tick();
+    expect(received).toEqual([{ byUser: true }]);
+  });
+});

@@ -475,6 +475,8 @@ export async function spawnChildSession(
     permissionMode: undefined,
     postTurn: undefined,
     systemTurn: undefined,
+    automatic: undefined,
+    heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
@@ -730,6 +732,9 @@ export async function deliverSessionMessage(
     permissionMode: undefined,
     postTurn: undefined,
     systemTurn: undefined,
+    // A proposal card is delivered by the user's own click; another session's message is not.
+    automatic: origin.relation !== "proposed",
+    heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,

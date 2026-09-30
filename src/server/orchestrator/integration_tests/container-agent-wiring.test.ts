@@ -1124,6 +1124,8 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         permissionMode: undefined,
         postTurn: undefined,
         systemTurn: true,
+        automatic: undefined,
+        heldId: undefined,
         onTurnComplete: undefined,
         deliveryId: "delivery-running",
         dictated: undefined,

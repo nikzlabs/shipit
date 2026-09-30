@@ -19,6 +19,8 @@ export function testDispatch(
     permissionMode: opts.permissionMode,
     postTurn: opts.postTurn,
     systemTurn: opts.systemTurn,
+    automatic: opts.automatic,
+    heldId: opts.heldId,
     onTurnComplete: opts.onTurnComplete,
     resetMergedBranch: opts.resetMergedBranch,
     compactContext: opts.compactContext,

@@ -85,6 +85,8 @@ describe("queue drain routing (planning#257)", () => {
       compactContext: false,
       postTurn: "none",
       systemTurn: true,
+      automatic: true,
+      heldId: 7,
       onTurnComplete,
       deliveryId: "watch-1:1",
       dictated: true,
@@ -167,6 +169,89 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
     const { runner } = fakeQueueRunner({ queue });
 
     expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
+  });
+});
+
+describe("a question holds automatic entries (docs/322)", () => {
+  function fakeHeldRunner(queue: QueuedMessage[], held: boolean) {
+    return {
+      sessionId: "s1",
+      messageQueue: queue,
+      answerHold: held,
+      dequeue: () => queue.shift(),
+      getAgent: () => null,
+      backgroundWorkDescriptions: [],
+    } as unknown as SessionRunnerInterface;
+  }
+
+  const automaticEntry = (text = "[ci-fix] CI failed"): QueuedMessage => ({
+    text,
+    execution: "dispatched",
+    systemTurn: true,
+    automatic: true,
+  });
+
+  it("leaves automatic entries queued while the agent waits for the answer", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const queue = [automaticEntry(), automaticEntry("Child PR #42 merged")];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, true))).toBeUndefined();
+    expect(queue.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+    vi.restoreAllMocks();
+  });
+
+  it("takes the user's entry from behind held automatic ones, and keeps their order (req 6)", () => {
+    const queue: QueuedMessage[] = [
+      automaticEntry(),
+      { text: "typed by the user", execution: "interactive" },
+      automaticEntry("Child PR #42 merged"),
+    ];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, true))?.text).toBe("typed by the user");
+    expect(queue.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+  });
+
+  it("moves held automatic entries into the saved hold, and forgets a saved one once it runs (req 8)", () => {
+    const saved: string[] = [];
+    const forgotten: number[] = [];
+    const store = {
+      holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry.text); return saved.length; },
+      forgetHeldTurn: (heldId: number) => { forgotten.push(heldId); },
+    };
+    const withStore = (queue: QueuedMessage[], held: boolean) => Object.assign(fakeHeldRunner(queue, held), {
+      answerHoldStore: store,
+      emitMessage: vi.fn(),
+      getQueueSnapshot: () => [],
+    }) as unknown as SessionRunnerInterface;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const queue: QueuedMessage[] = [automaticEntry(), { text: "typed by the user", execution: "interactive" }];
+    expect(takeRunnableQueuedTurn(withStore(queue, true))?.text).toBe("typed by the user");
+    expect(saved).toEqual(["[ci-fix] CI failed"]);
+    expect(queue).toHaveLength(0);
+
+    // The row stays until the turn starts: a compaction or a failed setup can put it back.
+    const restored: QueuedMessage[] = [{ ...automaticEntry(), heldId: 7 }];
+    expect(takeRunnableQueuedTurn(withStore(restored, false))?.heldId).toBe(7);
+    expect(forgotten).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("a released held turn still lets a message the user queued go first (req 6)", () => {
+    const queue: QueuedMessage[] = [
+      { ...automaticEntry(), heldId: 7 },
+      { text: "queued during the reply", execution: "interactive" },
+    ];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, false))?.text).toBe("queued during the reply");
+    expect(queue.map((m) => m.heldId)).toEqual([7]);
+  });
+
+  it("takes the automatic head once the user has answered (req 4)", () => {
+    const queue = [automaticEntry()];
+
+    expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, false))?.text).toBe("[ci-fix] CI failed");
+    expect(queue).toHaveLength(0);
   });
 });
 

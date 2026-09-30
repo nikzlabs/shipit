@@ -94,6 +94,8 @@ function dispatchRemediationTurn(
     permissionMode: undefined,
     postTurn: undefined,
     systemTurn: true,
+    automatic: true,
+    heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,

@@ -173,7 +173,9 @@ and it is for infrastructure failures, not for rolling dice on a real one.
 on, a failing check on an idle session makes ShipIt fetch the failing jobs' logs
 and annotations into the session and start a turn asking you to fix them. It
 tries **at most three times per commit**, then stops and says "Auto-fix
-exhausted" rather than looping.
+exhausted" rather than looping. A session waiting on your question or plan card
+does not count as idle here: the fix waits for the user's reply (see
+[chat.md](chat.md)), and so does auto-resolve below.
 
 Two controls sit either side of that:
 

@@ -823,7 +823,7 @@ export function createPrStatusPoller(
 
   let rebaseAndResolveCb: RebaseAndResolveCb | undefined;
   if (createGitManager && chatHistoryManager && usageManager) {
-    rebaseAndResolveCb = async (sessionId, baseBranch): Promise<AutoResolveResult> => {
+    rebaseAndResolveCb = async (sessionId, baseBranch, opts): Promise<AutoResolveResult> => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) {
         return { outcome: "deferred", lastError: "no_runner", didWork: false };
@@ -857,6 +857,7 @@ export function createPrStatusPoller(
           prStatusPoller: pollerHolder.current,
           ...(agentFactory ? { agentFactory } : {}),
           ...(drainQueueForSession ? { drainQueue: () => drainQueueForSession(sessionId) } : {}),
+          ...(opts?.byUser ? { userStarted: true } : {}),
         },
         baseBranch,
       );
@@ -910,6 +911,8 @@ export function createPrStatusPoller(
         agentInterface: undefined,
         activity: "Auto-fixing CI...",
         systemTurn: true,
+        automatic: true,
+        heldId: undefined,
         onTurnComplete: undefined,
         execution: undefined,
         images: undefined,

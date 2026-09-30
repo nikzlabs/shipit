@@ -95,7 +95,7 @@ export function attachToolResultsToGroup(
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
   text: string,
-  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin">,
+  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin" | "automatic">,
 ): void {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
   runner.steeredMessages = [
@@ -109,6 +109,7 @@ export function recordSteeredMessage(
       files: extra?.files,
       uploadPaths: extra?.uploadPaths,
       assembledPrompt: extra?.assembledPrompt,
+      ...(extra?.automatic ? { automatic: true } : {}),
     },
   ];
   console.log(
@@ -122,6 +123,7 @@ export function steerToQueuedMessage(s: SteeredMessage): QueuedMessage {
     execution: s.agentInterface ? "dispatched" : "interactive",
     ...(s.agentInterface ? { agentInterface: s.agentInterface } : {}),
     ...(s.messageOrigin ? { messageOrigin: s.messageOrigin } : {}),
+    ...(s.automatic ? { automatic: true } : {}),
   };
   if (s.images && s.images.length > 0) queued.images = s.images;
   if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));

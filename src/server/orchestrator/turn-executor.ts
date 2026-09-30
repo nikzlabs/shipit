@@ -52,6 +52,8 @@ import {
   type TurnStatusFacts,
 } from "./services/session-status.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
+import { writeAnswerHold } from "./turn-admission.js";
+import { forgetHeldTurn, restoreHeldTurns } from "./held-turns.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
@@ -116,6 +118,13 @@ export interface TurnInput {
   // "none" leaves commit, push, PR and queue drain to the multi-turn driver.
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
+  /** docs/322 — a turn the user did not start leaves the answer hold in place. */
+  automatic?: boolean;
+  /**
+   * docs/322-question-holds-automatic-turns req 8 — the saved row of the held turn this is;
+   * deleted now that it runs.
+   */
+  heldId?: number;
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /**
    * Receipts for notices already built into `prompt`, acknowledged only once the
@@ -428,6 +437,17 @@ export async function executeAgentTurn(
     }
   };
 
+  // docs/322-question-holds-automatic-turns req 3 — a turn the user started is their response.
+  // A turn adopted after a restart is not a new start, and an automatic one must not release
+  // what holds it.
+  forgetHeldTurn(deps.answerHold, input);
+  if (input.automatic !== true && !input.adopt) {
+    writeAnswerHold(deps, sessionId, false);
+    // req 4 — what the hold kept runs after this turn, from the queue it waits in now.
+    if (runner && restoreHeldTurns(runner) > 0) {
+      runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    }
+  }
   if (runner) {
     runner.running = true;
     runner.systemTurnInProgress = input.systemTurn === true;
@@ -883,6 +903,9 @@ export async function executeAgentTurn(
       userStopped: runner?.wasInterrupted ?? false,
       writeSeq: 0,
     };
+    // docs/322 — before the drain reads it. Only set here: a turn that did not ask leaves
+    // the hold to whatever the user does next.
+    if (facts.awaitingAnswer) writeAnswerHold(deps, sessionId, true);
     try {
       // Nothing to read while the feature is off, and nothing will be decided from it.
       if (cardOn) facts.writeSeq = storedStatus()?.writeSeq ?? 0;
