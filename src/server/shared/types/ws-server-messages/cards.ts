@@ -171,14 +171,15 @@ export interface WsRepoSessionProposalCard {
   card: RepoSessionProposalCard;
 }
 
-/** docs/303 — the user started it: starting → started, or failed. */
+/** docs/303 — the user started it (starting → started, or failed), or declined it. */
 export interface WsRepoSessionProposalUpdate {
   type: "repo_session_proposal_update";
   sessionId: string;
   cardId: string;
-  state: "starting" | "started" | "failed";
+  state: "starting" | "started" | "failed" | "declined";
   startedSessionId?: string;
   startedAt?: string;
+  declinedAt?: string;
   errorMessage?: string;
 }
 

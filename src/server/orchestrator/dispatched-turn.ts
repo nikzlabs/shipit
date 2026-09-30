@@ -248,6 +248,11 @@ async function runDispatchedTurnInner(
   const settingsOutcome = isCompactRequest
     ? null
     : deps.settingsOutcomeNotice?.(runner.sessionId) ?? null;
+  // docs/303-cross-repo-session-proposal req 11 — the same delivery rule as above.
+  const repoSessionOutcome = isCompactRequest
+    ? null
+    : deps.repoSessionOutcomeNotice?.(runner.sessionId) ?? null;
+  const noticeDeliveries = [settingsOutcome, repoSessionOutcome].filter((d) => d !== null);
 
   // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
   // every turn. Not on the nudge, whose own prompt carries the same block, and not on
@@ -261,6 +266,7 @@ async function runDispatchedTurnInner(
     pendingNotice,
     bugOutcomeNotice,
     settingsOutcome?.notice,
+    repoSessionOutcome?.notice,
     reset?.agentPrefix,
     isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
     statusContext,
@@ -382,7 +388,7 @@ async function runDispatchedTurnInner(
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
-      ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
+      ...(noticeDeliveries.length > 0 ? { noticeDeliveries } : {}),
       ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
       emitUserEcho: attempt === 0 && !opts.silent,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),

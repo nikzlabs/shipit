@@ -166,6 +166,25 @@ export async function registerProposeRepoSessionRoutes(
   // await, so two fast clicks would both read `undefined` and start two sessions.
   const startsInFlight = new Set<string>();
 
+  const patcher = (sessionId: string, cardId: string) => {
+    const runner = deps.runnerRegistry.get(sessionId);
+    return (fields: Partial<RepoSessionProposalCard>): void => {
+      if (runner) {
+        runner.emitMessage({
+          type: "repo_session_proposal_update",
+          sessionId,
+          cardId,
+          state: fields.state ?? "starting",
+          ...(fields.startedSessionId ? { startedSessionId: fields.startedSessionId } : {}),
+          ...(fields.startedAt ? { startedAt: fields.startedAt } : {}),
+          ...(fields.declinedAt ? { declinedAt: fields.declinedAt } : {}),
+          ...(fields.errorMessage ? { errorMessage: fields.errorMessage } : {}),
+        });
+      }
+      persistRepoSessionProposalTransition(deps, runner, sessionId, cardId, fields);
+    };
+  };
+
   // The user's click. Not container-accessible: the agent proposes, the user starts.
   app.post<{ Params: { sessionId: string; cardId: string } }>(
     "/api/sessions/:sessionId/repo-session-proposals/:cardId/start",
@@ -192,23 +211,12 @@ export async function registerProposeRepoSessionRoutes(
         });
         return;
       }
+      if (card.state === "declined") {
+        reply.code(409).send({ error: "That proposal was declined." });
+        return;
+      }
 
-      const runner = deps.runnerRegistry.get(sessionId);
-
-      const patch = (fields: Partial<RepoSessionProposalCard>): void => {
-        if (runner) {
-          runner.emitMessage({
-            type: "repo_session_proposal_update",
-            sessionId,
-            cardId,
-            state: fields.state ?? "starting",
-            ...(fields.startedSessionId ? { startedSessionId: fields.startedSessionId } : {}),
-            ...(fields.startedAt ? { startedAt: fields.startedAt } : {}),
-            ...(fields.errorMessage ? { errorMessage: fields.errorMessage } : {}),
-          });
-        }
-        persistRepoSessionProposalTransition(deps, runner, sessionId, cardId, fields);
-      };
+      const patch = patcher(sessionId, cardId);
 
       startsInFlight.add(cardId);
       patch({ state: "starting", errorMessage: undefined });
@@ -265,6 +273,39 @@ export async function registerProposeRepoSessionRoutes(
       } finally {
         startsInFlight.delete(cardId);
       }
+    },
+  );
+
+  // docs/303 req 10. The agent hears of it on its next turn (req 11), from the card.
+  app.post<{ Params: { sessionId: string; cardId: string } }>(
+    "/api/sessions/:sessionId/repo-session-proposals/:cardId/decline",
+    async (request, reply: FastifyReply) => {
+      const { sessionId, cardId } = request.params;
+
+      if (startsInFlight.has(cardId)) {
+        reply.code(409).send({ error: "That session is already starting." });
+        return;
+      }
+
+      const card = deps.chatHistoryManager.findRepoSessionProposalCard(sessionId, cardId);
+      if (!card) {
+        reply.code(404).send({ error: "That proposal is no longer in this session's history." });
+        return;
+      }
+      if (card.state === "started") {
+        reply.code(409).send({
+          error: "That session was already started.",
+          startedSessionId: card.startedSessionId,
+        });
+        return;
+      }
+      if (card.state === "declined") {
+        return { ok: true, declinedAt: card.declinedAt };
+      }
+
+      const declinedAt = new Date().toISOString();
+      patcher(sessionId, cardId)({ state: "declined", declinedAt, errorMessage: undefined });
+      return { ok: true, declinedAt };
     },
   );
 }

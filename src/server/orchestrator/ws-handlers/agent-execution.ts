@@ -17,6 +17,7 @@ import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
+import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
@@ -483,6 +484,13 @@ async function composeAndRunAgentTurn(
           capturedSessionId,
         )
       : null;
+  // docs/303-cross-repo-session-proposal req 11 — at-least-once, with the same
+  // exclusions as the settings outcome above.
+  const repoSessionOutcome =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? prepareRepoSessionOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
+      : null;
+  const noticeDeliveries = [settingsOutcome, repoSessionOutcome].filter((d) => d !== null);
 
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
@@ -502,6 +510,7 @@ async function composeAndRunAgentTurn(
     pendingAgentNotice,
     bugOutcomeNotice,
     settingsOutcome?.notice,
+    repoSessionOutcome?.notice,
     resetAgentPrefix,
     dependencyPrefix,
     statusContext,
@@ -765,7 +774,7 @@ async function composeAndRunAgentTurn(
       reuseExistingAgent: existingAgent !== null,
       emitErrorOnNoResult: true,
       onInterruptedTurn,
-      ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
+      ...(noticeDeliveries.length > 0 ? { noticeDeliveries } : {}),
       ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
     });
   } finally {

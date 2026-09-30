@@ -36,13 +36,15 @@ propose_repo_session({
 })
 ```
 
-Four things to know:
+Five things to know:
 
 - **You name the repository, and ShipIt verifies it before the card exists.**
   The call is refused — to you, in the same turn — if the name is not a GitHub
   repository, if it is the repository you are already in, or if the user's
-  connected GitHub account cannot write to it. So a name you got wrong is yours
-  to correct, not the user's to discover on the click.
+  connected GitHub account cannot see it. (Read-only access is accepted; the
+  card warns that the session will not be able to open a pull request.) So a
+  name you got wrong is yours to correct, not the user's to discover on the
+  click.
 - **The prompt must stand alone.** The session that receives it has a different
   repository checked out and none of this conversation. State the goal, the
   constraints and what to read there; say which repository the request came
@@ -53,6 +55,11 @@ Four things to know:
   prompt.
 - **It is non-blocking.** Post the card and end your turn; do not repeat the
   proposal in prose.
+- **You are told what the user did — don't ask.** The user can start the card
+  or decline it. At the start of your next turn a `[ShipIt]` line says which:
+  started (with the new session's id), declined, or a start that failed. That
+  line is from ShipIt, not the user. A card you have heard nothing about is
+  still waiting for the user.
 
 If the repository is one ShipIt has never seen, that is fine — the card says so,
 and starting it registers the repository. Nothing is added until the user clicks.

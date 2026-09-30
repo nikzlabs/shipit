@@ -82,6 +82,18 @@ describe("handleRepoSessionProposalUpdate", () => {
     });
   });
 
+  it("never reopens a declined card", () => {
+    handleRepoSessionProposalUpdate(
+      ctx,
+      update({ state: "declined", declinedAt: "2026-09-30T10:00:00.000Z" }),
+    );
+    handleRepoSessionProposalUpdate(ctx, update({ state: "starting" }));
+    expect(useSessionStore.getState().messages[0].repoSessionProposal).toMatchObject({
+      state: "declined",
+      declinedAt: "2026-09-30T10:00:00.000Z",
+    });
+  });
+
   it("ignores an update for a card that is not in the transcript", () => {
     handleRepoSessionProposalUpdate(ctx, update({ cardId: "rsp-other", state: "started" }));
     expect(useSessionStore.getState().messages[0].repoSessionProposal?.state).toBeUndefined();

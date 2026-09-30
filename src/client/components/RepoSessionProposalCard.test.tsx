@@ -143,3 +143,47 @@ describe("RepoSessionProposalCard — in flight and terminal states", () => {
     expect(screen.getByText(/not be able to open a pull request/)).toBeInTheDocument();
   });
 });
+
+// docs/303 req 10.
+describe("RepoSessionProposalCard — declining", () => {
+  it("declines on one click, passing the card id", async () => {
+    const onDecline = vi.fn<(cardId: string) => Promise<void>>(async () => {});
+    render(<RepoSessionProposalCard card={card()} onDecline={onDecline} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Decline/ }));
+    await waitFor(() => expect(onDecline).toHaveBeenCalledWith("rsp-1"));
+  });
+
+  it("offers a decline instead of a retry after a failed start", () => {
+    render(<RepoSessionProposalCard card={card({ state: "failed", errorMessage: "boom" })} />);
+    expect(screen.getByRole("button", { name: /Decline/ })).not.toBeDisabled();
+  });
+
+  it("cannot be declined while the start is running", () => {
+    const { rerender } = render(<RepoSessionProposalCard card={card()} />);
+    rerender(<RepoSessionProposalCard card={card({ state: "starting" })} />);
+    expect(screen.getByRole("button", { name: /Decline/ })).toBeDisabled();
+  });
+
+  it("says it was declined, and offers neither a start nor a decline", () => {
+    render(<RepoSessionProposalCard card={card({ state: "declined", registered: false, readOnly: true })} />);
+    expect(screen.getByTestId("repo-session-proposal-status")).toHaveTextContent(/Declined/);
+    expect(screen.queryByRole("button", { name: /Start in/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Decline/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/not in ShipIt yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not be able to open a pull request/)).not.toBeInTheDocument();
+  });
+
+  it("shows the reason when the decline request fails, and stays clickable", async () => {
+    const onDecline = vi.fn(async () => {
+      throw new Error("That session is already starting.");
+    });
+    render(<RepoSessionProposalCard card={card()} onDecline={onDecline} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Decline/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId("repo-session-proposal-error")).toHaveTextContent("already starting"),
+    );
+    expect(screen.getByRole("button", { name: /Decline/ })).not.toBeDisabled();
+  });
+});
