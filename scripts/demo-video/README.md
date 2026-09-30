@@ -105,7 +105,9 @@ driver to start that service on the repo's warm session during setup (it is a
 `manual` service, so the Preview pane never picks it), to ask it for its mode
 through the instance's preview address for the port
 (`{sessionId}--8787.<instance host>`) before the browser opens, and to read its
-counters there after a replay. The storyboard's
+counters there after the take. A replay proxy must declare the digest of the
+committed cassette and the storyboard's pace, so an image built from an older
+take of the same name is refused; a record take that saved nothing fails. The storyboard's
 `permissionMode: "auto"` is verified on the composer after the session is
 claimed, and a wait that finds a pending permission prompt in the session's
 history aborts the take (exit 4) naming the tool and path — a take never waits

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import os from "node:os";
@@ -13,12 +13,14 @@ import {
   parseArgs,
   proxyProblem,
   readStoryboard,
+  recordStatsProblem,
   resolveWaitCeilingS,
   sessionProxyUrl,
   until,
   verifyProxy,
   verifyRepoPin,
 } from "./driver.mjs";
+import { cassetteDigest } from "./proxy.mjs";
 
 /**
  * The driver's pure parts (docs/296 plan §4): argument parsing, storyboard
@@ -322,25 +324,52 @@ describe("the take's proxy", () => {
     }
   });
 
-  it("tells a proxy that is not there yet from one in the wrong mode or on the wrong cassette", async () => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { "x-demo-proxy-mode": "replay", "x-demo-proxy-cassette": "website-hero" }).end();
-    });
+  it("tells a proxy that is not there yet from one in the wrong mode, on another take, or at another pace", async () => {
+    // A scenario dir whose committed cassette is the test fixture.
+    const root = mkdtempSync(join(os.tmpdir(), "demo-proxy-check-"));
+    const scenario = join(root, "website-hero");
+    cpSync(join(HERE, "__fixtures__", "cassette"), join(scenario, "cassette"), { recursive: true });
+    const digest = cassetteDigest(join(scenario, "cassette"));
+    let answer: Record<string, string> = {};
+    const server = http.createServer((_req, res) => { res.writeHead(200, answer).end(); });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const replay = { mode: "replay", scenario };
+    const sb = { pace: { textCharsPerSecond: 120 } };
+    const good = { "x-demo-proxy-mode": "replay", "x-demo-proxy-cassette": "website-hero", "x-demo-proxy-cassette-digest": digest, "x-demo-proxy-pace": "120" };
     try {
-      expect(await proxyProblem(url, { mode: "replay", scenario: "/x/website-hero" })).toBeNull();
-      expect(await proxyProblem(url, { mode: "record", scenario: "/x/website-hero" })).toEqual({
+      answer = good;
+      expect(await proxyProblem(url, replay, sb)).toBeNull();
+      expect(await proxyProblem(url, { mode: "record", scenario }, sb)).toEqual({
         message: expect.stringContaining("is not in record mode: it answered x-demo-proxy-mode=replay"),
       });
-      expect(await proxyProblem(url, { mode: "replay", scenario: "/x/other" })).toEqual({
-        message: expect.stringContaining("is not replaying the other cassette"),
+      expect(await proxyProblem(url, { mode: "replay", scenario: join(root, "other") }, sb)).toEqual({
+        message: expect.stringContaining("is not on the other cassette"),
       });
+      // Same name, older take: nothing in the counters would show it.
+      answer = { ...good, "x-demo-proxy-cassette-digest": "0".repeat(64) };
+      expect(await proxyProblem(url, replay, sb)).toEqual({
+        message: expect.stringContaining(`holds another take of website-hero: its cassette digest is ${"0".repeat(64)}, the committed one is ${digest}`),
+      });
+      answer = { ...good, "x-demo-proxy-pace": "60" };
+      expect(await proxyProblem(url, replay, sb)).toEqual({ message: expect.stringContaining("paces at 60 chars/s, the storyboard says 120") });
+      // A record proxy is held to the cassette name too: another target would record into the wrong take.
+      answer = { "x-demo-proxy-mode": "record", "x-demo-proxy-cassette": "elsewhere" };
+      expect(await proxyProblem(url, { mode: "record", scenario }, sb)).toEqual({ message: expect.stringContaining("is not on the website-hero cassette") });
+      answer = { "x-demo-proxy-mode": "record", "x-demo-proxy-cassette": "website-hero" };
+      expect(await proxyProblem(url, { mode: "record", scenario }, sb)).toBeNull();
     } finally {
       await new Promise((r) => server.close(r));
+      rmSync(root, { recursive: true, force: true });
     }
-    expect(await proxyProblem(url, { mode: "replay", scenario: "/x/website-hero" })).toEqual({
-      unreachable: true, message: expect.stringContaining("proxy not reachable"),
-    });
+    expect(await proxyProblem(url, replay, sb)).toEqual({ unreachable: true, message: expect.stringContaining("proxy not reachable") });
+  });
+
+  it("fails a completed record take whose proxy saved nothing", () => {
+    expect(recordStatsProblem({ served: 12 }, true)).toBeNull();
+    expect(recordStatsProblem({ served: 0 }, true)).toContain("saved no response");
+    // An aborted take is already a failure; an empty cassette adds nothing to say.
+    expect(recordStatsProblem({ served: 0 }, false)).toBeNull();
+    expect(recordStatsProblem(null, true)).toContain("could not be read");
   });
 });

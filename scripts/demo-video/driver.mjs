@@ -54,6 +54,7 @@ import { execFileSync } from "node:child_process";
 import { chromium } from "playwright";
 import { SELECTORS as S } from "./selectors.mjs";
 import { beatSlices } from "./cut-plan.mjs";
+import { cassetteDigest } from "./proxy.mjs";
 
 const POLL_MS = 250;
 const DEFAULT_WAIT_CEILING_S = 600;
@@ -310,15 +311,14 @@ export function sessionProxyUrl(instance, sessionId, port) {
 
 /**
  * Why the proxy at `proxyUrl` is not the one the take assumes (plan §2), or
- * null when it is: `HEAD /api/hello` → 200 declaring the take's `--mode` in
- * `x-demo-proxy-mode` and, for a replay, this scenario in `x-demo-proxy-cassette`.
- * A record proxy under `--mode replay` is a live take that run.json calls a
- * replay; a replay proxy under `--mode record` answers from a cassette while
- * run.json says record; another scenario's cassette answers the wrong prompts.
- * `unreachable` is set when there was no 200 at all — the one case worth
- * waiting out for a service that is still starting.
+ * null when it is: `HEAD /api/hello` → 200 declaring the take's `--mode` and
+ * this scenario's cassette name; a replay must also declare the digest of the
+ * committed cassette and the storyboard's pace — a proxy built from an older
+ * take of the same name replays with no drift at all. `unreachable` is set
+ * when there was no 200 at all — the one case worth waiting out for a service
+ * that is still starting.
  */
-export async function proxyProblem(proxyUrl, opts) {
+export async function proxyProblem(proxyUrl, opts, sb = {}) {
   const url = `${proxyUrl.replace(/\/+$/, "")}/api/hello`;
   let res;
   try {
@@ -332,8 +332,16 @@ export async function proxyProblem(proxyUrl, opts) {
   const seen = `x-demo-proxy-mode=${mode ?? "(absent)"} x-demo-proxy-cassette=${cassette ?? "(absent)"}`;
   if (mode !== opts.mode) return { message: `proxy at ${url} is not in ${opts.mode} mode: it answered ${seen}` };
   const scenario = path.basename(opts.scenario);
-  if (opts.mode === "replay" && cassette !== scenario) {
-    return { message: `replay proxy at ${url} is not replaying the ${scenario} cassette: it answered ${seen}` };
+  if (cassette !== scenario) return { message: `${opts.mode} proxy at ${url} is not on the ${scenario} cassette: it answered ${seen}` };
+  if (opts.mode === "replay") {
+    const committed = path.join(opts.scenario, "cassette");
+    if (!fs.existsSync(path.join(committed, "fingerprints.jsonl"))) return { message: `no committed cassette at ${committed} to check the replay proxy against` };
+    const want = cassetteDigest(committed);
+    const got = res.headers.get("x-demo-proxy-cassette-digest");
+    if (got !== want) return { message: `replay proxy at ${url} holds another take of ${scenario}: its cassette digest is ${got ?? "(absent)"}, the committed one is ${want}` };
+    const pace = sb.pace?.textCharsPerSecond;
+    const gotPace = res.headers.get("x-demo-proxy-pace");
+    if (pace !== undefined && gotPace !== String(pace)) return { message: `replay proxy at ${url} paces at ${gotPace ?? "(absent)"} chars/s, the storyboard says ${pace}` };
   }
   log(`${opts.mode} proxy answering at ${proxyUrl} (${seen})`);
   return null;
@@ -352,7 +360,7 @@ export async function verifyProxy(sb, opts) {
     }
     return;
   }
-  const problem = await proxyProblem(sb.proxyUrl, opts);
+  const problem = await proxyProblem(sb.proxyUrl, opts, sb);
   if (problem) throw new Error(problem.message);
 }
 
@@ -366,6 +374,17 @@ export function replayStatsProblem(stats) {
   const off = ["drift", "fallback", "unused"].filter((k) => stats[k] !== 0);
   if (off.length === 0) return null;
   return `replay proxy stats: ${off.map((k) => `${k}=${stats[k]}`).join(" ")} (served=${stats.served}) — the take did not play the cassette as recorded`;
+}
+
+/**
+ * Why a finished record take is not a take, from the record proxy's counters;
+ * null when it is. A completed take that recorded nothing went to the vendor
+ * by some other road, and its cassette is empty.
+ */
+export function recordStatsProblem(stats, completed) {
+  if (!stats || typeof stats !== "object") return "record proxy stats could not be read (GET /api/demo/stats)";
+  if (completed && stats.served === 0) return "the take completed but the record proxy saved no response — the session's CLI did not go through it";
+  return null;
 }
 
 async function fetchProxyStats(proxyUrl) {
@@ -433,8 +452,9 @@ async function setup(opts, sb) {
  * The session's own proxy (plan §2): a manual Compose service, so that it is
  * never a preview candidate, started here on the warm session the take is
  * about to claim — the same `start_service` the Services panel sends — and
- * asked for its mode before the browser opens. Not answering yet is waited
- * out; the wrong mode or cassette aborts. Returns the session it runs in.
+ * asked what it is before the browser opens. Not answering yet is waited out;
+ * a service in `error`, or the wrong mode or cassette, aborts. Returns the
+ * session it runs in.
  */
 async function startSessionProxy(base, sessionId, sb, opts, ceilingMs) {
   const { service, port } = sb.proxy;
@@ -442,11 +462,14 @@ async function startSessionProxy(base, sessionId, sb, opts, ceilingMs) {
     const res = await api(base, "GET", `/api/sessions/${sessionId}/services`);
     return (res.body?.services ?? []).find((x) => x.name === service)?.status ?? null;
   };
-  const known = await until(status, { ceilingMs, what: `service ${service} listed on warm session ${sessionId}` });
-  if (known !== "running") await sendSessionMessage(base, sessionId, { type: "start_service", name: service });
+  await until(status, { ceilingMs, what: `service ${service} listed on warm session ${sessionId}` });
+  // Sent even when it already runs: a start is `compose up`, which replaces a
+  // container whose image tag has since been rebuilt.
+  await sendSessionMessage(base, sessionId, { type: "start_service", name: service });
   const url = sessionProxyUrl(base, sessionId, port);
   await until(async () => {
-    const problem = await proxyProblem(url, opts);
+    if (await status() === "error") throw new TakeAbortError(`service ${service} on warm session ${sessionId} failed to start (its log: GET /api/sessions/${sessionId}/services/${service}/logs)`);
+    const problem = await proxyProblem(url, opts, sb);
     if (!problem) return true;
     if (problem.unreachable) throw new Error(problem.message);
     throw new TakeAbortError(problem.message);
@@ -454,17 +477,23 @@ async function startSessionProxy(base, sessionId, sb, opts, ceilingMs) {
   return sessionId;
 }
 
+/** How long a session WebSocket may take to open before the send is given up. */
+const WS_OPEN_TIMEOUT_MS = 30_000;
+
 /** One client message on a session's WebSocket; resolves once it is sent, rejects on a server `error`. */
 function sendSessionMessage(base, sessionId, message) {
   const wsUrl = `${base.replace(/^http/, "ws")}/ws/sessions/${sessionId}`;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
-    // The server answers a refused message at once; a short linger catches it.
-    let linger;
-    const done = (err) => { clearTimeout(linger); ws.close(); err ? reject(err) : resolve(); };
+    let timer = setTimeout(() => done(new Error(`WebSocket to ${wsUrl} did not open within ${WS_OPEN_TIMEOUT_MS / 1000}s`)), WS_OPEN_TIMEOUT_MS);
+    let sent = false;
+    const done = (err) => { clearTimeout(timer); ws.close(); err ? reject(err) : resolve(); };
     ws.addEventListener("open", () => {
       ws.send(JSON.stringify(message));
-      linger = setTimeout(() => done(), 2000);
+      sent = true;
+      clearTimeout(timer);
+      // The server answers a refused message at once; a short linger catches it.
+      timer = setTimeout(() => done(), 2000);
     });
     ws.addEventListener("message", (ev) => {
       let msg;
@@ -472,6 +501,7 @@ function sendSessionMessage(base, sessionId, message) {
       if (msg.type === "error") done(new Error(`${message.type} refused: ${msg.message}`));
     });
     ws.addEventListener("error", () => done(new Error(`WebSocket to ${wsUrl} failed`)));
+    ws.addEventListener("close", () => { if (!sent) done(new Error(`WebSocket to ${wsUrl} closed before ${message.type} was sent`)); });
   });
 }
 
@@ -937,7 +967,7 @@ export async function run(opts) {
   // A replay is judged by the proxy's counters, not only by the beats: a
   // drifted or fallen-back recording still plays a video.
   const proxyUrl = driver.proxyUrl();
-  const proxyStats = opts.mode === "replay" ? (proxyUrl ? await fetchProxyStats(proxyUrl) : null) : undefined;
+  const proxyStats = proxyUrl ? await fetchProxyStats(proxyUrl) : opts.mode === "replay" ? null : undefined;
   fs.writeFileSync(path.join(opts.out, "run.json"), JSON.stringify({
     scenario: path.basename(opts.scenario),
     mode: opts.mode,
@@ -949,9 +979,11 @@ export async function run(opts) {
     completed: driver.beats.length === sb.beats.length,
     ...(proxyStats === undefined ? {} : { proxyStats }),
   }, null, 2) + "\n");
-  const statsProblem = opts.mode === "replay" ? replayStatsProblem(proxyStats) : null;
-  if (statsProblem) log(`REPLAY CHECK FAILED: ${statsProblem}`);
-  else if (proxyStats) log(`replay proxy stats: served=${proxyStats.served} drift=0 fallback=0 unused=0`);
+  const complete = driver.beats.length === sb.beats.length;
+  const statsProblem = proxyStats === undefined ? null : opts.mode === "replay" ? replayStatsProblem(proxyStats) : recordStatsProblem(proxyStats, complete);
+  if (statsProblem) log(`${opts.mode.toUpperCase()} CHECK FAILED: ${statsProblem}`);
+  else if (proxyStats && opts.mode === "replay") log(`replay proxy stats: served=${proxyStats.served} drift=0 fallback=0 unused=0`);
+  else if (proxyStats) log(`record proxy stats: recorded=${proxyStats.served}`);
 
   const recorded = video ? await video.path().catch(() => null) : null;
   const target = path.join(opts.out, "recording.webm");

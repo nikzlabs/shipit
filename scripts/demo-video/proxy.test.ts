@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
 import os from "node:os";
 import {
+  cassetteDigest,
   cassetteName,
   chooseRecording,
   describeDrift,
@@ -139,6 +140,22 @@ describe("pure helpers", () => {
     expect(parsedLegacy.headerNames).toEqual(["content-type", "anthropic-workspace-id", "cf-ray"]);
   });
 
+  it("digests a take by its recordings and fingerprints, and by nothing else in the directory", () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-digest-"));
+    try {
+      fsSync.cpSync(FIXTURE_CASSETTE, dir, { recursive: true });
+      const before = cassetteDigest(dir);
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      expect(before).toBe(cassetteDigest(FIXTURE_CASSETTE));
+      writeFileSync(join(dir, "notes.txt"), "not part of the take");
+      expect(cassetteDigest(dir)).toBe(before);
+      fsSync.appendFileSync(join(dir, "bearer", "001.sse"), "x");
+      expect(cassetteDigest(dir)).not.toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("names a cassette by its directory, or by the scenario when the directory is called cassette", () => {
     expect(cassetteName("/srv/shipit-demo/cassettes/website-hero")).toBe("website-hero");
     expect(cassetteName("/repo/scripts/demo-video/scenarios/website-hero/cassette")).toBe("website-hero");
@@ -244,6 +261,9 @@ describe("replay mode", () => {
       expect(hello.headers.get("x-demo-proxy-mode")).toBe("replay");
       // The fixture lives at __fixtures__/cassette, so it is named by its parent.
       expect(hello.headers.get("x-demo-proxy-cassette")).toBe("__fixtures__");
+      // A replay also says which take it holds and how fast it plays it.
+      expect(hello.headers.get("x-demo-proxy-cassette-digest")).toBe(cassetteDigest(FIXTURE_CASSETTE));
+      expect(hello.headers.get("x-demo-proxy-pace")).toBe("1000000");
     }
     const other = await fetch(p.url("/v1/models"));
     expect(other.status).toBe(404);
@@ -591,6 +611,7 @@ describe("record mode", () => {
       const hello = await fetch(p.url("/api/hello"), { method: "HEAD" });
       expect(hello.headers.get("x-demo-proxy-mode")).toBe("record");
       expect(hello.headers.get("x-demo-proxy-cassette")).toBe(basename(dir));
+      expect(hello.headers.get("x-demo-proxy-cassette-digest")).toBeNull();
       expect(await (await fetch(p.url("/api/demo/stats"))).json()).toEqual({ mode: "record", cassette: basename(dir), served: 2, drift: 0, fallback: 0, unused: 0 });
 
       // Neither the key the CLI sent nor the one that went upstream is in anything the cassette holds.
