@@ -180,6 +180,7 @@ function TranscriptRowInner({
     onStartRepoSession: handlers.onStartRepoSession,
     onDeclineRepoSession: handlers.onDeclineRepoSession,
     onDeliverSessionMessage: handlers.onDeliverSessionMessage,
+    onDeclineSessionMessage: handlers.onDeclineSessionMessage,
     onOpenIssue: handlers.onOpenIssue,
     onSendFollowUp: handlers.onSendFollowUp,
     onReleaseConfirm: handlers.onReleaseConfirm,

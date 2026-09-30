@@ -355,3 +355,4 @@ to say "this part, specifically".
 | Chooses the permission mode | Say what the work needs, and why |
 | Ticks a proposed action | Offer them; then do the work |
 | Starts or declines a card for work in another repository | Propose it with `propose_repo_session`; read the outcome on your next turn |
+| Sends or declines a card with a message for another session | Propose it with `propose_session_message`; read the outcome on your next turn |

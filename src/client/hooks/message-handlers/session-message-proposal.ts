@@ -17,11 +17,11 @@ export const handleSessionMessageProposalCard: Handler<WsSessionMessageProposalC
 };
 
 /**
- * Shared by the WS update and by the deliver request's own response. The
- * response path is load-bearing, not redundant: the route delivers even when
- * the proposing session has no runner, and with no runner it emits nothing at
- * all — so without this the card would fall back to its Send button after a
- * delivery that succeeded.
+ * Shared by the WS update and by the deliver and decline requests' own
+ * responses. The response path is load-bearing, not redundant: the routes work
+ * even when the proposing session has no runner, and with no runner they emit
+ * nothing at all — so without this the card would fall back to its Send button
+ * after a click that succeeded.
  */
 export function applySessionMessageProposalUpdate(
   data: Omit<WsSessionMessageProposalUpdate, "type" | "sessionId">,
@@ -30,8 +30,10 @@ export function applySessionMessageProposalUpdate(
     const index = prev.findIndex((m) => m.sessionMessageProposal?.cardId === data.cardId);
     if (index < 0) return prev;
     const card = prev[index].sessionMessageProposal!;
-    // `delivered` is terminal: a late `delivering` must never reopen it.
-    if (card.state === "delivered" && data.state !== "delivered") return prev;
+    // `delivered` and `declined` are terminal: a late `delivering` must never reopen them.
+    if ((card.state === "delivered" || card.state === "declined") && data.state !== card.state) {
+      return prev;
+    }
     const next = prev.slice();
     next[index] = {
       ...next[index],
@@ -39,6 +41,7 @@ export function applySessionMessageProposalUpdate(
         ...card,
         state: data.state,
         ...(data.deliveredAt ? { deliveredAt: data.deliveredAt } : {}),
+        ...(data.declinedAt ? { declinedAt: data.declinedAt } : {}),
         ...(data.queued !== undefined ? { queued: data.queued } : {}),
         errorMessage: data.errorMessage,
       },

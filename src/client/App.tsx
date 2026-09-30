@@ -1669,6 +1669,19 @@ export default function App() {
                 ...(res?.queued !== undefined ? { queued: res.queued } : {}),
               });
             }}
+            onDeclineSessionMessage={async (cardId) => {
+              if (!sessionId) return;
+              const res = await apiPost<{ declinedAt?: string }>(
+                `/api/sessions/${sessionId}/session-message-proposals/${cardId}/decline`,
+              );
+              // Same reason as the delivery above: no runner, no WS update.
+              if (useSessionStore.getState().sessionId !== sessionId) return;
+              applySessionMessageProposalUpdate({
+                cardId,
+                state: "declined",
+                ...(res?.declinedAt ? { declinedAt: res.declinedAt } : {}),
+              });
+            }}
             onOpenIssue={handleOpenIssue}
             onAgentInterfaceMessage={handleAgentInterfaceMessage}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}

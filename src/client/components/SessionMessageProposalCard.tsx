@@ -2,7 +2,7 @@
  * docs/314 — a message the agent wants delivered to a session it cannot
  * address. `shipit session message` reaches only the sessions that agent
  * spawned; approving here is the only way anything else receives it, and the
- * approval covers this one message.
+ * approval covers this one message. The user can decline it instead.
  */
 
 import { useLayoutEffect, useRef, useState } from "react";
@@ -10,6 +10,7 @@ import {
   ArrowSquareOutIcon,
   PaperPlaneTiltIcon,
   WarningCircleIcon,
+  XCircleIcon,
 } from "@phosphor-icons/react";
 import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -21,16 +22,20 @@ export interface SessionMessageProposalCardProps {
   card: SessionMessageProposalCardData;
   /** Rejects if the delivery could not be requested; the card then shows why. */
   onDeliver?: (cardId: string) => Promise<void>;
+  /** Rejects if the decline could not be requested; the card then shows why. */
+  onDecline?: (cardId: string) => Promise<void>;
   onOpenSession?: (sessionId: string) => void;
 }
 
 export function SessionMessageProposalCard({
   card,
   onDeliver,
+  onDecline,
   onOpenSession,
 }: SessionMessageProposalCardProps) {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
+  const [declining, setDeclining] = useState(false);
   /**
    * A card mounted as `delivering` stays clickable rather than spinning on a
    * state nothing here will ever resolve — a reload or a session switch can
@@ -60,9 +65,11 @@ export function SessionMessageProposalCard({
   const liveDelivering = card.state === "delivering" && !staleDelivery.current;
   const delivering = requesting || liveDelivering;
   const delivered = card.state === "delivered";
+  const declined = card.state === "declined";
+  const busy = delivering || declining;
 
   const handleDeliver = async () => {
-    if (delivering || delivered) return;
+    if (busy || delivered || declined) return;
     setRequestError(null);
     setRequesting(true);
     try {
@@ -71,6 +78,19 @@ export function SessionMessageProposalCard({
       setRequestError(err instanceof Error ? err.message : String(err));
     } finally {
       setRequesting(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (busy || delivered || declined) return;
+    setRequestError(null);
+    setDeclining(true);
+    try {
+      await onDecline?.(card.cardId);
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeclining(false);
     }
   };
 
@@ -150,15 +170,27 @@ export function SessionMessageProposalCard({
                 : `Delivered to ${card.targetTitle}`}
             </span>
           </>
+        ) : declined ? (
+          <span
+            className="flex items-center gap-1.5 text-(--color-text-tertiary)"
+            data-testid="session-message-proposal-status"
+          >
+            <XCircleIcon size={ICON_SIZE.SM} />
+            Declined — nothing was sent.
+          </span>
         ) : (
           <>
-            <Button variant="primary" size="md" onClick={handleDeliver} disabled={delivering}>
+            <Button variant="primary" size="md" onClick={handleDeliver} disabled={busy}>
               {delivering ? <Spinner size={ICON_SIZE.SM} /> : <PaperPlaneTiltIcon size={ICON_SIZE.SM} />}
               {delivering
                 ? "Sending…"
                 : card.state === "failed"
                   ? "Try again"
                   : `Send to ${card.targetTitle}`}
+            </Button>
+            <Button variant="ghost" size="md" onClick={handleDecline} disabled={busy}>
+              {declining && <Spinner size={ICON_SIZE.SM} />}
+              Decline
             </Button>
             <span className="text-(--color-text-tertiary)">
               Starts a turn there. This message only.

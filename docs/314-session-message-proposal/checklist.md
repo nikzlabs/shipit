@@ -34,3 +34,19 @@
   - [x] Factual corrections: `session report` reaches the direct parent (now
         refused and pointed at), and `list` uses `findChildren`
 - [x] PR opened with `Closes planning#450`
+
+## Decline, and telling the agent (reqs 13, 14)
+
+- [x] `declined` card state, `declinedAt`, `agentNotifiedState`
+- [x] Decline route; the deliver route refuses a declined card; every transition
+      persisted before it is emitted
+- [x] Card: Decline button and declined state; client handler keeps `declined` terminal
+- [x] `services/session-message-outcome-notice.ts`, wired into both prompt paths
+- [x] Tool description, tool result, `shipit-docs/sessions.md`, wiki `sessions.md` and `chat.md`
+- [x] Tests: notice service, decline route, both prompt paths, card, handler, transcript wiring
+- [x] lint:dev + typecheck clean
+- [x] Independent review against reqs 13 and 14 (applied: a delivery whose
+      acknowledgement failed is refused a second send and a decline; the
+      target's title is quoted in the tool result and the refusals; the queued
+      notice no longer guesses why. Not applied: a second failed delivery is not
+      reported again — the docs/303 known limit)

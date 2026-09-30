@@ -6,6 +6,7 @@ import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
+import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
 import {
   makeDispatchTurnDeps,
   testDispatch,
@@ -14,9 +15,10 @@ import {
 } from "./dispatch-test-helpers.js";
 
 /**
- * docs/303-cross-repo-session-proposal req 11 on the dispatch path
- * (`dispatched-turn.ts`); the WebSocket send path is covered in
- * `propose-repo-session-route.test.ts`.
+ * docs/303-cross-repo-session-proposal req 11 and docs/314-session-message-proposal
+ * req 14 on the dispatch path (`dispatched-turn.ts`); the WebSocket send path is
+ * covered in `propose-repo-session-route.test.ts` and
+ * `propose-session-message-deliver.test.ts`.
  */
 
 const SESSION = "sess-1";
@@ -41,6 +43,8 @@ beforeEach(() => {
   })) as unknown as SystemTurnDeps["buildRunParams"];
   deps.repoSessionOutcomeNotice = (sessionId) =>
     prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId);
+  deps.sessionMessageOutcomeNotice = (sessionId) =>
+    prepareSessionMessageOutcomeNotice({ chatHistoryManager }, sessionId);
 
   runner = new SessionRunner({
     sessionId: SESSION,
@@ -131,6 +135,35 @@ describe("a card the user acted on reaches the agent's next dispatched turn", ()
     await waitForTurn(() => settled.length > 0, "turn settled");
 
     expect(await dispatch("try again")).toContain("DECLINED by the user");
+    await completeTurn();
+  });
+});
+
+describe("a session-message card the user acted on reaches the next dispatched turn", () => {
+  it("is delivered once, alongside a repository card's outcome", async () => {
+    declinedCard("rsp-a");
+    chatHistoryManager.append(SESSION, {
+      role: "assistant",
+      text: "",
+      sessionMessageProposal: {
+        cardId: "smp-a",
+        targetSessionId: "ses_root",
+        targetTitle: "Orchestrator",
+        message: "The parser slice is done.",
+        createdAt: "2026-09-30T10:00:00.000Z",
+        state: "delivered",
+        queued: false,
+      },
+    });
+
+    const first = await dispatch("keep going");
+    expect(first).toContain('acme/api "Add cursor pagination" — DECLINED by the user');
+    expect(first).toContain('session ses_root "Orchestrator" — DELIVERED by the user');
+    await completeTurn();
+
+    expect(chatHistoryManager.findSessionMessageProposalCard(SESSION, "smp-a")?.agentNotifiedState)
+      .toBe("delivered");
+    expect(await dispatch("and again")).toBe("and again");
     await completeTurn();
   });
 });

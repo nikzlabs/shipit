@@ -22,6 +22,8 @@ import {
   OPS_DOCKER_HOST,
 } from "./container-lifecycle.js";
 import type { ContainerConfig, SessionContainer } from "./session-container.js";
+import { orchestratorInternalNames } from "./egress-dns-install.js";
+import { orchestratorFallbackHosts } from "../shared/orchestrator-hosts.js";
 import {
   buildOverlaySpecs,
   PNPM_BASE_DEP_DIR,
@@ -668,6 +670,35 @@ describe("buildEnv", () => {
       else process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS = oldFallbacks;
       if (oldPort === undefined) delete process.env.PORT;
       else process.env.PORT = oldPort;
+    }
+  });
+
+  // planning#626: after ShipIt is recreated SHIPIT_HOST is stale, and the worker
+  // reaches ShipIt only through a fallback name its contained resolver forwards.
+  it.each<[string, Record<string, string>]>([
+    ["no overrides", {}],
+    ["a host override", { SHIPIT_ORCHESTRATOR_HOST: "shipit-orch" }],
+    ["fallback hosts", { SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS: "orch2, orch3" }],
+    ["an empty fallback list", { SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS: "" }],
+  ])("the resolver forwards every name the worker tries (%s)", async (_label, overrides) => {
+    const saved = { ...process.env };
+    try {
+      delete process.env.SHIPIT_ORCHESTRATOR_HOST;
+      delete process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS;
+      Object.assign(process.env, overrides, { PORT: "4123" });
+      const forwarded = orchestratorInternalNames();
+      const workerEnv: NodeJS.ProcessEnv = {};
+      for (const entry of await buildOrchestratorCallbackEnv("sess-1")) {
+        const at = entry.indexOf("=");
+        workerEnv[entry.slice(0, at)] = entry.slice(at + 1);
+      }
+      // What the worker's OrchestratorClient tries, in order.
+      const tried = [workerEnv.SHIPIT_HOST ?? "", ...orchestratorFallbackHosts(workerEnv)];
+
+      expect(tried.length).toBeGreaterThan(1);
+      expect(forwarded).toEqual(expect.arrayContaining(tried));
+    } finally {
+      process.env = saved;
     }
   });
 });

@@ -71,6 +71,18 @@ describe("orchestrator compose services declare an init shim (planning#613)", ()
   });
 });
 
+// The orchestrator pins the images it uses at start, so an update that rebuilt only
+// another image must still restart it (planning#626).
+describe("an update starts the orchestrator with every image it built", () => {
+  it.each(["deployment/vps/deploy.sh", "deployment/local/lib.sh"])("%s recreates the orchestrator", (script) => {
+    const upLines = fs.readFileSync(path.join(REPO_ROOT, script), "utf-8")
+      .split("\n")
+      .filter((line) => /docker compose\b.*\sup\s/.test(line));
+    expect(upLines.length, `${script} has no start line`).toBeGreaterThan(0);
+    for (const line of upLines) expect(line).toMatch(/\s--force-recreate\s/);
+  });
+});
+
 // Confined Compose runs need the helper image wherever ShipIt ships (docs/318 req 4).
 describe("every deployment builds the Compose helper image (docs/318)", () => {
   const DEPLOYMENTS = [

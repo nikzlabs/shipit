@@ -320,12 +320,18 @@ taken inside one session, without building an agent that talks to many.
     may be behind (req 14), and the next turn's prompt asks for the update, as
     after any other missed update (req 38).
 
+47. When the session's pull request merges, the conversation scrolls to its
+    end, so the card's follow-up actions are in view.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
 
+- 2026-09-30 — Nik, with a screenshot of a merged session whose view stopped
+  at the "Last turn" section: "after a session is merged, the conversation
+  should scroll to the bottom, so the follow-up actions are visible." → req 47.
 - 2026-09-24 — Nik: "240/280 should be increased since they are markdown. Often
   the agent gives a long links, and they fail." Asked whether to count only the
   visible text of a link or to raise the raw limit, he chose "Raise to 1000

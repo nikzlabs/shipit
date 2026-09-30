@@ -61,6 +61,7 @@ export interface MessageCardCallbacks {
   onStartRepoSession?: (cardId: string) => Promise<void>;
   onDeclineRepoSession?: (cardId: string) => Promise<void>;
   onDeliverSessionMessage?: (cardId: string) => Promise<void>;
+  onDeclineSessionMessage?: (cardId: string) => Promise<void>;
 
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
 
@@ -309,6 +310,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
           <SessionMessageProposalCard
             card={msg.sessionMessageProposal}
             onDeliver={cb.onDeliverSessionMessage}
+            onDecline={cb.onDeclineSessionMessage}
             onOpenSession={cb.onResumeSession}
           />
         </div>

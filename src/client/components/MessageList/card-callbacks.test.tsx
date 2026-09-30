@@ -67,4 +67,29 @@ describe("a card's click reaches the handler MessageList was given", () => {
 
     await waitFor(() => expect(onDeclineRepoSession).toHaveBeenCalledWith("rsp-1"));
   });
+
+  it("sends a session-message proposal's Decline", async () => {
+    const onDeclineSessionMessage = vi.fn(async () => {});
+    const messages = [
+      { role: "user", text: "Tell the orchestrator" },
+      {
+        role: "assistant",
+        text: "",
+        sessionMessageProposal: {
+          cardId: "smp-1",
+          targetSessionId: "ses_root",
+          targetTitle: "Orchestrator",
+          message: "The parser slice is done.",
+          createdAt: "2026-09-30T10:00:00.000Z",
+        },
+      },
+    ] as ChatMessage[];
+
+    render(
+      <MessageList messages={messages} isLoading={false} onDeclineSessionMessage={onDeclineSessionMessage} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+
+    await waitFor(() => expect(onDeclineSessionMessage).toHaveBeenCalledWith("smp-1"));
+  });
 });

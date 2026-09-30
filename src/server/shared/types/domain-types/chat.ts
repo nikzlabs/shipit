@@ -338,13 +338,19 @@ export interface SessionMessageProposalCard {
   targetTitle: string;
   message: string;
   createdAt: string;
-  /** Absent until the user approves. */
-  state?: "delivering" | "delivered" | "failed";
+  /** Absent until the user acts. */
+  state?: "delivering" | "delivered" | "failed" | "declined";
   deliveredAt?: string;
+  declinedAt?: string;
   /** The target was mid-turn, so the message waits behind it. */
   queued?: boolean;
   errorMessage?: string;
+  /** The last state the proposing agent was told about (docs/314 req 14). */
+  agentNotifiedState?: SessionMessageProposalOutcomeState;
 }
+
+/** The card states the proposing agent is told about on its next turn. */
+export type SessionMessageProposalOutcomeState = "delivered" | "failed" | "declined";
 
 export type WsSubagentEvent =
   | {

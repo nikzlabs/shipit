@@ -1,6 +1,6 @@
 import type Docker from "dockerode";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
-import { egressDnsEnabled } from "./egress-dns-install.js";
+import { egressDnsEnabled, orchestratorCallbackHost } from "./egress-dns-install.js";
 import {
   EGRESS_DECISION_TOKEN_ENV,
   mintEgressDecisionToken,
@@ -17,6 +17,10 @@ export const EGRESS_PROXY_LABEL = "shipit-egress-proxy";
 
 export function egressProxyEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.SESSION_EGRESS_PROXY !== "0" && egressDnsEnabled(env);
+}
+
+export function agentEgressDecisionUrl(port: string = process.env.PORT || "3000"): string {
+  return `http://${orchestratorCallbackHost()}:${port}/api/egress/decision`;
 }
 
 export interface ProxyAllowedOpts {

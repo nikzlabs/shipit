@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,7 +18,7 @@ import {
 } from "./test-helpers.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
-import type { WsSystemUserMessage } from "../../shared/types.js";
+import type { WsSessionMessageProposalUpdate, WsSystemUserMessage } from "../../shared/types.js";
 
 /**
  * docs/314 — the user's click is the delivery. `shipit session message` cannot
@@ -35,8 +35,10 @@ describe("Integration: session-message proposal delivery", () => {
   let sessionId: string;
   let targetId: string;
   let client: TestClient;
+  let agents: FakeClaudeProcess[];
 
   beforeEach(async () => {
+    agents = [];
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "deliver-session-message-"));
     sessionManager = new SessionManager(dbManager);
@@ -46,7 +48,11 @@ describe("Integration: session-message proposal delivery", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      agentFactory: () => new FakeClaudeProcess() as unknown as never,
+      agentFactory: () => {
+        const agent = new FakeClaudeProcess();
+        agents.push(agent);
+        return agent as unknown as never;
+      },
       credentialStore,
       databaseManager: dbManager,
       workspaceDir: tmpDir,
@@ -91,6 +97,12 @@ describe("Integration: session-message proposal delivery", () => {
     app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/session-message-proposals/${cardId}/deliver`,
+    });
+
+  const decline = (cardId: string) =>
+    app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/session-message-proposals/${cardId}/decline`,
     });
 
   it("starts a turn in a ROOT session, which `session message` cannot reach", async () => {
@@ -208,6 +220,10 @@ describe("Integration: session-message proposal delivery", () => {
 
     expect(res.statusCode).toBe(500);
     expect(res.json()).toMatchObject({ delivered: true });
+    // The viewer is still told it landed, though the card could not store it.
+    const seen = await client.drain({ quietMs: 200 });
+    expect(seen.some((m) => m.type === "session_message_proposal_update"
+      && (m as WsSessionMessageProposalUpdate).state === "delivered")).toBe(true);
 
     // The message really did land, and the card was not downgraded to `failed`.
     const arrived = (await targetClient.receiveType("system_user_message")) as WsSystemUserMessage;
@@ -215,5 +231,139 @@ describe("Integration: session-message proposal delivery", () => {
     targetClient.close();
     expect(chatHistory.findSessionMessageProposalCard(sessionId, cardId)?.state)
       .not.toBe("failed");
+
+    // The stored card still reads `delivering`; neither a second send nor a
+    // decline may act on a message that already landed.
+    expect((await deliver(cardId)).statusCode).toBe(409);
+    expect((await decline(cardId)).statusCode).toBe(409);
+  });
+
+  it("refuses to deliver a card the user declined, and sends nothing", async () => {
+    const cardId = await propose("Never mind.");
+    expect((await decline(cardId)).statusCode).toBe(200);
+    const targetClient = await TestClient.connect(port, targetId);
+    await targetClient.receive();
+
+    const res = await deliver(cardId);
+    expect(res.statusCode).toBe(409);
+    expect(chatHistory.findSessionMessageProposalCard(sessionId, cardId)?.state).toBe("declined");
+    const seen = await targetClient.drain({ quietMs: 200 });
+    expect(seen.some((m) => m.type === "system_user_message")).toBe(false);
+    targetClient.close();
+  });
+
+  // req 13.
+  describe("declining the message", () => {
+    it("records the decline on the card and tells the viewer", async () => {
+      const cardId = await propose("Not this one.");
+
+      const res = await decline(cardId);
+      expect(res.statusCode).toBe(200);
+      const { declinedAt } = res.json() as { declinedAt: string };
+      expect(declinedAt).toBeTruthy();
+
+      const update = (await client.receiveType("session_message_proposal_update")) as WsSessionMessageProposalUpdate;
+      expect(update).toMatchObject({ cardId, state: "declined", declinedAt });
+      expect(chatHistory.findSessionMessageProposalCard(sessionId, cardId)).toMatchObject({
+        state: "declined",
+        declinedAt,
+      });
+    });
+
+    it("declines a card whose delivery failed, and clears the failure", async () => {
+      const cardId = await propose("Retry or not.");
+      chatHistory.updateSessionMessageProposalCard(sessionId, cardId, { state: "failed", errorMessage: "boom" });
+
+      expect((await decline(cardId)).statusCode).toBe(200);
+      const card = chatHistory.findSessionMessageProposalCard(sessionId, cardId);
+      expect(card?.state).toBe("declined");
+      expect(card?.errorMessage).toBeUndefined();
+    });
+
+    it("answers a second decline with the first one's time", async () => {
+      const cardId = await propose("Twice.");
+      const first = (await decline(cardId)).json() as { declinedAt: string };
+      const second = await decline(cardId);
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toMatchObject({ declinedAt: first.declinedAt });
+    });
+
+    it("refuses to decline a message that was already delivered", async () => {
+      const cardId = await propose("Already there.");
+      expect((await deliver(cardId)).statusCode).toBe(200);
+
+      const res = await decline(cardId);
+      expect(res.statusCode).toBe(409);
+      expect(chatHistory.findSessionMessageProposalCard(sessionId, cardId)?.state).toBe("delivered");
+    });
+
+    it("404s for a card that is not in this session's history", async () => {
+      expect((await decline("session-message-nope")).statusCode).toBe(404);
+    });
+
+    it("tells the viewer nothing when the decline could not be stored", async () => {
+      const cardId = await propose("Unstorable.");
+      await client.drain({ quietMs: 100 });
+      const write = vi
+        .spyOn(chatHistory, "updateSessionMessageProposalCard")
+        .mockImplementation(() => { throw new Error("disk full"); });
+
+      try {
+        expect((await decline(cardId)).statusCode).toBe(500);
+        const seen = await client.drain({ quietMs: 200 });
+        expect(seen.some((m) => m.type === "session_message_proposal_update")).toBe(false);
+      } finally {
+        write.mockRestore();
+      }
+      expect(chatHistory.findSessionMessageProposalCard(sessionId, cardId)?.state).toBeUndefined();
+    });
+  });
+
+  // req 14, through the WebSocket send path (`agent-execution.ts`).
+  describe("telling the proposing agent", () => {
+    /** Send a user turn, let the agent answer it, and return the prompt it was given. */
+    async function answeredTurn(text: string): Promise<string> {
+      const before = agents.length;
+      client.send({ type: "send_message", text });
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const agent = agents[before];
+        if (agent?.runCalled) {
+          agent.emit("event", { type: "result", subtype: "success", session_id: "agent-sid" });
+          agent.emit("done", 0);
+          await new Promise((r) => setTimeout(r, 50));
+          return agent.lastPrompt;
+        }
+        if (Date.now() > deadline) throw new Error(`no agent ran for ${JSON.stringify(text)}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+
+    it("tells the next turn that the user declined, once", async () => {
+      const cardId = await propose("Maybe later.");
+      await decline(cardId);
+
+      const first = await answeredTurn("What next?");
+      expect(first).toContain("[ShipIt] Since your last turn, the user acted on a card you posted");
+      expect(first).toContain(`session ${targetId} "Orchestrator" — DECLINED by the user`);
+      expect(first.endsWith("What next?")).toBe(true);
+
+      const second = await answeredTurn("And now?");
+      expect(second).not.toContain("[ShipIt] Since your last turn");
+    });
+
+    it("tells the next turn that the message was delivered", async () => {
+      const cardId = await propose("Done.");
+      chatHistory.updateSessionMessageProposalCard(sessionId, cardId, { state: "delivered", queued: false });
+
+      const prompt = await answeredTurn("Carry on");
+      expect(prompt).toContain("DELIVERED by the user; it started a turn there.");
+    });
+
+    it("says nothing about a card the user has not acted on", async () => {
+      await propose("Pending.");
+      const prompt = await answeredTurn("Carry on");
+      expect(prompt).not.toContain("[ShipIt] Since your last turn");
+    });
   });
 });

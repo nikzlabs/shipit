@@ -138,6 +138,54 @@ describe("SessionMessageProposalCard", () => {
     expect(screen.getByRole("button", { name: /Send to Orchestrator/ })).toBeEnabled();
   });
 
+  // req 13.
+  it("declines on click, passing the card id", async () => {
+    const onDecline = vi.fn<(cardId: string) => Promise<void>>(async () => {});
+    const onDeliver = vi.fn<(cardId: string) => Promise<void>>(async () => {});
+    render(<SessionMessageProposalCard card={card()} onDeliver={onDeliver} onDecline={onDecline} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    await waitFor(() => expect(onDecline).toHaveBeenCalledWith("smp-1"));
+    expect(onDeliver).not.toHaveBeenCalled();
+  });
+
+  it("cannot be declined while a delivery is in flight", async () => {
+    const onDecline = vi.fn<(cardId: string) => Promise<void>>(async () => {});
+    const onDeliver = vi.fn<(cardId: string) => Promise<void>>(() => new Promise<void>(() => {}));
+    render(<SessionMessageProposalCard card={card()} onDeliver={onDeliver} onDecline={onDecline} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Send to Orchestrator/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Decline" })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    expect(onDecline).not.toHaveBeenCalled();
+  });
+
+  it("offers neither send nor decline once declined, and says nothing was sent", () => {
+    render(<SessionMessageProposalCard card={card({ state: "declined", declinedAt: "x" })} />);
+    expect(screen.queryByRole("button", { name: /Send to/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Decline" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("session-message-proposal-status")).toHaveTextContent(
+      "Declined — nothing was sent.",
+    );
+  });
+
+  it("offers no decline once delivered", () => {
+    render(<SessionMessageProposalCard card={card({ state: "delivered" })} />);
+    expect(screen.queryByRole("button", { name: "Decline" })).not.toBeInTheDocument();
+  });
+
+  it("shows why a decline could not be made", async () => {
+    const onDecline = vi.fn<(cardId: string) => Promise<void>>(async () => {
+      throw new Error("That message was already delivered.");
+    });
+    render(<SessionMessageProposalCard card={card()} onDecline={onDecline} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("session-message-proposal-error")).toHaveTextContent("already delivered"),
+    );
+  });
+
   it("opens the target session once delivered", () => {
     const onOpenSession = vi.fn();
     render(
