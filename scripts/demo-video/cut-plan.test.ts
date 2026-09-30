@@ -214,6 +214,9 @@ describe("anchoring", () => {
     expect(() => buildPlan(log, story, { anchorWall: 0.626, anchorVideo: 1.08, videoDuration: 90 })).toThrow(/is not the driver's splash/);
     // One frame of rounding is not that.
     expect(() => buildPlan(log, story, { anchorWall: 0.44, anchorVideo: 0.48, videoDuration: 90 })).not.toThrow();
+    // A slow paint is not that either: the flip is judged against the stamp taken after it.
+    expect(() => buildPlan(log, story, { anchorWall: 0.4, anchorPainted: 0.7, anchorVideo: 0.62, videoDuration: 90 })).not.toThrow();
+    expect(() => buildPlan(log, story, { anchorWall: 0.4, anchorPainted: 0.7, anchorVideo: 0.9, videoDuration: 90 })).toThrow(/painted by 0.7s/);
   });
 
   it("shifts the slices by anchorWall − anchorVideo: the splash ended at 1.9 s on the driver's clock and 0.48 s into the file", () => {

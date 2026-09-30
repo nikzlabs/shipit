@@ -2,19 +2,29 @@
 # Copy the pipeline to the demo host — docs/296 plan §9. Runs where the repo
 # is checked out; everything after it runs on the host (host/demo-take.sh).
 #
-#   sync-to-host.sh <ssh-host> [remote-dir]     default remote-dir: shipit-demo/pipeline
+#   sync-to-host.sh <ssh-host>
 #
-# The remote tree is replaced whole, so it is this checkout's
-# scripts/demo-video (tests and fixtures left out) and nothing older. tar over
-# ssh, because a session has ssh and no rsync.
+# ~/shipit-demo/pipeline on the host becomes this checkout's
+# scripts/demo-video (tests and fixtures left out) and nothing older: the new
+# tree is unpacked beside the old one and swapped in by two renames, so a
+# broken transfer leaves the old tree in place. tar over ssh, because a session
+# has ssh and no rsync.
 set -euo pipefail
 
-[ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ $# -eq 1 ] || { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 HOST=$1
-REMOTE=${2:-shipit-demo/pipeline}
-case "$REMOTE" in ""|/|.|..|*..*) echo "sync-to-host: refusing remote dir '$REMOTE'" >&2; exit 2 ;; esac
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-tar -C "$HERE" --exclude='*.test.ts' --exclude='__fixtures__' -cf - . \
-  | ssh "$HOST" "set -e; d='$REMOTE'; rm -rf \"\$d.new\"; mkdir -p \"\$d.new\"; tar -xf - -C \"\$d.new\"; rm -rf \"\$d\"; mv \"\$d.new\" \"\$d\""
-echo "sync-to-host: $HERE -> $HOST:$REMOTE"
+# The remote path is fixed: nothing the caller passes reaches the remote shell.
+# shellcheck disable=SC2016
+REMOTE_SWAP='set -e
+d=shipit-demo/pipeline
+rm -rf "$d.new" "$d.old"
+mkdir -p "$d.new"
+tar -xf - -C "$d.new"
+if [ -e "$d" ]; then mv "$d" "$d.old"; fi
+mv "$d.new" "$d"
+rm -rf "$d.old"'
+
+tar -C "$HERE" --exclude='*.test.ts' --exclude='__fixtures__' -cf - . | ssh "$HOST" "$REMOTE_SWAP"
+echo "sync-to-host: $HERE -> $HOST:shipit-demo/pipeline"
