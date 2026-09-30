@@ -260,12 +260,11 @@ Three distinct causes, each with its own banner:
 **Session disabled — agent container OOM-killed N times.** A circuit breaker:
 the orchestrator stopped recreating a container that keeps being killed for
 memory. **Restart all** on the health strip resets the breaker and retries —
-that click is theirs. The banner's own advice to raise `agent.memory` in
-`shipit.yaml` is stale: that field was removed and is ignored with a warning.
-Session memory is now sized automatically from host capacity, and the only
-overrides are the deployment env vars `DEFAULT_SESSION_MEMORY_MB` and
-`MAX_SESSION_MEMORY_MB` — a host-level change, covered in
-[installing-and-updating.md](installing-and-updating.md).
+that click is theirs. Raising `agent.memory` in `shipit.yaml` does nothing: that
+field was removed and is ignored with a warning. Session memory is sized
+automatically from host capacity, and the only overrides are the deployment env
+vars `DEFAULT_SESSION_MEMORY_MB` and `MAX_SESSION_MEMORY_MB` — a host-level
+change, covered in [installing-and-updating.md](installing-and-updating.md).
 
 **Container creation failed**, with Docker's stderr under it, on the health
 strip. Read the error; it is usually the host — disk, image, or network space.
