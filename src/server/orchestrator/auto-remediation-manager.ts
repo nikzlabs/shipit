@@ -17,6 +17,11 @@ export interface RemediationState {
 
 export type SignalKind = "fire" | "resolved" | "ignore";
 
+/** docs/321 — the user asked for this attempt by hand, so a question the agent asked does not hold it. */
+export interface FireOptions {
+  byUser?: boolean;
+}
+
 export interface RemediationManagerConfig {
   name: string;
   maxAttempts: number;
@@ -75,7 +80,7 @@ export abstract class AutoRemediationManager<TSignal> {
   }
 
   /** Subclasses must release the claim on every terminal path. */
-  protected abstract fireAttempt(sessionId: string, signal: TSignal, attempt: number): void;
+  protected abstract fireAttempt(sessionId: string, signal: TSignal, attempt: number, opts: FireOptions): void;
 
   protected onDelete(_sessionId: string): void { /* override to clear caches */ }
 
@@ -124,7 +129,12 @@ export abstract class AutoRemediationManager<TSignal> {
     return true;
   }
 
-  protected async runTransition(sessionId: string, signal: TSignal, headSha: string): Promise<void> {
+  protected async runTransition(
+    sessionId: string,
+    signal: TSignal,
+    headSha: string,
+    opts: FireOptions = {},
+  ): Promise<void> {
     const kind = this.classify(signal);
     if (kind === "ignore") return;
 
@@ -196,7 +206,7 @@ export abstract class AutoRemediationManager<TSignal> {
 
     // Deferred as a running agent is, and before a runner is made: the idle that ends the
     // user's reply re-fires it.
-    if (this.heldForAnswer(sessionId)) {
+    if (!opts.byUser && this.heldForAnswer(sessionId)) {
       this.defer(sessionId, state);
       return;
     }
@@ -217,6 +227,11 @@ export abstract class AutoRemediationManager<TSignal> {
       // The idle handler may already have fired the attempt.
       return;
     }
+    // Again past the awaits: a turn can have ended on a question meanwhile.
+    if (!opts.byUser && this.heldForAnswer(sessionId)) {
+      this.defer(sessionId, state);
+      return;
+    }
 
     if (!this.tryClaim(sessionId, headSha)) {
       this.defer(sessionId, state);
@@ -224,7 +239,7 @@ export abstract class AutoRemediationManager<TSignal> {
     }
     state.status = "running";
     this.onChange(sessionId);
-    this.fireAttempt(sessionId, signal, state.attemptCount + 1);
+    this.fireAttempt(sessionId, signal, state.attemptCount + 1, opts);
   }
 
   async onRunnerIdle(sessionId: string): Promise<void> {
@@ -256,6 +271,7 @@ export abstract class AutoRemediationManager<TSignal> {
     }
 
     if (this.cfg.arbiter?.shouldSuppress(sessionId, state.lastHeadSha)) return;
+    if (this.heldForAnswer(sessionId)) return;
 
     const signal = this.rebuildSignalForIdle(sessionId);
     if (!signal) return;
@@ -264,7 +280,7 @@ export abstract class AutoRemediationManager<TSignal> {
     if (!this.tryClaim(sessionId, state.lastHeadSha)) return;
     state.status = "running";
     this.onChange(sessionId);
-    this.fireAttempt(sessionId, signal, state.attemptCount + 1);
+    this.fireAttempt(sessionId, signal, state.attemptCount + 1, {});
   }
 
   protected defer(sessionId: string, state: RemediationState): void {

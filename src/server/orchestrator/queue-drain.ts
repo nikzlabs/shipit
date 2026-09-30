@@ -4,7 +4,6 @@ import type {
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import { automaticTurnHeldForAnswer, systemTurnBlockedByResidentWork } from "./turn-admission.js";
-import { settleDroppedQueueEntries } from "./turn-settlement.js";
 
 export { queuedMessageToDispatchOptions };
 
@@ -45,22 +44,6 @@ function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedM
     return undefined;
   }
   return index === 0 ? runner.dequeue() : runner.messageQueue.splice(index, 1)[0];
-}
-
-/**
- * An interrupted turn discards what was queued behind it. docs/321 — a turn that ended on a
- * question keeps its automatic entries: they are held for the user's answer, not cancelled.
- */
-export function discardQueueAfterInterrupt(runner: SessionRunnerInterface): void {
-  if (!runner.awaitingUserAnswer) {
-    runner.clearQueue();
-    return;
-  }
-  const queue = runner.messageQueue;
-  const dropped = queue.filter((m) => m.automatic !== true);
-  if (dropped.length === 0) return;
-  queue.splice(0, queue.length, ...queue.filter((m) => m.automatic === true));
-  settleDroppedQueueEntries(dropped, "queue cleared");
 }
 
 // The tagged executor preserves callbacks and system-turn options across queue drains.

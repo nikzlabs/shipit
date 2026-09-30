@@ -479,6 +479,7 @@ export async function registerGitRoutes(
             agentFactory: deps.agentFactory,
             sseBroadcast: deps.sseBroadcast,
             recordSyncCard: true,
+            userStarted: true,
             prStatusPoller: deps.prStatusPoller,
             // Use runner.sessionDir exactly: the driver shares a mutex keyed by this string.
             commitPendingWork: (deferPushArm) => savePendingWorkForSync({
@@ -612,9 +613,11 @@ export async function registerGitRoutes(
           reviewDecision: "none" as const,
           autoMergeEnabled: false,
         };
-        manager.handleTransition(sessionId, pollSummary, baseBranch, headSha).catch((err: unknown) => {
-          console.error(`[auto-resolve] retry handleTransition error for ${sessionId}:`, err);
-        });
+        // docs/321 — the user's click, so a question the agent is waiting on does not hold it.
+        manager.handleTransition(sessionId, pollSummary, baseBranch, headSha, undefined, { byUser: true })
+          .catch((err: unknown) => {
+            console.error(`[auto-resolve] retry handleTransition error for ${sessionId}:`, err);
+          });
       }
       return { status: "retry_scheduled" };
     },

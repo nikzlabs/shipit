@@ -45,6 +45,7 @@ import {
   queuedMessageToDispatchOptions,
   type PreparedDispatch,
 } from "./prepared-dispatch.js";
+import { takeRunnableQueuedTurn } from "./queue-drain.js";
 import {
   createTurnSettlement,
   settleDroppedQueueEntries,
@@ -331,7 +332,8 @@ export function dispatchOnRunner(
       chained.onTurnComplete?.(turnErrored(`${DISPATCH_SETUP_FAILURE}: ${detail}`));
     }
     if (runner.queueLength > 0) {
-      const next = runner.dequeue();
+      // The shared take, so a held entry at the head cannot strand the user's behind it.
+      const next = takeRunnableQueuedTurn(runner);
       if (next) {
         runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
         dispatchOnRunner(runner, deps, queuedMessageToDispatchOptions(next));

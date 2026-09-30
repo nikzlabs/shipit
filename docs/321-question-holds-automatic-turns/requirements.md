@@ -29,7 +29,15 @@ shouldn't be interrupted by rebase, fix ci, and any other automatic turns".
 
 ## Open questions
 
-None.
+- A turn the agent's own CLI starts — a background job it started finishes while
+  the question waits — is not started by ShipIt. Should ShipIt stop that turn as
+  soon as it starts (the job's result stays in the agent's context, and the
+  agent reads it with the user's reply), or accept it as an exception to req 1?
+- A held automatic turn waits in the session's memory. If ShipIt stops the
+  session's container to free memory before the user replies, a held child
+  report, parent message or consult result is lost (req 4). Keep the container
+  running while it holds one, carry the held item into the user's next message
+  instead, or accept the loss?
 
 ## Resolved questions
 

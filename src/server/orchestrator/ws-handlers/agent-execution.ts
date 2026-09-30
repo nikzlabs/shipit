@@ -21,7 +21,7 @@ import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcom
 import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
-import { discardQueueAfterInterrupt, startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
+import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
 import {
   agentEnvTurnArgs,
   prepareSessionAgentEnvironment,
@@ -87,10 +87,12 @@ export async function drainNextQueuedMessage(
     runner.systemTurnInProgress = false;
     if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
   }
-  if (runner.wasInterrupted && !compactionTurn) {
+  // A stop discards the queue. docs/321 — a question does not: what the user queued is
+  // their reply, and the take below holds the automatic entries.
+  if (runner.wasInterrupted && !runner.awaitingUserAnswer && !compactionTurn) {
     if (messageQueue.length > 0) {
-      discardQueueAfterInterrupt(runner);
-      emit({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+      runner.clearQueue();
+      emit({ type: "queue_updated", queue: [] });
     }
     return;
   }

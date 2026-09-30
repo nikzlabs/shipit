@@ -59,6 +59,8 @@ export interface RebaseDriverDeps {
   drainQueue?: () => Promise<void> | void;
   /** Manual sync: persist no-op confirmations and notify the agent of rewrites. */
   recordSyncCard?: boolean;
+  /** docs/321 — the user started this flow (Sync, or Retry on the resolver), so its turns are theirs. */
+  userStarted?: boolean;
   prStatusPoller?: RebasePrStatusPoller | null;
   /** Manual sync only. Hand over the push arm before later commit bookkeeping can throw. */
   commitPendingWork?: (
@@ -896,8 +898,7 @@ function dispatchRebaseResolutionTurn(
       // Rebase owns the commits, push, and queue drain.
       postTurn: "none",
       systemTurn: true,
-      // docs/321 — the manual Sync's turns are the user's; the automatic resolver's are not.
-      automatic: deps.recordSyncCard !== true,
+      automatic: deps.userStarted !== true,
       execution: undefined,
       images: undefined,
       files: undefined,
@@ -975,6 +976,11 @@ export async function runAutoResolveAttempt(
   // and aborts under a running agent once per retry (nikzlabs/shipit#2751).
   if (residentBackgroundWork(runner).length > 0) {
     return { outcome: "deferred", lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK, didWork: false };
+  }
+
+  // docs/321 — the tree must not move under a question the agent is waiting on.
+  if (!deps.userStarted && runner.answerHold) {
+    return { outcome: "deferred", didWork: false, suppressEmit: true };
   }
 
   try {

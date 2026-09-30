@@ -197,6 +197,57 @@ describe("Integration: a question holds automatic turns (docs/321)", () => {
     client.close();
   });
 
+  it("a message the user queued behind the asking turn runs as the reply, ahead of held automatic work (req 3, 6)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const stop = pump(client);
+
+    const asker = await turnThatAsks(client);
+    const runner = runnerFor(client.sessionId);
+    const outcomes: TurnOutcome[] = [];
+    expect(dispatchWake(runner, outcomes).admitted).toBe("queued");
+    client.send({ type: "send_message", text: "Use Redis" });
+    await waitFor(() => runner.queueLength === 2, "the reply queued behind the wake");
+
+    asker.finish("question-turn");
+    const reply = await waitForClaude(() => lastClaude, asker);
+    expect(reply.lastPrompt).toContain("Use Redis");
+    expect(runner.queueLength).toBe(1);
+    expect(sessionManager.isAwaitingAnswer(client.sessionId)).toBe(false);
+
+    reply.finish("reply-turn");
+    const wakeTurn = await waitForClaude(() => lastClaude, reply);
+    expect(wakeTurn.lastPrompt).toContain("merged");
+    wakeTurn.finish("wake-turn");
+    await waitFor(() => outcomes.length > 0, "wake turn settled");
+    expect(outcomes).toEqual([TURN_COMPLETED]);
+
+    stop();
+    client.close();
+  });
+
+  it("a stop still discards what was queued behind the turn", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const stop = pump(client);
+
+    client.send({ type: "send_message", text: "Refactor the parser" });
+    const worker = await waitForClaude(() => lastClaude);
+    worker.initSession("work-turn");
+    const runner = runnerFor(client.sessionId);
+    const outcomes: TurnOutcome[] = [];
+    expect(dispatchWake(runner, outcomes).admitted).toBe("queued");
+
+    runner.wasInterrupted = true;
+    worker.finish("work-turn");
+    await waitFor(() => outcomes.length > 0, "the queued wake settled");
+    expect(outcomes[0]?.status).toBe("dropped");
+    expect(runner.queueLength).toBe(0);
+
+    stop();
+    client.close();
+  });
+
   it("an automatic turn that asks holds the automatic work queued behind it (req 1)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();

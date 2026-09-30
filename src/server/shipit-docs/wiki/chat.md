@@ -179,9 +179,10 @@ While a question card or a plan card waits, ShipIt starts **no automatic turn**
 in the session: no CI auto-fix, no automatic conflict resolution, no merge
 notice, child report, message from a parent session, finished consult or
 preview auto-fix. They wait, and run after the user's reply turn ends — unless
-that turn ends on a new question. This holds across a reclaimed container and a
-restart. What the user starts by hand — **Fix CI**, **Resolve conflicts** — is
-not held. If a conflict-resolution turn of yours asks a question, ShipIt aborts
+that turn ends on a new question. The hold itself survives a reclaimed container
+and a restart. What the user starts by hand — **Fix CI**, **Resolve conflicts**,
+**Retry** on a stopped auto-resolve — is not held. A message the user typed while
+the card appeared runs as their reply. If a conflict-resolution turn of yours asks a question, ShipIt aborts
 that rebase instead of prompting you again; the automatic resolver tries again
 after the answer.
 

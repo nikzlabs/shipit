@@ -69,18 +69,23 @@ question.
    mark like any other hold — queued, or refused for a `whenBusy: "refuse"`
    caller (req 1, 4). While a turn runs, automatic work is not steered into it
    once the turn has asked (`runner.awaitingUserAnswer`), so it queues instead.
-   An interrupted interactive turn discards its queue; one that ended on a
-   question now keeps the automatic entries (`discardQueueAfterInterrupt`), since
-   those are held, not cancelled.
+   An interrupted interactive turn discards its queue — the Stop button's
+   meaning. A question also interrupts the CLI, and used to discard the queue
+   the same way, dropping even a reply the user typed as the card appeared. The
+   interactive drain now discards only after a stop; after a question it goes on
+   to the take below, which runs the user's own entry and holds the automatic
+   ones (req 3, 6).
 2. **Queue take** (`takeRunnableQueuedTurn`): while the mark is set, a queued
    automatic head is passed over for the first entry the user queued, and left
-   in place when there is none. Every drain and `releaseQueuedTurn` takes
-   through it, so held work runs in order once the user's turn ends without a
-   new question (req 4, 6).
+   in place when there is none. Every drain, `releaseQueuedTurn` and the
+   dispatch setup-failure recovery take through it, so held work runs in order
+   once the user's turn ends without a new question (req 4, 6).
 3. **Remediation** (`AutoRemediationManager`): a held session defers exactly as
    a running one does, before any runner is created, so no container boots
-   for it. The `idle` event after the user's turn re-fires it. This covers the
-   CI auto-fix and the conflict auto-resolve, and so the automatic rebase.
+   for it, and again after the awaits just before the attempt is claimed, since
+   a turn can end on a question in between. The `idle` event after the user's
+   turn re-fires it. This covers the CI auto-fix and the conflict auto-resolve;
+   `runAutoResolveAttempt` checks once more before it touches the tree.
 4. **Rebase flow**: a conflict-resolution turn that ends by asking the user
    stops the flow and aborts the rebase, with the abort notice, instead of
    sending another resolution prompt. This holds for the manual Sync too: its
@@ -88,10 +93,14 @@ question.
    question.
 
 Work the user starts by hand passes every gate and clears the mark when its
-turn starts (req 6): Fix CI is a plain dispatch, and the manual Sync's
-resolution turn is not automatic.
+turn starts (req 6): Fix CI is a plain dispatch, and a rebase flow the user
+started — the Sync button, or **Retry** on the auto-resolver — carries
+`userStarted`, so its resolution turns are not automatic. Retry reaches the
+resolver as `handleTransition(…, { byUser: true })`, which skips the hold.
 
 ## Limits
+
+Both are open questions in [requirements.md](./requirements.md).
 
 - A queued entry lives in the runner. If the runner is reclaimed while an
   automatic turn is held, the entry settles as dropped, as any queued entry
@@ -100,8 +109,6 @@ resolution turn is not automatic.
   child report is not redelivered.
 - A turn the agent CLI starts on its own — a finished background job waking a
   resident process — is not dispatched by ShipIt and is not gated.
-- The auto-resolve **Retry** button re-arms the automatic resolver, so it is
-  held like the resolver itself.
 
 ## Key files
 

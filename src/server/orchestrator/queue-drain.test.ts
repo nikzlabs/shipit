@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  discardQueueAfterInterrupt,
   queuedMessageToDispatchOptions,
   releaseQueuedTurn,
   startQueuedMessage,
@@ -173,14 +172,12 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
 });
 
 describe("a question holds automatic entries (docs/321)", () => {
-  function fakeHeldRunner(queue: QueuedMessage[], held: boolean, awaitingUserAnswer = false) {
+  function fakeHeldRunner(queue: QueuedMessage[], held: boolean) {
     return {
       sessionId: "s1",
       messageQueue: queue,
       answerHold: held,
-      awaitingUserAnswer,
       dequeue: () => queue.shift(),
-      clearQueue: () => { queue.length = 0; },
       getAgent: () => null,
       backgroundWorkDescriptions: [],
     } as unknown as SessionRunnerInterface;
@@ -217,27 +214,6 @@ describe("a question holds automatic entries (docs/321)", () => {
     const queue = [automaticEntry()];
 
     expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, false))?.text).toBe("[ci-fix] CI failed");
-    expect(queue).toHaveLength(0);
-  });
-
-  it("keeps automatic entries when a turn ends on a question, and settles the rest as dropped", () => {
-    const dropped = vi.fn();
-    const queue: QueuedMessage[] = [
-      automaticEntry(),
-      { text: "typed before the question", execution: "interactive", onTurnComplete: dropped },
-    ];
-
-    discardQueueAfterInterrupt(fakeHeldRunner(queue, true, true));
-
-    expect(queue.map((m) => m.text)).toEqual(["[ci-fix] CI failed"]);
-    expect(dropped).toHaveBeenCalledWith(expect.objectContaining({ status: "dropped" }));
-  });
-
-  it("discards everything after a stop, automatic entries included", () => {
-    const queue: QueuedMessage[] = [automaticEntry(), { text: "typed", execution: "interactive" }];
-
-    discardQueueAfterInterrupt(fakeHeldRunner(queue, false, false));
-
     expect(queue).toHaveLength(0);
   });
 });
