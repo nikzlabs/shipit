@@ -423,22 +423,18 @@ const PLUGIN_SKILL_CLEAR_ROUNDS = 2;
 
 /**
  * ShipIt's plugin-skill copies are ignored, untracked directories in the harness skills roots
- * (docs/262-plugins), and git will not replace a root that holds them: a base that turns
- * `.claude/skills` into a symlink stops the rebase before it starts. Every container start
- * re-creates them, so they are cleared here and the flow prepares them again afterwards.
+ * (docs/262-plugins), and git 2.39 (the orchestrator image's) will not replace a root that
+ * holds them: a base that turns `.claude/skills` into a symlink stops the rebase before it
+ * starts. Every container start re-creates them, so they are cleared here; the flow prepares
+ * them again afterwards.
  */
-async function rebaseClearingPluginSkills(
-  deps: RebaseDriverDeps,
-  baseRef: string,
-  cleared: { done: boolean },
-): Promise<RebaseResult> {
+async function rebaseClearingPluginSkills(deps: RebaseDriverDeps, baseRef: string): Promise<RebaseResult> {
   for (let round = 0; ; round++) {
     try {
       return await deps.git.rebase(baseRef);
     } catch (err) {
       if (round >= PLUGIN_SKILL_CLEAR_ROUNDS || !isUntrackedFilesRefusal(getErrorMessage(err))) throw err;
       if ((await removePluginSkillCopies(deps.git, deps.runner.sessionDir)) === 0) throw err;
-      cleared.done = true;
     }
   }
 }
@@ -528,7 +524,8 @@ export async function runRebaseFlow(
   let published = false;
   let pushProhibited = false;
   let savedCommit: string | null = null;
-  const pluginSkillsCleared = { done: false };
+  // Our sweep removes them where git 2.39 refuses; newer git deletes ignored files itself.
+  let pluginSkillsBefore: string[] = [];
 
   try {
     hold.take();
@@ -577,7 +574,10 @@ export async function runRebaseFlow(
         );
       }
       worktreeRewritten = true;
-      return rebaseClearingPluginSkills(deps, baseRef, pluginSkillsCleared);
+      pluginSkillsBefore = ownedPluginSkillDirs(runner.sessionDir, new Set())
+        .filter((copy) => !copy.staging)
+        .map((copy) => copy.dir);
+      return rebaseClearingPluginSkills(deps, baseRef);
     });
 
     if (result.status === "clean") {
@@ -733,7 +733,7 @@ export async function runRebaseFlow(
       handWorkspaceBackToWorker(runner.sessionDir);
       // After the handback, since the worker may write into a root the rebase created; before
       // the queue drains, since a turn started now would spawn without the skills.
-      if (pluginSkillsCleared.done) {
+      if (pluginSkillsBefore.some((dir) => !fs.existsSync(dir))) {
         hold.take();
         await restorePluginSkills(runner);
       }

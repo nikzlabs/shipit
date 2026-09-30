@@ -1528,10 +1528,12 @@ instead of a repeat.
   ignore, as they do for `.gitignore`.
 
   **Rebasing across a skills root that changes shape.** An ignored copy is
-  still an untracked file, and git refuses to replace a directory that holds
-  one: when the base turns a real `.claude/skills/` into a symlink, `git rebase`
+  still an untracked file, and git 2.39 — the orchestrator image's
+  (`node:24-slim`, bookworm) — refuses to replace a directory that holds one:
+  when the base turns a real `.claude/skills/` into a symlink, `git rebase`
   stops at once ("Updating the following directories would lose untracked
-  files in them", then "could not detach HEAD"). A user-side `git clean` does
+  files in them", then "could not detach HEAD"). Newer git (CI runs 2.55)
+  deletes the ignored files instead and rebases. A user-side `git clean` does
   not last, because every container start and every `plugin_repos_updated`
   prepares the copies again. So the rebase flow (`runRebaseFlow`,
   `services/rebase-driver.ts`) handles it under the same workspace lock as the
@@ -1543,13 +1545,15 @@ instead of a repeat.
   during the `ls-files` await would otherwise redirect a recursive delete. The
   walk and the ownership rule are shared with the worker's sweep
   (`shared/plugin-skill-copies.ts`, kept apart from `plugin-skill-marker.ts`
-  because the browser bundle imports that one). After the flow ends, successful
-  or not, and after the workspace is handed back to the worker uid, it awaits
-  the runner's `preparePlugins()` before it releases the session, so the copies
+  because the browser bundle imports that one). The flow records which copies
+  exist just before it rebases; if any is gone when the flow ends — removed by
+  that sweep, or by newer git itself — then, successful or not, and after the
+  workspace is handed back to the worker uid, it awaits the runner's
+  `preparePlugins()` before it releases the session, so the copies
   come back at the new resolved root with its excludes before a queued turn can
   spawn; the wait is capped at 45s, because a worker that never became ready
-  would otherwise hold the session for ever. A rebase git does not refuse leaves
-  the copies alone. The conflict-resolution turn of such a rebase runs without
+  would otherwise hold the session for ever. A rebase that keeps the copies
+  neither removes nor re-prepares them. The conflict-resolution turn of such a rebase runs without
   the plugin skills. A known limit, not introduced here: that prepare pass's
   stale sweep, like every container start's, removes a marker-owned copy whose
   name left the plan without asking git whether it is tracked.

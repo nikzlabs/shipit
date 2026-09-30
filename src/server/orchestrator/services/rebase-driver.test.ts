@@ -3636,22 +3636,59 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
     return { runner, prepare };
   }
 
-  it("git refuses the rebase while the copies are there — the failure this path exists for", () => {
-    const { workDir } = skillsRootBecomesSymlink();
-    materializeCopies(workDir);
-    expect(execSync("git status --porcelain", { cwd: workDir }).toString()).toBe("");
-    let stderr = "";
-    try {
-      execSync("git fetch -q origin && git rebase origin/main", { cwd: workDir, stdio: "pipe" });
-    } catch (err) {
-      stderr = String((err as { stderr?: Buffer }).stderr);
-    }
-    expect(stderr).toContain("Updating the following directories would lose untracked files in them");
-  });
+  // Verbatim from git 2.39.5, the orchestrator image's git (node:24-slim, bookworm).
+  const GIT_239_REFUSAL = "error: Updating the following directories would lose untracked files in them:\n"
+    + "\t.claude/skills\n\nAborting\nerror: could not detach HEAD\n";
 
-  it("clears the copies, rebases, and prepares them again after handing the workspace back", async () => {
+  /**
+   * Newer git deletes ignored files in a directory it replaces, so CI's git would never refuse.
+   * This makes any git refuse the way the orchestrator's does: while the real `.claude/skills`
+   * still holds anything besides `tracked`.
+   */
+  function refuseLikeGit239(git: GitManager, workDir: string, tracked: readonly string[] = ["real"]): void {
+    const rebase = git.rebase.bind(git);
+    git.rebase = (onto: string) => {
+      const root = path.join(workDir, ".claude/skills");
+      const stat = fs.lstatSync(root, { throwIfNoEntry: false });
+      const blocking = stat?.isDirectory()
+        ? fs.readdirSync(root).filter((name) => !tracked.includes(name))
+        : [];
+      return blocking.length > 0 ? Promise.reject(new Error(GIT_239_REFUSAL)) : rebase(onto);
+    };
+  }
+
+  it("with this machine's own git, whichever way it treats the copies, rebases and prepares them again", async () => {
     const { workDir, git } = skillsRootBecomesSymlink();
     materializeCopies(workDir);
+    const { runner, prepare } = runnerWithPrepare(workDir);
+
+    const outcome = await runFlow(flowDeps(git, runner), "main");
+
+    expect(outcome).toMatchObject({ status: "rebased" });
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY))).toBe(false);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("prepares the copies again when git deleted them itself, as git newer than 2.39 does", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    const rebase = git.rebase.bind(git);
+    git.rebase = (onto: string) => {
+      for (const name of [COPY, STAGING]) fs.rmSync(path.join(workDir, ".claude/skills", name), { recursive: true });
+      return rebase(onto);
+    };
+    const { runner, prepare } = runnerWithPrepare(workDir);
+
+    const outcome = await runFlow(flowDeps(git, runner), "main");
+
+    expect(outcome).toMatchObject({ status: "rebased" });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the copies git 2.39 refuses over, rebases, and prepares them again after the handback", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
     const { runner, prepare } = runnerWithPrepare(workDir);
 
     const outcome = await runFlow(flowDeps(git, runner), "main");
@@ -3669,6 +3706,7 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
   it("holds the session until the copies are back, so a queued turn never spawns without them", async () => {
     const { workDir, git } = skillsRootBecomesSymlink();
     materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
     const { runner, prepare } = runnerWithPrepare(workDir);
     let finishPrepare: () => void = () => {};
     prepare.mockImplementation(() => new Promise<void>((resolve) => { finishPrepare = resolve; }));
@@ -3688,6 +3726,7 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
   it("stops waiting for a worker that never answers", async () => {
     const { workDir, git } = skillsRootBecomesSymlink();
     materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
     const { runner, prepare } = runnerWithPrepare(workDir);
     let prepareCalled: () => void = () => {};
     const called = new Promise<void>((resolve) => { prepareCalled = resolve; });
@@ -3712,6 +3751,7 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
   it("the automatic path resolves the same refusal instead of deferring it", async () => {
     const { workDir, git } = skillsRootBecomesSymlink();
     materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
     const { runner, prepare } = runnerWithPrepare(workDir);
     const deps = { ...flowDeps(git, runner), recordSyncCard: undefined };
     wireSystemTurnDeps(deps);
@@ -3722,7 +3762,7 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
     expect(prepare).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves copies alone on a rebase git does not refuse", async () => {
+  it("leaves copies alone, and prepares nothing, on a rebase that keeps them", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     materializeCopies(workDir);
@@ -3745,6 +3785,7 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
     fs.writeFileSync(path.join(notes, "todo.md"), "mine\n");
     fs.appendFileSync(path.join(workDir, ".git/info/exclude"), "/.claude/skills/local-notes/\n");
     materializeCopies(workDir);
+    refuseLikeGit239(git, workDir, ["real", tracked]);
     const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
     const { runner, prepare } = runnerWithPrepare(workDir);
 
