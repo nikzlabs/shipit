@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import {
   initGlobalGitConfig,
   setGlobalCredentialHelper,
@@ -14,6 +15,7 @@ import {
   CONTAINER_CREDENTIAL_HELPER,
   FALLBACK_CONTAINER_GIT_IDENTITY,
   GLOBAL_CREDENTIAL_FILENAME,
+  GLOBAL_CREDENTIAL_HELPER_KEY,
 } from "./git-config.js";
 
 describe("git-config: initGlobalGitConfig", () => {
@@ -246,7 +248,7 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     const configPath = process.env.GIT_CONFIG_GLOBAL!;
     expect(fs.readFileSync(configPath, "utf-8")).not.toContain("ghp_some_token_value");
 
-    const helper = execSync("git config --global credential.helper", { encoding: "utf-8" }).trim();
+    const helper = execSync(`git config --global ${GLOBAL_CREDENTIAL_HELPER_KEY}`, { encoding: "utf-8" }).trim();
     expect(helper).not.toContain("ghp_some_token_value");
 
     const credPath = path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME);
@@ -315,13 +317,11 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   it("clearGlobalCredentialHelper removes the helper and is a no-op when nothing is set", () => {
     setGlobalCredentialHelper("t1");
     clearGlobalCredentialHelper();
-    let cleared = false;
-    try {
-      execSync("git config --global credential.helper", { stdio: "pipe" });
-    } catch {
-      cleared = true;
-    }
-    expect(cleared).toBe(true);
+    const helpers = execSync("git config --global --get-regexp '^credential\\.' || true", {
+      encoding: "utf-8",
+      shell: "/bin/sh",
+    });
+    expect(helpers).toBe("");
     expect(fs.existsSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME))).toBe(false);
     expect(() => { clearGlobalCredentialHelper(); }).not.toThrow();
   });
@@ -336,6 +336,78 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     const config = fs.readFileSync(process.env.GIT_CONFIG_GLOBAL!, "utf-8");
     expect(config).not.toContain("old-token");
     expect(config).not.toContain("new-token");
+  });
+
+  it("offers the token to github.com and to no other host", () => {
+    setGlobalCredentialHelper("the-test-token");
+    const fill = (host: string): string => execSync(
+      `printf 'protocol=https\\nhost=${host}\\n\\n' | git credential fill 2>&1 || true`,
+      { encoding: "utf-8", shell: "/bin/sh", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+    );
+
+    expect(fill("github.com")).toContain("password=the-test-token");
+    expect(fill("lfs.example.com")).not.toContain("the-test-token");
+    expect(fill("github.com.evil.example")).not.toContain("the-test-token");
+  });
+
+  it("removes the unscoped helper an older build installed", () => {
+    execSync(`git config --global credential.helper '!f() { echo password=legacy-token; }; f'`, { shell: "/bin/sh" });
+
+    setGlobalCredentialHelper("the-test-token");
+
+    const unscoped = execSync("git config --global --get-all credential.helper || true", {
+      encoding: "utf-8",
+      shell: "/bin/sh",
+    });
+    expect(unscoped).toBe("");
+  });
+
+  // The exploit, end to end: root git with the global helper, and an LFS host named by
+  // a committed `.lfsconfig` that answers 401. git-lfs asks the helper for that host.
+  it("never sends the token to an LFS server a repository names", async () => {
+    const seen: string[] = [];
+    let requests = 0;
+    const server = http.createServer((req, res) => {
+      requests++;
+      const auth = req.headers.authorization;
+      if (auth) seen.push(Buffer.from(auth.replace(/^Basic /, ""), "base64").toString());
+      // 403 once credentials arrive, so a leaking helper cannot loop git-lfs.
+      res.writeHead(auth ? 403 : 401, { "WWW-Authenticate": "Basic realm=\"lfs\"" });
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      setGitIdentity("Test", "test@test.com");
+      setGlobalCredentialHelper("ghp_the_github_token");
+      const work = path.join(tmpDir, "work");
+      const bare = path.join(tmpDir, "bare.git");
+      fs.mkdirSync(work);
+      execSync(`git init -q --bare -b main ${bare}`);
+      const run = (cmd: string): void => { execSync(cmd, { cwd: work, stdio: "pipe" }); };
+      run("git init -q -b main");
+      run(`git remote add origin ${bare}`);
+      fs.writeFileSync(path.join(work, ".lfsconfig"), `[lfs]\n\turl = http://127.0.0.1:${port}/lfs\n`);
+      fs.writeFileSync(path.join(work, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+      fs.writeFileSync(path.join(work, "a.bin"), "asset bytes");
+      run("git add -A && git commit -q -m init");
+
+      // Async: a synchronous spawn would block this process's own server from answering.
+      const status = await new Promise<number | null>((resolve) => {
+        const child = spawn("git", ["-c", "core.hooksPath=/dev/null", "lfs", "push", "origin", "main"], {
+          cwd: work,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+          stdio: "ignore",
+        });
+        child.on("close", resolve);
+      });
+
+      expect(status).not.toBe(0);
+      expect(requests).toBeGreaterThan(0);
+      expect(seen.join("\n")).not.toContain("ghp_the_github_token");
+    } finally {
+      server.close();
+    }
   });
 
   it("refuses an empty credential rather than writing an unusable one", () => {

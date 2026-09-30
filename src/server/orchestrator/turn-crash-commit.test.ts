@@ -141,6 +141,54 @@ describe("post-turn commit when the agent process dies", () => {
     runner.dispose({ force: true });
   });
 
+  // docs/193 — a worker from before the broker denied abandoned requests exits without saying so.
+  it("denies a permission card the exited process left pending, and still commits", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const filePath = path.join(repoDir, "file.txt");
+    const postTurnPrFlow = vi.fn(async () => {});
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "work before dying\n"));
+    const sseBroadcast = vi.fn();
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow,
+      listenerDeps: makeListenerDeps(sseBroadcast),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+    const resolved: unknown[] = [];
+    runner.on("message", (m) => { if (m.type === "permission_resolved") resolved.push(m); });
+    // As agent-execution.ts does before the turn; the exit only speaks for the process in the slot.
+    runner.setAgent(agent as never);
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "make an edit",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: async () => {},
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+    agent.emit("event", { type: "agent_permission_request", requestId: "perm_1", toolName: "Bash" });
+    expect(runner.awaitingPermissionIds.has("perm_1")).toBe(true);
+
+    agent.emit("done", 143);
+    await waitFor(() => postTurnPrFlow.mock.calls.length === 1, "post-turn flow ran");
+
+    expect(resolved).toEqual([{ type: "permission_resolved", sessionId: "s1", requestId: "perm_1", phase: "denied" }]);
+    expect(sseBroadcast).toHaveBeenCalledWith("session_attention", { sessionId: "s1", awaitingPermission: false });
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" })).toBe("");
+    runner.dispose({ force: true });
+  });
+
   it("declines a non-forced dispose while the crashed turn's post-turn flow runs", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const filePath = path.join(repoDir, "file.txt");

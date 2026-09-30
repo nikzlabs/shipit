@@ -15,7 +15,8 @@ import {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
 } from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
-import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress, updateRecordedCard } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
+import { denyAbandonedPermissionCards, settlePermissionCard } from "../permission-cards.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
 import {
@@ -390,45 +391,14 @@ export function wireAgentListeners(
     if (event.type === "agent_permission_resolved") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
-        const phase = event.behavior === "allow" ? "approved" : "denied";
-        // Patch recorded cards before rebuilding history, or the pending phase returns.
-        const requestId = event.requestId;
-        const remembered = event.remembered;
-        const patchedRecorded = updateRecordedCard(
+        settlePermissionCard(
           runner,
-          (m) => m.permissionPrompt?.requestId === requestId,
-          (m) => ({
-            ...m,
-            permissionPrompt: {
-              ...m.permissionPrompt!,
-              phase,
-              ...(remembered ? { remembered: true } : {}),
-            },
-          }),
+          turnSessionId,
+          deps,
+          event.requestId,
+          event.behavior === "allow" ? "approved" : "denied",
+          event.remembered,
         );
-        if (patchedRecorded) {
-          persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
-        } else {
-          deps.chatHistoryManager.updatePermissionCard(turnSessionId, event.requestId, {
-            phase,
-            ...(event.remembered ? { remembered: true } : {}),
-          });
-        }
-        runner.emitMessage({
-          type: "permission_resolved",
-          sessionId: turnSessionId,
-          requestId: event.requestId,
-          phase,
-          ...(event.remembered ? { remembered: true } : {}),
-        });
-
-        runner.awaitingPermissionIds.delete(event.requestId);
-        if (runner.awaitingPermissionIds.size === 0) {
-          deps.sseBroadcast("session_attention", {
-            sessionId: turnSessionId,
-            awaitingPermission: false,
-          });
-        }
       }
       return;
     }
@@ -933,6 +903,15 @@ export function wireAgentListeners(
     const turnSessionId = opts.capturedSessionId;
     // A steer the CLI never acked was reported to its sender as delivered; the drain runs it.
     if (runner) requeueUndeliveredSteers(runner, emitToViewers);
+    // Only while this process holds the slot, so a replacement's requests are left alone.
+    // A throw must not skip onError below, which commits (post-turn invariant 3).
+    if (runner && turnSessionId && runner.getAgent() === agent) {
+      try {
+        denyAbandonedPermissionCards(runner, turnSessionId, deps);
+      } catch (err) {
+        console.error(`[agent] denying abandoned permission cards for ${turnSessionId} failed:`, err);
+      }
+    }
     if (turnSessionId) {
       const partialMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],

@@ -338,3 +338,12 @@ the target repo. Unverified, and independent of everything above.
   equals HEAD — a change to the refresh path generally, not to the LFS work.
 - **The session-side egress allowlist entry** is unexercised — see "Still
   unexercised" above.
+- **Forks are not seeded.** `forkSession` clones the parent's workspace with
+  `clone --local`, which carries no `.git/lfs`, and never calls
+  `linkLfsObjectsIntoClone`, so a fork's `git lfs pull` downloads every object at
+  its HEAD from the LFS server. Linking from the parent's `.git/lfs/objects` (or
+  from the cache) would remove that transfer.
+- **Every clone links every cached object**, not only those its HEAD needs, so
+  `nlink > 1` holds for superseded objects while any workspace of the repository
+  exists, and the prune reclaims them only after the last such workspace goes.
+  Disk cost is one inode link per object per workspace; the bytes are shared.

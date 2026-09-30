@@ -310,6 +310,30 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
       expect(disposeCalls).toEqual([{ force: true }]);
     });
 
+    // docs/193 — the dead worker cannot deny its own requests.
+    it("denies a permission card the dead worker left pending, keeps it denied in the saved turn, and clears attention", () => {
+      const { runner, emitted, setRunning } = makeFakeRunner("sess-perm");
+      const registry = makeFakeRegistry(new Map([["sess-perm", runner]]));
+      const { manager, calls } = makeFakeChatHistoryManager();
+      const sseBroadcast = vi.fn();
+      setRunning(true);
+      Object.assign(runner, {
+        awaitingPermissionIds: new Set(["perm_1"]),
+        recordedCards: [{
+          afterGroupIndex: 0,
+          message: { role: "assistant", text: "", permissionPrompt: { requestId: "perm_1", phase: "pending", toolName: "Bash" } },
+        }],
+      });
+
+      handleContainerExited("sess-perm", 137, "OOMKilled", registry, undefined, manager, sseBroadcast);
+
+      expect(emitted).toContainEqual({ type: "permission_resolved", sessionId: "sess-perm", requestId: "perm_1", phase: "denied" });
+      expect(sseBroadcast).toHaveBeenCalledWith("session_attention", { sessionId: "sess-perm", awaitingPermission: false });
+      const saved = calls.replaceInProgress.at(-1)?.messages.find((m) => m.permissionPrompt?.requestId === "perm_1");
+      expect(saved?.permissionPrompt?.phase).toBe("denied");
+      expect(calls.finalizeInProgress).toEqual(["sess-perm"]);
+    });
+
     it("does nothing to chat history when no chatHistoryManager is passed (back-compat)", () => {
       const { runner, disposeCalls, setChatMessageGroups } = makeFakeRunner("sess-oom5");
       const registry = makeFakeRegistry(new Map([["sess-oom5", runner]]));

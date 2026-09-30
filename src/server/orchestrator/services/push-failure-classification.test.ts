@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { GitManager } from "../../shared/git.js";
+import { LfsUploadError } from "../../shared/git-lfs-push.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import {
   classifyPushFailure,
@@ -31,6 +32,19 @@ describe("classifyPushFailure", () => {
   it("does not call a GH008 LFS rejection a divergence", () => {
     expect(isNonFastForwardError(new Error(GH008))).toBe(false);
     expect(classifyPushFailure(new Error(GH008))).toBe("lfs");
+  });
+
+  it("tells ShipIt's own LFS upload refusal apart from whatever git-lfs output it carries", () => {
+    const err = new LfsUploadError(
+      "origin",
+      "feature",
+      "! [rejected] non-fast-forward; Authentication failed; HTTP 401; GH008",
+    );
+    expect(classifyPushFailure(err)).toBe("lfs-upload");
+    // Wrapping callers keep only the text, e.g. `Push failed: ${msg}`.
+    expect(classifyPushFailure(new Error(`Push failed: ${err.message}`))).toBe("lfs-upload");
+    expect(isNonFastForwardError(err)).toBe(false);
+    expect(isRewriteWindowPushFailure(err)).toBe(false);
   });
 
   it("does not classify git's bare summary line at all", () => {

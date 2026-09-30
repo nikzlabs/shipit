@@ -8,7 +8,7 @@ import type {
 } from "./agents/agent-process.js";
 import type { PermissionMode, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type { AgentGoalCommand, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
-import type { PermissionBroker } from "./permission-broker.js";
+import { toolResultIds, type PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
@@ -165,6 +165,7 @@ export class AgentController {
         return reply.code(404).send({ error: "No agent running" });
       }
       this.agent.kill();
+      this.deps.permissionBroker.clearPending();
       this.vacateSlot();
       return { killed: true };
     });
@@ -452,6 +453,7 @@ export class AgentController {
     this.cancelAllSpawns();
     if (this.agent) {
       this.agent.kill();
+      this.deps.permissionBroker.clearPending();
       this.vacateSlot();
     }
   }
@@ -484,20 +486,24 @@ export class AgentController {
     agent.on("event", (event: AgentEvent) => {
       const forWire = restoreFullResolutionScreenshots(event);
       this.deps.broadcast({ type: "agent_event", data: { ...forWire, runToken } });
+      if (event.type === "agent_tool_result") {
+        for (const id of toolResultIds(event.content)) this.deps.permissionBroker.endToolUse(id);
+      }
       if (this.agent !== agent) return;
       if (event.type === "agent_result") this.endTurn();
       else if (event.type === "agent_background_tasks") this.backgroundTaskCount = event.tasks.length;
       else if (event.type === "agent_self_wake") this.selfWakeActive = true;
     });
 
+    // The broker is shared: a killed process's late exit must not deny its replacement's requests.
     agent.on("done", (exitCode: number) => {
-      this.deps.permissionBroker.clearPending();
+      if (this.agent === agent) this.deps.permissionBroker.clearPending();
       this.deps.broadcast({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) this.vacateSlot();
     });
 
     agent.on("error", (err: Error) => {
-      this.deps.permissionBroker.clearPending();
+      if (this.agent === agent) this.deps.permissionBroker.clearPending();
       this.deps.broadcast({ type: "agent_error", data: { message: err.message, runToken } });
       if (this.agent === agent) this.vacateSlot();
     });

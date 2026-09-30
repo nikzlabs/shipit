@@ -113,3 +113,29 @@
       path, both failure classifications, the notice's content and every cause,
       the fork's resolution scoped to its own workspace, the no-remote negative,
       and the janitor's credential + fail-closed decline
+
+## A failed LFS upload stops the push, and the GitHub token stays on github.com
+
+- [x] `push`, `forcePushWithLease` and `createAndPushTag` throw `LfsUploadError`
+      instead of pushing the ref when the upload failed; only `not-an-lfs-repo`
+      and a successful upload (including nothing to upload) push
+- [x] A missing `git-lfs` binary is a failed upload, not a reason to push
+- [x] Run the upload on a simple-git instance that rejects every non-zero exit:
+      git-lfs reports missing objects on stdout, which simple-git resolved
+- [x] Override a committed `.lfsconfig`'s `lfs.allowincompletepush`
+- [x] Count a pointer whose LFS declaration a later unpushed commit removed
+- [x] Delete the local rc tag when its upload or push fails
+- [x] `lfs-upload` push-failure class, matched before every other class
+- [x] Auto-push: report the refusal before the GitHub-auth check, as an ops-safe
+      line plus git-lfs's text, and a chat notice once per failure episode
+- [x] Tests against real git-lfs: an unreachable `lfs.url` leaves the remote
+      without the branch; a branch with no new objects still pushes; an object
+      missing everywhere is refused, with and without `allowincompletepush`; a
+      missing binary is a failure; an rc tag is withheld when its upload fails
+- [x] Scope the orchestrator's global credential helper to `https://github.com`
+      and remove the unscoped key older builds wrote
+- [x] Test against a local LFS server answering 401: requests arrive, and none
+      carries the token
+- [x] Agent-facing `shipit-docs/environment.md` (push refusal, credential scope,
+      the shared LFS store's scope for cost estimates) and the troubleshooting
+      wiki page

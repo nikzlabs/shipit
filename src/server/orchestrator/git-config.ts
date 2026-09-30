@@ -38,6 +38,20 @@ function removeSafeDirectoryGrant(): void {
 export const GLOBAL_CREDENTIAL_FILENAME = ".git-credential-github";
 const MIN_PLAUSIBLE_GITHUB_TOKEN_LENGTH = 20;
 
+// Host-scoped: a repository's remote or committed `.lfsconfig` can name any host, and an
+// unscoped helper hands that host the GitHub token on its first 401 (docs/231-git-lfs-support §9).
+export const GLOBAL_CREDENTIAL_HELPER_KEY = "credential.https://github.com.helper";
+// Builds before that scoping installed the helper here; it must not survive an upgrade.
+const LEGACY_GLOBAL_CREDENTIAL_HELPER_KEY = "credential.helper";
+
+function unsetGlobalKey(key: string): void {
+  try {
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--unset-all", key]), { stdio: "ignore" });
+  } catch {
+    // Already unset.
+  }
+}
+
 function globalCredentialFilePath(): string {
   const configPath = process.env.GIT_CONFIG_GLOBAL;
   return path.join(configPath ? path.dirname(configPath) : "/credentials", GLOBAL_CREDENTIAL_FILENAME);
@@ -311,16 +325,14 @@ export function setGlobalCredentialHelper(token: string): void {
   // Missing is a fault; unreadable is expected for dropped-UID git, which uses a repo-scoped helper.
   const quoted = singleQuote(credentialPath);
   const helper = `!f() { [ -e ${quoted} ] || { echo "shipit: git credential file missing at ${credentialPath}" >&2; return 1; }; cat ${quoted} 2>/dev/null; }; f`;
-  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "credential.helper", helper]));
+  unsetGlobalKey(LEGACY_GLOBAL_CREDENTIAL_HELPER_KEY);
+  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--replace-all", GLOBAL_CREDENTIAL_HELPER_KEY, helper]));
   reshareGlobalGitConfig();
 }
 
 export function clearGlobalCredentialHelper(): void {
-  try {
-    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--unset", "credential.helper"]));
-  } catch {
-    // Already unset.
-  }
+  unsetGlobalKey(GLOBAL_CREDENTIAL_HELPER_KEY);
+  unsetGlobalKey(LEGACY_GLOBAL_CREDENTIAL_HELPER_KEY);
   try {
     fs.rmSync(globalCredentialFilePath(), { force: true });
   } catch (err) {
