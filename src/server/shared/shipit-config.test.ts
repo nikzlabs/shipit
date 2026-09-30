@@ -504,10 +504,18 @@ describe("resolveShipitConfig", () => {
     expect(config.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
   });
 
+  // shipit-docs/shipit-yaml.md "Config resolution" states this rule; change both together.
   it("does not auto-detect compose files", () => {
     const dir = setup();
     fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent:\n  memory: 2048\n");
     fs.writeFileSync(path.join(dir, "docker-compose.yml"), "services: {}\n");
+    const config = resolveShipitConfig(dir);
+    expect(config.compose).toBeUndefined();
+  });
+
+  it("does not auto-detect compose files when there is no shipit.yaml", () => {
+    const dir = setup();
+    fs.writeFileSync(path.join(dir, "compose.yml"), "services: {}\n");
     const config = resolveShipitConfig(dir);
     expect(config.compose).toBeUndefined();
   });

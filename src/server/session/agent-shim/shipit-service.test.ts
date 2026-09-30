@@ -237,13 +237,14 @@ describe("shipit service list", () => {
     });
   });
 
-  it("points at compose.md when the project has no stack", async () => {
+  it("names the shipit.yaml compose key when the project has no stack", async () => {
     const { run } = makeRunner();
     const res = await run(["service", "list"], {
       "GET /services/list": { status: 500, body: { error: "No compose stack configured for this session" } },
     });
     expect(res.exitCode).not.toBe(0);
-    expect(res.stderr).toContain("no docker-compose.yml");
+    expect(res.stderr).toContain("`compose: docker-compose.yml`");
+    expect(res.stderr).toContain("/shipit-docs/compose.md");
   });
 });
 

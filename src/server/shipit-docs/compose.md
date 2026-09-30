@@ -2,7 +2,10 @@
 
 ShipIt uses Docker Compose to run project services (dev servers, databases,
 caches, etc.). When a project needs a live preview, create a
-`docker-compose.yml` at the workspace root.
+`docker-compose.yml` at the workspace root **and name it in `shipit.yaml`**
+(`compose: docker-compose.yml`). ShipIt does not auto-detect a compose file: from
+one that `shipit.yaml` does not name, it starts no services and reads no
+`x-shipit-secrets`. See "Pairing with shipit.yaml" below.
 
 ## Quick start
 
@@ -704,7 +707,8 @@ image, or publish the image and name it in `image:`.
 
 ## Pairing with shipit.yaml
 
-The minimal `shipit.yaml` to reference a compose file:
+This key is required: without it ShipIt starts none of the file's services. The minimal
+`shipit.yaml` to reference a compose file:
 
 ```yaml
 compose: docker-compose.yml

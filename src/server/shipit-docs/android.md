@@ -125,7 +125,8 @@ a rare case — surface it to the user.
 
 For anything that needs a *live* Android OS — runtime logs, touch interaction,
 the interactive preview — declare an **emulator as a Compose service** in
-`docker-compose.yml`, the same primitive as any other preview. This needs
+`docker-compose.yml`, the same primitive as any other preview (name the file in
+`shipit.yaml`: `compose: docker-compose.yml`). This needs
 `/dev/kvm` on the **host** (hardware acceleration); without it the emulator is
 too slow — fall back to a cloud device farm (below).
 
