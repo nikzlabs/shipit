@@ -284,13 +284,14 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         await safeSimpleGit(workspaceDir).raw(branchArgs);
 
         await syncLocalDefaultBranchToOrigin(workspaceDir);
+        // Before the pull: a declared LFS host's secret is looked up by this record.
+        deps.sessionManager.setRemoteUrl(appSessionId, url);
         // Materialize after checkout, which writes LFS pointer stubs.
         await materializeLfsWithWarning(workspaceDir, url, (message) =>
           deps.sseBroadcast("error", { message }),
         );
         handWorkspaceBackToWorker(workspaceDir);
 
-        deps.sessionManager.setRemoteUrl(appSessionId, url);
         deps.sessionManager.setBranch(appSessionId, branchPrefix);
         deps.sessionManager.setWarm(appSessionId, true);
 

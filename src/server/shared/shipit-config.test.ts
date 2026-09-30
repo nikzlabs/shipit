@@ -774,3 +774,35 @@ issues:
     expect(config.warnings).toEqual([]);
   });
 });
+
+describe("lfs (docs/320-lfs-host-credential)", () => {
+  const lfs = (body: string) => parseShipitConfig(parseYaml(`lfs:\n${body}`));
+
+  it("keeps one exact host and a secret name", () => {
+    const config = lfs("  host: LFS.Example.com:8443\n  credential: LFS_CREDENTIAL\n");
+    expect(config.lfs).toEqual({ host: "lfs.example.com:8443", credential: "LFS_CREDENTIAL" });
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("drops https's default port, so it matches the secret's URL", () => {
+    expect(lfs("  host: lfs.example.com:443\n  credential: LFS_CREDENTIAL\n").lfs?.host).toBe("lfs.example.com");
+  });
+
+  it("is absent when not declared", () => {
+    expect(parseShipitConfig(parseYaml("version: 1\n")).lfs).toBeUndefined();
+  });
+
+  it.each([
+    ["a wildcard host", "  host: \"*.example.com\"\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["a scheme", "  host: https://lfs.example.com\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["a path", "  host: lfs.example.com/lfs\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["github.com", "  host: github.com\n  credential: LFS_CREDENTIAL\n", "already authenticates"],
+    ["github.com with a trailing dot", "  host: github.com.\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["a secret name outside the compose and plugin name rule", "  host: lfs.example.com\n  credential: lfs-cred\n", "letters, digits and underscores"],
+    ["a missing credential", "  host: lfs.example.com\n", "needs both"],
+  ])("ignores %s, with a warning", (_what, body, warning) => {
+    const config = lfs(body);
+    expect(config.lfs).toBeUndefined();
+    expect(config.warnings.join("\n")).toContain(warning);
+  });
+});

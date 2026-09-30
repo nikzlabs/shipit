@@ -150,6 +150,8 @@ function lfsDownloadsDisabled(): boolean {
 export interface LfsOpts {
   isAvailable?: () => Promise<boolean>;
   resolveCredential?: () => Promise<GitRemoteCredential | null>;
+  /** The repository a tree is being provisioned for, before ShipIt records it (docs/320). */
+  repoUrl?: string;
   // Overrides the pull only; detection and availability probes remain real.
   spawnGit?: typeof runGit;
 }
@@ -184,7 +186,10 @@ export async function materializeLfsContent(
   }
 
   const credential = opts?.resolveCredential === undefined
-    ? await resolveTreeRemoteCredential(workspaceDir, "origin", lfsRemoteCredentialResolver)
+    ? await resolveTreeRemoteCredential(
+      workspaceDir, "origin", lfsRemoteCredentialResolver, undefined,
+      { lfsHost: true, ...(opts?.repoUrl ? { repoUrl: opts.repoUrl } : {}) },
+    )
     : await opts.resolveCredential();
 
   const startedAt = Date.now();
@@ -199,9 +204,11 @@ export async function materializeLfsContent(
   }, (r) => r.code !== 0 && looksLikeAuthRejection(r.stderr || r.stdout));
   const durationMs = Date.now() - startedAt;
 
+  // Reported even when the pull succeeded: the host may allow anonymous reads but not uploads.
+  const refusal = credential?.lfsHostRefusal;
   if (res.code === 0) {
     console.log(`[git-lfs] Pulled LFS content for ${workspaceDir} in ${durationMs}ms`);
-    return { status: "materialized", usesLfs: true, durationMs };
+    return { status: "materialized", usesLfs: true, durationMs, ...(refusal ? { warning: refusal } : {}) };
   }
 
   const output = res.stderr || res.stdout;
@@ -217,7 +224,7 @@ export async function materializeLfsContent(
     durationMs,
     failure,
     warning:
-      `This repository uses Git LFS and \`git lfs pull\` ${reason}. ${failureAdvice(failure)}`,
+      `This repository uses Git LFS and \`git lfs pull\` ${reason}. ${failureAdvice(failure)}${refusal ? ` ${refusal}` : ""}`,
   };
 }
 

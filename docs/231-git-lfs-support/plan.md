@@ -492,7 +492,9 @@ asks it only for github.com. `setGlobalCredentialHelper` removes the unscoped
 key an older build wrote, and `checkCredentials` calls it at every boot, so an
 upgrade repairs existing installs on its first start. Nothing ShipIt does needs
 the GitHub token on another host: the broker (`getRepoScopedGitCredential`) and
-the resolver already answer for github.com only.
+the resolver already answer for github.com only. An LFS host that is not GitHub
+gets its own credential, declared in `shipit.yaml`
+(docs/320-lfs-host-credential).
 
 ## Configuration
 

@@ -276,7 +276,9 @@ Users can also add ad-hoc env vars in the secrets panel that aren't
 declared in any compose service. Those are kept in the per-repo secret
 store but are NOT injected anywhere — declaring them in
 `x-shipit-secrets` is what wires them up. This keeps services scoped to
-exactly what they asked for.
+exactly what they asked for. One custom secret has a use without being
+injected: the one `shipit.yaml`'s `lfs.credential` names, which ShipIt's own git
+presents to a declared Git LFS host (`/shipit-docs/shipit-yaml.md` § `lfs`).
 
 **So deleting a service is also a secrets change.** A declaration is the only
 thing that injects a value, and it lives on a service. Delete the last service

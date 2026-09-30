@@ -262,6 +262,12 @@ What follows from the design, and answers most of what users ask:
   store. So a "custom" variable may already be wired up by a plugin without
   appearing in any compose file — the Secrets tab marks which plugin asked for
   it. Check there before telling a user their value is going nowhere.
+- **One secret is used by ShipIt itself, never injected:** the one
+  `shipit.yaml`'s `lfs.credential` names, for a Git LFS server that is not GitHub.
+  The user saves it as a custom variable holding one line,
+  `https://<username>:<password>@<lfs host>`, and ShipIt presents it to that
+  host only. It shows as an ordinary custom variable, so check `shipit.yaml`
+  before calling it unused. Setup: `/shipit-docs/shipit-yaml.md` § `lfs`.
 - **Deleting a service is a secrets change.** The declaration lives on the
   service, so removing the last service that names a secret silently un-wires
   it — including from the agent container if it was `agent: true`. Re-declare it

@@ -195,11 +195,13 @@ export async function forkSession(
   await newGit.raw(branchArgs);
 
   // Local clone omits .git/lfs and orchestrator checkout disables smudge.
-  // Materialize only after the final checkout, using the fork's identity.
+  // Materialize only after the final checkout, using the fork's identity. The fork has
+  // no session row yet, so it names its repository for a declared LFS host's secret.
   const lfs = await materializeLfsWithWarning(
     newWorkspaceDir,
     activeSession?.remoteUrl ?? newWorkspaceDir,
     warn,
+    activeSession?.remoteUrl ? { repoUrl: activeSession.remoteUrl } : undefined,
   );
 
   const resolvedTitle = title?.trim() || `${activeSession?.title ?? "Session"} (${trimmed})`;

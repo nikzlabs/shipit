@@ -19,6 +19,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { CredentialStore } from "../credential-store.js";
 import { RepoStore } from "../repo-store.js";
+import { SecretStore } from "../secret-store.js";
 import { AgentMergeClaimStore } from "../agent-merge-claims.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
@@ -769,6 +770,42 @@ describe("repo-aware PR brokering (docs/211)", () => {
       });
       expect(allowed.statusCode).toBe(200);
       expect(allowed.json()).toMatchObject({ username: "x-access-token", password: "test-token" });
+    },
+  );
+
+  it(
+    "docs/320-lfs-host-credential — the broker answers the declared LFS host, and only it",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await createBareSession();
+      const repoUrl = "https://github.com/test-user/test-repo.git";
+      sessionManager.setRemoteUrl(sessionId, repoUrl);
+      fs.writeFileSync(
+        path.join(sessionDir, "shipit.yaml"),
+        "lfs:\n  host: lfs.example.com\n  credential: LFS_CREDENTIAL\n",
+      );
+      const secrets = new SecretStore(dbManager);
+      const ask = (payload: Record<string, string>) => app.inject({
+        method: "POST", url: `/api/sessions/${sessionId}/git/credential`, payload,
+      });
+
+      secrets.saveSecrets(repoUrl, { LFS_CREDENTIAL: "https://alice:s3cret@lfs.example.com" });
+      const answered = await ask({ host: "lfs.example.com", protocol: "https" });
+      expect(answered.statusCode).toBe(200);
+      expect(answered.json()).toEqual({ username: "alice", password: "s3cret" });
+      for (const other of [{ host: "other.example.com", protocol: "https" }, { host: "lfs.example.com", protocol: "http" }]) {
+        const res = await ask(other);
+        expect(res.statusCode).toBe(404);
+        expect(res.body).not.toContain("s3cret");
+      }
+      expect((await ask({ host: "github.com", protocol: "https" })).json()).toMatchObject({ password: "test-token" });
+
+      secrets.saveSecrets(repoUrl, { LFS_CREDENTIAL: "https://alice:s3cret@lfs.elsewhere.example" });
+      const refused = await ask({ host: "lfs.example.com", protocol: "https" });
+      expect(refused.statusCode).toBe(404);
+      expect(refused.body).not.toContain("s3cret");
+      expect(refused.json().warning).toContain("is for `lfs.elsewhere.example`");
     },
   );
 
