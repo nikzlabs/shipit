@@ -1,5 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -424,6 +425,30 @@ describe("pluginSkillExcludeEntries", () => {
     fs.symlinkSync(path.join(tmp, "elsewhere"), path.join(workspaceDir, ".claude", "skills"));
 
     expect(pluginSkillExcludeEntries(workspaceDir, [NAME])).toHaveLength(8);
+  });
+
+  it("escapes glob characters in a resolved path", () => {
+    execFileSync("git", ["init", "-q"], { cwd: workspaceDir });
+    const real = path.join(workspaceDir, "skills[x]*");
+    fs.mkdirSync(path.join(real, NAME), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, "skillsx-other", NAME), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, ".claude"), { recursive: true });
+    fs.symlinkSync(real, path.join(workspaceDir, ".claude", "skills"));
+    fs.writeFileSync(
+      path.join(workspaceDir, ".git", "info", "exclude"),
+      `${pluginSkillExcludeEntries(workspaceDir, [NAME]).join("\n")}\n`,
+    );
+    const ignored = (rel: string): boolean => {
+      try {
+        execFileSync("git", ["check-ignore", "-q", rel], { cwd: workspaceDir });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    expect(ignored(`skills[x]*/${NAME}/`)).toBe(true);
+    expect(ignored(`skillsx-other/${NAME}/`)).toBe(false);
   });
 
   it("uses a root-level pattern for a root that resolves to the workspace itself", () => {

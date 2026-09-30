@@ -1517,7 +1517,12 @@ instead of a repeat.
   git does not follow a symlink, so the lexical entries alone missed the copies
   and the auto-commit added them. The resolution uses the deepest existing
   ancestor, as `writeSkill` does, because the exclude is written before the
-  root is created. Two limits are inherent rather than fixed: an ignore rule does not apply to an already-tracked path
+  root is created, and its glob characters are escaped because the path is the
+  user's. A known limit, accepted as rare: the resolution is per pass, so
+  retargeting the symlink leaves the copies at the old target unswept and, once
+  the next pass rewrites the block, unexcluded; a retarget between the exclude
+  write and the copy has the same effect. Two limits are inherent rather than
+  fixed: an ignore rule does not apply to an already-tracked path
   (an unmarked directory there is refused as foreign, so the copy never
   happens), and `git add -f` / `git clean -x` / `git stash --all` override any
   ignore, as they do for `.gitignore`.

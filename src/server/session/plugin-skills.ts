@@ -28,7 +28,8 @@ export function pluginSkillExcludeEntries(workspaceDir: string, names: readonly 
     if (real !== null) rels.add(real);
   }
   return [...rels].flatMap((rel) => {
-    const prefix = rel ? `/${rel}/` : "/";
+    // A resolved path is the user's, so its glob characters must match only themselves.
+    const prefix = rel ? `/${rel.replace(/[\\*?[]/g, "\\$&")}/` : "/";
     return [
       // Staging can overlap auto-commit or survive a crash.
       `${prefix}${STAGING_GLOB}`,
