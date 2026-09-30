@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runGit, repoDeclaresLfs, isGitLfsAvailable, PROBE_TIMEOUT_MS } from "./git-lfs.js";
+import { repoDeclaresLfs, isGitLfsAvailable, PROBE_TIMEOUT_MS } from "./git-lfs.js";
+import { runGit } from "../shared/run-git.js";
 import {
   type GitRemoteCredentialResolver,
   gitCredentialSpawnOverrides,

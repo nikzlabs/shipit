@@ -15,7 +15,7 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock("./git-lfs-push.js", async (importOriginal) => ({
   ...await importOriginal<typeof LfsPushModule>(),
-  pushLfsObjects: vi.fn(async (_git: unknown, remote: string, branch: string) => {
+  pushLfsObjects: vi.fn(async (_dir: string, _credential: unknown, remote: string, branch: string) => {
     hooks.observations.push({ remote, branch, remoteHadBranch: hooks.probeRemote?.() ?? false });
     return hooks.outcome;
   }),

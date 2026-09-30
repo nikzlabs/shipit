@@ -7,7 +7,8 @@ import {
   resolveShipitConfig,
 } from "../shared/shipit-config.js";
 import type { LfsHostCredentialResolver, LfsHostResolution } from "../shared/git-remote-credential.js";
-import { PROBE_TIMEOUT_MS, runGit } from "./git-lfs.js";
+import { PROBE_TIMEOUT_MS } from "./git-lfs.js";
+import { runGit } from "../shared/run-git.js";
 import { resolveCacheFetchRef } from "./git-lfs-store.js";
 
 // The host lives inside the secret, so editing shipit.yaml can never redirect it (req 4).

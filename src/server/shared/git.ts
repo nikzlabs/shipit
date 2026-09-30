@@ -1,4 +1,4 @@
-import { type SimpleGit, type SimpleGitOptions, type LogResult } from "simple-git";
+import { type SimpleGit, type LogResult } from "simple-git";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -261,9 +261,8 @@ export class GitManager {
     return this.workspaceDir;
   }
 
-  private gitWith(credential: GitRemoteCredential | null, options?: Partial<SimpleGitOptions>): SimpleGit {
-    if (credential) return credentialledGit(this.workspaceDir, credential, options);
-    return options ? safeSimpleGit(this.workspaceDir, options) : this.git;
+  private gitWith(credential: GitRemoteCredential | null): SimpleGit {
+    return credential ? credentialledGit(this.workspaceDir, credential) : this.git;
   }
 
   private remoteCredential(remote: string, opts?: { lfsHost?: boolean }): Promise<GitRemoteCredential | null> {
@@ -652,7 +651,7 @@ export class GitManager {
     remote: string,
     ref: string,
   ): Promise<void> {
-    const outcome = await pushLfsObjects((options) => this.gitWith(credential, options), remote, ref);
+    const outcome = await pushLfsObjects(this.workspaceDir, credential, remote, ref);
     if (outcome.status === "pushed") {
       console.log(`[git] Uploaded Git LFS objects for ${remote}/${ref}`);
     } else if (outcome.status === "failed") {

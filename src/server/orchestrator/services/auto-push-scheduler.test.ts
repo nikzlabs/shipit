@@ -515,7 +515,7 @@ describe("auto-push scheduler — a push that cannot happen is never silent", ()
       const notices = appendedNotices(deps);
       expect(notices).toHaveLength(1);
       expect(notices[0]).toContain("did not push its commits to origin/shipit/feature");
-      expect(notices[0]).toContain("`git lfs push origin shipit/feature` said: batch response");
+      expect(notices[0]).toContain("`git lfs push origin shipit/feature` failed: batch response");
       expect(runner.emitMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "system_notice", level: "warn" }));
     });
 
