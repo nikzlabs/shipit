@@ -10,7 +10,6 @@ export interface RemediationState {
   lastError?: string;
   nextEligibleAt?: number;
   pendingReset?: boolean;
-  lastEmittedDeferred?: string;
   settleUntil?: number;
   postPushSettledHeadSha?: string;
   postPushSettledBaseSha?: string;
@@ -98,7 +97,6 @@ export abstract class AutoRemediationManager<TSignal> {
     state.attemptCount = 0;
     delete state.nextEligibleAt;
     delete state.lastError;
-    delete state.lastEmittedDeferred;
     delete state.settleUntil;
     delete state.postPushSettledHeadSha;
     delete state.postPushSettledBaseSha;

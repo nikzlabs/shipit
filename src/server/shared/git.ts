@@ -1054,6 +1054,13 @@ export class GitManager {
     return [...paths];
   }
 
+  /** Tracked files at or under each repo-relative path; the paths match literally, never as globs. */
+  async trackedFilesUnder(paths: readonly string[]): Promise<string[]> {
+    if (paths.length === 0) return [];
+    const out = await this.git.raw(["ls-files", "-z", "--", ...paths.map((p) => `:(literal)${p}`)]);
+    return out.split("\0").filter(Boolean);
+  }
+
   async isRebaseInProgress(): Promise<boolean> {
     return (await this.rebaseInProgressState()) ?? false;
   }

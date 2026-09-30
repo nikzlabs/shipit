@@ -146,6 +146,60 @@ describe("Integration: WebSocket disconnect resilience", () => {
     client2.close();
   });
 
+  describe("a replayed rebase start", () => {
+    interface RebaseRunner {
+      emitMessage: (msg: AnyMsg) => void;
+      systemTurnInProgress: boolean;
+    }
+    const runnerFor = (sessionId: string): RebaseRunner =>
+      (app as unknown as { runnerRegistry: { get(id: string): RebaseRunner } }).runnerRegistry.get(sessionId);
+
+    async function startWithoutTerminator(): Promise<{ sessionId: string; runner: RebaseRunner }> {
+      const client1 = await TestClient.connect(port);
+      await client1.receive();
+      const sessionId = client1.sessionId;
+      const runner = runnerFor(sessionId);
+      runner.emitMessage({ type: "auto_resolve_started", sessionId, baseBranch: "main", attempt: 2 });
+      runner.emitMessage({ type: "rebase_started", sessionId, baseBranch: "main" });
+      client1.close();
+      await settle();
+      return { sessionId, runner };
+    }
+
+    async function framesUntilQueueUpdated(client: TestClient): Promise<AnyMsg[]> {
+      const frames: AnyMsg[] = [];
+      for (let i = 0; i < 50; i++) {
+        const m: AnyMsg = await client.receive(3000);
+        frames.push(m);
+        if (m.type === "queue_updated") return frames;
+      }
+      return frames;
+    }
+
+    it("is closed for the reconnecting viewer when no flow holds the runner", async () => {
+      const { sessionId } = await startWithoutTerminator();
+
+      const client2 = await TestClient.connect(port, sessionId);
+      const types = (await framesUntilQueueUpdated(client2)).map((m) => m.type as string);
+
+      expect(types.indexOf("rebase_aborted")).toBeGreaterThan(types.indexOf("rebase_started"));
+      client2.close();
+    });
+
+    it("is left open while a rebase flow still holds the runner", async () => {
+      const { sessionId, runner } = await startWithoutTerminator();
+      runner.systemTurnInProgress = true;
+
+      const client2 = await TestClient.connect(port, sessionId);
+      const types = (await framesUntilQueueUpdated(client2)).map((m) => m.type as string);
+
+      expect(types).toContain("rebase_started");
+      expect(types).not.toContain("rebase_aborted");
+      runner.systemTurnInProgress = false;
+      client2.close();
+    });
+  });
+
   it("unpersisted streaming events emitted after WS close reach a reconnecting viewer", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive();

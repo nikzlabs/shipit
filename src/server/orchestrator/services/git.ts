@@ -444,6 +444,7 @@ const MAX_LISTED_PATHS = 3;
 const GIT_ERROR_LINE = /^(?:error|fatal):/;
 const GIT_NOISE_LINE = /^(?:warning|hint):|^Rebasing \(\d+\/\d+\)$/;
 const UNTRACKED_OVERWRITE_LINE = /^error: The following untracked working tree files would be overwritten by \w+:$/;
+const UNTRACKED_DIRECTORY_LINE = /^error: Updating the following directories would lose untracked files in them:$/;
 
 // Git ends a progress line with \r, so "Rebasing (1/8)\rerror: ..." is two lines.
 function gitOutputLines(message: string): string[] {
@@ -483,10 +484,9 @@ export function summarizeGitError(message: string): string {
   return kept.length > 0 ? kept.join(" ") : message.trim();
 }
 
-/** The paths git refused to overwrite, or null when the failure is anything else. */
-export function untrackedOverwritePaths(message: string): string[] | null {
+function pathsUnder(message: string, header: RegExp): string[] | null {
   const lines = gitOutputLines(message);
-  const at = lines.findIndex((line) => UNTRACKED_OVERWRITE_LINE.test(line));
+  const at = lines.findIndex((line) => header.test(line));
   if (at < 0) return null;
   const paths: string[] = [];
   for (const line of lines.slice(at + 1)) {
@@ -494,4 +494,19 @@ export function untrackedOverwritePaths(message: string): string[] | null {
     paths.push(line.trim());
   }
   return paths;
+}
+
+/** The paths git refused to overwrite, or null when the failure is anything else. */
+export function untrackedOverwritePaths(message: string): string[] | null {
+  return pathsUnder(message, UNTRACKED_OVERWRITE_LINE);
+}
+
+/** Directories git would not replace with a file or symlink because they hold untracked files. */
+export function untrackedDirectoryPaths(message: string): string[] | null {
+  return pathsUnder(message, UNTRACKED_DIRECTORY_LINE);
+}
+
+/** Git repeats this refusal identically on every retry, so waiting cannot clear it. */
+export function isUntrackedFilesRefusal(message: string): boolean {
+  return untrackedOverwritePaths(message) !== null || untrackedDirectoryPaths(message) !== null;
 }
