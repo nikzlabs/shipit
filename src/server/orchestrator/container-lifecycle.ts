@@ -73,6 +73,7 @@ import {
 } from "./egress-dns-install.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import {
+  agentEgressDecisionUrl,
   buildProxyAllowed,
   launchEgressProxy,
   EGRESS_PROXY_UID,
@@ -881,14 +882,12 @@ export async function createContainer(
         });
       }
       if (contained && deps.egressProxy) {
-        const orchPort = process.env.PORT || "3000";
-        const decisionUrl = `http://${orchestratorCallbackHost()}:${orchPort}/api/egress/decision`;
         await launchEgressProxy(deps.docker, {
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
           allowed: buildProxyAllowed({ extraHosts: egressCfg.extraHosts, ...(egressCfg.base ? { base: egressCfg.base } : {}) }),
           sessionId: config.sessionId,
-          decisionUrl,
+          decisionUrl: agentEgressDecisionUrl(),
           ...(egressCfg.identityRules ? { identityRules: egressCfg.identityRules } : {}),
           labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId, "shipit-egress-parent": container.id },
         });

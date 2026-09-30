@@ -79,7 +79,8 @@ case "${FORCE_REBUILD:-0}" in
 esac
 shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${DOCKER_IMG_BUILD_ARGS[@]}" session-worker-docker
 
-docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
+# Recreate even an unchanged orchestrator: it pins the other images only at start.
+docker compose -f "$COMPOSE_FILE" up -d --no-build --force-recreate shipit
 
 # docs/319 req 6: a forwarder installed before this host lost the egress sidecar
 # would keep a non-loopback entrance open, so stop it.

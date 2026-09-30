@@ -165,6 +165,25 @@ exec ${realGit} "$@"
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("runs the deploy script of the checkout it just synced (planning#626)", () => {
+    const deployDir = path.join(seedDir, "deployment/vps");
+    fs.mkdirSync(deployDir, { recursive: true });
+    const commitDeploy = (version: string): void => {
+      fs.writeFileSync(path.join(deployDir, "deploy.sh"), `#!/bin/bash\necho ${version} > "${deployMarker}"\n`);
+      run(`git add -A && git commit -m ${version} && git push origin main`, seedDir);
+    };
+    commitDeploy("old");
+    run("git pull -q origin main", shipitDir);
+    commitDeploy("new");
+    fs.writeFileSync(path.join(shipitDir, ".release-channel"), "edge");
+
+    const env: NodeJS.ProcessEnv = { ...process.env, SHIPIT_DIR: shipitDir };
+    delete env.SHIPIT_DEPLOY_SCRIPT;
+    execFileSync("bash", [UPDATE_SCRIPT], { env, stdio: "pipe" });
+
+    expect(fs.readFileSync(deployMarker, "utf8")).toBe("new\n");
+  });
+
   it("advances stable across a DIVERGED (force-pushed) branch where git pull would abort", () => {
     run("git checkout -b stable", seedDir);
     fs.writeFileSync(path.join(seedDir, "v.txt"), "1\n");

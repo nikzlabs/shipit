@@ -11,6 +11,9 @@ const LIB_SH = fileURLToPath(
 const COMPOSE_YML = fileURLToPath(
   new URL("../../../../docker/local/prod/compose.yml", import.meta.url),
 );
+const UPDATE_SH = fileURLToPath(
+  new URL("../../../../deployment/local/update.sh", import.meta.url),
+);
 
 describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () => {
   let root: string;
@@ -392,7 +395,7 @@ describe("deployment/local/lib.sh — loopback only without the local block (doc
     expect(calls[0]).toMatch(/^compose -f \S+ build --pull /);
     expect(calls[1]).toMatch(/^run .*probe-firewall\.sh/);
     expect(calls[2]).toBe(
-      `compose -f ${path.join(home, "docker/local/prod/compose.yml")} up -d --no-build shipit | bind=127.0.0.1`,
+      `compose -f ${path.join(home, "docker/local/prod/compose.yml")} up -d --no-build --force-recreate shipit | bind=127.0.0.1`,
     );
     expect(fs.existsSync(overlay)).toBe(false);
     expect(stderr).toContain("Starting ShipIt on loopback only");
@@ -405,7 +408,7 @@ describe("deployment/local/lib.sh — loopback only without the local block (doc
 
     const calls = fs.readFileSync(dockerLog, "utf8").trim().split("\n");
     expect(calls[2]).toBe(
-      `compose -f ${path.join(home, "docker/local/prod/compose.yml")} -f ${overlay} up -d --no-build shipit | bind=0.0.0.0`,
+      `compose -f ${path.join(home, "docker/local/prod/compose.yml")} -f ${overlay} up -d --no-build --force-recreate shipit | bind=0.0.0.0`,
     );
   });
 });
@@ -550,5 +553,72 @@ describe("docker/local/prod/compose.yml — default bind address (docs/254-local
       expect(line).toMatch(/\$\{SHIPIT_BIND_ADDR:-127\.0\.0\.1\}/);
     }
     expect(yml).not.toMatch(/^\s*- "\d+:\d+"\s*$/m);
+  });
+});
+
+describe("deployment/local/update.sh — one run completes an update (planning#626)", () => {
+  let root: string;
+  let bare: string;
+  let seed: string;
+  let home: string;
+  let mark: string;
+
+  const git = (args: string[], cwd: string): string =>
+    execFileSync("git", args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@e",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@e",
+      },
+    }).toString();
+
+  // Stands in for lib.sh: the real sync is covered above, and the build is what differs by version.
+  const fakeLib = (version: string): string => `
+shipit_sync_checkout() {
+  echo sync >> "$MARK"
+  git -C "$SHIPIT_HOME" fetch -q origin
+  git -C "$SHIPIT_HOME" reset -q --hard origin/main
+}
+shipit_build_and_up() { echo "build ${version}" >> "$MARK"; }
+`;
+
+  const commitScripts = (version: string): void => {
+    const dir = path.join(seed, "deployment/local");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(UPDATE_SH, path.join(dir, "update.sh"));
+    fs.writeFileSync(path.join(dir, "lib.sh"), fakeLib(version));
+    git(["add", "-A"], seed);
+    git(["commit", "-qm", version], seed);
+    git(["push", "-q", "origin", "main"], seed);
+  };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-update-"));
+    bare = path.join(root, "origin.git");
+    seed = path.join(root, "seed");
+    home = path.join(root, "home");
+    mark = path.join(root, "mark");
+    fs.mkdirSync(bare);
+    git(["init", "-q", "--bare", "-b", "main", "."], bare);
+    git(["clone", "-q", bare, seed], root);
+    commitScripts("old");
+    git(["clone", "-q", bare, home], root);
+    commitScripts("new");
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("builds with the scripts the sync brought in, and syncs once", () => {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, MARK: mark };
+    delete env.SHIPIT_HOME;
+    delete env.SHIPIT_UPDATE_SYNCED;
+    execFileSync("bash", [path.join(home, "deployment/local/update.sh")], { env, stdio: "pipe" });
+
+    expect(fs.readFileSync(mark, "utf8")).toBe("sync\nbuild new\n");
   });
 });

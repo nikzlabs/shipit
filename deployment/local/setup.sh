@@ -493,6 +493,9 @@ fi
 . "$SHIPIT_HOME/deployment/local/lib.sh"
 
 shipit_sync_checkout
+# The sync can replace lib.sh; the build below must use the synced copy.
+# shellcheck source=/dev/null
+. "$SHIPIT_HOME/deployment/local/lib.sh"
 
 # Linux hosts need more watches for concurrent sessions and previews.
 if [ "$OS" = "Linux" ]; then

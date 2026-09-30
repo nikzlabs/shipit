@@ -26,3 +26,5 @@
 - [x] Internal session networks give the host no address; IPv6 off on ShipIt's networks
 - [x] Deployment checks run on the test machine (firewall scripts, both policies, Compose set-up); test items removed
 - [ ] After deploy: the checks that need the new orchestrator (PR test plan)
+- [x] Kept contained agents find ShipIt by name after a recreate: one fallback list for worker and resolver, stale sidecars replaced at start (planning#626)
+- [x] From this version on, one `update.sh` run uses the synced scripts and restarts the orchestrator with every image it built (planning#626)

@@ -125,7 +125,7 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
     });
 
     it("writes the restart marker after the restart, never before", () => {
-      const restart = deploySrc.indexOf("up -d --no-build shipit");
+      const restart = deploySrc.search(/\bup -d --no-build\b.*\sshipit$/m);
       const marker = deploySrc.indexOf("SHIPIT_RESTART_MARKER");
       expect(restart).toBeGreaterThan(-1);
       expect(marker).toBeGreaterThan(restart);

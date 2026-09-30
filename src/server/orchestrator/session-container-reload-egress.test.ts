@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { reloadEgressSidecars, containComposeServices, allowEgressToSubnets, installEgressFirewall } =
+const { reloadEgressSidecars, staleEgressSidecars, containComposeServices, allowEgressToSubnets, installEgressFirewall } =
   vi.hoisted(() => ({
-    reloadEgressSidecars: vi.fn(async () => {}),
+    reloadEgressSidecars: vi.fn(async (_o: Record<string, unknown>) => {}),
+    staleEgressSidecars: vi.fn(async (_d: unknown, _o: Record<string, unknown>) => ({ resolver: false, proxy: false })),
     containComposeServices: vi.fn(async () => {}),
     allowEgressToSubnets: vi.fn(async (_d: unknown, o: { subnets: string[] }) => o.subnets),
     installEgressFirewall: vi.fn(async (_d: unknown, _o: { inputs: { cidrs: string[] } }) => {}),
   }));
-vi.mock("./egress-reload.js", () => ({ reloadEgressSidecars }));
+vi.mock("./egress-reload.js", () => ({ reloadEgressSidecars, staleEgressSidecars }));
 vi.mock("./egress-firewall-install.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, allowEgressToSubnets, installEgressFirewall };
@@ -25,11 +26,13 @@ import { SessionContainerManager } from "./session-container.js";
 import { _setLocalBlockForTest } from "./local-block.js";
 import { LegacyEgressNamespaceError } from "./egress-firewall-install.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
+import { OPS_DOCKER_HOST } from "./container-lifecycle.js";
+import { OPS_DOCKER_PROXY_DNS_NAME } from "./egress-dns-install.js";
 
 const SESSION_ID = "sess-reload-1";
 const NETWORK = "shipit-test";
 
-function createMockDocker() {
+function createMockDocker(agentEnv: string[] = []) {
   return {
     ping: vi.fn(async () => true),
     listContainers: vi.fn(async () => [
@@ -37,6 +40,7 @@ function createMockDocker() {
     ]),
     getContainer: vi.fn((id: string) => ({
       inspect: vi.fn(async () => ({
+        Config: { Env: id === "orchestrator" ? [] : agentEnv },
         NetworkSettings: { Networks: { [NETWORK]: { IPAddress: id === "orchestrator" ? "172.18.0.2" : "172.18.0.7" } } },
       })),
     })),
@@ -46,8 +50,11 @@ function createMockDocker() {
   };
 }
 
-async function buildManager(config: ResolvedEgressConfig | (() => ResolvedEgressConfig)) {
-  const docker = createMockDocker();
+async function buildManager(
+  config: ResolvedEgressConfig | (() => ResolvedEgressConfig),
+  opts: { agentEnv?: string[] } = {},
+) {
+  const docker = createMockDocker(opts.agentEnv);
   const manager = new SessionContainerManager({
     docker: docker as never,
     imageName: "shipit-session-worker:test",
@@ -379,5 +386,105 @@ describe("reconcileAdoptedFirewalls (docs/319)", () => {
     allowEgressToSubnets.mockRejectedValueOnce(new Error("sidecar busy"));
     await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
     expect(allowEgressToSubnets).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * planning#626 — a recreated ShipIt has a new hostname. A kept agent's resolver
+ * forwards only the names it was started with, and its proxy calls the decision
+ * URL it was started with, so both must be brought up to date at start.
+ */
+describe("reconcileAdoptedFirewalls — a kept contained agent's sidecars", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+    process.env.SESSION_EGRESS_ENFORCE = "1";
+    process.env.SESSION_EGRESS_SIDECAR_IMAGE = "shipit-egress-sidecar:test";
+    delete process.env.SESSION_EGRESS_DNS;
+    delete process.env.SESSION_EGRESS_PROXY;
+    delete process.env.SHIPIT_ORCHESTRATOR_HOST;
+    delete process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS;
+    process.env.PORT = "4123";
+    _setLocalBlockForTest(true);
+    reloadEgressSidecars.mockClear();
+    staleEgressSidecars.mockClear();
+    staleEgressSidecars.mockResolvedValue({ resolver: false, proxy: false });
+    allowEgressToSubnets.mockClear();
+  });
+  afterEach(() => {
+    process.env = savedEnv;
+    _setLocalBlockForTest(false);
+  });
+
+  it("asks about the names the worker falls back to and this process's decision URL", async () => {
+    const manager = await buildManager({ contained: true, extraHosts: [] });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(staleEgressSidecars).toHaveBeenCalledTimes(1);
+    const opts = staleEgressSidecars.mock.calls[0][1];
+    expect(opts).toMatchObject({ sessionId: SESSION_ID, agentContainerId: "agent-container-1" });
+    expect(opts.internalNames).toContain("shipit");
+    expect(opts.decisionUrl).toMatch(/^http:\/\/[^/]+:4123\/api\/egress\/decision$/);
+  });
+
+  it("replaces the stale sidecars with the session's current policy", async () => {
+    staleEgressSidecars.mockResolvedValue({ resolver: true, proxy: false });
+    const manager = await buildManager({
+      contained: true, extraHosts: ["fal.run"], base: ["example.com"], identityRules: "rules",
+    });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(reloadEgressSidecars).toHaveBeenCalledTimes(1);
+    expect(reloadEgressSidecars.mock.calls[0][0]).toMatchObject({
+      agentContainerId: "agent-container-1",
+      sessionId: SESSION_ID,
+      opsSession: false,
+      extraHosts: ["fal.run"],
+      base: ["example.com"],
+      identityRules: "rules",
+      reloadResolver: true,
+      reloadProxy: false,
+    });
+  });
+
+  it("replaces them with the policy as it is after the inspection, not before", async () => {
+    let hosts = ["revoked.example"];
+    staleEgressSidecars.mockImplementation(async () => {
+      hosts = [];
+      return { resolver: true, proxy: true };
+    });
+    const manager = await buildManager(() => ({ contained: true, extraHosts: [...hosts] }));
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(reloadEgressSidecars.mock.calls[0][0]).toMatchObject({ extraHosts: [] });
+  });
+
+  it("leaves current sidecars alone, as after a plain restart, and still updates ShipIt's address", async () => {
+    const manager = await buildManager({ contained: true, extraHosts: [] });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(reloadEgressSidecars).not.toHaveBeenCalled();
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the ops Docker proxy's name for an adopted ops session", async () => {
+    staleEgressSidecars.mockResolvedValue({ resolver: true, proxy: true });
+    const manager = await buildManager(
+      { contained: true, extraHosts: [] },
+      { agentEnv: [`DOCKER_HOST=${OPS_DOCKER_HOST}`] },
+    );
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(staleEgressSidecars.mock.calls[0][1].internalNames).toContain(OPS_DOCKER_PROXY_DNS_NAME);
+    expect(reloadEgressSidecars.mock.calls[0][0]).toMatchObject({ opsSession: true });
+  });
+
+  it("does not look for sidecars in an open session, which has none", async () => {
+    const manager = await buildManager({ contained: false, extraHosts: [] });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(staleEgressSidecars).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed replacement", async () => {
+    staleEgressSidecars.mockResolvedValue({ resolver: true, proxy: false });
+    reloadEgressSidecars.mockRejectedValueOnce(new Error("resolver busy"));
+    const manager = await buildManager({ contained: true, extraHosts: [] });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(reloadEgressSidecars).toHaveBeenCalledTimes(2);
   });
 });
