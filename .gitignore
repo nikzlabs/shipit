@@ -20,6 +20,11 @@ dist/
 
 .claude/scheduled_tasks.lock
 
+# ShipIt writes plugin skills through the .claude/skills symlink, so they land
+# here, where its .git/info/exclude entries (keyed on .claude/skills) miss them.
+/.agents/skills/plugins--*/
+/.agents/skills/.plugins--*.staging-*/
+
 sessions/
 .inner-shipit/
 

@@ -87,7 +87,7 @@ Entry point is `src/server/orchestrator/index.ts` (`buildApp()`). `src/server/or
 
 Three-layer system: browser (React SPA) → orchestrator (Fastify) → session workers (Docker containers).
 
-Architecture reference lives in `.claude/skills/`, disclosed progressively. **Both backends read them** — Claude and Codex auto-disclose the same set with descriptions (no `.codex/skills/` needed, and no catalog duplicated here), so detail demoted into a skill reaches both; see `docs/209-cross-agent-skill-disclosure`. **Always-on invariants belong in this file** (shared with Codex via the `AGENTS.md` symlink), not in a skill — and a skill can lag it, so where they disagree the invariant below wins and the skill needs fixing.
+Architecture reference lives in `.agents/skills/` (`.claude/skills` is a symlink to it), disclosed progressively. **Edit a skill at its `.agents/skills/` path**: Claude Code asks for approval on any path with a `.claude` segment, including one that resolves through that symlink. **Both backends read them** — Claude and Codex auto-disclose the same set with descriptions (no `.codex/skills/` needed, and no catalog duplicated here), so detail demoted into a skill reaches both; see `docs/209-cross-agent-skill-disclosure`. **Always-on invariants belong in this file** (shared with Codex via the `AGENTS.md` symlink), not in a skill — and a skill can lag it, so where they disagree the invariant below wins and the skill needs fixing.
 
 ## Key patterns
 
