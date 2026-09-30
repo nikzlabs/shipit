@@ -329,6 +329,13 @@ transcript. Your own tool list is the answer to which one applies — do not
 assume, and read the setting with `shipit settings get advanced.sessionStatusCard`
 if you need to say what it is set to.
 
+**Work for another repository.** When a change belongs in a different
+repository, `propose_repo_session` puts a card in the transcript naming the
+repository and showing your prompt. **Start in owner/repo** starts an
+independent session there with the prompt already sent; **Decline** closes the
+card. Either way, a `[ShipIt]` line at the start of your next turn says what the
+user did, so never ask them. Details: `/shipit-docs/sessions.md`.
+
 ## Quoting and re-using what is on screen
 
 Selecting text anywhere in the conversation raises a floating **Reply** button,
@@ -347,3 +354,4 @@ to say "this part, specifically".
 | Sets and clears a goal | Work toward it |
 | Chooses the permission mode | Say what the work needs, and why |
 | Ticks a proposed action | Offer them; then do the work |
+| Starts or declines a card for work in another repository | Propose it with `propose_repo_session`; read the outcome on your next turn |

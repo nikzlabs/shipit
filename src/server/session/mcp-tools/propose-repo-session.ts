@@ -19,6 +19,8 @@ const TOOL_DESCRIPTION = [
   "call if it cannot reach it, so you find out now rather than the user finding",
   "out on the click. The started session is INDEPENDENT — you cannot message it,",
   "wait on it, or hear when it merges, so put everything it needs in the prompt.",
+  "The user can also decline the card. Either way ShipIt tells you what they did",
+  "at the start of your next turn, so do not ask them.",
   "Do NOT use it for work in the repository you are already in (that is just your",
   "own work), and do not use it to fan out your current task.",
 ].join(" ");
@@ -107,8 +109,9 @@ export const proposeRepoSessionTool: ToolDescriptor = {
             type: "text",
             text:
               `Posted a card proposing a session on ${repo}.${newRepoNote} `
-              + "The user starts it with one click, and it runs independently of this session — "
-              + "you will not hear back from it. Do not repeat the proposal in prose.",
+              + "The user starts or declines it from the card, and ShipIt tells you which at the start "
+              + "of your next turn. A started session runs independently of this one — you will not "
+              + "hear back from it. Do not repeat the proposal in prose.",
           },
         ],
       };

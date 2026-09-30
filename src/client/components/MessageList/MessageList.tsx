@@ -103,6 +103,7 @@ export function MessageList({
   onSettingsProposalDecision,
   onUndoIssueWrite,
   onStartRepoSession,
+  onDeclineRepoSession,
   onDeliverSessionMessage,
   onOpenIssue,
   onResumeSession,
@@ -135,6 +136,7 @@ export function MessageList({
 
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
+  onDeclineRepoSession?: (cardId: string) => Promise<void>;
   onDeliverSessionMessage?: (cardId: string) => Promise<void>;
 
   onOpenIssue?: (ref: {
@@ -345,6 +347,7 @@ export function MessageList({
     onSettingsProposalDecision,
     onUndoIssueWrite,
     onStartRepoSession,
+    onDeclineRepoSession,
     onDeliverSessionMessage,
     onOpenIssue,
     onResumeSession,

@@ -309,11 +309,21 @@ export interface RepoSessionProposalCard {
   prompt: string;
   createdAt: string;
   /** Absent until the user clicks. */
-  state?: "starting" | "started" | "failed";
+  state?: "starting" | "started" | "failed" | "declined";
   startedSessionId?: string;
   startedAt?: string;
+  declinedAt?: string;
   errorMessage?: string;
+  /**
+   * The last state the proposing agent was told about (docs/303 req 11). A state,
+   * not a flag: a failed start the agent heard about must still be reported when
+   * a retry then starts the session.
+   */
+  agentNotifiedState?: RepoSessionProposalOutcomeState;
 }
+
+/** The card states the proposing agent is told about on its next turn. */
+export type RepoSessionProposalOutcomeState = "started" | "failed" | "declined";
 
 /**
  * docs/314 — a message the agent wants delivered to a session it cannot

@@ -260,6 +260,7 @@ export class ChatHistoryManager {
   private stmtLoadAll;
   private stmtLoadBugReportRows;
   private stmtLoadSettingsProposalRows;
+  private stmtLoadRepoSessionProposalRows;
   private stmtLoadById;
   private stmtLoadSubAgentCards;
   private stmtLoadByToolUseId;
@@ -287,6 +288,9 @@ export class ChatHistoryManager {
     );
     this.stmtLoadSettingsProposalRows = this.db.prepare(
       "SELECT id, settings_proposal FROM messages WHERE session_id = ? AND settings_proposal IS NOT NULL ORDER BY id",
+    );
+    this.stmtLoadRepoSessionProposalRows = this.db.prepare(
+      "SELECT id, repo_session_proposal FROM messages WHERE session_id = ? AND repo_session_proposal IS NOT NULL ORDER BY id",
     );
     this.stmtLoadById = this.db.prepare("SELECT * FROM messages WHERE id = ?");
     // Include in-progress rows: consults can finish before their owning turn.
@@ -784,6 +788,23 @@ export class ChatHistoryManager {
       if (card.cardId === cardId) return card;
     }
     return null;
+  }
+
+  /** Read on every turn's prompt assembly, so it loads only the rows that carry one. */
+  listRepoSessionProposalCards(sessionId: string): RepoSessionProposalCard[] {
+    const rows = this.stmtLoadRepoSessionProposalRows.all(sessionId) as {
+      id: number;
+      repo_session_proposal: string;
+    }[];
+    const out: RepoSessionProposalCard[] = [];
+    for (const row of rows) {
+      try {
+        out.push(JSON.parse(row.repo_session_proposal) as RepoSessionProposalCard);
+      } catch {
+        console.error(`[chat-history] skipping unparseable repo_session_proposal on message ${row.id}`);
+      }
+    }
+    return out;
   }
 
   updateRepoSessionProposalCard(

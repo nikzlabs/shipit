@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +20,7 @@ import {
 } from "./test-helpers.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
-import type { WsRepoSessionProposalCard } from "../../shared/types.js";
+import type { WsRepoSessionProposalCard, WsRepoSessionProposalUpdate } from "../../shared/types.js";
 import { MAX_PROMPT_LEN } from "../../shared/repo-session-proposal-validation.js";
 
 const TARGET_URL = "https://github.com/acme/api.git";
@@ -38,8 +38,10 @@ describe("Integration: propose-repo-session route", () => {
   let writeAccess: { canWrite: boolean; reachable: boolean; reason?: string };
   let accessChecks: { owner: string; repo: string }[];
   let client: TestClient;
+  let agents: FakeClaudeProcess[];
 
   beforeEach(async () => {
+    agents = [];
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "propose-repo-session-"));
     sessionManager = new SessionManager(dbManager);
@@ -60,7 +62,11 @@ describe("Integration: propose-repo-session route", () => {
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      agentFactory: () => new FakeClaudeProcess() as unknown as never,
+      agentFactory: () => {
+        const agent = new FakeClaudeProcess();
+        agents.push(agent);
+        return agent as unknown as never;
+      },
       credentialStore,
       databaseManager: dbManager,
       githubAuthManager,
@@ -106,6 +112,12 @@ describe("Integration: propose-repo-session route", () => {
     app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/start`,
+    });
+
+  const decline = (cardId: string) =>
+    app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/decline`,
     });
 
   it("emits a card naming the repository, and persists it", async () => {
@@ -253,6 +265,136 @@ describe("Integration: propose-repo-session route", () => {
       const res = await start(cardId);
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ startedSessionId: "ses_other" });
+    });
+
+    it("refuses to start a card the user declined", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      expect((await decline(cardId)).statusCode).toBe(200);
+
+      const res = await start(cardId);
+      expect(res.statusCode).toBe(409);
+      expect(chatHistory.findRepoSessionProposalCard(sessionId, cardId)?.state).toBe("declined");
+    });
+  });
+
+  // docs/303 req 10.
+  describe("declining the proposed session", () => {
+    it("records the decline on the card and tells the viewer", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+
+      const res = await decline(cardId);
+      expect(res.statusCode).toBe(200);
+      const { declinedAt } = res.json() as { declinedAt: string };
+      expect(declinedAt).toBeTruthy();
+
+      const update = (await client.receiveType("repo_session_proposal_update")) as WsRepoSessionProposalUpdate;
+      expect(update).toMatchObject({ cardId, state: "declined", declinedAt });
+      expect(chatHistory.findRepoSessionProposalCard(sessionId, cardId)).toMatchObject({
+        state: "declined",
+        declinedAt,
+      });
+    });
+
+    it("declines a card whose start failed, and clears the failure", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      chatHistory.updateRepoSessionProposalCard(sessionId, cardId, { state: "failed", errorMessage: "boom" });
+
+      expect((await decline(cardId)).statusCode).toBe(200);
+      const card = chatHistory.findRepoSessionProposalCard(sessionId, cardId);
+      expect(card?.state).toBe("declined");
+      expect(card?.errorMessage).toBeUndefined();
+    });
+
+    it("answers a second decline with the first one's time", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      const first = (await decline(cardId)).json() as { declinedAt: string };
+      const second = await decline(cardId);
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toMatchObject({ declinedAt: first.declinedAt });
+    });
+
+    it("refuses to decline a session that was already started", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      chatHistory.updateRepoSessionProposalCard(sessionId, cardId, {
+        state: "started",
+        startedSessionId: "ses_other",
+      });
+
+      const res = await decline(cardId);
+      expect(res.statusCode).toBe(409);
+      expect(chatHistory.findRepoSessionProposalCard(sessionId, cardId)?.state).toBe("started");
+    });
+
+    it("404s for a card that is not in this session's history", async () => {
+      expect((await decline("repo-session-nope")).statusCode).toBe(404);
+    });
+
+    it("tells the viewer nothing when the decline could not be stored", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      await client.drain({ quietMs: 100 });
+      const write = vi
+        .spyOn(ChatHistoryManager.prototype, "updateRepoSessionProposalCard")
+        .mockImplementation(() => { throw new Error("disk full"); });
+
+      try {
+        expect((await decline(cardId)).statusCode).toBe(500);
+        const seen = await client.drain({ quietMs: 200 });
+        expect(seen.some((m) => m.type === "repo_session_proposal_update")).toBe(false);
+      } finally {
+        write.mockRestore();
+      }
+      expect(chatHistory.findRepoSessionProposalCard(sessionId, cardId)?.state).toBeUndefined();
+    });
+  });
+
+  // docs/303 req 11, through the WebSocket send path (`agent-execution.ts`).
+  describe("telling the proposing agent", () => {
+    /** Send a user turn, let the agent answer it, and return the prompt it was given. */
+    async function answeredTurn(text: string): Promise<string> {
+      const before = agents.length;
+      client.send({ type: "send_message", text });
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const agent = agents[before];
+        if (agent?.runCalled) {
+          agent.emit("event", { type: "result", subtype: "success", session_id: "agent-sid" });
+          agent.emit("done", 0);
+          await new Promise((r) => setTimeout(r, 50));
+          return agent.lastPrompt;
+        }
+        if (Date.now() > deadline) throw new Error(`no agent ran for ${JSON.stringify(text)}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+
+    it("tells the next turn that the user declined, once", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      await decline(cardId);
+
+      const first = await answeredTurn("What next?");
+      expect(first).toContain("[ShipIt] Since your last turn, the user acted on a card you posted");
+      expect(first).toContain(`acme/api "${validProposal.title}" — DECLINED by the user`);
+      expect(first.endsWith("What next?")).toBe(true);
+
+      const second = await answeredTurn("And now?");
+      expect(second).not.toContain("[ShipIt] Since your last turn");
+    });
+
+    it("tells the next turn which session the user started", async () => {
+      const { cardId } = (await propose(validProposal)).json() as { cardId: string };
+      chatHistory.updateRepoSessionProposalCard(sessionId, cardId, {
+        state: "started",
+        startedSessionId: "ses_started",
+      });
+
+      const prompt = await answeredTurn("Carry on");
+      expect(prompt).toContain("STARTED by the user, as session ses_started");
+    });
+
+    it("says nothing about a card the user has not acted on", async () => {
+      await propose(validProposal);
+      const prompt = await answeredTurn("Carry on");
+      expect(prompt).not.toContain("[ShipIt] Since your last turn");
     });
   });
 });

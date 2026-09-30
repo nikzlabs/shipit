@@ -2,8 +2,8 @@
  * docs/303 — work the agent says belongs in a different repository.
  *
  * One click starts an ordinary, independent session on that repository with the
- * prompt already sent. The card is the only link to what it started, so it keeps
- * the new session's id and opens it.
+ * prompt already sent, or declines it. The card is the only link to what it
+ * started, so it keeps the new session's id and opens it.
  */
 
 import { useRef, useState } from "react";
@@ -12,6 +12,7 @@ import {
   GitForkIcon,
   PlusCircleIcon,
   WarningCircleIcon,
+  XCircleIcon,
 } from "@phosphor-icons/react";
 import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -23,16 +24,20 @@ export interface RepoSessionProposalCardProps {
   card: RepoSessionProposalCardData;
   /** Rejects if the start could not be requested; the card then shows why. */
   onStart?: (cardId: string) => Promise<void>;
+  /** Rejects if the decline could not be requested; the card then shows why. */
+  onDecline?: (cardId: string) => Promise<void>;
   onOpenSession?: (sessionId: string) => void;
 }
 
 export function RepoSessionProposalCard({
   card,
   onStart,
+  onDecline,
   onOpenSession,
 }: RepoSessionProposalCardProps) {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
+  const [declining, setDeclining] = useState(false);
   /**
    * A card that is ALREADY `starting` when this mount begins is a leftover: the
    * live `starting` always arrives as an update, so the only way to load one is
@@ -51,9 +56,11 @@ export function RepoSessionProposalCard({
   const liveStarting = card.state === "starting" && !staleStart.current;
   const starting = requesting || liveStarting;
   const started = card.state === "started";
+  const declined = card.state === "declined";
+  const busy = starting || declining;
 
   const handleStart = async () => {
-    if (starting || started) return;
+    if (busy || started || declined) return;
     setRequestError(null);
     setRequesting(true);
     try {
@@ -62,6 +69,19 @@ export function RepoSessionProposalCard({
       setRequestError(err instanceof Error ? err.message : String(err));
     } finally {
       setRequesting(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (busy || started || declined) return;
+    setRequestError(null);
+    setDeclining(true);
+    try {
+      await onDecline?.(card.cardId);
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeclining(false);
     }
   };
 
@@ -110,7 +130,7 @@ export function RepoSessionProposalCard({
         )}
       </div>
 
-      {card.readOnly && !started && (
+      {card.readOnly && !started && !declined && (
         <div className="flex items-start gap-1.5 text-(--color-warning)">
           <span className="shrink-0 mt-0.5">
             <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
@@ -122,7 +142,7 @@ export function RepoSessionProposalCard({
         </div>
       )}
 
-      {!card.registered && !started && (
+      {!card.registered && !started && !declined && (
         <div className="flex items-start gap-1.5 text-(--color-text-tertiary)">
           <span className="shrink-0 mt-0.5">
             <PlusCircleIcon size={ICON_SIZE.XS} />
@@ -157,15 +177,27 @@ export function RepoSessionProposalCard({
               {startedSession ? `Started on ${card.repo}` : `Started on ${card.repo} · not in the sidebar`}
             </span>
           </>
+        ) : declined ? (
+          <span
+            className="flex items-center gap-1.5 text-(--color-text-tertiary)"
+            data-testid="repo-session-proposal-status"
+          >
+            <XCircleIcon size={ICON_SIZE.SM} />
+            Declined — no session was started.
+          </span>
         ) : (
           <>
-            <Button variant="primary" size="md" onClick={handleStart} disabled={starting}>
+            <Button variant="primary" size="md" onClick={handleStart} disabled={busy}>
               {starting ? <Spinner size={ICON_SIZE.SM} /> : <GitForkIcon size={ICON_SIZE.SM} />}
               {starting
                 ? "Starting…"
                 : card.state === "failed"
                   ? "Try again"
                   : `Start in ${card.repo}`}
+            </Button>
+            <Button variant="ghost" size="md" onClick={handleDecline} disabled={busy}>
+              {declining && <Spinner size={ICON_SIZE.SM} />}
+              Decline
             </Button>
             <span className="text-(--color-text-tertiary)">
               Runs on its own, separate from this session.

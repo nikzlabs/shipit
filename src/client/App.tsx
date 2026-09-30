@@ -137,6 +137,7 @@ import type {
 
 import { useSessionStore } from "./stores/session-store.js";
 import { applySessionMessageProposalUpdate } from "./hooks/message-handlers/session-message-proposal.js";
+import { applyRepoSessionProposalUpdate } from "./hooks/message-handlers/repo-session-proposal.js";
 import { useGitStore } from "./stores/git-store.js";
 import { useFileStore, markUploadDeleted, noteUploadDismissed } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
@@ -1626,9 +1627,31 @@ export default function App() {
             }
             onStartRepoSession={async (cardId) => {
               if (!sessionId) return;
-              await apiPost(
+              const res = await apiPost<{ startedSessionId?: string; startedAt?: string }>(
                 `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/start`,
               );
+              // Same reason as the decline below: no runner, no WS update.
+              if (!res?.startedSessionId || useSessionStore.getState().sessionId !== sessionId) return;
+              applyRepoSessionProposalUpdate({
+                cardId,
+                state: "started",
+                startedSessionId: res.startedSessionId,
+                ...(res.startedAt ? { startedAt: res.startedAt } : {}),
+              });
+            }}
+            onDeclineRepoSession={async (cardId) => {
+              if (!sessionId) return;
+              const res = await apiPost<{ declinedAt?: string }>(
+                `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/decline`,
+              );
+              // With no runner on this session the route emits no WS update, so
+              // apply the response itself — scoped, in case the user switched.
+              if (useSessionStore.getState().sessionId !== sessionId) return;
+              applyRepoSessionProposalUpdate({
+                cardId,
+                state: "declined",
+                ...(res?.declinedAt ? { declinedAt: res.declinedAt } : {}),
+              });
             }}
             onDeliverSessionMessage={async (cardId) => {
               if (!sessionId) return;

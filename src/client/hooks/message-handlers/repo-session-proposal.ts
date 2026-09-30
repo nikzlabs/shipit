@@ -14,9 +14,9 @@ export const handleRepoSessionProposalCard: Handler<WsRepoSessionProposalCard> =
 };
 
 /**
- * Shared by the WS update and by the start request's own response: a session
- * whose runner has been reclaimed emits nothing, and the click must still be
- * visible without a reload.
+ * Shared by the WS update and by the start and decline requests' own responses:
+ * a session whose runner has been reclaimed emits nothing, and the click must
+ * still be visible without a reload.
  */
 export function applyRepoSessionProposalUpdate(
   data: Omit<WsRepoSessionProposalUpdate, "type" | "sessionId">,
@@ -25,8 +25,10 @@ export function applyRepoSessionProposalUpdate(
     const index = prev.findIndex((m) => m.repoSessionProposal?.cardId === data.cardId);
     if (index < 0) return prev;
     const card = prev[index].repoSessionProposal!;
-    // `started` is terminal: a late `starting` must never reopen it.
-    if (card.state === "started" && data.state !== "started") return prev;
+    // `started` and `declined` are terminal: a late `starting` must never reopen them.
+    if ((card.state === "started" || card.state === "declined") && data.state !== card.state) {
+      return prev;
+    }
     const next = prev.slice();
     next[index] = {
       ...next[index],
@@ -35,6 +37,7 @@ export function applyRepoSessionProposalUpdate(
         state: data.state,
         ...(data.startedSessionId ? { startedSessionId: data.startedSessionId } : {}),
         ...(data.startedAt ? { startedAt: data.startedAt } : {}),
+        ...(data.declinedAt ? { declinedAt: data.declinedAt } : {}),
         errorMessage: data.errorMessage,
       },
     };

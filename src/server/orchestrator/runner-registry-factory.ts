@@ -55,6 +55,7 @@ import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
 import { prepareSettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -458,6 +459,8 @@ export function createRunnerRegistry(
                 prepareSettingsOutcomeNotice({ proposals: settingsProposals, chatHistoryManager }, sessionId),
             }
           : {}),
+        repoSessionOutcomeNotice: (sessionId) =>
+          prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId),
         ...(credentialStore
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }
