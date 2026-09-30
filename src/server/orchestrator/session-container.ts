@@ -269,6 +269,10 @@ const ORIGIN_INDEX_IDLE_STOP_MS = 60_000;
 const SESSION_RANGE_REFRESH_MS = 30_000;
 const SESSION_RANGE_TIMEOUT_MS = 10_000;
 
+interface StaleSidecarDecision {
+  stale?: { resolver: boolean; proxy: boolean };
+}
+
 function toIpv4(value: string): number | null {
   const parts = value.split(".").map(Number);
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
@@ -512,7 +516,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         console.log(`[egress:${sc.sessionId}] reinstalled a firewall from before docs/319 (${policy})`);
       });
       if (contained && (egressDnsEnabled() || egressProxyEnabled())) {
-        await retry(`[${sc.sessionId}] egress sidecars`, () => this.refreshStaleEgressSidecars(sc, sidecarImage));
+        const decided: StaleSidecarDecision = {};
+        await retry(`[${sc.sessionId}] egress sidecars`, () => this.refreshStaleEgressSidecars(sc, sidecarImage, decided));
       }
     }
     if (!egressEnforceEnabled() && !localBlockActive()) return;
@@ -532,14 +537,21 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * A recreated ShipIt has a new hostname, and a kept agent's resolver and proxy
    * still name the old one, so its worker could not find ShipIt by name
    * (planning#626). Replace the ones that differ from what this process starts.
+   * `decided` outlives a retry: a failed replacement has already removed the old
+   * sidecar, and inspecting again would find nothing stale and leave DNS down.
    */
-  private async refreshStaleEgressSidecars(sc: SessionContainer, sidecarImage: string): Promise<void> {
-    const stale = await staleEgressSidecars(this.docker, {
+  private async refreshStaleEgressSidecars(
+    sc: SessionContainer,
+    sidecarImage: string,
+    decided: StaleSidecarDecision,
+  ): Promise<void> {
+    decided.stale ??= await staleEgressSidecars(this.docker, {
       sessionId: sc.sessionId,
       agentContainerId: sc.id,
       ...(egressDnsEnabled() ? { internalNames: sessionInternalNames({ opsSession: sc.opsSession }) } : {}),
       ...(egressProxyEnabled() ? { decisionUrl: agentEgressDecisionUrl() } : {}),
     });
+    const stale = decided.stale;
     if (!stale.resolver && !stale.proxy) return;
     // Read after the inspection, so an allowlist change made meanwhile is not undone.
     const cfg = this.resolveEgressConfig?.(sc.sessionId) ?? { contained: true, extraHosts: [] };
@@ -557,7 +569,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       reloadProxy: stale.proxy,
     });
     console.log(
-      `[egress:${sc.sessionId}] replaced sidecars that named ShipIt's previous host (resolver: ${stale.resolver}, proxy: ${stale.proxy})`,
+      `[egress:${sc.sessionId}] replaced stale egress sidecars (resolver: ${stale.resolver}, proxy: ${stale.proxy})`,
     );
   }
 

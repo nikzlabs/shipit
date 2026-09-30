@@ -559,8 +559,10 @@ running in a session away from ShipIt's host and the user's other machines.
 From this container, what stays reachable:
 
 - ShipIt itself at `$SHIPIT_HOST:$SHIPIT_PORT`, and this session's own services
-  on the session network, by name or by the `url` ShipIt lists for them
-  ([preview.md](preview.md)). Never through a port published on the host.
+  on the session network, by their Compose service name (`http://dev:3000/`;
+  a name with a dot, such as `dev.local`, does not resolve in a Contained
+  session) or by the `url` ShipIt lists for them ([preview.md](preview.md)).
+  Never through a port published on the host.
 - An SSH destination granted to this session, on its SSH port only
   ([ssh.md](ssh.md)).
 - The internet: any host in an **Open** session, the allowlist in a

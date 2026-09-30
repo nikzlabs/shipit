@@ -496,4 +496,14 @@ describe("reconcileAdoptedFirewalls — a kept contained agent's sidecars", () =
     await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
     expect(reloadEgressSidecars).toHaveBeenCalledTimes(2);
   });
+
+  // The failed attempt removed the old resolver; a fresh inspection finds nothing stale.
+  it("retries a failed replacement even though the old sidecar is already gone", async () => {
+    staleEgressSidecars.mockResolvedValueOnce({ resolver: true, proxy: false });
+    reloadEgressSidecars.mockRejectedValueOnce(new Error("create failed"));
+    const manager = await buildManager({ contained: true, extraHosts: [] });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(reloadEgressSidecars).toHaveBeenCalledTimes(2);
+    expect(reloadEgressSidecars.mock.calls[1]![0]).toMatchObject({ reloadResolver: true });
+  });
 });

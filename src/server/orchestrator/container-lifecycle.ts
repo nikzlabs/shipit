@@ -64,9 +64,8 @@ import { sessionContainerRefusal } from "./local-block.js";
 import { NO_HOST_ADDRESS_OPTION } from "./egress-firewall.js";
 import { SSH_AGENT_SOCKET_PATH } from "./ssh-provision.js";
 import {
-  buildResolverConfigB64,
+  buildAgentResolverConfigB64,
   launchEgressResolver,
-  sessionInternalNames,
   orchestratorCallbackHost,
   OPS_DOCKER_PROXY_DNS_NAME,
   EGRESS_RESOLVER_LABEL,
@@ -869,9 +868,9 @@ export async function createContainer(
         labels: egressLabels,
       });
       if (contained && deps.egressDns) {
-        const configB64 = buildResolverConfigB64({
-          internalDomains: sessionInternalNames({ opsSession: config.opsSession }),
-          extraDomains: egressCfg.extraHosts,
+        const configB64 = buildAgentResolverConfigB64({
+          opsSession: config.opsSession,
+          extraHosts: egressCfg.extraHosts,
           ...(egressCfg.base ? { base: egressCfg.base } : {}),
         });
         await launchEgressResolver(deps.docker, {
