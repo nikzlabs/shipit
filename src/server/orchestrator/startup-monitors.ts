@@ -239,6 +239,9 @@ export async function startStartupMonitors(
           // Resolve live mounts at sweep time, not from a boot snapshot.
           liveOverlayScopeHashes: overlayLiveScopeSource(sessionManager),
           livePluginStoreArtifacts: pluginLiveArtifactSource(sessionManager),
+          sessionsRoot: rt.sessionsRoot,
+          sessionIds: () => new Set(sessionManager.allIds()),
+          isSessionEvicted: (id) => sessionManager.get(id)?.diskTier === "evicted",
         });
       } catch (err) {
         console.error("[disk-janitor] steady-state reclaim pass failed:", err);

@@ -37,9 +37,9 @@ fi
 prune_build_artifacts() {
   # Never use image prune -a; session-worker images can be idle but required.
   docker image prune -f || true
-  # Use version-compatible flags to cap all BuildKit cache at 15 GB.
-  docker builder prune -af --max-used-space 15GB \
-    || docker builder prune -af --keep-storage 15GB \
+  # Use version-compatible flags to cap all BuildKit cache at 4 GB.
+  docker builder prune -af --max-used-space 4GB \
+    || docker builder prune -af --keep-storage 4GB \
     || docker builder prune -af \
     || true
 }

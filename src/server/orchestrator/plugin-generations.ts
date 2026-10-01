@@ -284,6 +284,8 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       ? uncoveredInstalls(stateDir, repo.name, previous, deps.selectedExports)
       : [];
     if (uncovered.length === 0) {
+      // Retry what the lease declined at the last swap; otherwise it waits for the next new commit.
+      await pruneOldGenerations(stateDir, repo.name, generationIdOf(previous), deps.beginGenerationDeletion);
       return { status: "unchanged", generation: previous, ...warningField };
     }
     console.log(
