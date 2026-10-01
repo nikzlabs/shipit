@@ -154,6 +154,8 @@ interface SessionState {
   memoryExhausted: { countInWindow: number; windowMs: number; threshold: number; at: number } | null;
 
   containerFreshness: ContainerFreshness | null;
+  /** The user asked for a restart of the agent container when the turn ends. */
+  restartScheduled: boolean;
   /**
    * docs/213 / planning#317 — non-null while the active session's auto-commit is
    * refused because a likely credential sits in the working tree. Drives the
@@ -184,6 +186,7 @@ interface SessionState {
   setPauseNotice: (notice: SessionState["pauseNotice"]) => void;
   setMemoryExhausted: (notice: SessionState["memoryExhausted"]) => void;
   setContainerFreshness: (freshness: ContainerFreshness | null) => void;
+  setRestartScheduled: (restartScheduled: boolean) => void;
   setSecretBlock: (block: SessionSecretBlock | null) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
@@ -287,6 +290,7 @@ const initialResettableState = {
   pauseNotice: null as SessionState["pauseNotice"],
   memoryExhausted: null as SessionState["memoryExhausted"],
   containerFreshness: null as ContainerFreshness | null,
+  restartScheduled: false,
   secretBlock: null as SessionSecretBlock | null,
 };
 
@@ -353,6 +357,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setMemoryExhausted: (memoryExhausted) => set({ memoryExhausted }),
 
   setContainerFreshness: (containerFreshness) => set({ containerFreshness }),
+  setRestartScheduled: (restartScheduled) => set({ restartScheduled }),
   setSecretBlock: (secretBlock) => set({ secretBlock }),
 
   setSessions: (sessions) =>

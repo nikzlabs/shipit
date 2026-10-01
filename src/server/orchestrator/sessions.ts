@@ -489,6 +489,30 @@ export class SessionManager {
     return row?.pending_restart_note ?? undefined;
   }
 
+  // docs/242-stale-session-container-indicator req 9 — the user's "Restart after turn", stored
+  // as the id of the container it is for: any replacement of that container satisfies it.
+  setPendingUserRestart(id: string, containerId: string): void {
+    this.db.prepare("UPDATE sessions SET pending_user_restart = ? WHERE id = ?").run(containerId, id);
+  }
+
+  getPendingUserRestart(id: string): string | undefined {
+    const row = this.db.prepare(
+      "SELECT pending_user_restart FROM sessions WHERE id = ?",
+    ).get(id) as { pending_user_restart: string | null } | undefined;
+    return row?.pending_user_restart ?? undefined;
+  }
+
+  clearPendingUserRestart(id: string): void {
+    this.db.prepare("UPDATE sessions SET pending_user_restart = NULL WHERE id = ?").run(id);
+  }
+
+  /** One write for both requests: a failure must not clear the note and keep the other. */
+  clearPendingRestart(id: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET pending_restart_note = NULL, pending_user_restart = NULL WHERE id = ?",
+    ).run(id);
+  }
+
   // Read-and-clear prevents repeats; a crash before delivery can lose the notice.
   consumePendingAgentNotice(id: string): string | undefined {
     let notice: string | undefined;

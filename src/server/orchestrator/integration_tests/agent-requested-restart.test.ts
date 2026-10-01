@@ -18,6 +18,8 @@ import type { WsServerMessage } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import {
   recordRestartRequest,
+  deferRestartToTurnEnd,
+  userRestartPending,
   runRequestedRestart,
   buildRestartFollowupPrompt,
 } from "../services/agent-restart-request.js";
@@ -34,6 +36,7 @@ vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 import {
+  flushTurn,
   makeDispatchTurnDeps,
   testDispatch,
   waitForTurn,
@@ -46,7 +49,8 @@ const NOTE = "check that node -v prints the new version";
 function stubContainerManager(): SessionContainerManager & { destroyed: number; onDestroy?: () => void } {
   const cm: { destroyed: number; onDestroy?: () => void } & Record<string, unknown> = {
     destroyed: 0,
-    get: () => ({ status: "running" }),
+    // A replacement container has a new id, as a real one does.
+    get: () => ({ status: "running", id: `container-${cm.destroyed}` }),
     destroyAgentContainer: async () => { cm.destroyed += 1; cm.onDestroy?.(); },
     getLastCreateError: () => null,
     clearCreateError: () => {},
@@ -69,13 +73,10 @@ describe("agent-requested restart over real runners (docs/321)", () => {
     const registry: SessionRunnerRegistry = new SessionRunnerRegistry({
       onRunnerCreated: (runner) => runner.setSystemTurnDeps(turnDeps),
     });
+    const restartDeps = { sessionManager, runnerRegistry: registry, defaultAgentId: "claude" as const, containerManager };
     const turnDeps: SystemTurnDeps = {
       ...deps,
-      runRequestedRestart: (turn) =>
-        runRequestedRestart(
-          { sessionManager, runnerRegistry: registry, defaultAgentId: "claude", containerManager },
-          turn,
-        ),
+      runRequestedRestart: (turn) => runRequestedRestart(restartDeps, turn),
     };
     const prompts = () =>
       (deps.buildRunParams as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[2]));
@@ -204,6 +205,74 @@ describe("agent-requested restart over real runners (docs/321)", () => {
     await waitForTurn(() => !second.running, "follow-up settled");
     second.dispose({ force: true });
   });
+
+  // docs/242-stale-session-container-indicator req 9 — the user's "Restart after turn".
+  it("the user's scheduled restart runs after the turn, starts no follow-up turn, and keeps a message", async () => {
+    const { sessionManager, containerManager, agents, registry, prompts } = setup();
+    const first = registry.getOrCreate(SESSION, "/tmp/s1", "claude");
+    first.dispatch(testDispatch({ text: "a long task" }));
+    await waitForTurn(() => agents.length === 1, "first turn");
+    await waitForTurn(() => agents[0]!.run.mock.calls.length === 1, "first turn running");
+
+    expect(deferRestartToTurnEnd({ sessionManager, containerManager, runnerRegistry: registry }, SESSION)).toBe(true);
+    expect(first.disposed).toBe(false);
+    expect(containerManager.destroyed).toBe(0);
+
+    first.on("message", (msg: WsServerMessage) => {
+      if (msg.type === "container_restarting" && msg.phase === "restarting_agent") {
+        first.dispatch(testDispatch({ text: "sent while restarting" }));
+      }
+    });
+    endTurn(agents[0]!);
+    await waitForTurn(() => agents.length === 2, "the kept message's turn");
+
+    const second = registry.get(SESSION)!;
+    expect(first.disposed).toBe(true);
+    expect(second).not.toBe(first);
+    expect(containerManager.destroyed).toBe(1);
+    expect(userRestartPending({ sessionManager, containerManager }, SESSION)).toBe(false);
+    await waitForTurn(() => prompts().length === 2, "kept message prompt");
+    // The only turn on the new runner is the user's own message: there is no follow-up turn.
+    expect(prompts()[1]).toContain("sent while restarting");
+
+    endTurn(agents[1]!);
+    await waitForTurn(() => !second.running, "kept message settled");
+    expect(registry.get(SESSION)).toBe(second);
+    expect(containerManager.destroyed).toBe(1);
+    second.dispose({ force: true });
+  });
+
+  it("a scheduled restart waits for a consult that outlives the turn, then runs at the next turn's end", async () => {
+    const { sessionManager, containerManager, agents, registry } = setup();
+    const first = registry.getOrCreate(SESSION, "/tmp/s1", "claude");
+    first.dispatch(testDispatch({ text: "start a review" }));
+    await waitForTurn(() => agents.length === 1, "first turn");
+    await waitForTurn(() => agents[0]!.run.mock.calls.length === 1, "first turn running");
+    expect(deferRestartToTurnEnd({ sessionManager, containerManager, runnerRegistry: registry }, SESSION)).toBe(true);
+
+    const consult = first.spawnSubAgent({ agentId: "claude", prompt: "review", spawnId: "c1", depth: 0, model: "m" });
+    await waitForTurn(() => agents.length === 2, "the consult");
+    endTurn(agents[0]!);
+    await waitForTurn(() => !first.running && !first.postTurnWorkInFlight, "first turn settled");
+    expect(containerManager.destroyed).toBe(0);
+    expect(userRestartPending({ sessionManager, containerManager }, SESSION)).toBe(true);
+
+    // The end of the work is not a trigger: the CLI reports it just before the turn it wakes.
+    agents[1]!.emit("done", 0);
+    await consult;
+    await flushTurn();
+    expect(containerManager.destroyed).toBe(0);
+    expect(registry.get(SESSION)).toBe(first);
+
+    first.dispatch(testDispatch({ text: "use the review" }));
+    await waitForTurn(() => agents.length === 3, "the next turn");
+    await waitForTurn(() => agents[2]!.run.mock.calls.length === 1, "the next turn running");
+    endTurn(agents[2]!);
+    await waitForTurn(() => containerManager.destroyed === 1, "the restart");
+    await waitForTurn(() => registry.get(SESSION) !== undefined && registry.get(SESSION) !== first, "the replacement");
+    expect(first.disposed).toBe(true);
+    registry.get(SESSION)?.dispose({ force: true });
+  });
 });
 
 function createFakeDocker() {
@@ -223,6 +292,7 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
   let app: FastifyInstance | null = null;
   let db: DatabaseManager;
   let sessionManager: SessionManager;
+  let containerManager: SessionContainerManager | null = null;
 
   afterEach(async () => {
     await app?.close();
@@ -235,6 +305,16 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
     db = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-restart-route-"));
     sessionManager = new SessionManager(db);
+    containerManager = withContainers
+      ? new SessionContainerManager({
+          docker: createFakeDocker() as never,
+          imageName: "shipit-session-worker:test",
+          networkName: "shipit-test",
+          workerPort: await allocateDeadLoopbackPort(),
+          skipHealthCheck: true,
+          stackName: "shipit-test",
+        })
+      : null;
     app = await buildApp({
       workspaceDir: tmpDir,
       credentialStore: createTestCredentialStore(tmpDir),
@@ -243,18 +323,11 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => new FakeClaudeProcess() as never,
       serveStatic: false,
-      ...(withContainers
+      ...(containerManager
         ? {
             // Runners stay local: the route only records the request.
             runnerFactory: (o) => new SessionRunner(o),
-            sessionContainerManager: new SessionContainerManager({
-              docker: createFakeDocker() as never,
-              imageName: "shipit-session-worker:test",
-              networkName: "shipit-test",
-              workerPort: await allocateDeadLoopbackPort(),
-              skipHealthCheck: true,
-              stackName: "shipit-test",
-            }),
+            sessionContainerManager: containerManager,
           }
         : {}),
     });
@@ -284,5 +357,42 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
     const res = await post(id, { note: "x" });
     expect(res.statusCode).toBe(503);
     expect(sessionManager.getPendingRestartNote(id)).toBeUndefined();
+  });
+
+  it("the restart route records the user's request while a turn runs (docs/242 req 9)", async () => {
+    const id = await build(true);
+    vi.spyOn(containerManager!, "get").mockReturnValue({ id: "container-1", status: "running" } as never);
+    const runner = app!.runnerRegistry.getOrCreate(id, tmpDir, "claude");
+    const restart = () => app!.inject({
+      method: "POST",
+      url: `/api/sessions/${id}/agent/container/restart`,
+      payload: { afterTurn: true },
+    });
+
+    runner.running = true;
+    expect((await restart()).json()).toEqual({ ok: true, scheduled: true });
+    expect(sessionManager.getPendingUserRestart(id)).toBe("container-1");
+
+    // Post-turn work: `running` is already false, and a restart now would dispose the runner.
+    runner.running = false;
+    runner.beginPostTurnWork();
+    expect((await restart()).json()).toEqual({ ok: true, scheduled: true });
+    runner.endPostTurnWork();
+
+    expect(app!.runnerRegistry.get(id)).toBe(runner);
+    expect(runner.disposed).toBe(false);
+  });
+
+  it("DELETE on the restart route cancels the user's request only (docs/242 req 10)", async () => {
+    const id = await build(true);
+    sessionManager.setPendingUserRestart(id, "container-1");
+    sessionManager.setPendingRestartNote(id, "check node -v");
+    const cancel = (sid: string) =>
+      app!.inject({ method: "DELETE", url: `/api/sessions/${sid}/agent/container/restart` });
+
+    expect((await cancel(id)).json()).toEqual({ ok: true });
+    expect(sessionManager.getPendingUserRestart(id)).toBeUndefined();
+    expect(sessionManager.getPendingRestartNote(id)).toBe("check node -v");
+    expect((await cancel("no-such-session")).statusCode).toBe(404);
   });
 });

@@ -18,3 +18,10 @@
 - [x] Update docs/113 status/key-file notes when implementation lands
 - [x] Run affected tests, `npm run lint:dev`, and `npm run typecheck`
 - [x] Verify the warning in the live preview across themes and mobile/desktop layouts
+
+- [x] Enable the banner button during a turn and schedule the restart for the turn's end — req 9
+- [x] Run the scheduled restart from the docs/321 post-turn step, without a follow-up turn
+- [x] Hold the scheduled restart while the agent's background work runs
+- [x] Report the scheduled state on attach (`restartScheduled`)
+- [x] Update the wiki `troubleshooting.md` text about the button
+- [x] Cancel a scheduled restart from the banner — req 10

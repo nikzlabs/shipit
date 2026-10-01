@@ -21,17 +21,25 @@ vi.mock("../wake-session.js", () => ({
     wakeSessionWithTurn(deps, session, opts),
 }));
 
-const { recordRestartRequest, runRequestedRestart, buildRestartFollowupPrompt } =
-  await import("./agent-restart-request.js");
+const {
+  recordRestartRequest, deferRestartToTurnEnd, userRestartPending, cancelUserRestart,
+  runRequestedRestart, buildRestartFollowupPrompt,
+} = await import("./agent-restart-request.js");
 
 const SESSION = "restart-session";
+const CONTAINER = "container-1";
+const CONTAINERS = { get: () => ({ id: CONTAINER }) } as unknown as SessionContainerManager;
 
 function makeSessionManager(note?: string) {
-  const state = { note, notices: [] as string[] };
+  const state = { note, userRestart: undefined as string | undefined, notices: [] as string[] };
   const manager = {
     get: (id: string) => (id === SESSION ? { id, workspaceDir: "/tmp/ws" } : undefined),
     getPendingRestartNote: () => state.note,
     setPendingRestartNote: (_id: string, value: string | null) => { state.note = value ?? undefined; },
+    getPendingUserRestart: () => state.userRestart,
+    setPendingUserRestart: (_id: string, containerId: string) => { state.userRestart = containerId; },
+    clearPendingRestart: () => { state.note = undefined; state.userRestart = undefined; },
+    clearPendingUserRestart: () => { state.userRestart = undefined; },
     appendPendingAgentNotice: (_id: string, notice: string) => { state.notices.push(notice); },
   } as unknown as SessionManager;
   return { manager, state };
@@ -45,7 +53,7 @@ function setup(note: string | null = "check node -v") {
     sessionManager: manager,
     runnerRegistry,
     defaultAgentId: "claude",
-    containerManager: {} as SessionContainerManager,
+    containerManager: CONTAINERS,
   };
   const turn = {
     sessionId: SESSION,
@@ -173,9 +181,9 @@ describe("runRequestedRestart — the restart", () => {
     expect(settledBeforeRestart).toBe(true);
   });
 
-  it("a failed write of the note takes no hold, so nothing stays queued for ever", async () => {
+  it("a failed clear of the request takes no hold, so nothing stays queued for ever", async () => {
     const { deps, runner, turn } = setup();
-    (deps.sessionManager as unknown as { setPendingRestartNote: () => void }).setPendingRestartNote = () => {
+    (deps.sessionManager as unknown as { clearPendingRestart: () => void }).clearPendingRestart = () => {
       throw new Error("SQLITE_FULL");
     };
 
@@ -249,6 +257,148 @@ describe("runRequestedRestart — the restart", () => {
     await settle();
 
     expect(state.notices).toEqual([]);
+  });
+});
+
+describe("the user's Restart after turn (docs/242-stale-session-container-indicator req 9)", () => {
+  const running = { ok: true, noContainer: false, newContainerState: "running", error: null };
+
+  function deferSetup() {
+    const base = setup(null);
+    const deferDeps = {
+      sessionManager: base.deps.sessionManager,
+      containerManager: CONTAINERS,
+      runnerRegistry: base.runnerRegistry,
+    };
+    return { ...base, deferDeps };
+  }
+
+  it("records the request, for the session's container, only while a turn runs", () => {
+    const { deferDeps, state, runner } = deferSetup();
+
+    expect(deferRestartToTurnEnd(deferDeps, SESSION)).toBe(false);
+    expect(state.userRestart).toBeUndefined();
+
+    runner.running = true;
+    expect(deferRestartToTurnEnd(deferDeps, SESSION)).toBe(true);
+    expect(state.userRestart).toBe(CONTAINER);
+  });
+
+  it("records it during post-turn work too: a restart there drops a message behind the commit", () => {
+    const { deferDeps, state, runner } = deferSetup();
+    runner.beginPostTurnWork();
+    expect(deferRestartToTurnEnd(deferDeps, SESSION)).toBe(true);
+    expect(state.userRestart).toBe(CONTAINER);
+    runner.endPostTurnWork();
+  });
+
+  it("does not record where there is no container to restart", () => {
+    const { deferDeps, state, runner } = deferSetup();
+    runner.running = true;
+    for (const containerManager of [null, { get: () => undefined } as unknown as SessionContainerManager]) {
+      expect(deferRestartToTurnEnd({ ...deferDeps, containerManager }, SESSION)).toBe(false);
+    }
+    expect(state.userRestart).toBeUndefined();
+  });
+
+  it("restarts at the turn's end, carries the queue, and starts no follow-up turn", async () => {
+    const { deps, state, turn } = setup(null);
+    state.userRestart = CONTAINER;
+    const held = replacementHold();
+    restartAgent.mockResolvedValue({ ...running, held });
+
+    await runRequestedRestart(deps, turn);
+    await settle();
+
+    expect(restartAgent.mock.calls[0]![2]).toEqual({ carryQueue: true });
+    expect(state.userRestart).toBeUndefined();
+    expect(wakeSessionWithTurn).not.toHaveBeenCalled();
+    expect(held.runner.systemTurnInProgress).toBe(false);
+    expect(held.runner.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("does not restart a container that replaced the one the request was for", async () => {
+    const { deps, state, turn } = setup(null);
+    state.userRestart = "an-earlier-container";
+
+    await runRequestedRestart(deps, turn);
+
+    expect(restartAgent).not.toHaveBeenCalled();
+    expect(userRestartPending(deps, SESSION)).toBe(false);
+  });
+
+  it("gives the agent its note when both asked, in one restart", async () => {
+    const { deps, state, turn } = setup();
+    state.userRestart = CONTAINER;
+    restartAgent.mockResolvedValue(running);
+    wakeSessionWithTurn.mockResolvedValue({} as TurnHandle);
+
+    await runRequestedRestart(deps, turn);
+    await settle();
+
+    expect(restartAgent).toHaveBeenCalledTimes(1);
+    expect(wakeSessionWithTurn).toHaveBeenCalledTimes(1);
+    expect(state.userRestart).toBeUndefined();
+  });
+
+  it("waits while the agent's background work runs, then restarts at the next turn's end", async () => {
+    const { deps, state, runner, turn } = setup(null);
+    state.userRestart = CONTAINER;
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "review" }]);
+
+    await runRequestedRestart(deps, turn);
+    expect(restartAgent).not.toHaveBeenCalled();
+    expect(userRestartPending(deps, SESSION)).toBe(true);
+
+    runner.clearBackgroundTasks();
+    restartAgent.mockResolvedValue(running);
+    await runRequestedRestart(deps, turn);
+    expect(restartAgent).toHaveBeenCalledTimes(1);
+    expect(wakeSessionWithTurn).not.toHaveBeenCalled();
+  });
+
+  it("the agent's own request does not wait for its background work", async () => {
+    const { deps, runner, turn } = setup();
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "review" }]);
+    restartAgent.mockResolvedValue(running);
+    wakeSessionWithTurn.mockResolvedValue({} as TurnHandle);
+
+    await runRequestedRestart(deps, turn);
+    expect(restartAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed restart parks no notice for the agent and releases the holds", async () => {
+    const { deps, state, runner, turn } = setup(null);
+    state.userRestart = CONTAINER;
+    restartAgent.mockRejectedValue(new Error("worker gone"));
+
+    await runRequestedRestart(deps, turn);
+
+    expect(state.notices).toEqual([]);
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+});
+
+describe("cancelUserRestart (docs/242-stale-session-container-indicator req 10)", () => {
+  it("removes the user's request and keeps the agent's", async () => {
+    const { deps, state, turn } = setup();
+    state.userRestart = CONTAINER;
+
+    expect(cancelUserRestart(deps, SESSION)).toEqual({ ok: true });
+    expect(state.userRestart).toBeUndefined();
+    expect(state.note).toBe("check node -v");
+
+    // The cancelled request alone restarts nothing at the turn's end.
+    state.note = undefined;
+    await runRequestedRestart(deps, turn);
+    expect(restartAgent).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown session with 404", () => {
+    const { deps } = setup(null);
+    expect(() => cancelUserRestart(deps, "other")).toThrow(expect.objectContaining({ statusCode: 404 }));
   });
 });
 

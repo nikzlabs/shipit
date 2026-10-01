@@ -99,6 +99,7 @@ export function resumeSessionInternal(sessionId: string) {
   session.setActivity(undefined);
   session.setQueuedMessages([]);
   session.setContainerFreshness(null);
+  session.setRestartScheduled(false);
 
   // because `setStatus("connecting")` is then a no-op and the effect never
 

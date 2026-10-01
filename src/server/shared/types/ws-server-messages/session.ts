@@ -42,6 +42,8 @@ export interface WsSessionContainerFreshness {
   type: "session_container_freshness";
   sessionId: string;
   freshness: ContainerFreshness;
+  /** The user asked for a restart of the agent container when the turn ends. */
+  restartScheduled: boolean;
 }
 
 export interface WsSecretBlockStatus {

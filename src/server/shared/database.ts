@@ -1031,6 +1031,11 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_held_turns_session ON held_turns(session_id, id);
     `);
   },
+
+  // docs/242-stale-session-container-indicator req 9 — the user's "Restart after turn".
+  (db) => {
+    addSessionColumnIfMissing(db, "pending_user_restart");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

@@ -59,6 +59,7 @@ import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
 import { getContainerFreshness } from "./container-freshness.js";
+import { userRestartPending } from "./services/agent-restart-request.js";
 import { buildComposeAttachReplay } from "./compose-attach-replay.js";
 import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
 import { currentUpdateNotice, versionAnchor } from "./services/update-notice.js";
@@ -648,6 +649,7 @@ export async function registerRoutes(
           type: "session_container_freshness",
           sessionId: sid,
           freshness: getContainerFreshness(container?.workerBuildId, buildId),
+          restartScheduled: userRestartPending({ sessionManager, containerManager }, sid),
         });
       };
 
