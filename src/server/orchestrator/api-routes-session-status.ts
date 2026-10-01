@@ -3,12 +3,81 @@ import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 import { validateSessionStatus } from "../shared/session-status-validation.js";
 import { requireOfferDescriptions } from "../shared/session-status-offers.js";
-import { recordSessionStatus } from "./services/session-status.js";
+import {
+  formatSessionStatusCardFull,
+  recordSessionStatus,
+  turnsAgoCount,
+} from "./services/session-status.js";
+
+const CARD_OFF =
+  "The session status card is off, so there is no card to read: "
+  + "offer follow-up actions with propose_actions instead.";
 
 export async function registerSessionStatusRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
+  /**
+   * docs/303 req 48 — the agent fetches the card in full. A READ: it writes nothing,
+   * touches neither `fresh` nor `writeSeq`, and does not set the turn's `statusUpdated`,
+   * so reading the card never answers the update the turn owes. The per-turn block keeps
+   * its cap (req 35); this is what makes the cap survivable, since a card can grow past
+   * any cap and an offer whose payload was withheld cannot be repeated in a replacement.
+   */
+  app.get<{ Params: { sessionId: string } }>(
+    "/api/sessions/:sessionId/session-status",
+    { config: { containerAccessible: true } },
+    async (request, reply: FastifyReply) => {
+      if (!deps.credentialStore.getSessionStatusCard()) {
+        reply.code(409).send({ error: CARD_OFF });
+        return;
+      }
+      const session = deps.sessionManager.get(request.params.sessionId);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found." });
+        return;
+      }
+      const card = session.sessionStatus;
+      if (!card) {
+        return {
+          ok: true,
+          hasCard: false,
+          text:
+            "This session has no status card yet. Write the first one with `session_status`:"
+            + " pass `status` — what the session is about and how far it got.",
+        };
+      }
+      return {
+        ok: true,
+        hasCard: true,
+        text: formatSessionStatusCardFull(card),
+        card: {
+          ...(card.lastTurn ? { lastTurn: card.lastTurn } : {}),
+          status: card.status,
+          fresh: card.fresh,
+          turnSeq: card.turnSeq,
+          needsYou: (card.needsYou ?? []).map((text, i) => ({
+            text,
+            addedTurnsAgo: turnsAgoCount(card.turnSeq, card.stepSeq?.[i]),
+          })),
+          actions: card.actions.map((offer) => ({
+            offerId: offer.offerId,
+            id: offer.id,
+            label: offer.label,
+            ...(offer.description ? { description: offer.description } : {}),
+            ...(offer.defaultChecked ? { defaultChecked: true } : {}),
+            payload: offer.payload,
+            taken: offer.takenAt !== undefined,
+            offeredTurnsAgo: turnsAgoCount(card.turnSeq, offer.offeredSeq),
+            ...(offer.takenAt
+              ? { takenTurnsAgo: turnsAgoCount(card.turnSeq, offer.takenSeq) }
+              : {}),
+          })),
+        },
+      };
+    },
+  );
+
   app.post<{
     Params: { sessionId: string };
     Body: {

@@ -20,6 +20,7 @@ import {
   handleSessionRename,
   handleSessionReport,
   handleSessionRestart,
+  handleSessionStatus,
   handleSessionView,
   handleSessionWait,
   handleSessionWhoami,
@@ -107,6 +108,16 @@ Supported subcommands:
                           next container start. ShipIt gives your note back as
                           a turn on the new container. Say in your reply what
                           you restart and why.
+  shipit session status  [--json]
+                          Print THIS session's status card as it is stored: the
+                          status, the last-turn line, every manual step with its
+                          age, and every follow-up with its description, payload
+                          and whether the user has sent it. The card block in
+                          your turn prompt is size-capped and withholds payloads
+                          on a large card; this is uncapped, so it is how you
+                          drop a finished offer — \`replaceActions\` must repeat
+                          every offer you keep byte-exactly. A read: it writes
+                          nothing and does not count as the turn's card update.
   shipit session whoami  [--json]
   shipit session rename  --title T [--json]
                           Retitle THIS session (never another). Do it when you
@@ -568,6 +579,7 @@ const SESSION_HANDLERS: Record<
   "continue-after-rebase": handleSessionContinueAfterRebase,
   restart: handleSessionRestart,
   report: handleSessionReport,
+  status: handleSessionStatus,
   whoami: handleSessionWhoami,
   rename: handleSessionRename,
 };

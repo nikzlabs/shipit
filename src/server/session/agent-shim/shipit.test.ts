@@ -1461,6 +1461,54 @@ describe("shipit session whoami", () => {
   });
 });
 
+describe("shipit session status (docs/303 req 48)", () => {
+  const CARD_BODY = {
+    ok: true,
+    hasCard: true,
+    text: "<session_status_card_full>\nStatus:\nRoutes done.\n  payload: Open the PR.\n</session_status_card_full>",
+    card: { status: "Routes done.", actions: [{ id: "pr", payload: "Open the PR.", taken: false }] },
+  };
+
+  it("reads THIS session's card from the self-scoped route and prints it whole", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status"], {
+      "GET /agent-ops/session/status": { status: 200, body: CARD_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({ method: "GET", path: "/agent-ops/session/status" });
+    expect(out.stdout).toContain("payload: Open the PR.");
+  });
+
+  it("--json passes the broker response through verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status", "--json"], {
+      "GET /agent-ops/session/status": { status: 200, body: CARD_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(CARD_BODY);
+  });
+
+  it("takes no session id — another session's card is not readable", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status", "ses_other"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("fails with the server's reason when the card is off", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status"], {
+      "GET /agent-ops/session/status": {
+        status: 409,
+        body: { error: "The session status card is off, so there is no card to read." },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("is off");
+  });
+});
+
 describe("shipit session rename (docs/250)", () => {
   const RENAMED = { sessionId: "ses_me", previousTitle: "Fix the flaky test", title: "Harden CI" };
 

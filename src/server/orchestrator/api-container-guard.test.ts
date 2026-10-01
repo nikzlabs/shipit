@@ -536,6 +536,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/bug-report",
   "POST /api/sessions/:sessionId/propose-actions",
   "POST /api/sessions/:sessionId/session-status",
+  // docs/303 req 48 — the agent reads its own card in full; a pure read, no write path.
+  "GET /api/sessions/:sessionId/session-status",
   "POST /api/sessions/:sessionId/propose-repo-session",
   // docs/314 req 7 — the agent may PROPOSE a message; the matching
   // `…/session-message-proposals/:cardId/deliver` and `…/decline` are absent on

@@ -323,11 +323,49 @@ taken inside one session, without building an agent that talks to many.
 47. When the session's pull request merges, the conversation scrolls to its
     end, so the card's follow-up actions are in view.
 
+48. The agent can fetch the card in full. What rides the turn is bounded (req 35),
+    so a large card rides it incomplete — part of what each offer says is withheld
+    first, and on a very large one some offers go unlisted as well. The agent can
+    then see an offer it has finished and cannot take it off the card, because
+    replacing the list means repeating every offer it keeps exactly and the part it
+    was not shown is the part it would have to repeat. Fetching gets the whole
+    stored card — every offer complete, every manual step, the status and the
+    last-turn line, and how long each entry has been there — and gives it in a form
+    the agent can repeat exactly, so the bound costs reading room each turn and
+    never the power to tidy the card. Fetching is reading: it changes nothing on the
+    card, and it is not the update a turn owes. Where what rides the turn is
+    incomplete, it says how to fetch the rest rather than telling the agent to add
+    to the list, which is the one thing that removes nothing.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-10-01 — Nik, quoting an agent's own report from a session where this bit:
+  "the agent should be able to fetch the card in full. Example: *'Three done
+  follow-ups still show on the card (thin-joints, close-border-pockets,
+  move-bridges). I could not remove them, because the card did not print the other
+  offers in full.'*" → req 48. The dead end is two shipped decisions meeting: the
+  per-turn block keeps every offer listed and withholds the payloads past its cap
+  (req 35, deliberately — an offer the agent cannot see is one a replacement would
+  silently drop), while `replaceActions` requires every kept offer to be repeated
+  byte-exactly (req 17's identity rule). So past the cap the agent could see a
+  finished offer and had no call that would remove it, and the notice sent it to
+  `actions` without `replaceActions` — the one path that can only add. The card then
+  accumulated finished offers, which is what Nik reported.
+
+  Decided here and not by him, because he named the capability and not the
+  mechanism. **The fetch is a read of its own**, not the write's reply: a bare
+  `session_status` call is the "nothing moved" confirmation (req 14) and must stay
+  that, so making it a read would have made reading cost a write and marked the card
+  current before the agent had reconciled it. **It is not a bigger cap**: a card can
+  grow past any cap, so only an unbounded copy makes the dead end unreachable.
+  **And it is not an id-based removal** (`removeActions: ["id"]`), which would have
+  solved the symptom by routing around req 17's identity rule rather than giving the
+  agent what req 48 asks for; whether it is worth having as well is a separate
+  question, put to Nik in the PR rather than shipped beside this.
 
 - 2026-09-30 — Nik, with a screenshot of a merged session whose view stopped
   at the "Last turn" section: "after a session is merged, the conversation
