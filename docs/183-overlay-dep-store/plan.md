@@ -350,7 +350,10 @@ session gets, over a lower that holds `.vite/deps`, and replays the optimizer's 
 second case mounts with `redirect_dir=off` and asserts `EXDEV`, so the test is known to reproduce the
 defect. Mounting needs root, so both cases skip in a session container; a third case fails on a CI
 runner that cannot mount, so they cannot skip there silently. The test does not cover Docker's volume
-driver or the fallback on a filesystem without xattrs. `overlay-volume.test.ts` covers the option
+driver or the fallback on a filesystem without xattrs. The volume driver was measured by hand on a
+deployment host (2026-10-01, Docker 29, ext4): a `local` volume with `type=overlay` and the session's
+option string lists `redirect_dir=on` in its mount, and the rename sequence succeeds in a container
+with no capabilities; the same volume without the option gives `EXDEV`. `overlay-volume.test.ts` covers the option
 string and the recreate of an older volume. `plugin-overlay.test.ts` and `overlay-session.test.ts`
 pin the two exclusions.
 
