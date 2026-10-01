@@ -8,6 +8,8 @@ import {
   registerShutdownHook,
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
+import { sweepRetainedSessionData } from "./data-retention-sweep.js";
+import { isRestoreInFlight } from "./services/session.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
 import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-liveness-sources.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
@@ -245,6 +247,26 @@ export async function startStartupMonitors(
         });
       } catch (err) {
         console.error("[disk-janitor] steady-state reclaim pass failed:", err);
+      }
+      try {
+        await sweepRetainedSessionData({
+          sessionManager,
+          chatHistory: chatHistoryManager,
+          sessionsRoot: rt.sessionsRoot,
+          isSessionLive: (sid) =>
+            runnerRegistry.get(sid) !== undefined
+            || serviceManagers.has(sid)
+            || containerManager.get(sid) !== undefined
+            || isRestoreInFlight(sid),
+          stopComposeStack: (sid) => serializeStackOp(
+            sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
+          ),
+          onSessionsChanged: () =>
+            sseBroadcast("session_list", { sessions: sessionManager.list() }),
+          paceMs: escalationPaceMs,
+        });
+      } catch (err) {
+        console.error("[data-retention] sweep failed:", err);
       } finally {
         escalationInFlight = false;
       }

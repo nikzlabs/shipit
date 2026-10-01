@@ -123,3 +123,33 @@ describe("docs/277 mute action", () => {
     expect(row().querySelectorAll("svg").length).toBe(iconsBefore);
   });
 });
+
+describe("docs/323 data deletion date", () => {
+  const row = (extra: Partial<SessionInfo>) => (
+    <SessionItem session={{ ...session(), ...extra }} isCurrent={false} onResume={vi.fn()} overflowMenuPortaled={false} />
+  );
+  const shortDate = new Date("2026-11-30T12:00:00.000Z").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+  it("shows the date on an archived row, and says how to keep the files", () => {
+    render(row({ archived: true, userArchived: true, dataDeletesAt: "2026-11-30T12:00:00.000Z" }));
+    const badge = screen.getByTestId("data-deletion-badge");
+    expect(badge).toHaveTextContent(shortDate);
+    expect(badge.title).toContain("/persist files and uploads");
+    expect(badge.title).toContain("Restore the session");
+  });
+
+  it("shows the date on a done row that is not archived", () => {
+    render(row({ mergedAt: "2026-10-01T00:00:00.000Z", dataDeletesAt: "2026-11-30T12:00:00.000Z" }));
+    expect(screen.getByTestId("data-deletion-badge").title).toContain("Open the session");
+  });
+
+  it("names the checkout for an archived sandbox session with no remote", () => {
+    render(row({ archived: true, userArchived: true, kind: "sandbox", dataDeletesAt: "2026-11-30T12:00:00.000Z" }));
+    expect(screen.getByTestId("data-deletion-badge").title).toContain("uploads and checkout");
+  });
+
+  it("shows nothing for a session with no deletion date", () => {
+    render(row({ archived: true, userArchived: true }));
+    expect(screen.queryByTestId("data-deletion-badge")).toBeNull();
+  });
+});

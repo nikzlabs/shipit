@@ -289,10 +289,28 @@ development database, an upload directory, a cache built up over weeks of work.
 That data was never durable and no backup covers it. If it matters to the user,
 say so *before* they archive, and get it out first.
 
-**The session's `/persist` stays.** Archive, restore, checkout reclaim and idle
-reclaim all keep it; only **Full reset** deletes it. That includes what a service
-writes through a `persist` mount, so move data a service must keep to one
-(`/shipit-docs/compose.md`, "Data a service must keep").
+**The session's `/persist` files and uploads stay for a retention period, not
+for ever.** Checkout reclaim and idle reclaim keep them. Archive starts a
+period: 60 days by default, and 14 days when the files use 100 MB or more. When
+it ends, ShipIt deletes the files. That includes what a service writes through a
+`persist` mount (`/shipit-docs/compose.md`, "Data a service must keep").
+
+- The archived row in **All sessions** shows the date of the deletion. Read the
+  date from there; do not calculate it.
+- Restore before the date keeps the files, and a later archive starts a new
+  period. Restore after the date still works: the session opens with an empty
+  `/persist`, no uploads, and a notice in the transcript that says what was
+  deleted.
+- A **finished** session that the user did not archive has the same period: one
+  whose pull request merged or closed, and that was not used since. Its period
+  starts at the merge or close, or at the last time it was used or opened. A
+  pinned session is not finished, so a pin keeps its files.
+- An archived **sandbox** session that has no remote also loses its checkout
+  when the period ends, because nothing else holds that work. Restore gives it
+  an empty workspace.
+
+So when a user asks "can I archive this?", check what is in `/persist` first.
+If it holds something they must not lose, say so before they archive.
 
 **"If I archive this, do I lose my work?"** is the question users actually ask,
 and the answer is no, for a reason worth giving them: before ShipIt reclaims a

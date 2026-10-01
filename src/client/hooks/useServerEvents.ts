@@ -157,7 +157,10 @@ export function useServerEvents(): void {
 
     es.addEventListener("session_list", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { sessions: SessionInfo[] };
-      useSessionStore.getState().setSessions(data.sessions);
+      const store = useSessionStore.getState();
+      store.setSessions(data.sessions);
+      // This list has no archived rows, and All sessions has its own copy of every row.
+      if (store.allSessionsDialogOpen) void store.fetchAllSessions();
     });
 
     es.addEventListener("session_started", (e: MessageEvent) => {

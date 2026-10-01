@@ -100,6 +100,10 @@ services:
 - It is always this session's own `/persist`: the directory you read and write.
   It has the lifecycle of `/persist` (environment.md, "What survives what"), and
   a backup of the workspace volume includes it.
+- That lifecycle has an end. ShipIt keeps the data while the session is in use,
+  and deletes it when a retention period ends after the session is archived or
+  finished (environment.md, "The retention period for `/persist` and
+  `/uploads`"). Tell the user about data that must stay longer than that.
 - ShipIt creates the directory before the service starts. It belongs to the
   session user and is group-writable, so a service with no `user:` and you can
   both write the same files. Docker does not copy the image's own files into it.

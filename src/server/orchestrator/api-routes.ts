@@ -168,6 +168,8 @@ export interface ApiDeps {
   serviceManagers?: Map<string, ServiceManager>;
   composeStopPromises?: Map<string, Promise<void>>;
   pruneSessionVolumes?: (sessionId: string) => Promise<void>;
+  /** docs/323-archived-session-data-retention — archive needs a pass to get its deletion date. */
+  kickDiskEscalation?: () => void;
   getLogBuffer?: (sessionId: string) => LogRingEntry[];
   removeSessionLogs?: (sessionId: string) => void;
   logStore: LogStoreReader | undefined;

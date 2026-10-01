@@ -60,8 +60,8 @@ What this means in practice:
 | Path | Description |
 |------|-------------|
 | `/workspace` | Project root. This is the git repo. Your working directory. |
-| `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts, checkout reclaim and archive, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Deleted only by **Full reset** (Settings → Advanced), which deletes all ShipIt data — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
-| `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
+| `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts and checkout reclaim, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). It is kept while the session is in use. After the session is archived or finished, ShipIt deletes it when a retention period ends — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
+| `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. It has the same retention period as `/persist`. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
 | `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
 | `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
@@ -542,14 +542,44 @@ lifecycle. A project's own named volumes are different:
 | Idle reclaim that also stops the preview stack | Kept | Kept |
 | 24 hours idle | Kept | Can be deleted |
 | Checkout reclaim, then a fresh clone | Kept | Kept |
-| Archive | Kept | Can be deleted |
-| Restore from the archive | Kept, as it was | Empty, if they were deleted |
-| Delete — there is no separate session delete; removing a repository archives its sessions | Kept | Can be deleted |
+| Archive | Kept for the retention period, then **deleted** | Can be deleted |
+| Restore from the archive | Kept, as it was, if the period did not end. Empty after that | Empty, if they were deleted |
+| The pull request merged or closed, and the session was not used since | Kept for the retention period, then **deleted** | Can be deleted |
+| Delete — there is no separate session delete; removing a repository archives its sessions | As archive | Can be deleted |
 | **Full reset** (Settings → Advanced) | **Deleted** | Deleted |
 
-So data that must last goes in `/persist`, and a service that must keep data
-mounts `persist` instead of declaring a named volume. There is no per-session
-reset: only Full reset, which deletes every session's data, clears `/persist`.
+So data that the session needs while it is in use goes in `/persist`, and a
+service that must keep data mounts `persist` instead of declaring a named
+volume. `/persist` is not an archive: data that must stay after the session is
+finished belongs in git, or outside ShipIt.
+
+### The retention period for `/persist` and `/uploads`
+
+ShipIt deletes everything in `/persist` and `/uploads` when the retention
+period of the session ends. That includes what a Compose service wrote through
+a `persist` mount.
+
+- **Which sessions.** A session that the user archived, and a session that is
+  finished: its pull request merged or closed and it was not used since. A
+  pinned session, and a session with **Keep preview running**, is not finished.
+  A session in use keeps its files with no time limit.
+- **How long.** 60 days. 14 days when the files use 100 MB or more. The person
+  who deploys ShipIt can change these values.
+- **From when.** For an archived session, from the archive. For a finished
+  session, from the merge or close, or from the last time it was used or
+  opened, the latest of these. A message in the session starts a new period.
+- **What the user sees.** The session's row in **All sessions** shows the date.
+  After the deletion, the transcript has a notice that says what was deleted,
+  and your next turn in that session starts with a `[System]` line that says
+  the same.
+- **A sandbox session that has no remote** also loses its `/workspace` checkout
+  when the period of its archive ends, because that checkout has no other copy.
+  Restore gives it an empty workspace.
+
+When a session holds data that the user must not lose — generated media that
+cost money to make, a database file — say so before they archive it, and before
+its pull request merges. To keep the data, the user restores or opens the
+session before the date, or pins it.
 
 ### Restarting your agent container
 

@@ -99,6 +99,34 @@ describe("useServerEvents — session_agent_started", () => {
   });
 });
 
+describe("useServerEvents — session_list and the All sessions dialog", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  // docs/323-archived-session-data-retention req 7 — session_list has no archived rows,
+  // so the deletion date of an archived row reaches the open dialog only by a new fetch.
+  it("fetches all sessions again while the dialog is open, and not when it is closed", () => {
+    const fetchAllSessions = vi.fn().mockResolvedValue(undefined);
+    useSessionStore.setState({ fetchAllSessions, allSessionsDialogOpen: false });
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => { es.emit("session_list", { sessions: [] }); });
+    expect(fetchAllSessions).not.toHaveBeenCalled();
+
+    useSessionStore.setState({ allSessionsDialogOpen: true });
+    act(() => { es.emit("session_list", { sessions: [] }); });
+    expect(fetchAllSessions).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("useServerEvents — session_attention background work", () => {
   beforeEach(() => {
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);

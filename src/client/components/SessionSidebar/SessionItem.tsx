@@ -9,7 +9,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useAttentionInfo } from "../../hooks/useAttentionInfo.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
-import { SessionStatusDot, AutoMergeBadge, DiskTierBadge } from "./SessionStatusIndicators.js";
+import { SessionStatusDot, AutoMergeBadge, DataDeletionBadge, DiskTierBadge } from "./SessionStatusIndicators.js";
 
 interface SessionItemProps {
   session: SessionInfo;
@@ -232,6 +232,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             {isArchived && <PhArchiveIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />}
             {!isArchived && <DiskTierBadge session={session} />}
             <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
+            <DataDeletionBadge session={session} />
             <AutoMergeBadge sessionId={session.id} />
           </div>
         </button>

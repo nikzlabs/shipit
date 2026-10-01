@@ -69,6 +69,15 @@ export interface SessionInfo {
   archived?: boolean;
   diskTier?: "hot" | "light" | "evicted";
   userArchived?: boolean;
+  /** docs/323-archived-session-data-retention — the start of an archived session's retention period. */
+  archivedAt?: string;
+  /** No retention period starts before this; set once, for sessions older than the feature. */
+  retentionFloorAt?: string;
+  /** Size of the files the retention sweep would delete; absent until it is measured. */
+  retainedDataBytes?: number;
+  retainedDataMeasuredAt?: string;
+  /** Derived on the session lists, never stored: when ShipIt deletes the kept files. */
+  dataDeletesAt?: string;
   /** Disk-idle clock only; viewing must not promote a resolved session to Active. */
   lastViewedAt?: string;
   /** Protects sidebar and disk persistence, not live capacity. */

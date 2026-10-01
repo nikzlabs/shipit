@@ -2,6 +2,8 @@ import path from "node:path";
 import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { doneSessionTest, isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
+import { dataDeletionTimeMs, type DataRetentionConfig } from "../shared/session-retention.js";
+import { dataRetentionConfigFromEnv } from "./data-retention-config.js";
 
 export { holdsActiveReservation } from "../shared/session-resolution.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -37,6 +39,10 @@ interface SessionRow {
   archived: number;
   disk_tier: string;
   user_archived: number;
+  archived_at: string | null;
+  retention_floor_at: string | null;
+  retained_data_bytes: number | null;
+  retained_data_measured_at: string | null;
   last_viewed_at: string | null;
   warm: number;
   branch: string | null;
@@ -227,8 +233,11 @@ export class SessionManager {
   private db;
   private readonly heldTurnCallbacks = new Map<number, (outcome: TurnOutcome) => void>();
 
-  constructor(dbManager: DatabaseManager) {
+  readonly dataRetention: DataRetentionConfig;
+
+  constructor(dbManager: DatabaseManager, opts: { dataRetention?: DataRetentionConfig } = {}) {
     this.db = dbManager.db;
+    this.dataRetention = opts.dataRetention ?? dataRetentionConfigFromEnv();
   }
 
   private fromRow(row: SessionRow): SessionInfo {
@@ -247,6 +256,12 @@ export class SessionManager {
     if (row.user_archived) {
       info.userArchived = true;
       info.archived = true;
+    }
+    if (row.archived_at) info.archivedAt = row.archived_at;
+    if (row.retention_floor_at) info.retentionFloorAt = row.retention_floor_at;
+    if (row.retained_data_bytes !== null) {
+      info.retainedDataBytes = row.retained_data_bytes;
+      if (row.retained_data_measured_at) info.retainedDataMeasuredAt = row.retained_data_measured_at;
     }
     if (row.last_viewed_at) info.lastViewedAt = row.last_viewed_at;
     if (row.warm) info.warm = true;
@@ -338,7 +353,20 @@ export class SessionManager {
     const rows = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return filterVisibleInSidebar(rows.map((r) => this.fromRow(r)));
+    return filterVisibleInSidebar(this.withDataDeletionDates(rows.map((r) => this.fromRow(r))));
+  }
+
+  // docs/323-archived-session-data-retention req 7 — needs the whole list, because
+  // "done" is decided from it.
+  private withDataDeletionDates(sessions: SessionInfo[]): SessionInfo[] {
+    if (!sessions.some((s) => (s.retainedDataBytes ?? 0) > 0)) return sessions;
+    const isDone = doneSessionTest(sessions);
+    for (const s of sessions) {
+      if (!s.retainedDataBytes) continue;
+      const at = dataDeletionTimeMs(s, isDone(s), this.dataRetention);
+      if (at !== undefined) s.dataDeletesAt = new Date(at).toISOString();
+    }
+    return sessions;
   }
 
   allIds(): string[] {
@@ -592,10 +620,19 @@ export class SessionManager {
   // skips 'evicted') never comes back to finish the job.
   archive(id: string, opts: { keepCheckout?: boolean } = {}): boolean {
     const tier = opts.keepCheckout ? "light" : "evicted";
+    // A new archive starts a new retention period, with a new measurement
+    // (docs/323-archived-session-data-retention req 4).
     const result = this.db.prepare(
-      "UPDATE sessions SET user_archived = 1, disk_tier = ?, pinned_at = NULL, keep_preview_running = 0 WHERE id = ?",
-    ).run(tier, id);
+      "UPDATE sessions SET user_archived = 1, disk_tier = ?, pinned_at = NULL, keep_preview_running = 0, "
+      + "archived_at = ?, retained_data_bytes = NULL, retained_data_measured_at = NULL WHERE id = ?",
+    ).run(tier, new Date().toISOString(), id);
     return result.changes > 0;
+  }
+
+  setRetainedData(id: string, bytes: number, measuredAt: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET retained_data_bytes = ?, retained_data_measured_at = ? WHERE id = ?",
+    ).run(bytes, measuredAt, id);
   }
 
   unarchive(id: string): boolean {
@@ -605,7 +642,8 @@ export class SessionManager {
     if (!row || (!row.user_archived && row.disk_tier !== "evicted")) return false;
     // Another session may now own the preview slot; restore must not reclaim it.
     this.db.prepare(
-      "UPDATE sessions SET user_archived = 0, disk_tier = 'hot', keep_preview_running = 0 WHERE id = ?",
+      "UPDATE sessions SET user_archived = 0, disk_tier = 'hot', keep_preview_running = 0, "
+      + "archived_at = NULL, retained_data_bytes = NULL, retained_data_measured_at = NULL WHERE id = ?",
     ).run(id);
     return true;
   }
@@ -685,7 +723,7 @@ export class SessionManager {
     const rows = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return rows.map((r) => this.fromRow(r));
+    return this.withDataDeletionDates(rows.map((r) => this.fromRow(r)));
   }
 
   // What listAll() leaves out: pool standbys and drafts claimed before their first message.

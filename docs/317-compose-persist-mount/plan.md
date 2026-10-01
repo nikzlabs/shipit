@@ -79,9 +79,9 @@ Verified against the code on 2026-09-27. `/persist` is `<sessionDir>/scratch`; a
 | Idle reclaim, memory path (agent container, then preview stack) | Kept | Kept |
 | 24 hours idle (hot → light disk tier) | Kept | Can be removed (`tier-escalation.ts`) |
 | Checkout reclaim (light → evicted), then re-clone | Kept (only `workspace/`, `overlay/`, `state/` are removed) | Kept |
-| Archive | Kept | Can be removed (`archiveSession`, when the session is loaded) |
-| Restore (unarchive) | Kept | Recreated empty if they were removed |
-| Delete — there is no separate session delete; removing a repository archives its sessions | Kept | As archive |
+| Archive | Kept for the retention period of `docs/323-archived-session-data-retention`, then deleted | Can be removed (`archiveSession`, when the session is loaded) |
+| Restore (unarchive) | Kept, if the period did not end | Recreated empty if they were removed |
+| Delete — there is no separate session delete; removing a repository archives its sessions | As archive | As archive |
 | Full reset (Settings) | **Deleted** | Deleted |
 
 There is no per-session reset; the old sentence in `environment.md` ("Cleared only by a full session reset") described one.
