@@ -198,7 +198,27 @@ async function recreateSandboxWorkspaceIfGone(workspaceDir: string): Promise<voi
   console.log(`[unarchiveSession] re-created the empty sandbox workspace ${workspaceDir}`);
 }
 
+const unarchivesInFlight = new Set<string>();
+
+// docs/323-archived-session-data-retention — a session keeps its archived flag until its
+// restore is complete, so the flag alone does not tell the retention sweep to stay away.
+export function isRestoreInFlight(sessionId: string): boolean {
+  return unarchivesInFlight.has(sessionId) || inFlightRestores.has(sessionId);
+}
+
 export async function unarchiveSession(
+  ...args: Parameters<typeof unarchiveSessionImpl>
+): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
+  const sessionId = args[5];
+  unarchivesInFlight.add(sessionId);
+  try {
+    return await unarchiveSessionImpl(...args);
+  } finally {
+    unarchivesInFlight.delete(sessionId);
+  }
+}
+
+async function unarchiveSessionImpl(
   sessionManager: SessionManager,
   createRepoGit: (dir: string) => RepoGit,
   getBareCacheDir: (url: string) => string,

@@ -26,4 +26,12 @@ describe("dataRetentionConfigFromEnv (req 6)", () => {
       SESSION_DATA_RETENTION_LARGE_DAYS: "-3",
     })).toEqual(DEFAULT_DATA_RETENTION);
   });
+
+  it("does not read a number from the start of a malformed value", () => {
+    expect(dataRetentionConfigFromEnv({
+      SESSION_DATA_RETENTION_DAYS: "1_000",
+      SESSION_DATA_RETENTION_LARGE_DAYS: "1oops",
+      SESSION_DATA_RETENTION_LARGE_MB: "",
+    })).toEqual(DEFAULT_DATA_RETENTION);
+  });
 });

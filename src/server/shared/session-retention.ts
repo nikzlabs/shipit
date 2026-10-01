@@ -3,7 +3,7 @@ import { resolvedAt } from "./session-resolution.js";
 import { parseTimestampMs } from "./utils.js";
 
 export interface DataRetentionConfig {
-  /** 0 keeps the files with no time limit. */
+  /** 0 keeps the files of every session with no time limit. */
   days: number;
   /** 0 gives a large session the normal period. */
   largeDays: number;
@@ -49,6 +49,7 @@ export function retainedDataSizeIsStale(session: SessionInfo, isDone: boolean): 
 }
 
 export function retentionPeriodDays(bytes: number, config: DataRetentionConfig): number {
+  if (config.days <= 0) return 0;
   if (config.largeDays > 0 && bytes >= config.largeBytes) return config.largeDays;
   return config.days;
 }

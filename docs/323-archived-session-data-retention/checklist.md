@@ -10,4 +10,4 @@
 - [x] The date on the session row
 - [x] `unarchiveSession` re-creates a sandbox workspace that is gone
 - [x] Agent-facing docs and the wiki
-- [ ] Independent review against the requirements
+- [x] Independent review against the requirements

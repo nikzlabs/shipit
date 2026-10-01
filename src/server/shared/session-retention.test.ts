@@ -35,6 +35,11 @@ describe("retention period (req 3, req 13)", () => {
   it("gives a large session the normal period when the short period is off", () => {
     expect(retentionPeriodDays(500 * MB, { ...DEFAULT_DATA_RETENTION, largeDays: 0 })).toBe(60);
   });
+
+  it("has no period at all when the normal period is 0", () => {
+    expect(retentionPeriodDays(500 * MB, { ...DEFAULT_DATA_RETENTION, days: 0 })).toBe(0);
+    expect(retentionPeriodDays(1, { ...DEFAULT_DATA_RETENTION, days: 0 })).toBe(0);
+  });
 });
 
 describe("an archived session (req 4, req 5)", () => {
@@ -91,6 +96,12 @@ describe("a done session that is not archived (req 11, req 12)", () => {
 
   it("needs a new measurement after the user opened it", () => {
     expect(retainedDataSizeIsStale(done({ lastViewedAt: "2026-03-20T00:00:00.000Z" }), true)).toBe(true);
+  });
+
+  it("counts from the close of a pull request that was not merged", () => {
+    const closed = done({ mergedAt: undefined, closedAt: "2026-03-05T12:00:00.000Z" });
+    expect(dataDeletionTimeMs(closed, true, DEFAULT_DATA_RETENTION))
+      .toBe(at("2026-03-05T12:00:00.000Z") + 60 * DAY);
   });
 
   it("is not under retention when it is not done", () => {

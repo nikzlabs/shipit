@@ -652,7 +652,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessions: result.sessions,
       allSessions: state.allSessions.map((s) =>
         s.id === sessionId
-          ? { ...s, archived: undefined, userArchived: undefined, diskTier: "hot" as const }
+          ? { ...s, archived: undefined, userArchived: undefined, diskTier: "hot" as const, dataDeletesAt: undefined }
           : s,
       ),
     }));
@@ -696,7 +696,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         allSessions: state.allSessions.map((s) =>
           s.id === sessionId
             // Mirror the server's released preview reservation in the cached row.
-            ? { ...s, archived: true, userArchived: true, diskTier: archivedTier, keepPreviewRunning: undefined }
+            ? { ...s, archived: true, userArchived: true, diskTier: archivedTier, keepPreviewRunning: undefined, dataDeletesAt: undefined }
             : s,
         ),
         turnUsage: rest,

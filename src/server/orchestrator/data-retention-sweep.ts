@@ -30,8 +30,12 @@ export interface DataRetentionSweepDeps {
     "listAll" | "setRetainedData" | "appendPendingAgentNotice" | "dataRetention"
   >;
   chatHistory: { append(sessionId: string, message: PersistedMessage): unknown };
-  /** A runner, a container or a Compose stack can have the directories mounted. */
+  /** A session directory is `<sessionsRoot>/<id>`; a workspace anywhere else is never touched. */
+  sessionsRoot: string;
+  /** A runner, a container, a Compose stack or a restore can have the directories in use. */
   isSessionLive: (sessionId: string) => boolean;
+  /** Stops a stack that an earlier orchestrator process started; it is in no map of this one. */
+  stopComposeStack?: (sessionId: string) => Promise<unknown>;
   onSessionsChanged?: () => void;
   now?: () => number;
   paceMs?: number;
@@ -56,11 +60,11 @@ interface RetainedSizes {
   checkout: number;
 }
 
-export function retainedDataDirs(session: SessionInfo): RetainedDirs | null {
+export function retainedDataDirs(session: SessionInfo, sessionsRoot: string): RetainedDirs | null {
   const workspaceDir = session.workspaceDir;
   // In any other layout the siblings of the workspace are not this session's own dirs.
-  if (!workspaceDir || path.basename(workspaceDir) !== SESSION_WORKSPACE_SUBDIR) return null;
-  const root = path.dirname(workspaceDir);
+  const root = path.join(path.resolve(sessionsRoot), session.id);
+  if (!workspaceDir || path.resolve(workspaceDir) !== path.join(root, SESSION_WORKSPACE_SUBDIR)) return null;
   const checkoutUnderRetention = session.userArchived === true
     && session.kind === "sandbox"
     && !session.remoteUrl;
@@ -73,8 +77,18 @@ export function retainedDataDirs(session: SessionInfo): RetainedDirs | null {
   };
 }
 
+// A symlink in place of the directory would send the walk, and the deletion, somewhere else.
+async function isRealDir(dir: string): Promise<boolean> {
+  try {
+    return (await fs.lstat(dir)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 // Counts files, not directories, so a tree of empty directories has no size.
 async function treeBytes(dir: string): Promise<number> {
+  if (!(await isRealDir(dir))) return 0;
   let total = 0;
   const pending = [dir];
   while (pending.length > 0) {
@@ -93,7 +107,8 @@ async function treeBytes(dir: string): Promise<number> {
       }
       try {
         const st = await fs.lstat(full);
-        total += st.blocks > 0 ? st.blocks * 512 : st.size;
+        // An empty file is still a file to delete, so it counts.
+        total += Math.max(1, st.blocks > 0 ? st.blocks * 512 : st.size);
       } catch {
         // The file went away during the walk.
       }
@@ -114,14 +129,13 @@ async function measure(dirs: RetainedDirs): Promise<RetainedSizes> {
 
 const totalBytes = (sizes: RetainedSizes): number => sizes.persist + sizes.uploads + sizes.checkout;
 
+async function entryNames(dir: string): Promise<string[]> {
+  if (!(await isRealDir(dir))) return [];
+  return fs.readdir(dir);
+}
+
 // The directory itself stays: mounts and upload listings expect it, with its owner.
-async function emptyDir(dir: string): Promise<string | null> {
-  let names: string[];
-  try {
-    names = await fs.readdir(dir);
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "ENOENT" ? null : getMessage(err);
-  }
+async function removeEntries(dir: string, names: string[]): Promise<string | null> {
   for (const name of names) {
     try {
       await fs.rm(path.join(dir, name), { recursive: true, force: true });
@@ -144,14 +158,17 @@ function joinList(parts: string[]): string {
 }
 
 interface DeletionFacts {
+  /** What this pass deleted; a part that failed is 0 here. */
   sizes: RetainedSizes;
+  /** The size that selected the period. */
+  measuredBytes: number;
   deletedAt: string;
   archived: boolean;
   config: DataRetentionConfig;
 }
 
 function periodReason(facts: DeletionFacts): string {
-  const bytes = totalBytes(facts.sizes);
+  const bytes = facts.measuredBytes;
   const days = retentionPeriodDays(bytes, facts.config);
   const large = facts.config.largeDays > 0 && bytes >= facts.config.largeBytes;
   const state = facts.archived ? "was archived" : "was finished and not used";
@@ -159,7 +176,7 @@ function periodReason(facts: DeletionFacts): string {
   return `The session ${state} for ${days} days, which is the retention period${scope}.`;
 }
 
-export function formatDataRetentionNotice(facts: DeletionFacts): string {
+function formatDataRetentionNotice(facts: DeletionFacts): string {
   const { sizes } = facts;
   const parts = [
     ...(sizes.persist > 0 ? ["`/persist` files"] : []),
@@ -180,7 +197,7 @@ export function formatDataRetentionNotice(facts: DeletionFacts): string {
   );
 }
 
-export function formatDataRetentionAgentNotice(facts: DeletionFacts): string {
+function formatDataRetentionAgentNotice(facts: DeletionFacts): string {
   const { sizes } = facts;
   const parts = [
     ...(sizes.persist > 0 ? ["the files under /persist"] : []),
@@ -202,48 +219,81 @@ async function deleteDueSession(
   result: DataRetentionSweepResult,
 ): Promise<void> {
   const config = deps.sessionManager.dataRetention;
-  // The measurement and the pacing were awaits: decide from the list as it is now.
-  const sessions = deps.sessionManager.listAll();
-  const session = sessions.find((s) => s.id === id);
-  if (!session) return;
-  const dueAt = dataDeletionTimeMs(session, doneSessionTest(sessions)(session), config);
-  if (dueAt === undefined || dueAt > now()) return;
-  if (deps.isSessionLive(id)) return;
-  const dirs = retainedDataDirs(session);
-  if (!dirs) return;
+  const iso = (): string => new Date(now()).toISOString();
+  // Each await below is a point where the user can restore or open the session, so the
+  // decision is taken again from the list as it is then.
+  const stillDue = (): { session: SessionInfo; dirs: RetainedDirs } | null => {
+    const sessions = deps.sessionManager.listAll();
+    const session = sessions.find((s) => s.id === id);
+    if (!session) return null;
+    const dueAt = dataDeletionTimeMs(session, doneSessionTest(sessions)(session), config);
+    if (dueAt === undefined || dueAt > now()) return null;
+    if (deps.isSessionLive(id)) return null;
+    const dirs = retainedDataDirs(session, deps.sessionsRoot);
+    return dirs ? { session, dirs } : null;
+  };
 
+  if (!stillDue()) return;
+  // A throw here leaves the files: a stack that cannot be stopped can still use them.
+  await deps.stopComposeStack?.(id);
+  const before = stillDue();
+  if (!before) return;
+
+  const { dirs } = before;
   const sizes = await measure(dirs);
+  const names = { persist: await entryNames(dirs.persist), uploads: await entryNames(dirs.uploads) };
+  // The period comes from what is on disk now, not from an earlier measurement.
+  deps.sessionManager.setRetainedData(id, totalBytes(sizes), iso());
+  const due = stillDue();
+  if (!due) return;
+
+  const deleted: RetainedSizes = { persist: 0, uploads: 0, checkout: 0 };
   const failures: string[] = [];
-  for (const dir of [dirs.persist, dirs.uploads]) {
-    const message = await emptyDir(dir);
-    if (message) failures.push(`${dir}: ${message}`);
+  for (const part of ["persist", "uploads"] as const) {
+    const message = await removeEntries(dirs[part], names[part]);
+    if (message) failures.push(`${dirs[part]}: ${message}`);
+    else deleted[part] = sizes[part];
   }
-  if (dirs.checkout.length > 0 && session.workspaceDir) {
-    const { failed } = await reclaimRegenerableSessionDirs(session.workspaceDir, { paceMs: deps.paceMs });
-    failures.push(...failed.map((f) => `${f.dir}: ${f.message}`));
+  if (dirs.checkout.length > 0 && due.session.workspaceDir) {
+    const { failed } = await reclaimRegenerableSessionDirs(due.session.workspaceDir, { paceMs: deps.paceMs });
+    if (failed.length > 0) failures.push(...failed.map((f) => `${f.dir}: ${f.message}`));
+    else deleted.checkout = sizes.checkout;
   }
+
+  if (totalBytes(deleted) > 0) {
+    result.sessionsDeleted += 1;
+    result.bytesDeleted += totalBytes(deleted);
+    const facts: DeletionFacts = {
+      sizes: deleted,
+      measuredBytes: totalBytes(sizes),
+      deletedAt: iso(),
+      archived: due.session.userArchived === true,
+      config,
+    };
+    console.log(
+      `[data-retention] ${id}: deleted ${formatBytes(totalBytes(deleted))} `
+      + `(persist=${deleted.persist} uploads=${deleted.uploads} checkout=${deleted.checkout})`,
+    );
+    // Separate, and before the size is stored: one failed write must not lose the other.
+    try {
+      persistNoticeUnattached(deps.chatHistory, id, formatDataRetentionNotice(facts));
+    } catch (err) {
+      console.warn(`[data-retention] transcript notice failed for ${id}:`, getMessage(err));
+    }
+    try {
+      deps.sessionManager.appendPendingAgentNotice(id, formatDataRetentionAgentNotice(facts));
+    } catch (err) {
+      console.warn(`[data-retention] agent notice failed for ${id}:`, getMessage(err));
+    }
+  }
+
   if (failures.length > 0) {
-    // The stored size stays, so the next pass tries again and no notice claims a deletion.
     console.warn(`[data-retention] deletion incomplete for ${id}: ${failures.join("; ")}`);
+    // What is left keeps a size, so a later pass deletes it and reports it.
+    deps.sessionManager.setRetainedData(id, totalBytes(await measure(dirs)), iso());
     return;
   }
-
-  const deletedAt = new Date(now()).toISOString();
-  deps.sessionManager.setRetainedData(id, 0, deletedAt);
-  if (totalBytes(sizes) === 0) return;
-  result.sessionsDeleted += 1;
-  result.bytesDeleted += totalBytes(sizes);
-  const facts: DeletionFacts = { sizes, deletedAt, archived: session.userArchived === true, config };
-  console.log(
-    `[data-retention] ${id}: deleted ${formatBytes(totalBytes(sizes))} `
-    + `(persist=${sizes.persist} uploads=${sizes.uploads} checkout=${sizes.checkout})`,
-  );
-  try {
-    persistNoticeUnattached(deps.chatHistory, id, formatDataRetentionNotice(facts));
-    deps.sessionManager.appendPendingAgentNotice(id, formatDataRetentionAgentNotice(facts));
-  } catch (err) {
-    console.warn(`[data-retention] notice failed for ${id}:`, getMessage(err));
-  }
+  deps.sessionManager.setRetainedData(id, 0, iso());
 }
 
 export async function sweepRetainedSessionData(
@@ -251,7 +301,7 @@ export async function sweepRetainedSessionData(
 ): Promise<DataRetentionSweepResult> {
   const result: DataRetentionSweepResult = { measured: 0, sessionsDeleted: 0, bytesDeleted: 0 };
   const config = deps.sessionManager.dataRetention;
-  if (config.days <= 0 && config.largeDays <= 0) return result;
+  if (config.days <= 0) return result;
   const now = deps.now ?? Date.now;
   const paceMs = deps.paceMs ?? 0;
 
@@ -260,7 +310,7 @@ export async function sweepRetainedSessionData(
   for (const listed of sessions) {
     const done = isDone(listed);
     if (!isUnderDataRetention(listed, done)) continue;
-    const dirs = retainedDataDirs(listed);
+    const dirs = retainedDataDirs(listed, deps.sessionsRoot);
     if (!dirs) continue;
     try {
       let session = listed;

@@ -1,9 +1,11 @@
 import { DEFAULT_DATA_RETENTION, type DataRetentionConfig } from "../shared/session-retention.js";
 
-// docs/323-archived-session-data-retention req 6. A negative or unreadable value falls
-// back to the default, so a typing error cannot shorten a period to nothing.
+// docs/323-archived-session-data-retention req 6. Number(), not parseFloat(): "1_000"
+// must fall back to the default and not become a period of 1 day.
 function nonNegative(raw: string | undefined, fallback: number): number {
-  const value = parseFloat(raw ?? "");
+  const text = raw?.trim();
+  if (!text) return fallback;
+  const value = Number(text);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 

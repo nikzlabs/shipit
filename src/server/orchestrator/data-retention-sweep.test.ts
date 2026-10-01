@@ -5,7 +5,7 @@ import os from "node:os";
 import { DatabaseManager } from "../shared/database.js";
 import type { DataRetentionConfig } from "../shared/session-retention.js";
 import { SessionManager } from "./sessions.js";
-import type { PersistedMessage } from "./chat-history.js";
+import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 import { sweepRetainedSessionData, type DataRetentionSweepDeps } from "./data-retention-sweep.js";
 
 const NOW = Date.parse("2026-10-01T00:00:00.000Z");
@@ -47,6 +47,10 @@ describe("sweepRetainedSessionData", () => {
     persistBytes?: number;
     uploadBytes?: number;
     flatLayout?: boolean;
+    diskTier?: "hot" | "light" | "evicted";
+    closedAt?: string;
+    /** A size from an earlier measurement, which the files no longer have. */
+    storedBytes?: number;
   }
 
   function seed(row: Seed): { root: string; workspace: string; persist: string; uploads: string } {
@@ -64,8 +68,9 @@ describe("sweepRetainedSessionData", () => {
     dbManager.db.prepare(
       `INSERT INTO sessions
          (id, title, created_at, last_used_at, last_viewed_at, workspace_dir, remote_url, kind,
-          merged_at, pinned_at, user_archived, archived_at, retention_floor_at, disk_tier)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          merged_at, pinned_at, user_archived, archived_at, retention_floor_at, disk_tier,
+          closed_at, retained_data_bytes, retained_data_measured_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       row.id,
       row.id,
@@ -80,7 +85,10 @@ describe("sweepRetainedSessionData", () => {
       row.archivedAt ? 1 : 0,
       row.archivedAt ?? null,
       row.floorAt ?? null,
-      row.archivedAt ? "evicted" : "hot",
+      row.diskTier ?? (row.archivedAt ? "evicted" : "hot"),
+      row.closedAt ?? null,
+      row.storedBytes ?? null,
+      row.storedBytes === undefined ? null : new Date(NOW).toISOString(),
     );
     return { root, workspace, persist, uploads };
   }
@@ -89,6 +97,7 @@ describe("sweepRetainedSessionData", () => {
     return {
       sessionManager,
       chatHistory: { append: (sessionId, message) => { notices.push({ sessionId, message }); } },
+      sessionsRoot: path.join(tmpDir, "sessions"),
       isSessionLive: (id) => live.has(id),
       now: () => now,
     };
@@ -291,14 +300,183 @@ describe("sweepRetainedSessionData", () => {
     expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
   });
 
-  it("does nothing when both periods are off (req 6)", async () => {
-    sessionManager = new SessionManager(dbManager, { dataRetention: { days: 0, largeDays: 0, largeBytes: 1 } });
-    const dirs = seed({ id: "a", archivedAt: daysAgo(400), persistBytes: 8 * KB });
+  it("does nothing when the period is 0, also for a large session (req 6)", async () => {
+    sessionManager = new SessionManager(dbManager, { dataRetention: { ...CONFIG, days: 0 } });
+    const dirs = seed({ id: "a", archivedAt: daysAgo(400), persistBytes: 600 * KB });
 
     const result = await sweepRetainedSessionData(deps());
 
     expect(result.measured).toBe(0);
     expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+  });
+
+  it("does not touch a session whose checkout ShipIt reclaimed but which is not done (req 2)", async () => {
+    const dirs = seed({ id: "a", lastUsedAt: daysAgo(300), diskTier: "evicted", persistBytes: 8 * KB });
+
+    await sweepRetainedSessionData(deps());
+
+    expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+  });
+
+  it("deletes the files of a done session whose pull request closed (req 11)", async () => {
+    const dirs = seed({ id: "a", closedAt: daysAgo(61), lastUsedAt: daysAgo(70), persistBytes: 8 * KB });
+
+    await sweepRetainedSessionData(deps());
+
+    expect(fs.readdirSync(dirs.persist)).toEqual([]);
+  });
+
+  it("adds /persist and uploads to decide if a session is large (req 13)", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(15), persistBytes: 300 * KB, uploadBytes: 300 * KB });
+
+    await sweepRetainedSessionData(deps());
+
+    expect(fs.readdirSync(dirs.persist)).toEqual([]);
+    expect(fs.readdirSync(dirs.uploads)).toEqual([]);
+  });
+
+  it("uses the size on disk, not an earlier one, to decide the period", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(20), persistBytes: 8 * KB, storedBytes: 600 * KB });
+
+    await sweepRetainedSessionData(deps());
+
+    expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+    expect(listed("a").retainedDataBytes).toBeLessThan(CONFIG.largeBytes);
+    expect(listed("a").dataDeletesAt).toBe(daysAgo(20 - 60));
+  });
+
+  it("deletes an empty file too", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(61) });
+    fs.writeFileSync(path.join(dirs.persist, "empty.txt"), "");
+
+    await sweepRetainedSessionData(deps());
+
+    expect(fs.readdirSync(dirs.persist)).toEqual([]);
+    expect(notices).toHaveLength(1);
+  });
+
+  it("does not delete when the session became live after the first check", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(61), persistBytes: 8 * KB });
+
+    await sweepRetainedSessionData({
+      ...deps(),
+      stopComposeStack: async (id) => { live.add(id); },
+    });
+
+    expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+    expect(notices).toEqual([]);
+  });
+
+  it("does not delete when the user restored the session during the pass", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(61), persistBytes: 8 * KB });
+
+    await sweepRetainedSessionData({
+      ...deps(),
+      stopComposeStack: async (id) => { sessionManager.unarchive(id); },
+    });
+
+    expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+  });
+
+  it("does not delete when the Compose stack cannot be stopped", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(61), persistBytes: 8 * KB });
+
+    await sweepRetainedSessionData({
+      ...deps(),
+      stopComposeStack: async () => { throw new Error("docker is not reachable"); },
+    });
+
+    expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+    expect(notices).toEqual([]);
+  });
+
+  it("does nothing for a workspace named 'workspace' that is not in the session's own directory", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(100), persistBytes: 8 * KB });
+    const elsewhere = path.join(tmpDir, "other", "workspace");
+    fs.mkdirSync(path.join(tmpDir, "other", "scratch"), { recursive: true });
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "other", "scratch", "keep.txt"), "not this session's");
+    dbManager.db.prepare("UPDATE sessions SET workspace_dir = ? WHERE id = 'a'").run(elsewhere);
+
+    const result = await sweepRetainedSessionData(deps());
+
+    expect(result.measured).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, "other", "scratch", "keep.txt"))).toBe(true);
+    expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+  });
+
+  it("does not follow a symlink that replaced the /persist directory", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(100) });
+    const outside = path.join(tmpDir, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "keep.txt"), "x".repeat(8 * KB));
+    fs.rmdirSync(dirs.persist);
+    fs.symlinkSync(outside, dirs.persist);
+
+    await sweepRetainedSessionData(deps());
+
+    expect(fs.readdirSync(outside)).toEqual(["keep.txt"]);
+    expect(notices).toEqual([]);
+  });
+
+  // Root ignores directory permissions, so this failure cannot be made as root.
+  it.skipIf(process.getuid?.() === 0)("reports what it deleted when a part fails, and the rest later", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(61), persistBytes: 8 * KB, uploadBytes: 8 * KB });
+    fs.chmodSync(dirs.uploads, 0o555);
+    try {
+      await sweepRetainedSessionData(deps());
+    } finally {
+      fs.chmodSync(dirs.uploads, 0o755);
+    }
+
+    expect(fs.readdirSync(dirs.persist)).toEqual([]);
+    expect(fs.readdirSync(dirs.uploads)).toEqual(["photo.png"]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0].message.text).toContain("this session's `/persist` files on");
+    expect(listed("a").retainedDataBytes).toBeGreaterThan(0);
+
+    await sweepRetainedSessionData(deps());
+
+    expect(fs.readdirSync(dirs.uploads)).toEqual([]);
+    expect(notices).toHaveLength(2);
+    expect(notices[1].message.text).toContain("this session's uploads on");
+  });
+
+  it("still tells the agent when the transcript notice cannot be written", async () => {
+    seed({ id: "a", archivedAt: daysAgo(61), persistBytes: 8 * KB });
+
+    await sweepRetainedSessionData({
+      ...deps(),
+      chatHistory: { append: () => { throw new Error("database is locked"); } },
+    });
+
+    expect(sessionManager.get("a")?.pendingAgentNotice).toContain("/persist");
+  });
+
+  it("puts the notice in the history that a restored session loads (req 9)", async () => {
+    seed({ id: "a", archivedAt: daysAgo(61), persistBytes: 8 * KB });
+    const chatHistory = new ChatHistoryManager(dbManager);
+
+    await sweepRetainedSessionData({ ...deps(), chatHistory });
+
+    const history = chatHistory.load("a");
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ role: "assistant", notice: true });
+    expect(history[0].text).toContain("ShipIt deleted this session's `/persist` files");
+  });
+
+  it("starts a new period when the user restores the session and archives it again (req 4)", async () => {
+    const dirs = seed({ id: "a", archivedAt: daysAgo(59), persistBytes: 8 * KB });
+    await sweepRetainedSessionData(deps());
+    expect(listed("a").dataDeletesAt).toBe(daysAgo(59 - 60));
+
+    sessionManager.unarchive("a");
+    sessionManager.archive("a");
+    const archivedAgain = Date.parse(sessionManager.get("a")!.archivedAt!);
+    await sweepRetainedSessionData(deps(archivedAgain + 59 * 86_400_000));
+
+    expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
+    expect(Date.parse(listed("a").dataDeletesAt!)).toBe(archivedAgain + 60 * 86_400_000);
   });
 
   it("tells the caller when a list changed", async () => {

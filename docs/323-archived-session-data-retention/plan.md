@@ -24,8 +24,11 @@ them or lists them continues to find a directory with the correct owner. The
 sandbox checkout goes through `reclaimRegenerableSessionDirs`, the function the
 archive path and the disk ladder already use.
 
-The sweep does nothing for a session whose `workspace_dir` does not end in
-`workspace`. Its siblings are then not the directories above.
+The sweep does nothing for a session whose `workspace_dir` is not exactly
+`<sessions-root>/<id>/workspace`. Its siblings are then not the directories
+above. It also does nothing with `scratch` or `uploads` when a symlink is there
+in place of the directory. On the production host, each of the 1899 sessions
+had that exact path on 2026-10-01.
 
 ## Which sessions, and when the period starts
 
@@ -55,6 +58,8 @@ the list that the browser gets and the sweep cannot disagree about a date.
 The period is 14 days when the kept files use 100 MB or more, and 60 days
 otherwise (req 3, req 13). The size is the total of the files the sweep would
 delete for that session: file blocks under the directories of the table above.
+Each file counts as 1 byte or more, so a session that has only empty files
+still has files to delete.
 
 The sweep measures the size and stores it in `retained_data_bytes`, with the
 time in `retained_data_measured_at`. A stored size is stale, and is measured
@@ -67,11 +72,12 @@ notice. On the production host that is most sessions.
 
 `dataRetentionConfigFromEnv` (`data-retention-config.ts`) reads the three
 values (req 6). They are passed to the orchestrator container in
-`deployment/vps/docker-compose.yml`.
+`deployment/vps/docker-compose.yml`. A value that is not a complete number, or
+is negative, gives the default, so a typing error cannot make a period shorter.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SESSION_DATA_RETENTION_DAYS` | 60 | The period. `0` keeps the files with no time limit. |
+| `SESSION_DATA_RETENTION_DAYS` | 60 | The period. `0` keeps the files of each session with no time limit, also of a large session. |
 | `SESSION_DATA_RETENTION_LARGE_DAYS` | 14 | The period for a large session. `0` gives a large session the normal period. |
 | `SESSION_DATA_RETENTION_LARGE_MB` | 100 | The size from which a session is large. |
 
@@ -87,7 +93,9 @@ a repository, and the rollback handler) get the date from the next pass. The
 pass does not run in local runtime mode, which has no containers.
 
 A session is **live** when it has a runner, a container or a Compose service
-manager. A live session can have the directories mounted, so the sweep does not
+manager, or when a restore of it is in progress (`isRestoreInFlight` in
+`services/session.ts`; a session keeps its archived flag until the restore is
+complete). A live session can have the directories in use, so the sweep does not
 measure it and does not delete from it. The sweep does not depend on another
 mechanism to stop the session first: it checks, and tries again in the next
 pass.
@@ -96,13 +104,26 @@ For each session under retention:
 
 1. Measure the size when it is missing or stale, unless the session is live.
 2. Calculate the deletion time. Stop when there is none, or it is in the future.
-3. Read the session list again and stop when the session is no longer under
-   retention, or when its deletion time moved.
-4. Stop when the session is live.
-5. Delete the files, set the stored size to 0, and write the notices.
+3. Stop the session's Compose stack by project name. A stack that an earlier
+   orchestrator process started is in no map of this process, and could have
+   `/persist` mounted. When the stop fails, the files stay. This is the step
+   that `reclaimToEvicted` (`tier-escalation.ts`) does before it deletes a
+   workspace.
+4. Measure the files again, store that size, and list the entries to delete.
+   Thus the period comes from what is on disk now, not from an earlier
+   measurement.
+5. Take the decision again from the session list as it is now: still under
+   retention, still due with the new size, not live. No `await` is between
+   this check and the first deletion.
+6. Delete the listed entries, write the notices, and set the stored size to 0.
 
-When a deletion fails, the stored size stays, no notice is written, and the
-next pass tries again.
+The check is repeated after each step that waits (steps 3 and 4), because the
+user can restore or open the session during the wait. A file that a session
+creates after step 4 is not in the list, so it is not deleted.
+
+When a part of the deletion fails, the notice names only the parts that were
+deleted, the stored size becomes the size of what is left, and a later pass
+deletes the rest and writes a second notice.
 
 ## What the user sees
 
@@ -117,7 +138,16 @@ next pass tries again.
   row of the transcript when the user restores or opens the session.
 - **The agent (req 9).** The sweep also appends a pending agent notice
   (`appendPendingAgentNotice`), which the next turn of the session delivers to
-  the agent once.
+  the agent once. The two notices are written separately, so a failure of one
+  does not stop the other.
+- **An open All sessions dialog.** The `session_list` event has no archived
+  rows. When the dialog is open, the browser fetches all sessions again on that
+  event, so the date appears when the sweep has measured the session.
+
+Known limit: a manual branch reset and the rebase driver replace the pending
+agent notice (`setPendingAgentNotice`). When the user does one of these in a
+session before the first message after a deletion, the agent does not get the
+fact. The notice in the transcript stays.
 
 ## Restore (req 8, req 10)
 
