@@ -275,7 +275,8 @@ banner recreates just the agent container and leaves the Compose stack up. While
 is running the button reads **Restart after turn**: a click does not interrupt the
 turn, it schedules the restart for the turn's end, and the button then reads
 *Restart scheduled*. No follow-up turn starts after that restart. If the turn
-leaves background work running, the restart waits for the end of the next turn.
+leaves background work running, the restart waits for the end of the next turn;
+the banner says so, and **Restart agent container** on it then restarts at once.
 
 A container that has simply *stopped* is not automatically one of these. It may
 be idle reclaim, which is normal and explained in [sessions.md](sessions.md), or

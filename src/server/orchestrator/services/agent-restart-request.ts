@@ -51,18 +51,33 @@ export function recordRestartRequest(
 
 export interface UserRestartDeps {
   sessionManager: Pick<SessionManager, "setPendingUserRestart">;
-  containerManager: SessionContainerManager | null;
+  containerManager: Pick<SessionContainerManager, "get"> | null;
   runnerRegistry: Pick<SessionRunnerRegistry, "get">;
 }
 
 /**
- * The user's "Restart after turn". True when a turn runs and the restart now waits for its
- * end; false when nothing runs, and the caller restarts at once.
+ * The user's "Restart after turn". True when a turn or its post-turn work runs and the
+ * restart now waits for the post-turn step; false when the caller restarts at once.
  */
 export function deferRestartToTurnEnd(deps: UserRestartDeps, sessionId: string): boolean {
-  if (!deps.containerManager || !deps.runnerRegistry.get(sessionId)?.running) return false;
-  deps.sessionManager.setPendingUserRestart(sessionId, true);
+  const container = deps.containerManager?.get(sessionId);
+  const runner = deps.runnerRegistry.get(sessionId);
+  // A restart during post-turn work would drop a message that waits behind the commit.
+  if (!container || !(runner?.running || runner?.postTurnWorkInFlight)) return false;
+  deps.sessionManager.setPendingUserRestart(sessionId, container.id);
   return true;
+}
+
+/** The user's request stands only while the container it was made for is the session's. */
+export function userRestartPending(
+  deps: {
+    sessionManager: Pick<SessionManager, "getPendingUserRestart">;
+    containerManager?: Pick<SessionContainerManager, "get"> | null | undefined;
+  },
+  sessionId: string,
+): boolean {
+  const containerId = deps.containerManager?.get(sessionId)?.id;
+  return containerId !== undefined && deps.sessionManager.getPendingUserRestart(sessionId) === containerId;
 }
 
 /** What the ending turn tells the step about itself. */
@@ -96,7 +111,7 @@ export async function runRequestedRestart(
 ): Promise<void> {
   const { sessionId, runner } = turn;
   const note = deps.sessionManager.getPendingRestartNote(sessionId);
-  if (!note && !deps.sessionManager.hasPendingUserRestart(sessionId)) return;
+  if (!note && !userRestartPending(deps, sessionId)) return;
   // A late terminal callback from an older turn sees a disposed runner that looks idle.
   if (deps.runnerRegistry.get(sessionId) !== runner || !turn.turnIsCurrent()) return;
   const heldByOther = runner.systemTurnInProgress && !turn.ownsSystemHold();

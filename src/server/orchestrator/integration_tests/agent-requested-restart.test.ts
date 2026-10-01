@@ -19,6 +19,7 @@ import type { TurnOutcome } from "../turn-settlement.js";
 import {
   recordRestartRequest,
   deferRestartToTurnEnd,
+  userRestartPending,
   runRequestedRestart,
   buildRestartFollowupPrompt,
 } from "../services/agent-restart-request.js";
@@ -47,7 +48,8 @@ const NOTE = "check that node -v prints the new version";
 function stubContainerManager(): SessionContainerManager & { destroyed: number; onDestroy?: () => void } {
   const cm: { destroyed: number; onDestroy?: () => void } & Record<string, unknown> = {
     destroyed: 0,
-    get: () => ({ status: "running" }),
+    // A replacement container has a new id, as a real one does.
+    get: () => ({ status: "running", id: `container-${cm.destroyed}` }),
     destroyAgentContainer: async () => { cm.destroyed += 1; cm.onDestroy?.(); },
     getLastCreateError: () => null,
     clearCreateError: () => {},
@@ -230,7 +232,7 @@ describe("agent-requested restart over real runners (docs/321)", () => {
     expect(first.disposed).toBe(true);
     expect(second).not.toBe(first);
     expect(containerManager.destroyed).toBe(1);
-    expect(sessionManager.hasPendingUserRestart(SESSION)).toBe(false);
+    expect(userRestartPending({ sessionManager, containerManager }, SESSION)).toBe(false);
     await waitForTurn(() => prompts().length === 2, "kept message prompt");
     // The only turn on the new runner is the user's own message: there is no follow-up turn.
     expect(prompts()[1]).toContain("sent while restarting");
@@ -260,6 +262,7 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
   let app: FastifyInstance | null = null;
   let db: DatabaseManager;
   let sessionManager: SessionManager;
+  let containerManager: SessionContainerManager | null = null;
 
   afterEach(async () => {
     await app?.close();
@@ -272,6 +275,16 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
     db = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-restart-route-"));
     sessionManager = new SessionManager(db);
+    containerManager = withContainers
+      ? new SessionContainerManager({
+          docker: createFakeDocker() as never,
+          imageName: "shipit-session-worker:test",
+          networkName: "shipit-test",
+          workerPort: await allocateDeadLoopbackPort(),
+          skipHealthCheck: true,
+          stackName: "shipit-test",
+        })
+      : null;
     app = await buildApp({
       workspaceDir: tmpDir,
       credentialStore: createTestCredentialStore(tmpDir),
@@ -280,18 +293,11 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => new FakeClaudeProcess() as never,
       serveStatic: false,
-      ...(withContainers
+      ...(containerManager
         ? {
             // Runners stay local: the route only records the request.
             runnerFactory: (o) => new SessionRunner(o),
-            sessionContainerManager: new SessionContainerManager({
-              docker: createFakeDocker() as never,
-              imageName: "shipit-session-worker:test",
-              networkName: "shipit-test",
-              workerPort: await allocateDeadLoopbackPort(),
-              skipHealthCheck: true,
-              stackName: "shipit-test",
-            }),
+            sessionContainerManager: containerManager,
           }
         : {}),
     });
@@ -325,19 +331,25 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
 
   it("the restart route records the user's request while a turn runs (docs/242 req 9)", async () => {
     const id = await build(true);
+    vi.spyOn(containerManager!, "get").mockReturnValue({ id: "container-1", status: "running" } as never);
     const runner = app!.runnerRegistry.getOrCreate(id, tmpDir, "claude");
-    runner.running = true;
-
-    const res = await app!.inject({
+    const restart = () => app!.inject({
       method: "POST",
       url: `/api/sessions/${id}/agent/container/restart`,
       payload: { afterTurn: true },
     });
 
-    expect(res.json()).toEqual({ ok: true, scheduled: true });
-    expect(sessionManager.hasPendingUserRestart(id)).toBe(true);
+    runner.running = true;
+    expect((await restart()).json()).toEqual({ ok: true, scheduled: true });
+    expect(sessionManager.getPendingUserRestart(id)).toBe("container-1");
+
+    // Post-turn work: `running` is already false, and a restart now would dispose the runner.
+    runner.running = false;
+    runner.beginPostTurnWork();
+    expect((await restart()).json()).toEqual({ ok: true, scheduled: true });
+    runner.endPostTurnWork();
+
     expect(app!.runnerRegistry.get(id)).toBe(runner);
     expect(runner.disposed).toBe(false);
-    runner.running = false;
   });
 });

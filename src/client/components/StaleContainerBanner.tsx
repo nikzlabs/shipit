@@ -26,8 +26,9 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
   if (freshness?.state !== "stale") return null;
 
   const restarting = requesting || (!!rescueState && rescueState.phase !== "ready" && rescueState.phase !== "failed");
-  // With no turn running, a scheduled restart waits for background work; the button restarts now.
+  // With no turn running, a scheduled restart waits for the agent's work; the button restarts now.
   const scheduled = turnRunning && restartScheduled;
+  const waiting = restartScheduled && !turnRunning && !restarting;
   const disabled = scheduled || restarting;
   const buttonTitle = scheduled
     ? "The agent container restarts when this turn ends"
@@ -47,7 +48,8 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
         ? api.post<RestartResult>(url, { afterTurn: true })
         : api.post<RestartResult>(url));
       if ("scheduled" in result) {
-        setRestartScheduled(true);
+        // A late answer must not mark the session the user switched to.
+        if (useSessionStore.getState().sessionId === sessionId) setRestartScheduled(true);
         return;
       }
       if (result.newContainerState === "missing" && result.error) {
@@ -77,7 +79,11 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
             <div className="font-medium">Update available for this session</div>
             <div className="text-(--color-text-secondary)">
               Its agent container is from an earlier ShipIt build.{" "}
-              {scheduled ? "It restarts when this turn ends." : "Restart it to use the latest updates."}
+              {scheduled
+                ? "It restarts when this turn ends."
+                : waiting
+                  ? "The scheduled restart waits for the end of the agent's work. Restart it now if you do not want to wait."
+                  : "Restart it to use the latest updates."}
             </div>
           </div>
         </div>

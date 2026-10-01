@@ -111,7 +111,6 @@ export async function registerContainerRoutes(
     "/api/sessions/:id/container/restart",
     async (request, reply) => {
       try {
-        sessionManager.setPendingUserRestart(request.params.id, false);
         const result = await restartContainer(
           {
             sessionManager: deps.sessionManager,
@@ -148,8 +147,6 @@ export async function registerContainerRoutes(
         if (request.body?.afterTurn === true && deferRestartToTurnEnd(deferDeps, id)) {
           return { ok: true, scheduled: true };
         }
-        // A restart now is the one that a pending "Restart after turn" waits for.
-        sessionManager.setPendingUserRestart(id, false);
         const result = await restartAgent(
           {
             sessionManager: deps.sessionManager,

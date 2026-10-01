@@ -297,13 +297,17 @@ hide a failed restart.
 
 During a turn the button reads **Restart after turn** and is enabled (req 9). A
 click sends the same request with `afterTurn: true`. The route decides, on the
-server's own `runner.running`, which of two things the click means:
+server's own runner state, which of two things the click means:
 
-- **A turn runs.** `deferRestartToTurnEnd` (`services/agent-restart-request.ts`)
-  records the request in `sessions.pending_user_restart` and answers
-  `{ scheduled: true }`. The button then reads **Restart scheduled** and is
-  disabled; the banner says that the container restarts when the turn ends.
-- **No turn runs** (the turn ended before the request arrived). The route
+- **A turn or its post-turn work runs** (`runner.running`, or
+  `postTurnWorkInFlight`). `deferRestartToTurnEnd`
+  (`services/agent-restart-request.ts`) records the request in
+  `sessions.pending_user_restart` and answers `{ scheduled: true }`. The button
+  then reads **Restart scheduled** and is disabled; the banner says that the
+  container restarts when the turn ends. Post-turn work counts because `running`
+  goes false before the local commit: a restart there disposes the runner and
+  drops a message that waits behind that commit.
+- **Nothing runs** (the turn ended before the request arrived). The route
   restarts at once, as the idle button does.
 
 The restart itself is the post-turn step of
@@ -319,25 +323,35 @@ the agent's in three ways:
   background tasks or a brokered sub-agent run in flight
   (`backgroundTaskCount`, `subAgentSpawnsInFlight`), the request stays pending
   and the next turn's end retries — normally the turn that this work wakes. The
-  boot sweep keeps such a worker for the same reason. Meanwhile the button reads
-  **Restart agent container** again, and a click restarts at once.
+  boot sweep keeps such a worker for the same reason.
 - **A failed restart parks no notice for the agent.** The health strip shows the
   failure, and the banner stays.
 
 When both the user and the agent asked in one turn, there is one restart and the
-agent gets its note. One write (`clearPendingRestart`) clears both requests. A
-restart from **Restart agent container** or **Restart all** also clears the user's
-request, so that it cannot cause a second restart at a later turn's end.
+agent gets its note. One write (`clearPendingRestart`) clears both requests.
+
+**The request is for one container.** The column holds the id of the container
+the request was made for, and `userRestartPending` is true only while that
+container is still the session's. Any replacement satisfies the request: the
+restart buttons, the boot sweep's reclaim, an idle reclaim, a settings-driven
+rebuild. So a request that was not served cannot restart a container that is
+already current, and no replacement path has to remember to clear it.
 
 The scheduled state is server state. `session_container_freshness` carries
 `restartScheduled`, sent on attach, so a reload or a session switch shows
-**Restart scheduled** again. The client that clicked sets it from the response.
-There is no cancel: the restart keeps the workspace, `/persist` and the queue, and
-the user asked for it.
+**Restart scheduled** again. The client that clicked sets it from the response,
+and only if the session is still the active one. There is no cancel: the restart
+keeps the workspace, `/persist` and the queue, and the user asked for it.
 
-The known limits of docs/321-agent-requested-restart apply: a request waits for
-the next turn's end when a merge or another flow holds the session, when the turn
-was a rebase-resolution step, or when a stopped process sends no terminal event.
+**A request that still waits after the turn.** The banner then says that the
+scheduled restart waits for the end of the agent's work, and the button reads
+**Restart agent container** again; a click restarts at once. This is the state
+after the background-work wait, and after the known limits of
+docs/321-agent-requested-restart: a merge or another flow holds the session, the
+turn was a rebase-resolution step, or a stopped process sends no terminal event.
+One more limit is specific to the wait: background work that ends without a turn
+of its own (a foreground consult that timed out, a background process that never
+ends) triggers no retry, so the request waits for the next turn's end.
 
 ### Unknown build identity
 
@@ -480,7 +494,9 @@ ShipIt update
 | Stale worker whose turn was live AT boot, and settles later | Adopted, and then **stays stale**: nothing schedules a reclaim for the moment its turn ends, so the banner is what the user meets on that one session and the manual "Restart agent" is the path. Requirement 8 is met for every session the sweep reached and not for this one — recorded on planning#498 rather than closed over. |
 | Restart request fails | Existing container remains classified stale; warning stays visible and the existing error surface explains the failure. |
 | User clicks **Restart after turn** during a turn | The request is recorded; the agent container restarts at the turn's end, with no follow-up turn. |
-| The turn with a scheduled restart leaves background work running | The request waits for the next turn's end. The idle button restarts at once. |
+| The turn with a scheduled restart leaves background work running | The request waits for the next turn's end. The banner says so, and the idle button restarts at once. |
+| The container is replaced while a request is pending | The request is satisfied: it names the old container, so no later turn restarts the new one. |
+| The answer to the request arrives after a session switch | Ignored by the client; the owning session reads the state on its next attach. |
 | New container starts from an unexpectedly old/custom image | Recomputed IDs still differ, so the warning remains. |
 | Session has no running container | No warning. Its next activation creates from the current image. |
 | Orchestrator rolls back while a newer worker survives | IDs differ and the warning appears; diagnostics show the exact mismatch without claiming chronological ordering. |

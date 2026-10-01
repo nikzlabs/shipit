@@ -14,6 +14,7 @@ vi.mock("../hooks/useApi.js", () => ({
 describe("StaleContainerBanner", () => {
   beforeEach(() => {
     useSessionStore.getState().reset();
+    useSessionStore.getState().setSessionId(undefined);
     post.mockReset();
   });
 
@@ -51,6 +52,7 @@ describe("StaleContainerBanner", () => {
 
   it("schedules the restart during an active turn, without the restart overlay", async () => {
     post.mockResolvedValue({ ok: true, scheduled: true });
+    useSessionStore.getState().setSessionId("s1");
     useSessionStore.getState().setContainerFreshness(STALE);
     useSessionStore.getState().setIsLoading(true);
     render(<StaleContainerBanner sessionId="s1" />);
@@ -90,11 +92,27 @@ describe("StaleContainerBanner", () => {
     expect(useSessionStore.getState().restartScheduled).toBe(false);
   });
 
-  it("offers the restart again when a scheduled one still waits after the turn", () => {
+  it("says so when a scheduled restart still waits after the turn, and offers the restart now", () => {
     useSessionStore.getState().setContainerFreshness(STALE);
     useSessionStore.getState().setRestartScheduled(true);
     render(<StaleContainerBanner sessionId="s1" />);
 
+    expect(screen.getByText(/The scheduled restart waits/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restart agent container" })).toBeEnabled();
+  });
+
+  it("does not mark another session when the answer arrives after a session switch", async () => {
+    let answer: (value: unknown) => void = () => {};
+    post.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    useSessionStore.getState().setContainerFreshness(STALE);
+    useSessionStore.getState().setIsLoading(true);
+    render(<StaleContainerBanner sessionId="s1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart after turn" }));
+
+    useSessionStore.getState().setSessionId("s2");
+    answer({ ok: true, scheduled: true });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Restart after turn" })).toBeEnabled());
+    expect(useSessionStore.getState().restartScheduled).toBe(false);
   });
 });
