@@ -20,12 +20,6 @@ dist/
 
 .claude/scheduled_tasks.lock
 
-# Plugin skill copies land here through the .claude/skills symlink. ShipIt builds
-# before the symlink-aware .git/info/exclude fix miss them; remove these lines
-# once every session runs a build that has it.
-/.agents/skills/plugins--*/
-/.agents/skills/.plugins--*.staging-*/
-
 sessions/
 .inner-shipit/
 

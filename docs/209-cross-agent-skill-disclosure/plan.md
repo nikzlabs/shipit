@@ -45,9 +45,10 @@ Claude still discovers every skill through the symlinked `.claude/skills`.
 ShipIt copies plugin skills into `.claude/skills/`, so the copies land in
 `.agents/skills/`. Git does not look through a symlink, so ShipIt also writes
 `.git/info/exclude` entries for the resolved `.agents/skills/…` path
-(`pluginSkillExcludeEntries`, docs/262-plugins). ShipIt builds without that fix
-exclude only `.claude/skills/…`, so this repo's `.gitignore` also ignores
-`/.agents/skills/plugins--*/` until every session runs a build that has it.
+(`pluginSkillExcludeEntries`, docs/262-plugins). The repo's `.gitignore` has no
+entry for the copies: the exclude file is the only thing that keeps them out of
+git. A ShipIt build older than that fix excludes only `.claude/skills/…`, and
+its auto-commit adds the copies.
 
 ## The key finding (verified empirically, 2026-06-15)
 
