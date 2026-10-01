@@ -352,19 +352,17 @@ pushed. A push uploads only the objects of commits the remote does not have yet,
 so a commit that changes `lfs.url` and adds no LFS file uploads nothing.
 `git lfs push --all origin` does not copy them either: with no ref named it
 reads local refs only, and a session checkout has few local branches. It skips
-the objects of the other remote branches, and fails with `(missing)` on each
-object the local store does not hold. Copy by object id, and commit `.lfsconfig`
-last:
+the objects of the other remote branches, and fails with `(missing)` on an
+object that neither the local store nor the new server holds. Instead, list
+every object of every branch and tag, get the ones the local store lacks from
+the old server, and push the list to the new server by object id:
 
 ```bash
 git fetch --tags origin
-# Every object of every branch and tag.
 git lfs ls-files --all --long | cut -d' ' -f1 | sort -u > /tmp/oids
-# The objects the local store lacks, from the old server.
 git -c lfs.url=<old LFS URL> lfs fetch --all origin
-# In the working tree only, not committed. The push then goes to the new server.
-git config -f .lfsconfig lfs.url <new LFS URL>
-git lfs push --object-id origin --stdin < /tmp/oids
+git -c lfs.url=<new LFS URL> -c lfs.pushurl=<new LFS URL> \
+  lfs push --object-id origin --stdin < /tmp/oids
 ```
 
 For GitHub the old URL is `https://github.com/<owner>/<repo>.git/info/lfs`, and
@@ -372,22 +370,24 @@ GitHub bills that fetch as a download. Then check the result: send the new
 server a download batch request (`POST <new LFS URL>/objects/batch`,
 `"operation": "download"`) with the `oid` and `size` of every object, which
 `git lfs ls-files --all --json` lists. Each object must come back with a
-`download` action. ShipIt commits `.lfsconfig` when the turn ends, so do the
-copy and the check in one turn, and delete `.lfsconfig` if the check fails. A
-clone that reads the new `lfs.url` before the new server holds the bytes gets
-pointer stubs with a clean `git status`.
+`download` action. Write the new `lfs.url` into `.lfsconfig` only after that
+check passes. ShipIt commits the file when the turn ends, also when the turn
+fails part-way, and a clone that reads the new `lfs.url` before the new server
+holds the bytes gets pointer stubs with a clean `git status`.
 
 Branches made before the move can need the copy again. A sync rebases such a
 branch onto the new `lfs.url`, and the upload before its force-push sends every
-LFS object of the rebased commits to the new server. If the session's store
-holds only a pointer for one of them, that upload fails with `(missing)` and
-ShipIt does not push: run the copy in that session. A merge of the base into the
-branch uploads only the objects added after the merge. So a branch that reaches
-the base with no sync after the move, or with only such a merge, leaves the base
-naming objects the new server lacks: run the copy and the check again after it
-merges. On a repeat, also run `git lfs fetch --all origin` before the push,
-because the push stops on an id the local store does not hold, and the new
-server then has objects of its own.
+LFS object of the rebased commits to the new server. If neither the session's
+store nor the new server holds one of them, that upload fails with `(missing)`
+and ShipIt does not push: run the copy in that session. A merge of the base into
+the branch rewrites no commit, so the upload sends only the objects of commits
+not pushed before. So a branch that reaches the base with no sync after the
+move, or with only such a merge, makes the base name objects the new server
+lacks. The list covers every remote branch, so run the copy and the check again
+before such a branch merges, or immediately if it merged already. On a repeat,
+also run `git lfs fetch --all origin` before the push: the push by object id
+stops on an id the local store does not hold, and the new server then has
+objects of its own.
 
 **LFS objects are shared between sessions on one host.** ShipIt keeps one LFS
 object store per repository per ShipIt host, beside its bare git cache. This is

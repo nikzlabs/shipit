@@ -487,12 +487,13 @@ Not covered, deliberately: a commit that moves `lfs.url` to a new, empty server
 and adds no LFS file pushes normally, because the range has nothing to upload.
 That matches a hooks-enabled `git push`. Moving LFS storage is a migration: get
 the objects of every branch and tag from the old server, push them to the new
-one by object id, and check them there, all before `.lfsconfig` is committed.
-The agent-facing docs give the sequence (`shipit-docs/environment.md`, Git LFS).
-`git lfs push --all origin` is not that migration. With no ref named it reads
-local refs only, and a session checkout has few local branches, so it skips the
-objects of the other remote branches and fails with `(missing)` on each object
-the local store does not hold.
+one by object id, and check them there, and only then write the new `lfs.url`
+into `.lfsconfig`. The agent-facing docs give the sequence
+(`shipit-docs/environment.md`, Git LFS). `git lfs push --all origin` is not that
+migration. With no ref named it reads local refs only, and a session checkout
+has few local branches, so it skips the objects of the other remote branches,
+and it fails with `(missing)` on an object that neither the local store nor the
+new server holds.
 
 ### 9. The GitHub credential is offered to github.com only
 
