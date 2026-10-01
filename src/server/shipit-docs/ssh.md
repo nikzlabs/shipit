@@ -23,6 +23,24 @@ So `ssh prod 'df -h'` works, and so do `scp build.tar prod:/srv/`, `rsync -a dis
 
 If `~/.ssh/config` contains no `Host` block, this session has no destination granted. Say so and ask the user to grant one in the session's settings (Session settings → SSH destinations). Do not try to add a key yourself — there is nothing you can add that ShipIt will sign with.
 
+## Running git on a destination
+
+Run it through `ssh`, as a quoted remote command or as a heredoc on `ssh`'s stdin:
+
+```sh
+ssh prod 'cd /srv/app && git fetch -q origin && git checkout -q --detach origin/main'
+
+ssh prod bash -s <<'EOF'
+cd /srv/app
+git fetch -q origin
+git checkout -q --detach origin/main
+EOF
+```
+
+Quote the heredoc delimiter (`<<'EOF'`). With a bare `<<EOF`, bash expands `$(…)` and `$VAR` in the body here, before `ssh` sends it.
+
+ShipIt's branch guard is meant to refuse branch moves only for git that runs in this container, so it leaves both forms alone. It still judges a command chained after `ssh` — `ssh prod true && git checkout main` runs that checkout here — and a body behind a bare `<<EOF`. It also reads an `ssh` behind a wrapper such as `timeout 60 ssh …` like any other command, so give `ssh` its own limits instead: `-o ConnectTimeout=10 -o ServerAliveInterval=15`.
+
 ## What you cannot do
 
 **You cannot read the private key.** It lives in the orchestrator's credential store and never enters this container: not in the compose file, not in a compose service's environment, not under `/credentials`, not in a settings read. `~/.ssh` holds the config, `known_hosts`, and a `.pub` file — public material only.
