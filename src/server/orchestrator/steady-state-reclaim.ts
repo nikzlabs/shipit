@@ -226,10 +226,11 @@ async function sweepEvictedAgentCaches(
       } catch {
         continue;
       }
-      // Re-read per directory: an evicted session that is restored becomes hot first.
+      await sleep(paceMs);
+      // Read after the pace, right before deleting: a restore marks the session hot before
+      // its runner starts (finishRestore).
       if (!isSessionEvicted(entry)) break;
       try {
-        await sleep(paceMs);
         await fs.rm(full, { recursive: true, force: true });
         removed += 1;
       } catch (err) {

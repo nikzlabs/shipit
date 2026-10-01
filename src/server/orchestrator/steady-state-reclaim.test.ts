@@ -942,5 +942,23 @@ describe("runSteadyStateReclaim", () => {
       expect(fs.existsSync(path.join(home, ".tmp"))).toBe(false);
       expect(fs.existsSync(path.join(home, "cache"))).toBe(true);
     });
+
+    it("keeps the caches of a session restored during the pacing delay", async () => {
+      setup();
+      const home = codexHome("restored-session");
+      let evicted = true;
+      setTimeout(() => { evicted = false; }, 10);
+
+      const result = await runSteadyStateReclaim({
+        repoStore: new RepoStore(dbManager!),
+        stateDir: tmpDir,
+        credentialsDir: path.join(tmpDir, "credentials"),
+        isSessionEvicted: () => evicted,
+        paceMs: 50,
+      });
+
+      expect(result.agentCacheDirsRemoved).toBe(0);
+      expect(fs.existsSync(path.join(home, ".tmp", "plugins"))).toBe(true);
+    });
   });
 });
