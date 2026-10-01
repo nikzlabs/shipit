@@ -144,7 +144,7 @@ deletes the rest and writes a second notice.
   rows. When the dialog is open, the browser fetches all sessions again on that
   event, so the date appears when the sweep has measured the session.
 
-Known limit: a manual branch reset and the rebase driver replace the pending
+Known limit (planning#633): a manual branch reset and the rebase driver replace the pending
 agent notice (`setPendingAgentNotice`). When the user does one of these in a
 session before the first message after a deletion, the agent does not get the
 fact. The notice in the transcript stays.
