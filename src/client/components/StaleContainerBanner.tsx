@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Spinner } from "./Spinner.js";
-import { ArrowsClockwiseIcon, WarningIcon } from "@phosphor-icons/react";
+import { ArrowsClockwiseIcon, ClockIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -8,15 +8,15 @@ import { useUiStore } from "../stores/ui-store.js";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 
-interface RestartResult {
-  ok: true;
-  newContainerState: "running" | "starting" | "missing" | "pending";
-  error: string | null;
-}
+type RestartResult =
+  | { ok: true; scheduled: true }
+  | { ok: true; newContainerState: "running" | "starting" | "missing" | "pending"; error: string | null };
 
 export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
   const freshness = useSessionStore((s) => s.containerFreshness);
   const turnRunning = useSessionStore((s) => s.isLoading);
+  const restartScheduled = useSessionStore((s) => s.restartScheduled);
+  const setRestartScheduled = useSessionStore((s) => s.setRestartScheduled);
   const rescueState = useSessionStore((s) => s.rescueState);
   const setRescueState = useSessionStore((s) => s.setRescueState);
   const setRecoveryActionError = useSessionStore((s) => s.setRecoveryActionError);
@@ -26,21 +26,30 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
   if (freshness?.state !== "stale") return null;
 
   const restarting = requesting || (!!rescueState && rescueState.phase !== "ready" && rescueState.phase !== "failed");
-  const disabled = turnRunning || restarting;
-  const title = turnRunning
-    ? "Wait for the current turn to finish"
-    : `Worker ${freshness.workerBuildId}; ShipIt ${freshness.orchestratorBuildId}`;
+  // With no turn running, a scheduled restart waits for background work; the button restarts now.
+  const scheduled = turnRunning && restartScheduled;
+  const disabled = scheduled || restarting;
+  const buttonTitle = scheduled
+    ? "The agent container restarts when this turn ends"
+    : turnRunning
+      ? "Restart the agent container when this turn ends; the turn is not interrupted"
+      : "Restart only the agent container; preview services keep running";
 
   const restart = async () => {
     if (disabled) return;
     const startedAt = Date.now();
+    const url = `/api/sessions/${encodeURIComponent(sessionId)}/agent/container/restart`;
     setRequesting(true);
     setRecoveryActionError(null);
-    setRescueState({ phase: "restarting_agent", startedAt });
+    if (!turnRunning) setRescueState({ phase: "restarting_agent", startedAt });
     try {
-      const result = await api.post<RestartResult>(
-        `/api/sessions/${encodeURIComponent(sessionId)}/agent/container/restart`,
-      );
+      const result = await (turnRunning
+        ? api.post<RestartResult>(url, { afterTurn: true })
+        : api.post<RestartResult>(url));
+      if ("scheduled" in result) {
+        setRestartScheduled(true);
+        return;
+      }
       if (result.newContainerState === "missing" && result.error) {
         throw new Error(result.error);
       }
@@ -48,7 +57,7 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
     } catch (error) {
       const message = error instanceof ApiError ? error.message : String(error instanceof Error ? error.message : error);
       setRecoveryActionError(`Restart agent container failed: ${message}`);
-      setRescueState({ phase: "failed", reason: "request_error", message, startedAt });
+      if (!turnRunning) setRescueState({ phase: "failed", reason: "request_error", message, startedAt });
       useUiStore.getState().setToast({ message: `Failed to restart the agent container: ${message}` });
     } finally {
       setRequesting(false);
@@ -60,14 +69,15 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
       <Banner
         variant="warning"
         className="flex flex-col items-stretch gap-2 rounded-lg border border-(--color-warning) text-left font-normal sm:flex-row sm:items-center"
-        title={title}
+        title={`Worker ${freshness.workerBuildId}; ShipIt ${freshness.orchestratorBuildId}`}
       >
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <WarningIcon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" />
           <div className="min-w-0 flex-1">
             <div className="font-medium">Update available for this session</div>
             <div className="text-(--color-text-secondary)">
-              Its agent container is from an earlier ShipIt build. Restart it to use the latest updates.
+              Its agent container is from an earlier ShipIt build.{" "}
+              {scheduled ? "It restarts when this turn ends." : "Restart it to use the latest updates."}
             </div>
           </div>
         </div>
@@ -77,13 +87,15 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
           size="md"
           className="w-full sm:w-auto"
           disabled={disabled}
-          title={turnRunning ? "Wait for the current turn to finish" : "Restart only the agent container; preview services keep running"}
+          title={buttonTitle}
           onClick={() => void restart()}
         >
           {restarting
             ? <Spinner size={ICON_SIZE.XS} />
-            : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
-          {turnRunning ? "Restart after turn" : "Restart agent container"}
+            : scheduled
+              ? <ClockIcon size={ICON_SIZE.XS} />
+              : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
+          {scheduled ? "Restart scheduled" : turnRunning ? "Restart after turn" : "Restart agent container"}
         </Button>
       </Banner>
     </div>

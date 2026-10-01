@@ -272,9 +272,10 @@ strip. Read the error; it is usually the host — disk, image, or network space.
 **Update available for this session.** Not a failure at all: the session's agent
 container predates the running ShipIt build. **Restart agent container** on that
 banner recreates just the agent container and leaves the Compose stack up. While a turn
-is running the button is **disabled** and reads *Restart after turn* — that is a
-label, not a promise: nothing is queued, and someone has to press it once the
-turn ends.
+is running the button reads **Restart after turn**: a click does not interrupt the
+turn, it schedules the restart for the turn's end, and the button then reads
+*Restart scheduled*. No follow-up turn starts after that restart. If the turn
+leaves background work running, the restart waits for the end of the next turn.
 
 A container that has simply *stopped* is not automatically one of these. It may
 be idle reclaim, which is normal and explained in [sessions.md](sessions.md), or

@@ -6,6 +6,11 @@ User request, 2026-07-31:
 
 > now that the containers are not killed on shipit update, needs some indication that a container a stale, with a suggestion to restart it. Create a design doc with requirements.md file next to it, requirements only sourced from me
 
+User request, 2026-10-01, about the banner's disabled **Restart after turn**
+button:
+
+> can we make this button enabled during a turn and schedule a restart? Now that the agent could schedule a restart itself.
+
 ## User-sourced requirements
 
 1. Now that ShipIt updates do not kill existing containers, ShipIt must indicate when a container is stale.
@@ -20,6 +25,9 @@ User request, 2026-07-31:
    update actually frees the RAM they were holding.
 8. After such an update, the user must stop meeting the stale-container banner
    on the sessions they open afterwards.
+9. The restart button on the stale-container banner must be enabled during a
+   turn. A click during a turn schedules the restart; the restart then happens
+   without a second click.
 
 ## Resolved questions
 

@@ -9,7 +9,8 @@ description: Detect workers left on an older ShipIt build after an update, recla
 ## Status
 
 Implemented (2026-07-31), automatic idle rotation added 2026-08-02, replaced by
-idle **reclaim** 2026-09-02 (reqs 7, 8).
+idle **reclaim** 2026-09-02 (reqs 7, 8). **Restart after turn** added 2026-10-01
+(req 9).
 
 Worker image build IDs are retained on fresh and adopted container records,
 classified centrally, and delivered as a transient session-scoped WebSocket
@@ -71,8 +72,9 @@ primary indication.
 
 Reclaiming the agent container kills its current CLI process. The boot sweep
 therefore checks the worker's authoritative agent status: a live turn is
-re-adopted unchanged and never touched. The manual action remains disabled during
-a turn as a fallback for states that cannot be classified automatically.
+re-adopted unchanged and never touched. The manual action does not interrupt a
+turn either: during a turn it schedules the restart for the turn's end — see
+[Restart after turn](#restart-after-turn).
 
 **`running: false` was the wrong test, and it is gone (2026-09-02).** The rule
 this section originally described rotated only a stale worker reporting
@@ -291,6 +293,52 @@ new worker is ready. The warning clears only after the reconnect reports that
 the new container matches the orchestrator build; an optimistic click must not
 hide a failed restart.
 
+### Restart after turn
+
+During a turn the button reads **Restart after turn** and is enabled (req 9). A
+click sends the same request with `afterTurn: true`. The route decides, on the
+server's own `runner.running`, which of two things the click means:
+
+- **A turn runs.** `deferRestartToTurnEnd` (`services/agent-restart-request.ts`)
+  records the request in `sessions.pending_user_restart` and answers
+  `{ scheduled: true }`. The button then reads **Restart scheduled** and is
+  disabled; the banner says that the container restarts when the turn ends.
+- **No turn runs** (the turn ended before the request arrived). The route
+  restarts at once, as the idle button does.
+
+The restart itself is the post-turn step of
+[docs/321-agent-requested-restart](../321-agent-requested-restart/plan.md),
+`runRequestedRestart`. It now acts on either request, and the user's differs from
+the agent's in three ways:
+
+- **No follow-up turn.** The agent's request carries a note that comes back as a
+  turn. The user's has nothing to continue: it is the **Restart agent container**
+  action, moved to the turn's end. Messages sent during the restart are still
+  carried to the new runner and run there.
+- **It waits for the agent's background work.** If the ending turn left
+  background tasks or a brokered sub-agent run in flight
+  (`backgroundTaskCount`, `subAgentSpawnsInFlight`), the request stays pending
+  and the next turn's end retries — normally the turn that this work wakes. The
+  boot sweep keeps such a worker for the same reason. Meanwhile the button reads
+  **Restart agent container** again, and a click restarts at once.
+- **A failed restart parks no notice for the agent.** The health strip shows the
+  failure, and the banner stays.
+
+When both the user and the agent asked in one turn, there is one restart and the
+agent gets its note. One write (`clearPendingRestart`) clears both requests. A
+restart from **Restart agent container** or **Restart all** also clears the user's
+request, so that it cannot cause a second restart at a later turn's end.
+
+The scheduled state is server state. `session_container_freshness` carries
+`restartScheduled`, sent on attach, so a reload or a session switch shows
+**Restart scheduled** again. The client that clicked sets it from the response.
+There is no cancel: the restart keeps the workspace, `/persist` and the queue, and
+the user asked for it.
+
+The known limits of docs/321-agent-requested-restart apply: a request waits for
+the next turn's end when a merge or another flow holds the session, when the turn
+was a rebase-resolution step, or when a stopped process sends no terminal event.
+
 ### Unknown build identity
 
 Do not call a container stale when either build ID is unknown. Show the worker
@@ -380,7 +428,8 @@ Add `StaleContainerBanner` in the chat column immediately above
 - uses semantic design tokens through the shared warning `Banner`;
 - uses Phosphor icons and `ICON_SIZE` constants;
 - invokes the existing agent-container restart endpoint;
-- disables restart while `isLoading` reports an active turn;
+- while `isLoading` reports an active turn, sends `afterTurn: true` and shows no
+  restart overlay; the restart is scheduled (req 9);
 - joins the existing rescue state/overlay rather than inventing a second
   spinner or restart state machine;
 - leaves the warning visible on request failure and surfaces the failure using
@@ -410,7 +459,7 @@ ShipIt update
   -> compare with orchestrator buildId
   -> session attach emits session_container_freshness
   -> active chat renders warning
-  -> user selects Restart agent after any turn finishes
+  -> user selects Restart agent container, or Restart after turn during a turn
   -> existing restart lifecycle recreates worker, reconnects WS
   -> matching build IDs arrive
   -> warning clears
@@ -430,6 +479,8 @@ ShipIt update
 | Stale idle container with a running terminal or an `agent.install` in flight | Left alone (`terminalActive` / `installRunning`). A shell that merely exists also holds it; see the reasoning above. |
 | Stale worker whose turn was live AT boot, and settles later | Adopted, and then **stays stale**: nothing schedules a reclaim for the moment its turn ends, so the banner is what the user meets on that one session and the manual "Restart agent" is the path. Requirement 8 is met for every session the sweep reached and not for this one — recorded on planning#498 rather than closed over. |
 | Restart request fails | Existing container remains classified stale; warning stays visible and the existing error surface explains the failure. |
+| User clicks **Restart after turn** during a turn | The request is recorded; the agent container restarts at the turn's end, with no follow-up turn. |
+| The turn with a scheduled restart leaves background work running | The request waits for the next turn's end. The idle button restarts at once. |
 | New container starts from an unexpectedly old/custom image | Recomputed IDs still differ, so the warning remains. |
 | Session has no running container | No warning. Its next activation creates from the current image. |
 | Orchestrator rolls back while a newer worker survives | IDs differ and the warning appears; diagnostics show the exact mismatch without claiming chronological ordering. |
@@ -506,7 +557,8 @@ points. A second poll would duplicate the health-strip channel.
 
 - Render the banner for `stale`, and not for `current`, `unknown`, or no
   container.
-- Verify restart is disabled during a turn and enabled when idle.
+- Verify that a click during a turn schedules the restart, shows no restart
+  overlay, and that a scheduled restart sends no second request.
 - Verify the action uses the agent-only restart endpoint and participates in
   the existing restart overlay/reconnect flow.
 - Verify a failed restart keeps the warning visible.
@@ -528,6 +580,7 @@ themes, at desktop width, and in the mobile chat layout.
 | Client handling/state | `src/client/hooks/message-handlers/`, `src/client/stores/session-store.ts`, `src/client/stores/actions/session-actions.ts` |
 | UI | new `src/client/components/StaleContainerBanner.tsx`, chat-column composition in `src/client/App.tsx` |
 | Existing restart flow | `src/server/orchestrator/services/recovery.ts`, `src/server/orchestrator/api-routes-container.ts`, `src/client/components/SessionHealthStrip/RecoveryActions.tsx` |
+| Restart after turn | `src/server/orchestrator/services/agent-restart-request.ts` (`deferRestartToTurnEnd`, `runRequestedRestart`), `src/server/orchestrator/sessions.ts` (`pending_user_restart` accessors), `integration_tests/agent-requested-restart.test.ts` |
 | Tests | `container-freshness.test.ts`, `container-discovery.test.ts`, `integration_tests/connection.test.ts`, `StaleContainerBanner.test.tsx`, `dispatch-session-scope.test.ts` |
 | Idle reclaim on update | `src/server/orchestrator/restart-turn-reattach.ts` (`staleIdleHoldReason` + the reclaim branch), `restart-turn-reattach.test.ts` |
 | Worker-side liveness on the wire | `src/server/session/agent-controller.ts` (`backgroundTaskCount`, `selfWakeActive`, `vacateSlot`, the `otherWorkerLiveness` dep), `src/server/session/session-worker.ts` (wiring), `src/server/session/install-controller.ts` (`installRunning`), `src/server/shared/types/agent-types.ts` (`WorkerAgentStatus`), `agent-controller.test.ts` |

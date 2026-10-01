@@ -13,6 +13,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { postInterruptCommitDepsFrom } from "./services/post-interrupt-commit.js";
+import { deferRestartToTurnEnd } from "./services/agent-restart-request.js";
 import { getErrorMessage } from "./validation.js";
 import { accountServiceForHarness } from "./provider-account-manager.js";
 
@@ -110,6 +111,7 @@ export async function registerContainerRoutes(
     "/api/sessions/:id/container/restart",
     async (request, reply) => {
       try {
+        sessionManager.setPendingUserRestart(request.params.id, false);
         const result = await restartContainer(
           {
             sessionManager: deps.sessionManager,
@@ -133,10 +135,21 @@ export async function registerContainerRoutes(
     },
   );
 
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string }; Body: { afterTurn?: boolean } | undefined }>(
     "/api/sessions/:id/agent/container/restart",
     async (request, reply) => {
       try {
+        const { id } = request.params;
+        const deferDeps = {
+          sessionManager,
+          containerManager: deps.containerManager ?? null,
+          runnerRegistry: deps.runnerRegistry,
+        };
+        if (request.body?.afterTurn === true && deferRestartToTurnEnd(deferDeps, id)) {
+          return { ok: true, scheduled: true };
+        }
+        // A restart now is the one that a pending "Restart after turn" waits for.
+        sessionManager.setPendingUserRestart(id, false);
         const result = await restartAgent(
           {
             sessionManager: deps.sessionManager,
@@ -147,7 +160,7 @@ export async function registerContainerRoutes(
             ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
             ...postInterruptCommitDepsFrom(deps),
           },
-          request.params.id,
+          id,
         );
         return result;
       } catch (err) {

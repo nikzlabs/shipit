@@ -109,6 +109,12 @@ opt-in `carryQueue`:
 The **Restart agent container** button does not pass the option and keeps
 today's behaviour.
 
+**The step also serves the user.** The stale-container banner's **Restart after
+turn** records its own request (`sessions.pending_user_restart`), and this step
+restarts for it with the same checks, hold and carried queue, but with no note and
+no wake turn. The differences are in
+[docs/242-stale-session-container-indicator](../242-stale-session-container-indicator/plan.md#restart-after-turn).
+
 **5. The restart and the wake.** The step settles the ending turn first
 (`settle`, which is the executor's `finishTurn`). Otherwise the dispose settles a
 finished dispatched turn as interrupted, and the executor settles it a second

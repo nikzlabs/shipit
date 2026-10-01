@@ -1,9 +1,10 @@
 // The agent asks for its own agent container to restart; ShipIt restarts it once the turn is
 // over and gives the agent its note back as a turn on the new container
-// (docs/321-agent-requested-restart).
+// (docs/321-agent-requested-restart). The user's "Restart after turn" uses the same step,
+// without a note and without a follow-up turn (docs/242-stale-session-container-indicator req 9).
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
@@ -48,6 +49,22 @@ export function recordRestartRequest(
   return { requested: true };
 }
 
+export interface UserRestartDeps {
+  sessionManager: Pick<SessionManager, "setPendingUserRestart">;
+  containerManager: SessionContainerManager | null;
+  runnerRegistry: Pick<SessionRunnerRegistry, "get">;
+}
+
+/**
+ * The user's "Restart after turn". True when a turn runs and the restart now waits for its
+ * end; false when nothing runs, and the caller restarts at once.
+ */
+export function deferRestartToTurnEnd(deps: UserRestartDeps, sessionId: string): boolean {
+  if (!deps.containerManager || !deps.runnerRegistry.get(sessionId)?.running) return false;
+  deps.sessionManager.setPendingUserRestart(sessionId, true);
+  return true;
+}
+
 /** What the ending turn tells the step about itself. */
 export interface RequestedRestartTurn {
   sessionId: string;
@@ -67,10 +84,11 @@ export function buildRestartFollowupPrompt(note: string): string {
 }
 
 /**
- * Runs at the end of every turn's commit-and-PR step. Does nothing unless the agent asked for
- * a restart; leaves the request pending while another turn or flow has the session, so the
- * next turn's end retries it. Resolves once the container is replaced, without waiting for
- * the follow-up turn. Throws only if the note cannot be cleared, before anything is held.
+ * Runs at the end of every turn's commit-and-PR step. Does nothing unless the agent or the
+ * user asked for a restart; leaves the request pending while another turn or flow has the
+ * session, so the next turn's end retries it. Resolves once the container is replaced, without
+ * waiting for the follow-up turn. Throws only if the request cannot be cleared, before
+ * anything is held.
  */
 export async function runRequestedRestart(
   deps: WakeSessionDeps,
@@ -78,7 +96,7 @@ export async function runRequestedRestart(
 ): Promise<void> {
   const { sessionId, runner } = turn;
   const note = deps.sessionManager.getPendingRestartNote(sessionId);
-  if (!note) return;
+  if (!note && !deps.sessionManager.hasPendingUserRestart(sessionId)) return;
   // A late terminal callback from an older turn sees a disposed runner that looks idle.
   if (deps.runnerRegistry.get(sessionId) !== runner || !turn.turnIsCurrent()) return;
   const heldByOther = runner.systemTurnInProgress && !turn.ownsSystemHold();
@@ -88,13 +106,23 @@ export async function runRequestedRestart(
     );
     return;
   }
+  // The agent knows what its own request ends; the user's must not end work the agent left
+  // running. The turn that this work wakes retries.
+  if (!note && (runner.backgroundTaskCount > 0 || runner.subAgentSpawnsInFlight > 0)) {
+    console.log(
+      `[agent-restart] ${sessionId} has background work; the user's restart waits for the next turn's end`,
+    );
+    return;
+  }
 
   // Before the hold: if this write throws, nothing is held and the next turn's end retries.
-  deps.sessionManager.setPendingRestartNote(sessionId, null);
+  deps.sessionManager.clearPendingRestart(sessionId);
   // In the same synchronous step as the checks: from here new messages queue, and the
   // restart carries them to the new runner. Taking the hold also ends this turn's own.
   const oldHold = takeQueueHold(runner, { lease: false });
-  console.log(`[agent-restart] restarting the agent container of ${sessionId}, as the agent asked`);
+  console.log(
+    `[agent-restart] restarting the agent container of ${sessionId}, as the ${note ? "agent" : "user"} asked`,
+  );
 
   let held: QueueHold | undefined;
   try {
@@ -120,6 +148,10 @@ export async function runRequestedRestart(
     }
   } catch (err) {
     failRestart(deps, sessionId, note, err, [oldHold, held]);
+    return;
+  }
+  if (!note) {
+    releaseHold(held);
     return;
   }
   void wakeAfterRestart(deps, sessionId, note, held);
@@ -156,18 +188,21 @@ async function wakeAfterRestart(
 function failRestart(
   deps: WakeSessionDeps,
   sessionId: string,
-  note: string,
+  note: string | undefined,
   err: unknown,
   holds: (QueueHold | undefined)[],
 ): void {
   const reason = getErrorMessage(err);
   console.error(`[agent-restart] the requested restart of ${sessionId} failed: ${reason}`);
-  parkNotice(
-    deps,
-    sessionId,
-    "[System] The agent container restart you asked for with `shipit session restart` did not "
-    + `complete (${reason}). Your note for after the restart was:\n\n${note}`,
-  );
+  // The user's request has no note to give back; the health strip shows the failure.
+  if (note) {
+    parkNotice(
+      deps,
+      sessionId,
+      "[System] The agent container restart you asked for with `shipit session restart` did not "
+      + `complete (${reason}). Your note for after the restart was:\n\n${note}`,
+    );
+  }
   for (const hold of holds) releaseHold(hold);
 }
 

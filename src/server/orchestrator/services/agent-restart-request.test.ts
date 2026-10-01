@@ -21,17 +21,20 @@ vi.mock("../wake-session.js", () => ({
     wakeSessionWithTurn(deps, session, opts),
 }));
 
-const { recordRestartRequest, runRequestedRestart, buildRestartFollowupPrompt } =
+const { recordRestartRequest, deferRestartToTurnEnd, runRequestedRestart, buildRestartFollowupPrompt } =
   await import("./agent-restart-request.js");
 
 const SESSION = "restart-session";
 
 function makeSessionManager(note?: string) {
-  const state = { note, notices: [] as string[] };
+  const state = { note, userAsked: false, notices: [] as string[] };
   const manager = {
     get: (id: string) => (id === SESSION ? { id, workspaceDir: "/tmp/ws" } : undefined),
     getPendingRestartNote: () => state.note,
     setPendingRestartNote: (_id: string, value: string | null) => { state.note = value ?? undefined; },
+    hasPendingUserRestart: () => state.userAsked,
+    setPendingUserRestart: (_id: string, pending: boolean) => { state.userAsked = pending; },
+    clearPendingRestart: () => { state.note = undefined; state.userAsked = false; },
     appendPendingAgentNotice: (_id: string, notice: string) => { state.notices.push(notice); },
   } as unknown as SessionManager;
   return { manager, state };
@@ -173,9 +176,9 @@ describe("runRequestedRestart — the restart", () => {
     expect(settledBeforeRestart).toBe(true);
   });
 
-  it("a failed write of the note takes no hold, so nothing stays queued for ever", async () => {
+  it("a failed clear of the request takes no hold, so nothing stays queued for ever", async () => {
     const { deps, runner, turn } = setup();
-    (deps.sessionManager as unknown as { setPendingRestartNote: () => void }).setPendingRestartNote = () => {
+    (deps.sessionManager as unknown as { clearPendingRestart: () => void }).clearPendingRestart = () => {
       throw new Error("SQLITE_FULL");
     };
 
@@ -249,6 +252,89 @@ describe("runRequestedRestart — the restart", () => {
     await settle();
 
     expect(state.notices).toEqual([]);
+  });
+});
+
+describe("the user's Restart after turn (docs/242-stale-session-container-indicator req 9)", () => {
+  const containerManager = {} as SessionContainerManager;
+  const running = { ok: true, noContainer: false, newContainerState: "running", error: null };
+
+  it("records the request only while a turn runs", () => {
+    const { deps, state, runner, runnerRegistry } = setup(null);
+    const deferDeps = { sessionManager: deps.sessionManager, containerManager, runnerRegistry };
+
+    expect(deferRestartToTurnEnd(deferDeps, SESSION)).toBe(false);
+    expect(state.userAsked).toBe(false);
+
+    runner.running = true;
+    expect(deferRestartToTurnEnd(deferDeps, SESSION)).toBe(true);
+    expect(state.userAsked).toBe(true);
+  });
+
+  it("does not record where there is no container to restart", () => {
+    const { deps, state, runner, runnerRegistry } = setup(null);
+    runner.running = true;
+    const deferDeps = { sessionManager: deps.sessionManager, containerManager: null, runnerRegistry };
+    expect(deferRestartToTurnEnd(deferDeps, SESSION)).toBe(false);
+    expect(state.userAsked).toBe(false);
+  });
+
+  it("restarts at the turn's end, carries the queue, and starts no follow-up turn", async () => {
+    const { deps, state, turn } = setup(null);
+    state.userAsked = true;
+    const held = replacementHold();
+    restartAgent.mockResolvedValue({ ...running, held });
+
+    await runRequestedRestart(deps, turn);
+    await settle();
+
+    expect(restartAgent.mock.calls[0]![2]).toEqual({ carryQueue: true });
+    expect(state.userAsked).toBe(false);
+    expect(wakeSessionWithTurn).not.toHaveBeenCalled();
+    expect(held.runner.systemTurnInProgress).toBe(false);
+    expect(held.runner.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("gives the agent its note when both asked, in one restart", async () => {
+    const { deps, state, turn } = setup();
+    state.userAsked = true;
+    restartAgent.mockResolvedValue(running);
+    wakeSessionWithTurn.mockResolvedValue({} as TurnHandle);
+
+    await runRequestedRestart(deps, turn);
+    await settle();
+
+    expect(restartAgent).toHaveBeenCalledTimes(1);
+    expect(wakeSessionWithTurn).toHaveBeenCalledTimes(1);
+    expect(state.userAsked).toBe(false);
+  });
+
+  it("waits while the agent's background work runs, which the agent's own request does not", async () => {
+    const { deps, state, runner, turn } = setup(null);
+    state.userAsked = true;
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "review" }]);
+
+    await runRequestedRestart(deps, turn);
+    expect(restartAgent).not.toHaveBeenCalled();
+    expect(state.userAsked).toBe(true);
+
+    state.note = "check node -v";
+    restartAgent.mockResolvedValue(running);
+    wakeSessionWithTurn.mockResolvedValue({} as TurnHandle);
+    await runRequestedRestart(deps, turn);
+    expect(restartAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed restart parks no notice for the agent and releases the holds", async () => {
+    const { deps, state, runner, turn } = setup(null);
+    state.userAsked = true;
+    restartAgent.mockRejectedValue(new Error("worker gone"));
+
+    await runRequestedRestart(deps, turn);
+
+    expect(state.notices).toEqual([]);
+    expect(runner.systemTurnInProgress).toBe(false);
   });
 });
 

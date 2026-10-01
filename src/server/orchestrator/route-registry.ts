@@ -648,6 +648,7 @@ export async function registerRoutes(
           type: "session_container_freshness",
           sessionId: sid,
           freshness: getContainerFreshness(container?.workerBuildId, buildId),
+          restartScheduled: sessionManager.hasPendingUserRestart(sid),
         });
       };
 

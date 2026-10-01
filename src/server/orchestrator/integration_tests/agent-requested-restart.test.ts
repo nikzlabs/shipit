@@ -18,6 +18,7 @@ import type { WsServerMessage } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import {
   recordRestartRequest,
+  deferRestartToTurnEnd,
   runRequestedRestart,
   buildRestartFollowupPrompt,
 } from "../services/agent-restart-request.js";
@@ -204,6 +205,42 @@ describe("agent-requested restart over real runners (docs/321)", () => {
     await waitForTurn(() => !second.running, "follow-up settled");
     second.dispose({ force: true });
   });
+
+  // docs/242-stale-session-container-indicator req 9 — the user's "Restart after turn".
+  it("the user's scheduled restart runs after the turn, starts no follow-up turn, and keeps a message", async () => {
+    const { sessionManager, containerManager, agents, registry, prompts } = setup();
+    const first = registry.getOrCreate(SESSION, "/tmp/s1", "claude");
+    first.dispatch(testDispatch({ text: "a long task" }));
+    await waitForTurn(() => agents.length === 1, "first turn");
+    await waitForTurn(() => agents[0]!.run.mock.calls.length === 1, "first turn running");
+
+    expect(deferRestartToTurnEnd({ sessionManager, containerManager, runnerRegistry: registry }, SESSION)).toBe(true);
+    expect(first.disposed).toBe(false);
+    expect(containerManager.destroyed).toBe(0);
+
+    first.on("message", (msg: WsServerMessage) => {
+      if (msg.type === "container_restarting" && msg.phase === "restarting_agent") {
+        first.dispatch(testDispatch({ text: "sent while restarting" }));
+      }
+    });
+    endTurn(agents[0]!);
+    await waitForTurn(() => agents.length === 2, "the kept message's turn");
+
+    const second = registry.get(SESSION)!;
+    expect(first.disposed).toBe(true);
+    expect(second).not.toBe(first);
+    expect(containerManager.destroyed).toBe(1);
+    expect(sessionManager.hasPendingUserRestart(SESSION)).toBe(false);
+    await waitForTurn(() => prompts().length === 2, "kept message prompt");
+    // The only turn on the new runner is the user's own message: there is no follow-up turn.
+    expect(prompts()[1]).toContain("sent while restarting");
+
+    endTurn(agents[1]!);
+    await waitForTurn(() => !second.running, "kept message settled");
+    expect(registry.get(SESSION)).toBe(second);
+    expect(containerManager.destroyed).toBe(1);
+    second.dispose({ force: true });
+  });
 });
 
 function createFakeDocker() {
@@ -284,5 +321,23 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
     const res = await post(id, { note: "x" });
     expect(res.statusCode).toBe(503);
     expect(sessionManager.getPendingRestartNote(id)).toBeUndefined();
+  });
+
+  it("the restart route records the user's request while a turn runs (docs/242 req 9)", async () => {
+    const id = await build(true);
+    const runner = app!.runnerRegistry.getOrCreate(id, tmpDir, "claude");
+    runner.running = true;
+
+    const res = await app!.inject({
+      method: "POST",
+      url: `/api/sessions/${id}/agent/container/restart`,
+      payload: { afterTurn: true },
+    });
+
+    expect(res.json()).toEqual({ ok: true, scheduled: true });
+    expect(sessionManager.hasPendingUserRestart(id)).toBe(true);
+    expect(app!.runnerRegistry.get(id)).toBe(runner);
+    expect(runner.disposed).toBe(false);
+    runner.running = false;
   });
 });
