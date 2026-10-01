@@ -89,20 +89,21 @@ cuts run before the split; `offends` and `offendsDestructive` are unchanged.
    means three things. The delimiter is quoted (`<<'EOF'`, `<<"EOF"`,
    `<<\EOF`), so bash expands nothing in the body. Every command in the
    pipeline it feeds is a data reader — `cat`, `tee`, `gh`, `shipit`, or an
-   `ssh` with no `ProxyCommand` / `LocalCommand` and no local substitution
-   (`feedsOnlyDataReaders`) — and the pipeline is finished on its line. And
-   the opener is not inside a `(`, `$(` or `<(`, on its own line or an earlier
-   one, whose output the shell may run (`source <(cat <<'EOF' …)`). Every
-   other body is kept as written. The scanner reads quotes, comments and
-   parentheses across lines, so `'a <<EOF'` and `# a <<EOF` open nothing, and a
-   `\` continuation starts the body after the joined line, as in bash.
+   `ssh` that runs nothing here (`feedsOnlyDataReaders`) — and the pipeline is
+   finished on its line. And the command text has no group or substitution
+   anywhere outside data bodies: no unquoted `(`, `)` or backtick, and no `{`,
+   `}` or reserved word (`if`, `for`, `case`, …) as a command. Every other body
+   is kept as written. The scanner reads quotes and comments across lines, so
+   `'a <<EOF'` and `# a <<EOF` open nothing, and a `\` continuation starts the
+   body after the joined line, as in bash.
 2. **The words of an `ssh` command are cut** (`withoutSshRemoteCommands`), from
    after `ssh` to the end of that simple command. This uses the process-test
    rule's quote-aware tokenizer, so a `&&` inside the remote command stays
    inside and one outside ends it: `ssh host true && git checkout main` is
    still refused. An ssh that runs something here first is not cut: a `$(` or
-   a backtick outside single quotes, or a `ProxyCommand` / `LocalCommand`
-   option.
+   a backtick outside single quotes, an option that runs a command
+   (`ProxyCommand`, `LocalCommand`, `KnownHostsCommand`, `Match exec`), or a
+   `-F` config file, which can hold one.
 
 Decisions, and why:
 
@@ -118,6 +119,15 @@ Decisions, and why:
 - **An ssh that runs something here is not a data reader.** A `ProxyCommand`
   runs here and inherits ssh's file descriptors, so
   `ssh -o 'ProxyCommand=bash /dev/fd/2' host 2<<'EOF'` runs the body here.
+- **Any group or substitution keeps every body.** Rounds 3 and 4 of review
+  found bodies whose output a construct on another line runs here:
+  `source <(` above the heredoc, `{ … } | bash` and `if …; fi | bash` around
+  it, a backtick substitution over several lines, and a `case` pattern's `)`
+  that a parenthesis counter reads as the end of the `$(` it is inside.
+  Knowing where each construct ends means parsing bash, which a
+  mistake-preventer does not need. The incident shapes have no group or
+  substitution. The cost is the old false refusal when a data heredoc shares
+  its command with a loop, a group or an unquoted `$(…)`.
 - **Only the pipeline the heredoc feeds decides.** A data reader on a line that
   also runs a shell elsewhere is still data:
   `bash --version && gh pr create --body-file - <<'EOF'` is cut, and so is
@@ -159,31 +169,34 @@ Decisions, and why:
 - **Unreadable input falls back to the old reading.** A delimiter that does
   not end where its word ends (`<<EOF.txt`, `<<E"OF"`, the shift in
   `$((1<<2))`), or a double-quoted one with a backslash (`<<"E\\OF"`, which
-  bash reads as `E\OF`), judges the whole text as written. Skipping only that opener is
-  not enough: its body is then read as commands, and an opener-like line in it
-  can swallow a command that bash runs after the real delimiter. Quoting the
-  tokenizer cannot close cuts nothing, and a throw judges the text as written.
+  bash reads as `E\OF`), judges the whole text as written. Skipping only that
+  opener is not enough: its body is then read as commands, and an opener-like
+  line in it can swallow a command that bash runs after the real delimiter.
+  Quoting the tokenizer cannot close cuts nothing, and a throw judges the text
+  as written.
 - **The process-test rule is unchanged.** It keeps `withoutHeredocBodies`,
   which drops every heredoc body. The git rules have their own scanner because
   making the shared one read quotes would change what the process test reads.
 
 What still refuses text that does not run here, each the old behaviour: a body
 whose reader is not on the list (`python3 -`, `psql`, `timeout 60 ssh …`); an
-unquoted delimiter; a heredoc inside `bash -c '…'`, inside `"$(…)"`
+unquoted delimiter; a data heredoc in a command that also has a group, a loop
+or an unquoted substitution; a heredoc inside `bash -c '…'`, inside `"$(…)"`
 (`gh pr create --body "$(cat <<'EOF' …)"`) or inside a shell's heredoc; a remote
 command with a local substitution (`ssh host "cd $(pwd) && git checkout x"`);
 and anything the scanner cannot read.
 
 **How it was checked.** Besides the unit tests, a differential oracle generated
-commands from two levels of about 50 wrappers (ssh in each form, heredocs into
-data readers, shells, `source`, groups, open and continued pipes,
-substitutions, captures over several lines, odd delimiters, comments and
-quotes) around a branch switch, and ran each three ways: through the old hook,
-through the new one, and through bash with a `git` that logs its calls and an
-`ssh` that runs only its `ProxyCommand` / `LocalCommand`. The same run was
-repeated for `git reset --hard` under the destructive guard. The result is in
-the pull request. Three rounds of independent review found the gaps listed
-above; the oracle and the unit tests now cover each of them.
+commands from two levels of about 55 wrappers (ssh in each form, heredocs into
+data readers, shells, `source`, groups, `if` and `case`, open and continued
+pipes, substitutions and backticks over several lines, odd delimiters, comments
+and quotes) around a branch switch, and ran each three ways: through the old
+hook, through the new one, and through bash with a `git` that logs its calls
+and an `ssh` that runs only its `ProxyCommand`, `LocalCommand` and
+`KnownHostsCommand`. The same run was repeated for `git reset --hard` under the
+destructive guard. The result is in the pull request. Four rounds of
+independent review found the gaps listed above; the oracle and the unit tests
+now cover each of them.
 
 ### Second rule — destructive git on a merged branch (planning#267)
 

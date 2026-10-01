@@ -282,10 +282,15 @@ describe("block-branch-ops.mjs", () => {
       `timeout 60 bash -s <<'EOF'\n${MAIN}\nEOF`,
       `source /dev/stdin <<'EOF'\n${MAIN}\nEOF`,
       `{ true; bash; } <<'EOF'\n${MAIN}\nEOF`,
-      // Inside `$(` or `<(` the output can be run, on any line.
+      // The output of a group or a substitution can be run, and its end can be
+      // on any line, so any group or substitution keeps every body.
       `x=$(cat <<'EOF'\n${MAIN}\nEOF\n); eval "$x"`,
       `x=$(\ncat <<'EOF'\n${MAIN}\nEOF\n); eval "$x"`,
       `source <(\ncat <<'EOF'\n${MAIN}\nEOF\n)`,
+      `{\ncat <<'EOF'\n${MAIN}\nEOF\n} | bash`,
+      `if true; then\ncat <<'EOF'\n${MAIN}\nEOF\nfi | bash`,
+      `eval \`\ncat <<'EOF'\n${MAIN}\nEOF\n\``,
+      `x=$(\ncase x in\nx)\ncat <<'EOF'\n${MAIN}\nEOF\n;;\nesac\n); eval "$x"`,
       // A ProxyCommand runs here and can read the body.
       `ssh -o 'ProxyCommand=bash /dev/fd/2' some-host 2<<'EOF'\n${MAIN}\nEOF`,
       `bash -s <<'EOF'\n${MAIN}`,
@@ -317,6 +322,8 @@ describe("block-branch-ops.mjs", () => {
       // ssh runs these here before it connects.
       `ssh some-host "echo $(true && ${MAIN})"`,
       `ssh -o "ProxyCommand=sh -c 'true; ${SWITCH}'" some-host true`,
+      `ssh -o "KnownHostsCommand=/bin/sh -c 'true; ${SWITCH}'" some-host true`,
+      `ssh -F ./ssh-config some-host 'cd x && ${SWITCH}'`,
       // Text that only looks like a heredoc opener opens nothing.
       `gh pr comment 1 --body "use <<'EOF' here"\n${MAIN}\nEOF`,
       `gh pr comment 1 --body x # <<'EOF'\n${MAIN}\nEOF`,

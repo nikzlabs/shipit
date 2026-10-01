@@ -360,11 +360,18 @@ function wordsAfter(tokens, i) {
 
 /**
  * Whether these ssh words run something here before ssh connects: a `$(` or
- * backtick outside single quotes, or a `ProxyCommand` / `LocalCommand`, which
- * can also read the heredoc (`-o 'ProxyCommand=bash /dev/fd/2' host 2<<'EOF'`).
+ * backtick outside single quotes, an option that runs a command
+ * (`ProxyCommand`, `LocalCommand`, `KnownHostsCommand`, `Match exec`), or a
+ * `-F` config that can hold one. Such a command can also read the heredoc
+ * (`-o 'ProxyCommand=bash /dev/fd/2' host 2<<'EOF'`).
  */
 function sshRunsHere(words) {
-  return words.some((t) => t.expands || /proxycommand|localcommand/i.test(t.value));
+  return words.some(
+    (t) =>
+      t.expands
+      || /^-F/.test(t.value)
+      || /^(?:-o)?\s*(?:proxycommand|localcommand|knownhostscommand|match)\b/i.test(t.value),
+  );
 }
 
 /**
@@ -427,22 +434,30 @@ function feedsOnlyDataReaders(command, at) {
 const DELIMITER =
   /<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n\\]*)"|\\([A-Za-z0-9_][A-Za-z0-9_-]*)|([A-Za-z0-9_][A-Za-z0-9_-]*))(?=$|[\s;|&<>])/y;
 
+// Reserved words and braces that open or close a compound command.
+const COMPOUND_WORDS = new Set([
+  "{", "}", "if", "then", "elif", "else", "fi", "while", "until", "for", "do", "done", "case", "esac",
+  "select", "function",
+]);
+
 /**
  * The text the git rules judge: what runs in this container. Each command has
  * its ssh remote words cut, and a heredoc body is cut when it is data — its
- * delimiter is quoted, so bash expands nothing in it, only data readers take
- * it, and it is not inside a `(`, `$(` or `<(` whose output the shell may run
- * (`source <(cat <<'EOF' …)`). Every other body is kept as written. Quotes,
- * comments and parentheses are read across lines, so `'a <<EOF'` opens
- * nothing, and a `\` continuation starts the body after the joined line, as in
- * bash. Null where the body's end is not certain; the caller then judges the
- * text as written.
+ * delimiter is quoted, so bash expands nothing in it, and only data readers
+ * take it. Every other body is kept as written, and so is every body when the
+ * text holds a group or a substitution anywhere outside data bodies: an
+ * unquoted `(`, `)` or backtick, or a compound word as a command. Its output
+ * may be run here (`{ cat <<'EOF' … } | bash`, `source <(cat <<'EOF' …)`), and
+ * telling where one ends means parsing bash. Quotes and comments are read
+ * across lines, so `'a <<EOF'` opens nothing, and a `\` continuation starts
+ * the body after the joined line, as in bash. Null where the body's end is not
+ * certain; the caller then judges the text as written.
  */
 function commandsRunHere(text) {
   const lines = text.split("\n");
   const kept = [];
   let quote = null;
-  let depth = 0;
+  let compound = false;
   let command = "";
   let openers = [];
   let n = 0;
@@ -465,25 +480,22 @@ function commandsRunHere(text) {
       }
       if (ch === "'" || ch === '"') { quote = ch; continue; }
       if (ch === "#" && (i === 0 || /[\s;|&()]/.test(one[i - 1]))) break;
-      if (ch === "(") depth++;
-      if (ch === ")") depth = Math.max(0, depth - 1);
+      if (ch === "(" || ch === ")" || ch === "`") compound = true;
       if (ch !== "<" || one[i + 1] !== "<") continue;
       if (one[i + 2] === "<") { i += 2; continue; }
       DELIMITER.lastIndex = i;
       const m = DELIMITER.exec(one);
       if (!m) return null;
-      openers.push({
-        at: base + i,
-        dash: m[1] === "-",
-        word: m[2] ?? m[3] ?? m[4] ?? m[5],
-        quoted: m[5] === undefined,
-        nested: depth > 0,
-      });
+      openers.push({ at: base + i, dash: m[1] === "-", word: m[2] ?? m[3] ?? m[4] ?? m[5], quoted: m[5] === undefined });
       i = DELIMITER.lastIndex - 1;
     }
     if (quote !== null || continues) {
       command += "\n";
       continue;
+    }
+    const tokens = tokenize(command);
+    if (!tokens || tokens.some((t) => t.command === true && !t.quoted && COMPOUND_WORDS.has(t.value))) {
+      compound = true;
     }
     kept.push(withoutSshRemoteCommands(command));
     for (const opener of openers) {
@@ -496,13 +508,14 @@ function commandsRunHere(text) {
       }
       // bash joins a `\`-ended line before it looks for an unquoted delimiter.
       if (!opener.quoted && body.some((line) => line.endsWith("\\"))) return null;
-      if (!opener.quoted || opener.nested || !feedsOnlyDataReaders(command, opener.at)) kept.push(...body);
+      if (opener.quoted && feedsOnlyDataReaders(command, opener.at)) kept.push({ data: body });
+      else kept.push(...body);
     }
     openers = [];
     command = "";
   }
   if (command) kept.push(command);
-  return kept.join("\n");
+  return kept.flatMap((k) => (typeof k === "string" ? [k] : compound ? k.data : [])).join("\n");
 }
 
 /** A redirection word — `>`, `2>`, `>>/dev/null`, `&>`. Not an argument, not a command. */
