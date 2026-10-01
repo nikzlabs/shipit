@@ -754,6 +754,8 @@ The user picks a permission mode per turn from the chat input. There are three
 - **Auto** — autonomous with no classifier. The default. Safety here rests on
   the tool allowlist, the branch-block hook, and container isolation.
 
-Independently of the mode, the branch-block hook always prevents branch
-operations, and conversational boundaries the user states ("don't push until I
-review") are honored under guarded mode.
+Independently of the mode, the branch-block hook refuses the common
+branch-moving git commands you run in this container. It reads command text,
+so it is a guard against mistakes, not a sandbox; git run on an SSH destination
+is not judged (see `ssh.md`). Conversational boundaries the user states ("don't
+push until I review") are honored under guarded mode.

@@ -1,3 +1,8 @@
+---
+issue: planning#631
+title: Keep the agent on the session branch (branch-op block hook)
+description: The PreToolUse hook that refuses branch moves, destructive git during merged-branch recovery, and self-matching process tests.
+---
 
 # 130 — Keep the agent on the session branch (branch-op block hook)
 
@@ -30,11 +35,17 @@ PreToolUse JSON envelope on stdin and:
 
 - Fails open (exit 0) for non-`Bash` tools, empty commands, or unparseable
   stdin — the prompt instruction remains the first line of defense.
-- Splits the Bash command on shell separators (`&&`, `||`, `;`, `|`,
+- Cuts the text that does not run in this container — a heredoc body that is
+  data, and an `ssh` command's remote command (see
+  [What the git rules read](#what-the-git-rules-read-only-what-runs-in-this-container)).
+- Splits the rest on shell separators (`&&`, `||`, `;`, `|`,
   newlines) and inspects each segment that actually invokes `git` (stepping
   past leading `VAR=value` env assignments and git's own global options).
 - Blocks (exit 2, reason on stderr) when a segment is:
   - `git checkout -b` / `-B`
+  - `git checkout <branch>` — only the unambiguous form; a name carrying `.`,
+    `/` or `\`, a name that is a path here, and any `--` / `-p` form stay
+    allowed (docs/312-base-branch-push-protection)
   - `git switch -c` / `-C` / `--create` / `--orphan`, or `git switch <branch>`
     (a plain switch moves off the session branch)
   - `git branch <name>` without a delete (`-d`/`-D`/`--delete`) or list
@@ -47,6 +58,125 @@ PreToolUse JSON envelope on stdin and:
 It's a heuristic, not a shell parser: exotic quoting can slip a false
 negative through, which is acceptable. False positives are avoided by
 requiring `git` to be the command token of a segment.
+
+### What the git rules read: only what runs in this container
+
+**What the guard is.** A mistake-preventer for the agent, not a security
+boundary. It reads command text, fails open, is Claude-only, does not cover the
+terminal panel, and has always passed `bash -c 'git checkout main'`. ShipIt's
+own pushes are guarded separately on the orchestrator side
+(docs/312-base-branch-push-protection, layers 1 and 2); a raw git command the
+hook misses is not. So an exemption here must keep an *accidental* branch move
+refused. It need not resist an agent that sets out to get around the guard, and
+it should be no larger than that.
+
+**The defect (2026-10-01).** The rules split the command text and judged every
+segment that starts with `git`, so they also refused text that does not run
+here:
+
+- **git on an SSH destination.** A heredoc on the stdin of `ssh <host> bash -s`,
+  or a quoted remote command, `ssh <host> 'cd x && git checkout y'`, which the
+  split cuts inside the quotes. Neither can move the session's branch. The way
+  out was to copy a script to the host, which needed the user's approval.
+- **Prose in a heredoc.** A `shipit session create --prompt-file -`,
+  `gh pr create --body-file -` or `shipit issue comment --body-file -` body
+  with a line that starts with `git checkout`. That text is data.
+
+**The fix: cut what does not run here, then judge the rest as before.** Two
+cuts run before the split; `offends` and `offendsDestructive` are unchanged.
+
+1. **A heredoc body is cut only when it is data** (`commandsRunHere`). Data
+   means two things. The delimiter is quoted (`<<'EOF'`, `<<"EOF"`,
+   `<<\EOF`), so bash expands nothing in the body. And every command in the
+   pipeline it feeds is a data reader — `cat`, `tee`, `gh`, `shipit` or `ssh`
+   (`feedsOnlyDataReaders`) — the pipeline is finished on its line, and it is
+   not inside `(` or `$(`. Every other body is kept as written. The scanner
+   reads quotes and comments across lines, so `'a <<EOF'` and `# a <<EOF` open
+   nothing, and a `\` continuation starts the body after the joined line, as in
+   bash.
+2. **The words of an `ssh` command are cut** (`withoutSshRemoteCommands`), from
+   after `ssh` to the end of that simple command. This uses the process-test
+   rule's quote-aware tokenizer, so a `&&` inside the remote command stays
+   inside and one outside ends it: `ssh host true && git checkout main` is
+   still refused. An ssh that runs something here first is not cut: a `$(` or
+   a backtick outside single quotes, or a `ProxyCommand` / `LocalCommand`
+   option.
+
+Decisions, and why:
+
+- **Data readers are listed, not shells.** The first version listed shells and
+  cut every other body. Review found local readers it had no word for:
+  `source /dev/stdin`, `{ true; bash; } <<EOF`, `$shell -s`, a pipe that names
+  `bash` after the body, `x=$(cat <<EOF …); eval "$x"`. Each was a refusal the
+  old hook had and the new one lost. Listing the readers that cannot run their
+  input keeps every unknown reader judged, as before, and it is less mechanism.
+  The list is the readers the incidents and ShipIt's own instructions use;
+  `git` is not on it, because a `!` alias can run stdin.
+- **Only the pipeline the heredoc feeds decides.** A data reader on a line that
+  also runs a shell elsewhere is still data:
+  `bash --version && gh pr create --body-file - <<'EOF'` is cut, and so is
+  `gh pr create --title bash …`, where `bash` is an argument.
+- **An unquoted delimiter keeps the body judged.** bash expands `$(…)` in that
+  body here, and it joins a `\`-ended line before it looks for the delimiter.
+  ShipIt's instructions already ask for `<<'EOF'`, and `ssh.md` now says why.
+  A `\`-ended line in an unquoted body makes the end of the body uncertain, so
+  the whole text is judged as written.
+- **A kept body is not read again.** The first version read a shell's body as
+  a script and cut its own data heredocs. That is wrong for an unquoted body,
+  where the outer shell runs the substitutions, and the cases it allowed
+  (`bash <<'EOF'` around an ssh or a `gh` heredoc) are rare. Kept bodies are
+  judged as written, as before.
+- **Only an `ssh` in command position is remote.** A wrapped
+  `timeout 60 ssh host '…'` or `sshpass … ssh` is read as before, including the
+  split inside its quotes. Knowing wrappers is more mechanism than that false
+  refusal is worth: ssh takes its own limits (`-o ConnectTimeout=`,
+  `-o ServerAliveInterval=`), and `shipit-docs/ssh.md` says so.
+- **`ssh localhost` is not special-cased.** The session image installs
+  `openssh-client` and no `sshd`, and ShipIt signs only for a granted
+  destination. The one granted destination that could reach this checkout is
+  the ShipIt host itself, which `ssh.md` already names as breaking its
+  guarantees, and there it is reachable only by the checkout's host path.
+  Using ssh to move the local branch is a deliberate act, which this guard
+  never claimed to stop.
+- **A heredoc that a local shell reads is still judged.** `bash -s <<'EOF'`
+  with a `git checkout main` line is refused exactly as before.
+- **Writing a script is not running it.** `cat > fix.sh <<'EOF'` is data, and
+  a later `bash fix.sh` is not read — as with the Write tool, which the guard
+  never saw.
+- **`scp` and `rsync` need nothing.** They carry no remote command text, so
+  they never put a `git` segment in front of the rules. `rsync --rsync-path=…`
+  carries command text, and nobody moves a branch through it by mistake.
+- **The split stays blind to quotes.** A quote-aware split would also stop
+  refusing prose in a quoted string (`git commit -m 'a; git checkout main'`),
+  but it would stop refusing `bash -c 'cd x && git checkout main'` too, and that
+  runs here. The refusal is an accident of the split, and it is kept.
+- **Unreadable input falls back to the old reading.** A delimiter that does
+  not end where its word ends (`<<EOF.txt`, `<<E"OF"`, the shift in
+  `$((1<<2))`) judges the whole text as written. Skipping only that opener is
+  not enough: its body is then read as commands, and an opener-like line in it
+  can swallow a command that bash runs after the real delimiter. Quoting the
+  tokenizer cannot close cuts nothing, and a throw judges the text as written.
+- **The process-test rule is unchanged.** It keeps `withoutHeredocBodies`,
+  which drops every heredoc body. The git rules have their own scanner because
+  making the shared one read quotes would change what the process test reads.
+
+What still refuses text that does not run here, each the old behaviour: a body
+whose reader is not on the list (`python3 -`, `psql`, `timeout 60 ssh …`); an
+unquoted delimiter; a heredoc inside `bash -c '…'`, inside `"$(…)"`
+(`gh pr create --body "$(cat <<'EOF' …)"`) or inside a shell's heredoc; a remote
+command with a local substitution (`ssh host "cd $(pwd) && git checkout x"`);
+and anything the scanner cannot read.
+
+**How it was checked.** Besides the unit tests, a differential oracle generated
+commands from two levels of about 45 wrappers (ssh in each form, heredocs into
+data readers, shells, `source`, groups, open and continued pipes,
+substitutions, captures, odd delimiters, comments and quotes) around a branch
+switch, and ran each three ways: through the old hook, through the new one,
+and through bash with a `git` that logs its calls and an `ssh` that runs only
+its `ProxyCommand` / `LocalCommand`. The same run was repeated for
+`git reset --hard` under the destructive guard. The result is in the pull
+request. Two rounds of independent review found the reader gaps listed above;
+the oracle now covers each of them.
 
 ### Second rule — destructive git on a merged branch (planning#267)
 
@@ -270,7 +400,7 @@ planning#267 additions:
 
 | Test | What it covers |
 |---|---|
-| `src/server/session/agent-shim/block-branch-ops.test.ts` | Runs the real hook with `node`: ~15 blocked forms (incl. compound commands, env prefixes, git global options), ~15 allowed forms, and fail-open cases. planning#267 adds the destructive-git matrix: blocked-when-armed, untouched-when-not, sandbox-exempt, `shipit branch reset-to-base` allowed, and branch ops still getting the branch-op message. The third rule adds its own matrix: self-matching loops **and** one-shot checks blocked, every caller-excluding form allowed, the two message variants, and the backtracking deadline. |
+| `src/server/session/agent-shim/block-branch-ops.test.ts` | Runs the real hook with `node`: ~15 blocked forms (incl. compound commands, env prefixes, git global options), ~15 allowed forms, and fail-open cases. planning#267 adds the destructive-git matrix: blocked-when-armed, untouched-when-not, sandbox-exempt, `shipit branch reset-to-base` allowed, and branch ops still getting the branch-op message. The third rule adds its own matrix: self-matching loops **and** one-shot checks blocked, every caller-excluding form allowed, the two message variants, and the backtracking deadline. planning#631 adds the remote/data matrix: git over `ssh` and git text in quoted data heredocs allowed, each paired with a check that the same git line is refused when it runs here; heredocs any other reader takes (shells, `source`, groups, captures, open or continued pipes), unquoted delimiters, commands chained after `ssh`, local substitutions and `ProxyCommand`, text that only looks like a heredoc opener, unreadable delimiters, and a `bash -c` git still refused; the same reading under the destructive guard. |
 | `src/server/orchestrator/session-agent-run-params.test.ts` | planning#267: the guard arms iff the session row carries `mergedHeadSha` (off when unmerged, cleared, missing, or sandbox). |
 | `src/server/orchestrator/agent-run-params-prep.test.ts` | planning#267: Claude's hook forwards `guardDestructiveGitActive` → `guardDestructiveGit`, defaulting false. |
 | `src/server/session/agents/claude/process.test.ts` | planning#267: `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` is set in the spawn env iff `guardDestructiveGit` is true. |
@@ -288,7 +418,3 @@ Same as docs/129: the `codex-adapter` has no equivalent hook surface. The
 - **Block on the orchestrator side too** — the `gh` shim already resolves the
   current branch; if branch-stranding is ever observed via paths other than
   the Claude CLI, add a guard there.
-- **`git checkout <branch>` (plain switch)** — left allowed because
-  `git checkout <path>` (discard changes) is indistinguishable without
-  consulting the repo. `git switch <branch>` is already blocked since it's
-  unambiguously branch-oriented.

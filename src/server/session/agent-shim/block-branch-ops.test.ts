@@ -223,6 +223,123 @@ describe("block-branch-ops.mjs", () => {
     });
   });
 
+  describe("docs/130 — judges only the git that runs in this container", () => {
+    const DETACH = "git checkout -q --detach 3f2c9e1";
+    const SWITCH = "git switch -c topic";
+    const MAIN = "git checkout main";
+
+    it("refuses each move these cases carry when it runs here", () => {
+      // Otherwise an allowed case could pass because its git line was never refused.
+      for (const line of [DETACH, SWITCH, MAIN]) {
+        expect({ line, status: runHook(bash(line)).status }).toEqual({ line, status: 2 });
+      }
+    });
+
+    const allowed = [
+      // The 2026-10-01 incident: a heredoc on ssh's stdin runs on the remote host.
+      `ssh some-host bash -s <<'EOF_REMOTE'\ncd ~/some-checkout\ngit fetch -q origin some-branch\n${DETACH}\nEOF_REMOTE`,
+      `ssh some-host <<'EOF'\n${MAIN}\nEOF`,
+      `cat <<'EOF' | ssh some-host bash -s\n${MAIN}\nEOF`,
+      // A continuation joins `ssh` to the line that opens the heredoc.
+      `ssh -o ConnectTimeout=10 \\\n  some-host bash -s <<'EOF'\n${MAIN}\nEOF`,
+      // The segment split cut inside these quotes and judged the remote half.
+      `ssh some-host 'cd ~/some-checkout && ${MAIN}'`,
+      `ssh -p 2222 some-host "git fetch origin; ${SWITCH}"`,
+      // Quoted-delimiter bodies that only data readers take. The first is the
+      // second incident: a prompt that quotes the first one.
+      `shipit session create --detached --title "x" --prompt-file - <<'EOF'\nMove it like this:\n\nssh some-host bash -s <<'EOF_REMOTE'\n${DETACH}\nEOF_REMOTE\nEOF`,
+      `gh pr create -t "x" --body-file - <<'EOF'\n## Summary\n${MAIN}\nEOF`,
+      `shipit issue comment tracker#1 --body-file - <<'EOF'\n${SWITCH}\nEOF`,
+      `tee notes.md <<"EOF"\n${MAIN}\nEOF`,
+      `cat > notes.md <<\\EOF\n${MAIN}\nEOF`,
+      // Only the pipeline the heredoc feeds decides, and only its commands:
+      // this `bash` is another command, and that one is an argument.
+      `bash --version && gh pr create --body-file - <<'EOF'\n${MAIN}\nEOF`,
+      `gh pr create --title bash --body-file - <<'EOF'\n${MAIN}\nEOF`,
+      `gh pr create --body-file - <<'EOF' && echo done\n${MAIN}\nEOF`,
+      `GH_PROMPT_DISABLED=1 gh pr create --body-file - <<'EOF'\n${MAIN}\nEOF`,
+      `grep -q x <<<"y" && gh pr create --body-file - <<'EOF'\n${MAIN}\nEOF`,
+      // A substitution in single quotes runs on the remote host.
+      `ssh some-host 'echo $(hostname) && ${MAIN}'`,
+    ];
+    for (const command of allowed) {
+      it(`allows: ${command.replace(/\n/g, " ").slice(0, 80)}`, () => {
+        const r = runHook(bash(command));
+        expect(r.status).toBe(0);
+        expect(r.stderr).toBe("");
+      });
+    }
+
+    const refused = [
+      // A heredoc that anything but a data reader takes may be run here: a
+      // shell however it is reached, `source`, a group, a wrapper.
+      `bash -s <<'EOF'\n${MAIN}\nEOF`,
+      `/bin/bash <<-'EOF'\n\t${MAIN}\n\tEOF`,
+      `bash<<'EOF'\n${MAIN}\nEOF`,
+      `cat <<'EOF' | bash\n${MAIN}\nEOF`,
+      `timeout 60 bash -s <<'EOF'\n${MAIN}\nEOF`,
+      `source /dev/stdin <<'EOF'\n${MAIN}\nEOF`,
+      `{ true; bash; } <<'EOF'\n${MAIN}\nEOF`,
+      `x=$(cat <<'EOF'\n${MAIN}\nEOF\n); eval "$x"`,
+      `bash -s <<'EOF'\n${MAIN}`,
+      // A pipeline that a `\` continues names its reader before the body; one
+      // left open by `|` names it after the body.
+      `cat <<'EOF' | \\\nbash\n${MAIN}\nEOF`,
+      `cat <<'EOF' |\n${MAIN}\nEOF\nbash`,
+      // An unquoted delimiter expands `$(…)` here, so its body stays judged.
+      `gh pr create --body-file - <<EOF\n${MAIN}\nEOF`,
+      `cat <<EOF\n$(\n${MAIN}\n)\nEOF`,
+      `cat <<EOF\n\`\n${MAIN}\n\`\nEOF`,
+      `cat <<EOF\ncat <<'INNER'\n$(\n${MAIN}\n)\nINNER\nEOF`,
+      // bash joins `text\` and `EOF`, so this body ends at the second `EOF`
+      // and the checkout runs; ending it at the first would make the `gh`
+      // line an opener that swallows the checkout.
+      `cat <<EOF\ntext\\\nEOF\ngh pr create --body-file - <<'X'\nEOF\n${MAIN}\nX`,
+      // A command chained after ssh runs here.
+      `ssh some-host true && ${MAIN}`,
+      `ssh some-host 'git status'; git switch main`,
+      `ssh some-host 'git fetch' || ${MAIN}`,
+      `ssh some-host 'echo hi'\n${MAIN}`,
+      `ssh some-host bash -s <<'EOF' && ${MAIN}\ngit status\nEOF`,
+      // A data body ends at its delimiter, and the next line runs here. `<<-`
+      // strips the delimiter's tabs, so that body ends at the tabbed `EOF`.
+      `gh pr create --body-file - <<'EOF'\ntext\nEOF\n${MAIN}`,
+      `cat <<-'EOF'\n\ttext\n\tEOF\n${MAIN}`,
+      // The split stays blind to quotes on purpose: this git runs here.
+      `bash -c 'cd x && ${MAIN}'`,
+      // ssh runs these here before it connects.
+      `ssh some-host "echo $(true && ${MAIN})"`,
+      `ssh -o "ProxyCommand=sh -c 'true; ${SWITCH}'" some-host true`,
+      // Text that only looks like a heredoc opener opens nothing.
+      `gh pr comment 1 --body "use <<'EOF' here"\n${MAIN}\nEOF`,
+      `gh pr comment 1 --body x # <<'EOF'\n${MAIN}\nEOF`,
+      `git commit -m "one\ngh pr create --body-file - <<'EOF'\ntwo"\n${MAIN}\nEOF`,
+      // bash's delimiter here is `EOFx`, so the checkout runs. Read as `EOF`,
+      // the body would swallow it.
+      `cat <<'EOF'x\nEOFx\n${MAIN}\nEOF`,
+      // A delimiter this cannot read is judged as written. Skipping only that
+      // opener would read its body's `cat <<'X'` as one, which swallows the
+      // checkout that bash runs after `EOF.txt`.
+      `cat <<EOF.txt\ncat <<'X'\nEOF.txt\n${MAIN}\nX`,
+    ];
+    for (const command of refused) {
+      it(`blocks: ${command.replace(/\n/g, " ").slice(0, 80)}`, () => {
+        const r = runHook(bash(command));
+        expect(r.status).toBe(2);
+        expect(r.stderr).toContain("dedicated branch");
+      });
+    }
+
+    it("reads the command the same way under the destructive guard", () => {
+      const guarded = { SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" };
+      const status = (command: string) => runHook(bash(command), guarded).status;
+      expect(status("ssh some-host 'cd x && git reset --hard origin/main'")).toBe(0);
+      expect(status("gh pr create --body-file - <<'EOF'\ngit reset --hard origin/main\nEOF")).toBe(0);
+      expect(status("ssh some-host true && git reset --hard origin/main")).toBe(2);
+      expect(status("bash -s <<'EOF'\ngit reset --hard origin/main\nEOF")).toBe(2);
+    });
+  });
+
   describe("fails open on non-Bash / malformed input", () => {
     it("allows non-Bash tools", () => {
       const r = runHook({
