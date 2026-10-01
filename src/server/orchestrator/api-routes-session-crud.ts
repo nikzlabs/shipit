@@ -305,6 +305,7 @@ export async function registerSessionCrudRoutes(
           deps.removeSessionLogs,
           createGitManager,
         );
+        deps.kickDiskEscalation?.();
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {

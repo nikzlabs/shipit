@@ -1036,6 +1036,21 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "pending_user_restart");
   },
+
+  // docs/323-archived-session-data-retention req 5, req 12 — a session older than the
+  // feature starts its retention period at this migration, never before it.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "archived_at")) return;
+    db.exec(`
+      ALTER TABLE sessions ADD COLUMN archived_at TEXT;
+      ALTER TABLE sessions ADD COLUMN retention_floor_at TEXT;
+      ALTER TABLE sessions ADD COLUMN retained_data_bytes INTEGER;
+      ALTER TABLE sessions ADD COLUMN retained_data_measured_at TEXT;
+      UPDATE sessions SET retention_floor_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+      UPDATE sessions SET archived_at = retention_floor_at WHERE user_archived = 1;
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1057,6 +1072,8 @@ export const CODEX_ROLLUP_REPAIR_MIGRATION = 73;
 export const INSTALL_LEVEL_USAGE_MIGRATION = 91;
 
 export const STALE_PERMISSION_CARD_MIGRATION = 101;
+
+export const DATA_RETENTION_MIGRATION = 105;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

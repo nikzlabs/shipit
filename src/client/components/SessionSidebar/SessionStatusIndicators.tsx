@@ -1,4 +1,4 @@
-import { CloudArrowDownIcon, GitMergeIcon, HardDrivesIcon, CheckCircleIcon, XCircleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { CloudArrowDownIcon, GitMergeIcon, HardDrivesIcon, CheckCircleIcon, TrashIcon, XCircleIcon, WrenchIcon } from "@phosphor-icons/react";
 import { Spinner } from "../Spinner.js";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../../design-tokens.js";
 import { useSessionStore } from "../../stores/session-store.js";
@@ -79,4 +79,24 @@ export function DiskTierBadge({ session }: { session: SessionInfo }) {
     );
   }
   return null;
+}
+
+// docs/323-archived-session-data-retention req 7, req 12.
+export function DataDeletionBadge({ session }: { session: SessionInfo }) {
+  if (!session.dataDeletesAt) return null;
+  const at = new Date(session.dataDeletesAt);
+  if (Number.isNaN(at.getTime())) return null;
+  const withCheckout = session.userArchived && session.kind === "sandbox" && !session.remoteUrl;
+  const what = withCheckout ? "/persist files, uploads and checkout" : "/persist files and uploads";
+  const keep = session.userArchived ? "Restore" : "Open";
+  return (
+    <span
+      data-testid="data-deletion-badge"
+      className="shrink-0 flex items-center gap-0.5 text-[10px] text-(--color-text-tertiary)"
+      title={`ShipIt deletes this session's ${what} on ${at.toLocaleDateString(undefined, { dateStyle: "medium" })}. ${keep} the session before that date to keep them.`}
+    >
+      <TrashIcon size={ICON_SIZE.XS} />
+      {at.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+    </span>
+  );
 }

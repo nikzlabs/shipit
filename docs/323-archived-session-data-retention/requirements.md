@@ -36,17 +36,18 @@ gave the other answers on the same day; see "Resolved questions".
 
 1. ShipIt keeps the `/persist` files and the uploads of an archived session for
    a retention period. When the period ends, ShipIt deletes them.
-2. The retention period applies only to a session that the user archived. A
-   session that is not archived keeps its `/persist` files and its uploads with
-   no time limit. This includes a session whose checkout ShipIt reclaimed for
-   disk but which the user did not archive.
-3. The retention period is 60 days.
+2. The retention period applies to a session that the user archived, and to a
+   done session (requirement 11). Each other session keeps its `/persist` files
+   and its uploads with no time limit.
+3. The retention period is 60 days. A session with much data has a shorter
+   period (requirement 13).
 4. The period starts when the user archives the session. When the user restores
    a session and archives it again, a new period starts.
 5. A session that was archived before this feature counts from the day the
    feature starts to run. Thus ShipIt deletes nothing during the first period.
-6. The person who deploys ShipIt can change the period with an environment
-   variable. There is no row for it in Settings.
+6. The person who deploys ShipIt can change the two periods and the size limit
+   of requirement 13 with environment variables. There is no row for them in
+   Settings.
 7. The row of an archived session in **All sessions** shows the date on which
    ShipIt will delete the session's files.
 8. Restore of an archived session works after ShipIt deleted its files. The
@@ -57,6 +58,19 @@ gave the other answers on the same day; see "Resolved questions".
     session that has no remote. Requirements 7, 8 and 9 apply to it: the row
     shows the date, restore works with an empty workspace, and the notice names
     the checkout.
+11. The retention period also applies to a done session that the user did not
+    archive. "Done" has the one definition that the browser and the server
+    share (`docs/316-done-sessions-return-memory` req 1 and req 2). This feature
+    does not make its own definition. Thus a pinned session, which is not done,
+    keeps its files.
+12. For a done session that is not archived, the period starts at its last use,
+    or when its pull request merged or closed, the later of the two. It does
+    not start before the day the feature starts to run (requirement 5). A
+    message in the session starts a new period. Requirements 7, 8 and 9 apply:
+    the row shows the date, the session opens with an empty `/persist` and no
+    uploads, and the transcript has the notice.
+13. A session whose files use 100 MB or more has a retention period of 14 days.
+    The size is the total of the session's files that the retention deletes.
 
 ## Requirements of other features that this one touches
 
@@ -77,19 +91,7 @@ practice.
 
 ## Open questions
 
-- Are there two periods, a short one for a session with much data and a long one
-  for a session with little data? If so: which size divides them, and how long
-  is the short period? The user asked this on 2026-10-01 ("if it is 5 GB, it
-  makes sense to delete early, whereas 20 MB could be kept for longer").
-- Does the feature also apply to finished sessions that the user did not
-  archive? Measured on 2026-10-01: 742 sessions are evicted but not archived,
-  and their `/persist` uses 18.1 GB. 737 of them are sessions whose pull request
-  merged or closed. The sidebar shows only the newest 5 resolved sessions for
-  each repository, so most of the 737 are visible only in **All sessions**. The
-  size is as unequal as for archived sessions: 20 sessions have 100 MB or more
-  each, and 17.4 GB together. If the answer is yes, requirement 2 changes, and
-  the answer must say when the period starts for such a session, because it has
-  no archive time.
+(none)
 
 ## Resolved questions
 
@@ -110,3 +112,22 @@ practice.
   not add the tool output in the database, so it stays out of scope. For the
   third set, sessions that are evicted but not archived, the user asked what
   these sessions are; that question stays open above.
+- 2026-10-01 — Are there two periods, a short one for a session with much data
+  and a long one for a session with little data? The user asked this ("if it is
+  5 GB, it makes sense to delete early, whereas 20 MB could be kept for
+  longer"). The measurement showed that 30 of the 1075 archived sessions hold
+  16.6 GB of the 18.0 GB, and that no session has 5 GB. The user then chose:
+  100 MB or more gets 14 days, each other session gets 60 days, the size is the
+  total of the files that the retention deletes, and the size limit and the two
+  periods are environment variables. Requirements 3, 6 and 13.
+- 2026-10-01 — Does the feature also apply to finished sessions that the user
+  did not archive? Measured: 742 sessions are evicted but not archived, and
+  their `/persist` uses 18.1 GB. 737 of them are sessions whose pull request
+  merged or closed. The sidebar shows only the newest 5 resolved sessions for
+  each repository, so most of them are visible only in **All sessions**. The
+  user: "yes, add them. There should be a notion of a 'done' session consistent
+  between server and client, use it." The answer includes: the period starts at
+  the last use or at the merge or close, the later of the two, and not before
+  the day the feature ships; a message starts a new period; a pinned session
+  keeps its files; the same row date and notice apply. Requirements 2, 11 and
+  12.

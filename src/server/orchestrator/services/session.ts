@@ -14,7 +14,8 @@ import type { SessionInfo } from "../../shared/types.js";
 import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix, syncLocalDefaultBranchToOrigin } from "../git-utils.js";
-import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { chownToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import { materializeLfsWithWarning } from "../git-lfs.js";
 import { reclaimRegenerableSessionDirs, reclaimBlockedSessionCaches } from "../disk-utils.js";
 import {
@@ -185,6 +186,18 @@ async function restoreInPlace(
   await materializeLfsAndChown(workspaceDir, remoteUrl);
 }
 
+// docs/323-archived-session-data-retention req 10 — the retention sweep deleted the
+// checkout. A new sandbox workspace is an empty directory, so the restored one is too.
+async function recreateSandboxWorkspaceIfGone(workspaceDir: string): Promise<void> {
+  if ((await pathState(workspaceDir)) !== "absent") return;
+  const stateDir = sessionStateDirForWorkspace(workspaceDir);
+  for (const dir of [workspaceDir, stateDir]) {
+    await fs.mkdir(dir, { recursive: true });
+    chownToSessionWorker(dir);
+  }
+  console.log(`[unarchiveSession] re-created the empty sandbox workspace ${workspaceDir}`);
+}
+
 export async function unarchiveSession(
   sessionManager: SessionManager,
   createRepoGit: (dir: string) => RepoGit,
@@ -281,6 +294,8 @@ export async function unarchiveSession(
     await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
 
     sessionManager.setBranch(sessionId, newBranch);
+  } else if (session.workspaceDir && session.kind === "sandbox") {
+    await recreateSandboxWorkspaceIfGone(session.workspaceDir);
   }
 
   // The new branch must not inherit the previous PR's merge record or snapshot.

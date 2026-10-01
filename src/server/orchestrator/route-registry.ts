@@ -226,6 +226,7 @@ export async function registerRoutes(
 
   await registerApiRoutes(app, {
     sessionManager,
+    kickDiskEscalation,
     cancelAutoPush: (sessionId: string) => autoPushScheduler.cancel(sessionId),
     scheduleAutoPush: (git: GitManager, sessionId?: string) => autoPushScheduler.schedule(git, sessionId),
     repoStore,
