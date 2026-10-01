@@ -5,6 +5,8 @@ import type { Dirent } from "node:fs";
 import type { RepoStore } from "./repo-store.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { REPO_MEMORY_SUBDIR } from "./session-credentials.js";
+import { perSessionCredentialsRoot } from "./session-credentials-scaffold.js";
+import { isShipItOwnSession } from "./shipit-own-sessions.js";
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
 import { readBasePointerByHash, withScopeLock } from "./overlay-base.js";
 import { liveOverlayBaseClaims } from "./overlay-base-claims.js";
@@ -26,6 +28,11 @@ export interface SteadyStateReclaimDeps {
   liveOverlayScopeHashes?: () => Set<string>;
   /** Plugin artifacts are not represented by repoStore or session dep-dir scopes. */
   livePluginStoreArtifacts?: () => Promise<{ scopeHashes: Set<string>; cacheHashes: Set<string> }>;
+  /** Deleting a session row never removes its directory; one with no row is an orphan. */
+  sessionsRoot?: string;
+  sessionIds?: () => Set<string>;
+  /** Read per session: an evicted session runs no agent, so its CLI caches can go. */
+  isSessionEvicted?: (sessionId: string) => boolean;
   paceMs?: number;
 }
 
@@ -36,7 +43,16 @@ export interface SteadyStateReclaimResult {
   pnpmStoresRemoved: number;
   lfsObjectsRemoved: number;
   lfsBytesFreed: number;
+  orphanSessionDirsRemoved: number;
+  agentCacheDirsRemoved: number;
 }
+
+// Session creation makes the directory a moment before the row, and a fork clones before it.
+export const ORPHAN_SESSION_DIR_GRACE_MS = 24 * 60 * 60 * 1000;
+
+// Codex re-syncs its curated plugins snapshot (.tmp) and rebuilds cache/ at startup. Not
+// plugins/: that holds plugins a user installed.
+const EVICTED_AGENT_CACHE_PATHS = [".codex/.tmp", ".codex/cache"] as const;
 
 export async function runSteadyStateReclaim(
   deps: SteadyStateReclaimDeps,
@@ -48,6 +64,8 @@ export async function runSteadyStateReclaim(
     pnpmStoresRemoved: 0,
     lfsObjectsRemoved: 0,
     lfsBytesFreed: 0,
+    orphanSessionDirsRemoved: 0,
+    agentCacheDirsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
@@ -115,10 +133,31 @@ export async function runSteadyStateReclaim(
     console.warn("[disk-janitor] cache LFS object sweep failed:", getMessage(err));
   }
 
+  if (deps.sessionsRoot && deps.sessionIds) {
+    try {
+      result.orphanSessionDirsRemoved = await sweepOrphanSessionDirs(
+        deps.sessionsRoot, deps.sessionIds(), paceMs,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan session-dir sweep failed:", getMessage(err));
+    }
+  }
+
+  if (deps.credentialsDir && deps.isSessionEvicted) {
+    try {
+      result.agentCacheDirsRemoved = await sweepEvictedAgentCaches(
+        deps.credentialsDir, deps.isSessionEvicted, paceMs,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] evicted agent-cache sweep failed:", getMessage(err));
+    }
+  }
+
   if (
     result.cachesRemoved || result.overlayBasesRemoved
     || result.pnpmStoresRemoved || result.repoMemoryDirsRemoved
-    || result.lfsObjectsRemoved
+    || result.lfsObjectsRemoved || result.orphanSessionDirsRemoved
+    || result.agentCacheDirsRemoved
   ) {
     console.log(
       `[disk-janitor] steady-state reclaim: caches=${result.cachesRemoved} `
@@ -126,10 +165,80 @@ export async function runSteadyStateReclaim(
       + `pnpm-stores=${result.pnpmStoresRemoved} `
       + `repo-memory=${result.repoMemoryDirsRemoved} `
       + `lfs-objects=${result.lfsObjectsRemoved} `
-      + `(${Math.round(result.lfsBytesFreed / 1_048_576)} MiB)`,
+      + `(${Math.round(result.lfsBytesFreed / 1_048_576)} MiB) `
+      + `orphan-session-dirs=${result.orphanSessionDirsRemoved} `
+      + `agent-cache-dirs=${result.agentCacheDirsRemoved}`,
     );
   }
   return result;
+}
+
+async function sweepOrphanSessionDirs(
+  sessionsRoot: string,
+  sessionIds: ReadonlySet<string>,
+  paceMs: number,
+): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(sessionsRoot, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  const cutoffMs = Date.now() - ORPHAN_SESSION_DIR_GRACE_MS;
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (sessionIds.has(entry.name) || isShipItOwnSession(entry.name)) continue;
+    const full = path.join(sessionsRoot, entry.name);
+    try {
+      if ((await fs.lstat(full)).mtimeMs >= cutoffMs) continue;
+      await sleep(paceMs);
+      await fs.rm(full, { recursive: true, force: true });
+      removed += 1;
+      console.log(`[disk-janitor] removed orphan session dir ${full}`);
+    } catch (err) {
+      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+    }
+  }
+  return removed;
+}
+
+async function sweepEvictedAgentCaches(
+  credentialsDir: string,
+  isSessionEvicted: (sessionId: string) => boolean,
+  paceMs: number,
+): Promise<number> {
+  const root = perSessionCredentialsRoot(credentialsDir);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(root);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    for (const rel of EVICTED_AGENT_CACHE_PATHS) {
+      const full = path.join(root, entry, rel);
+      try {
+        // A symlinked agent home can point at a shared tree; never delete through it.
+        if (!(await fs.lstat(path.dirname(full))).isDirectory()) continue;
+        if (!(await fs.lstat(full)).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      await sleep(paceMs);
+      // Read after the pace, right before deleting: a restore marks the session hot before
+      // its runner starts (finishRestore).
+      if (!isSessionEvicted(entry)) break;
+      try {
+        await fs.rm(full, { recursive: true, force: true });
+        removed += 1;
+      } catch (err) {
+        console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+      }
+    }
+  }
+  return removed;
 }
 
 function lfsObjectDays(deps: SteadyStateReclaimDeps): number {
