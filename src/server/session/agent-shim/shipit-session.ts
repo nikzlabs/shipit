@@ -1150,6 +1150,38 @@ export async function handleSessionRename(args: string[], deps: RunDeps): Promis
   );
 }
 
+/**
+ * docs/303 req 48 — print THIS session's status card as it is stored, uncapped. The card
+ * block in the turn prompt is size-capped and withholds payloads on a large card, and a
+ * `replaceActions` has to repeat every kept offer exactly, so without this read a finished
+ * offer past the cap could be seen and not dropped. It is a read: it writes nothing and
+ * does not answer the card update the turn owes.
+ */
+export async function handleSessionStatus(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session status: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.positional.length > 0) {
+    fail(
+      deps.io,
+      "shipit session status takes no session id — it always reads THIS session's card. "
+        + "Another session's card is not readable, including a child's.",
+    );
+  }
+
+  const res = await deps.call("GET", "/agent-ops/session/status", undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read this session's status card"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  success(deps.io, asString(res.body.text) || "This session has no status card yet.");
+}
+
 export async function handleSessionWhoami(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
   if (parsed.unsupported.length > 0) {

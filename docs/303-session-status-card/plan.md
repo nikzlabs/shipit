@@ -1348,9 +1348,11 @@ whole of what req 35 asks the agent to reconcile.
   fit does the listing itself shrink. Dropping offers first would be the wrong
   order twice over — req 35 asks that the agent see *each* offer, and an offer it
   cannot see is exactly the one a `replaceActions` would silently drop. So
-  whenever the listing is anything less than complete the block says so and tells
-  the agent not to replace the list that turn: a large card costs reconciliation
-  power, never offers. **No field is ever truncated mid-value**: a half-printed
+  whenever the listing is anything less than complete the block says so and sends the
+  agent to `shipit session status` (req 48), which prints the card whole: before req 48
+  it told the agent not to replace the list that turn, which left a finished offer past
+  the cap visible and undroppable. A large card now costs a fetch before a replacement,
+  never offers. **No field is ever truncated mid-value**: a half-printed
   payload is one the agent would echo back as a changed offer, which silently
   re-creates the offer it meant to keep.
   A worst-case card therefore costs about 2k tokens a turn; a real one costs a
@@ -1428,6 +1430,95 @@ Re-delivering the user's own message to a retried attempt is intended and unchan
 attempt that failed produced no result, and that message is the turn. What stops the
 agent redoing finished work is the block, which now says the offer was already sent and
 what the last attempt wrote — so the record and the prompt agree again.
+
+## Fetching the card in full (req 48)
+
+The per-turn block withholds the payloads before it drops an offer, by design
+(req 35: an offer the agent cannot see is the one a replacement would silently
+drop) — so the usual shape past the cap is every offer listed and no payload
+printed, and only a card whose ids and labels alone will not fit loses offers from
+the listing too. `replaceActions` requires every kept offer to be repeated
+**byte-exactly** (req 17: `id` is a name, the server owns identity, so an offer
+whose payload differs by a byte arrives as a new untaken one). Those two correct
+decisions met and made a dead end: past the cap the agent could see
+a finished offer and had no call that removed it — the payloads it would have to
+repeat were the part not printed — and the notice sent it to `actions` *without*
+`replaceActions`, which is the one path that can only add. The card then filled
+with finished offers, reported by the agent it happened to:
+
+> Three done follow-ups still show on the card … I could not remove them,
+> because the card did not print the other offers in full.
+
+**The mechanism: a read of its own.** `shipit session status [--json]`, backed by
+`GET /api/sessions/:sessionId/session-status` (`containerAccessible: true`, the
+same path as the write, beside it in `api-routes-session-status.ts`), relayed by
+the worker as `GET /agent-ops/session/status`, rendered by
+`formatSessionStatusCardFull` (`services/session-status.ts`) — which shares
+`offerBlock` and `turnsAgo` with the block, so the fetched copy and the per-turn
+copy read the same and an offer can be copied from either.
+
+It is **uncapped and withholds nothing**: the status, the last-turn line, every
+manual step with its age, and every offer with its description, `defaultChecked`,
+payload, sent state and both ages. `--json` adds the same thing structured, with
+the ages as numbers (`turnsAgoCount`).
+
+**And it ends with the offers as a copyable JSON array** — exactly the `actions`
+items the tool takes, nothing server-owned beside them (`copyableOffer`). Found by
+the independent review, and the reason the readable listing is not enough on its
+own: `offerBlock` interpolates each value into a line of its own, so a payload
+holding a line like `  payload: …` is indistinguishable from the field boundary and
+two different offers can render **identically** — reproduced against the real
+formatter and the real validator. A replacement built from that re-creates the offer
+it meant to keep, which is the harm req 48 exists to remove, so the fetch tells the
+agent to copy from the JSON and not from the lines above it.
+
+The payload is therefore printed twice — once in the readable listing, once in the
+JSON — which doubles the biggest field. Kept on purpose: the readable listing is what
+the per-turn block looks like, so the fetched copy reads the same as the one the agent
+already knows, and the cost is a rarely-run deliberate read whose size the card bounds.
+Printing it only as JSON would save that, and would make the agent read escaped strings
+to decide which offer is finished.
+
+**It is a read.** The route writes nothing: no `writeSeq`, no `fresh`, no
+`nudgePending`, and it does **not** set the turn's `statusUpdated`, so fetching
+the card never answers the update the turn owes. It needs no runner either —
+unlike the write, whose 409 exists to pin the credit on a turn. Guarded by
+`integration_tests/session-status-route.test.ts` → "is a read".
+
+**Why not the three cheaper shapes.**
+
+- **Widening the `session_status` reply.** A bare call *is* the "nothing moved"
+  confirmation (req 14), and it is a write: it bumps `writeSeq`, marks the card
+  current and credits the turn. Reading through it would cost a write every time
+  and would mark the card current *before* the agent had reconciled it — and the
+  reconciliation needs the payloads *first*, so the read has to precede the
+  write it informs. The reply therefore keeps naming ids and labels only.
+- **Raising `MAX_STATUS_CONTEXT_CHARS`.** A card can grow past any cap, so this
+  moves the dead end rather than removing it, and it pays per turn in a cost that
+  accumulates down the conversation. The cap stays where it is.
+- **An id-based `removeActions: ["id"]`.** It would remove the symptom by routing
+  around req 17's identity rule, and req 48 asks for the fetch. Left as a question
+  for the user rather than shipped beside it.
+
+**`lastTurn` is in the fetch and absent from the block.** The block omits it
+because showing the previous turn's line invites carrying it forward, which req 31
+rules out; the fetch is a deliberate read of the whole stored card, and its label
+("not a delta: your next call rewrites this line or clears it") turns the same
+risk into the reminder.
+
+**What the fetch cannot carry: a manual step's reported state.** Nothing stores it
+— a tick and a note ride one message and are gone (the req 37 and req 44
+receipts), and the record of a tick is per-browser React state in
+`SessionStatusCard.tsx`. So the fetch lists the steps as the agent wrote them,
+with their ages, exactly as the block does; a step the user has done is learned
+from the submit message, as before. The fetch claims nothing about it.
+
+**The notice at the cap now names the way out** rather than forbidding the only
+call that could tidy the card: `REPLACE_UNSAFE` sends the agent to
+`shipit session status`, still refusing a replacement composed from the
+incomplete listing alone. `prompts/status-card-reconcile.md`, the injected
+`prompts/session-status.md`, the tool description and
+`src/server/shipit-docs/sessions.md` say the same thing in their own words.
 
 ## Tests
 
@@ -1612,9 +1703,10 @@ tests.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts`, `src/server/orchestrator/dispatched-turn.ts` — resident reuse check against the flag, one helper for both.
 - `src/server/orchestrator/resident-spawn-guard.ts` — `releaseResidentOnStatusCardChange` and the per-process record of the value it was spawned with.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
-- `src/server/orchestrator/api-routes-session-status.ts` — the route; `api-routes-propose-actions.ts` — refuses under the flag.
+- `src/server/orchestrator/api-routes-session-status.ts` — the write route and the req 48 read beside it; `api-routes-propose-actions.ts` — refuses under the flag.
+- `src/server/session/agent-shim/shipit-session.ts` (`handleSessionStatus`), `agent-shim/shipit.ts` — `shipit session status`, the agent's fetch (req 48).
 - `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope; shared `validateActionItems`.
-- `src/server/orchestrator/services/session-status.ts` — record, settle, take, the block (`formatSessionStatusContext`), `shouldCarryStatusNudge`, the seq bookkeeping behind req 40.
+- `src/server/orchestrator/services/session-status.ts` — record, settle, take, the block (`formatSessionStatusContext`), the uncapped fetch rendering (`formatSessionStatusCardFull`, req 48), `shouldCarryStatusNudge`, the seq bookkeeping behind req 40.
 - `src/server/orchestrator/prompts/status-card-reconcile.md`, `status-card-missed.md`, `status-card-absent.md` — the block's three pieces of prose.
 - `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts` and the one card write it makes; `harnessCommand` and `statusContext` on `TurnInput`, the latter swapped for the current rendering on every attempt.
 - `src/server/orchestrator/turn-accumulator.ts` — `statusUpdated` and `awaitingUserAnswer`; `ws-handlers/agent-listeners.ts` sets the second from the turn's tool blocks.
@@ -1643,6 +1735,7 @@ tests.
 - **An `idle` listener for the decision** — `idle` fires twice on the
   streaming path and once from worker reconciliation with no turn behind it.
 - **An alias for `propose_actions` under the flag** — see "Evolving".
+- **A second MCP tool for the req 48 fetch** — a tool's schema rides every turn on every harness and would need the five adapter tool lists and the two Claude allowlists the setting already threads through, for a read the agent needs rarely. The shim subcommand costs nothing per turn and is reached identically from every harness.
 - **Opacity, colored rails, state words in a header, a transcript notice**
   for freshness — the label in the corner is what the user chose.
 

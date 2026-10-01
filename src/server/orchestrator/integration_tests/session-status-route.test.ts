@@ -21,6 +21,11 @@ import {
   MAX_NEEDS_YOU_ITEMS,
   MAX_STATUS_LEN,
 } from "../../shared/session-status-validation.js";
+import {
+  MAX_STATUS_CONTEXT_CHARS,
+  formatSessionStatusContext,
+  takeOfferedActions,
+} from "../services/session-status.js";
 
 describe("Integration: session-status route", () => {
   let app: FastifyInstance;
@@ -78,6 +83,9 @@ describe("Integration: session-status route", () => {
 
   const post = (payload: Record<string, unknown>) =>
     app.inject({ method: "POST", url: `/api/sessions/${sessionId}/session-status`, payload });
+
+  const get = (id: string = sessionId) =>
+    app.inject({ method: "GET", url: `/api/sessions/${id}/session-status` });
 
   it("persists the card with per-offer provenance and marks the turn updated", async () => {
     const client = await TestClient.connect(port, sessionId);
@@ -305,5 +313,106 @@ describe("Integration: session-status route", () => {
       { offerId: expect.any(String), id: "pr", label: "Open a PR", taken: true },
       { offerId: expect.any(String), id: "docs", label: "Update the docs", taken: false },
     ]);
+  });
+
+  it("fetches the whole card, payloads included, where the per-turn block withholds them", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    const bulky = Array.from({ length: 12 }, (_, i) => ({
+      id: `big-${i}`,
+      label: `Offer ${i}`,
+      description: `Does ${i}.`,
+      payload: `p${i}-${"x".repeat(1500)}`,
+    }));
+    await post({ status: "Many offers.", needsYou: ["Paste the key."], actions: bulky });
+
+    const stored = sessionManager.get(sessionId)!.sessionStatus!;
+    // The dead end this fetch exists for: the offer is listed, its payload is not.
+    expect(formatSessionStatusContext(stored)).toContain("payload: (not printed this turn — too long)");
+
+    const res = await get();
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      hasCard: boolean;
+      text: string;
+      card: {
+        status: string;
+        needsYou: { text: string; addedTurnsAgo: number | null }[];
+        actions: { id: string; payload: string; taken: boolean; offeredTurnsAgo: number | null }[];
+      };
+    };
+    expect(body.hasCard).toBe(true);
+    expect(body.text.length).toBeGreaterThan(MAX_STATUS_CONTEXT_CHARS);
+    for (const offer of bulky) {
+      expect(body.text).toContain(`  payload: ${offer.payload}`);
+      expect(body.card.actions.find((a) => a.id === offer.id)?.payload).toBe(offer.payload);
+    }
+    expect(body.card.status).toBe("Many offers.");
+    expect(body.card.needsYou).toEqual([{ text: "Paste the key.", addedTurnsAgo: 0 }]);
+  });
+
+  it("is a read: it marks nothing fresh, bumps no writeSeq, and answers no update", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    await post({ status: "Stored once." });
+    const before = sessionManager.get(sessionId)!.sessionStatus!;
+    // The state a settling turn leaves behind, and the state the fetch must not change.
+    sessionManager.setSessionStatus(sessionId, { ...before, fresh: false, nudgePending: true });
+    const runner = app.runnerRegistry.get(sessionId)!;
+    runner.statusUpdated = false;
+
+    expect((await get()).statusCode).toBe(200);
+
+    const after = sessionManager.get(sessionId)!.sessionStatus!;
+    expect(after.fresh).toBe(false);
+    expect(after.nudgePending).toBe(true);
+    expect(after.writeSeq).toBe(before.writeSeq);
+    expect(after.turnSeq).toBe(before.turnSeq);
+    // Reading the card is not confirming it: the turn still owes the call.
+    expect(runner.statusUpdated).toBe(false);
+  });
+
+  it("reports a sent offer as sent, so a replacement keeps its provenance", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    await post({
+      status: "One offer.",
+      actions: [{ id: "pr", label: "Open a PR", description: "Against main.", payload: "Open it." }],
+    });
+    const stored = sessionManager.get(sessionId)!.sessionStatus!;
+    await takeOfferedActions(
+      { sessionManager, sseBroadcast: () => {} },
+      sessionId,
+      [stored.actions[0]!.offerId],
+    );
+
+    const body = (await get()).json() as {
+      text: string;
+      card: { actions: { id: string; taken: boolean; takenTurnsAgo?: number | null }[] };
+    };
+    expect(body.card.actions[0]).toMatchObject({ id: "pr", taken: true, takenTurnsAgo: 0 });
+    expect(body.text).toContain("ALREADY SENT to you");
+  });
+
+  it("asks for the first card when the session has none, rather than failing", async () => {
+    const res = await get();
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { hasCard: boolean; text: string; card?: unknown };
+    expect(body.hasCard).toBe(false);
+    expect(body.text).toContain("no status card yet");
+    expect(body.card).toBeUndefined();
+  });
+
+  it("refuses the read while the setting is off, and 404s an unknown session (req 21)", async () => {
+    const unknown = await get("does-not-exist");
+    expect(unknown.statusCode).toBe(404);
+
+    credentialStore.setSessionStatusCard(false);
+    const off = await get();
+    expect(off.statusCode).toBe(409);
+    expect((off.json() as { error: string }).error).toContain("propose_actions");
   });
 });

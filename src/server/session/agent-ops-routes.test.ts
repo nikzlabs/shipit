@@ -137,6 +137,32 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("GET /agent-ops/session/status reads /session-status, body and all (docs/303 req 48)", async () => {
+    client.setResponse("GET", "/session-status", {
+      ok: true, status: 200,
+      body: { ok: true, hasCard: true, text: "<session_status_card_full>…", card: { status: "Done." } },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/session/status" });
+
+    expect(res.statusCode).toBe(200);
+    // A GET, so the orchestrator route cannot be the write one, and no body rides it.
+    expect(client.calls).toEqual([{ method: "GET", path: "/session-status", body: undefined }]);
+    expect(res.json()).toMatchObject({ hasCard: true, text: "<session_status_card_full>…" });
+  });
+
+  it("GET /agent-ops/session/status relays the orchestrator's refusal status", async () => {
+    client.setResponse("GET", "/session-status", {
+      ok: false, status: 409,
+      body: { error: "The session status card is off" },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/session/status" });
+
+    expect(res.statusCode).toBe(409);
+    expect((res.json() as { error: string }).error).toContain("is off");
+  });
+
   it("POST /agent-ops/pr/create forwards to /pr/agent-create with body", async () => {
     client.setResponse("POST", "/pr/agent-create", {
       ok: true, status: 200,

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   clearConversationThread,
+  formatSessionStatusCardFull,
   formatSessionStatusContext,
   MAX_STATUS_CONTEXT_CHARS,
   markAllSessionStatusesStale,
@@ -686,8 +687,10 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     expect(block.length).toBeLessThanOrEqual(MAX_STATUS_CONTEXT_CHARS);
     // req 35 asks that the agent see each offer, so the cap falls on the payloads.
     for (const offer of card.actions) expect(block).toContain(`- id: ${offer.id}`);
-    // And it says so, because a replacement it cannot copy exactly would drop them.
-    expect(block).toContain("Do NOT use `replaceActions` this turn");
+    // And it says so, because a replacement it cannot copy exactly would drop them —
+    // naming the fetch that does print them, so the offer can still be dropped (req 48).
+    expect(block).toContain("Do NOT use `replaceActions` from this listing alone");
+    expect(block).toContain("Run `shipit session status`");
     // Never half a payload: a truncated one is echoed back as a changed offer.
     const printed = block.split("\n").filter((line) => line.startsWith("  payload: "));
     for (const line of printed) {
@@ -706,7 +709,8 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
     expect(block.length).toBeLessThanOrEqual(MAX_STATUS_CONTEXT_CHARS);
     expect(block).toContain("further offer(s) are on the card, not listed here.");
-    expect(block).toContain("Do NOT use `replaceActions` this turn");
+    expect(block).toContain("Do NOT use `replaceActions` from this listing alone");
+    expect(block).toContain("Run `shipit session status`");
   });
 
   it("prints every payload and no warning on an ordinary card", async () => {
@@ -714,6 +718,169 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
     expect(block).not.toContain("not printed this turn");
     expect(block).not.toContain("Do NOT use `replaceActions`");
+    expect(block).not.toContain("This listing is incomplete");
+  });
+});
+
+describe("formatSessionStatusCardFull (docs/303 req 48)", () => {
+  /** The shape the per-turn block cannot print: more payload than the cap holds. */
+  async function bulkyCard() {
+    const { d } = await seededCard();
+    const bulky = Array.from({ length: 12 }, (_, i) =>
+      item({ id: `big-${i}`, label: `Offer ${i}`, description: `Does ${i}`, payload: `p${i}-${"x".repeat(1500)}` }),
+    );
+    await recordSessionStatus(d, "s1", {
+      lastTurn: "Wired the webhook route.",
+      needsYou: ["Paste the Stripe key."],
+      actions: bulky,
+      replaceActions: true,
+    });
+    return { d, card: d.sessionManager.get("s1")!.sessionStatus! };
+  }
+
+  it("prints every payload the per-turn block withheld, so a replacement can repeat them", async () => {
+    const { card } = await bulkyCard();
+    const block = formatSessionStatusContext(card);
+    const full = formatSessionStatusCardFull(card);
+
+    // The dead end: the block lists the offer and withholds what a replacement must repeat.
+    expect(block).toContain("payload: (not printed this turn — too long)");
+    expect(full).not.toContain("not printed this turn");
+    expect(full.length).toBeGreaterThan(MAX_STATUS_CONTEXT_CHARS);
+    for (const offer of card.actions) {
+      expect(full).toContain(`- id: ${offer.id}`);
+      expect(full).toContain(`  payload: ${offer.payload}`);
+      expect(full).toContain(`  description: ${offer.description}`);
+    }
+  });
+
+  it("carries the status, each manual step with its age, and the last-turn line", async () => {
+    const { card } = await bulkyCard();
+    const full = formatSessionStatusCardFull(card);
+    expect(full).toContain("Routes done.");
+    expect(full).toContain("- Paste the Stripe key. — added this turn");
+    // Absent from the per-turn block (req 31), present here: the fetch is the whole card.
+    expect(full).toContain("Wired the webhook route.");
+    expect(full).toContain("not a delta");
+  });
+
+  it("reports a sent offer as sent, and its age, so provenance survives a replacement", async () => {
+    const { d, card } = await bulkyCard();
+    await takeOfferedActions(d, "s1", [card.actions[0]!.offerId]);
+    const full = formatSessionStatusCardFull(d.sessionManager.get("s1")!.sessionStatus!);
+    expect(full).toContain("id: big-0 — offered this turn, ALREADY SENT to you this turn");
+    expect(full).not.toContain("id: big-1 — offered this turn, ALREADY SENT");
+  });
+
+  it("says whether the card reads stale, and names `replaceActions` as the way to drop one", async () => {
+    const { d, card } = await bulkyCard();
+    expect(formatSessionStatusCardFull(card)).toContain("reads current to the user");
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq,
+      statusUpdated: false,
+      nudgePending: true,
+    });
+    const stale = formatSessionStatusCardFull(d.sessionManager.get("s1")!.sessionStatus!);
+    expect(stale).toContain("reads STALE to the user");
+    expect(stale).toContain("`replaceActions: true`");
+  });
+
+  /**
+   * The promise of req 48, exercised rather than asserted about: take what the fetch
+   * printed, drop one offer, send the rest back — and the kept ones must keep their
+   * identity. The values are block-shaped on purpose: an independent review showed two
+   * different offers rendering IDENTICALLY in the readable listing, so this round-trips
+   * through the copyable JSON the fetch ends with, which is what the agent is told to use.
+   */
+  it("round-trips through its JSON: a replacement drops one and keeps the rest exactly", async () => {
+    const sessions = fakeSessions();
+    sessions.track("s1");
+    const d = deps(sessions);
+    const nasty = [
+      item({
+        id: "keep",
+        label: "Keep me",
+        description: "Has a line that looks like a field.",
+        // Block-shaped: in the readable listing this is indistinguishable from a boundary.
+        payload: "First line.\n  payload: not really\n- id: not an offer either",
+        defaultChecked: true,
+      }),
+      item({ id: "sent", label: "Already sent", description: "Taken by the user.", payload: "Do it." }),
+      item({ id: "drop", label: "Finished", description: "Done, so it goes.", payload: "Gone." }),
+    ];
+    await recordSessionStatus(d, "s1", { status: "Three offers.", actions: nasty, replaceActions: true });
+    const before = d.sessionManager.get("s1")!.sessionStatus!;
+    await takeOfferedActions(d, "s1", [before.actions[1]!.offerId]);
+    // Two settled turns, so the ages are non-zero and a dropped seq would show.
+    for (const _ of [0, 1]) {
+      const card = d.sessionManager.get("s1")!.sessionStatus!;
+      await settleSessionStatusCard(d, "s1", {
+        ifWriteSeq: card.writeSeq, statusUpdated: true, nudgePending: false,
+      });
+    }
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+
+    // Parse the copyable JSON out of the fetch, exactly as the agent is told to.
+    const full = formatSessionStatusCardFull(stored);
+    const json = full.slice(full.indexOf("[\n"), full.lastIndexOf("]") + 1);
+    const copied = JSON.parse(json) as { id: string }[];
+    expect(copied.map((o) => o.id)).toEqual(["keep", "sent", "drop"]);
+    expect(copied[0]).toEqual({
+      id: "keep",
+      label: "Keep me",
+      description: "Has a line that looks like a field.",
+      defaultChecked: true,
+      payload: "First line.\n  payload: not really\n- id: not an offer either",
+    });
+
+    await recordSessionStatus(d, "s1", {
+      actions: copied.filter((o) => o.id !== "drop") as never,
+      replaceActions: true,
+    });
+
+    const after = d.sessionManager.get("s1")!.sessionStatus!;
+    expect(after.actions.map((o) => o.id)).toEqual(["keep", "sent"]);
+    // Identity, provenance and the sent state all survive, which is what byte-exact means.
+    expect(after.actions[0]).toMatchObject({
+      offerId: stored.actions[0]!.offerId,
+      offeredAt: stored.actions[0]!.offeredAt,
+      offeredSeq: stored.actions[0]!.offeredSeq,
+      defaultChecked: true,
+    });
+    expect(after.actions[1]).toMatchObject({
+      offerId: stored.actions[1]!.offerId,
+      takenAt: stored.actions[1]!.takenAt,
+      takenSeq: stored.actions[1]!.takenSeq,
+    });
+    // And the fetch reported the ages the settled turns gave them.
+    expect(full).toContain("id: keep — offered 2 turns ago");
+    expect(full).toContain("id: sent — offered 2 turns ago, ALREADY SENT to you 2 turns ago");
+  });
+
+  it("renders two offers that differ only in block-shaped values distinguishably", async () => {
+    const sessions = fakeSessions();
+    sessions.track("a");
+    sessions.track("b");
+    const d = deps(sessions);
+    const shared = { id: "keep", description: "D" };
+    await recordSessionStatus(d, "a", {
+      status: "s",
+      actions: [{ ...shared, label: "L\n  description: D\n  payload: first", payload: "second" }],
+    });
+    await recordSessionStatus(d, "b", {
+      status: "s",
+      actions: [{ ...shared, label: "L", payload: "first\n  description: D\n  payload: second" }],
+    });
+    const a = formatSessionStatusCardFull(d.sessionManager.get("a")!.sessionStatus!);
+    const b = formatSessionStatusCardFull(d.sessionManager.get("b")!.sessionStatus!);
+    expect(a).not.toBe(b);
+  });
+
+  it("says so plainly when the card offers nothing", async () => {
+    const { d } = await seededCard();
+    await recordSessionStatus(d, "s1", { actions: [], replaceActions: true });
+    const full = formatSessionStatusCardFull(d.sessionManager.get("s1")!.sessionStatus!);
+    expect(full).toContain("Follow-ups offered: none.");
   });
 });
 

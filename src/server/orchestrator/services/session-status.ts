@@ -330,9 +330,14 @@ type OfferDetail = "full" | "no-payload" | "id-only";
  * against. A card or an entry stored before req 40 carries no seq, and says nothing
  * rather than claiming an age of zero.
  */
+export function turnsAgoCount(turnSeq: number, seq: number | null | undefined): number | null {
+  if (seq === undefined || seq === null) return null;
+  return Math.max(0, turnSeq - seq);
+}
+
 function turnsAgo(turnSeq: number, seq: number | null | undefined): string {
-  if (seq === undefined || seq === null) return "at an unrecorded turn";
-  const n = Math.max(0, turnSeq - seq);
+  const n = turnsAgoCount(turnSeq, seq);
+  if (n === null) return "at an unrecorded turn";
   if (n === 0) return "this turn";
   return n === 1 ? "1 turn ago" : `${n} turns ago`;
 }
@@ -352,9 +357,17 @@ function offerBlock(offer: OfferedAction, detail: OfferDetail, turnSeq: number):
   ].join("\n");
 }
 
+/**
+ * docs/303 req 48 — the notice names the way out. It used to stop at "you cannot repeat
+ * every offer exactly" and forbid `replaceActions`, which left the agent able to SEE a
+ * finished offer and unable to drop it: adding is the one thing that removes nothing.
+ */
 const REPLACE_UNSAFE =
-  "This listing is incomplete, so you cannot repeat every offer exactly."
-  + " Do NOT use `replaceActions` this turn — it would drop the ones not printed in full.";
+  "This listing is incomplete, so you cannot repeat every offer exactly from it."
+  + " Run `shipit session status` to get the whole card, every payload included, and then"
+  + " `replaceActions` is safe — that is a read and does not count as this turn's update."
+  + " Do NOT use `replaceActions` from this listing alone: it would drop the offers it did"
+  + " not print in full.";
 
 /**
  * docs/303 req 35 — what the agent reconciles at the end of the turn. Without it
@@ -372,9 +385,9 @@ const REPLACE_UNSAFE =
  *
  * The cap therefore falls on the PAYLOADS, never on the offers: req 35 asks that
  * the agent see each offer, and an offer it cannot see is one a replacement would
- * silently drop. When a payload is withheld the block says so and forbids
- * `replaceActions` for that turn, so a large card costs reconciliation power, not
- * offers.
+ * silently drop. When a payload is withheld the block says so and sends the agent to
+ * `shipit session status` (req 48), which prints the card whole: a large card costs a
+ * fetch before a replacement, not the power to make one.
  *
  * req 39 — the instruction CLOSES the block, in the words the nudge used, because that
  * is where the measurement found an instruction is obeyed. req 40 — each manual step and
@@ -430,6 +443,75 @@ export function formatSessionStatusContext(card: SessionStatus | undefined): str
   let shown = offers.length;
   while (shown > 0 && render("id-only", shown).length > MAX_STATUS_CONTEXT_CHARS) shown -= 1;
   return render("id-only", shown);
+}
+
+/**
+ * docs/303 req 48 — an offer in the one shape that is copyable: the `actions` item the
+ * tool takes, nothing server-owned beside it. Found by review — the readable listing
+ * interpolates the values into lines of its own, so a payload holding a line like
+ * `  payload: …` is indistinguishable from the field boundary, and two different offers
+ * can render identically. A replacement built from that silently re-creates the offer it
+ * meant to keep (req 17), which is the harm req 48 exists to remove.
+ */
+function copyableOffer(offer: OfferedAction): ActionChecklistItem {
+  return {
+    id: offer.id,
+    label: offer.label,
+    ...(offer.description ? { description: offer.description } : {}),
+    ...(offer.defaultChecked ? { defaultChecked: true } : {}),
+    payload: offer.payload,
+  };
+}
+
+/**
+ * docs/303 req 48 — the stored card, complete and uncapped: what `shipit session status`
+ * prints. The per-turn block is bounded (req 35) and withholds payloads on a large card,
+ * and `replaceActions` must repeat every kept offer exactly, so past the cap an offer the
+ * agent could see was one it could not drop. This is the copy that makes dropping it
+ * possible: the cap then costs reading room each turn, never reconciliation power.
+ *
+ * Unlike the block it carries `lastTurn`, because fetching the card is deliberate and the
+ * line is part of what is stored; the label says it is not a delta, which is the thing
+ * req 31 rules out and the reason the block omits it.
+ */
+export function formatSessionStatusCardFull(card: SessionStatus): string {
+  const lines = [
+    "<session_status_card_full>",
+    "The stored status card, in full: every field and every offer with its payload."
+    + " Nothing is withheld here.",
+    `The card currently reads ${card.fresh ? "current" : "STALE"} to the user.`,
+  ];
+  if (card.lastTurn) {
+    lines.push(
+      "",
+      "Last turn (what the last write said about the turn that made it — not a delta:"
+      + " your next call rewrites this line or clears it):",
+      card.lastTurn,
+    );
+  }
+  lines.push("", "Status:", card.status);
+  const steps = card.needsYou ?? [];
+  if (steps.length > 0) {
+    lines.push(
+      "",
+      "Manual steps (only the user can do these):",
+      ...steps.map((s, i) => `- ${s} — added ${turnsAgo(card.turnSeq, card.stepSeq?.[i])}`),
+    );
+  }
+  lines.push("", card.actions.length === 0 ? "Follow-ups offered: none." : "Follow-ups offered:");
+  for (const offer of card.actions) lines.push(offerBlock(offer, "full", card.turnSeq));
+  if (card.actions.length > 0) {
+    lines.push(
+      "",
+      "To drop an offer, call `session_status` with `replaceActions: true` and the offers"
+      + " you keep. Copy them from HERE rather than from the readable list above: this is"
+      + " the exact `actions` shape the tool takes, and a value is only unambiguous as"
+      + " JSON — an offer whose payload differs by a byte arrives as a new, untaken one.",
+      JSON.stringify(card.actions.map(copyableOffer), null, 2),
+    );
+  }
+  lines.push("</session_status_card_full>");
+  return lines.join("\n");
 }
 
 /**
