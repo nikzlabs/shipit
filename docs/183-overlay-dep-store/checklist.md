@@ -373,6 +373,19 @@ the value at runtime so self-updates rotate the scope too (not hardcoded in `dep
       `buildEnv` forwarding (`SESSION_WORKER_IMAGE_ID`, `IMAGE_DIGEST` fallback, neither set) in
       `container-lifecycle.test.ts`.
 
+### Directory rename inside a mounted dep dir — `redirect_dir=on` (2026-10-01)
+
+See plan.md "Renaming a directory that lives in the base".
+
+- [x] **`OverlaySpec.redirectDir`** — `overlayDriverOpts` appends `redirect_dir=on` when it is set.
+- [x] **`buildOverlaySpecs` sets it** for npm/Yarn dep-dir overlays. Plugin overlays and the verified
+      pnpm base stay without it, because a host-side step reads their raw upper.
+- [x] Tests: a real overlay mount that replays the optimizer's rename sequence, with an `EXDEV`
+      control (`overlay-redirect-dir.test.ts`); the option string and the recreate of an older volume
+      (`overlay-volume.test.ts`); the two exclusions (`plugin-overlay.test.ts`,
+      `overlay-session.test.ts`).
+- [x] `shipit-docs/shipit-yaml.md` — the symptom and the workaround for a mount without the option.
+
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 
 - [REJECTED] **(A) Source-sync re-sequencing** — clone/checkout/`git clean` inside the merged mount.

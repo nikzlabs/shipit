@@ -142,8 +142,9 @@ export async function applyOverlayDepDirsForSession(
     const recreated = containerManager.consumeOverlayVolumesRecreated(sessionId);
     if (recreated) {
       warn(
-        `the dependency base advanced, so the compose services holding the previous ` +
-        `overlay were recreated over the new one. Services set to start automatically ` +
+        `the dependency overlay was recreated (its base advanced or its mount options ` +
+        `changed), so the compose services holding the previous one were removed. ` +
+        `Services set to start automatically ` +
         `come back on their own; a manually-started service needs starting again.`,
       );
     }

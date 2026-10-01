@@ -26,7 +26,7 @@ import {
   resolveOverlayScope,
   validDepDirsForOverlay,
 } from "./overlay-session.js";
-import { overlayScopeHash, overlayVolumeName } from "./overlay-volume.js";
+import { overlayDriverOpts, overlayScopeHash, overlayVolumeName } from "./overlay-volume.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -298,6 +298,29 @@ describe("buildOverlaySpecs", () => {
     expect(nm.volumeName).toBe(overlayVolumeName(sessionId, "node_modules"));
 
     expect(specs[1].mountPath).toBe("/workspace/packages/app/node_modules");
+  });
+
+  it("mounts every dep dir with redirect_dir=on, so a directory the base holds can be renamed", () => {
+    const specs = buildOverlaySpecs({
+      sessionId: "sess",
+      scope,
+      depDirs: ["node_modules", "vendor/bundle"],
+      volumeMountpoint: MP,
+    });
+    for (const spec of specs) {
+      expect(overlayDriverOpts(spec).split(",")).toContain("redirect_dir=on");
+    }
+  });
+
+  it("mounts a verified pnpm base without redirect_dir, because the bin seed reads that upper raw", () => {
+    const [spec] = buildOverlaySpecs({
+      sessionId: "sess",
+      scope,
+      depDirs: ["node_modules"],
+      volumeMountpoint: MP,
+      namespace: PNPM_VERIFIED_NAMESPACE,
+    });
+    expect(overlayDriverOpts(spec)).not.toContain("redirect_dir");
   });
 
   it("gives each dep dir a distinct base, upper, and volume (no shared upperdir)", () => {

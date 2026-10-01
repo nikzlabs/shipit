@@ -315,6 +315,33 @@ agent:
   automatically. (A platform operator can disable the store for a release via
   the `OVERLAY_DEP_STORE=0` kill switch, in which case dep dirs fall back to a
   plain install.) See docs/183.
+- **A tool can rename a directory inside a dep dir**, including one that came
+  from the shared store. Vite's dependency optimizer needs this: it replaces
+  `node_modules/.vite/deps` by rename each time it finds a new dependency.
+
+If a service log still shows `EXDEV: cross-device link not permitted, rename
+'…/node_modules/.vite/deps' -> '…/deps_temp_…'`, and the browser gets `504
+(Outdated Optimize Dep)` for every page that imports the new dependency, the
+session's mount does not have that ability. Restarting the service does not
+help. There are two causes:
+
+- **The mount is older than the fix.** The next container start replaces it.
+  Until then, remove the tool's cache directory and restart the service. The
+  tool creates the directory again in the session's own layer, where the rename
+  works:
+
+  ```bash
+  rm -rf node_modules/.vite
+  shipit service restart <name>
+  ```
+
+  Do this only for a cache the tool builds again by itself.
+- **The host's filesystem cannot store the marker the kernel needs.** The error
+  then comes back after a container restart, and the removed directory cannot
+  be created again. Point the tool's cache at a path outside the dep dir (for
+  Vite, `cacheDir` in `vite.config`), and tell the user that this host cannot
+  support the shared store: its operator can turn the store off with
+  `OVERLAY_DEP_STORE=0`.
 
 #### pnpm projects: a private store
 

@@ -257,6 +257,103 @@ partial tree never mixes into the retry's, and the `attempts` count reaches both
 `[overlay-measure]` line in each shape; `service-manager-setup.test.ts` asserts the log line's real
 string matches the ops-safe template, carries the `"server"` source, and names no dep dir.
 
+### Renaming a directory that lives in the base (`redirect_dir=on`, 2026-10-01)
+
+overlayfs answers `rename(2)` on a directory that is in the lower layer with **`EXDEV`** unless the
+mount has the redirect feature (kernel `Documentation/filesystems/overlayfs.rst`, "Renaming
+directories": EXDEV "is the default behavior"). The mount did not ask for it, and the host this was
+measured on does not default to it (`/sys/module/overlay/parameters/redirect_dir` is `N`). So inside
+a mounted dep dir, a directory the base holds could not be renamed — measured in a session container
+on a package directory and on a cache directory alike.
+
+Most tools survive that: `mv` and npm copy on `EXDEV`. A tool that swaps a directory by rename and has
+no fallback does not. Vite's dependency optimizer commits a run as two directory renames inside its
+cache (`deps` → `deps_temp_<hash>`, then the new directory → `deps`). When the base holds
+`node_modules/.vite/deps`, the first rename fails, the dev server answers `504 (Outdated Optimize Dep)`
+for the new dependency, and a service restart repeats the failure.
+
+**Why a base holds a tool cache.** This is about the npm/Yarn path, where a base is the merged tree of
+a session at the moment its install succeeds. (A verified pnpm base is built by the orchestrator from
+committed inputs and holds no cache.) Three things put caches into such a base:
+
+- Compose services start beside `agent.install`, so a dev server can write its cache into the dep dir
+  before the snapshot is read (the section above). A snapshot that raced with that write is read
+  again, and the second read contains the new cache directory.
+- A publish is attempted at every container start (`service-manager-setup.ts`), not only a session's
+  first. When the session's commit is ahead of the pointer, the snapshot holds everything the session
+  wrote into the dep dir before.
+- The snapshot is the merged tree, so what generation N holds is in generation N+1 too, unless the
+  publishing session removed it.
+
+**The fix is at the mount.** An npm/Yarn dep-dir overlay now mounts with `redirect_dir=on`
+(`OverlaySpec.redirectDir`, set by `buildOverlaySpecs`, appended by `overlayDriverOpts`). The kernel
+then copies up the directory itself (not its contents), records where it came from in a
+`trusted.overlay.redirect` xattr on the upper copy, and leaves a whiteout at the old name.
+
+The feature has three conditions. Each was checked at the source:
+
+1. **The lower tree must not change under an upper that holds redirects** (kernel doc: offline
+   changes to the lower tree are allowed only if `redirect_dir` was not used). The names and contents
+   of a published generation do not change: `copySnapshotToBase` never replaces one. Its metadata can.
+   A later generation hardlinks its unchanged files (link count), and `shareTreeWithAllSessions` /
+   `shareTreeOnce` set owner and mode. Both were true before this change, and a redirect resolves by
+   path, so neither moves its target. The upper's path contains the generation
+   (`sessionOverlayGenDir`), so an upper is only ever mounted over the lower it was created over.
+   `prepareOverlayDirs` deletes it when the generation rotates, and an upper whose generation was
+   reclaimed is never mounted again.
+2. **Nothing may read the raw upper as a tree**, because a renamed directory is there without its
+   lower children. The publisher exports the merged view (`session/dep-snapshot.ts`), and
+   `reconcileDepDirCacheOwnership` changes owner and mode only.
+3. **Only the host may write the xattr.** It is `trusted.*`, which needs `CAP_SYS_ADMIN` in the
+   initial user namespace. A session container has neither that capability nor a path to the raw
+   upper, and a redirect resolves inside the lowerdir only, which the session can read anyway.
+
+**Two overlays do not get the option, because condition 2 does not hold for them.**
+
+- **Plugin overlays.** `promotePluginDepDirs` moves directories out of the raw upper after the
+  unmount.
+- **The verified pnpm base.** `seedOverlayBinTargetsOnce` writes a base file into the upper wherever
+  the raw upper lacks it, and it runs again on a used upper when an earlier run failed. Under a
+  redirected directory that would shadow the file the session sees there. The defect also does not
+  occur on this base: it holds no tool cache, and a directory a tool created in the session's own
+  layer can be renamed without the option.
+
+**Rollout needs no new base.** The option string is the volume's identity (`readOverlayVolume`), so a
+volume created before this change reads as a mismatch and is recreated when the session's container
+is next created. That is the path a generation rotation already takes, with the same cost: a Compose
+service that held the old volume is removed, a service set to start automatically comes back, and a
+manually started service must be started again (`service-manager-setup.ts` logs this). A session
+whose container keeps running keeps its old mount until that container is replaced. Existing bases,
+caches included, work as they are.
+
+**Where it cannot work.** If the upper's filesystem cannot store overlay xattrs, the kernel still
+mounts and falls back to the old behaviour with a warning in the kernel log (`ovl_make_workdir`,
+`fs/overlayfs/super.c`). On such a host a removed directory cannot be created again either, so the
+only repair in the session is to move the tool's cache out of the dep dir. `shipit-docs/shipit-yaml.md`
+gives the agent both cases. After a rollback to a release without the option, a kernel whose default
+redirect mode is `nofollow` shows a renamed directory without its lower contents. A reinstall repairs
+that.
+
+Two alternatives were ruled out:
+
+- **Leaving known caches (`.vite`, `.cache`) out of the snapshot.** It does not reach a base that
+  exists until that base's content changes: while the content key describes the tree and the install
+  inputs are unchanged, no new generation is published (`lineage-advanced`). It covers only names on
+  a list, while the defect is every directory in the base. And it removes something useful: a base
+  that carries a warm cache gives a new session a warm start. This repo keeps its `tsc` and ESLint
+  caches in `node_modules/.cache`.
+- **Moving the cache per repo** (`cacheDir`, as docs/118-shipit-ui-local did for the dogfood). Every
+  repo would need the change, and each tool has a different setting.
+
+Regression coverage: `overlay-redirect-dir.test.ts` mounts a real overlay with the option string a
+session gets, over a lower that holds `.vite/deps`, and replays the optimizer's rename sequence. A
+second case mounts with `redirect_dir=off` and asserts `EXDEV`, so the test is known to reproduce the
+defect. Mounting needs root, so both cases skip in a session container; a third case fails on a CI
+runner that cannot mount, so they cannot skip there silently. The test does not cover Docker's volume
+driver or the fallback on a filesystem without xattrs. `overlay-volume.test.ts` covers the option
+string and the recreate of an older volume. `plugin-overlay.test.ts` and `overlay-session.test.ts`
+pin the two exclusions.
+
 ### Reused vs dropped vs changed (relative to the whole-workspace implementation already on the branch)
 
 - **Reused as-is:** the rolling-base publish CAS + depth-cap flatten + force-push lineage reset

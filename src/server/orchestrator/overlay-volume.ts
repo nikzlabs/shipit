@@ -58,6 +58,10 @@ export interface OverlaySpec {
   lowerdir: string;
   upperdir: string;
   workdir: string;
+  // Lets a directory that lives in the lowerdir be renamed; the kernel default answers EXDEV.
+  // The raw upper then holds redirect xattrs in place of whole directories, so set it only for
+  // an upper that is always read back through the mount (docs/183-overlay-dep-store plan.md).
+  redirectDir?: boolean;
 }
 
 let createChain: Promise<void> = Promise.resolve();
@@ -90,7 +94,8 @@ export async function resolveVolumeMountpoint(
 }
 
 export function overlayDriverOpts(spec: OverlaySpec): string {
-  return `lowerdir=${spec.lowerdir},upperdir=${spec.upperdir},workdir=${spec.workdir}`;
+  const opts = `lowerdir=${spec.lowerdir},upperdir=${spec.upperdir},workdir=${spec.workdir}`;
+  return spec.redirectDir ? `${opts},redirect_dir=on` : opts;
 }
 
 export type OverlayVolumeState = "absent" | "match" | "mismatch";
