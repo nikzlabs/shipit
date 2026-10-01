@@ -353,7 +353,9 @@ runner that cannot mount, so they cannot skip there silently. The test does not 
 driver or the fallback on a filesystem without xattrs. The volume driver was measured by hand on a
 deployment host (2026-10-01, Docker 29, ext4): a `local` volume with `type=overlay` and the session's
 option string lists `redirect_dir=on` in its mount, and the rename sequence succeeds in a container
-with no capabilities; the same volume without the option gives `EXDEV`. `overlay-volume.test.ts` covers the option
+with no capabilities; the same volume without the option gives `EXDEV`. A deployed build of this
+change then created a session whose agent container and Compose service both list `redirect_dir=on`
+for the dep dir, and the session user renamed a package directory of the base there. `overlay-volume.test.ts` covers the option
 string and the recreate of an older volume. `plugin-overlay.test.ts` and `overlay-session.test.ts`
 pin the two exclusions.
 
