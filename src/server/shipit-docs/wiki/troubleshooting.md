@@ -273,8 +273,9 @@ strip. Read the error; it is usually the host — disk, image, or network space.
 container predates the running ShipIt build. **Restart agent container** on that
 banner recreates just the agent container and leaves the Compose stack up. While a turn
 is running the button reads **Restart after turn**: a click does not interrupt the
-turn, it schedules the restart for the turn's end, and the button then reads
-*Restart scheduled*. No follow-up turn starts after that restart. If the turn
+turn, it schedules the restart for the turn's end. The banner then says that the
+container restarts when the turn ends, and shows **Cancel restart**, which removes
+the scheduled restart. No follow-up turn starts after that restart. If the turn
 leaves background work running, the restart waits for the end of the next turn;
 the banner says so, and **Restart agent container** on it then restarts at once.
 

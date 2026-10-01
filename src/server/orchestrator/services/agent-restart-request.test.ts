@@ -22,7 +22,8 @@ vi.mock("../wake-session.js", () => ({
 }));
 
 const {
-  recordRestartRequest, deferRestartToTurnEnd, userRestartPending, runRequestedRestart, buildRestartFollowupPrompt,
+  recordRestartRequest, deferRestartToTurnEnd, userRestartPending, cancelUserRestart,
+  runRequestedRestart, buildRestartFollowupPrompt,
 } = await import("./agent-restart-request.js");
 
 const SESSION = "restart-session";
@@ -38,6 +39,7 @@ function makeSessionManager(note?: string) {
     getPendingUserRestart: () => state.userRestart,
     setPendingUserRestart: (_id: string, containerId: string) => { state.userRestart = containerId; },
     clearPendingRestart: () => { state.note = undefined; state.userRestart = undefined; },
+    clearPendingUserRestart: () => { state.userRestart = undefined; },
     appendPendingAgentNotice: (_id: string, notice: string) => { state.notices.push(notice); },
   } as unknown as SessionManager;
   return { manager, state };
@@ -376,6 +378,27 @@ describe("the user's Restart after turn (docs/242-stale-session-container-indica
 
     expect(state.notices).toEqual([]);
     expect(runner.systemTurnInProgress).toBe(false);
+  });
+});
+
+describe("cancelUserRestart (docs/242-stale-session-container-indicator req 10)", () => {
+  it("removes the user's request and keeps the agent's", async () => {
+    const { deps, state, turn } = setup();
+    state.userRestart = CONTAINER;
+
+    expect(cancelUserRestart(deps, SESSION)).toEqual({ ok: true });
+    expect(state.userRestart).toBeUndefined();
+    expect(state.note).toBe("check node -v");
+
+    // The cancelled request alone restarts nothing at the turn's end.
+    state.note = undefined;
+    await runRequestedRestart(deps, turn);
+    expect(restartAgent).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown session with 404", () => {
+    const { deps } = setup(null);
+    expect(() => cancelUserRestart(deps, "other")).toThrow(expect.objectContaining({ statusCode: 404 }));
   });
 });
 

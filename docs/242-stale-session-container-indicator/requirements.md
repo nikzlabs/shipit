@@ -28,6 +28,8 @@ button:
 9. The restart button on the stale-container banner must be enabled during a
    turn. A click during a turn schedules the restart; the restart then happens
    without a second click.
+10. The user must be able to cancel a scheduled restart from the banner. A
+    cancelled restart does not happen.
 
 ## Resolved questions
 
@@ -42,6 +44,11 @@ button:
   *mechanism* — a reclaim is no longer a restart, because recreating the
   container spends the freed memory straight back — while keeping its outcome:
   the user still never has to click "Restart agent" for an idle session.
+
+- 2026-10-01 — Can a scheduled restart be removed? The first version had no
+  cancel. The user approved the follow-up "Add a cancel for a scheduled restart"
+  on the session status card ("Lets a second click on **Restart scheduled** remove
+  the request"). Recorded as requirement 10.
 
 ## Provenance boundary
 

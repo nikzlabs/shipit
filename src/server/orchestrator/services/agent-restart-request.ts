@@ -80,6 +80,16 @@ export function userRestartPending(
   return containerId !== undefined && deps.sessionManager.getPendingUserRestart(sessionId) === containerId;
 }
 
+/** The user's cancel. The agent's own request stays. */
+export function cancelUserRestart(
+  deps: { sessionManager: Pick<SessionManager, "get" | "clearPendingUserRestart"> },
+  sessionId: string,
+): { ok: true } {
+  if (!deps.sessionManager.get(sessionId)) throw new ServiceError(404, "Session not found");
+  deps.sessionManager.clearPendingUserRestart(sessionId);
+  return { ok: true };
+}
+
 /** What the ending turn tells the step about itself. */
 export interface RequestedRestartTurn {
   sessionId: string;
@@ -122,7 +132,8 @@ export async function runRequestedRestart(
     return;
   }
   // The agent knows what its own request ends; the user's must not end work the agent left
-  // running. The turn that this work wakes retries.
+  // running. The turn that this work wakes retries. The end of the work itself is no safe
+  // trigger: the CLI reports an empty task list just before it starts that turn (docs/242).
   if (!note && (runner.backgroundTaskCount > 0 || runner.subAgentSpawnsInFlight > 0)) {
     console.log(
       `[agent-restart] ${sessionId} has background work; the user's restart waits for the next turn's end`,

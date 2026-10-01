@@ -13,7 +13,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { postInterruptCommitDepsFrom } from "./services/post-interrupt-commit.js";
-import { deferRestartToTurnEnd } from "./services/agent-restart-request.js";
+import { cancelUserRestart, deferRestartToTurnEnd } from "./services/agent-restart-request.js";
 import { getErrorMessage } from "./validation.js";
 import { accountServiceForHarness } from "./provider-account-manager.js";
 
@@ -166,6 +166,21 @@ export async function registerContainerRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to restart agent: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/container/restart",
+    async (request, reply) => {
+      try {
+        return cancelUserRestart({ sessionManager }, request.params.id);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to cancel the scheduled restart: ${getErrorMessage(err)}` });
       }
     },
   );

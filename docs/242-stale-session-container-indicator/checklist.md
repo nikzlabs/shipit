@@ -24,3 +24,4 @@
 - [x] Hold the scheduled restart while the agent's background work runs
 - [x] Report the scheduled state on attach (`restartScheduled`)
 - [x] Update the wiki `troubleshooting.md` text about the button
+- [x] Cancel a scheduled restart from the banner — req 10

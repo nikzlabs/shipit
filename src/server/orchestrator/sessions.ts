@@ -502,6 +502,10 @@ export class SessionManager {
     return row?.pending_user_restart ?? undefined;
   }
 
+  clearPendingUserRestart(id: string): void {
+    this.db.prepare("UPDATE sessions SET pending_user_restart = NULL WHERE id = ?").run(id);
+  }
+
   /** One write for both requests: a failure must not clear the note and keep the other. */
   clearPendingRestart(id: string): void {
     this.db.prepare(

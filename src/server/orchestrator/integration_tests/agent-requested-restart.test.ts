@@ -36,6 +36,7 @@ vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 import {
+  flushTurn,
   makeDispatchTurnDeps,
   testDispatch,
   waitForTurn,
@@ -72,13 +73,10 @@ describe("agent-requested restart over real runners (docs/321)", () => {
     const registry: SessionRunnerRegistry = new SessionRunnerRegistry({
       onRunnerCreated: (runner) => runner.setSystemTurnDeps(turnDeps),
     });
+    const restartDeps = { sessionManager, runnerRegistry: registry, defaultAgentId: "claude" as const, containerManager };
     const turnDeps: SystemTurnDeps = {
       ...deps,
-      runRequestedRestart: (turn) =>
-        runRequestedRestart(
-          { sessionManager, runnerRegistry: registry, defaultAgentId: "claude", containerManager },
-          turn,
-        ),
+      runRequestedRestart: (turn) => runRequestedRestart(restartDeps, turn),
     };
     const prompts = () =>
       (deps.buildRunParams as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[2]));
@@ -243,6 +241,38 @@ describe("agent-requested restart over real runners (docs/321)", () => {
     expect(containerManager.destroyed).toBe(1);
     second.dispose({ force: true });
   });
+
+  it("a scheduled restart waits for a consult that outlives the turn, then runs at the next turn's end", async () => {
+    const { sessionManager, containerManager, agents, registry } = setup();
+    const first = registry.getOrCreate(SESSION, "/tmp/s1", "claude");
+    first.dispatch(testDispatch({ text: "start a review" }));
+    await waitForTurn(() => agents.length === 1, "first turn");
+    await waitForTurn(() => agents[0]!.run.mock.calls.length === 1, "first turn running");
+    expect(deferRestartToTurnEnd({ sessionManager, containerManager, runnerRegistry: registry }, SESSION)).toBe(true);
+
+    const consult = first.spawnSubAgent({ agentId: "claude", prompt: "review", spawnId: "c1", depth: 0, model: "m" });
+    await waitForTurn(() => agents.length === 2, "the consult");
+    endTurn(agents[0]!);
+    await waitForTurn(() => !first.running && !first.postTurnWorkInFlight, "first turn settled");
+    expect(containerManager.destroyed).toBe(0);
+    expect(userRestartPending({ sessionManager, containerManager }, SESSION)).toBe(true);
+
+    // The end of the work is not a trigger: the CLI reports it just before the turn it wakes.
+    agents[1]!.emit("done", 0);
+    await consult;
+    await flushTurn();
+    expect(containerManager.destroyed).toBe(0);
+    expect(registry.get(SESSION)).toBe(first);
+
+    first.dispatch(testDispatch({ text: "use the review" }));
+    await waitForTurn(() => agents.length === 3, "the next turn");
+    await waitForTurn(() => agents[2]!.run.mock.calls.length === 1, "the next turn running");
+    endTurn(agents[2]!);
+    await waitForTurn(() => containerManager.destroyed === 1, "the restart");
+    await waitForTurn(() => registry.get(SESSION) !== undefined && registry.get(SESSION) !== first, "the replacement");
+    expect(first.disposed).toBe(true);
+    registry.get(SESSION)?.dispose({ force: true });
+  });
 });
 
 function createFakeDocker() {
@@ -351,5 +381,18 @@ describe("POST /api/sessions/:id/restart-after-turn (docs/321)", () => {
 
     expect(app!.runnerRegistry.get(id)).toBe(runner);
     expect(runner.disposed).toBe(false);
+  });
+
+  it("DELETE on the restart route cancels the user's request only (docs/242 req 10)", async () => {
+    const id = await build(true);
+    sessionManager.setPendingUserRestart(id, "container-1");
+    sessionManager.setPendingRestartNote(id, "check node -v");
+    const cancel = (sid: string) =>
+      app!.inject({ method: "DELETE", url: `/api/sessions/${sid}/agent/container/restart` });
+
+    expect((await cancel(id)).json()).toEqual({ ok: true });
+    expect(sessionManager.getPendingUserRestart(id)).toBeUndefined();
+    expect(sessionManager.getPendingRestartNote(id)).toBe("check node -v");
+    expect((await cancel("no-such-session")).statusCode).toBe(404);
   });
 });
