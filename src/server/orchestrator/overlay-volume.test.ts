@@ -239,6 +239,20 @@ describe("createOverlayVolume", () => {
     expect(c.Labels?.["shipit-stack"]).toBe("prod");
   });
 
+  it("adds redirect_dir=on only for a spec that asks for it", async () => {
+    expect(overlayDriverOpts(spec)).toBe(optsOf(spec));
+    expect(overlayDriverOpts({ ...spec, redirectDir: true })).toBe(`${optsOf(spec)},redirect_dir=on`);
+  });
+
+  it("recreates a volume created before the redirect option existed", async () => {
+    const { docker, created, removed } = makeVolumeStore({
+      seed: { [spec.volumeName]: { o: optsOf(spec) } },
+    });
+    await createOverlayVolume(docker, { ...spec, redirectDir: true });
+    expect(removed).toEqual([spec.volumeName]);
+    expect(created.map((c) => c.DriverOpts?.o)).toEqual([`${optsOf(spec)},redirect_dir=on`]);
+  });
+
   it("removes a pre-existing volume whose opts disagree before recreating", async () => {
     const { docker, created, removed } = makeVolumeStore({
       seed: { [spec.volumeName]: { o: "lowerdir=/stale,upperdir=/stale/u,workdir=/stale/w" } },

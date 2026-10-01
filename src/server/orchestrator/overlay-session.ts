@@ -189,6 +189,10 @@ export function buildOverlaySpecs(args: {
       lowerdir: overlayBaseGenDir(volumeMountpoint, scopeHash, generation),
       upperdir: path.join(sessionOverlayDir, "upper"),
       workdir: path.join(sessionOverlayDir, "work"),
+      // A tool that swaps a directory by rename (Vite's optimizer cache) must work on one the base
+      // holds. Not over a verified pnpm base: the bin seed reads that upper raw, and the base is
+      // built from committed inputs, so it holds no tool cache.
+      ...(namespace === PNPM_VERIFIED_NAMESPACE ? {} : { redirectDir: true }),
       depDir,
       mountPath: path.posix.join(CONTAINER_WORKSPACE_PATH, depDir),
       scope: {
