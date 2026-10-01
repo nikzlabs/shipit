@@ -252,6 +252,8 @@ describe("block-branch-ops.mjs", () => {
       `shipit issue comment tracker#1 --body-file - <<'EOF'\n${SWITCH}\nEOF`,
       `tee notes.md <<"EOF"\n${MAIN}\nEOF`,
       `cat > notes.md <<\\EOF\n${MAIN}\nEOF`,
+      `cat>notes.md <<'EOF'\n${MAIN}\nEOF`,
+      `cat<<'EOF'\n${MAIN}\nEOF`,
       // Only the pipeline the heredoc feeds decides, and only its commands:
       // this `bash` is another command, and that one is an argument.
       `bash --version && gh pr create --body-file - <<'EOF'\n${MAIN}\nEOF`,
@@ -280,7 +282,12 @@ describe("block-branch-ops.mjs", () => {
       `timeout 60 bash -s <<'EOF'\n${MAIN}\nEOF`,
       `source /dev/stdin <<'EOF'\n${MAIN}\nEOF`,
       `{ true; bash; } <<'EOF'\n${MAIN}\nEOF`,
+      // Inside `$(` or `<(` the output can be run, on any line.
       `x=$(cat <<'EOF'\n${MAIN}\nEOF\n); eval "$x"`,
+      `x=$(\ncat <<'EOF'\n${MAIN}\nEOF\n); eval "$x"`,
+      `source <(\ncat <<'EOF'\n${MAIN}\nEOF\n)`,
+      // A ProxyCommand runs here and can read the body.
+      `ssh -o 'ProxyCommand=bash /dev/fd/2' some-host 2<<'EOF'\n${MAIN}\nEOF`,
       `bash -s <<'EOF'\n${MAIN}`,
       // A pipeline that a `\` continues names its reader before the body; one
       // left open by `|` names it after the body.
@@ -314,9 +321,10 @@ describe("block-branch-ops.mjs", () => {
       `gh pr comment 1 --body "use <<'EOF' here"\n${MAIN}\nEOF`,
       `gh pr comment 1 --body x # <<'EOF'\n${MAIN}\nEOF`,
       `git commit -m "one\ngh pr create --body-file - <<'EOF'\ntwo"\n${MAIN}\nEOF`,
-      // bash's delimiter here is `EOFx`, so the checkout runs. Read as `EOF`,
-      // the body would swallow it.
+      // bash's delimiters here are `EOFx` and `E\OF`, so the checkout runs.
+      // Read as `EOF` and `E\\OF`, the body would swallow it.
       `cat <<'EOF'x\nEOFx\n${MAIN}\nEOF`,
+      `cat <<"E\\\\OF"\ndata\nE\\OF\n${MAIN}`,
       // A delimiter this cannot read is judged as written. Skipping only that
       // opener would read its body's `cat <<'X'` as one, which swallows the
       // checkout that bash runs after `EOF.txt`.

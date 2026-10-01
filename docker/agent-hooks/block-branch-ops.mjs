@@ -343,29 +343,46 @@ function tokenize(text) {
   return quote ? null : tokens;
 }
 
-const SSH = /^(?:.*\/)?ssh$/;
+/** The program a command word names: `/usr/bin/cat>notes.md` is `cat`. */
+function programName(word) {
+  return word.replace(/[<>].*$/s, "").replace(/^.*\//, "");
+}
+
+/**
+ * The words of the simple command whose command word is `tokens[i]`, up to the
+ * next operator.
+ */
+function wordsAfter(tokens, i) {
+  let j = i + 1;
+  while (j < tokens.length && tokens[j].operator !== true) j++;
+  return tokens.slice(i + 1, j);
+}
+
+/**
+ * Whether these ssh words run something here before ssh connects: a `$(` or
+ * backtick outside single quotes, or a `ProxyCommand` / `LocalCommand`, which
+ * can also read the heredoc (`-o 'ProxyCommand=bash /dev/fd/2' host 2<<'EOF'`).
+ */
+function sshRunsHere(words) {
+  return words.some((t) => t.expands || /proxycommand|localcommand/i.test(t.value));
+}
 
 /**
  * The text with each `ssh` command's words cut out: its destination and remote
  * command run on another machine. Quoting is read, so a `&&` inside the remote
  * command stays inside and one outside ends it — `ssh host true && git checkout
  * main` keeps its local checkout. Nothing is cut from unreadable quoting, or
- * from an ssh that runs something here first: a `$(` or backtick outside
- * single quotes, or a `ProxyCommand` / `LocalCommand` option.
+ * from an ssh that runs something here first.
  */
 function withoutSshRemoteCommands(text) {
   const tokens = tokenize(text);
   if (!tokens) return text;
   const cuts = [];
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].command !== true || !SSH.test(tokens[i].value)) continue;
-    let j = i + 1;
-    while (j < tokens.length && tokens[j].operator !== true) j++;
-    const words = tokens.slice(i + 1, j);
-    if (words.length && !words.some((t) => t.expands || /proxycommand|localcommand/i.test(t.value))) {
-      cuts.push([tokens[i].end, tokens[j - 1].end]);
-    }
-    i = j - 1;
+    if (tokens[i].command !== true || programName(tokens[i].value) !== "ssh") continue;
+    const words = wordsAfter(tokens, i);
+    if (!sshRunsHere(words)) cuts.push([tokens[i].end, (words.at(-1) ?? tokens[i]).end]);
+    i += words.length;
   }
   let out = text;
   for (const [from, to] of cuts.reverse()) out = out.slice(0, from) + out.slice(to);
@@ -377,11 +394,10 @@ const DATA_READERS = new Set(["cat", "tee", "gh", "shipit", "ssh"]);
 
 /**
  * Whether the quoted-delimiter heredoc opened at offset `at` of this command is
- * data: every command in the pipeline it feeds is a data reader, and the
- * pipeline is finished on this line and not inside `(` / `$(`, whose output
- * the shell may run (`x=$(cat <<'EOF' …); eval "$x"`). Anything else — a
- * shell, `source /dev/stdin`, a `{ …; }` group, a wrapper, a name only known at
- * run time — may run it here.
+ * data: every command in the pipeline it feeds is a data reader, an ssh among
+ * them runs nothing here, and the pipeline is finished on this line. Anything
+ * else — a shell, `source /dev/stdin`, a `{ …; }` group, a wrapper, a name only
+ * known at run time — may run it here.
  */
 function feedsOnlyDataReaders(command, at) {
   const tokens = tokenize(command);
@@ -394,29 +410,39 @@ function feedsOnlyDataReaders(command, at) {
     else { to = k; break; }
   }
   const pipeline = tokens.slice(from, to);
-  if (pipeline.at(-1)?.value === "|" || pipeline.some((t) => t.operator && t.value === "(")) return false;
-  const commands = pipeline.filter((t) => t.command === true && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.value));
-  return commands.length > 0 && commands.every((t) => DATA_READERS.has(t.value.replace(/^.*\//, "")));
+  if (pipeline.at(-1)?.value === "|") return false;
+  // The opener's own `<<EOF` word is in the pipeline, and when no command
+  // precedes it, it is the command word and no reader's name.
+  for (const [k, t] of pipeline.entries()) {
+    if (t.command !== true || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.value)) continue;
+    const name = programName(t.value);
+    if (!DATA_READERS.has(name) || (name === "ssh" && sshRunsHere(wordsAfter(pipeline, k)))) return false;
+  }
+  return true;
 }
 
-// Only a delimiter that ends where its word ends is read. `<<EOF.txt` and
-// `<<E"OF"` are words bash reads differently, and `$((1<<2))` is no heredoc.
+// Only a delimiter that ends where its word ends, and whose quotes need no
+// unescaping, is read. `<<EOF.txt`, `<<E"OF"` and `<<"E\\OF"` are words bash
+// reads differently, and `$((1<<2))` is no heredoc.
 const DELIMITER =
-  /<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\([A-Za-z0-9_][A-Za-z0-9_-]*)|([A-Za-z0-9_][A-Za-z0-9_-]*))(?=$|[\s;|&<>])/y;
+  /<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n\\]*)"|\\([A-Za-z0-9_][A-Za-z0-9_-]*)|([A-Za-z0-9_][A-Za-z0-9_-]*))(?=$|[\s;|&<>])/y;
 
 /**
  * The text the git rules judge: what runs in this container. Each command has
  * its ssh remote words cut, and a heredoc body is cut when it is data — its
- * delimiter is quoted, so bash expands nothing in it, and only data readers
- * take it. Every other body is kept as written. Quotes and comments are read
- * across lines, so `'a <<EOF'` opens nothing, and a `\` continuation starts the
- * body after the joined line, as in bash. Null where the body's end is not
- * certain; the caller then judges the text as written.
+ * delimiter is quoted, so bash expands nothing in it, only data readers take
+ * it, and it is not inside a `(`, `$(` or `<(` whose output the shell may run
+ * (`source <(cat <<'EOF' …)`). Every other body is kept as written. Quotes,
+ * comments and parentheses are read across lines, so `'a <<EOF'` opens
+ * nothing, and a `\` continuation starts the body after the joined line, as in
+ * bash. Null where the body's end is not certain; the caller then judges the
+ * text as written.
  */
 function commandsRunHere(text) {
   const lines = text.split("\n");
   const kept = [];
   let quote = null;
+  let depth = 0;
   let command = "";
   let openers = [];
   let n = 0;
@@ -439,12 +465,20 @@ function commandsRunHere(text) {
       }
       if (ch === "'" || ch === '"') { quote = ch; continue; }
       if (ch === "#" && (i === 0 || /[\s;|&()]/.test(one[i - 1]))) break;
+      if (ch === "(") depth++;
+      if (ch === ")") depth = Math.max(0, depth - 1);
       if (ch !== "<" || one[i + 1] !== "<") continue;
       if (one[i + 2] === "<") { i += 2; continue; }
       DELIMITER.lastIndex = i;
       const m = DELIMITER.exec(one);
       if (!m) return null;
-      openers.push({ at: base + i, dash: m[1] === "-", word: m[2] ?? m[3] ?? m[4] ?? m[5], quoted: m[5] === undefined });
+      openers.push({
+        at: base + i,
+        dash: m[1] === "-",
+        word: m[2] ?? m[3] ?? m[4] ?? m[5],
+        quoted: m[5] === undefined,
+        nested: depth > 0,
+      });
       i = DELIMITER.lastIndex - 1;
     }
     if (quote !== null || continues) {
@@ -462,7 +496,7 @@ function commandsRunHere(text) {
       }
       // bash joins a `\`-ended line before it looks for an unquoted delimiter.
       if (!opener.quoted && body.some((line) => line.endsWith("\\"))) return null;
-      if (!opener.quoted || !feedsOnlyDataReaders(command, opener.at)) kept.push(...body);
+      if (!opener.quoted || opener.nested || !feedsOnlyDataReaders(command, opener.at)) kept.push(...body);
     }
     openers = [];
     command = "";

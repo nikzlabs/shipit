@@ -86,14 +86,16 @@ here:
 cuts run before the split; `offends` and `offendsDestructive` are unchanged.
 
 1. **A heredoc body is cut only when it is data** (`commandsRunHere`). Data
-   means two things. The delimiter is quoted (`<<'EOF'`, `<<"EOF"`,
-   `<<\EOF`), so bash expands nothing in the body. And every command in the
-   pipeline it feeds is a data reader — `cat`, `tee`, `gh`, `shipit` or `ssh`
-   (`feedsOnlyDataReaders`) — the pipeline is finished on its line, and it is
-   not inside `(` or `$(`. Every other body is kept as written. The scanner
-   reads quotes and comments across lines, so `'a <<EOF'` and `# a <<EOF` open
-   nothing, and a `\` continuation starts the body after the joined line, as in
-   bash.
+   means three things. The delimiter is quoted (`<<'EOF'`, `<<"EOF"`,
+   `<<\EOF`), so bash expands nothing in the body. Every command in the
+   pipeline it feeds is a data reader — `cat`, `tee`, `gh`, `shipit`, or an
+   `ssh` with no `ProxyCommand` / `LocalCommand` and no local substitution
+   (`feedsOnlyDataReaders`) — and the pipeline is finished on its line. And
+   the opener is not inside a `(`, `$(` or `<(`, on its own line or an earlier
+   one, whose output the shell may run (`source <(cat <<'EOF' …)`). Every
+   other body is kept as written. The scanner reads quotes, comments and
+   parentheses across lines, so `'a <<EOF'` and `# a <<EOF` open nothing, and a
+   `\` continuation starts the body after the joined line, as in bash.
 2. **The words of an `ssh` command are cut** (`withoutSshRemoteCommands`), from
    after `ssh` to the end of that simple command. This uses the process-test
    rule's quote-aware tokenizer, so a `&&` inside the remote command stays
@@ -111,7 +113,11 @@ Decisions, and why:
   old hook had and the new one lost. Listing the readers that cannot run their
   input keeps every unknown reader judged, as before, and it is less mechanism.
   The list is the readers the incidents and ShipIt's own instructions use;
-  `git` is not on it, because a `!` alias can run stdin.
+  `git` is not on it, because a `!` alias can run stdin. A redirection written
+  against the name (`cat>notes.md`, `cat<<'EOF'`) does not change the program.
+- **An ssh that runs something here is not a data reader.** A `ProxyCommand`
+  runs here and inherits ssh's file descriptors, so
+  `ssh -o 'ProxyCommand=bash /dev/fd/2' host 2<<'EOF'` runs the body here.
 - **Only the pipeline the heredoc feeds decides.** A data reader on a line that
   also runs a shell elsewhere is still data:
   `bash --version && gh pr create --body-file - <<'EOF'` is cut, and so is
@@ -152,7 +158,8 @@ Decisions, and why:
   runs here. The refusal is an accident of the split, and it is kept.
 - **Unreadable input falls back to the old reading.** A delimiter that does
   not end where its word ends (`<<EOF.txt`, `<<E"OF"`, the shift in
-  `$((1<<2))`) judges the whole text as written. Skipping only that opener is
+  `$((1<<2))`), or a double-quoted one with a backslash (`<<"E\\OF"`, which
+  bash reads as `E\OF`), judges the whole text as written. Skipping only that opener is
   not enough: its body is then read as commands, and an opener-like line in it
   can swallow a command that bash runs after the real delimiter. Quoting the
   tokenizer cannot close cuts nothing, and a throw judges the text as written.
@@ -168,15 +175,15 @@ command with a local substitution (`ssh host "cd $(pwd) && git checkout x"`);
 and anything the scanner cannot read.
 
 **How it was checked.** Besides the unit tests, a differential oracle generated
-commands from two levels of about 45 wrappers (ssh in each form, heredocs into
+commands from two levels of about 50 wrappers (ssh in each form, heredocs into
 data readers, shells, `source`, groups, open and continued pipes,
-substitutions, captures, odd delimiters, comments and quotes) around a branch
-switch, and ran each three ways: through the old hook, through the new one,
-and through bash with a `git` that logs its calls and an `ssh` that runs only
-its `ProxyCommand` / `LocalCommand`. The same run was repeated for
-`git reset --hard` under the destructive guard. The result is in the pull
-request. Two rounds of independent review found the reader gaps listed above;
-the oracle now covers each of them.
+substitutions, captures over several lines, odd delimiters, comments and
+quotes) around a branch switch, and ran each three ways: through the old hook,
+through the new one, and through bash with a `git` that logs its calls and an
+`ssh` that runs only its `ProxyCommand` / `LocalCommand`. The same run was
+repeated for `git reset --hard` under the destructive guard. The result is in
+the pull request. Three rounds of independent review found the gaps listed
+above; the oracle and the unit tests now cover each of them.
 
 ### Second rule — destructive git on a merged branch (planning#267)
 
