@@ -286,7 +286,7 @@ export interface WsPrNotableFiles {
   notableFiles: NotableFileChange[];
 }
 
-/** The attached session's PR status: the SSE connect snapshot covers only the sidebar's sessions. */
+/** The attached session's PR status at attach: the SSE connect snapshot covers only the sidebar's sessions. */
 export interface WsSessionPrStatus {
   type: "session_pr_status";
   sessionId: string;

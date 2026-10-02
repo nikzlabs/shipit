@@ -4,6 +4,8 @@ import { useServerEvents } from "./useServerEvents.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { usePrStore } from "../stores/pr-store.js";
+import type { PrStatusSummary } from "../../server/shared/types.js";
 import { getParkedHarness, getSavedModelId } from "../utils/local-storage.js";
 import { persistHarnessPick } from "../utils/harness-seed.js";
 import { applyModelList, exportModelList, getModel, serializeModelList } from "../../server/shared/catalogue/index.js";
@@ -124,6 +126,48 @@ describe("useServerEvents — session_list and the All sessions dialog", () => {
     useSessionStore.setState({ allSessionsDialogOpen: true });
     act(() => { es.emit("session_list", { sessions: [] }); });
     expect(fetchAllSessions).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useServerEvents — pr_status connect snapshot", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    usePrStore.getState().reset();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  // The snapshot covers the sidebar; a session opened from All sessions got its status on its socket.
+  it("drops only what its scope covers", () => {
+    const pr = (sessionId: string): PrStatusSummary => ({
+      sessionId,
+      prNumber: 1,
+      prUrl: "https://github.com/o/r/pull/1",
+      prTitle: "t",
+      prBody: "",
+      prState: "merged",
+      baseBranch: "main",
+      headBranch: `shipit/${sessionId}`,
+      insertions: 0,
+      deletions: 0,
+      checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      mergeable: "unknown",
+      reviewDecision: "none",
+      autoMergeEnabled: false,
+    });
+    usePrStore.getState().applyPrStatusUpdates([pr("in-sidebar"), pr("archived")]);
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("pr_status", { updates: [], isSnapshot: true, scope: ["in-sidebar"] });
+    });
+
+    expect(usePrStore.getState().statusBySession["in-sidebar"]).toBeUndefined();
+    expect(usePrStore.getState().statusBySession.archived).toBeDefined();
   });
 });
 

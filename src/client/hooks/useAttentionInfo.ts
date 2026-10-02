@@ -1,7 +1,6 @@
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 import type { WorkspaceBlockKind } from "../../server/shared/types.js";
@@ -138,14 +137,16 @@ export function computeAttentionReason({
 }
 
 /**
- * `muted` and `workspaceBlockKind` are passed in rather than looked up: the
- * caller is a session ROW, whose `SessionInfo` may come from a list the store
- * has not caught up with, and a stale lookup would contradict the row itself.
+ * `muted`, `workspaceBlockKind` and `resolved` are passed in rather than looked
+ * up: the caller is a session ROW, whose `SessionInfo` may come from a list the
+ * store has not caught up with — or from All sessions, which the sidebar list
+ * does not hold — and a lookup would contradict the row itself.
  */
 export function useAttentionInfo(
   sessionId: string,
   muted = false,
   workspaceBlockKind?: WorkspaceBlockKind,
+  resolved = false,
 ): string | null {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);
@@ -154,9 +155,5 @@ export function useAttentionInfo(
   const hasBackgroundTasks = useSessionStore((s) => s.backgroundTaskSessions.has(sessionId));
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
-  const resolved = useSessionStore((s) => {
-    const session = s.sessions.find((sess) => sess.id === sessionId);
-    return session ? isTerminalPrResolved(session) : false;
-  });
   return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved, muted, workspaceBlockKind });
 }

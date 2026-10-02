@@ -828,9 +828,6 @@ export async function registerRoutes(
         const s = sessionManager.get(sid);
         activeAppSessionId = sid;
         const dir = s?.workspaceDir ?? null;
-        // Before the archived early return: those are what the SSE snapshot leaves out.
-        const [prStatus] = prStatusPoller.getStatusesFor([sid]);
-        if (prStatus) send({ type: "session_pr_status", sessionId: sid, status: prStatus });
 
         // Keep normal attachment synchronous to preserve the connect-frame order.
         const materializeDeps = {
@@ -1019,6 +1016,10 @@ export async function registerRoutes(
         logStore,
         removeSessionLogs,
       };
+
+      // The SSE snapshot covers only the sidebar; an archived or older done session is not in it.
+      const [prStatus] = prStatusPoller.getStatusesFor([sessionId]);
+      if (prStatus) send({ type: "session_pr_status", sessionId, status: prStatus });
 
       void activateSession(sessionId);
 
