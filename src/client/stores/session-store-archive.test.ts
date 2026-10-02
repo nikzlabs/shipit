@@ -49,3 +49,19 @@ describe("archiveSession: retained checkout", () => {
     expect(useSessionStore.getState().allSessions[0].diskTier).toBe("evicted");
   });
 });
+
+describe("archive and unarchive keep unchanged rows", () => {
+  it("keep the object of every row the server returned unchanged", async () => {
+    const other = { id: "s2", title: "S2" } as unknown as SessionInfo;
+    useSessionStore.setState({ sessions: [session, other] });
+    const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+    mockArchiveResponse({ sessions: [copy(other)] });
+    await useSessionStore.getState().archiveSession("s1");
+    expect(useSessionStore.getState().sessions[0]).toBe(other);
+
+    mockArchiveResponse({ sessions: [copy(session), copy(other)] });
+    await useSessionStore.getState().unarchiveSession("s1");
+    expect(useSessionStore.getState().sessions[1]).toBe(other);
+  });
+});

@@ -7,6 +7,7 @@ import {
   useCallback,
   lazy,
   Suspense,
+  type ComponentProps,
 } from "react";
 /* eslint-enable no-restricted-imports */
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
@@ -180,6 +181,24 @@ import { Spinner } from "./components/Spinner.js";
 import { runSend } from "./utils/send-handler.js";
 import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
 import { removeDraftUploads } from "./utils/local-storage.js";
+import type { NotifyContext } from "./hooks/useNotification.js";
+
+// The components below read whole session lists, so that a list change re-renders them and not the app.
+function AttentionNotifications({
+  notify,
+}: {
+  notify: (msg: string, context?: NotifyContext) => void;
+}): null {
+  useAttentionNotifications(notify);
+  return null;
+}
+
+function AllSessionsDialogWithRows(
+  props: Omit<ComponentProps<typeof AllSessionsDialog>, "sessions">,
+) {
+  const sessions = useSessionStore((s) => s.allSessions);
+  return <AllSessionsDialog {...props} sessions={sessions} />;
+}
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -213,7 +232,13 @@ export default function App() {
   const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
   const isLoading = useSessionStore((s) => s.isLoading);
   const activity = useSessionStore((s) => s.activity);
-  const sessions = useSessionStore((s) => s.sessions);
+  // Rows only, never the list: a change to another session's row must not re-render the app.
+  const currentSession = useSessionStore((s) =>
+    s.sessions.find((x) => x.id === s.sessionId),
+  );
+  const wsSession = useSessionStore((s) =>
+    wsSessionId ? s.sessions.find((x) => x.id === wsSessionId) : undefined,
+  );
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
   const historyLoaded = useSessionStore((s) => s.historyLoaded);
   const turnUsageForActiveSession = useSessionStore((s) =>
@@ -282,14 +307,8 @@ export default function App() {
   const rightTabRaw = useUiStore((s) => s.rightTab);
   const runtimeMode = useUiStore((s) => s.runtimeMode);
   const isLocalMode = runtimeMode === "local";
-  const isOpsSession = useMemo(
-    () => sessions.find((s) => s.id === wsSessionId)?.kind === "ops",
-    [sessions, wsSessionId],
-  );
-  const isSandboxSession = useMemo(
-    () => sessions.find((s) => s.id === wsSessionId)?.kind === "sandbox",
-    [sessions, wsSessionId],
-  );
+  const isOpsSession = wsSession?.kind === "ops";
+  const isSandboxSession = wsSession?.kind === "sandbox";
   const pluginSnapshot = usePluginReposStore((s) => snapshotForSession(s, sessionId));
   const showPluginsTab = pluginsTabVisible(pluginSnapshot);
   const rightTab = (() => {
@@ -343,11 +362,6 @@ export default function App() {
   const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const allSessionsDialogOpen = useSessionStore((s) => s.allSessionsDialogOpen);
   const allSessionsDialogRepoUrl = useSessionStore((s) => s.allSessionsDialogRepoUrl);
-  const allSessions = useSessionStore((s) => s.allSessions);
-  const currentSession = useMemo(
-    () => sessions.find((s) => s.id === sessionId),
-    [sessions, sessionId],
-  );
   const agentGoal = useSessionStore((s) =>
     s.sessionId ? s.sessionDetails[s.sessionId]?.agentGoal ?? null : null,
   );
@@ -397,7 +411,6 @@ export default function App() {
   const chatDisabledReason = useChatDisabledReason();
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
-  useAttentionNotifications(notify);
   const { theme, setTheme } = useTheme();
   const { errors: previewErrors, clearErrors: clearPreviewErrors } =
     usePreviewErrors();
@@ -1552,11 +1565,7 @@ export default function App() {
         !showNewSessionView &&
         wsSessionId &&
         (isSandboxSession ? (
-          <SandboxBanner
-            capabilities={
-              sessions.find((s) => s.id === wsSessionId)?.capabilities
-            }
-          />
+          <SandboxBanner capabilities={wsSession?.capabilities} />
         ) : (
           <PrLifecycleCard
             sessionId={wsSessionId}
@@ -1758,18 +1767,27 @@ export default function App() {
     </>
   );
 
+  // Both returns share the root and the first child, so the watcher runs from the first render
+  // and stays mounted when bootstrap ends.
   if (!bootstrapLoaded) {
     return (
-      <div className="flex h-(--app-height) items-center justify-center bg-(--color-bg-primary)">
-        {showBootstrapSpinner && (
-          <Spinner size={ICON_SIZE.MD} className="text-(--color-text-tertiary)" />
-        )}
-      </div>
+      <TooltipProvider delayDuration={300}>
+        <AttentionNotifications notify={notify} />
+        <div
+          key="bootstrap"
+          className="flex h-(--app-height) items-center justify-center bg-(--color-bg-primary)"
+        >
+          {showBootstrapSpinner && (
+            <Spinner size={ICON_SIZE.MD} className="text-(--color-text-tertiary)" />
+          )}
+        </div>
+      </TooltipProvider>
     );
   }
 
   return (
     <TooltipProvider delayDuration={300}>
+      <AttentionNotifications notify={notify} />
       <div className="flex flex-col h-(--app-height) bg-(--color-bg-primary) text-(--color-text-primary)">
         <AuthOverlayContainer
           showGitHubGate={showGitHubGate}
@@ -1859,7 +1877,6 @@ export default function App() {
           <UsageModal
             currentSessionUsage={currentSessionUsage}
             allUsage={allUsageStats}
-            sessions={sessions}
             onClose={() => useUiStore.getState().setShowUsageModal(false)}
             modelInfo={modelInfo}
             contextTokens={contextTokens}
@@ -1941,7 +1958,6 @@ export default function App() {
           onMouseDown={onMouseDown}
           onTouchStart={onTouchStart}
           containerRef={containerRef}
-          sessions={sessions}
           currentSessionId={sessionId}
           activeNewSessionRepoUrl={
             showNewSessionView ? newSessionRepoUrl : undefined
@@ -1952,16 +1968,20 @@ export default function App() {
             useUiStore.getState().setMobileSidebarOpen(false)
           }
           onResumeSession={(sid: string) => {
-            const session = sessions.find((s) => s.id === sid);
+            const session = useSessionStore
+              .getState()
+              .sessions.find((s) => s.id === sid);
             if (session?.remoteUrl)
               {useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);}
             handleSessionResume(sid, navigate);
           }}
           onArchiveSession={async (sid: string) => {
+            const archivedRepoUrl = useSessionStore
+              .getState()
+              .sessions.find((s) => s.id === sid)?.remoteUrl;
             await useSessionStore.getState().archiveSession(sid);
             if (sid === useSessionStore.getState().sessionId) {
-              const repoUrl =
-                sessions.find((s) => s.id === sid)?.remoteUrl ?? activeRepoUrl;
+              const repoUrl = archivedRepoUrl ?? activeRepoUrl;
               if (repoUrl)
                 {void handleNewSessionForRepo(repoUrl, {
                   preserveMobileView: true,
@@ -2040,12 +2060,11 @@ export default function App() {
           }
           repos={repos}
         />
-        <AllSessionsDialog
+        <AllSessionsDialogWithRows
           open={allSessionsDialogOpen}
           onClose={() =>
             useSessionStore.getState().setAllSessionsDialogOpen(false)
           }
-          sessions={allSessions}
           repos={repos}
           initialRepoUrl={allSessionsDialogRepoUrl ?? currentRepoUrl}
           onFetch={() => useSessionStore.getState().fetchAllSessions()}

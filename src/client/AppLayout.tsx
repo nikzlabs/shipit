@@ -22,6 +22,7 @@ import { Logo } from "./components/Logo.js";
 import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
 import { ContentPanels } from "./components/ContentPanels.js";
 import { MobileSessionsPanel } from "./components/MobileSessionsPanel.js";
+import { useSessionStore } from "./stores/session-store.js";
 
 // Keep complete class names for Tailwind's source scanner.
 export function statusGroupBreakpoint(pillCount: number): {
@@ -70,7 +71,6 @@ interface AppLayoutProps {
   onTouchStart: (e: React.TouchEvent) => void;
   containerRef: RefObject<HTMLDivElement | null>;
 
-  sessions: SessionInfo[];
   currentSessionId: string | undefined;
   activeNewSessionRepoUrl: string | undefined;
   sidebarCollapsed: boolean;
@@ -120,7 +120,6 @@ export function AppLayout({
   onMouseDown,
   onTouchStart,
   containerRef,
-  sessions,
   currentSessionId,
   activeNewSessionRepoUrl,
   sidebarCollapsed,
@@ -135,6 +134,8 @@ export function AppLayout({
   onCreateNewRepo,
   toast,
 }: AppLayoutProps) {
+  // Read here, not in App: the panels arrive as finished elements, so a list change does not re-render them.
+  const sessions = useSessionStore((s) => s.sessions);
   const subscriptionPills = useSubscriptionPillCount(subscriptionLimits);
   const { statusInline, statusCollapsed } = statusGroupBreakpoint(subscriptionPills);
 

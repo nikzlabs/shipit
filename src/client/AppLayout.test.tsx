@@ -94,7 +94,6 @@ function layoutProps(over: Partial<Parameters<typeof AppLayout>[0]>): Parameters
     onMouseDown: () => {},
     onTouchStart: () => {},
     containerRef: createRef<HTMLDivElement>(),
-    sessions: [],
     currentSessionId: "s1",
     activeNewSessionRepoUrl: undefined,
     sidebarCollapsed: false,

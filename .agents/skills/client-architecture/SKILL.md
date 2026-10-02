@@ -39,6 +39,7 @@ The main stores (partial — `ls src/client/stores/` for the full set):
 - Each store has a `reset()` method for clearing session-specific state during session switching.
 - Components subscribe to individual fields via selectors: `useSessionStore((s) => s.messages)`.
 - Stores are updated directly — no centralized dispatcher. Handlers call `store.getState().setX(value)`.
+- **`App.tsx` selects single rows, never a list that changes for other sessions** (`sessions`, the PR store's per-session maps): each such change would re-render the whole app. `setSessions` keeps unchanged row objects (`utils/session-rows.ts`), so a one-row selector is stable. A reader of the whole list goes in a leaf component (`AttentionNotifications`, `AllSessionsDialogWithRows`) or in `AppLayout`, which gets the panels as finished elements. Guard: `App.render-count.test.tsx`.
 
 ### Session Actions
 

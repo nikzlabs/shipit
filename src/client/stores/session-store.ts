@@ -666,7 +666,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     const result = await res.json() as { sessions: SessionListRow[] };
     set((state) => ({
-      sessions: result.sessions,
+      sessions: reuseUnchangedRows(state.sessions, result.sessions),
       allSessions: state.allSessions.map((s) =>
         s.id === sessionId
           ? { ...s, archived: undefined, userArchived: undefined, diskTier: "hot" as const, dataDeletesAt: undefined }
@@ -709,7 +709,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       const { [sessionId]: _omit, ...rest } = state.turnUsage;
       return {
-        sessions: result.sessions,
+        sessions: reuseUnchangedRows(state.sessions, result.sessions),
         allSessions: state.allSessions.map((s) =>
           s.id === sessionId
             // Mirror the server's released preview reservation in the cached row.
