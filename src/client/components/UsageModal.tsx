@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import type {
-  SessionInfo, SessionUsage, SubscriptionLimitsMap, TurnUsage, UsageGroup, UsageStats,
+  SessionUsage, SubscriptionLimitsMap, TurnUsage, UsageGroup, UsageStats,
   UsageTotals, WeeklyUsage,
 } from "../../server/shared/types.js";
 import { compareSessionsBySpend, sessionRunningFigure, sessionUsageTokens } from "../../server/shared/types/usage-types.js";
@@ -10,11 +10,11 @@ import { formatTokenCount, getContextLevel, type ModelInfo } from "../utils/mode
 import { formatModelName } from "../utils/format-model.js";
 import { RUNNING_FIGURE_TITLE, formatCost, formatEstimate, turnCostDisplay } from "../utils/format-cost.js";
 import { billingModeLabel, serviceLabel } from "../utils/service-label.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 interface UsageModalProps {
   currentSessionUsage: SessionUsage | null;
   allUsage: UsageStats | null;
-  sessions: SessionInfo[];
   onClose: () => void;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
@@ -502,7 +502,8 @@ function UsageSplitSection({
   );
 }
 
-export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnUsage, subscriptionLimits }: UsageModalProps) {
+export function UsageModal({ currentSessionUsage, allUsage, onClose, modelInfo, contextTokens, turnUsage, subscriptionLimits }: UsageModalProps) {
+  const sessions = useSessionStore((s) => s.sessions);
 
   const getSessionTitle = (sessionId: string): string => {
     const session = sessions.find((s) => s.id === sessionId);
