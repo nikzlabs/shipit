@@ -168,7 +168,17 @@ interface PrState {
 
   importSearchResults: ImportSearchResult[];
 
-  applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[], isSnapshot?: boolean) => void;
+  /**
+   * A snapshot drops what it does not carry. With `snapshotScope` it speaks only
+   * for those sessions: the server's connect snapshot covers the sidebar, so a
+   * session opened from outside it keeps the status its own socket delivered.
+   */
+  applyPrStatusUpdates: (
+    updates: PrStatusSummary[],
+    removals?: string[],
+    isSnapshot?: boolean,
+    snapshotScope?: readonly string[],
+  ) => void;
 
   updateCard: (sessionId: string, card: PrCardState) => void;
 
@@ -233,7 +243,7 @@ let repoSearchGeneration = 0;
 export const usePrStore = create<PrState>((set, get) => ({
   ...initialState,
 
-  applyPrStatusUpdates: (updates, removals, isSnapshot) => {
+  applyPrStatusUpdates: (updates, removals, isSnapshot, snapshotScope) => {
     set((state) => {
       const nextStatus = { ...state.statusBySession };
       const nextCards = { ...state.cardBySession };
@@ -242,15 +252,18 @@ export const usePrStore = create<PrState>((set, get) => ({
 
       if (isSnapshot) {
         const present = new Set(updates.map((u) => u.sessionId));
+        const scope = snapshotScope ? new Set(snapshotScope) : undefined;
+        const dropped = (sessionId: string): boolean =>
+          !present.has(sessionId) && (!scope || scope.has(sessionId));
         for (const sessionId of Object.keys(nextStatus)) {
-          if (!present.has(sessionId)) {
+          if (dropped(sessionId)) {
             // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
             delete nextStatus[sessionId];
           }
         }
         for (const [sessionId, card] of Object.entries(nextCards)) {
           const pollerPhase = card.phase === "open" || card.phase === "merged" || card.phase === "closed";
-          if (pollerPhase && !present.has(sessionId)) {
+          if (pollerPhase && dropped(sessionId)) {
             // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
             delete nextCards[sessionId];
 

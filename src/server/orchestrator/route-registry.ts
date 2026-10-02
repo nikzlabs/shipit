@@ -116,8 +116,12 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions, runnerIncarnations })}\n\n`);
     client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions, backgroundTaskSessionIds: backgroundTaskSessions })}\n\n`);
 
-    const prStatuses = prStatusPoller.getAllStatuses();
-    client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses, isSnapshot: true })}\n\n`);
+    // Only the sidebar's sessions: every PR a session ever had, body and comments
+    // included, made this snapshot ~10 MB. An open session outside the sidebar
+    // gets its own status on its socket (`session_pr_status`).
+    const scope = sessions.map((s) => s.id);
+    const prStatuses = prStatusPoller.getStatusesFor(scope);
+    client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses, isSnapshot: true, scope })}\n\n`);
 
     const rateLimit = githubAuthManager.getRateLimitState();
     if (rateLimit.limited && (rateLimit.resetAt === null || rateLimit.resetAt > Date.now())) {
@@ -824,6 +828,9 @@ export async function registerRoutes(
         const s = sessionManager.get(sid);
         activeAppSessionId = sid;
         const dir = s?.workspaceDir ?? null;
+        // Before the archived early return: those are what the SSE snapshot leaves out.
+        const [prStatus] = prStatusPoller.getStatusesFor([sid]);
+        if (prStatus) send({ type: "session_pr_status", sessionId: sid, status: prStatus });
 
         // Keep normal attachment synchronous to preserve the connect-frame order.
         const materializeDeps = {

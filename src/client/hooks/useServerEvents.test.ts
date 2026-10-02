@@ -519,7 +519,7 @@ describe("useServerEvents — foreground reconnect", () => {
   it.each([
     ["visibilitychange", () => document.dispatchEvent(new Event("visibilitychange"))],
 
-    ["pageshow", () => window.dispatchEvent(new Event("pageshow"))],
+    ["a bfcache pageshow", () => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }))],
     ["online", () => window.dispatchEvent(new Event("online"))],
   ])("reopens the stream on %s", (_name, fire) => {
     renderHook(() => useServerEvents());
@@ -532,20 +532,31 @@ describe("useServerEvents — foreground reconnect", () => {
     expect(FakeEventSource.created).toBe(2);
   });
 
+  // Each reopen makes the server send its whole connect snapshot again.
+  it("keeps the stream it opened through the first load's pageshow", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+    });
+
+    expect(FakeEventSource.created).toBe(1);
+  });
+
   it("opens one stream per resume, not one per event in the burst", () => {
     renderHook(() => useServerEvents());
 
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
       window.dispatchEvent(new Event("focus"));
-      window.dispatchEvent(new Event("pageshow"));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
     });
 
     expect(FakeEventSource.created).toBe(2);
 
     act(() => {
       vi.advanceTimersByTime(1000);
-      window.dispatchEvent(new Event("pageshow"));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
     });
     expect(FakeEventSource.created).toBe(3);
   });

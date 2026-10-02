@@ -702,8 +702,9 @@ export function useServerEvents(): void {
         removals?: string[];
 
         isSnapshot?: boolean;
+        scope?: string[];
       };
-      usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot);
+      usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot, data.scope);
     });
 
     es.addEventListener("gh_rate_limited", (e: MessageEvent) => {
