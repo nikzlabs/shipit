@@ -242,7 +242,7 @@ describe("Integration: /api/events initial snapshot is authoritative", () => {
       expect(await ws.receiveType("session_details")).toMatchObject({ sessionId: "open-1", agentGoal: null });
     });
 
-    // The checkout is restored before a runner attaches; the card must not wait for it.
+    // Neither path attaches a runner; the card needs no workspace.
     it("reach a session whose workspace restore fails, and an archived one", async () => {
       sessionManager.track("evicted-1", "Evicted", path.join(tmpDir, "gone", "workspace"));
       sessionManager.setRemoteUrl("evicted-1", "https://github.com/o/does-not-exist");

@@ -175,9 +175,11 @@ receives `session_list` again on each change, and a card with a few offers is
 sessions with one-offer cards made a 188 KB frame, 27 KB without the cards. Only
 the open session's viewer reads it, so it travels on that session's WebSocket as
 `session_details` (`{ sessionId, sessionStatus, agentGoal }`, the goal of docs/154
-with it): `route-registry.ts` sends it when the session activates — first, before
-any workspace restore, so an evicted session shows its card at once and a failed
-restore does not hide it — and again each
+with it): `route-registry.ts` sends it when the session activates — after the
+runner's attach frames, because clients (the integration tests above all) read the
+first frame on connect as the runner being ready, and also on the failed-restore
+and archived paths, which attach no runner, so a lost workspace does not hide the
+card — and again each
 time `SessionManager.setSessionStatus`, `setAgentGoal` or `clearAgentSessionId`
 reports a write through `onDetailsChanged` for the connection's active session.
 Each send reads the record when it is sent, on one socket, so the last frame to

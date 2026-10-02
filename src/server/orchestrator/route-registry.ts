@@ -679,6 +679,13 @@ export async function registerRoutes(
       const offDetailsChanged = sessionManager.onDetailsChanged((sid) => {
         if (sid === activeAppSessionId) sendSessionDetails(sid);
       });
+      // Once per session on this socket; after that the listener keeps it current.
+      let detailsSeededFor: string | undefined;
+      const seedSessionDetails = (sid: string) => {
+        if (detailsSeededFor === sid) return;
+        detailsSeededFor = sid;
+        sendSessionDetails(sid);
+      };
 
       // Report persisted values without buffering a selection that could become stale.
       const sendSelectionChanged = (
@@ -841,8 +848,6 @@ export async function registerRoutes(
       const activateSession = async (sid: string, opts?: ActivateSessionOptions) => {
         const s = sessionManager.get(sid);
         activeAppSessionId = sid;
-        // Before the restore wait and the early returns: the card and goal need no workspace.
-        sendSessionDetails(sid);
         const dir = s?.workspaceDir ?? null;
 
         // Keep normal attachment synchronous to preserve the connect-frame order.
@@ -870,6 +875,8 @@ export async function registerRoutes(
             running: false,
             error: "This session's workspace was lost and could not be restored from the repository.",
           });
+          // The card and goal need no workspace, so a lost one must not hide them.
+          seedSessionDetails(sid);
           detachFromRunner();
           if (dir !== activeSessionDir) activeSessionDir = dir;
           return;
@@ -877,6 +884,7 @@ export async function registerRoutes(
           detachFromRunner();
           if (outcome.status === "archived") {
             if (dir !== activeSessionDir) activeSessionDir = dir;
+            seedSessionDetails(sid);
             return;
           }
         }
@@ -959,6 +967,8 @@ export async function registerRoutes(
         }
         sendContainerFreshness(sid);
         sendSecretBlock(sid);
+        // After the attach frames: a client takes the first frame on connect as the runner being ready.
+        seedSessionDetails(sid);
         kickDiskEscalation(sid);
       };
 
