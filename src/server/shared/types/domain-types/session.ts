@@ -138,6 +138,16 @@ export interface SessionInfo {
 }
 
 /**
+ * A row of the session lists, which every tab receives again on each change. The
+ * status card and the goal reach only the open session's viewer, on `session_details`;
+ * the replay and the notice are for the agent.
+ */
+export type SessionListRow = Omit<
+  SessionInfo,
+  "sessionStatus" | "agentGoal" | "conversationReplay" | "pendingAgentNotice"
+>;
+
+/**
  * docs/303-session-status-card — an offer the agent made, as stored.
  *
  * `offerId` is server-assigned and is the identity the checkbox, the submit and

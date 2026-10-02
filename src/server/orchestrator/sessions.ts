@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { doneSessionTest, isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
 import { dataDeletionTimeMs, type DataRetentionConfig } from "../shared/session-retention.js";
@@ -190,12 +190,24 @@ export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
   }
 }
 
-export function filterVisibleInSidebar(
-  sessions: SessionInfo[],
+/** The same session as a list row, for an event that carries one session to every tab. */
+export function toListRow(session: SessionInfo): SessionListRow {
+  const {
+    sessionStatus: _sessionStatus,
+    agentGoal: _agentGoal,
+    conversationReplay: _conversationReplay,
+    pendingAgentNotice: _pendingAgentNotice,
+    ...row
+  } = session;
+  return row;
+}
+
+export function filterVisibleInSidebar<T extends SessionListRow>(
+  sessions: T[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
-): SessionInfo[] {
+): T[] {
   // Archived rows keep their rank so archiving does not promote an older session.
-  const resolvedByRepo = new Map<string, SessionInfo[]>();
+  const resolvedByRepo = new Map<string, T[]>();
   for (const s of sessions) {
     if (!isTerminalPrResolved(s)) continue;
     const key = s.remoteUrl ?? "";
@@ -217,7 +229,7 @@ export function filterVisibleInSidebar(
   // member stays with its root so the spawn tree is not torn apart.
   const isDone = doneSessionTest(sessions);
   const byId = new Map(sessions.map((s) => [s.id, s]));
-  const shownOnItsOwn = (s: SessionInfo | undefined): boolean =>
+  const shownOnItsOwn = (s: T | undefined): boolean =>
     !!s && !s.userArchived && (!isDone(s) || topResolvedIds.has(s.id));
   return sessions.filter(
     (s) =>
@@ -232,6 +244,7 @@ export function filterVisibleInSidebar(
 export class SessionManager {
   private db;
   private readonly heldTurnCallbacks = new Map<number, (outcome: TurnOutcome) => void>();
+  private readonly detailsListeners = new Set<(sessionId: string) => void>();
 
   readonly dataRetention: DataRetentionConfig;
 
@@ -240,8 +253,41 @@ export class SessionManager {
     this.dataRetention = opts.dataRetention ?? dataRetentionConfigFromEnv();
   }
 
+  /** Runs after each write of a session's status card or goal; returns the unsubscribe. */
+  onDetailsChanged(listener: (sessionId: string) => void): () => void {
+    this.detailsListeners.add(listener);
+    return () => {
+      this.detailsListeners.delete(listener);
+    };
+  }
+
+  private detailsChanged(id: string): void {
+    for (const listener of this.detailsListeners) {
+      try {
+        listener(id);
+      } catch (err) {
+        console.error(`[sessions] details listener for ${id} failed:`, err);
+      }
+    }
+  }
+
   private fromRow(row: SessionRow): SessionInfo {
-    const info: SessionInfo = {
+    const info: SessionInfo = this.listRowFromRow(row);
+    if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
+    if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
+    if (row.agent_goal) {
+      const goal = parseAgentGoal(row.agent_goal);
+      if (goal) info.agentGoal = goal;
+    }
+    if (row.session_status) {
+      const status = parseSessionStatus(row.session_status);
+      if (status) info.sessionStatus = status;
+    }
+    return info;
+  }
+
+  private listRowFromRow(row: SessionRow): SessionListRow {
+    const info: SessionListRow = {
       id: row.id,
       title: row.title,
       createdAt: row.created_at,
@@ -251,7 +297,6 @@ export class SessionManager {
     if (row.title_source === "user" || row.title_source === "agent") info.titleSource = row.title_source;
     if (row.agent_session_id) info.agentSessionId = row.agent_session_id;
     if (row.workspace_dir) info.workspaceDir = row.workspace_dir;
-    if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
     info.diskTier = row.disk_tier === "light" || row.disk_tier === "evicted" ? row.disk_tier : "hot";
     if (row.user_archived) {
       info.userArchived = true;
@@ -331,34 +376,25 @@ export class SessionManager {
     if (row.merge_continue_declined_anchor) {
       info.mergeContinueDeclinedAnchor = row.merge_continue_declined_anchor;
     }
-    if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
     // Partial provenance must not authorize a merge.
     if (row.pr_number && row.pr_repo_id) {
       info.prNumber = row.pr_number;
       info.prRepoId = row.pr_repo_id;
     }
-    if (row.agent_goal) {
-      const goal = parseAgentGoal(row.agent_goal);
-      if (goal) info.agentGoal = goal;
-    }
-    if (row.session_status) {
-      const status = parseSessionStatus(row.session_status);
-      if (status) info.sessionStatus = status;
-    }
     return info;
   }
 
   // Include archived rows for ranking; filterVisibleInSidebar removes them afterwards.
-  list(): SessionInfo[] {
+  list(): SessionListRow[] {
     const rows = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return filterVisibleInSidebar(this.withDataDeletionDates(rows.map((r) => this.fromRow(r))));
+    return filterVisibleInSidebar(this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r))));
   }
 
   // docs/323-archived-session-data-retention req 7 — needs the whole list, because
   // "done" is decided from it.
-  private withDataDeletionDates(sessions: SessionInfo[]): SessionInfo[] {
+  private withDataDeletionDates(sessions: SessionListRow[]): SessionListRow[] {
     if (!sessions.some((s) => (s.retainedDataBytes ?? 0) > 0)) return sessions;
     const isDone = doneSessionTest(sessions);
     for (const s of sessions) {
@@ -441,6 +477,7 @@ export class SessionManager {
   setAgentGoal(id: string, goal: AgentGoal | null): boolean {
     if (this.agentGoalChecked(id) && sameShownGoal(this.get(id)?.agentGoal ?? null, goal)) return false;
     this.db.prepare("UPDATE sessions SET agent_goal = ? WHERE id = ?").run(JSON.stringify(goal), id);
+    this.detailsChanged(id);
     return true;
   }
 
@@ -448,6 +485,7 @@ export class SessionManager {
   setSessionStatus(id: string, status: SessionStatus | null): void {
     this.db.prepare("UPDATE sessions SET session_status = ? WHERE id = ?")
       .run(status ? JSON.stringify(status) : null, id);
+    this.detailsChanged(id);
   }
 
   /** Every session holding a card, archived ones included: a restore brings its card back. */
@@ -557,18 +595,16 @@ export class SessionManager {
   }
 
   /**
-   * docs/303 — returns whether the stored status card changed, so callers broadcast only
-   * then. The card is marked stale rather than cleared: after a rewind it may describe work
-   * that is gone, and "Stale" is how it says so. The mark lives here, with the goal's clear,
-   * because every conversation reset and rewind reaches this one method.
+   * docs/303 — the card is marked stale rather than cleared: after a rewind it may describe
+   * work that is gone, and "Stale" is how it says so. The mark lives here, with the goal's
+   * clear, because every conversation reset and rewind reaches this one method.
    */
-  clearAgentSessionId(id: string): boolean {
+  clearAgentSessionId(id: string): void {
     // The goal belonged to the old conversation's thread.
     this.db.prepare("UPDATE sessions SET agent_session_id = NULL, agent_goal = NULL WHERE id = ?").run(id);
     const card = this.get(id)?.sessionStatus;
-    if (!card?.fresh) return false;
-    this.setSessionStatus(id, { ...card, fresh: false });
-    return true;
+    if (card?.fresh) this.setSessionStatus(id, { ...card, fresh: false });
+    else this.detailsChanged(id);
   }
 
   remoteUrlForWorkspaceDir(workspaceDir: string): string | null {
@@ -719,11 +755,11 @@ export class SessionManager {
     return rows.map((r) => this.fromRow(r));
   }
 
-  listAll(): SessionInfo[] {
+  listAll(): SessionListRow[] {
     const rows = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return this.withDataDeletionDates(rows.map((r) => this.fromRow(r)));
+    return this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r)));
   }
 
   // What listAll() leaves out: pool standbys and drafts claimed before their first message.

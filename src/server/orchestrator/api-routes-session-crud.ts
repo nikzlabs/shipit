@@ -28,6 +28,7 @@ import type { AgentId, IssueRef } from "../shared/types.js";
 import type { BillingMode } from "../shared/catalogue/index.js";
 import { getErrorMessage } from "./validation.js";
 import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
+import { toListRow } from "./sessions.js";
 import { dismissNonTurnFailure } from "./services/non-turn-work.js";
 import { reconcileSessionEgress } from "./services/reconcile-session-egress.js";
 
@@ -139,7 +140,7 @@ export async function registerSessionCrudRoutes(
     async (request, reply) => {
       try {
         const session = renameSession(sessionManager, request.params.id, request.body.title);
-        deps.sseBroadcast("session_renamed", { session });
+        deps.sseBroadcast("session_renamed", { session: toListRow(session) });
         return { session };
       } catch (err) {
         if (err instanceof ServiceError) {

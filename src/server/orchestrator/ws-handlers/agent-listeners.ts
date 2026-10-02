@@ -8,7 +8,7 @@ import { noteTurnSubmitted } from "../turn-stop-request.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
 import { quotaRefusalCanFailOver } from "../credential-failure-policy.js";
-import type { SessionManager } from "../sessions.js";
+import { toListRow, type SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import {
   getContextWindowForModel,
@@ -503,8 +503,9 @@ export function wireAgentListeners(
       pendingAgentSessionId ??= event.sessionId;
       const session = deps.sessionManager.get(turnSessionId);
       if (session) {
-        emitToViewers({ type: "session_started", session });
-        deps.sseBroadcast("session_started", { session });
+        const row = toListRow(session);
+        emitToViewers({ type: "session_started", session: row });
+        deps.sseBroadcast("session_started", { session: row });
       }
       if (opts.isNewSession) {
         console.log(`[persist-user] agent_init session=${turnSessionId} (isNewSession branch)`);

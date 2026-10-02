@@ -666,6 +666,27 @@ export async function registerRoutes(
         });
       };
 
+      // Read when sent, and sent on this socket only, so the last one to arrive is the newest.
+      const sendSessionDetails = (sid: string) => {
+        const session = sessionManager.get(sid);
+        send({
+          type: "session_details",
+          sessionId: sid,
+          sessionStatus: session?.sessionStatus ?? null,
+          agentGoal: session?.agentGoal ?? null,
+        });
+      };
+      const offDetailsChanged = sessionManager.onDetailsChanged((sid) => {
+        if (sid === activeAppSessionId) sendSessionDetails(sid);
+      });
+      // Once per session on this socket; after that the listener keeps it current.
+      let detailsSeededFor: string | undefined;
+      const seedSessionDetails = (sid: string) => {
+        if (detailsSeededFor === sid) return;
+        detailsSeededFor = sid;
+        sendSessionDetails(sid);
+      };
+
       // Report persisted values without buffering a selection that could become stale.
       const sendSelectionChanged = (
         agentId: AgentId,
@@ -841,7 +862,7 @@ export async function registerRoutes(
           attachToRunner(outcome.runner);
           const goalRunner = outcome.runner;
           void reconcileAgentGoal(
-            { sessionManager, sseBroadcast }, sid, goalRunner.agentId,
+            { sessionManager }, sid, goalRunner.agentId,
             () => goalAgentFor(goalRunner, goalRunner.agentId, agentFactory),
           ).catch((err: unknown) => {
             console.warn(`[goal] activation read for ${sid} failed: ${getErrorMessage(err)}`);
@@ -854,6 +875,8 @@ export async function registerRoutes(
             running: false,
             error: "This session's workspace was lost and could not be restored from the repository.",
           });
+          // The card and goal need no workspace, so a lost one must not hide them.
+          seedSessionDetails(sid);
           detachFromRunner();
           if (dir !== activeSessionDir) activeSessionDir = dir;
           return;
@@ -861,6 +884,7 @@ export async function registerRoutes(
           detachFromRunner();
           if (outcome.status === "archived") {
             if (dir !== activeSessionDir) activeSessionDir = dir;
+            seedSessionDetails(sid);
             return;
           }
         }
@@ -943,6 +967,8 @@ export async function registerRoutes(
         }
         sendContainerFreshness(sid);
         sendSecretBlock(sid);
+        // After the attach frames: a client takes the first frame on connect as the runner being ready.
+        seedSessionDetails(sid);
         kickDiskEscalation(sid);
       };
 
@@ -1398,6 +1424,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
         console.log(`[ws] session client disconnected: ${sessionId}`);
         stopKeepalive();
         containerManager?.off("container_started", onContainerStarted);
+        offDetailsChanged();
         detachFromRunner();
         // Disconnects must not stop agents or dispose runners and containers.
       });

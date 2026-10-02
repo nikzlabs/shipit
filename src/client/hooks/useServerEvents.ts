@@ -10,7 +10,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
+import type { AgentId, SessionListRow, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption, GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
@@ -156,7 +156,7 @@ export function useServerEvents(): void {
     eventSourceRef.current = es;
 
     es.addEventListener("session_list", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { sessions: SessionInfo[] };
+      const data = JSON.parse(e.data as string) as { sessions: SessionListRow[] };
       const store = useSessionStore.getState();
       store.setSessions(data.sessions);
       // This list has no archived rows, and All sessions has its own copy of every row.
@@ -164,7 +164,7 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("session_started", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { session: SessionInfo };
+      const data = JSON.parse(e.data as string) as { session: SessionListRow };
       useSessionStore.getState().setSessions((prev) => {
         const exists = prev.some((s) => s.id === data.session.id);
         if (exists) return prev.map((s) => s.id === data.session.id ? data.session : s);
@@ -173,7 +173,7 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("session_renamed", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { session: SessionInfo };
+      const data = JSON.parse(e.data as string) as { session: SessionListRow };
       useSessionStore.getState().setSessions((prev) =>
         prev.map((s) => s.id === data.session.id ? data.session : s),
       );

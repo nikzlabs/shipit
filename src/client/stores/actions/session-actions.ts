@@ -109,7 +109,8 @@ export function resumeSessionInternal(sessionId: string) {
 
   session.setCompacting(false);
 
-  useSessionStore.setState({ subAgentSpawns: {} });
+  // The incoming session's socket sends its own; an older copy may be out of date.
+  useSessionStore.setState({ subAgentSpawns: {}, sessionDetails: {} });
   useUiStore.getState().setShowTemplates(false);
 
   useFileStore.getState().reset();

@@ -1,5 +1,5 @@
 /** Shared warm-to-active transition. Callers handle pool refill separately. */
-import type { SessionManager } from "../sessions.js";
+import { toListRow, type SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { RepoStore } from "../repo-store.js";
 import type { GitManager } from "../../shared/git.js";
@@ -316,8 +316,9 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
         const updatedSession = sessionManager.get(sessionId);
         if (updatedSession) {
           const runner = runnerRegistry.get(sessionId);
-          runner?.emitMessage({ type: "session_renamed", session: updatedSession });
-          sseBroadcast("session_renamed", { session: updatedSession });
+          const row = toListRow(updatedSession);
+          runner?.emitMessage({ type: "session_renamed", session: row });
+          sseBroadcast("session_renamed", { session: row });
         }
       }
       await finalizeBranchRenamed();

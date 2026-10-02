@@ -149,7 +149,7 @@ export async function registerSessionStatusRoutes(
       }
 
       const card = await recordSessionStatus(
-        { sessionManager: deps.sessionManager, sseBroadcast: deps.sseBroadcast },
+        { sessionManager: deps.sessionManager },
         sessionId,
         { ...validated, ...(branch ? { branch } : {}), ...(headSha ? { headSha } : {}) },
       );

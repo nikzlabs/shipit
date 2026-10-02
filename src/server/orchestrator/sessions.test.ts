@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import {
   SessionManager,
   filterVisibleInSidebar,
   holdsActiveReservation,
   MAX_MERGED_SESSIONS_PER_REPO,
+  toListRow,
 } from "./sessions.js";
 import { doneSessionTest, isTerminalPrResolved } from "../shared/session-resolution.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -1493,20 +1494,15 @@ describe("setSessionStatus (docs/303 req 10)", () => {
     expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
   });
 
-  it("marks the card stale when the conversation is reset or rewound, and says it changed", () => {
+  it("marks the card stale when the conversation is reset or rewound", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("c1");
     mgr.setSessionStatus("c1", card);
     mgr.setAgentSessionId("c1", "thread-1");
 
     // The card is kept, not cleared: a rewind can remove the work it describes.
-    expect(mgr.clearAgentSessionId("c1")).toBe(true);
+    mgr.clearAgentSessionId("c1");
     expect(mgr.get("c1")?.sessionStatus).toEqual({ ...card, fresh: false });
-
-    // Nothing to broadcast the second time, and nothing at all without a card.
-    expect(mgr.clearAgentSessionId("c1")).toBe(false);
-    mgr.track("c2");
-    expect(mgr.clearAgentSessionId("c2")).toBe(false);
   });
 
   it("reads a corrupt or shapeless card as no card", () => {
@@ -1562,5 +1558,92 @@ describe("setAgentGoal (docs/154 req 6)", () => {
     mgr.clearAgentSessionId("g1");
     expect(mgr.get("g1")?.agentGoal).toBeUndefined();
     expect(mgr.agentGoalChecked("g1")).toBe(false);
+  });
+});
+
+// Every tab receives the list again on each change; only the open session's viewer reads these.
+describe("session list rows", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const goal = { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1 };
+  const card = { status: "Routes done.", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 };
+
+  function heavySession(mgr: SessionManager): void {
+    mgr.track("s1", "Heavy");
+    mgr.setSessionStatus("s1", card);
+    mgr.setAgentGoal("s1", goal);
+    mgr.setConversationReplay("s1", "User: the whole transcript");
+    mgr.setPendingAgentNotice("s1", "A notice for the agent.");
+  }
+
+  it("leave out the card, the goal, the replay and the notice", () => {
+    const mgr = new SessionManager(dbManager);
+    heavySession(mgr);
+
+    for (const row of [mgr.list()[0], mgr.listAll()[0]]) {
+      expect(row).not.toHaveProperty("sessionStatus");
+      expect(row).not.toHaveProperty("agentGoal");
+      expect(row).not.toHaveProperty("conversationReplay");
+      expect(row).not.toHaveProperty("pendingAgentNotice");
+    }
+    expect(mgr.get("s1")).toMatchObject({ sessionStatus: card, agentGoal: goal });
+  });
+
+  it("are what toListRow makes of the full session", () => {
+    const mgr = new SessionManager(dbManager);
+    heavySession(mgr);
+    expect(mgr.list()[0]).toEqual(toListRow(mgr.get("s1")!));
+  });
+});
+
+describe("onDetailsChanged", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const goal = { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1 };
+  const card = { status: "Routes done.", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 };
+
+  it("names the session on each card write, shown goal change and conversation clear", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    const changed: string[] = [];
+    mgr.onDetailsChanged((id) => changed.push(id));
+
+    mgr.setSessionStatus("s1", card);
+    mgr.setAgentGoal("s1", goal);
+    // Only the token count moved, which the chip does not show.
+    mgr.setAgentGoal("s1", { ...goal, tokensUsed: 50 });
+    mgr.clearAgentSessionId("s1");
+
+    expect(changed).toEqual(["s1", "s1", "s1"]);
+  });
+
+  it("stops after the unsubscribe", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    const changed: string[] = [];
+    const off = mgr.onDetailsChanged((id) => changed.push(id));
+    off();
+    mgr.setSessionStatus("s1", card);
+    expect(changed).toEqual([]);
+  });
+
+  it("keeps the write and the other listeners when one listener throws", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const changed: string[] = [];
+    mgr.onDetailsChanged(() => { throw new Error("socket gone"); });
+    mgr.onDetailsChanged((id) => changed.push(id));
+
+    mgr.setSessionStatus("s1", card);
+
+    expect(mgr.get("s1")?.sessionStatus).toEqual(card);
+    expect(changed).toEqual(["s1"]);
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
   });
 });

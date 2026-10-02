@@ -219,7 +219,7 @@ export function createRunnerRegistry(
       // may already be in one of its own, so the adapter's refusal is the guard.
       runner.on("idle", () => {
         void refreshAgentGoalAfterTurn(
-          { sessionManager, sseBroadcast },
+          { sessionManager },
           runner.sessionId,
           runner.agentId,
           () => goalAgentFor(runner, runner.agentId, agentFactory),

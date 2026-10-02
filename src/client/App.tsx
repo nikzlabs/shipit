@@ -348,6 +348,9 @@ export default function App() {
     () => sessions.find((s) => s.id === sessionId),
     [sessions, sessionId],
   );
+  const agentGoal = useSessionStore((s) =>
+    s.sessionId ? s.sessionDetails[s.sessionId]?.agentGoal ?? null : null,
+  );
 
   const liveSteeringActive =
     liveSteering &&
@@ -1691,9 +1694,9 @@ export default function App() {
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
-            {wsSessionId && currentSession?.agentGoal
+            {wsSessionId && agentGoal
               && agentList.find((a) => a.id === activeAgentId)?.supportsGoals
-              && <GoalChip goal={currentSession.agentGoal} />}
+              && <GoalChip goal={agentGoal} />}
             <SecretBlockBanner />
             {queuedMessages.length > 0 && (
               <QueueIndicator

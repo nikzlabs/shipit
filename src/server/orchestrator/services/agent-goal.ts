@@ -3,15 +3,15 @@ import { getAgentCapabilities } from "../../shared/agent-registry.js";
 import type { SessionManager } from "../sessions.js";
 
 export interface AgentGoalDeps {
-  sessionManager: Pick<SessionManager, "setAgentGoal" | "list" | "get">;
-  sseBroadcast: (event: string, data: unknown) => void;
+  sessionManager: Pick<SessionManager, "setAgentGoal" | "get">;
 }
 
-/** docs/154 — the goal rides SessionInfo, so every viewer and a reload see the same chip. */
+/**
+ * docs/154 — the goal is stored with the session, and the write sends it to the
+ * session's viewers (`session_details`), so every viewer and a reload see the same chip.
+ */
 export function recordAgentGoal(deps: AgentGoalDeps, sessionId: string, goal: AgentGoal | null): void {
-  if (deps.sessionManager.setAgentGoal(sessionId, goal)) {
-    deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
-  }
+  deps.sessionManager.setAgentGoal(sessionId, goal);
 }
 
 /** An answer about a thread the session no longer uses (conversation reset meanwhile) is dropped. */

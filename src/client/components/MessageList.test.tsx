@@ -1954,16 +1954,26 @@ describe("session status card slot", () => {
         title: "Billing",
         createdAt: "2026-01-01T00:00:00Z",
         lastUsedAt: "2026-01-01T00:00:00Z",
-        ...(sessionStatus ? { sessionStatus } : {}),
       } as SessionInfo],
+      sessionDetails: sessionStatus ? { s1: { sessionStatus, agentGoal: null } } : {},
       activeRunnerSessions: new Set<string>(),
     });
     useSettingsStore.setState({ sessionStatusCard: true });
   }
 
   afterEach(() => {
-    useSessionStore.setState({ sessionId: undefined, sessions: [], activeRunnerSessions: new Set<string>() });
+    useSessionStore.setState({ sessionId: undefined, sessions: [], sessionDetails: {}, activeRunnerSessions: new Set<string>() });
     useSettingsStore.setState({ sessionStatusCard: false });
+  });
+
+  it("does not render another session's card", () => {
+    seed(undefined);
+    useSessionStore.setState({ sessionDetails: { s2: { sessionStatus: status, agentGoal: null } } });
+    render(<MessageList messages={[]} isLoading={false} />);
+    expect(screen.queryByTestId("session-status-card")).toBeNull();
+
+    act(() => { useSessionStore.setState({ sessionDetails: { s1: { sessionStatus: status, agentGoal: null } } }); });
+    expect(screen.getByTestId("session-status-card")).toBeInTheDocument();
   });
 
   it("renders the card as the last child of the scrolling content, after every transcript row", () => {
