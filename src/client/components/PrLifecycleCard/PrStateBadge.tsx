@@ -9,11 +9,23 @@ import {
 import { GitPullRequestClosedIcon } from "../GitPullRequestClosedIcon.js";
 import { ICON_SIZE } from "../../design-tokens.js";
 
-export function PrStateBadge({ sessionId, url, prNumber }: { sessionId: string; url?: string; prNumber?: number }) {
+/**
+ * `rowState` is what the session row itself records: the PR store covers only
+ * the sidebar and the open session, and an All sessions row can be neither.
+ */
+export function PrStateBadge({ sessionId, url, prNumber, rowState }: {
+  sessionId: string;
+  url?: string;
+  prNumber?: number;
+  rowState?: "open" | "merged" | "closed";
+}) {
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const card = usePrStore((s) => s.cardBySession[sessionId]);
 
-  const prState = status?.prState ?? (card?.phase === "merged" ? "merged" : card?.phase === "closed" ? "closed" : card?.phase === "open" ? "open" : null);
+  const prState = status?.prState
+    ?? (card?.phase === "merged" ? "merged" : card?.phase === "closed" ? "closed" : card?.phase === "open" ? "open" : null)
+    ?? rowState
+    ?? null;
 
   const base = "w-5 h-5 rounded-md flex items-center justify-center shrink-0 border";
 

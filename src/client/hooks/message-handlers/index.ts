@@ -65,6 +65,7 @@ import { handleModelInfo } from "./model-info.js";
 import { handleModelSelectionChanged } from "./model-selection-changed.js";
 import { handlePrLifecycleUpdate } from "./pr-lifecycle-update.js";
 import { handlePrNotableFiles } from "./pr-notable-files.js";
+import { handleSessionPrStatus } from "./session-pr-status.js";
 import { handleResetEligible } from "./reset-eligible.js";
 import { handlePresentCleared } from "./present-cleared.js";
 import { handlePresentContent } from "./present-content.js";
@@ -188,6 +189,7 @@ export const messageHandlers: MessageHandlerMap = {
   model_selection_changed: handleModelSelectionChanged,
   pr_lifecycle_update: handlePrLifecycleUpdate,
   pr_notable_files: handlePrNotableFiles,
+  session_pr_status: handleSessionPrStatus,
   reset_eligible: handleResetEligible,
   present_cleared: handlePresentCleared,
   present_content: handlePresentContent,

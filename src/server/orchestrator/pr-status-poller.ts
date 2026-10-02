@@ -452,6 +452,16 @@ export class PrStatusPoller {
     return [...this.tracker.lastKnown.values()].map((s) => this.attachAutomationState(s));
   }
 
+  /** As a viewer sees them; `lastKnown` holds every PR a session ever had. */
+  getStatusesFor(sessionIds: Iterable<string>): PrStatusSummary[] {
+    const out: PrStatusSummary[] = [];
+    for (const id of sessionIds) {
+      const summary = this.tracker.lastKnown.get(id);
+      if (summary) out.push(this.attachAutomationState(summary));
+    }
+    return out;
+  }
+
   getAutoFixState(sessionId: string): AutoFixState | undefined {
     return this.autoFix.get(sessionId);
   }

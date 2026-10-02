@@ -50,6 +50,10 @@ function fire(target: Window | Document, type: string): void {
   act(() => { target.dispatchEvent(new Event(type)); });
 }
 
+function showPage(persisted = true): void {
+  act(() => { window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted })); });
+}
+
 function blurToIframe(): void {
   windowKeptSystemFocus = true;
   fire(window, "blur");
@@ -64,13 +68,20 @@ describe("useForegroundSignal", () => {
   describe("unambiguous resumes always reconnect", () => {
     it.each([
       ["visibilitychange", () => fire(document, "visibilitychange")],
-      ["pageshow", () => fire(window, "pageshow")],
+      ["pageshow from the bfcache", () => showPage()],
       ["online", () => fire(window, "online")],
     ])("%s", (_name, dispatch) => {
       const { onForeground } = setup();
       dispatch();
       expect(onForeground).toHaveBeenCalledTimes(1);
     });
+  });
+
+  // The first load fires `pageshow` too, after the connections are already open.
+  it("ignores the pageshow of the page's first load", () => {
+    const { onForeground } = setup({ live: true });
+    showPage(false);
+    expect(onForeground).not.toHaveBeenCalled();
   });
 
   it("ignores focus returning from an iframe", () => {
@@ -179,7 +190,7 @@ describe("useForegroundSignal", () => {
 
   it("does not swallow a background transition that lands inside the coalesce window", () => {
     const { onForeground } = setup({ live: true });
-    fire(window, "pageshow");
+    showPage();
     expect(onForeground).toHaveBeenCalledTimes(1);
 
     act(() => { vi.advanceTimersByTime(200); });
@@ -196,11 +207,11 @@ describe("useForegroundSignal", () => {
     const { onForeground } = setup({ live: false });
     fire(document, "visibilitychange");
     fire(window, "focus");
-    fire(window, "pageshow");
+    showPage();
     expect(onForeground).toHaveBeenCalledTimes(1);
 
     settle();
-    fire(window, "pageshow");
+    showPage();
     expect(onForeground).toHaveBeenCalledTimes(2);
   });
 
@@ -208,7 +219,7 @@ describe("useForegroundSignal", () => {
     const { onForeground } = setup({ live: false });
     pageHidden = true;
     fire(document, "visibilitychange");
-    fire(window, "pageshow");
+    showPage();
     fire(window, "focus");
     fire(window, "online");
     expect(onForeground).not.toHaveBeenCalled();
@@ -241,7 +252,7 @@ describe("useForegroundSignal", () => {
       const { onForeground } = setup({ live: false });
       blurToIframe();
       act(() => { vi.advanceTimersByTime(20_000); });
-      fire(window, "pageshow");
+      showPage();
 
       expect(lastResume(onForeground).awayMs).toBeUndefined();
     });
@@ -287,7 +298,7 @@ describe("useForegroundSignal", () => {
   it("attaches nothing when disabled", () => {
     const { onForeground } = setup({ enabled: false, live: false });
     fire(document, "visibilitychange");
-    fire(window, "pageshow");
+    showPage();
     fire(window, "focus");
     expect(onForeground).not.toHaveBeenCalled();
   });

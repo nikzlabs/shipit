@@ -328,6 +328,26 @@ describe("pr-store", () => {
         expect(usePrStore.getState().cardBySession.s3?.phase).toBe("creating");
       });
 
+      it("drops only within its scope, so an open session outside the sidebar keeps its status", () => {
+        usePrStore.getState().applyPrStatusUpdates([
+          makePrStatus({ sessionId: "s1", prNumber: 1 }),
+          makePrStatus({ sessionId: "s2", prNumber: 2 }),
+          makePrStatus({ sessionId: "archived", prNumber: 3, prState: "merged" }),
+        ]);
+
+        usePrStore.getState().applyPrStatusUpdates(
+          [makePrStatus({ sessionId: "s1", prNumber: 1 })],
+          undefined,
+          true,
+          ["s1", "s2"],
+        );
+
+        expect(usePrStore.getState().statusBySession.s2).toBeUndefined();
+        expect(usePrStore.getState().cardBySession.s2).toBeUndefined();
+        expect(usePrStore.getState().statusBySession.archived?.prState).toBe("merged");
+        expect(usePrStore.getState().cardBySession.archived?.phase).toBe("merged");
+      });
+
       it("does not prune when isSnapshot is falsy (incremental merge)", () => {
         usePrStore.getState().applyPrStatusUpdates([
           makePrStatus({ sessionId: "s1" }),

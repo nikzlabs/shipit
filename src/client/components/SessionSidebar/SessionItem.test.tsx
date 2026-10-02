@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionItem } from "./SessionItem.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { usePrStore } from "../../stores/pr-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
 afterEach(cleanup);
@@ -58,6 +59,24 @@ describe("SessionItem keep-preview action", () => {
       />,
     );
     expect(screen.queryByTitle("Always-on preview")).toBeNull();
+  });
+});
+
+// The PR store covers the sidebar and the open session; an All sessions row can be neither.
+describe("a row the PR store does not cover", () => {
+  it("reads the PR state from the row, and does not ask for the user", () => {
+    usePrStore.getState().reset();
+    useSessionStore.setState({ sessions: [] });
+    render(
+      <SessionItem
+        session={{ ...session(), mergedAt: "2024-01-02", prNumber: 5 }}
+        isCurrent={false}
+        onResume={vi.fn()}
+        overflowMenuPortaled={false}
+      />,
+    );
+    expect(screen.getByTitle("PR merged")).toBeInTheDocument();
+    expect(screen.queryByTitle("Waiting for your input")).toBeNull();
   });
 });
 

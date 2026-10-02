@@ -24,8 +24,11 @@
  *
  * So the events are split by what they actually prove:
  *
- *  - `visibilitychange` → visible, `pageshow` (bfcache restore) and `online`
- *    are unambiguous resumes. They always reconnect.
+ *  - `visibilitychange` → visible, a bfcache-restore `pageshow` and `online`
+ *    are unambiguous resumes. They always reconnect. A `pageshow` with
+ *    `persisted=false` is the page's own first load, fired after `load` — on a
+ *    session page that is after the connections opened, since the preview
+ *    iframe holds `load` back — so it is not a resume and must not reopen them.
  *  - `visibilitychange` → hidden, `pagehide` and `freeze` cannot be fired by an
  *    iframe focus change, so they are safe evidence that the page really went
  *    away. They only *record* that; the resume itself reconnects.
@@ -136,6 +139,10 @@ export function useForegroundSignal({
     reconnect();
   }
 
+  function handlePageShow(event: Event): void {
+    if (event instanceof PageTransitionEvent && event.persisted) reconnect();
+  }
+
   function handleBlur(): void {
 
     lastBlurRef.current = document.hasFocus() ? "internal" : "external";
@@ -175,7 +182,7 @@ export function useForegroundSignal({
     { target: doc, type: "freeze", handler: markBackgrounded },
     { target: win, type: "blur", handler: handleBlur },
 
-    { target: win, type: "pageshow", handler: reconnect },
+    { target: win, type: "pageshow", handler: handlePageShow },
     { target: win, type: "online", handler: reconnect },
 
     { target: win, type: "focus", handler: handleFocus },
