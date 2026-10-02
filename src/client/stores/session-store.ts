@@ -2,7 +2,9 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
+import type { SessionCapabilities, SessionListRow, SessionStatus, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
+import type { AgentGoal } from "../../server/shared/types/agent-types.js";
+import { reuseUnchangedRows } from "../utils/session-rows.js";
 import { useUiStore } from "./ui-store.js";
 
 /**
@@ -40,6 +42,12 @@ export interface RescueState {
   startedAt?: number;
 }
 
+/** A session's status card and goal, as its socket last sent them (`session_details`). */
+export interface SessionDetails {
+  sessionStatus: SessionStatus | null;
+  agentGoal: AgentGoal | null;
+}
+
 export interface RewindRecovery {
   sessionId: string;
   action: "chat" | "code" | "both" | "fork";
@@ -68,7 +76,9 @@ interface SessionState {
   subAgentSpawns: Record<string, SubAgentSpawnChip>;
   selectedRepoUrl: string | null;
   creatingRepo: boolean;
-  sessions: SessionInfo[];
+  sessions: SessionListRow[];
+  /** By session id; not on the rows, which every tab receives again on each change. */
+  sessionDetails: Record<string, SessionDetails>;
   /**
    * docs/252 phase 4 — how many times the server has answered a selection change
    * for a session, keyed by session id.
@@ -188,8 +198,9 @@ interface SessionState {
   setContainerFreshness: (freshness: ContainerFreshness | null) => void;
   setRestartScheduled: (restartScheduled: boolean) => void;
   setSecretBlock: (block: SessionSecretBlock | null) => void;
+  setSessionDetails: (sessionId: string, details: SessionDetails) => void;
   setSessions: (
-    sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
+    sessions: SessionListRow[] | ((prev: SessionListRow[]) => SessionListRow[]),
   ) => void;
 
   bumpModelSelectionEcho: (sessionId: string) => void;
@@ -244,7 +255,7 @@ interface SessionState {
   setTurnUsageForSession: (sessionId: string, turns: TurnUsage[]) => void;
   reset: () => void;
 
-  allSessions: SessionInfo[];
+  allSessions: SessionListRow[];
   allSessionsDialogOpen: boolean;
   /**
    * Repo the dialog opens filtered to, when it was opened FROM a repo (the
@@ -266,7 +277,7 @@ interface SessionState {
 
   createSandboxSession: (capabilities: SessionCapabilities) => Promise<string | null>;
 
-  getChildren: (parentSessionId: string) => SessionInfo[];
+  getChildren: (parentSessionId: string) => SessionListRow[];
 }
 
 const initialResettableState = {
@@ -292,6 +303,7 @@ const initialResettableState = {
   containerFreshness: null as ContainerFreshness | null,
   restartScheduled: false,
   secretBlock: null as SessionSecretBlock | null,
+  sessionDetails: {} as Record<string, SessionDetails>,
 };
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
@@ -299,7 +311,7 @@ const initialTurnUsage: Record<string, TurnUsage[]> = {};
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
-  sessions: [] as SessionInfo[],
+  sessions: [] as SessionListRow[],
   modelSelectionEcho: {},
   activeRunnerSessions: new Set<string>(),
   runnerIncarnations: {},
@@ -308,7 +320,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   backgroundTaskSessions: new Map<string, string[]>(),
   rewindRecoveries: {},
   turnUsage: initialTurnUsage,
-  allSessions: [] as SessionInfo[],
+  allSessions: [] as SessionListRow[],
   allSessionsDialogOpen: false,
   allSessionsDialogRepoUrl: undefined,
 
@@ -360,10 +372,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setRestartScheduled: (restartScheduled) => set({ restartScheduled }),
   setSecretBlock: (secretBlock) => set({ secretBlock }),
 
+  setSessionDetails: (sessionId, details) =>
+    set((state) => ({ sessionDetails: { ...state.sessionDetails, [sessionId]: details } })),
+
   setSessions: (sessions) =>
     set((state) => ({
-      sessions:
+      sessions: reuseUnchangedRows(
+        state.sessions,
         typeof sessions === "function" ? sessions(state.sessions) : sessions,
+      ),
     })),
 
   bumpModelSelectionEcho: (sessionId) =>
@@ -634,7 +651,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const res = await fetch("/api/sessions/all", {
       headers: { Accept: "application/json" },
     });
-    const data = await res.json() as { sessions: SessionInfo[] };
+    const data = await res.json() as { sessions: SessionListRow[] };
     set({ allSessions: data.sessions });
   },
 
@@ -647,7 +664,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const err = await res.json().catch(() => ({ error: "Unknown error" })) as { error?: string };
       throw new Error(err.error ?? `Failed to unarchive session (${res.status})`);
     }
-    const result = await res.json() as { sessions: SessionInfo[] };
+    const result = await res.json() as { sessions: SessionListRow[] };
     set((state) => ({
       sessions: result.sessions,
       allSessions: state.allSessions.map((s) =>
@@ -668,7 +685,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       throw new Error(err.error ?? `Failed to archive session (${res.status})`);
     }
     const result = await res.json() as {
-      sessions: SessionInfo[];
+      sessions: SessionListRow[];
       checkoutsRetained?: { sessionId: string; message: string }[];
     };
     // The server keeps a checkout when its commits are on no remote; say so, or the
@@ -725,8 +742,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       method: "GET",
       headers: { Accept: "application/json" },
     });
-    const data = await res.json() as { sessions: SessionInfo[] };
-    set({ sessions: data.sessions });
+    const data = await res.json() as { sessions: SessionListRow[] };
+    get().setSessions(data.sessions);
   },
 
   createOpsSession: async (targetSessionId) => {

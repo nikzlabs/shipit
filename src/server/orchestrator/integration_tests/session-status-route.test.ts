@@ -384,7 +384,7 @@ describe("Integration: session-status route", () => {
     });
     const stored = sessionManager.get(sessionId)!.sessionStatus!;
     await takeOfferedActions(
-      { sessionManager, sseBroadcast: () => {} },
+      { sessionManager },
       sessionId,
       [stored.actions[0]!.offerId],
     );

@@ -864,10 +864,7 @@ export async function executeAgentTurn(
   // Read at the settlement rather than captured at turn start: the user can turn the
   // setting off mid-turn, and with it off the card is not ShipIt's to touch (req 21).
   const statusCardOn = (): boolean => deps.statusCardEnabled?.() ?? false;
-  const statusDeps: SessionStatusDeps = {
-    sessionManager: deps.listenerDeps.sessionManager,
-    sseBroadcast: deps.listenerDeps.sseBroadcast,
-  };
+  const statusDeps: SessionStatusDeps = { sessionManager: deps.listenerDeps.sessionManager };
   const storedStatus = () => deps.listenerDeps.sessionManager.get(sessionId)?.sessionStatus;
 
   let turnFacts: TurnStatusFacts | null = null;

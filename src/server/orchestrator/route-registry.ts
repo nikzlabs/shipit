@@ -666,6 +666,20 @@ export async function registerRoutes(
         });
       };
 
+      // Read when sent, and sent on this socket only, so the last one to arrive is the newest.
+      const sendSessionDetails = (sid: string) => {
+        const session = sessionManager.get(sid);
+        send({
+          type: "session_details",
+          sessionId: sid,
+          sessionStatus: session?.sessionStatus ?? null,
+          agentGoal: session?.agentGoal ?? null,
+        });
+      };
+      const offDetailsChanged = sessionManager.onDetailsChanged((sid) => {
+        if (sid === activeAppSessionId) sendSessionDetails(sid);
+      });
+
       // Report persisted values without buffering a selection that could become stale.
       const sendSelectionChanged = (
         agentId: AgentId,
@@ -827,6 +841,8 @@ export async function registerRoutes(
       const activateSession = async (sid: string, opts?: ActivateSessionOptions) => {
         const s = sessionManager.get(sid);
         activeAppSessionId = sid;
+        // Before the restore wait and the early returns: the card and goal need no workspace.
+        sendSessionDetails(sid);
         const dir = s?.workspaceDir ?? null;
 
         // Keep normal attachment synchronous to preserve the connect-frame order.
@@ -841,7 +857,7 @@ export async function registerRoutes(
           attachToRunner(outcome.runner);
           const goalRunner = outcome.runner;
           void reconcileAgentGoal(
-            { sessionManager, sseBroadcast }, sid, goalRunner.agentId,
+            { sessionManager }, sid, goalRunner.agentId,
             () => goalAgentFor(goalRunner, goalRunner.agentId, agentFactory),
           ).catch((err: unknown) => {
             console.warn(`[goal] activation read for ${sid} failed: ${getErrorMessage(err)}`);
@@ -1398,6 +1414,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
         console.log(`[ws] session client disconnected: ${sessionId}`);
         stopKeepalive();
         containerManager?.off("container_started", onContainerStarted);
+        offDetailsChanged();
         detachFromRunner();
         // Disconnects must not stop agents or dispose runners and containers.
       });

@@ -189,6 +189,8 @@ The orchestrator maintains a Server-Sent Events endpoint for global push to all 
 
 SSE is separate from per-session WebSocket. It broadcasts to all tabs, not just the active session.
 
+So a field only the open session's viewer reads does not belong on a session list row: `list()` / `listAll()` return `SessionListRow` (no status card, goal, conversation replay or agent notice), and single-session events go through `toListRow`. The card and the goal reach the open session on its socket as `session_details`, sent at activation and on each `SessionManager.onDetailsChanged` (docs/303-session-status-card → Delivery).
+
 ## Type System
 
 All types live in `src/server/shared/types/`:

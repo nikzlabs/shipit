@@ -127,6 +127,28 @@ describe("useServerEvents — session_list and the All sessions dialog", () => {
     act(() => { es.emit("session_list", { sessions: [] }); });
     expect(fetchAllSessions).toHaveBeenCalledTimes(1);
   });
+
+  // Each frame parses into new objects; the store keeps the rows that did not change.
+  it("keeps the objects of rows a broadcast did not change", () => {
+    useSessionStore.setState({ sessions: [], allSessionsDialogOpen: false });
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+    const row = (id: string, lastUsedAt: string) => ({
+      id, title: id, createdAt: "2026-01-01T00:00:00.000Z", lastUsedAt, remoteUrl: "",
+    });
+
+    act(() => { es.emit("session_list", { sessions: [row("a", "t1"), row("b", "t1")] }); });
+    const first = useSessionStore.getState().sessions;
+
+    act(() => { es.emit("session_list", { sessions: [row("a", "t1"), row("b", "t1")] }); });
+    expect(useSessionStore.getState().sessions).toBe(first);
+
+    act(() => { es.emit("session_list", { sessions: [row("a", "t1"), row("b", "t2")] }); });
+    const third = useSessionStore.getState().sessions;
+    expect(third[0]).toBe(first[0]);
+    expect(third[1]).not.toBe(first[1]);
+    expect(third[1].lastUsedAt).toBe("t2");
+  });
 });
 
 describe("useServerEvents — pr_status connect snapshot", () => {

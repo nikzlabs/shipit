@@ -183,7 +183,7 @@ export function MessageList({
 
   const sessionStatusCardEnabled = useSettingsStore((s) => s.sessionStatusCard);
   const sessionStatus = useSessionStore((s) =>
-    s.sessions.find((session) => session.id === s.sessionId)?.sessionStatus,
+    s.sessionId ? s.sessionDetails[s.sessionId]?.sessionStatus ?? undefined : undefined,
   );
   // The session the card was read from, so its collapsed state (docs/303
   // req 42) is keyed on the same session and never on a neighbouring id.

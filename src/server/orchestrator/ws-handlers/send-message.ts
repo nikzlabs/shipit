@@ -83,14 +83,14 @@ export function recordActionChecklistSubmission(
  * session by itself, so chaining is enough and the order of two submits holds.
  */
 export function recordSessionStatusOffersTaken(
-  ctx: Pick<FullCtx, "getActiveAppSessionId" | "sessionManager" | "sseBroadcast">,
+  ctx: Pick<FullCtx, "getActiveAppSessionId" | "sessionManager">,
   offerIds: string[] | undefined,
 ): void {
   if (!offerIds || offerIds.length === 0) return;
   const sessionId = ctx.getActiveAppSessionId();
   if (!sessionId) return;
   void takeOfferedActions(
-    { sessionManager: ctx.sessionManager, sseBroadcast: ctx.sseBroadcast },
+    { sessionManager: ctx.sessionManager },
     sessionId,
     offerIds,
   ).catch((err: unknown) => {

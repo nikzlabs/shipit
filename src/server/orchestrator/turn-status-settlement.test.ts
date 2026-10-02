@@ -149,7 +149,6 @@ function harness(opts: {
 
   const statusDeps: SessionStatusDeps = {
     sessionManager: sessionManager as unknown as SessionStatusDeps["sessionManager"],
-    sseBroadcast: vi.fn(),
   };
 
   /** What the route does on an accepted `session_status` call. */

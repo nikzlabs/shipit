@@ -82,6 +82,7 @@ import { handleRewindPreview } from "./rewind-preview.js";
 import { handleRewindRestored } from "./rewind-restored.js";
 import { handleRewindSnapshotAvailable } from "./rewind-snapshot-available.js";
 import { handleSecretBlockStatus } from "./secret-block-status.js";
+import { handleSessionDetails } from "./session-details.js";
 import { handleSecretsStatus } from "./secrets-status.js";
 import { handleServiceList } from "./service-list.js";
 import { handleServiceStatus } from "./service-status.js";
@@ -206,6 +207,7 @@ export const messageHandlers: MessageHandlerMap = {
   rewind_restored: handleRewindRestored,
   rewind_snapshot_available: handleRewindSnapshotAvailable,
   secret_block_status: handleSecretBlockStatus,
+  session_details: handleSessionDetails,
   secrets_status: handleSecretsStatus,
   service_list: handleServiceList,
   service_status: handleServiceStatus,

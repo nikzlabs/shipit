@@ -157,7 +157,6 @@ function harness(opts: { card?: SessionStatus; statusCardEnabled?: () => boolean
 
   const statusDeps: SessionStatusDeps = {
     sessionManager: sessionManager as unknown as SessionStatusDeps["sessionManager"],
-    sseBroadcast: vi.fn(),
   };
 
   return {

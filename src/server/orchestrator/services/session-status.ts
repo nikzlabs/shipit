@@ -8,9 +8,9 @@ const RECONCILE = loadPrompt(import.meta.url, "../prompts/status-card-reconcile.
 const MISSED = loadPrompt(import.meta.url, "../prompts/status-card-missed.md").trim();
 const ABSENT = loadPrompt(import.meta.url, "../prompts/status-card-absent.md").trim();
 
+/** Each write reaches the open session's viewers through `SessionManager.onDetailsChanged`. */
 export interface SessionStatusDeps {
-  sessionManager: Pick<SessionManager, "get" | "list" | "setSessionStatus" | "sessionIdsWithStatus">;
-  sseBroadcast: (event: string, data: unknown) => void;
+  sessionManager: Pick<SessionManager, "get" | "setSessionStatus" | "sessionIdsWithStatus">;
 }
 
 /** Provenance of the offers a call creates, captured by the route (docs/303 → Call path). */
@@ -39,22 +39,6 @@ export function runStatusExclusive<T>(sessionId: string, fn: () => Promise<T>): 
     if (statusChains.get(sessionId) === tail) statusChains.delete(sessionId);
   })();
   return next;
-}
-
-/** What a viewer reads. `writeSeq` is bookkeeping, so a bump alone is not a change. */
-function shown(card: SessionStatus | undefined): string {
-  if (!card) return "";
-  return JSON.stringify({
-    lastTurn: card.lastTurn ?? "",
-    status: card.status,
-    needsYou: card.needsYou ?? [],
-    fresh: card.fresh,
-    actions: card.actions,
-  });
-}
-
-function broadcast(deps: SessionStatusDeps): void {
-  deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
 }
 
 function sameOffer(stored: OfferedAction, item: ActionChecklistItem): boolean {
@@ -174,9 +158,7 @@ export function recordSessionStatus(
       turnSeq,
       // req 38 — the call is the answer to the miss, so the notice does not ride on.
     };
-    const before = shown(stored);
     deps.sessionManager.setSessionStatus(sessionId, card);
-    if (shown(card) !== before) broadcast(deps);
     return card;
   });
 }
@@ -215,8 +197,6 @@ export function settleSessionStatusCard(
       // one (a question, a crash) records no ask of its own and must not drop that one.
       ...(turn.nudgePending || stored.nudgePending ? { nudgePending: true } : {}),
     });
-    // `turnSeq` and the notice are bookkeeping; only the freshness mark is on screen.
-    if (stored.fresh) broadcast(deps);
   });
 }
 
@@ -243,7 +223,6 @@ export function takeOfferedActions(
     if (!changed) return;
     // Taking an offer is the user acting, not the agent writing: `writeSeq` holds.
     deps.sessionManager.setSessionStatus(sessionId, { ...stored, actions });
-    broadcast(deps);
   });
 }
 
@@ -252,18 +231,13 @@ export function takeOfferedActions(
  *
  * docs/303 — the card is kept and marked stale rather than cleared: after a rewind it may
  * describe work that is gone, and "Stale" is how it says so. The mark itself lives in
- * `clearAgentSessionId`, beside the goal's clear, so no caller can forget it; this wraps it
- * with the broadcast, so viewers never keep a card that reads current.
+ * `clearAgentSessionId`, beside the goal's clear, so no caller can forget it.
  */
 export function clearConversationThread(
-  deps: {
-    sessionManager: Pick<SessionManager, "clearAgentSessionId" | "list">;
-    sseBroadcast?: (event: string, data: unknown) => void;
-  },
+  deps: { sessionManager: Pick<SessionManager, "clearAgentSessionId"> },
   sessionId: string,
 ): void {
-  if (!deps.sessionManager.clearAgentSessionId(sessionId)) return;
-  deps.sseBroadcast?.("session_list", { sessions: deps.sessionManager.list() });
+  deps.sessionManager.clearAgentSessionId(sessionId);
 }
 
 /**
@@ -597,14 +571,12 @@ export async function markAllSessionStatusesStale(deps: SessionStatusDeps): Prom
     .map((id) => ({ id, card: deps.sessionManager.get(id)?.sessionStatus }))
     .filter((entry): entry is { id: string; card: SessionStatus } => entry.card !== undefined);
 
-  let changed = false;
   for (const { id, card } of snapshot) {
     try {
       await runStatusExclusive(id, async () => {
         const stored = deps.sessionManager.get(id)?.sessionStatus;
         if (!stored?.fresh || stored.writeSeq !== card.writeSeq) return;
         deps.sessionManager.setSessionStatus(id, { ...stored, fresh: false });
-        changed = true;
       });
     } catch (err) {
       // One session's failed write must not leave the rest reading as current,
@@ -612,5 +584,4 @@ export async function markAllSessionStatusesStale(deps: SessionStatusDeps): Prom
       console.error(`[session-status] failed to mark ${id} stale on re-enable:`, err);
     }
   }
-  if (changed) broadcast(deps);
 }

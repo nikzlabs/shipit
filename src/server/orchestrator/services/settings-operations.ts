@@ -334,7 +334,7 @@ function saveOptions(
     ...(sessionManager
       ? {
           onSessionStatusCardEnabled: () => {
-            void markAllSessionStatusesStale({ sessionManager, sseBroadcast: deps.sseBroadcast });
+            void markAllSessionStatusesStale({ sessionManager });
           },
         }
       : {}),
