@@ -97,6 +97,16 @@ below** (those are kept only to explain what the command does and as a fallback)
       from a fresh branch. **Closing the PR does not help** — a closed pull
       request still blocks the branch (it lands on the dead-PR guard above);
       retargeting it on GitHub does work.
+    - **Ignored files in the way:** when the release branch has a file or
+      symlink where your branch has a directory, git will not replace the
+      directory while untracked files are inside, and ignored files count.
+      ShipIt's own plugin skill copies are such files: `prepare` clears them
+      itself and puts them back before it answers, so they need nothing from
+      you. If other ignored files remain, `prepare` **refuses**, names the
+      directory, and says where the session is — for a refused checkout that is
+      the branch it started on, with nothing moved. List the files with
+      `git status --short --ignored`, move them out of the workspace (they are
+      ignored, so this changes nothing the release ships), and re-run.
 
     **Cold-start caveat — the merge-trigger workflow must be on the branch.**
     GitHub Actions evaluates a workflow as it exists *on the branch that was

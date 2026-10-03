@@ -182,7 +182,7 @@ Another case worth being explicit about: `runRebaseFlow` calls `git.fetch("origi
 
 A free deferral is only safe for a condition that can clear by itself. A git refusal over untracked files — files a checkout would overwrite, or a directory that holds untracked files and must become a file or symlink — comes back identically on every retry, so deferring it retried every 60s for as long as the PR stayed CONFLICTING, fetching and attempting a rebase each time, and logged only once. `isUntrackedFilesRefusal` (`services/git.ts`) classifies those messages, and the wrapper returns `{ outcome: "error", lastError: <git's summary>, didWork: true }` for them. They then take the 5-minute error cooldown, exhaust after `MAX_AUTO_RESOLVE_ATTEMPTS`, and put git's summary on the PR card's failure banner. Everything else that throws before a spawn (a fetch failure, a lock file) stays deferred. `could not detach HEAD` is deliberately not a signal: git appends it to any failed checkout, including index-lock contention, which clears by itself.
 
-ShipIt's own plugin-skill copies were one such refusal, and the flow now clears them itself — see docs/262-plugins, "Rebasing across a skills root that changes shape".
+ShipIt's own plugin-skill copies were one such refusal, and the flow now clears them itself — see docs/262-plugins, "Git steps across a skills root that changes shape".
 
 #### Reconnect reconcile
 
