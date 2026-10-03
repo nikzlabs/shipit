@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import type { GitManager, RebaseConflictFile, RebaseResult } from "../../shared/git.js";
-import { ownedPluginSkillDirs, pluginSkillOwnership } from "../../shared/plugin-skill-copies.js";
+import type { GitManager, RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { AgentProcess, AgentId, BranchSyncedCard } from "../../shared/types.js";
 import type { ChatHistoryManager } from "../chat-history.js";
@@ -24,6 +21,12 @@ import {
   untrackedOverwritePaths,
 } from "./git.js";
 import { findSharedBranchRefusal } from "./push-target-guard.js";
+import {
+  pluginSkillCopiesGone,
+  presentPluginSkillCopies,
+  restorePluginSkills,
+  retryClearingPluginSkills,
+} from "./plugin-skill-clearing.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -420,83 +423,6 @@ async function prepareWorkspaceForRebase(
   return { savedCommit: saved.commitHash };
 }
 
-// A concurrent /plugins/prepare pass can re-create a copy between the sweep and the retry.
-const PLUGIN_SKILL_CLEAR_ROUNDS = 2;
-
-/**
- * ShipIt's plugin-skill copies are ignored, untracked directories in the harness skills roots
- * (docs/262-plugins), and git 2.39 (the orchestrator image's) will not replace a root that
- * holds them: a base that turns `.claude/skills` into a symlink stops the rebase before it
- * starts. Every container start re-creates them, so they are cleared here; the flow prepares
- * them again afterwards.
- */
-async function rebaseClearingPluginSkills(deps: RebaseDriverDeps, baseRef: string): Promise<RebaseResult> {
-  for (let round = 0; ; round++) {
-    try {
-      return await deps.git.rebase(baseRef);
-    } catch (err) {
-      if (round >= PLUGIN_SKILL_CLEAR_ROUNDS || !isUntrackedFilesRefusal(getErrorMessage(err))) throw err;
-      if ((await removePluginSkillCopies(deps.git, deps.runner.sessionDir)) === 0) throw err;
-    }
-  }
-}
-
-// Only what the marker claims, git does not track, and resolves inside the workspace.
-async function removePluginSkillCopies(git: GitManager, workspaceDir: string): Promise<number> {
-  let workspace: string;
-  let copies: string[];
-  let tracked: string[];
-  try {
-    workspace = fs.realpathSync(workspaceDir);
-    const rels = ownedPluginSkillDirs(workspaceDir, new Set()).map(({ dir }) => containedRealRel(workspace, dir));
-    copies = [...new Set(rels.filter((rel): rel is string => rel !== null))];
-    tracked = await git.trackedFilesUnder(copies);
-  } catch (err) {
-    console.warn("[rebase] could not list plugin skill copies:", getErrorMessage(err));
-    return 0;
-  }
-  let removed = 0;
-  for (const rel of copies) {
-    if (tracked.some((file) => file.startsWith(`${rel}/`))) continue;
-    const dir = path.join(workspace, ...rel.split("/"));
-    // Re-checked after the await: a symlink retargeted meanwhile must not redirect the delete.
-    if (containedRealRel(workspace, dir) !== rel || pluginSkillOwnership(dir) !== "ours") continue;
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      removed++;
-    } catch (err) {
-      console.warn(`[rebase] could not remove plugin skill copy ${rel}:`, getErrorMessage(err));
-    }
-  }
-  return removed;
-}
-
-function containedRealRel(workspace: string, dir: string): string | null {
-  try {
-    const rel = path.relative(workspace, fs.realpathSync(dir));
-    if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null;
-    return rel.split(path.sep).join("/");
-  } catch {
-    return null;
-  }
-}
-
-// Bounded: a worker that never became ready would otherwise hold the session for ever.
-export const PLUGIN_SKILL_RESTORE_WAIT_MS = 45_000;
-
-async function restorePluginSkills(runner: SessionRunnerInterface): Promise<void> {
-  const prepare = runner.preparePlugins?.().catch((err: unknown) => {
-    console.error("[rebase] re-preparing plugin skills failed:", getErrorMessage(err));
-  });
-  if (!prepare) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    prepare,
-    new Promise<void>((resolve) => { timer = setTimeout(resolve, PLUGIN_SKILL_RESTORE_WAIT_MS); }),
-  ]);
-  clearTimeout(timer);
-}
-
 export async function runRebaseFlow(
   deps: RebaseDriverDeps,
   baseBranch: string,
@@ -576,10 +502,8 @@ export async function runRebaseFlow(
         );
       }
       worktreeRewritten = true;
-      pluginSkillsBefore = ownedPluginSkillDirs(runner.sessionDir, new Set())
-        .filter((copy) => !copy.staging)
-        .map((copy) => copy.dir);
-      return rebaseClearingPluginSkills(deps, baseRef);
+      pluginSkillsBefore = presentPluginSkillCopies(runner.sessionDir);
+      return retryClearingPluginSkills(git, runner.sessionDir, () => git.rebase(baseRef));
     });
 
     if (result.status === "clean") {
@@ -739,7 +663,7 @@ export async function runRebaseFlow(
       handWorkspaceBackToWorker(runner.sessionDir);
       // After the handback, since the worker may write into a root the rebase created; before
       // the queue drains, since a turn started now would spawn without the skills.
-      if (pluginSkillsBefore.some((dir) => !fs.existsSync(dir))) {
+      if (pluginSkillCopiesGone(pluginSkillsBefore)) {
         hold.take();
         await restorePluginSkills(runner);
       }

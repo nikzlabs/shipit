@@ -57,6 +57,7 @@ import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { resolveLfsHost } from "../shared/git-remote-credential.js";
 import { assessMergeAutoPublish } from "./release-autopublish-check.js";
 import { onWorkspaceRewritten } from "./workspace-rewrite.js";
+import { restorePluginSkills } from "./services/plugin-skill-clearing.js";
 
 function readStringProp(obj: unknown, key: string): string | undefined {
   if (obj && typeof obj === "object" && key in obj) {
@@ -397,6 +398,10 @@ export async function registerGitHubRoutes(
             runnerRegistry: deps.runnerRegistry,
             ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
             chatHistory: deps.chatHistoryManager,
+            // The worker prepares copies in the session's own workspace only, never in another clone.
+            ...(gitDir === dir
+              ? { restorePluginSkills: () => restorePluginSkills(deps.runnerRegistry.get(request.params.id)) }
+              : {}),
           });
         } finally {
           if (gitDir === dir && treeRewritten) {

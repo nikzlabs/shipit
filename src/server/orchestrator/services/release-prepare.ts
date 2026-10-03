@@ -7,8 +7,15 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ReleaseBumpType } from "../../shared/types/release-types.js";
 import { ServiceError } from "./types.js";
+import { formatPathList, untrackedDirectoryPaths, untrackedOverwritePaths } from "./git.js";
 import { agentCreatePr, findBranchPullRequest } from "./github.js";
 import { findSharedBranchRefusal } from "./push-target-guard.js";
+import {
+  pluginSkillCopiesGone,
+  presentPluginSkillCopies,
+  retryClearingPluginSkills,
+} from "./plugin-skill-clearing.js";
+import { getErrorMessage } from "../validation.js";
 import { workflowPublishesAuthoredNotes } from "../release-autopublish-check.js";
 import {
   NOTES_DIR,
@@ -201,6 +208,11 @@ export interface PrepareReleaseArgs extends PlanReleaseArgs {
   chatHistory?: ChatHistoryManager;
   /** Notify immediately after checkout, even if later release steps fail. */
   onTreeRewrite?: () => void;
+  /**
+   * Set only when `dir` is the session's own workspace. Its plugin-skill copies are the ones the
+   * worker prepares again, so they are the only ones a refused git step may clear.
+   */
+  restorePluginSkills?: () => Promise<void>;
 }
 
 export type PrepareReleaseResult =
@@ -250,7 +262,81 @@ export async function prepareRelease(
     return preparePrerelease(git, { version, tag, detected, from: args.from, confirm: args.confirm ?? false });
   }
 
-  return prepareFinalRelease(git, githubAuth, args, detected, version, tag, bumpType);
+  const pluginSkills = args.restorePluginSkills ? presentPluginSkillCopies(args.dir) : [];
+  try {
+    return await prepareFinalRelease(git, githubAuth, args, detected, version, tag, bumpType);
+  } finally {
+    // Last, so the copies return to the tree the release ends on; awaited, so the agent that
+    // ran the command does not continue its turn without them.
+    if (pluginSkillCopiesGone(pluginSkills)) await args.restorePluginSkills?.();
+  }
+}
+
+/**
+ * A git step that replaces tracked paths, retried past ShipIt's plugin-skill copies. A refusal
+ * that stays is reported with what `leftover` finds, so the message states where the session is.
+ */
+async function treeStep<T>(
+  git: GitManager,
+  args: PrepareReleaseArgs,
+  step: string,
+  leftover: () => Promise<string>,
+  gitStep: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await (args.restorePluginSkills ? retryClearingPluginSkills(git, args.dir, gitStep) : gitStep());
+  } catch (err) {
+    const blocked = untrackedFilesInTheWay(getErrorMessage(err));
+    if (!blocked) throw err;
+    const notOurs = args.restorePluginSkills
+      ? " ShipIt clears its own plugin skill copies out of the way by itself, so these are most likely other files."
+      : "";
+    throw new ServiceError(
+      409,
+      `The release could not ${step}: ${blocked}. \`git status\` does not show ignored files, which ` +
+        `these usually are.${notOurs} ${await leftover()} List them with ` +
+        `\`git status --short --ignored\`, move them out of the workspace or delete them, then run the ` +
+        `command again.`,
+    );
+  }
+}
+
+function untrackedFilesInTheWay(gitError: string): string | null {
+  const dirs = untrackedDirectoryPaths(gitError);
+  if (dirs && dirs.length > 0) {
+    return `that replaces ${formatPathList(dirs)} with a file or symlink, and git will not delete the untracked files still inside`;
+  }
+  const files = untrackedOverwritePaths(gitError);
+  if (files && files.length > 0) {
+    return `that writes ${formatPathList(files)}, where this workspace has untracked files, and git will not overwrite them`;
+  }
+  return null;
+}
+
+// Git checks every path before a checkout writes one, so the branch read here is the one it started on.
+async function afterRefusedCheckout(git: GitManager, branch: string): Promise<string> {
+  let current = "";
+  try {
+    current = await git.getCurrentBranch();
+  } catch {
+    // The sentence below still holds without the name.
+  }
+  const where = current ? `the session is still on \`${current}\`` : "the session is on the branch it was on";
+  return `Git changed nothing: ${where}, and \`${branch}\` was not checked out.`;
+}
+
+// Picks before the refused one were committed; `GitManager.cherryPick` aborts them, which can fail.
+async function afterRefusedPick(
+  git: GitManager,
+  headBranch: string,
+  releaseBranch: string,
+  startPoint: string,
+): Promise<string> {
+  const head = await git.getHeadHash();
+  const where = head !== null && head === (await git.getRefHash(startPoint))
+    ? `Nothing was picked: the session is on \`${headBranch}\`, level with \`${releaseBranch}\`.`
+    : `The session is on \`${headBranch}\`, and a part of the pick may still be applied there.`;
+  return `${where} \`${headBranch}\` was not pushed, and running the command again rebuilds it.`;
 }
 
 async function preparePrerelease(
@@ -358,7 +444,9 @@ async function prepareFinalRelease(
     const detected = await git.getDefaultBranch();
     const base = remoteBranches.includes(detected) ? detected : null;
     if (!base) throw new ServiceError(400, "Could not resolve the repository's default branch to bootstrap from.");
-    await git.createBranchFrom(releaseBranch, `origin/${base}`);
+    await treeStep(git, args, `check out \`${releaseBranch}\``, () => afterRefusedCheckout(git, releaseBranch), () =>
+      git.createBranchFrom(releaseBranch, `origin/${base}`),
+    );
     args.onTreeRewrite?.();
     await git.push("origin", releaseBranch);
     startPoint = `origin/${releaseBranch}`;
@@ -377,11 +465,20 @@ async function prepareFinalRelease(
     }
   }
 
-  await git.createBranchFrom(headBranch, startPoint);
+  await treeStep(git, args, `check out \`${headBranch}\``, () => afterRefusedCheckout(git, headBranch), () =>
+    git.createBranchFrom(headBranch, startPoint),
+  );
   args.onTreeRewrite?.();
 
   if (args.pick?.length) {
-    const res = await git.cherryPick(args.pick);
+    const picks = args.pick;
+    const res = await treeStep(
+      git,
+      args,
+      `cherry-pick onto \`${headBranch}\``,
+      () => afterRefusedPick(git, headBranch, releaseBranch, startPoint),
+      () => git.cherryPick(picks),
+    );
     if (!res.success) {
       throw new ServiceError(
         409,

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
@@ -17,6 +17,7 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import type { CredentialStore } from "../credential-store.js";
+import { PLUGIN_SKILL_MARKER, PLUGIN_SKILL_MARKER_ID } from "../../shared/plugin-skill-marker.js";
 
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -174,5 +175,60 @@ describe("Integration: release prepare tells the container its tree was rewritte
       env: { ...process.env, HOME: tmpDir },
     }).toString().trim();
     expect(head).not.toBe("release/0.2.1");
+  });
+});
+
+describe("Integration: release prepare and ShipIt's plugin-skill copies", () => {
+  const COPY = "plugins--tools--probe-0123456789ab";
+
+  // `stable` has `.claude/skills` as a symlink; the session's `main` has it as the real directory.
+  function setupRemoteWhoseStableSymlinksTheSkillsRoot(sessionDir: string): void {
+    const env = { ...process.env, HOME: tmpDir };
+    const bareDir = path.join(tmpDir, "bare-remote.git");
+    fs.mkdirSync(bareDir, { recursive: true });
+    execSync("git init --bare -b main", { cwd: bareDir, env, stdio: "pipe" });
+    execSync(`git remote add origin ${bareDir}`, { cwd: sessionDir, env, stdio: "pipe" });
+
+    fs.writeFileSync(
+      path.join(sessionDir, "package.json"),
+      JSON.stringify({ name: "app", version: "0.2.0" }, null, 2),
+    );
+    fs.mkdirSync(path.join(sessionDir, ".agents/skills/real"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".agents/skills/real/SKILL.md"), "# real\n");
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.symlinkSync("../.agents/skills", path.join(sessionDir, ".claude/skills"));
+    execSync("git add -A && git commit -m 'Skills in .agents'", { cwd: sessionDir, env, stdio: "pipe" });
+    execSync("git push -u origin main && git push origin main:stable", { cwd: sessionDir, env, stdio: "pipe" });
+
+    execSync("git rm -q .claude/skills && mkdir -p .claude && git mv .agents/skills .claude/skills", { cwd: sessionDir, env, stdio: "pipe" });
+    fs.mkdirSync(path.join(sessionDir, ".agents"), { recursive: true });
+    fs.symlinkSync("../.claude/skills", path.join(sessionDir, ".agents/skills"));
+    execSync("git add -A && git commit -m 'Move the skills root to .claude' && git push origin main", { cwd: sessionDir, env, stdio: "pipe" });
+  }
+
+  it("with this machine's own git, whichever way it treats the copies, has the worker prepare them again before it answers", async () => {
+    const { sessionId, sessionDir } = await createSession();
+    setupRemoteWhoseStableSymlinksTheSkillsRoot(sessionDir);
+    const copy = path.join(sessionDir, ".claude/skills", COPY);
+    fs.mkdirSync(copy);
+    fs.writeFileSync(
+      path.join(copy, PLUGIN_SKILL_MARKER),
+      JSON.stringify({ marker: PLUGIN_SKILL_MARKER_ID, source: "/checkout/skills/probe", name: COPY }),
+    );
+    fs.appendFileSync(path.join(sessionDir, ".git/info/exclude"), `/.claude/skills/${COPY}/\n`);
+    const prepare = vi.fn(() => Promise.resolve());
+    Object.assign(app.runnerRegistry.get(sessionId)!, { preparePlugins: prepare });
+
+    const res = await postPrepare(sessionId);
+
+    // Past the checkout, which git 2.39 refuses over the copy; the release itself has no content.
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no changes/i);
+    const head = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    }).toString().trim();
+    expect(head).toBe("release/0.2.1");
+    expect(prepare).toHaveBeenCalledTimes(1);
   });
 });

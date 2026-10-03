@@ -19,9 +19,9 @@ import {
   buildBranchSyncAgentNotice,
   buildSyncFailureNotice,
   MAX_REBASE_ITERATIONS,
-  PLUGIN_SKILL_RESTORE_WAIT_MS,
   syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
+import { PLUGIN_SKILL_RESTORE_WAIT_MS } from "./plugin-skill-clearing.js";
 import { armFollowupNote, followupWindowOpen } from "./rebase-followup.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
