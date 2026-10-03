@@ -193,6 +193,15 @@ describe("reactToReleaseMarkers", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("1 malformed release marker"));
     expect(poller.propose).toHaveBeenCalledTimes(1);
   });
+
+  it("says so when a marker's JSON is not closed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { deps, poller } = makeDeps();
+    const turnText = `<!--shipit:release {"action":"propose","version":"0.5.2","tag":"v0.5.2"-->`;
+    await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir: "/tmp/none", turnText });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("1 malformed release marker"));
+    expect(poller.propose).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildPostTurnReleaseFlow", () => {

@@ -61,10 +61,12 @@ function asString(v: unknown): string | undefined {
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
 const MECHANISMS: ReadonlySet<string> = new Set(["tag-triggered", "brokered", "release-branch"]);
 
-/** Marker-shaped comments, valid or not; more than the parse returned means some were dropped. */
+const MARKER_OPENING_RE = /<!--\s*shipit:release/g;
+
+/** Marker openings, whatever follows them; more than the parse returned means some were dropped. */
 export function countReleaseMarkerComments(text: string): number {
   if (!text?.includes("shipit:release")) return 0;
-  return [...text.matchAll(MARKER_RE)].length;
+  return [...text.matchAll(MARKER_OPENING_RE)].length;
 }
 
 export function parseReleaseMarkers(text: string): ReleaseMarker[] {

@@ -121,9 +121,10 @@ describe("countReleaseMarkerComments", () => {
       `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0"}-->`,
       `<!--shipit:release {"action":"propose","version":"0.3.0"}-->`,
       `<!--shipit:release {not json}-->`,
+      `<!--shipit:release {"action":"propose","version":"0.5.2","tag":"v0.5.2"-->`,
       `prose that names shipit:release without a marker`,
     ].join("\n");
-    expect(countReleaseMarkerComments(text)).toBe(3);
+    expect(countReleaseMarkerComments(text)).toBe(4);
     expect(parseReleaseMarkers(text)).toHaveLength(1);
   });
 });
