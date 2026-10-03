@@ -124,8 +124,8 @@ export type AccountSelection =
 
 export interface SelectAccountOptions {
   exclude?: readonly string[];
-  // Balanced mode keeps a healthy resident route to avoid respawning on every turn.
-  residentRouteId?: string;
+  // The account the session is on; it wins over the strategy within its tier (docs/260 req 8).
+  currentRouteId?: string;
   // Only callers that will attempt the route may retry refusal-blocked accounts.
   optimistic?: boolean;
 }
@@ -448,12 +448,7 @@ export class ProviderAccountManager {
       clear.push(account);
     }
 
-    if (mode === "balanced" && opts.residentRouteId) {
-      const resident = clear.find((account) => account.id === opts.residentRouteId);
-      if (resident) return { ok: true, route: { kind: "account", id: resident.id } };
-    }
-
-    const pick = clear[0] ?? overCutoff[0] ?? looksSpent[0];
+    const pick = pickKeepingCurrent([clear, overCutoff, looksSpent], opts.currentRouteId);
     if (pick) return { ok: true, route: { kind: "account", id: pick.id } };
 
     // Refused or excluded subscriptions must not fall through to metered billing.
@@ -739,6 +734,20 @@ export function orderForSelectionMode<T extends { lastUsedAt?: number }>(
 ): T[] {
   if (mode !== "balanced") return [...accounts];
   return [...accounts].sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0));
+}
+
+/**
+ * The first non-empty tier's pick, where the session's current account beats the
+ * strategy's order. A session therefore moves only when a strictly better tier
+ * exists, never back to an account the strategy prefers (docs/260 req 8).
+ */
+export function pickKeepingCurrent<T extends { id: string }>(
+  tiers: readonly (readonly T[])[],
+  currentId: string | undefined,
+): T | undefined {
+  const tier = tiers.find((candidates) => candidates.length > 0);
+  if (!tier) return undefined;
+  return tier.find((candidate) => candidate.id === currentId) ?? tier[0];
 }
 
 export function snapshotExhaustedResetAt(

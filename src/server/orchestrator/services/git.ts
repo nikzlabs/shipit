@@ -6,6 +6,7 @@ import { scanFileTree } from "../../shared/file-tree.js";
 import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "../git-lfs-blob.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
 import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
+import { LFS_UPLOAD_REFUSAL } from "../../shared/git-lfs-push.js";
 import { ServiceError } from "./types.js";
 import { findSharedBranchRefusal } from "./push-target-guard.js";
 
@@ -392,6 +393,7 @@ export type PushFailureClass =
   | "non-fast-forward"
   | "invalid-refspec"
   | "auth"
+  | "lfs-upload"
   | "lfs"
   | "remote-rejected"
   | "network"
@@ -399,8 +401,10 @@ export type PushFailureClass =
 
 // Match specific causes first: LFS overlaps remote rejection, and auth overlaps
 // network errors. The generic "failed to push some refs" summary identifies neither.
+// `lfs-upload` is ShipIt's own refusal and embeds git-lfs output, so it goes first.
 const PUSH_FAILURE_PATTERNS: readonly (readonly [PushFailureClass, RegExp])[] = [
-  ["lfs", /GH008|unknown Git LFS object|LFS upload|lfs\.locksverify|missing (?:a few |some )?(?:Git )?LFS object/i],
+  ["lfs-upload", new RegExp(LFS_UPLOAD_REFUSAL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))],
+  ["lfs",/GH008|unknown Git LFS object|LFS upload|lfs\.locksverify|missing (?:a few |some )?(?:Git )?LFS object/i],
   [
     // Require HTTP context: progress counts such as (403/403) are not auth errors.
     "auth",
@@ -434,4 +438,75 @@ export function isNonFastForwardError(err: unknown): boolean {
 export function isRewriteWindowPushFailure(err: unknown): boolean {
   const cls = classifyPushFailure(err);
   return cls === "non-fast-forward" || cls === "invalid-refspec";
+}
+
+const MAX_LISTED_PATHS = 3;
+const GIT_ERROR_LINE = /^(?:error|fatal):/;
+const GIT_NOISE_LINE = /^(?:warning|hint):|^Rebasing \(\d+\/\d+\)$/;
+const UNTRACKED_OVERWRITE_LINE = /^error: The following untracked working tree files would be overwritten by \w+:$/;
+const UNTRACKED_DIRECTORY_LINE = /^error: Updating the following directories would lose untracked files in them:$/;
+
+// Git ends a progress line with \r, so "Rebasing (1/8)\rerror: ..." is two lines.
+function gitOutputLines(message: string): string[] {
+  return message.split(/\r\n|\r|\n/).map((line) => line.trimEnd());
+}
+
+export function formatPathList(paths: readonly string[]): string {
+  const shown = paths.slice(0, MAX_LISTED_PATHS).map((p) => `\`${p}\``).join(", ");
+  const rest = paths.length - MAX_LISTED_PATHS;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
+/**
+ * One line for a person: git's own `error:`/`fatal:` lines with the path list
+ * under each capped, and no warnings, hints, or progress. Log the raw message.
+ */
+export function summarizeGitError(message: string): string {
+  const lines = gitOutputLines(message);
+  const errors: { line: string; paths: string[] }[] = [];
+  let current: { line: string; paths: string[] } | null = null;
+  for (const line of lines) {
+    if (GIT_ERROR_LINE.test(line)) {
+      current = { line: line.trim(), paths: [] };
+      errors.push(current);
+    } else if (current && line.startsWith("\t")) {
+      current.paths.push(line.trim());
+    } else {
+      current = null;
+    }
+  }
+  if (errors.length > 0) {
+    return errors
+      .map((e) => (e.paths.length > 0 ? `${e.line} ${formatPathList(e.paths)}` : e.line))
+      .join(" ");
+  }
+  const kept = lines.map((l) => l.trim()).filter((l) => l !== "" && !GIT_NOISE_LINE.test(l));
+  return kept.length > 0 ? kept.join(" ") : message.trim();
+}
+
+function pathsUnder(message: string, header: RegExp): string[] | null {
+  const lines = gitOutputLines(message);
+  const at = lines.findIndex((line) => header.test(line));
+  if (at < 0) return null;
+  const paths: string[] = [];
+  for (const line of lines.slice(at + 1)) {
+    if (!line.startsWith("\t")) break;
+    paths.push(line.trim());
+  }
+  return paths;
+}
+
+/** The paths git refused to overwrite, or null when the failure is anything else. */
+export function untrackedOverwritePaths(message: string): string[] | null {
+  return pathsUnder(message, UNTRACKED_OVERWRITE_LINE);
+}
+
+/** Directories git would not replace with a file or symlink because they hold untracked files. */
+export function untrackedDirectoryPaths(message: string): string[] | null {
+  return pathsUnder(message, UNTRACKED_DIRECTORY_LINE);
+}
+
+/** Git repeats this refusal identically on every retry, so waiting cannot clear it. */
+export function isUntrackedFilesRefusal(message: string): boolean {
+  return untrackedOverwritePaths(message) !== null || untrackedDirectoryPaths(message) !== null;
 }

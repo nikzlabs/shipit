@@ -6,7 +6,7 @@ import {
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import { stackLabelFilters } from "./stack-label.js";
-import { cleanupSessionDockerResources } from "./container-lifecycle.js";
+import { cleanupSessionDockerResources, OPS_DOCKER_HOST } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { overlayDepDirsFromMounts } from "./overlay-session.js";
 import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
@@ -80,6 +80,11 @@ async function reconcileAdoptedCpuPolicy(
   }
 }
 
+/** From the container's own Docker endpoint: a resolver reload must keep that name (planning#626). */
+function isOpsContainer(env: string[] | undefined): boolean {
+  return env?.includes(`DOCKER_HOST=${OPS_DOCKER_HOST}`) ?? false;
+}
+
 function logAdoptedWorkerBuild(
   sessionId: string,
   containerId: string,
@@ -143,11 +148,14 @@ export async function rediscoverContainers(
           workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
+          opsSession: isOpsContainer(info.Config?.Env),
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
           bootedLimits,
           // Use actual mounts; workspace configuration may have changed since creation.
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
+          otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
+          joinedSessionNetworks: sessionNetworksOf(info.NetworkSettings?.Networks),
         });
         // Do not restore standby status: the immutable label survives a claim.
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
@@ -205,10 +213,13 @@ export async function adoptRunningContainer(
           workerBuildId: ci.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined,
           hostWorkspaceDir: resolved.workspaceDir,
           dockerAccess,
+          opsSession: isOpsContainer(info.Config?.Env),
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
           bootedLimits,
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
+          otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
+          joinedSessionNetworks: sessionNetworksOf(info.NetworkSettings?.Networks),
         });
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         return true;
@@ -379,7 +390,30 @@ export function getSessionByContainerIp(
   ip: string,
 ): SessionContainer | undefined {
   for (const sc of containers.values()) {
-    if (sc.containerIp === ip) return sc;
+    if (sc.containerIp === ip || sc.otherAddresses?.includes(ip)) return sc;
   }
   return undefined;
+}
+
+/**
+ * Every address a container holds, IPv4 and IPv6, except `primary`. An agent's
+ * second address must resolve as that agent, or the guard reads it as the user
+ * (planning#506, docs/319 req 1).
+ */
+export function containerAddresses(
+  networks: Record<string, { IPAddress?: string; GlobalIPv6Address?: string }> | undefined,
+  primary?: string,
+): string[] {
+  const out = new Set<string>();
+  for (const network of Object.values(networks ?? {})) {
+    for (const addr of [network.IPAddress, network.GlobalIPv6Address]) {
+      if (addr && addr !== primary) out.add(addr);
+    }
+  }
+  return [...out];
+}
+
+/** An adopted agent's session networks, so a firewall reinstall reopens them. */
+function sessionNetworksOf(networks: Record<string, unknown> | undefined): Set<string> {
+  return new Set(Object.keys(networks ?? {}).filter((name) => name.startsWith("shipit-session-")));
 }

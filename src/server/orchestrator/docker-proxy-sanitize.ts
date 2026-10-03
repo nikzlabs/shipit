@@ -2,9 +2,17 @@ import path from "node:path";
 
 import type { SessionInfo } from "./docker-proxy-helpers.js";
 import { PARENT_SESSION_LABEL, forwardToDocker } from "./docker-proxy-helpers.js";
-import { resolveUnderWorkspace, volumeBelongsToSession, networkBelongsToSession } from "./docker-proxy-auth.js";
+import {
+  resolveUnderWorkspace,
+  volumeBelongsToSession,
+  networkBelongsToSession,
+  sessionOwnedNetwork,
+  RESERVED_EGRESS_LABEL_PREFIX,
+} from "./docker-proxy-auth.js";
 import { findAmbiguousFieldCasing } from "./docker-proxy-field-casing.js";
+import { egressNetworkAttachRefusal } from "./docker-proxy-egress.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
+import { localBlockActive } from "./local-block.js";
 
 const BUILTIN_NETWORK_MODES = new Set(["", "default", "bridge", "host", "none"]);
 
@@ -195,9 +203,12 @@ export async function sanitizeContainerCreate(
 
   // Foreign networks can give a child an IP the API guard treats as trusted.
   if (networkMode && isNamedNetwork(networkMode)) {
-    if (!(await networkBelongsToSession(socketPath, networkMode, session.sessionId))) {
+    const network = await sessionOwnedNetwork(socketPath, networkMode, session.sessionId);
+    if (!network) {
       return { error: `Network "${networkMode}" does not belong to this session` };
     }
+    const refusal = egressNetworkAttachRefusal(networkMode, network);
+    if (refusal) return { error: refusal };
   }
 
   const networkingConfig = body.NetworkingConfig as Record<string, unknown> | undefined;
@@ -207,9 +218,12 @@ export async function sanitizeContainerCreate(
       if (!isNamedNetwork(netName)) {
         return { error: `Network "${netName}" is not allowed via NetworkingConfig` };
       }
-      if (!(await networkBelongsToSession(socketPath, netName, session.sessionId))) {
+      const network = await sessionOwnedNetwork(socketPath, netName, session.sessionId);
+      if (!network) {
         return { error: `Network "${netName}" does not belong to this session` };
       }
+      const refusal = egressNetworkAttachRefusal(netName, network);
+      if (refusal) return { error: refusal };
     }
   }
 
@@ -247,6 +261,13 @@ export async function sanitizeContainerCreate(
     return {
       error: `RestartPolicy "${restartPolicy}" is not allowed with a host bind mount ` +
         "(Docker's own restart would remount the path without a check); start the container again instead",
+    };
+  }
+  // A restart runs the container in a new network namespace, which has no firewall (docs/319).
+  if (localBlockActive() && restartPolicy && restartPolicy !== "no") {
+    return {
+      error: `RestartPolicy "${restartPolicy}" is not allowed: Docker would restart the container without ` +
+        "the firewall that keeps it away from this machine and private networks; start the container again instead",
     };
   }
 
@@ -291,6 +312,10 @@ export async function sanitizeContainerCreate(
   delete hostConfig.VolumeDriver;
 
   const labels = (body.Labels ?? {}) as Record<string, string>;
+  const reserved = Object.keys(labels).find((key) => key.startsWith(RESERVED_EGRESS_LABEL_PREFIX));
+  if (reserved) {
+    return { error: `Label "${reserved}" uses ShipIt's reserved egress namespace` };
+  }
   labels[PARENT_SESSION_LABEL] = session.sessionId;
   body.Labels = labels;
 

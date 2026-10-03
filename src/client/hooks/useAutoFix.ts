@@ -37,13 +37,12 @@ export function useAutoFix(params: {
       const sid = useSessionStore.getState().sessionId;
       if (!sid) return;
 
-      // "Send to Agent" button. `requestPermission` is intentionally NOT
-
       void dispatchAgentMessage({
         sessionId: sid,
         text,
         activity: "Fixing preview errors…",
         apiPost,
+        automatic: true,
       }).catch(() => { /* helper surfaces toast */ });
     },
     [apiPost],

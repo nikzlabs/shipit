@@ -1,10 +1,10 @@
-import fs from "node:fs";
-import path from "node:path";
 import type Docker from "dockerode";
 import {
   classifyComposeFailure,
-  parseComposeFile,
+  ComposeValidationError,
+  parseComposeContent,
   type ComposeFailure,
+  type DockerSocketGrant,
 } from "../compose-generator.js";
 import {
   buildPluginComposeServices,
@@ -27,6 +27,15 @@ export interface PluginServiceDeps {
   depStoreDir?: string;
   containEgress: boolean;
   stackName?: string;
+  projectCompose?: ProjectComposeAccess;
+}
+
+/** How a plugin reader reads the session's project compose file (docs/318-compose-remaining-escapes). */
+export interface ProjectComposeAccess {
+  /** A confined read, made for this call: the agent can change the file at any time. */
+  readProjectFile: (file: string) => Promise<Buffer>;
+  dockerSocketGrant: () => DockerSocketGrant;
+  opsSession: boolean;
 }
 
 export async function resolveSessionPluginServices(
@@ -54,7 +63,7 @@ export async function resolveSessionPluginServices(
     return nothingToSurface(sessionId);
   }
 
-  const project = readProjectServices(workspaceDir, config, deps.containEgress);
+  const project = await readProjectServices(config, deps.containEgress, deps.projectCompose);
   const { services: fragments } = collectPluginFragments({
     workspaceDir,
     live: resolveLiveGenerations(stateDir, config.plugins.repos),
@@ -119,32 +128,45 @@ export interface ProjectServices {
 
 export type ProjectComposeFailure = ComposeFailure;
 
-export function readProjectServices(
-  workspaceDir: string,
-  config: ShipitConfig,
+export async function readProjectServices(
+  config: Pick<ShipitConfig, "compose">,
   containEgress: boolean,
-): ProjectServices {
+  access: ProjectComposeAccess | undefined,
+): Promise<ProjectServices> {
   if (!config.compose) return { names: [], unknown: false };
-  const file = path.join(workspaceDir, config.compose.file);
-  // A declared file that does not exist yet claims no service names.
-  if (!fs.existsSync(file)) return { names: [], unknown: false };
+  const unknown = (err: unknown): ProjectServices => ({
+    names: [],
+    unknown: true,
+    failure: classifyComposeFailure(err),
+  });
+  if (!access) {
+    return unknown(new ComposeValidationError(
+      "ShipIt cannot read this project's compose file here: it has no Compose helper for the session.",
+      "malformed",
+    ));
+  }
+  let raw: Buffer;
   try {
-    const parsed = parseComposeFile(file, {
-      dockerSocket: config.compose.dockerSocket,
-      containEgress,
-    });
-    return {
-      names: parsed.map((s) => s.name),
-      unknown: false,
-    };
+    raw = await access.readProjectFile(config.compose.file);
   } catch (err) {
-    return {
-      names: [],
-      unknown: true,
-      failure: classifyComposeFailure(err),
-    };
+    // A declared file that does not exist yet claims no service names.
+    if (MISSING_FILE.test(err instanceof Error ? err.message : String(err))) return { names: [], unknown: false };
+    return unknown(err);
+  }
+  try {
+    const parsed = parseComposeContent(raw, {
+      dockerSocket: config.compose.dockerSocket,
+      dockerSocketGrant: access.dockerSocketGrant(),
+      containEgress,
+      trustedOpsProxy: access.opsSession,
+    });
+    return { names: parsed.map((s) => s.name), unknown: false };
+  } catch (err) {
+    return unknown(err);
   }
 }
+
+const MISSING_FILE = /no such file or directory/i;
 
 // Rebuilds share commits; leases and volumes must use the generation ID.
 type TrackedGenerations = Map<string, { commit: string; generationId: string; checkoutDir: string }>;

@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { forwardToDocker, PARENT_SESSION_LABEL } from "./docker-proxy-helpers.js";
 
+export const RESERVED_EGRESS_LABEL_PREFIX = "shipit-egress-";
+
 export async function containerBelongsToSession(
   socketPath: string,
   containerId: string,
@@ -12,10 +14,35 @@ export async function containerBelongsToSession(
     const result = await forwardToDocker(socketPath, "GET", `/containers/${containerId}/json`, {});
     if (result.statusCode !== 200) return false;
     const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
-    return (info.Config as Record<string, unknown> | undefined)?.Labels !== undefined &&
-      ((info.Config as Record<string, unknown>).Labels as Record<string, string>)?.[PARENT_SESSION_LABEL] === sessionId;
+    const labels = (info.Config as Record<string, unknown> | undefined)?.Labels as Record<string, string> | undefined;
+    if (labels?.[PARENT_SESSION_LABEL] !== sessionId) return false;
+    // ShipIt's firewall sidecars carry the session label and hold NET_ADMIN in its namespace (docs/319).
+    return !Object.keys(labels).some((key) => key.startsWith(RESERVED_EGRESS_LABEL_PREFIX));
   } catch {
     return false;
+  }
+}
+
+/**
+ * The network when it belongs to the session, else undefined. `name` is what Docker holds, so an
+ * id or an id prefix yields the same name as the name itself.
+ */
+export async function sessionOwnedNetwork(
+  socketPath: string,
+  networkId: string,
+  sessionId: string,
+): Promise<{ name?: string; isolated?: boolean } | undefined> {
+  try {
+    const result = await forwardToDocker(socketPath, "GET", `/networks/${networkId}`, {});
+    if (result.statusCode !== 200) return undefined;
+    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
+    if ((info.Labels as Record<string, string> | undefined)?.[PARENT_SESSION_LABEL] !== sessionId) return undefined;
+    const options = info.Options as Record<string, string> | undefined;
+    // Internal with no host address: nothing on it reaches the host, firewall or not (docs/319).
+    const isolated = info.Internal === true && options?.["com.docker.network.bridge.inhibit_ipv4"] === "true";
+    return { ...(typeof info.Name === "string" ? { name: info.Name } : {}), isolated };
+  } catch {
+    return undefined;
   }
 }
 
@@ -24,14 +51,7 @@ export async function networkBelongsToSession(
   networkId: string,
   sessionId: string,
 ): Promise<boolean> {
-  try {
-    const result = await forwardToDocker(socketPath, "GET", `/networks/${networkId}`, {});
-    if (result.statusCode !== 200) return false;
-    const info = JSON.parse(result.body.toString()) as Record<string, unknown>;
-    return (info.Labels as Record<string, string> | undefined)?.[PARENT_SESSION_LABEL] === sessionId;
-  } catch {
-    return false;
-  }
+  return (await sessionOwnedNetwork(socketPath, networkId, sessionId)) !== undefined;
 }
 
 export async function volumeBelongsToSession(

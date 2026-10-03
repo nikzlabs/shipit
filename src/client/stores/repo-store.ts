@@ -1,6 +1,11 @@
-import { create } from "zustand";
+import { create, type StoreApi } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
+import { allSessionSettingWritesSettled } from "../utils/session-setting-writes.js";
+import { randomId } from "../utils/random-id.js";
 import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedExpandedResolvedChildren, saveExpandedResolvedChildren, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
+
+// Per page load, so a duplicated or second tab never gets this tab's `/new` draft (docs/285 req 13).
+const TAB_ID = randomId();
 
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
 
@@ -51,12 +56,65 @@ interface RepoState {
 
   setRepoAllowAgentMerge: (url: string, allow: boolean) => Promise<boolean>;
 
+  setRepoAllowDockerSocket: (url: string, allow: boolean) => Promise<boolean>;
+
   setRepoColorIndex: (url: string, colorIndex: number) => Promise<boolean>;
 
   reorderRepos: (urls: string[]) => Promise<boolean>;
 
   trustRepo: (url: string) => Promise<boolean>;
   claimSession: (url: string, signal?: AbortSignal) => Promise<{ sessionId: string; sessionDir: string } | null>;
+}
+
+/**
+ * docs/287 — a **rejected** request is a definitive answer, so the optimistic
+ * write is undone. A **thrown** fetch is not: it may have been committed and
+ * its response lost, and showing "off" while the database says "on" tells the
+ * user a permission is withheld when it is granted. So it re-reads, and reverts
+ * only if that fails too.
+ */
+async function setRepoGrant(
+  set: StoreApi<RepoState>["setState"],
+  get: StoreApi<RepoState>["getState"],
+  field: "allowAgentMerge" | "allowDockerSocket",
+  url: string,
+  allow: boolean,
+): Promise<boolean> {
+  const previous = get().repos.find((r) => r.url === url)?.[field] ?? false;
+  const apply = (a: boolean) =>
+    set((state) => ({
+      repos: state.repos.map((r) => (r.url === url ? { ...r, [field]: a } : r)),
+    }));
+  const revert = () => apply(previous);
+  const reconcile = async () => {
+    try {
+      const res = await fetch("/api/repos", { headers: { Accept: "application/json" } });
+      if (!res.ok) return false;
+      const data = await res.json() as { repos?: RepoInfo[] };
+      if (!data.repos) return false;
+      get().setRepos(data.repos);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  apply(allow);
+  try {
+    const res = await fetch(`/api/repos/${encodeURIComponent(url)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ [field]: allow }),
+    });
+    if (!res.ok) {
+      revert();
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`[repo-store] setting ${field} failed:`, err);
+    if (!await reconcile()) revert();
+    return false;
+  }
 }
 
 export const useRepoStore = create<RepoState>((set, get) => ({
@@ -292,50 +350,9 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     }
   },
 
-  /**
-   * docs/287 — a **rejected** request is a definitive answer, so the optimistic
-   * write is undone. A **thrown** fetch is not: it may have been committed and
-   * its response lost, and showing "off" while the database says "on" tells the
-   * user agents cannot merge when they can. So it re-reads, and reverts only if
-   * that fails too.
-   */
-  setRepoAllowAgentMerge: async (url, allow) => {
-    const previous = get().repos.find((r) => r.url === url)?.allowAgentMerge ?? false;
-    const apply = (a: boolean) =>
-      set((state) => ({
-        repos: state.repos.map((r) => (r.url === url ? { ...r, allowAgentMerge: a } : r)),
-      }));
-    const revert = () => apply(previous);
-    const reconcile = async () => {
-      try {
-        const res = await fetch("/api/repos", { headers: { Accept: "application/json" } });
-        if (!res.ok) return false;
-        const data = await res.json() as { repos?: RepoInfo[] };
-        if (!data.repos) return false;
-        get().setRepos(data.repos);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    apply(allow);
-    try {
-      const res = await fetch(`/api/repos/${encodeURIComponent(url)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ allowAgentMerge: allow }),
-      });
-      if (!res.ok) {
-        revert();
-        return false;
-      }
-      return true;
-    } catch (err) {
-      console.error("[repo-store] setRepoAllowAgentMerge failed:", err);
-      if (!await reconcile()) revert();
-      return false;
-    }
-  },
+  setRepoAllowAgentMerge: (url, allow) => setRepoGrant(set, get, "allowAgentMerge", url, allow),
+
+  setRepoAllowDockerSocket: (url, allow) => setRepoGrant(set, get, "allowDockerSocket", url, allow),
 
   setRepoColorIndex: async (url, colorIndex) => {
     const previous = get().repos.find((r) => r.url === url)?.colorIndex;
@@ -400,11 +417,14 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   claimSession: async (url, signal) => {
     const { usePreviewStore } = await import("./preview-store.js");
     try {
+      // A draft's settings must reach the server before a claim can decide whether to reuse it (docs/285 req 8).
+      await allSessionSettingWritesSettled();
 
       usePreviewStore.getState().initStartupSteps();
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}/claim-session`, {
         method: "POST",
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ tabId: TAB_ID }),
         signal,
       });
       if (!res.ok) {

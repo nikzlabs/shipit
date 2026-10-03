@@ -1,4 +1,4 @@
-import { catalogueModelLabels } from "../../server/shared/catalogue/index.js";
+import { activeModelList, catalogueModelLabels, type ModelListDoc } from "../../server/shared/catalogue/index.js";
 
 const LEGACY_DISPLAY_NAMES: Record<string, string> = {
 
@@ -8,10 +8,16 @@ const LEGACY_DISPLAY_NAMES: Record<string, string> = {
   "gpt-5.6": "GPT-5.6 Sol",
 };
 
-const MODEL_DISPLAY_NAMES: Record<string, string> = {
-  ...LEGACY_DISPLAY_NAMES,
-  ...catalogueModelLabels(),
-};
+// Rebuilt when the server's published model list replaces the one in effect (docs/318).
+let displayNames: { list: ModelListDoc | undefined; names: Record<string, string> } | undefined;
+
+function modelDisplayNames(): Record<string, string> {
+  const list = activeModelList();
+  if (!displayNames || displayNames.list !== list) {
+    displayNames = { list, names: { ...LEGACY_DISPLAY_NAMES, ...catalogueModelLabels() } };
+  }
+  return displayNames.names;
+}
 
 const CLAUDE_FAMILIES = ["sonnet", "opus", "haiku"];
 
@@ -29,11 +35,11 @@ export function resolveModelAlias(modelId: string): string {
 }
 
 export function formatModelName(modelId: string): string {
-
-  if (MODEL_DISPLAY_NAMES[modelId]) return MODEL_DISPLAY_NAMES[modelId];
+  const names = modelDisplayNames();
+  if (names[modelId]) return names[modelId];
 
   const alias = resolveModelAlias(modelId);
-  if (alias !== modelId && MODEL_DISPLAY_NAMES[alias]) return MODEL_DISPLAY_NAMES[alias];
+  if (alias !== modelId && names[alias]) return names[alias];
 
   const match = /claude-(\w+)-(\d[\w.]*)/.exec(modelId);
   if (match) {

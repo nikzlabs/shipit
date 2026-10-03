@@ -3,6 +3,7 @@ import type Docker from "dockerode";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 import { buildDnsmasqConfig, EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { egressEnforceEnabled } from "./egress-firewall-install.js";
+import { orchestratorFallbackHosts } from "../shared/orchestrator-hosts.js";
 
 export const EGRESS_DNS_DEFAULT_UPSTREAMS = ["1.1.1.1", "1.0.0.1"];
 // Exempts the resolver from the Compose stale-container sweep.
@@ -18,7 +19,7 @@ export function orchestratorCallbackHost(env: NodeJS.ProcessEnv = process.env): 
 }
 
 export function orchestratorInternalNames(env: NodeJS.ProcessEnv = process.env): string[] {
-  const names = [orchestratorCallbackHost(env), ...(env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS?.split(/[\s,]+/) ?? [])];
+  const names = [orchestratorCallbackHost(env), ...orchestratorFallbackHosts(env)];
   return names
     .map((n) => (n ?? "").trim())
     .filter((n) => n && !/^\d+\.\d+\.\d+\.\d+$/.test(n));
@@ -52,6 +53,24 @@ export function buildResolverConfigB64(opts: ResolverConfigOpts = {}): string {
     unqualifiedInternalNames: opts.unqualifiedInternalNames,
   });
   return Buffer.from(config, "utf-8").toString("base64");
+}
+
+/**
+ * The agent's resolver, at create and at every reload. Single-label names go to
+ * Docker DNS so the agent finds its session's Compose services by name, as
+ * `environment.md` promises; a Compose service's resolver does the same.
+ */
+export function buildAgentResolverConfigB64(opts: {
+  opsSession?: boolean;
+  extraHosts?: string[];
+  base?: readonly string[];
+}): string {
+  return buildResolverConfigB64({
+    internalDomains: sessionInternalNames({ opsSession: opts.opsSession }),
+    unqualifiedInternalNames: true,
+    ...(opts.extraHosts ? { extraDomains: opts.extraHosts } : {}),
+    ...(opts.base ? { base: opts.base } : {}),
+  });
 }
 
 export interface LaunchResolverOpts {

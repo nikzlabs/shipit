@@ -92,14 +92,18 @@ describe("dispatchMessage — transcript session scoping", () => {
       type: "session_container_freshness",
       sessionId: "other",
       freshness: stale,
+      restartScheduled: true,
     });
+    expect(useSessionStore.getState().restartScheduled).toBe(false);
     expect(useSessionStore.getState().containerFreshness).toBeNull();
 
     dispatchMessage(ctx, {
       type: "session_container_freshness",
       sessionId: "active",
       freshness: stale,
+      restartScheduled: true,
     });
+    expect(useSessionStore.getState().restartScheduled).toBe(true);
     expect(useSessionStore.getState().containerFreshness).toEqual(stale);
   });
 

@@ -7,6 +7,7 @@ import type {
   WsPrStatus,
   WsPrLifecycleUpdate,
   WsPrNotableFiles,
+  WsSessionPrStatus,
   WsResetEligible,
 } from "../github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogSnapshot, WsLogAppend } from "../terminal-types.js";
@@ -68,6 +69,7 @@ import type {
   WsContainerRestarting,
   WsSessionContainerFreshness,
   WsSecretBlockStatus,
+  WsSessionDetails,
   WsFullResetComplete,
   WsSessionStatus,
   WsBackgroundTasks,
@@ -240,6 +242,7 @@ export type WsServerMessage =
   | WsContainerRestarting
   | WsSessionContainerFreshness
   | WsSecretBlockStatus
+  | WsSessionDetails
   | WsFullResetComplete
   | WsTurnDiff
   | WsSessionStatus
@@ -251,6 +254,7 @@ export type WsServerMessage =
   | WsRepoList
   | WsPrLifecycleUpdate
   | WsPrNotableFiles
+  | WsSessionPrStatus
   | WsResetEligible
   | WsSystemUserMessage
   | WsSystemNotice

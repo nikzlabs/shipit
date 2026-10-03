@@ -16,6 +16,7 @@ import { useAttentionSessions } from "../../hooks/useAttentionSessions.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { useSidebarResize } from "./useSidebarResize.js";
 import { computeRepoGroups } from "./useSessionGrouping.js";
+import { doneSessionTest } from "../../../server/shared/session-resolution.js";
 import { OpsSessionGroup, OrphanSessionGroup, RepoGroup, SandboxSessionGroup } from "./SessionGroup.js";
 import { AttentionSessionList } from "./AttentionSessionList.js";
 import { AttentionViewToggle } from "./AttentionViewToggle.js";
@@ -101,7 +102,11 @@ export function SessionSidebar({
     () => (hiddenUrls.size === 0 ? sessions : sessions.filter((s) => !s.remoteUrl || !hiddenUrls.has(s.remoteUrl))),
     [sessions, hiddenUrls],
   );
-  const repoGroups = useMemo(() => computeRepoGroups(visibleRepos, visibleSessions), [visibleRepos, visibleSessions]);
+  const isDone = useMemo(() => doneSessionTest(sessions), [sessions]);
+  const repoGroups = useMemo(
+    () => computeRepoGroups(visibleRepos, visibleSessions, isDone),
+    [visibleRepos, visibleSessions, isDone],
+  );
 
   // never appear in the other.
   const sidebarView = useUiStore((s) => s.sidebarView);
@@ -476,6 +481,7 @@ export function SessionSidebar({
               key={group.repo.url}
               repo={group.repo}
               sessions={group.sessions}
+              isDone={isDone}
               currentSessionId={currentSessionId}
               isNewSessionSelected={activeNewSessionRepoUrl === group.repo.url}
               isCollapsed={!isSingleRepo && collapsedRepos.has(group.repo.url)}

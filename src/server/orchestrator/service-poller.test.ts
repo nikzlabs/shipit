@@ -675,3 +675,171 @@ describe("ServicePoller — statuses expire when docker stops answering (docs/12
     ]);
   });
 });
+
+describe("ServicePoller — query working directory (docs/318)", () => {
+  function pollerRecordingCwds(overrides: Partial<ServicePollerOptions>) {
+    const cwds: string[] = [];
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const poller = buildPoller({
+      getService: (name) => (name === "web" ? svc : undefined),
+      listServices: () => [svc],
+      composeQuery: async (args, cwd) => {
+        cwds.push(cwd);
+        if (args[1] === "ps") return JSON.stringify({ Service: "web", ID: "c1", State: "running" });
+        return "[]";
+      },
+      ...overrides,
+    });
+    return { poller, cwds };
+  }
+
+  it("runs its queries in the workspace by default", async () => {
+    const { poller, cwds } = pollerRecordingCwds({});
+    await poller.pollOnce();
+    expect(cwds.length).toBeGreaterThan(1);
+    expect(new Set(cwds)).toEqual(new Set(["/workspace"]));
+  });
+
+  it("runs every query in the directory it is given", async () => {
+    const { poller, cwds } = pollerRecordingCwds({ queryCwd: () => "/state/compose/no-model" });
+    await poller.pollOnce();
+    expect(cwds.length).toBeGreaterThan(1);
+    expect(new Set(cwds)).toEqual(new Set(["/state/compose/no-model"]));
+  });
+});
+
+describe("ServicePoller — the listed address", () => {
+  type Nets = Record<string, { IPAddress?: string }>;
+
+  function addressPoller() {
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const state = {
+      rows: [{ Service: "web", ID: "c1", State: "running", ExitCode: 0 }] as object[],
+      inspect: new Map<string, Nets | Error>(),
+    };
+    const ips = new Map<string, string | undefined>();
+    const poller = buildPoller({
+      composeQuery: async (args) => {
+        if (args.includes("ps")) return state.rows.map((row) => JSON.stringify(row)).join("\n");
+        if (args[0] === "inspect") {
+          const nets = state.inspect.get(args[1]);
+          if (nets instanceof Error) throw nets;
+          return JSON.stringify([{ State: { OOMKilled: false }, NetworkSettings: { Networks: nets ?? {} } }]);
+        }
+        return "";
+      },
+      getService: (name) => (name === svc.name ? svc : undefined),
+      listServices: () => [svc],
+      setContainerIp: (name, ip) => { ips.set(name, ip); },
+    });
+    return { poller, state, ips };
+  }
+
+  it("never lists an address from a network the agent is not on", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+
+    state.inspect.set("c1", { "shipit-egress-sess-1": { IPAddress: "172.30.0.5" } });
+    await poller.pollOnce();
+    expect([...ips]).toEqual([["web", undefined]]);
+  });
+
+  it("does not give a replacement container the address of the one it replaced", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    await poller.pollOnce();
+
+    state.rows = [{ Service: "web", ID: "c2", State: "running", ExitCode: 0 }];
+    state.inspect.set("c2", new Error("No such object: c2"));
+    await poller.pollOnce();
+    expect([...ips]).toEqual([["web", undefined]]);
+  });
+
+  // A slow Docker must not blank a working preview for a poll.
+  it("keeps the address when the same container cannot be read", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    await poller.pollOnce();
+
+    state.inspect.set("c1", new Error("docker inspect did not answer"));
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+  });
+
+  it("does not let a replica with no address yet hide the running one's", async () => {
+    const { poller, state, ips } = addressPoller();
+    state.rows.push({ Service: "web", ID: "c2", State: "created", ExitCode: 0 });
+    state.inspect.set("c1", { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } });
+    state.inspect.set("c2", { "shipit-session-sess-1": { IPAddress: "" } });
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+  });
+});
+
+describe("ServicePoller — containers left by `docker compose run`", () => {
+  const SERVICE_LABELS =
+    "com.docker.compose.depends_on=db:service_started:false,cache:service_started:false," +
+    "com.docker.compose.oneoff=False,com.docker.compose.service=web";
+  const ONE_OFF_LABELS = "com.docker.compose.oneoff=True,com.docker.compose.service=web";
+
+  function oneOffPoller(status: PollerService["status"], rows: object[]) {
+    const svc: PollerService = { name: "web", preview: "auto", status };
+    const inspected: string[] = [];
+    const ips = new Map<string, string | undefined>();
+    const updateServiceStatus = vi.fn();
+    const onLeftRunning = vi.fn();
+    const onExitedWithError = vi.fn();
+    const poller = buildPoller({
+      composeQuery: async (args) => {
+        if (args.includes("ps")) return rows.map((row) => JSON.stringify(row)).join("\n");
+        inspected.push(args[1]);
+        const nets = args[1] === "c1" ? { "shipit-session-sess-1": { IPAddress: "172.20.0.2" } }
+          : args[1] === "run2" ? { "shipit-session-sess-1": { IPAddress: "172.20.0.7" } }
+          : {};
+        return JSON.stringify([{ State: { OOMKilled: false }, NetworkSettings: { Networks: nets } }]);
+      },
+      getService: (name) => (name === svc.name ? svc : undefined),
+      listServices: () => [svc],
+      setContainerIp: (name, ip) => { ips.set(name, ip); },
+      updateServiceStatus,
+      onLeftRunning,
+      onExitedWithError,
+    });
+    return { poller, inspected, ips, updateServiceStatus, onLeftRunning, onExitedWithError };
+  }
+
+  it("reads a running service's status and address from its own container only", async () => {
+    const { poller, inspected, ips, updateServiceStatus, onLeftRunning, onExitedWithError } = oneOffPoller("running", [
+      { Service: "web", ID: "c1", State: "running", ExitCode: 0, Labels: SERVICE_LABELS },
+      { Service: "web", ID: "run1", State: "exited", ExitCode: 1, Labels: ONE_OFF_LABELS },
+      { Service: "web", ID: "run2", State: "running", ExitCode: 0, Labels: ONE_OFF_LABELS },
+    ]);
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+    expect(onLeftRunning).not.toHaveBeenCalled();
+    expect(onExitedWithError).not.toHaveBeenCalled();
+    expect([...ips]).toEqual([["web", "172.20.0.2"]]);
+    expect(inspected).toEqual(["c1"]);
+  });
+
+  it("does not skip a service whose other label value contains the one-off label", async () => {
+    const { poller, ips } = oneOffPoller("running", [{
+      Service: "web", ID: "c1", State: "running", ExitCode: 0,
+      Labels: `note=x,com.docker.compose.oneoff=True,y,${SERVICE_LABELS}`,
+    }]);
+    await poller.pollOnce();
+    expect(ips.get("web")).toBe("172.20.0.2");
+  });
+
+  it("does not report a stopped service running because a `run` shell of it is", async () => {
+    const { poller, ips, updateServiceStatus } = oneOffPoller("stopped", [
+      { Service: "web", ID: "c0", State: "exited", ExitCode: 0, Labels: SERVICE_LABELS },
+      { Service: "web", ID: "run2", State: "running", ExitCode: 0, Labels: ONE_OFF_LABELS },
+    ]);
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+    expect(ips.get("web")).toBeUndefined();
+  });
+});

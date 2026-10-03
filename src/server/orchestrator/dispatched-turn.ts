@@ -131,6 +131,9 @@ async function runDispatchedTurnInner(
       permissionMode: opts.permissionMode,
       postTurn: undefined,
       systemTurn: true,
+      // The prelude of the entry above, so it releases the answer hold only if that would.
+      automatic: opts.automatic,
+      heldId: undefined,
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: undefined,
@@ -248,6 +251,16 @@ async function runDispatchedTurnInner(
   const settingsOutcome = isCompactRequest
     ? null
     : deps.settingsOutcomeNotice?.(runner.sessionId) ?? null;
+  // docs/303-cross-repo-session-proposal req 11 — the same delivery rule as above.
+  const repoSessionOutcome = isCompactRequest
+    ? null
+    : deps.repoSessionOutcomeNotice?.(runner.sessionId) ?? null;
+  // docs/314-session-message-proposal req 14 — the same again.
+  const sessionMessageOutcome = isCompactRequest
+    ? null
+    : deps.sessionMessageOutcomeNotice?.(runner.sessionId) ?? null;
+  const noticeDeliveries = [settingsOutcome, repoSessionOutcome, sessionMessageOutcome]
+    .filter((d) => d !== null);
 
   // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
   // every turn. Not on the nudge, whose own prompt carries the same block, and not on
@@ -261,6 +274,8 @@ async function runDispatchedTurnInner(
     pendingNotice,
     bugOutcomeNotice,
     settingsOutcome?.notice,
+    repoSessionOutcome?.notice,
+    sessionMessageOutcome?.notice,
     reset?.agentPrefix,
     isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
     statusContext,
@@ -368,6 +383,7 @@ async function runDispatchedTurnInner(
       agentId,
       sessionId: runner.sessionId,
       prompt,
+      ...(attempt > 0 ? { continuesTurn: true } : {}),
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText: text,
       ...(activity !== undefined ? { activity } : {}),
@@ -377,11 +393,13 @@ async function runDispatchedTurnInner(
       ...(isCompactRequest ? { compact: true } : {}),
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
+      ...(opts.automatic !== undefined ? { automatic: opts.automatic } : {}),
+      ...(opts.heldId !== undefined ? { heldId: opts.heldId } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
-      ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
+      ...(noticeDeliveries.length > 0 ? { noticeDeliveries } : {}),
       ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
       emitUserEcho: attempt === 0 && !opts.silent,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),

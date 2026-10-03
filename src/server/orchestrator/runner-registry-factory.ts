@@ -29,7 +29,14 @@ import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import type { QuotaContinuationManager } from "./services/quota-continuation.js";
-import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager, type ServiceSetupDeps } from "./service-manager-setup.js";
+import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
+import {
+  applyShipitConfigChange,
+  emitPluginReposUpdated,
+  setupServiceManager,
+  type ComposeHelperConfig,
+  type ServiceSetupDeps,
+} from "./service-manager-setup.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
@@ -49,6 +56,8 @@ import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
 import { prepareSettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
+import { prepareSessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -57,6 +66,7 @@ import { goalAgentFor, refreshAgentGoalAfterTurn } from "./services/agent-goal.j
 import { residentRouteNeedsRelease} from "./service-routing.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { sessionStatusTurnContext } from "./services/session-status.js";
+import { denyAbandonedPermissionCards } from "./permission-cards.js";
 
 export interface RunnerRegistryDeps {
   effectiveRunnerFactory: SessionRunnerFactory | undefined;
@@ -85,6 +95,7 @@ export interface RunnerRegistryDeps {
   };
   /** Orchestrator-private directory outside the agent's workspace mount. */
   serviceEnvDir: string;
+  composeHelperConfig?: ComposeHelperConfig;
   logStore?: LogStore;
   runtimeMode: RuntimeMode;
   broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
@@ -109,6 +120,8 @@ export interface RunnerRegistryDeps {
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
   /** Lazy: the continuation manager wakes through this registry, so it is built after it. */
   getQuotaContinuation?: () => QuotaContinuationManager | undefined;
+  /** docs/321 — resolves the registry lazily for the same reason. */
+  runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
@@ -151,13 +164,14 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushScheduler, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
+    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, composeHelperConfig, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
     reconcileAgentMergeClaimsFor,
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
     getQuotaContinuation,
+    runRequestedRestart,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -181,7 +195,21 @@ export function createRunnerRegistry(
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
       reconcileAgentMergeClaimsFor?.(sessionId);
     },
+    // Same event restartContainer sends: it tells an open tab to reconnect.
+    onViewersOrphaned: (sessionId, incarnation) => {
+      sseBroadcast("runner_replaced", { sessionId, incarnation });
+    },
     onRunnerCreated: (runner) => {
+      // A new container holds no earlier turn, so inherited in-progress rows belong to one
+      // that ended with the old container; the next turn's replaceInProgress would delete
+      // them (docs/240-turn-survives-orchestrator-restart).
+      if (runner.awaitingContainer) {
+        try {
+          chatHistoryManager.finalizeInheritedInProgress(runner.sessionId);
+        } catch (err) {
+          console.error(`[runner] finalizing ${runner.sessionId}'s ended turn rows failed:`, err);
+        }
+      }
       // A merge can start before this runner exists; seed both dispatch and disposal holds.
       if (isAgentMergeInFlight?.(runner.sessionId)) {
         runner.mergeHold = true;
@@ -191,7 +219,7 @@ export function createRunnerRegistry(
       // may already be in one of its own, so the adapter's refusal is the guard.
       runner.on("idle", () => {
         void refreshAgentGoalAfterTurn(
-          { sessionManager, sseBroadcast },
+          { sessionManager },
           runner.sessionId,
           runner.agentId,
           () => goalAgentFor(runner, runner.agentId, agentFactory),
@@ -207,6 +235,19 @@ export function createRunnerRegistry(
         // The release re-enters dispatch, preserving the entry's settlement callback, and
         // leaves it queued in order if another gate (a system hold) still holds.
         if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
+      });
+      // The worker reports no agent, so nothing can answer a request the lost one raised.
+      // A throw here would stop verifyRunningState before it releases the queue.
+      runner.on("turn_abandoned", () => {
+        if (runner.awaitingPermissionIds.size === 0) return;
+        try {
+          denyAbandonedPermissionCards(runner, runner.sessionId, { chatHistoryManager, sseBroadcast });
+          // Nothing else finalizes an abandoned turn, and the next turn's replaceInProgress
+          // would delete the denied card with the rest of its rows.
+          chatHistoryManager.finalizeInProgress(runner.sessionId);
+        } catch (err) {
+          console.error(`[permission] denying abandoned cards for ${runner.sessionId} failed:`, err);
+        }
       });
       wireResetEligibleOnFileChange(
         {
@@ -255,6 +296,7 @@ export function createRunnerRegistry(
         autoPushScheduler.schedule(git, runner.sessionId);
       };
       const systemTurnDeps: SystemTurnDeps = {
+        answerHold: sessionManager,
         authorizeDispatch: (sessionId) => {
           const session = sessionManager.get(sessionId);
           assertSessionCanDispatch(sessionId, session, (remoteUrl) =>
@@ -372,6 +414,7 @@ export function createRunnerRegistry(
             await getQuotaContinuation()?.continueNow(sessionId);
           },
         } : {}),
+        ...(runRequestedRestart ? { runRequestedRestart } : {}),
         commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {
@@ -447,6 +490,10 @@ export function createRunnerRegistry(
                 prepareSettingsOutcomeNotice({ proposals: settingsProposals, chatHistoryManager }, sessionId),
             }
           : {}),
+        repoSessionOutcomeNotice: (sessionId) =>
+          prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId),
+        sessionMessageOutcomeNotice: (sessionId) =>
+          prepareSessionMessageOutcomeNotice({ chatHistoryManager }, sessionId),
         ...(credentialStore
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }
@@ -518,6 +565,7 @@ export function createRunnerRegistry(
           secretStore,
           dockerSecretsConfig,
           serviceEnvDir,
+          ...(composeHelperConfig ? { composeHelperConfig } : {}),
           logStore,
           broadcastLog,
           credentialStore,

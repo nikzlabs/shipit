@@ -35,18 +35,20 @@ export function getRawFilePath(
 export async function getFileContent(
   dir: string,
   filePath: string,
-): Promise<{ content: string; isBinary?: boolean; isImage?: boolean }> {
+): Promise<{ content: string; size: number; isBinary?: boolean; isImage?: boolean }> {
   const safePath = path.resolve(dir, filePath);
   if (!safePath.startsWith(`${dir  }/`)) {
     throw new ServiceError(400, "Invalid path");
   }
   const stat = await fs.stat(safePath);
+  const size = stat.size;
   const ext = path.extname(filePath).slice(1).toLowerCase();
 
   if (IMAGE_EXTENSIONS.has(ext)) {
-    if (stat.size > MAX_IMAGE_SIZE) {
+    if (size > MAX_IMAGE_SIZE) {
       return {
-        content: `Image is too large to preview (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 10 MB.`,
+        content: `Image is too large to preview (${(size / 1_048_576).toFixed(1)} MB). Maximum supported size is 10 MB.`,
+        size,
         isBinary: true,
       };
     }
@@ -54,21 +56,23 @@ export async function getFileContent(
     const mime = getMimeType(ext);
     return {
       content: `data:${mime};base64,${buf.toString("base64")}`,
+      size,
       isImage: true,
     };
   }
 
-  if (stat.size > MAX_TEXT_SIZE) {
+  if (size > MAX_TEXT_SIZE) {
     return {
-      content: `File is too large to display (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
+      content: `File is too large to display (${(size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
+      size,
       isBinary: true,
     };
   }
   const buf = await fs.readFile(safePath);
   if (buf.includes(0)) {
-    return { content: "Binary file — cannot display.", isBinary: true };
+    return { content: "Binary file — cannot display.", size, isBinary: true };
   }
-  return { content: buf.toString("utf-8") };
+  return { content: buf.toString("utf-8"), size };
 }
 
 export async function writeFileContent(

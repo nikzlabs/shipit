@@ -610,6 +610,7 @@ export interface RepoSettingsPatch {
   hidden?: boolean | undefined;
   colorIndex?: number | undefined;
   allowAgentMerge?: boolean | undefined;
+  allowDockerSocket?: boolean | undefined;
 }
 
 export interface RepoSettingsWriteResult {
@@ -696,6 +697,13 @@ export async function applyRepoSettings(
             ));
           }
         }
+      }
+      if (patch.allowDockerSocket !== undefined) {
+        if (deps.repoStore.setAllowDockerSocket(url, patch.allowDockerSocket) === "not-found") {
+          return { repo: null, outcome: combineOutcomes(outcomes), notFound: true };
+        }
+        outcomes.push(APPLIED);
+        keys.push("project.allowDockerSocket");
       }
     } catch (err) {
       console.error(`[settings-apply] writing repository settings for ${url} failed:`, err);

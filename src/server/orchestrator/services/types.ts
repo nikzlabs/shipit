@@ -4,6 +4,7 @@ import type { EligibleModel } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { StoredGlobalSettings } from "../../shared/settings-catalogue/index.js";
 import type { ModelSelection } from "../../shared/catalogue/types.js";
+import type { ModelListDoc } from "../../shared/catalogue/model-list.js";
 
 export interface AgentInfo {
   id: AgentId;
@@ -91,6 +92,8 @@ export interface BootstrapData {
   settings: GlobalSettings;
   runtimeMode: RuntimeMode;
   tailnetPreviewHost?: string;
+  /** docs/318 — present while a published model list is in effect. */
+  modelList?: ModelListDoc;
 }
 
 export class ServiceError extends Error {

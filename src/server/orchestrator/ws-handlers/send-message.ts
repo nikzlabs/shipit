@@ -83,14 +83,14 @@ export function recordActionChecklistSubmission(
  * session by itself, so chaining is enough and the order of two submits holds.
  */
 export function recordSessionStatusOffersTaken(
-  ctx: Pick<FullCtx, "getActiveAppSessionId" | "sessionManager" | "sseBroadcast">,
+  ctx: Pick<FullCtx, "getActiveAppSessionId" | "sessionManager">,
   offerIds: string[] | undefined,
 ): void {
   if (!offerIds || offerIds.length === 0) return;
   const sessionId = ctx.getActiveAppSessionId();
   if (!sessionId) return;
   void takeOfferedActions(
-    { sessionManager: ctx.sessionManager, sseBroadcast: ctx.sseBroadcast },
+    { sessionManager: ctx.sessionManager },
     sessionId,
     offerIds,
   ).catch((err: unknown) => {
@@ -367,6 +367,8 @@ async function decideAndRunSend(
         activity: undefined,
         postTurn: undefined,
         systemTurn: undefined,
+        automatic: undefined,
+        heldId: undefined,
         onTurnComplete: undefined,
         deliveryId: undefined,
         dictated: msg.dictated,
@@ -535,8 +537,8 @@ async function decideAndRunSend(
   // queue itself can still refuse it, so each branch accepts after its own
   // dispatch has been taken.
   const turnRunner = resolveRunner(ctx);
-  // A turn or merge can start during the awaits above.
-  if (turnRunner?.mergeHold || turnRunner?.running) {
+  // A turn, merge or system hold (docs/321's restart) can start during the awaits above.
+  if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.systemTurnInProgress) {
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
@@ -552,6 +554,8 @@ async function decideAndRunSend(
       activity: undefined,
       postTurn: undefined,
       systemTurn: undefined,
+      automatic: undefined,
+      heldId: undefined,
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
@@ -582,6 +586,8 @@ async function decideAndRunSend(
       activity: undefined,
       postTurn: undefined,
       systemTurn: undefined,
+      automatic: undefined,
+      heldId: undefined,
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
@@ -635,6 +641,8 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
       activity: undefined,
       postTurn: undefined,
       systemTurn: undefined,
+      automatic: undefined,
+      heldId: undefined,
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,

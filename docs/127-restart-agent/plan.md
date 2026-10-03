@@ -1,6 +1,9 @@
 
 # Restart agent — recover the agent container without nuking the compose stack
 
+> **Labels renamed (2026-09-30):** the button is now **Restart agent container**, and
+> **Rescue session** is now **Restart all**. The names below are the originals.
+
 ## Problem
 
 Today the heaviest recovery action a user can take on a stuck session

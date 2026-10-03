@@ -406,7 +406,7 @@ id or a bad flag, since neither condition can ever clear.
 - **The run's lifetime is its own.** Nothing about your turn ends a consult —
   not an interrupt, not a Stop, not asking the user a question, not your turn
   finishing. It ends only on its own ~30-minute cap or if the session container
-  goes away (Restart agent, Restart container, archive). So you can safely
+  goes away (Restart agent container, Restart all, archive). So you can safely
   background a review and then ask the user something while it runs; collect it
   afterwards with `shipit agent result`. A consult whose card reads `cancelled`
   always says why — including the one case that is not a termination: if ShipIt

@@ -108,7 +108,7 @@ describe("SessionHealthStrip", () => {
     });
 
     it("preserves recoveryActionError across unmount/remount", async () => {
-      useSessionStore.getState().setRecoveryActionError("Restart agent failed: Docker daemon unreachable");
+      useSessionStore.getState().setRecoveryActionError("Restart agent container failed: Docker daemon unreachable");
       defaultPolls(healthMissing);
 
       const { unmount } = render(
@@ -120,7 +120,7 @@ describe("SessionHealthStrip", () => {
 
       unmount();
       expect(useSessionStore.getState().recoveryActionError).toBe(
-        "Restart agent failed: Docker daemon unreachable",
+        "Restart agent container failed: Docker daemon unreachable",
       );
 
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
@@ -240,7 +240,7 @@ describe("SessionHealthStrip", () => {
   });
 
   describe("button click sets rescueState with startedAt", () => {
-    it("sets rescueState with startedAt when Restart agent is clicked", async () => {
+    it("sets rescueState with startedAt when Restart agent container is clicked", async () => {
 
       queueResponses([
         { body: healthMissing },
@@ -263,7 +263,7 @@ describe("SessionHealthStrip", () => {
         expect(matches.length).toBeGreaterThan(0);
       });
 
-      const restartButton = screen.getByRole("button", { name: /Restart agent/i });
+      const restartButton = screen.getByRole("button", { name: "Restart agent container" });
       fireEvent.click(restartButton);
 
       await waitFor(() => {

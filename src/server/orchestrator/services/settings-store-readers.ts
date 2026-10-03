@@ -625,7 +625,7 @@ function projectValue(
 
 function repoField(
   ctx: StoreReadContext,
-  field: (repo: { allowAgentMerge?: boolean; colorIndex?: number }) => unknown,
+  field: (repo: { allowAgentMerge?: boolean; allowDockerSocket?: boolean; colorIndex?: number }) => unknown,
 ): StoredRead {
   return projectValue(ctx, (repoUrl) => {
     const store = ctx.deps.repoStore;
@@ -817,6 +817,7 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
 
   // Project Settings.
   "project.allowAgentMerge": (ctx) => repoField(ctx, (repo) => repo.allowAgentMerge ?? false),
+  "project.allowDockerSocket": (ctx) => repoField(ctx, (repo) => repo.allowDockerSocket ?? false),
   "project.colorIndex": (ctx) => repoField(ctx, (repo) => repo.colorIndex ?? null),
   "project.secrets": (ctx, cache) =>
     projectValue(ctx, () =>

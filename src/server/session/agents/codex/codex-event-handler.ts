@@ -125,6 +125,9 @@ export class CodexEventHandler {
 
   private requestPermission: PermissionRequester | null = null;
 
+  // Keyed by JSON-RPC id, so serverRequest/resolved can withdraw a request Codex cleared.
+  private pendingApprovals = new Map<number, AbortController>();
+
   // docs/154 — ShipIt paused the goal across the resume; its own notifications are not news.
   private goalHeld = false;
 
@@ -183,14 +186,19 @@ export class CodexEventHandler {
 
     const input = buildCodexPermissionInput(req.method, req.params ?? {});
     const requester = this.requestPermission;
+    const withdrawn = new AbortController();
+    this.pendingApprovals.set(req.id, withdrawn);
     void (async () => {
       try {
-        const decision = await requester({ ...input, agentId: "codex" });
+        const decision = await requester({ ...input, agentId: "codex", signal: withdrawn.signal });
+        if (withdrawn.signal.aborted) return;
         this.ctx.sendResponse(req.id, { decision: decision.behavior === "allow" ? accept : reject });
       } catch (err: unknown) {
         const reason = err instanceof Error ? err.message : String(err);
         this.ctx.emitLog("codex-rpc", `permission broker error, auto-accepting: ${reason}`);
         this.ctx.sendResponse(req.id, { decision: accept });
+      } finally {
+        this.pendingApprovals.delete(req.id);
       }
     })();
   }
@@ -210,6 +218,12 @@ export class CodexEventHandler {
         if (!this.isParentThread(params)) break;
         const turn = params.turn as { id?: string } | undefined;
         this.currentTurnId = turn?.id ?? (params.turnId as string) ?? this.currentTurnId;
+        break;
+      }
+
+      case "serverRequest/resolved": {
+        // Codex clears a pending approval itself when, e.g., its turn is interrupted.
+        this.pendingApprovals.get(params.requestId as number)?.abort();
         break;
       }
 

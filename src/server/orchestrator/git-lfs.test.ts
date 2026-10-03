@@ -12,7 +12,6 @@ import {
   resetGitLfsAvailabilityCache,
   classifyPullFailure,
   buildLfsUnresolvedAgentNotice,
-  runGit,
 } from "./git-lfs.js";
 
 function git(cwd: string, args: string): string {
@@ -244,6 +243,22 @@ describe("materializeLfsContent", () => {
     expect(result.status).toBe("failed");
     expect(result.failure).toBe("no-credential");
     expect(result.warning).toMatch(/could not present a credential/);
+  });
+
+  it("reports why a declared LFS host got no credential, even when the pull succeeded", async () => {
+    const refusal = "the secret `LFS_CREDENTIAL` is for `other.example.com`";
+    const pull = (code: number) => materializeLfsContent(lfsRepo(), {
+      isAvailable: () => Promise.resolve(true),
+      resolveCredential: () => Promise.resolve({ origin: "https://github.com", lfsHostRefusal: refusal }),
+      spawnGit: () => Promise.resolve({ code, stdout: "", stderr: code ? "batch response: 401" : "", timedOut: false }),
+    });
+
+    const ok = await pull(0);
+    expect(ok.status).toBe("materialized");
+    expect(ok.warning).toBe(refusal);
+    const failed = await pull(2);
+    expect(failed.status).toBe("failed");
+    expect(failed.warning).toContain(refusal);
   });
 
   it("reports a refused credential as an access problem, not a plumbing one", async () => {
@@ -510,37 +525,6 @@ describe("restoreLfsAfterTreeRewrite (nikzlabs/shipit#2349)", () => {
     expect(result.status).toBe("not-an-lfs-repo");
     expect(warnings).toEqual([]);
   });
-});
-
-// A `!`-alias stands in for `git lfs`: git resolves an external `git-lfs` binary
-// BEFORE any alias of that name, so `lfs` itself cannot be shadowed here. The shape
-// that matters is identical — a `git` wrapper whose child outlives it on the pipes.
-describe.skipIf(!fs.existsSync("/proc/1/stat"))("runGit timeout (planning#615)", () => {
-  const dirs: string[] = [];
-  afterEach(() => {
-    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-  });
-
-  it("settles and leaves no descendant when the timed-out git has a child on the pipes", async () => {
-    const dir = makeRepo();
-    dirs.push(dir);
-    // `!` aliases run from the repo root, so the markers land beside .git. `started`
-    // proves the descendant existed to be killed, so a slow spawn fails rather than
-    // passing vacuously; `leaked` appears only if it outlived the timeout.
-    git(dir, "config alias.lingering "
-      + "'!touch started.txt; { sleep 5 && touch leaked.txt; } & exec sleep 60'");
-
-    const startedAt = Date.now();
-    const res = await runGit(["lingering"], dir, 1_500);
-
-    expect(res.timedOut).toBe(true);
-    // Unfixed, `close` waits on the surviving child and this runs ~60s, not ~1.5s.
-    expect(Date.now() - startedAt).toBeLessThan(20_000);
-    expect(fs.existsSync(path.join(dir, "started.txt"))).toBe(true);
-
-    await new Promise((r) => setTimeout(r, 6_000));
-    expect(fs.existsSync(path.join(dir, "leaked.txt"))).toBe(false);
-  }, 40_000);
 });
 
 describe("isGitLfsAvailable", () => {

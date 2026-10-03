@@ -22,7 +22,8 @@ function stubFetch(opts: {
   startedContained?: boolean | null;
   pendingRestart?: boolean;
 } = {}) {
-  const { initialOverride = null, enforcementActive = true, startedContained = null } = opts;
+  const { initialOverride = null, enforcementActive = true } = opts;
+  let startedContained = opts.startedContained ?? null;
   const enforcementStatus: EgressEnforcementStatus =
     opts.enforcementStatus ?? (enforcementActive ? "active" : "no-sidecar");
   let override = initialOverride;
@@ -59,6 +60,7 @@ function stubFetch(opts: {
       return { ok: true, status: 200, json: async () => sessionView() } as Response;
     }
     if (url.includes("/container/restart") && init?.method === "POST") {
+      startedContained = effectiveContained();
       return { ok: true, status: 200, json: async () => ({ ok: true, noContainer: false, newContainerState: "running", error: null }) } as Response;
     }
     return { ok: true, status: 200, json: async () => ({}) } as Response;
@@ -174,6 +176,14 @@ describe("SessionSettingsDialog (docs/172)", () => {
           ),
         ).toBe(true),
       );
+    });
+
+    it("drops the pending indicator once the restarted container runs the new mode", async () => {
+      stubFetch({ initialOverride: false, startedContained: true });
+      renderDialog();
+      await waitFor(() => expect(screen.getByTestId("session-settings-restart")).toBeEnabled());
+      await userEvent.click(screen.getByTestId("session-settings-restart"));
+      await waitFor(() => expect(screen.queryByTestId("session-settings-pending")).not.toBeInTheDocument());
     });
 
     it("never auto-restarts on mode selection (only the explicit button does)", async () => {

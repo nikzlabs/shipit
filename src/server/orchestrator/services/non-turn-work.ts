@@ -13,6 +13,7 @@ import {
 } from "../chat-card-persistence.js";
 import { resolveTurnCost, turnAttributionFor } from "../turn-attribution.js";
 import { getErrorMessage } from "../validation.js";
+import { getModel } from "../../shared/catalogue/index.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import {
   provisionProviderAccountCredentials,
@@ -420,12 +421,16 @@ export async function runNonTurnDirect(
   const call = directCallForStyle(target.call.style, deps.fetchImpl ?? fetch);
   if (!call) return fail(`No direct client speaks ${target.call.style}.`);
 
+  // Thinking is always on for some models; background work is short and latency-bound.
+  const effort = target.call.style === "anthropic-messages"
+    && getModel(target.selection)?.reasoningEfforts?.includes("low") ? "low" : undefined;
   try {
     const result = await call({
       baseUrl: target.call.baseUrl,
       apiModelId: target.call.apiModelId,
       apiKey: target.apiKey,
       ...(target.call.headers ? { headers: target.call.headers } : {}),
+      ...(effort ? { effort } : {}),
       prompt: args.prompt,
       signal: args.signal ?? AbortSignal.timeout(NON_TURN_DIRECT_TIMEOUT_MS),
     });

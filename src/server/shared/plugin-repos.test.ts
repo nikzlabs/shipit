@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DeclaredTracker } from "./declared-tracker.js";
 import {
   buildPluginReposSnapshot,
+  formatMemorySize,
+  parseMemorySize,
   parsePluginExports,
   parsePluginRepos,
   type PluginRepoRuntime,
@@ -63,6 +65,15 @@ describe("parsePluginRepos — grammar", () => {
     expect(config.uses[0].overrides.services.probe).toEqual({ port: 4300 });
   });
 
+  it("keeps a command `memory` the consuming project wrote, in bytes", () => {
+    const { config, warnings } = repos({
+      repos: [{ repo: "a/b", name: "tools" }],
+      use: [{ plugin: "assetgen", from: "tools", overrides: { commands: { bake: { memory: "4g", as: "bake-assets" } } } }],
+    });
+    expect(warnings).toEqual([]);
+    expect(config.uses[0].overrides.commands.bake).toEqual({ as: "bake-assets", memoryBytes: 4 * 1024 ** 3 });
+  });
+
   it("drops an entry missing repo or name, keeps the rest", () => {
     const { config, warnings } = repos({
       repos: [{ name: "no-repo" }, { repo: "a/b" }, { repo: "c/d", name: "ok" }],
@@ -97,6 +108,9 @@ describe("parsePluginRepos — grammar", () => {
     ["a zero port", { services: { svc: { port: 0 } } }, "port"],
     ["an invalid service alias", { services: { svc: { as: "bad name" } } }, "as"],
     ["an invalid command alias", { commands: { cmd: { as: "bad/name" } } }, "as"],
+    ["a command memory with no unit", { commands: { cmd: { memory: 4096 } } }, "commands.cmd.memory"],
+    ["a command memory in an unknown unit", { commands: { cmd: { memory: "4x" } } }, "commands.cmd.memory"],
+    ["a command memory below Docker's floor", { commands: { cmd: { memory: "1m" } } }, "commands.cmd.memory"],
     ["a non-scalar setting value", { settings: { root: { nested: true } } }, "settings.root"],
     ["a non-mapping overrides block", "nope", "overrides"],
   ])("drops the whole use entry for %s", (_label, overrides, mentions) => {
@@ -266,6 +280,42 @@ describe("parsePluginExports", () => {
     expect(byDefault!.depDirs).toEqual(["node_modules"]);
     expect(declared!.depDirs).toEqual(["node_modules", "tools/node_modules"]);
     expect(optedOut!.depDirs).toEqual([]);
+  });
+
+  it("takes a command's default memory from the mapping form, beside bare-string commands (req 31)", () => {
+    const warnings: string[] = [];
+    const [exported] = parsePluginExports(
+      {
+        plugins: {
+          assetgen: {
+            cli: {
+              bake: { entry: "cli/bake.mjs", memory: "4g", extra: 1 },
+              list: "cli/list.mjs",
+              plain: { entry: "./cli/plain.mjs" },
+            },
+          },
+        },
+      },
+      warnings,
+    );
+    expect(exported.cli).toEqual({ bake: "cli/bake.mjs", list: "cli/list.mjs", plain: "cli/plain.mjs" });
+    expect(exported.cliMemoryBytes).toEqual({ bake: 4 * 1024 ** 3 });
+    expect(warnings).toEqual(["Unknown key `exports.plugins.assetgen.cli.bake.extra` in shipit.yaml."]);
+  });
+
+  it("puts no maximum on a manifest's default (req 31)", () => {
+    const [exported] = parsePluginExports({ plugins: { p: { cli: { run: { entry: "cli", memory: "512g" } } } } }, []);
+    expect(exported.cliMemoryBytes).toEqual({ run: 512 * 1024 ** 3 });
+  });
+
+  it.each([
+    ["an invalid memory", { run: { entry: "cli", memory: 4096 } }, "`cli.run.memory` must be a size"],
+    ["a mapping with no entry", { run: { memory: "4g" } }, "`cli.run` needs an entrypoint path"],
+    ["an entry outside the repository", { run: { entry: "../x" } }, "cli.run.entry` must stay inside"],
+  ])("drops the whole export for %s", (_label, cli, mentions) => {
+    const warnings: string[] = [];
+    expect(parsePluginExports({ plugins: { p: { cli } } }, warnings)).toEqual([]);
+    expect(warnings.join("\n")).toContain(mentions);
   });
 
   it("drops a plugin whose dep-dirs escape the repository", () => {
@@ -754,5 +804,42 @@ describe("buildPluginReposSnapshot", () => {
   it("reports pending: false — the route owns the pending answer", () => {
     const snapshot = buildPluginReposSnapshot({ declared: true, repos: [], uses: [] }, [], null, []);
     expect(snapshot.pending).toBe(false);
+  });
+});
+
+describe("parseMemorySize", () => {
+  it.each([
+    ["4g", 4 * 1024 ** 3],
+    ["4G", 4 * 1024 ** 3],
+    ["4GiB", 4 * 1024 ** 3],
+    ["4gb", 4 * 1024 ** 3],
+    [" 3584m ", 3584 * 1024 ** 2],
+    ["2.5g", 2.5 * 1024 ** 3],
+    ["6m", 6 * 1024 ** 2],
+    ["8192k", 8 * 1024 ** 2],
+  ])("reads %j as binary units", (raw, bytes) => {
+    expect(parseMemorySize(raw)).toBe(bytes);
+  });
+
+  it.each([4096, "4096", "4 x", "-1g", "g", "5m", "0g", true, null])("refuses %j", (raw) => {
+    expect(parseMemorySize(raw)).toBeUndefined();
+  });
+
+  it("refuses a value too large to send, which would otherwise reach Docker as no limit", () => {
+    expect(parseMemorySize(`1${"0".repeat(309)}g`)).toBeUndefined();
+    expect(parseMemorySize("99999999999g")).toBeUndefined();
+  });
+});
+
+describe("formatMemorySize", () => {
+  it.each([
+    [2 * 1024 ** 3, "2 GiB"],
+    [2.5 * 1024 ** 3, "2.5 GiB"],
+    [3584 * 1024 ** 2, "3.5 GiB"],
+    [512 * 1024 ** 2, "512 MiB"],
+    [6.5 * 1024 ** 2, "6.5 MiB"],
+    [3000 * 1024 ** 2, "3000 MiB"],
+  ])("formats %d as %s", (bytes, text) => {
+    expect(formatMemorySize(bytes)).toBe(text);
   });
 });

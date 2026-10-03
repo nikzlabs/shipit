@@ -59,6 +59,7 @@ import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
 import { getContainerFreshness } from "./container-freshness.js";
+import { userRestartPending } from "./services/agent-restart-request.js";
 import { buildComposeAttachReplay } from "./compose-attach-replay.js";
 import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
 import { currentUpdateNotice, versionAnchor } from "./services/update-notice.js";
@@ -115,8 +116,12 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions, runnerIncarnations })}\n\n`);
     client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions, backgroundTaskSessionIds: backgroundTaskSessions })}\n\n`);
 
-    const prStatuses = prStatusPoller.getAllStatuses();
-    client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses, isSnapshot: true })}\n\n`);
+    // Only the sidebar's sessions: every PR a session ever had, body and comments
+    // included, made this snapshot ~10 MB. An open session outside the sidebar
+    // gets its own status on its socket (`session_pr_status`).
+    const scope = sessions.map((s) => s.id);
+    const prStatuses = prStatusPoller.getStatusesFor(scope);
+    client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses, isSnapshot: true, scope })}\n\n`);
 
     const rateLimit = githubAuthManager.getRateLimitState();
     if (rateLimit.limited && (rateLimit.resetAt === null || rateLimit.resetAt > Date.now())) {
@@ -176,6 +181,12 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
   });
 }
 
+const REBASE_BANNER_OPENERS: ReadonlySet<WsServerMessage["type"]> = new Set([
+  "auto_resolve_started",
+  "rebase_started",
+  "rebase_conflicts",
+]);
+
 export async function registerRoutes(
   app: FastifyInstance,
   rt: OrchestratorRuntime,
@@ -197,8 +208,9 @@ export async function registerRoutes(
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh,
     authManagers, runParamsPreps,
     runnerRegistry, repoPrefetcher, mergeWatchManager,
-    refreshPluginReposForSession, runPluginCommandForSession,
+    refreshPluginReposForSession, runPluginCommandForSession, projectComposeAccess,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
+    runRequestedRestartForTurn,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId, version,
   } = rt;
@@ -218,6 +230,7 @@ export async function registerRoutes(
 
   await registerApiRoutes(app, {
     sessionManager,
+    kickDiskEscalation,
     cancelAutoPush: (sessionId: string) => autoPushScheduler.cancel(sessionId),
     scheduleAutoPush: (git: GitManager, sessionId?: string) => autoPushScheduler.schedule(git, sessionId),
     repoStore,
@@ -296,6 +309,7 @@ export async function registerRoutes(
     composeStopPromises,
     refreshPluginReposForSession,
     runPluginCommandForSession,
+    projectComposeAccess,
     // Tests must not invoke Docker or an agent CLI.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
     ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),
@@ -640,6 +654,7 @@ export async function registerRoutes(
           type: "session_container_freshness",
           sessionId: sid,
           freshness: getContainerFreshness(container?.workerBuildId, buildId),
+          restartScheduled: userRestartPending({ sessionManager, containerManager }, sid),
         });
       };
 
@@ -649,6 +664,27 @@ export async function registerRoutes(
           sessionId: sid,
           block: sessionManager.getSecretBlock(sid) ?? null,
         });
+      };
+
+      // Read when sent, and sent on this socket only, so the last one to arrive is the newest.
+      const sendSessionDetails = (sid: string) => {
+        const session = sessionManager.get(sid);
+        send({
+          type: "session_details",
+          sessionId: sid,
+          sessionStatus: session?.sessionStatus ?? null,
+          agentGoal: session?.agentGoal ?? null,
+        });
+      };
+      const offDetailsChanged = sessionManager.onDetailsChanged((sid) => {
+        if (sid === activeAppSessionId) sendSessionDetails(sid);
+      });
+      // Once per session on this socket; after that the listener keeps it current.
+      let detailsSeededFor: string | undefined;
+      const seedSessionDetails = (sid: string) => {
+        if (detailsSeededFor === sid) return;
+        detailsSeededFor = sid;
+        sendSessionDetails(sid);
       };
 
       // Report persisted values without buffering a selection that could become stale.
@@ -725,8 +761,10 @@ export async function registerRoutes(
             ),
           });
         }
+        let replayedRebaseStart = false;
         // Transcript snapshots, log snapshots, and xterm handle their own replay.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
+          if (REBASE_BANNER_OPENERS.has(buffered.type)) replayedRebaseStart = true;
           if (buffered.type === "agent_event") continue;
           if (buffered.type === "turn_snapshot") continue;
           if (buffered.type === "log_append") continue;
@@ -737,6 +775,11 @@ export async function registerRoutes(
           if (buffered.type === "background_tasks") continue;
           // Keep system_user_message for its activity label; clientRequestId deduplicates it.
           send(buffered);
+        }
+        // Every rebase flow holds the runner, so a replayed start with no hold is one whose
+        // terminator was lost; left alone it keeps the banner up and Sync disabled.
+        if (replayedRebaseStart && !runner.running && !runner.systemTurnInProgress) {
+          send({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
         // An empty queue snapshot clears messages drained while disconnected.
         send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
@@ -819,7 +862,7 @@ export async function registerRoutes(
           attachToRunner(outcome.runner);
           const goalRunner = outcome.runner;
           void reconcileAgentGoal(
-            { sessionManager, sseBroadcast }, sid, goalRunner.agentId,
+            { sessionManager }, sid, goalRunner.agentId,
             () => goalAgentFor(goalRunner, goalRunner.agentId, agentFactory),
           ).catch((err: unknown) => {
             console.warn(`[goal] activation read for ${sid} failed: ${getErrorMessage(err)}`);
@@ -832,6 +875,8 @@ export async function registerRoutes(
             running: false,
             error: "This session's workspace was lost and could not be restored from the repository.",
           });
+          // The card and goal need no workspace, so a lost one must not hide them.
+          seedSessionDetails(sid);
           detachFromRunner();
           if (dir !== activeSessionDir) activeSessionDir = dir;
           return;
@@ -839,6 +884,7 @@ export async function registerRoutes(
           detachFromRunner();
           if (outcome.status === "archived") {
             if (dir !== activeSessionDir) activeSessionDir = dir;
+            seedSessionDetails(sid);
             return;
           }
         }
@@ -921,6 +967,8 @@ export async function registerRoutes(
         }
         sendContainerFreshness(sid);
         sendSecretBlock(sid);
+        // After the attach frames: a client takes the first frame on connect as the runner being ready.
+        seedSessionDetails(sid);
         kickDiskEscalation(sid);
       };
 
@@ -982,6 +1030,7 @@ export async function registerRoutes(
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         releaseStatusPoller,
+        runRequestedRestart: runRequestedRestartForTurn,
         recordAgentRateLimits,
         markSessionAccountExhausted,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
@@ -993,6 +1042,10 @@ export async function registerRoutes(
         logStore,
         removeSessionLogs,
       };
+
+      // The SSE snapshot covers only the sidebar; an archived or older done session is not in it.
+      const [prStatus] = prStatusPoller.getStatusesFor([sessionId]);
+      if (prStatus) send({ type: "session_pr_status", sessionId, status: prStatus });
 
       void activateSession(sessionId);
 
@@ -1371,6 +1424,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
         console.log(`[ws] session client disconnected: ${sessionId}`);
         stopKeepalive();
         containerManager?.off("container_started", onContainerStarted);
+        offDetailsChanged();
         detachFromRunner();
         // Disconnects must not stop agents or dispose runners and containers.
       });

@@ -96,7 +96,9 @@ export interface StagedGeneration {
 // have activated during install. CLI name collisions withhold commands, not generations.
 export type ValidateStagedGeneration = (
   staged: StagedGeneration,
-) => { ok: true } | { ok: false; reason: string };
+) => StagedVerdict | Promise<StagedVerdict>;
+
+export type StagedVerdict = { ok: true } | { ok: false; reason: string };
 
 export interface ActivateDeps {
   stateDir: string;
@@ -282,6 +284,8 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       ? uncoveredInstalls(stateDir, repo.name, previous, deps.selectedExports)
       : [];
     if (uncovered.length === 0) {
+      // Retry what the lease declined at the last swap; otherwise it waits for the next new commit.
+      await pruneOldGenerations(stateDir, repo.name, generationIdOf(previous), deps.beginGenerationDeletion);
       return { status: "unchanged", generation: previous, ...warningField };
     }
     console.log(
@@ -420,7 +424,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
 
       const refusal = await enqueue(publishKey(stateDir), async () => {
         if (deps.validateStaged) {
-          const verdict = deps.validateStaged({ repoName: repo.name, source, commit, stagingDir });
+          const verdict = await deps.validateStaged({ repoName: repo.name, source, commit, stagingDir });
           if (!verdict.ok) return verdict.reason;
         }
         if (deps.isCancelled?.()) return "the session went away before activation completed";

@@ -63,6 +63,7 @@ export async function adoptInFlightTurn(
     agentId: info.agentId,
     sessionId,
     adopt: true,
+    continuesTurn: true,
     ...(info.deliveryId !== undefined ? { deliveryId: info.deliveryId } : {}),
     ...(rebound ? { onTurnComplete: rebound } : {}),
     prompt: "",

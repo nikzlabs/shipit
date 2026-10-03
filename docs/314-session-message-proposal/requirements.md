@@ -65,6 +65,13 @@ what makes the unreachable case possible without giving it up.
     ShipIt adds no agent-facing API for enumerating the sessions on the box.
 12. The card stays in the transcript after the turn ends and after a page
     reload, and records whether the message was delivered.
+13. The user can decline the message from the card. The card then records that
+    the user declined it, and nothing is sent.
+14. When the user delivers or declines the message, or approves a delivery that
+    then fails, the agent in the proposing session is told at the start of its
+    next turn — the same way it is told what the user did with a card that
+    proposes work in another repository
+    (`docs/303-cross-repo-session-proposal req 11`).
 
 ## Open questions
 
@@ -88,6 +95,15 @@ None.
   approval that makes a root session safe to reach is the same approval that
   makes a sibling safe to reach — and it would leave the sibling case, inside an
   orchestration cohort, exactly as dead as it is today.
+- 2026-09-30 — *Can the user decline the card, and does the agent hear what
+  the user did?* The user asked for this on the repository-session card —
+  "If an agent suggests starting a session in another repo and the user accepts
+  or declines, this information should be sent to the agent on the next turn,
+  similar to the bug reports and other cases" — and then approved the same
+  change for this card: "the user can decline the card from the transcript,
+  and the card records the decline; the proposing agent is told at the start of
+  its next turn whether the user delivered or declined the message (or a
+  delivery that failed)". That is reqs 13 and 14.
 
 ## Requirement provenance
 

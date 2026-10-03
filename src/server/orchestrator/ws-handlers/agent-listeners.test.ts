@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { SessionRunner } from "../session-runner.js";
-import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { wireAgentListeners, buildTurnMessages, recordSteeredMessage, type AgentListenerDeps } from "./agent-listeners.js";
 import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
@@ -47,6 +47,7 @@ function deps(): AgentListenerDeps {
       setModel: vi.fn(),
       get: vi.fn(() => null),
       track: vi.fn(),
+      touchUnlessResolved: vi.fn(),
       setMuted: vi.fn(),
       list: vi.fn(() => []),
     } as any,
@@ -599,6 +600,84 @@ describe("wireAgentListeners", () => {
         expect(errorTexts(d)).toEqual([errorRow.text]);
         runner.dispose({ force: true });
       });
+    });
+  });
+
+  describe("a steer that never reached the CLI is re-queued with its origin", () => {
+    const origin = { sessionId: "parent-1", sessionTitle: "Parent", relation: "parent" as const };
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    function wireWithSteers() {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      runner.running = true;
+      runner.setAgent(agent as unknown as AgentProcess);
+      recordSteeredMessage(runner, "earlier", { assembledPrompt: "[earlier]" });
+      recordSteeredMessage(runner, "change of scope", {
+        assembledPrompt: "[from parent] change of scope",
+        messageOrigin: origin,
+      });
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, d };
+    }
+
+    it("a rejected steer re-queues the exact message and leaves the turn running", () => {
+      const { agent, runner } = wireWithSteers();
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+
+      expect(runner.running).toBe(true);
+      expect(runner.getAgent()).toBe(agent);
+      expect(runner.steeredMessages.map((m) => m.text)).toEqual(["earlier"]);
+      expect(runner.dequeue()).toMatchObject({ text: "change of scope", messageOrigin: origin });
+      runner.dispose({ force: true });
+    });
+
+    it("a rejection that arrives after the turn errored does not queue the message twice", async () => {
+      const { agent, runner } = wireWithSteers();
+
+      agent.emit("error", new Error("No agent running"));
+      await tick();
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+
+      expect(runner.queueLength).toBe(2);
+      expect(runner.dequeue()?.text).toBe("earlier");
+      expect(runner.dequeue()).toMatchObject({ text: "change of scope", messageOrigin: origin });
+      expect(runner.queueLength).toBe(0);
+      runner.dispose({ force: true });
+    });
+
+    it("a rejection asks the worker whether the turn is still alive", () => {
+      const { agent, runner } = wireWithSteers();
+      const verify = vi.spyOn(runner, "verifyRunningState");
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+
+      expect(verify).toHaveBeenCalledOnce();
+      runner.dispose({ force: true });
+    });
+
+    it("a turn that errors re-queues its unacked steer and keeps the acked one's row", async () => {
+      const { agent, runner, d } = wireWithSteers();
+      agent.emit("event", { type: "agent_user_replay", text: "[earlier]" });
+
+      agent.emit("error", new Error("spawn ENOENT"));
+      await tick();
+
+      expect(runner.dequeue()).toMatchObject({ text: "change of scope", messageOrigin: origin });
+      const rows = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls
+        .flatMap((c) => c[1] as { role: string; text: string }[]);
+      expect(rows.filter((m) => m.role === "user").map((m) => m.text)).toEqual(["earlier"]);
+      runner.dispose({ force: true });
     });
   });
 
@@ -1483,6 +1562,56 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
   });
 });
 
+describe("wireAgentListeners — a CLI-started turn while the agent waits for an answer (docs/322-question-holds-automatic-turns req 7)", () => {
+  function wireHeld(held: boolean) {
+    const agent = new FakeAgent();
+    const interrupt = vi.spyOn(agent, "interrupt");
+    const runner = new SessionRunner({ sessionId: "session-held", sessionDir: "/tmp/session-held", defaultAgentId: "claude" });
+    runner.setSystemTurnDeps({
+      answerHold: {
+        isAwaitingAnswer: () => held,
+        setAwaitingAnswer: vi.fn(),
+        holdTurn: vi.fn(),
+        heldTurns: () => [],
+        forgetHeldTurn: vi.fn(),
+        hasHeldDelivery: () => false,
+      },
+    } as never);
+    runner.setAgent(agent as unknown as AgentProcess);
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
+      capturedSessionId: "session-held",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+      adoptsCliStartedTurns: true,
+      useStreaming: true,
+    });
+    runner.running = true;
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "session-held" } satisfies AgentEvent);
+    return { agent, runner, interrupt };
+  }
+
+  it("stops a turn the CLI starts on its own, and the turn still ends waiting for the user", () => {
+    const { agent, runner, interrupt } = wireHeld(true);
+    runner.running = false;
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" } satisfies AgentEvent);
+
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(runner.awaitingUserAnswer).toBe(true);
+    expect(runner.wasInterrupted).toBe(true);
+  });
+
+  it("leaves it alone when nothing waits for the user", () => {
+    const { agent, runner, interrupt } = wireHeld(false);
+    runner.running = false;
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" } satisfies AgentEvent);
+
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(runner.running).toBe(true);
+  });
+});
+
 describe("wireAgentListeners — tool-call time", () => {
   it("stamps an unstamped tool_use with one time that reaches both the wire and the persisted row", () => {
     const agent = new FakeAgent();
@@ -1551,6 +1680,98 @@ describe("wireAgentListeners — tool-call time", () => {
     const elapsed = Date.now() - startedAtMs;
     expect(resultBlock.duration_ms).toBeLessThanOrEqual(elapsed);
 
+    runner.dispose({ force: true });
+  });
+});
+
+describe("wireAgentListeners — permission cards no agent can answer (docs/193)", () => {
+  function wireForPermission() {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({
+      sessionId: "session-perm",
+      sessionDir: "/tmp/session-perm",
+      defaultAgentId: "claude",
+    });
+    runner.setAgent(agent as unknown as AgentProcess);
+    const d = deps();
+    const updatePermissionCard = vi.fn();
+    Object.assign(d.chatHistoryManager, { updatePermissionCard, hasInProgress: () => false });
+    const emitted: { type?: string; requestId?: string; phase?: string }[] = [];
+    runner.on("message", (m) => emitted.push(m as { type?: string }));
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-perm",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    agent.emit("event", {
+      type: "agent_permission_request",
+      requestId: "perm_1",
+      toolName: "Bash",
+      summary: "Bash: curl x",
+    } satisfies AgentEvent);
+    const attention = () =>
+      vi.mocked(d.sseBroadcast).mock.calls.filter(([e]) => e === "session_attention").map(([, data]) => data);
+    const denied = () => emitted.filter((m) => m.type === "permission_resolved" && m.phase === "denied");
+    return { agent, runner, updatePermissionCard, denied, attention };
+  }
+
+  it("denies the card and clears attention when the agent process errors out", () => {
+    const { agent, runner, updatePermissionCard, denied, attention } = wireForPermission();
+    expect(attention()).toEqual([{ sessionId: "session-perm", awaitingPermission: true }]);
+
+    agent.emit("error", new Error("process died"));
+
+    expect(denied().map((m) => m.requestId)).toEqual(["perm_1"]);
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-perm", "perm_1", { phase: "denied" });
+    expect(attention().at(-1)).toEqual({ sessionId: "session-perm", awaitingPermission: false });
+    expect(runner.awaitingPermissionIds.size).toBe(0);
+    runner.dispose({ force: true });
+  });
+
+  it("still runs the error path's drain and commit when the card write fails", async () => {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({ sessionId: "session-perm", sessionDir: "/tmp/session-perm", defaultAgentId: "claude" });
+    runner.setAgent(agent as unknown as AgentProcess);
+    const d = deps();
+    Object.assign(d.chatHistoryManager, {
+      updatePermissionCard: () => { throw new Error("database is locked"); },
+      hasInProgress: () => false,
+    });
+    const onError = vi.fn(async () => {});
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-perm",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+      onError,
+    });
+    agent.emit("event", { type: "agent_permission_request", requestId: "perm_1", toolName: "Bash" } satisfies AgentEvent);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    agent.emit("error", new Error("process died"));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+
+    logged.mockRestore();
+    runner.dispose({ force: true });
+  });
+
+  it("leaves the card to the process that now holds the slot", () => {
+    const { agent, runner, denied } = wireForPermission();
+    runner.setAgent(new FakeAgent("claude") as unknown as AgentProcess);
+
+    agent.emit("error", new Error("late error from a replaced process"));
+
+    expect(denied()).toEqual([]);
+    expect(runner.awaitingPermissionIds.has("perm_1")).toBe(true);
+    runner.dispose({ force: true });
+  });
+
+  it("settles the card from the worker's own deny", () => {
+    const { agent, runner, denied, attention } = wireForPermission();
+
+    agent.emit("event", { type: "agent_permission_resolved", requestId: "perm_1", behavior: "deny" } satisfies AgentEvent);
+
+    expect(denied().map((m) => m.requestId)).toEqual(["perm_1"]);
+    expect(attention().at(-1)).toEqual({ sessionId: "session-perm", awaitingPermission: false });
     runner.dispose({ force: true });
   });
 });

@@ -72,6 +72,7 @@ export function trySteerDispatch(
     assembledPrompt: agentText,
     ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
     ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
+    ...(opts.automatic ? { automatic: true } : {}),
   });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
   runner.emitMessage({

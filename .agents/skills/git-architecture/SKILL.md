@@ -1,0 +1,167 @@
+---
+name: git-architecture
+description: "ShipIt git architecture: GitManager (per-session), RepoGit (shared bare cache + per-session local clones), credential setup, auto-commit flow, session clone lifecycle, branch naming. Load when working on git operations, the bare cache, per-session clones, credentials, or repo management."
+user-invocable: true
+---
+
+# Git Architecture
+
+ShipIt uses git for version control at two levels: per-session workspace repos managed by `GitManager`, and a shared per-remote bare cache (from which each session gets its own independent local clone) managed by `RepoGit`. Both use the `simple-git` library.
+
+> Each session gets its **own independent full clone** — `git clone --local` from the bare cache, which hardlinks objects so the clone is fast and disk-cheap. Each session owns a complete `.git/` and shares nothing mutable with its siblings.
+
+## Two Git Layers
+
+### GitManager (per-session)
+
+`src/server/shared/git.ts` — operates on a single session's workspace directory.
+
+Each session gets its own `GitManager` instance via the `createGitManager(dir)` factory. Used for:
+
+- `init()` — initialize repo with initial commit (so rollback always has a base)
+- `autoCommit(summary)` — stage all + commit if anything changed
+- `log(maxCount)` — commit history
+- `rollback(hash)` — hard reset to a previous commit
+- `push(remote, branch)` — push with upstream tracking
+- `pull(remote, branch)` — pull from remote
+- `addRemote(name, url)` / `getRemotes()` — remote management
+- `checkoutNewBranch(name)` / `renameBranch(old, new)` — branch operations
+- `diffSummary()` — per-file diff stats for the working tree
+- `diffStatVsBranch(baseBranch)` — insertions/deletions vs a base branch (for PR stats)
+- `getFileAtCommit(hash, filePath)` — file content at a specific commit
+- `diffNameStatus(from, to)` — changed files with status between commits
+- `merge(branchName)` — merge with conflict detection
+
+### RepoGit (bare cache)
+
+`src/server/orchestrator/repo-git.ts` — operates on a per-remote **bare cache** directory (one bare clone per remote URL, at `{stateDir}/repo-cache/{hash}`).
+
+Used by the orchestrator to seed and refresh the cache, then cut per-session clones from it:
+
+- `cloneBare(url)` — bare-clone the remote into the cache dir (`git clone --bare`)
+- `fetchCache(ttlMs?)` — fetch the remote into the bare cache (advances local `refs/heads/*`); TTL-throttled
+- `cloneFromCache(sessionDir, remoteUrl?)` — **create a session's clone**: `git clone --local` from the cache (hardlinked objects), set `gc.auto=0`, then reset `origin` to the real remote URL
+- `getDefaultBranch(remote)` — detect main/master (tries local refs first to avoid network calls)
+- `deleteBranch(name)` — delete local branch
+- `isEmpty()` / `createInitialCommit()` — empty-repo handling
+- `readHead()` / `lastFetchAgeMs()` — cache freshness checks used by the proactive pre-fetcher
+
+#### Who owns the bare cache (docs/272-shared-cache-ownership)
+
+The cache is **ShipIt's own tree, owned uniformly by the orchestrator's identity**, and `orchestrator/shared-tree-ownership.ts` enforces that rather than assuming it: `fetchCache` and `cloneFromCache` each check the cache with one `lstat` first and repair it if a foreign owner appears, and the boot janitor makes one deep pass over `repo-cache/` and `marketplace-cache/`. Three production failures came out of the same unstated contract — refs that could not be locked, a chown reaching through a hardlink into the cache, and a root clone that a uid-1000 source refused once git's ownership check was armed.
+
+Two rules when you touch any of this:
+
+- **Never `chownRecursive` a tree cut from the cache.** `clone --local` hardlinks `.git/objects`, and an inode has one owner across every link, so it is a chown *inside the cache*. Use `handWorkspaceBackToWorker` (a session workspace) or `handPluginCheckoutToWorker` (a plugin generation's checkout); both chown object *directories* and never the data files. `session-fork-merge.ts` is the one legitimate exception, and only because it clones with `--no-hardlinks`. Enforced by `orchestrator/shared-tree-ownership-coverage.test.ts`.
+- **A clone needs BOTH ownership answers — source and destination.** git's check tests the repository being *read*, and `clone --local` can only hardlink an object file the cloning identity may link. A destination-only audit cleared the site that broke production. Enforced by the two censuses in `shared/git-hooks-guard-coverage.test.ts`.
+
+**Debugging:** a root process getting `EACCES`/`EPERM` is not impossible — read it as *"the process dropped uid (docs/266) and the tree is not uniformly owned"* before anything else.
+
+## Session Types and Git Setup
+
+### Standalone Session
+
+No remote repo. A fresh git repo is initialized in the session directory:
+
+```
+/workspace/sessions/{uuid}/
+  .git/              <- independent repo
+  (user's code)
+```
+
+`GitManager.init()` creates the repo with `--initial-branch=main` and an empty initial commit.
+
+### Repo-backed Session
+
+Backed by the per-remote bare cache. The session directory is its **own independent clone** — a complete repo:
+
+```
+{stateDir}/repo-cache/{hash}/            <- bare cache (one per remote URL)
+  HEAD, refs/, objects/                  (bare; no working tree)
+
+{sessionsRoot}/{uuid}/workspace/         <- the session's own clone
+  .git/   (complete; objects hardlinked from the cache)
+  (checked out on a unique branch)
+```
+
+Created via `RepoGit.cloneFromCache(sessionDir, remoteUrl)` (`git clone --local`, so objects are hardlinked — fast and disk-cheap), then the session's `GitManager` checks out a unique branch. Each session owns a full `.git/` and shares nothing mutable with its siblings, so multiple sessions work the same repo simultaneously without conflicts.
+
+## Git Credentials
+
+### Global Git Config
+
+`src/server/orchestrator/git-config.ts` sets up a global git config file via `GIT_CONFIG_GLOBAL` environment variable:
+
+```
+/credentials/.gitconfig
+  [user]
+    name = ...
+    email = ...
+  [commit]
+    gpgsign = false
+  [credential "https://github.com"]
+    helper = ...
+```
+
+This config is inherited by all git operations (both `GitManager` and `RepoGit`).
+
+### CredentialStore
+
+Two distinct things live in the credentials directory — don't conflate them:
+
+- **`.gitconfig`** — git identity (name, email), written by `git-config.ts` and pointed at by `GIT_CONFIG_GLOBAL` so every git invocation inherits it. **Not** part of `CredentialStore`.
+- **`shipit-credentials.json`** — `CredentialStore` (`credential-store.ts`). Holds `githubToken`, `agentEnv`, provider-account metadata, and app settings as *fields in one JSON file*, encrypted when a cipher is supplied. The older separate `.github-token` / `.agent-env` / `.git-credentials` files are gone.
+
+Provider subscription auth (Claude/Codex logins) is separate again — it lives in per-account filesystem roots managed by `provider-account-manager.ts`.
+
+The credentials directory is mounted read-only into session containers, so workers can push/pull but not modify credentials.
+
+### GitHub Auth
+
+`src/server/orchestrator/github-auth.ts` — manages GitHub token and API access. When authenticated:
+
+1. Configures git credential helper to use the stored token
+2. Loads GitHub user info (username, avatar) for UI display
+3. Enables GitHub API operations (search repos, create PRs, etc.)
+
+## Auto-Commit Flow
+
+After each agent turn (backend-agnostic), `turn-executor.ts` runs `postTurnCommit()` → `GitManager.autoCommit(summary)`,
+broadcasts `git_committed`, runs the PR lifecycle card flow, and arms the auto-push LAST via
+`services/auto-push-scheduler.ts` (debounce `autoPushDebounceMs`, default 0). Ordering and invariants:
+CLAUDE.md → *Post-turn flow*.
+
+## Session Clone Lifecycle
+
+### Creation (new session on an imported repo)
+
+1. `createSessionDir(title)` — creates the empty `{uuid}/workspace` directory
+2. `RepoGit.cloneFromCache(workspaceDir, remoteUrl)` — `git clone --local` from the bare cache (hardlinked objects), set `gc.auto=0`, reset `origin` to the real remote
+3. `GitManager.checkoutNewBranch(branchName)` — unique branch off the default branch
+   - Branch name: `{prefix}/{short-uuid}` (e.g., `shipit/abc123`)
+4. Git credentials are inherited from the global config (see below)
+
+### Cleanup (session archived)
+
+1. `RepoGit.deleteBranch(branchName)` — clean up the local branch in the cache, when applicable
+2. Remove the session directory (its independent clone goes with it — nothing else to detach)
+
+## Repo Import Flow
+
+When a user imports a GitHub repo (`POST /api/repos`):
+
+1. `RepoStore` tracks the repo with `status: "cloning"`
+2. Bare-clone into `{stateDir}/repo-cache/{hash}/` via `RepoGit.cloneBare()`
+3. Fetch to ensure the default branch is available in the cache
+4. Set `status: "ready"`
+5. Warm a session for the repo (clone-from-cache + metadata, no container)
+
+On subsequent use, the bare cache is reused (and periodically re-fetched). Each new session gets its own fresh local clone branching from the latest default branch.
+
+## Branch Naming
+
+`src/server/orchestrator/git-utils.ts`:
+
+- `generateBranchPrefix()` returns a prefix like `shipit` (configurable)
+- Full branch name: `{prefix}/{short-uuid}`
+- `parseGitHubRemote(url)` extracts owner/repo from GitHub URLs

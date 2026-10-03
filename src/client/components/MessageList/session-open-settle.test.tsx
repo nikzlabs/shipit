@@ -189,7 +189,6 @@ function session(id: string): SessionInfo {
     title: id,
     createdAt: "2026-01-01T00:00:00Z",
     lastUsedAt: "2026-01-01T00:00:00Z",
-    sessionStatus: status,
   } as SessionInfo;
 }
 
@@ -198,6 +197,10 @@ function show(id: string): void {
     useSessionStore.setState({
       sessionId: id,
       sessions: [session("s1"), session("s2")],
+      sessionDetails: {
+        s1: { sessionStatus: status, agentGoal: null },
+        s2: { sessionStatus: status, agentGoal: null },
+      },
       activeRunnerSessions: new Set<string>(),
     });
   });
@@ -229,7 +232,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.getSelection()?.removeAllRanges();
-  useSessionStore.setState({ sessionId: undefined, sessions: [], activeRunnerSessions: new Set<string>() });
+  useSessionStore.setState({ sessionId: undefined, sessions: [], sessionDetails: {}, activeRunnerSessions: new Set<string>() });
   useSettingsStore.setState({ sessionStatusCard: false });
 });
 

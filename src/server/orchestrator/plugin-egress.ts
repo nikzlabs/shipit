@@ -7,6 +7,7 @@ import { egressHostReach } from "./egress-host-reach.js";
 import {
   buildTierAEgressInputs,
   installEgressFirewall,
+  NO_TIER_A_INPUTS,
 } from "./egress-firewall-install.js";
 import {
   buildResolverConfigB64,
@@ -37,6 +38,9 @@ export interface PluginEgressPolicy {
   sidecarImage?: string | undefined;
   dnsEnabled: boolean;
   proxyEnabled: boolean;
+  /** docs/319: an uncontained plugin still gets the local block. */
+  blockLocal?: boolean;
+  hostAddresses?: () => Promise<string[]>;
 }
 
 export const UNCONTAINED_PLUGIN_EGRESS: PluginEgressPolicy = {
@@ -67,9 +71,10 @@ export async function preparePluginNetns(
   opts: PreparePluginNetnsOptions,
 ): Promise<PluginNetns> {
   const { policy } = opts;
-  if (!policy.contained) {
+  if (!policy.contained && !policy.blockLocal) {
     return { networkMode: opts.network, release: async () => undefined };
   }
+  const contained = policy.contained;
   const sidecarImage = policy.sidecarImage;
   if (!sidecarImage) {
     throw new Error(
@@ -89,7 +94,7 @@ export async function preparePluginNetns(
     HostConfig: {
       NetworkMode: opts.network,
       // The proxy's loopback redirect needs this sysctl; installer sidecars cannot set it later.
-      ...(policy.proxyEnabled ? { Sysctls: { "net.ipv4.conf.all.route_localnet": "1" } } : {}),
+      ...(contained && policy.proxyEnabled ? { Sysctls: { "net.ipv4.conf.all.route_localnet": "1" } } : {}),
       AutoRemove: false,
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
@@ -126,19 +131,22 @@ export async function preparePluginNetns(
     const sidecarLabels = { ...labels, [PLUGIN_NETNS_PARENT_LABEL]: holder.id };
     const allowed = allowedHosts(policy);
 
-    // Await the firewall's default-deny self-test before starting the other tiers.
+    // Await the firewall's self-test before starting the other tiers. The
+    // plugin network is shared between sessions, so nothing on it is accepted.
     await installEgressFirewall(opts.docker, {
       agentContainerId: holder.id,
       sidecarImage,
-      inputs: await buildTierAEgressInputs(),
-      ...(policy.dnsEnabled ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
-      ...(policy.proxyEnabled
+      inputs: contained ? await buildTierAEgressInputs() : NO_TIER_A_INPUTS,
+      policy: contained ? "contained" : "open",
+      hostAddresses: await (policy.hostAddresses?.() ?? Promise.resolve([])),
+      ...(contained && policy.dnsEnabled ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
+      ...(contained && policy.proxyEnabled
         ? { proxyUid: EGRESS_PROXY_UID, proxyPort: EGRESS_PROXY_PORT }
         : {}),
       labels: sidecarLabels,
     });
 
-    if (policy.dnsEnabled) {
+    if (contained && policy.dnsEnabled) {
       await launchEgressResolver(opts.docker, {
         agentContainerId: holder.id,
         sidecarImage,
@@ -151,7 +159,7 @@ export async function preparePluginNetns(
       });
     }
 
-    if (policy.proxyEnabled) {
+    if (contained && policy.proxyEnabled) {
       await launchEgressProxy(opts.docker, {
         agentContainerId: holder.id,
         sidecarImage,

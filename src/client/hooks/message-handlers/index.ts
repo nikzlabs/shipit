@@ -65,6 +65,7 @@ import { handleModelInfo } from "./model-info.js";
 import { handleModelSelectionChanged } from "./model-selection-changed.js";
 import { handlePrLifecycleUpdate } from "./pr-lifecycle-update.js";
 import { handlePrNotableFiles } from "./pr-notable-files.js";
+import { handleSessionPrStatus } from "./session-pr-status.js";
 import { handleResetEligible } from "./reset-eligible.js";
 import { handlePresentCleared } from "./present-cleared.js";
 import { handlePresentContent } from "./present-content.js";
@@ -81,6 +82,7 @@ import { handleRewindPreview } from "./rewind-preview.js";
 import { handleRewindRestored } from "./rewind-restored.js";
 import { handleRewindSnapshotAvailable } from "./rewind-snapshot-available.js";
 import { handleSecretBlockStatus } from "./secret-block-status.js";
+import { handleSessionDetails } from "./session-details.js";
 import { handleSecretsStatus } from "./secrets-status.js";
 import { handleServiceList } from "./service-list.js";
 import { handleServiceStatus } from "./service-status.js";
@@ -188,6 +190,7 @@ export const messageHandlers: MessageHandlerMap = {
   model_selection_changed: handleModelSelectionChanged,
   pr_lifecycle_update: handlePrLifecycleUpdate,
   pr_notable_files: handlePrNotableFiles,
+  session_pr_status: handleSessionPrStatus,
   reset_eligible: handleResetEligible,
   present_cleared: handlePresentCleared,
   present_content: handlePresentContent,
@@ -204,6 +207,7 @@ export const messageHandlers: MessageHandlerMap = {
   rewind_restored: handleRewindRestored,
   rewind_snapshot_available: handleRewindSnapshotAvailable,
   secret_block_status: handleSecretBlockStatus,
+  session_details: handleSessionDetails,
   secrets_status: handleSecretsStatus,
   service_list: handleServiceList,
   service_status: handleServiceStatus,

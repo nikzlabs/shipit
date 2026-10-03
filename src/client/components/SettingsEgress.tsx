@@ -49,7 +49,8 @@ export function SettingsEgress() {
               <p className="text-sm text-(--color-text-secondary)">
                 When contained, session containers can only reach an allowlist of known hosts (the agent&rsquo;s
                 API, your git host, package registries, and your connected MCP servers). This is the main
-                defense against a prompt-injected agent exfiltrating your credentials.
+                defense against a prompt-injected agent exfiltrating your credentials. Contained or open, sessions
+                cannot reach this machine, private networks or the tailnet, except an SSH destination you grant.
               </p>
             </div>
           ),
@@ -67,7 +68,7 @@ export function SettingsEgress() {
                     <p className="text-xs text-(--color-text-tertiary)">
                       The containment policy is on, but this deployment can&rsquo;t enforce it. Build/provide the egress
                       sidecar image, or this host can&rsquo;t run the required NET_ADMIN sidecar — see the install notes.
-                      Until then, contained sessions fail to start (or run with open egress if containment is disabled).
+                      Until then, contained sessions fail to start (or run as Open, with no allowlist, if egress limits are switched off).
                     </p>
                   </div>
                 </Alert>

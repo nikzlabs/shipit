@@ -34,7 +34,7 @@ let providerAccountManager: ProviderAccountManager;
 let hosts: string[];
 /** The SSH destinations this session is granted; the read is scoped to them. */
 let grantedSshHostIds: string[];
-let repo: { allowAgentMerge?: boolean; colorIndex?: number } | undefined;
+let repo: { allowAgentMerge?: boolean; allowDockerSocket?: boolean; colorIndex?: number } | undefined;
 let secrets: Record<string, string>;
 
 /** A catalogue row, resolved at run time: a test naming a model id rots. */
@@ -974,6 +974,12 @@ describe("Project Settings", () => {
     repo = { allowAgentMerge: true, colorIndex: 3 };
     expect((await detail("project.allowAgentMerge")).display).toBe("on");
     expect((await detail("project.colorIndex")).display).toBe("3");
+  });
+
+  it("reads the Docker socket grant, and an unset one as off", async () => {
+    expect((await detail("project.allowDockerSocket")).display).toBe("off");
+    repo = { allowDockerSocket: true };
+    expect((await detail("project.allowDockerSocket")).display).toBe("on");
   });
 
   it("names the secrets that are set and whether each has a value, never a value", async () => {

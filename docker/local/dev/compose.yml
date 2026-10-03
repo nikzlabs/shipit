@@ -39,6 +39,7 @@ services:
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:dev
+      - SESSION_COMPOSE_HELPER_IMAGE=shipit-compose-helper:dev
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
       - SESSION_SECCOMP=${SESSION_SECCOMP:-}
       - SESSION_SECCOMP_PROFILE=${SESSION_SECCOMP_PROFILE:-}
@@ -60,6 +61,15 @@ services:
       context: ../..
       dockerfile: Dockerfile.egress-sidecar
     image: shipit-egress-sidecar:dev
+    profiles:
+      - build-only
+
+  # Runs the Compose commands that read a session's project files (docs/318).
+  compose-helper:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.compose-helper
+    image: shipit-compose-helper:dev
     profiles:
       - build-only
 

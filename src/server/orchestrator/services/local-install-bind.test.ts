@@ -3,13 +3,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 const LIB_SH = fileURLToPath(
   new URL("../../../../deployment/local/lib.sh", import.meta.url),
 );
+const SETUP_SH = fileURLToPath(
+  new URL("../../../../deployment/local/setup.sh", import.meta.url),
+);
 const COMPOSE_YML = fileURLToPath(
   new URL("../../../../docker/local/prod/compose.yml", import.meta.url),
+);
+const UPDATE_SH = fileURLToPath(
+  new URL("../../../../deployment/local/update.sh", import.meta.url),
 );
 
 describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () => {
@@ -254,6 +260,162 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
   });
 });
 
+describe("deployment/local/lib.sh — loopback only without the local block (docs/319-api-reach-through-host req 6)", () => {
+  let root: string;
+  let home: string;
+  let binDir: string;
+  let envFile: string;
+  let overlay: string;
+  let dockerLog: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-block-"));
+    home = path.join(root, "home");
+    binDir = path.join(root, "bin");
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    envFile = path.join(home, ".shipit.env");
+    overlay = path.join(home, ".shipit-tailnet.compose.yml");
+    dockerLog = path.join(root, "docker.log");
+    const tailscale = path.join(binDir, "tailscale");
+    fs.writeFileSync(tailscale, '#!/bin/sh\n[ "$1" = "ip" ] && echo 100.83.12.47\n');
+    fs.chmodSync(tailscale, 0o755);
+    // Records each call with the bind address Compose would read; `run` is the probe.
+    const docker = path.join(binDir, "docker");
+    fs.writeFileSync(
+      docker,
+      '#!/bin/sh\necho "$* | bind=$SHIPIT_BIND_ADDR" >> "$DOCKER_LOG"\n[ "$1" = "run" ] && exit "$PROBE_EXIT"\nexit 0\n',
+    );
+    fs.chmodSync(docker, 0o755);
+  });
+
+  afterEach(() => {
+    fs.chmodSync(home, 0o755);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function start(
+    probe: "pass" | "fail",
+    snippet = `shipit_load_env_file
+      shipit_apply_local_block
+      shipit_refresh_tailnet_bind
+      shipit_compose_files
+      printf 'block=%s bind=%s\\n' "$SHIPIT_LOCAL_BLOCK" "\${SHIPIT_BIND_ADDR:-}"`,
+  ): { stdout: string; stderr: string } {
+    const stderrFile = path.join(root, "stderr.txt");
+    const stdout = execFileSync(
+      "bash",
+      ["-c", `set -euo pipefail\nSHIPIT_HOME=${JSON.stringify(home)}\n. ${JSON.stringify(LIB_SH)}\n${snippet}`],
+      {
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          HOME: home,
+          DOCKER_LOG: dockerLog,
+          PROBE_EXIT: probe === "pass" ? "0" : "1",
+        },
+        stdio: ["pipe", "pipe", fs.openSync(stderrFile, "w")],
+      },
+    ).toString();
+    return { stdout, stderr: fs.readFileSync(stderrFile, "utf8") };
+  }
+
+  function composeFiles(stdout: string): string[] {
+    return stdout.trim().split("\n").filter((l) => !l.startsWith("block="));
+  }
+
+  it("probes with the sidecar image in a namespace of its own", () => {
+    start("pass");
+    expect(fs.readFileSync(dockerLog, "utf8")).toContain(
+      "run --rm --network none --cap-add NET_ADMIN --entrypoint /usr/local/bin/probe-firewall.sh shipit-egress-sidecar:prod",
+    );
+  });
+
+  it("uses the tailnet overlay and the configured bind address when the probe passes", () => {
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\nSHIPIT_BIND_ADDR=0.0.0.0\n");
+
+    const { stdout, stderr } = start("pass");
+
+    expect(composeFiles(stdout)).toEqual(["-f", path.join(home, "docker/local/prod/compose.yml"), "-f", overlay]);
+    expect(stdout).toContain("block=active bind=0.0.0.0");
+    expect(stderr).not.toContain("loopback only");
+  });
+
+  it("leaves the overlay out, even one it cannot delete, and binds loopback when the probe fails", () => {
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\nSHIPIT_BIND_ADDR=0.0.0.0\n");
+    fs.writeFileSync(overlay, 'services:\n  shipit:\n    ports:\n      - "100.83.12.47:4123:4123"\n');
+    fs.chmodSync(home, 0o555);
+
+    const { stdout, stderr } = start("fail");
+
+    expect(fs.existsSync(overlay)).toBe(true);
+    expect(composeFiles(stdout)).toEqual(["-f", path.join(home, "docker/local/prod/compose.yml")]);
+    expect(stdout).toContain("block=unavailable bind=127.0.0.1");
+    expect(stderr).toContain("Starting ShipIt on loopback only");
+    expect(stderr).toContain("cannot keep");
+    expect(stderr).toContain("the tailnet binding");
+    expect(stderr).toContain("SHIPIT_BIND_ADDR=0.0.0.0");
+    expect(stderr).toContain("Rootless Docker");
+    expect(stderr).not.toContain("keep using the tailnet binding");
+  });
+
+  it("removes a deletable overlay when the probe fails", () => {
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\n");
+    fs.writeFileSync(overlay, "services: {}\n");
+
+    start("fail");
+
+    expect(fs.existsSync(overlay)).toBe(false);
+  });
+
+  it.each(["127.0.0.1", "127.0.0.2", "::1"])("keeps a loopback bind address (%s) when the probe fails", (addr) => {
+    fs.writeFileSync(envFile, `SHIPIT_BIND_ADDR=${addr}\n`);
+
+    const { stdout, stderr } = start("fail");
+
+    expect(stdout).toContain(`block=unavailable bind=${addr}`);
+    expect(stderr).not.toContain("SHIPIT_BIND_ADDR=");
+  });
+
+  it.each(["0.0.0.0", "192.168.1.20", "127.0.0.1.example", "::"])(
+    "replaces a non-loopback bind address (%s) when the probe fails",
+    (addr) => {
+      fs.writeFileSync(envFile, `SHIPIT_BIND_ADDR=${addr}\n`);
+
+      const { stdout } = start("fail");
+
+      expect(stdout).toContain("block=unavailable bind=127.0.0.1");
+    },
+  );
+
+  it("builds, then probes, then starts on loopback without the overlay (shipit_build_and_up)", () => {
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\nSHIPIT_BIND_ADDR=0.0.0.0\n");
+
+    const { stderr } = start("fail", "shipit_build_and_up");
+
+    const calls = fs.readFileSync(dockerLog, "utf8").trim().split("\n");
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toMatch(/^compose -f \S+ build --pull /);
+    expect(calls[1]).toMatch(/^run .*probe-firewall\.sh/);
+    expect(calls[2]).toBe(
+      `compose -f ${path.join(home, "docker/local/prod/compose.yml")} up -d --no-build --force-recreate shipit | bind=127.0.0.1`,
+    );
+    expect(fs.existsSync(overlay)).toBe(false);
+    expect(stderr).toContain("Starting ShipIt on loopback only");
+  });
+
+  it("starts with the overlay and the configured bind address when the probe passes (shipit_build_and_up)", () => {
+    fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\nSHIPIT_BIND_ADDR=0.0.0.0\n");
+
+    start("pass", "shipit_build_and_up");
+
+    const calls = fs.readFileSync(dockerLog, "utf8").trim().split("\n");
+    expect(calls[2]).toBe(
+      `compose -f ${path.join(home, "docker/local/prod/compose.yml")} -f ${overlay} up -d --no-build --force-recreate shipit | bind=0.0.0.0`,
+    );
+  });
+});
+
 describe("deployment/local/lib.sh — shipit_persist_env (docs/276 req 3)", () => {
   let home: string;
 
@@ -330,6 +492,9 @@ describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs
     git("init --bare -b main .", bare);
     git(`clone ${bare} ${home}`, root);
     fs.writeFileSync(path.join(home, "tracked.txt"), "v1\n");
+    // The sync loads the synced checkout's lib.sh.
+    fs.mkdirSync(path.join(home, "deployment/local"), { recursive: true });
+    fs.copyFileSync(LIB_SH, path.join(home, "deployment/local/lib.sh"));
     git("add -A", home);
     git("commit -m first", home);
     git("push -u origin main", home);
@@ -395,4 +560,196 @@ describe("docker/local/prod/compose.yml — default bind address (docs/254-local
     }
     expect(yml).not.toMatch(/^\s*- "\d+:\d+"\s*$/m);
   });
+});
+
+describe("deployment/local/update.sh — one run completes an update (planning#626)", () => {
+  let root: string;
+  let bare: string;
+  let seed: string;
+  let home: string;
+  let mark: string;
+
+  const git = (args: string[], cwd: string): string =>
+    execFileSync("git", args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@e",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@e",
+      },
+    }).toString();
+
+  // Stands in for lib.sh: the real sync is covered above, and the build is what differs by version.
+  const fakeLib = (version: string): string => `
+shipit_sync_checkout() {
+  echo sync >> "$MARK"
+  git -C "$SHIPIT_HOME" fetch -q origin
+  git -C "$SHIPIT_HOME" reset -q --hard origin/main
+}
+shipit_build_and_up() { echo "build ${version}" >> "$MARK"; }
+`;
+
+  const commitScripts = (version: string): void => {
+    const dir = path.join(seed, "deployment/local");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(UPDATE_SH, path.join(dir, "update.sh"));
+    fs.writeFileSync(path.join(dir, "lib.sh"), fakeLib(version));
+    git(["add", "-A"], seed);
+    git(["commit", "-qm", version], seed);
+    git(["push", "-q", "origin", "main"], seed);
+  };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-update-"));
+    bare = path.join(root, "origin.git");
+    seed = path.join(root, "seed");
+    home = path.join(root, "home");
+    mark = path.join(root, "mark");
+    fs.mkdirSync(bare);
+    git(["init", "-q", "--bare", "-b", "main", "."], bare);
+    git(["clone", "-q", bare, seed], root);
+    commitScripts("old");
+    git(["clone", "-q", bare, home], root);
+    commitScripts("new");
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("builds with the scripts the sync brought in, and syncs once", () => {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, MARK: mark };
+    delete env.SHIPIT_HOME;
+    delete env.SHIPIT_UPDATE_SYNCED;
+    execFileSync("bash", [path.join(home, "deployment/local/update.sh")], { env, stdio: "pipe" });
+
+    expect(fs.readFileSync(mark, "utf8")).toBe("sync\nbuild new\n");
+  });
+});
+
+describe("deployment/local/setup.sh — a fresh install builds with the synced lib.sh (planning#628)", () => {
+  const SOURCE_LIB = '. "$SHIPIT_HOME/deployment/local/lib.sh"';
+  let root: string;
+  let bare: string;
+  let home: string;
+  let bin: string;
+  let mark: string;
+  let dockerLog: string;
+
+  const git = (args: string[], cwd: string): string =>
+    execFileSync("git", args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@e",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@e",
+      },
+    }).toString();
+
+  const stub = (name: string, body: string): void => {
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}`);
+    fs.chmodSync(path.join(bin, name), 0o755);
+  };
+
+  // The setup.sh that stable serves sources lib.sh only once, before its sync.
+  const stableShape = (): string => {
+    const src = fs.readFileSync(SETUP_SH, "utf8");
+    const sync = src.indexOf("\nshipit_sync_checkout\n");
+    expect(sync).toBeGreaterThan(0);
+    const tail = src
+      .slice(sync)
+      .split("\n")
+      .filter((line) => line !== SOURCE_LIB)
+      .join("\n");
+    const shaped = src.slice(0, sync) + tail;
+    expect(shaped.split(SOURCE_LIB)).toHaveLength(2);
+    const file = path.join(root, "stable-setup.sh");
+    fs.writeFileSync(file, shaped);
+    return file;
+  };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-setup-"));
+    bare = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    home = path.join(root, "home");
+    bin = path.join(root, "bin");
+    mark = path.join(root, "mark");
+    dockerLog = path.join(root, "docker.log");
+    fs.mkdirSync(bare);
+    fs.mkdirSync(bin);
+    git(["init", "-q", "--bare", "-b", "main", "."], bare);
+    git(["clone", "-q", bare, seed], root);
+
+    // main carries the lib.sh under test; its build names a service stable's Compose file lacks.
+    const libDir = path.join(seed, "deployment/local");
+    fs.mkdirSync(libDir, { recursive: true });
+    fs.copyFileSync(LIB_SH, path.join(libDir, "lib.sh"));
+    git(["add", "-A"], seed);
+    git(["commit", "-qm", "main"], seed);
+    git(["push", "-q", "origin", "main"], seed);
+    git(["checkout", "-qb", "stable"], seed);
+    fs.writeFileSync(
+      path.join(libDir, "lib.sh"),
+      `shipit_persist_env() { echo "persist $1" >> "$MARK"; }\nshipit_build_and_up() { echo "build stable" >> "$MARK"; }\n`,
+    );
+    git(["add", "-A"], seed);
+    git(["commit", "-qm", "stable"], seed);
+    git(["push", "-q", "origin", "stable"], seed);
+
+    stub(
+      "docker",
+      `echo "$*" >> "$DOCKER_LOG"
+case "$*" in
+  "version --format"*) echo 1.51 ;;
+  "compose version --short") echo 2.39.1 ;;
+esac
+`,
+    );
+    // Darwin skips the inotify step, which writes /etc/sysctl.d through sudo.
+    stub("uname", "echo Darwin\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function install(script: string) {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: root,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      SHIPIT_HOME: home,
+      SHIPIT_REPO_URL: bare,
+      SHIPIT_HARNESSES: "claude",
+      MARK: mark,
+      DOCKER_LOG: dockerLog,
+    };
+    delete env.SHIPIT_ENV_FILE;
+    delete env.TAILNET_COMPOSE_FILE;
+    delete env.SHIPIT_EGRESS;
+    delete env.SHIPIT_DESCRIBE;
+    delete env.SHIPIT_DRY_RUN;
+    const r = spawnSync("bash", [script], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const read = (file: string): string => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
+    return { status: r.status, stderr: r.stderr, mark: read(mark), docker: read(dockerLog) };
+  }
+
+  for (const [name, script] of [
+    ["stable's setup.sh", stableShape],
+    ["main's setup.sh", () => SETUP_SH],
+  ] as const) {
+    it(`${name}: clones main, syncs to stable, and runs stable's lib.sh from then on`, () => {
+      const r = install(script());
+
+      expect(r.status, r.stderr).toBe(0);
+      expect(git(["rev-parse", "HEAD"], home)).toBe(git(["rev-parse", "stable"], bare));
+      expect(r.mark).toBe("persist SHIPIT_HARNESSES\nbuild stable\n");
+      expect(r.docker).not.toMatch(/^compose .*\bbuild\b/m);
+    });
+  }
 });

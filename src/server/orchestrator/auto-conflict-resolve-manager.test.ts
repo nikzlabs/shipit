@@ -363,15 +363,51 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.cb.count).toBe(1);
   });
 
-  it("dedup: back-to-back deferred outcomes don't double-emit auto_resolve_result", async () => {
-    fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", lastError: "dirty_tree", didWork: false })) });
-    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
-    await tick();
-    fx.advance(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1);
-    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
-    await tick();
-    const emits = fx.runner!.emitted.filter((m: unknown) => (m as { type?: string }).type === "auto_resolve_result");
-    expect(emits.length).toBe(1);
+  describe("every announced attempt ends the banner it opened", () => {
+    const types = () => fx.runner!.emitted.map((m) => (m as { type: string }).type);
+
+    it("an identical deferral repeated on every retry is terminated every time", async () => {
+      fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", lastError: "dirty_tree", didWork: false })) });
+      for (let i = 0; i < 3; i++) {
+        await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+        await tick();
+        expect(types().at(-1)).toBe("auto_resolve_result");
+        fx.advance(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1);
+      }
+      expect(types()).toEqual([
+        "auto_resolve_started", "auto_resolve_result",
+        "auto_resolve_started", "auto_resolve_result",
+        "auto_resolve_started", "auto_resolve_result",
+      ]);
+    });
+
+    it("is terminated when the PR stopped conflicting while the attempt ran", async () => {
+      let resolveCb: (r: AutoResolveResult) => void = () => { /* set below */ };
+      fx = makeFixture({ cb: recordingCb(() => new Promise<AutoResolveResult>((r) => { resolveCb = r; })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha1");
+      expect(fx.manager.get("s1")).toBeUndefined();
+      resolveCb({ outcome: "deferred", lastError: "dirty_tree", didWork: false });
+      await tick();
+      expect(types()).toEqual(["auto_resolve_started", "auto_resolve_result"]);
+    });
+
+    it("is terminated when the setting was switched off while the attempt ran", async () => {
+      let resolveCb: (r: AutoResolveResult) => void = () => { /* set below */ };
+      fx = makeFixture({ cb: recordingCb(() => new Promise<AutoResolveResult>((r) => { resolveCb = r; })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      fx.setEnabled(false);
+      resolveCb({ outcome: "error", lastError: "boom", didWork: true });
+      await tick();
+      expect(types()).toEqual(["auto_resolve_started", "auto_resolve_result"]);
+    });
+
+    it("adds nothing when the flow already ended the banner with rebase_complete", async () => {
+      fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", didWork: false, suppressEmit: true })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(types()).toEqual(["auto_resolve_started"]);
+    });
   });
 
   it("settle: a successful force-push opens a settle window (settleUntil + cooldown set)", async () => {
@@ -575,5 +611,77 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.manager.get("s1")?.status).toBe("idle");
     expect(fx.manager.get("s1")?.lastError).toBeUndefined();
     expect(fx.manager.get("s1")?.pendingReset).toBeUndefined();
+  });
+});
+
+describe("AutoConflictResolveManager — a question holds it (docs/322)", () => {
+  function heldManager() {
+    const state = { awaiting: true };
+    const runner = makeRunner(false);
+    const received: { byUser?: boolean }[] = [];
+    const cb: RebaseAndResolveCb = async (_s, _b, opts) => {
+      received.push(opts ?? {});
+      return { outcome: "success", forcePushed: true, didWork: true };
+    };
+    const manager = new AutoConflictResolveManager(
+      () => {},
+      () => runner as unknown as SessionRunnerInterface,
+      () => true,
+      cb,
+      () => 1_000_000,
+      undefined,
+      undefined,
+      () => state.awaiting,
+    );
+    return { manager, state, received };
+  }
+
+  it("defers the automatic attempt while the agent waits for an answer", async () => {
+    const { manager, received } = heldManager();
+    await manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(received).toEqual([]);
+    expect(manager.get("s1")?.status).toBe("deferred");
+  });
+
+  it("a Retry that had to wait for a running turn is still the user's when it fires (req 6)", async () => {
+    const state = { awaiting: false };
+    const runner = makeRunner(true);
+    const received: { byUser?: boolean }[] = [];
+    const manager = new AutoConflictResolveManager(
+      () => {},
+      () => runner as unknown as SessionRunnerInterface,
+      () => true,
+      async (_s, _b, opts) => {
+        received.push(opts ?? {});
+        return { outcome: "success", forcePushed: true, didWork: true };
+      },
+      () => 1_000_000,
+      undefined,
+      undefined,
+      () => state.awaiting,
+    );
+
+    await manager.handleTransition(
+      "s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1", undefined, { byUser: true },
+    );
+    await tick();
+    expect(manager.get("s1")?.status).toBe("deferred");
+
+    // The running turn ends on a question; the Retry is still the user's work.
+    state.awaiting = true;
+    runner.running = false;
+    await manager.onRunnerIdle("s1");
+    await tick();
+    expect(received).toEqual([{ byUser: true }]);
+  });
+
+  it("a Retry the user clicks is not held, and the flow is told it is theirs (req 6)", async () => {
+    const { manager, received } = heldManager();
+    await manager.handleTransition(
+      "s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1", undefined, { byUser: true },
+    );
+    await tick();
+    expect(received).toEqual([{ byUser: true }]);
   });
 });

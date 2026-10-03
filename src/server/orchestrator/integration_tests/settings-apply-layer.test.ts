@@ -233,6 +233,20 @@ describe("the shared settings apply layer", () => {
     expect(sse.frames.map((f) => f.event)).toContain("repo_list");
   });
 
+  it("raises it for the Docker socket grant", async () => {
+    repoStore.add("https://github.com/acme/widgets.git");
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent("https://github.com/acme/widgets.git")}`,
+      payload: { allowDockerSocket: true },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(repoStore.get("https://github.com/acme/widgets.git")?.allowDockerSocket).toBe(true);
+    expect(await sse.changedKeys()).toContain("project.allowDockerSocket");
+  });
+
   it("answers 500 rather than 200 when a write did not land", async () => {
     // The shipped routes got this for free — a store error threw and Fastify
     // answered 500. The layer turns that throw into an outcome, so a route that

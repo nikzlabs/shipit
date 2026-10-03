@@ -5,6 +5,7 @@ import {
   notifySessionNetworkModeChanged,
   _resetSessionNetworkModeClock,
 } from "./useSessionNetworkMode.js";
+import { beginSessionSettingWrite } from "../utils/session-setting-writes.js";
 import type { EgressSessionSettings } from "../../server/shared/types.js";
 
 function settings(over: Partial<EgressSessionSettings> = {}): EgressSessionSettings {
@@ -238,6 +239,82 @@ describe("useSessionNetworkMode (docs/285)", () => {
     await waitFor(() => expect(result.current.saving).toBe(false));
 
     expect(result.current.mode).toBe("contained");
+  });
+});
+
+describe("useSessionNetworkMode — writes from another surface (docs/285 req 12)", () => {
+  beforeEach(() => {
+    _resetSessionNetworkModeClock();
+    vi.restoreAllMocks();
+  });
+
+  it("bars the composer's Send while the Session settings dialog's write is in flight", async () => {
+    let stored: boolean | null = null;
+    let releasePut: ((v: Response) => void) | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        stored = (JSON.parse(init.body as string) as { override: boolean | null }).override;
+        return new Promise<Response>((r) => { releasePut = r; });
+      }
+      return { ok: true, status: 200, json: async () => settings({ override: stored }) } as Response;
+    }));
+
+    // The dialog opens after the composer has loaded, as in the app.
+    const composer = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(composer.result.current.loaded).toBe(true));
+    const dialog = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(dialog.result.current.loaded).toBe(true));
+
+    act(() => { dialog.result.current.setMode("contained"); });
+    expect(composer.result.current.saving).toBe(true);
+
+    await act(async () => {
+      releasePut?.({ ok: true, status: 200, json: async () => settings({ override: true }) } as Response);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(composer.result.current.saving).toBe(false));
+    await waitFor(() => expect(composer.result.current.mode).toBe("contained"));
+  });
+
+  it("refreshes the composer when the dialog closes before its write lands", async () => {
+    let stored: boolean | null = null;
+    let releasePut: ((v: Response) => void) | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        stored = (JSON.parse(init.body as string) as { override: boolean | null }).override;
+        return new Promise<Response>((r) => { releasePut = r; });
+      }
+      return { ok: true, status: 200, json: async () => settings({ override: stored }) } as Response;
+    }));
+
+    const composer = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(composer.result.current.loaded).toBe(true));
+    const dialog = renderHook(({ id }: { id: string | null }) => useSessionNetworkMode(id), {
+      initialProps: { id: "s1" as string | null },
+    });
+    await waitFor(() => expect(dialog.result.current.loaded).toBe(true));
+
+    act(() => { dialog.result.current.setMode("open"); });
+    dialog.rerender({ id: null });
+
+    await act(async () => {
+      releasePut?.({ ok: true, status: 200, json: async () => settings({ override: false }) } as Response);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(composer.result.current.mode).toBe("open"));
+  });
+
+  it("bars Send while an SSH grant write is in flight", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => (
+      { ok: true, status: 200, json: async () => settings() } as Response
+    )));
+    const composer = renderHook(() => useSessionNetworkMode("s1"));
+
+    let end: () => void = () => {};
+    act(() => { end = beginSessionSettingWrite("s1"); });
+    expect(composer.result.current.saving).toBe(true);
+    act(() => { end(); });
+    expect(composer.result.current.saving).toBe(false);
   });
 });
 

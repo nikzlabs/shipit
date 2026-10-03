@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import type { RepoStore } from "./repo-store.js";
 import { ensureBareCache, type RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -47,6 +48,15 @@ function describeOwnershipFailure(cacheDir: string, err: unknown): void {
   );
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fsp.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Refresh only bare caches; live session branches must not move under an agent.
 export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
   const { repoStore, getBareCacheDir, createRepoGit, githubAuthManager } = deps;
@@ -54,13 +64,16 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
   const inFlight = new Set<string>();
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  const fetchOne = async (repoUrl: string): Promise<void> => {
+  const fetchOne = async (repoUrl: string, { recreate }: { recreate: boolean }): Promise<void> => {
     if (inFlight.has(repoUrl)) return;
     const repo = repoStore.get(repoUrl);
     if (repo?.status !== "ready") return;
+    // A cache the janitor reclaimed stays gone until something uses the repo;
+    // re-cloning it here made the two fight every 3 minutes.
+    if (!recreate && !(await pathExists(getBareCacheDir(repoUrl)))) return;
     inFlight.add(repoUrl);
     try {
-      // The janitor can reclaim caches; construct through the repair path.
+      // Repairs a corrupt cache, and recreates a missing one for an explicit prefetch.
       const { git: cacheGit } = await ensureBareCache(
         getBareCacheDir(repoUrl),
         repoUrl,
@@ -85,7 +98,7 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
 
   const sweep = (): void => {
     for (const repo of repoStore.list()) {
-      if (repo.status === "ready") void fetchOne(repo.url);
+      if (repo.status === "ready") void fetchOne(repo.url, { recreate: false });
     }
   };
 
@@ -102,7 +115,7 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
       }
     },
     prefetchRepo(repoUrl: string) {
-      void fetchOne(repoUrl);
+      void fetchOne(repoUrl, { recreate: true });
     },
     coveredRecently(repoUrl: string): boolean {
       const repo = repoStore.get(repoUrl);

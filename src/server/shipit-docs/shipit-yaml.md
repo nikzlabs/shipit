@@ -4,9 +4,10 @@ Place `shipit.yaml` at the workspace root (`/workspace/shipit.yaml`) to
 configure the agent container, install commands, the compose file path, and the
 issue trackers the repository declares.
 
-If no `shipit.yaml` exists, ShipIt auto-detects `docker-compose.yml` or
-`compose.yml` at the workspace root. If no compose file is found, the
-preview panel shows an onboarding UI.
+ShipIt reads a compose file only when `shipit.yaml` names it in the `compose`
+key. It does not auto-detect `docker-compose.yml` or `compose.yml`, so a project
+with a compose file and no `compose` key (or no `shipit.yaml`) contributes no
+project services. See "Config resolution" below.
 
 ## Full example
 
@@ -314,6 +315,33 @@ agent:
   automatically. (A platform operator can disable the store for a release via
   the `OVERLAY_DEP_STORE=0` kill switch, in which case dep dirs fall back to a
   plain install.) See docs/183.
+- **A tool can rename a directory inside a dep dir**, including one that came
+  from the shared store. Vite's dependency optimizer needs this: it replaces
+  `node_modules/.vite/deps` by rename each time it finds a new dependency.
+
+If a service log still shows `EXDEV: cross-device link not permitted, rename
+'…/node_modules/.vite/deps' -> '…/deps_temp_…'`, and the browser gets `504
+(Outdated Optimize Dep)` for every page that imports the new dependency, the
+session's mount does not have that ability. Restarting the service does not
+help. There are two causes:
+
+- **The mount is older than the fix.** The next container start replaces it.
+  Until then, remove the tool's cache directory and restart the service. The
+  tool creates the directory again in the session's own layer, where the rename
+  works:
+
+  ```bash
+  rm -rf node_modules/.vite
+  shipit service restart <name>
+  ```
+
+  Do this only for a cache the tool builds again by itself.
+- **The host's filesystem cannot store the marker the kernel needs.** The error
+  then comes back after a container restart, and the removed directory cannot
+  be created again. Point the tool's cache at a path outside the dep dir (for
+  Vite, `cacheDir` in `vite.config`), and tell the user that this host cannot
+  support the shared store: its operator can turn the store off with
+  `OVERLAY_DEP_STORE=0`.
 
 #### pnpm projects: a private store
 
@@ -358,8 +386,8 @@ compose:
 | `file` | string | required | Path to compose file |
 | `docker-socket` | boolean | false | Grant Docker socket access to compose services |
 
-When `compose` is omitted, ShipIt auto-detects `docker-compose.yml`,
-`docker-compose.yaml`, `compose.yml`, or `compose.yaml` at the workspace root.
+When `compose` is omitted, ShipIt uses no compose file, even one at the
+workspace root. Services then come only from plugins the project uses.
 
 #### `docker-socket`
 
@@ -445,12 +473,63 @@ Issues enabled — there is no connect step at which to check. Note that on a
 **public** code repository, a declaration discloses what it declares in a
 committed file.
 
+### `lfs` (optional)
+
+Names the Git LFS server of a repository whose LFS objects do not live on
+GitHub (a committed `.lfsconfig` sets `lfs.url` to it), and the secret that
+authenticates to it.
+
+```yaml
+lfs:
+  host: lfs.example.com        # one exact host, optionally with :port
+  credential: LFS_CREDENTIAL   # a secret in Project Settings → Secrets
+```
+
+The secret's value is one line in git's credential-store format:
+`https://<username>:<password>@lfs.example.com`. Percent-encode `@`, `:` and `/`
+in the username or password. ShipIt presents that username and password only to
+the host inside the secret, and only while it equals `lfs.host`. So editing
+this file can never send the secret to another server; changing the host means
+editing the secret.
+
+ShipIt presents it on every LFS transfer it runs itself (the upload before each
+push, the pulls when it creates, forks or rewrites a workspace, the shared LFS
+store's fill, the diff viewer), and the session's `git` gets it through
+ShipIt's credential helper. The value is never written into the repository or
+into the workspace's git config.
+
+Refused, with a warning, and the whole section ignored: a wildcard, a scheme or
+a path in `host`; `github.com` (ShipIt already authenticates it); a `credential`
+that is not letters, digits and underscores. When the secret is missing, is not
+an `https://` credential line, or names another host, ShipIt presents nothing
+and says why: in the push-refusal notice, in the LFS warning after a pull, and on
+stderr from `shipit-git-credential` when your own `git lfs` asks.
+
+Declaring the host opens no network access. Your session reaches it only if the
+user allows it (and the storage host its server redirects downloads to) in the
+egress settings. ShipIt's own push and pull are not affected.
+
 ## Config resolution
 
 1. **shipit.yaml with `compose`** — use the referenced compose file
-2. **shipit.yaml without `compose`** — auto-detect compose file at workspace root
-3. **No shipit.yaml** — same auto-detection as (2)
-4. **No compose file found** — preview panel shows onboarding UI
+2. **shipit.yaml without `compose`** — no project compose file is used. ShipIt
+   does **not** auto-detect one: it starts no services from a
+   `docker-compose.yml` at the workspace root that `shipit.yaml` does not name.
+   The project gets services only from plugins it uses (/shipit-docs/plugins.md).
+3. **No shipit.yaml** — same as (2)
+4. **No `compose` key and no plugins in use** — preview panel shows onboarding UI
+
+ShipIt also reads no `x-shipit-secrets` from a compose file that is not named:
+its names get no declared-secret rows in **Project Settings → Secrets**, and
+`agent: true` values do not reach the agent. So when you write a compose file,
+add the key in the same change:
+
+```yaml
+compose: docker-compose.yml
+```
+
+ShipIt applies the new key at once, without a container restart (see "Config
+changes at runtime" below). `shipit service list` then shows the services.
 
 ## Onboarding a repository
 

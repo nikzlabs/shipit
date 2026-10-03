@@ -130,6 +130,15 @@ there are two:
   Worth knowing when a user expects it to even out and it does not: it rotates
   by last use, not by how much each has left, so wildly unequal sessions still
   drain unequally.
+
+  Under **both** options a session then **stays** on its credential. It moves
+  only when it must — the credential refused a turn for quota, passed its
+  cutoff while another has not, or was disconnected — and it **never moves
+  back** when a preferred credential recovers. So *Use in order* does not
+  return a session to the first credential; new sessions start there. The
+  reason: each move sends the whole conversation again without the prompt
+  cache, which spends quota, and on some models it loses the earlier
+  reasoning. A move shows in the chat as "Continuing on «name»."
 - **Cutoffs**, as a percentage of a reported quota: a short-window (5h) one and
   a weekly (7d) one. Past its cutoff a credential stops taking *new* work while
   another is below one — and is still used when none is, so nothing is stranded.
@@ -190,6 +199,13 @@ Three rules the user asks about:
   not from a fixed list. A harness may declare levels and honour none of them on
   a given row, and the menu offers only the ones that survive. Some harnesses
   offer none at all.
+
+**New models arrive without a ShipIt update.** ShipIt reads its model list from
+the ShipIt repository every hour, and the model menu picks up a new model on its
+own. Only models of services this install already has can arrive this way. When
+it cannot read the list, ShipIt keeps the last list it read. A model that needs
+new harness code still needs an update. When the user asks for a model that is
+not in the menu, check `shipit agent params` before you say it needs an update.
 
 To start work on something specific yourself, name a **role** rather than
 assembling parameters — see below, and `/shipit-docs/agent.md`.
@@ -281,10 +297,12 @@ signature, ShipIt signs, and only for a connection that really reached the serve
 whose host key it recorded, as that destination's configured user.
 
 Adding a destination grants nothing. **The grant is per session**, in that
-session's own settings (the session menu → Session settings → SSH destinations),
-and any session kind can hold one — repo-backed, sandbox or ops. Granting one
-writes `~/.ssh/config` for that session and opens its egress to that address;
-revoking removes both, though a connection already authenticated runs until it
+session's own settings (the session menu → Session settings → SSH destinations,
+or the composer's permission-mode control → Session settings…, which also works
+on a new session before its first message), and any session kind can hold one — repo-backed, sandbox or ops. Granting one
+writes `~/.ssh/config` for that session and opens its egress to that address,
+on its SSH port only when the address is this machine, a private network or the
+tailnet; revoking removes both, though a connection already authenticated runs until it
 closes.
 
 A destination can be changed after it is added: **Edit** on its row reopens the

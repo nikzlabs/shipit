@@ -108,6 +108,7 @@ describe("Integration: File content viewer", () => {
     const body = res.json();
     expect(body.isImage).toBe(true);
     expect(body.content).toContain("data:image/png;base64,");
+    expect(body.size).toBe(buf.byteLength);
   });
 
   it("returns isBinary for non-image binary files", async () => {
@@ -130,6 +131,7 @@ describe("Integration: File content viewer", () => {
     const body = res.json();
     expect(body.isBinary).toBe(true);
     expect(body.content).toContain("too large");
+    expect(body.size).toBe(1_048_577);
   });
 
   it("writes text file content", async () => {

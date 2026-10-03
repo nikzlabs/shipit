@@ -113,7 +113,7 @@ agent:
 compose: docker-compose.yml
 ```
 
-**Minimal (agent defaults, compose auto-detected):**
+**Minimal (agent defaults, compose file named):**
 ```yaml
 compose: docker-compose.yml
 ```
@@ -227,10 +227,11 @@ project and creates both docker-compose.yml and shipit.yaml.
 ### Config resolution
 
 1. **shipit.yaml with `compose`** → read the referenced compose file, manage stack.
-2. **shipit.yaml without `compose`** → check for docker-compose.yml / compose.yml at
-   workspace root. If found, use it (as if `compose: docker-compose.yml` was set).
-3. **No shipit.yaml** → same auto-detection as (2).
-4. **No compose file found** → show onboarding UI in preview panel.
+2. **shipit.yaml without `compose`** → read no project compose file, even one at the
+   workspace root. (This step auto-detected a root compose file until #313 removed
+   it, so that a project's services are always explicitly declared.)
+3. **No shipit.yaml** → same as (2).
+4. **No compose file named** → show onboarding UI in preview panel.
 
 ### Unified parser
 
@@ -386,9 +387,21 @@ adds ShipIt's labels, network, and volume rewrites.
 **Volume rewriting:** Bind mounts in the user's compose file are rewritten in the
 override to use the workspace named volume with the correct subpath. The orchestrator
 rewrites any bind mount whose source is `.` or `./` (the workspace root). Subdirectory
-mounts (e.g., `./src:/code`) are rewritten to use the corresponding subpath within
-the workspace volume. Mounts with absolute source paths or paths outside the workspace
-(e.g., `../`) are rejected with a validation error.
+mounts (e.g., `./src:/code`) are **not** subpaths of the shared workspace volume: Docker
+follows a subpath's symlinks and checks only that the result stays inside the volume
+root, and the shared root holds every session, so a symlinked `src` could name another
+session's files. They are subpaths of `shipit-session-workspace` instead, a bind-backed
+local volume whose root is this session's workspace (device = the workspace volume's
+`Mountpoint` + the session's subpath), so Docker's own check confines them to it
+(`workspaceVolumeMount` in `compose-generator.ts`, planning#619). Mounts with absolute or
+`~` source paths, paths outside the workspace (e.g., `../`), and either reserved volume
+name are rejected with a validation error.
+
+Since docs/318-compose-remaining-escapes, the rewrite no longer lives in the override.
+ShipIt resolves the project file once with `docker compose config` in a confined helper
+container, validates and rewrites that resolved model (every in-workspace bind, however
+it is spelled), writes it as the start's snapshot under `<state>/compose/`, and starts
+`up --no-build` from the snapshot plus an override that holds only what ShipIt adds.
 
 **Manual services via profiles:** Services with `x-shipit-preview: manual` (or
 defaulting to manual) are assigned to the `shipit-manual` profile in the override.
@@ -485,8 +498,9 @@ When a project has no docker-compose.yml, the preview panel shows an onboarding 
 instead of a blank preview:
 
 1. User creates session with existing repo (or new project from template).
-2. ShipIt looks for `compose` in shipit.yaml and auto-detects compose files at the
-   workspace root → none found.
+2. ShipIt looks for `compose` in shipit.yaml → none found. There is no auto-detection
+   of a root compose file: it was removed in #313 so that a project's services are
+   always explicitly declared.
 3. Preview panel shows: **"Set up live preview"** with a "Generate" button and a brief
    explanation that ShipIt uses Docker Compose to run services.
 4. User clicks "Generate."
@@ -500,8 +514,8 @@ instead of a blank preview:
    follow up ("add Redis too", "use port 8080 instead").
 7. Agent inspects the project (package.json, requirements.txt, Dockerfile, etc.),
    reads the compose guide from shipit-docs, picks appropriate base images and
-   commands, writes docker-compose.yml (and shipit.yaml if needed).
-8. ShipIt detects the new compose file (via `fs.watch`), starts the stack.
+   commands, writes docker-compose.yml and the shipit.yaml `compose:` key that names it.
+8. ShipIt detects the shipit.yaml change (via `fs.watch`), starts the stack.
 9. Preview panel switches to the live preview automatically.
 
 For **new projects from templates**, the template includes both files — no onboarding

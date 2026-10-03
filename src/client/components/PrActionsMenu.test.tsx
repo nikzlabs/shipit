@@ -7,7 +7,9 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
-import type { RepoInfo, SessionInfo } from "../../server/shared/types.js";
+import { dispatchMessage } from "../hooks/message-handlers/index.js";
+import type { HandlerContext } from "../hooks/message-handlers/types.js";
+import type { RepoInfo, SessionInfo, WsServerMessage } from "../../server/shared/types.js";
 
 function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
   return {
@@ -196,6 +198,45 @@ describe("PrActionsMenu", () => {
 
     expect(resetBranchToBase).toHaveBeenCalledWith("s1");
     expect(startRebase).not.toHaveBeenCalled();
+  });
+
+  describe("Sync after automatic attempts that fail before any agent runs", () => {
+    const ctx = {} as HandlerContext;
+    const lastError = "error: Updating the following directories would lose untracked files in them: `.claude/skills`";
+    // One incident attempt as the server now sends it: the banner opened twice, then closed.
+    const attempt = (n: number): WsServerMessage[] => [
+      { type: "auto_resolve_started", sessionId: "s1", baseBranch: "main", attempt: n },
+      { type: "rebase_started", sessionId: "s1", baseBranch: "main" },
+      { type: "auto_resolve_result", sessionId: "s1", outcome: "deferred", attempt: n, lastError },
+    ];
+
+    async function syncItemAfter(messages: WsServerMessage[]): Promise<HTMLElement> {
+      useSessionStore.setState({ sessionId: "s1", sessions: [makeSession({ id: "s1" })] });
+      usePrStore.setState({ cardBySession: { s1: openCard } });
+      for (const message of messages) dispatchMessage(ctx, message);
+      render(<PrActionsMenu sessionId="s1" />);
+      await userEvent.setup().click(screen.getByLabelText("Pull request actions"));
+      return screen.getByRole("menuitem", { name: "Sync with main" });
+    }
+
+    it("a start with no terminator disables Sync — the stuck state these messages must prevent", async () => {
+      const item = await syncItemAfter(attempt(1).slice(0, 2));
+      expect(item).toHaveAttribute("aria-disabled", "true");
+    });
+
+    it("stays enabled after repeated identical deferrals", async () => {
+      const item = await syncItemAfter([...attempt(1), ...attempt(2), ...attempt(3)]);
+      expect(useGitStore.getState().rebaseStatus).toBe("idle");
+      expect(item).not.toHaveAttribute("aria-disabled");
+    });
+
+    it("is enabled again by the abort a reconnect sends after an unterminated start", async () => {
+      const item = await syncItemAfter([
+        ...attempt(1).slice(0, 2),
+        { type: "rebase_aborted", sessionId: "s1" },
+      ]);
+      expect(item).not.toHaveAttribute("aria-disabled");
+    });
   });
 
   describe("base branch (no hard-coded 'main')", () => {

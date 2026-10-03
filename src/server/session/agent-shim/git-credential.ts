@@ -55,11 +55,13 @@ export function parseCredentialInput(input: string): Record<string, string> {
   return out;
 }
 
+type CredentialAnswer = { username: string; password: string } | { warning: string } | null;
+
 async function fetchCredential(
   attrs: Record<string, string>,
   env: CredEnv,
   fetchImpl: typeof fetch,
-): Promise<{ username: string; password: string } | null> {
+): Promise<CredentialAnswer> {
   const url = `${workerBaseUrl(env)}/agent-ops/git/credential`;
   let res: Response;
   try {
@@ -71,7 +73,6 @@ async function fetchCredential(
   } catch {
     return null;
   }
-  if (res.status < 200 || res.status >= 300) return null;
   let parsed: unknown;
   try {
     parsed = await res.json();
@@ -80,6 +81,10 @@ async function fetchCredential(
   }
   if (!parsed || typeof parsed !== "object") return null;
   const body = parsed as Record<string, unknown>;
+  // Why a declared LFS host got no credential (docs/320-lfs-host-credential req 5).
+  if (res.status < 200 || res.status >= 300) {
+    return typeof body.warning === "string" ? { warning: body.warning } : null;
+  }
   if (typeof body.username !== "string" || typeof body.password !== "string") {
     return null;
   }
@@ -111,7 +116,8 @@ export async function runGitCredential(argv: string[], deps: RunCredDeps = {}): 
   const cred = await fetchCredential(attrs, env, fetchImpl);
 
   // Empty output lets git try other helpers or anonymous access.
-  if (!cred) {
+  if (!cred || "warning" in cred) {
+    if (cred) io.stderr(`shipit-git-credential: ${cred.warning}\n`);
     io.exit(0);
     return;
   }

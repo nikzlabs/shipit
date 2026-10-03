@@ -49,10 +49,14 @@ export interface SessionCohortView {
   self: ChildSessionView;
   parent?: ChildSessionView;
   rootSessionId?: string;
-  siblings: ChildSessionView[];
   children: ChildSessionView[];
 }
 
+/**
+ * Siblings are deliberately absent and the parent carries no transcript or PR
+ * projection, so parallel children stay blind to each other's work
+ * (docs/233-child-session-report req 12).
+ */
 export function resolveSessionCohort(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
@@ -64,7 +68,6 @@ export function resolveSessionCohort(
 
   const view: SessionCohortView = {
     self: buildChildView(self, runnerRegistry, projections),
-    siblings: [],
     children: sessionManager
       .findChildren(sessionId)
       .filter((c) => !isArchived(c))
@@ -75,11 +78,7 @@ export function resolveSessionCohort(
   const parentId = self.parentSessionId;
   if (!parentId) return view;
   const parent = sessionManager.get(parentId);
-  if (parent) view.parent = buildChildView(parent, runnerRegistry, projections);
-  view.siblings = sessionManager
-    .findChildren(parentId)
-    .filter((c) => c.id !== sessionId && !isArchived(c))
-    .map((c) => buildChildView(c, runnerRegistry, projections));
+  if (parent) view.parent = buildChildView(parent, runnerRegistry, {});
   return view;
 }
 

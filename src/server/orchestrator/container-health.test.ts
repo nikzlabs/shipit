@@ -201,7 +201,7 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
             if (actual === undefined) return false;
             return value === undefined || actual === value;
           })
-          .map(([Id]) => ({ Id }));
+          .map(([Id, c]) => ({ Id, Labels: c.labels }));
       }),
       getContainer: vi.fn((id: string) => ({
         inspect: vi.fn(async () => {
@@ -420,6 +420,32 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
     expect(removed).not.toContain("res-2");
     expect(removed).not.toContain("proxy-2");
   });
+
+  it("reaps a Compose service's sidecars when Docker destroys the service, and spares a live service's", async () => {
+    const serviceSidecar = (tier: string, parent: string): FakeC => ({
+      labels: { [tier]: "sess-1", "shipit-parent-session": "sess-1", "shipit-egress-parent": parent },
+      parent,
+    });
+    await start({
+      extra: {
+        "svc-live": { labels: { "shipit-parent-session": "sess-1" }, running: true },
+        "svc-gone-res": serviceSidecar(EGRESS_RESOLVER_LABEL, "svc-gone"),
+        "svc-gone-proxy": serviceSidecar(EGRESS_PROXY_LABEL, "svc-gone"),
+        "svc-live-res": serviceSidecar(EGRESS_RESOLVER_LABEL, "svc-live"),
+      },
+    });
+    const destroy = (id: string) => eventStream.emit("data", Buffer.from(JSON.stringify({
+      Action: "destroy",
+      Actor: { ID: id, Attributes: { "shipit-parent-session": "sess-1", "shipit-service-name": "web" } },
+    })));
+
+    destroy("svc-gone");
+    destroy("svc-live");
+
+    await vi.waitFor(() => expect(removed).toHaveLength(2));
+    expect([...removed].sort()).toEqual(["svc-gone-proxy", "svc-gone-res"]);
+    expect(store.has("svc-live-res")).toBe(true);
+  });
 });
 
 describe("container-health: compose service vs. ShipIt's own session children", () => {
@@ -458,7 +484,7 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   }
 
   it("reports a project compose service, by name", () => {
-    die({ [PARENT]: "sess-1", "shipit-service-name": "dev" });
+    die({ [PARENT]: "sess-1", "shipit-service-name": "dev", "com.docker.compose.oneoff": "False" });
 
     expect(serviceExited).toHaveBeenCalledWith("sess-1", {
       serviceName: "dev", containerId: "c1", exitCode: 137, oom: false,
@@ -476,12 +502,29 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("reports a service the SESSION brought up through the Docker proxy", () => {
-    die({ [PARENT]: "sess-1", "com.docker.compose.service": "worker" });
+    die({ [PARENT]: "sess-1", "com.docker.compose.service": "worker", "com.docker.compose.oneoff": "False" });
 
     expect(serviceExited).toHaveBeenCalledWith("sess-1", {
       serviceName: "worker", containerId: "c1", exitCode: 137, oom: false,
     });
     expect(childExited).not.toHaveBeenCalled();
+  });
+
+  it("does NOT report a container left by `docker compose run` as its service exiting", () => {
+    const runLabels = {
+      [PARENT]: "sess-1",
+      "shipit-service-name": "web",
+      "com.docker.compose.service": "web",
+      "com.docker.compose.oneoff": "True",
+    };
+    die({ ...runLabels, exitCode: "0" });
+    die(runLabels, "oom");
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited.mock.calls).toEqual([
+      ["sess-1", { containerId: "c1", exitCode: 0, oom: false, egressSidecar: false }],
+      ["sess-1", { containerId: "c1", exitCode: 137, oom: true, egressSidecar: false }],
+    ]);
   });
 
   it("keeps a sidecar out of the service path even if it carries a compose label", () => {

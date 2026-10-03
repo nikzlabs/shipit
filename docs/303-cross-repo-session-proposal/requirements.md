@@ -37,6 +37,11 @@ What the feature must do, in the user's terms. Design lives in
 9. The card stays in the transcript after the turn ends and after a page reload,
    like every other agent-authored card. After the work starts, the card names
    the session it started and opens it.
+10. The user can decline the proposed work from the card. The card then records
+    that the user declined it.
+11. When the user starts or declines the proposed work, the agent in the
+    proposing session is told at the start of its next turn — the same way it is
+    told what the user did with a bug report it proposed.
 
 ## Open questions
 
@@ -55,3 +60,8 @@ None.
 - 2026-09-14 — *Does the click start the work or fill the composer?* The user
   chose start and send, over the composer-prefill behaviour the Issues tab uses
   for its cross-repository start (req 4).
+- 2026-09-30 — The user asked: "If an agent suggests starting a session in
+  another repo and the user accepts or declines, this information should be
+  sent to the agent on the next turn, similar to the bug reports and other
+  cases." That is req 11. The card had no way to decline, so req 10 is that
+  sentence's "declines" made possible.

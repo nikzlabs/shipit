@@ -16,7 +16,9 @@ RUN addgroup -g 912 egressproxy && adduser -D -H -u 912 -G egressproxy egresspro
 COPY egress-sidecar/init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY egress-sidecar/run-resolver.sh /usr/local/bin/run-resolver.sh
 COPY egress-sidecar/allow-subnet.sh /usr/local/bin/allow-subnet.sh
+COPY egress-sidecar/probe-firewall.sh /usr/local/bin/probe-firewall.sh
 COPY --from=proxy-build /out/sni-proxy /usr/local/bin/sni-proxy
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh /usr/local/bin/allow-subnet.sh /usr/local/bin/sni-proxy
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh /usr/local/bin/allow-subnet.sh \
+  /usr/local/bin/probe-firewall.sh /usr/local/bin/sni-proxy
 
 ENTRYPOINT ["/usr/local/bin/init-firewall.sh"]

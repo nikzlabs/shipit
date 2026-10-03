@@ -31,7 +31,7 @@ import type { ClaimSessionService } from "./claim-session.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
-import { isResolvedForGrouping } from "../../shared/session-resolution.js";
+import { isSessionDone } from "../../shared/session-resolution.js";
 import type { TurnAdmission } from "../turn-settlement.js";
 
 export class ResolvedChildMessageError extends ServiceError {
@@ -49,7 +49,7 @@ function hasVisibleDirectChildren(sessionManager: SessionManager, sessionId: str
 /**
  * Does this child still hold a slot against the per-parent cap?
  *
- * `isResolvedForGrouping` decides "finished", the same predicate
+ * `isSessionDone` decides "finished", the same predicate
  * `sendChildMessage` refuses on, so the word means one thing across the feature.
  * Two of its inputs are supplied more conservatively here than the sidebar needs:
  *
@@ -75,7 +75,7 @@ function isChildLive(
   seen.add(child.id);
   const runner = runnerRegistry.get(child.id);
   const busy = runner?.agentBusy === true || (runner?.queueLength ?? 0) > 0;
-  if (!isResolvedForGrouping(child, { hasVisibleBrood: false, isRunning: busy })) return true;
+  if (busy || !isSessionDone(child, { hasUnfinishedDescendant: false })) return true;
   return sessionManager.findChildren(child.id)
     .some((grandchild) => isChildLive(sessionManager, runnerRegistry, grandchild, seen));
 }
@@ -475,6 +475,8 @@ export async function spawnChildSession(
     permissionMode: undefined,
     postTurn: undefined,
     systemTurn: undefined,
+    automatic: undefined,
+    heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
@@ -625,10 +627,10 @@ export async function sendChildMessage(
     throw new ServiceError(400, "Message text exceeds 50,000 characters");
   }
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  if (isResolvedForGrouping(child, {
-    hasVisibleBrood: hasVisibleDirectChildren(sessionManager, child.id),
-    isRunning: runnerRegistry.get(child.id)?.running === true,
-  })) {
+  if (
+    runnerRegistry.get(child.id)?.running !== true
+    && isSessionDone(child, { hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id) })
+  ) {
     throw new ResolvedChildMessageError(child);
   }
   if (child.archived) {
@@ -730,6 +732,9 @@ export async function deliverSessionMessage(
     permissionMode: undefined,
     postTurn: undefined,
     systemTurn: undefined,
+    // A proposal card is delivered by the user's own click; another session's message is not.
+    automatic: origin.relation !== "proposed",
+    heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,

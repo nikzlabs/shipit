@@ -168,3 +168,38 @@ describe("unarchiveSession with a checkout that is on no remote", () => {
     expect(fs.existsSync(path.join(workspaceDir, "stale.txt"))).toBe(false);
   });
 });
+
+describe("unarchiveSession for a sandbox session whose checkout the retention sweep deleted", () => {
+  // docs/323-archived-session-data-retention req 10
+  it("gives the session an empty workspace, so it opens", async () => {
+    const sandboxWorkspace = path.join(tmpDir, "sandbox", "workspace");
+    sessionManager.track("sandbox", "Sandbox session", sandboxWorkspace);
+    sessionManager.setKind("sandbox", "sandbox");
+    sessionManager.archive("sandbox");
+
+    const result = await unarchiveSession(
+      sessionManager, createRepoGit, () => path.join(tmpDir, "cache"), githubAuthManager, repoStore,
+      "sandbox", undefined, createGitManager,
+    );
+
+    expect(result.session.userArchived).toBeUndefined();
+    expect(fs.readdirSync(sandboxWorkspace)).toEqual([]);
+    expect(fs.statSync(path.join(tmpDir, "sandbox", "state")).isDirectory()).toBe(true);
+  });
+
+  it("leaves a sandbox workspace that is still there as it is", async () => {
+    const sandboxWorkspace = path.join(tmpDir, "sandbox", "workspace");
+    fs.mkdirSync(sandboxWorkspace, { recursive: true });
+    fs.writeFileSync(path.join(sandboxWorkspace, "notes.txt"), "kept");
+    sessionManager.track("sandbox", "Sandbox session", sandboxWorkspace);
+    sessionManager.setKind("sandbox", "sandbox");
+    sessionManager.archive("sandbox");
+
+    await unarchiveSession(
+      sessionManager, createRepoGit, () => path.join(tmpDir, "cache"), githubAuthManager, repoStore,
+      "sandbox", undefined, createGitManager,
+    );
+
+    expect(fs.readFileSync(path.join(sandboxWorkspace, "notes.txt"), "utf8")).toBe("kept");
+  });
+});

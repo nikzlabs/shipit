@@ -1,19 +1,33 @@
-import type { SessionInfo, SessionMessageOrigin, SessionSecretBlock } from "../domain-types.js";
+import type {
+  SessionListRow,
+  SessionMessageOrigin,
+  SessionSecretBlock,
+  SessionStatus,
+} from "../domain-types.js";
+import type { AgentGoal } from "../agent-types.js";
 import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
 
 export interface WsSessionList {
   type: "session_list";
-  sessions: SessionInfo[];
+  sessions: SessionListRow[];
 }
 
 export interface WsSessionStarted {
   type: "session_started";
-  session: SessionInfo;
+  session: SessionListRow;
 }
 
 export interface WsSessionRenamed {
   type: "session_renamed";
-  session: SessionInfo;
+  session: SessionListRow;
+}
+
+/** The open session's status card and goal: sent when it attaches and on each change. */
+export interface WsSessionDetails {
+  type: "session_details";
+  sessionId: string;
+  sessionStatus: SessionStatus | null;
+  agentGoal: AgentGoal | null;
 }
 
 export type RescuePhase =
@@ -42,6 +56,8 @@ export interface WsSessionContainerFreshness {
   type: "session_container_freshness";
   sessionId: string;
   freshness: ContainerFreshness;
+  /** The user asked for a restart of the agent container when the turn ends. */
+  restartScheduled: boolean;
 }
 
 export interface WsSecretBlockStatus {

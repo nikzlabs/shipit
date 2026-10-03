@@ -43,7 +43,7 @@ const CHILD_NOT_FOUND =
   + "and approval delivers the message there.";
 
 const WHOAMI_HINT =
-  "To see THIS session (its parent, siblings, and children), run `shipit session whoami`.";
+  "To see THIS session (its parent and children), run `shipit session whoami`.";
 
 export async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void> {
   const usedInline = args.some(
@@ -1062,6 +1062,49 @@ export async function handleSessionContinueAfterRebase(
   );
 }
 
+export async function handleSessionRestart(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--note": "note", "-n": "note" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session restart: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.positional[0]) {
+    fail(
+      deps.io,
+      "shipit session restart takes no session id — it always restarts this session's own agent "
+      + "container.",
+    );
+  }
+  const note = parsed.values.note?.trim();
+  if (!note) {
+    fail(
+      deps.io,
+      'shipit session restart: --note "..." is required. ShipIt gives the note back to you as the '
+      + "first turn on the new container, so without one there is nothing to continue from.",
+    );
+  }
+
+  const res = await deps.call("POST", "/agent-ops/session/restart", { note }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to request the restart"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  success(
+    deps.io,
+    "restart: requested (agent container)\n"
+    + "when:     after this turn ends. Nothing restarts while you are still working.\n"
+    + "then:     ShipIt gives your note back as a turn on the new container.\n"
+    + "now:      say in your reply what you restart and why — the user sees no button for it.",
+  );
+}
+
 const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];
 const REPORT_TARGETS = ["parent"];
 const MAX_REPORT_BODY_CHARS = 10_000;
@@ -1107,6 +1150,38 @@ export async function handleSessionRename(args: string[], deps: RunDeps): Promis
   );
 }
 
+/**
+ * docs/303 req 48 — print THIS session's status card as it is stored, uncapped. The card
+ * block in the turn prompt is size-capped and withholds payloads on a large card, and a
+ * `replaceActions` has to repeat every kept offer exactly, so without this read a finished
+ * offer past the cap could be seen and not dropped. It is a read: it writes nothing and
+ * does not answer the card update the turn owes.
+ */
+export async function handleSessionStatus(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session status: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.positional.length > 0) {
+    fail(
+      deps.io,
+      "shipit session status takes no session id — it always reads THIS session's card. "
+        + "Another session's card is not readable, including a child's.",
+    );
+  }
+
+  const res = await deps.call("GET", "/agent-ops/session/status", undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read this session's status card"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  success(deps.io, asString(res.body.text) || "This session has no status card yet.");
+}
+
 export async function handleSessionWhoami(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
   if (parsed.unsupported.length > 0) {
@@ -1125,7 +1200,6 @@ export async function handleSessionWhoami(args: string[], deps: RunDeps): Promis
 
   const self = (res.body.self ?? {}) as Record<string, unknown>;
   const parent = res.body.parent as Record<string, unknown> | undefined;
-  const siblings = (res.body.siblings as Record<string, unknown>[] | undefined) ?? [];
   const children = (res.body.children as Record<string, unknown>[] | undefined) ?? [];
 
   const lines = [
@@ -1141,9 +1215,7 @@ export async function handleSessionWhoami(args: string[], deps: RunDeps): Promis
   if (res.body.rootSessionId && res.body.rootSessionId !== (parent?.id ?? "")) {
     lines.push(`root:     ${asString(res.body.rootSessionId)}`);
   }
-  lines.push("", `siblings: ${siblings.length === 0 ? "(none)" : ""}`);
-  for (const s of siblings) lines.push(`  ${formatPeer(s)}`);
-  lines.push(`children: ${children.length === 0 ? "(none)" : ""}`);
+  lines.push("", `children: ${children.length === 0 ? "(none)" : ""}`);
   for (const c of children) lines.push(`  ${formatPeer(c)}`);
   success(deps.io, lines.join("\n"));
 }

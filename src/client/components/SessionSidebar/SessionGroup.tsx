@@ -9,7 +9,6 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { SessionItem } from "./SessionItem.js";
 import { repoColorVar } from "../../../server/shared/repo-colors.js";
-import { isResolvedForGrouping } from "../../../server/shared/session-resolution.js";
 
 /**
  * docs/254 — the per-group identity edge. A 3px colored line on the LEFT of the
@@ -251,6 +250,7 @@ export function OrphanSessionGroup({
 export function RepoGroup({
   repo,
   sessions,
+  isDone,
   currentSessionId,
   isNewSessionSelected,
   isCollapsed,
@@ -283,6 +283,8 @@ export function RepoGroup({
 }: {
   repo: RepoInfo;
   sessions: SessionInfo[];
+  // From the whole session list, never from this repo's sessions only.
+  isDone: (s: SessionInfo) => boolean;
   currentSessionId: string | undefined;
   isNewSessionSelected: boolean;
   isCollapsed: boolean;
@@ -522,8 +524,7 @@ export function RepoGroup({
                 list.push(s);
                 broodByRoot.set(s.rootSessionId, list);
               }
-              const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
-                isResolvedForGrouping(s, { hasVisibleBrood: broodByRoot.has(s.id) });
+              const isRecentlyResolvedForGroup = isDone;
 
               // work is never automatically moved under "Recently resolved". The
 
@@ -549,14 +550,6 @@ export function RepoGroup({
 
                 // never tucked away: hiding it would leave its own descendants
 
-                const parentsInBrood = new Set<string>();
-                for (const m of brood) {
-                  if (m.parentSessionId) parentsInBrood.add(m.parentSessionId);
-                }
-                // A PINNED member is never tucked away either: docs/110 —
-
-                const isResolvedMember = (m: SessionInfo): boolean =>
-                  isResolvedForGrouping(m, { hasVisibleBrood: parentsInBrood.has(m.id) });
                 const renderMember = (member: SessionInfo) => (
                   <SessionItem
                     key={member.id}
@@ -571,7 +564,7 @@ export function RepoGroup({
                 );
                 const resolvedMembers: SessionInfo[] = [];
                 for (const member of brood) {
-                  if (isResolvedMember(member)) resolvedMembers.push(member);
+                  if (isRecentlyResolvedForGroup(member)) resolvedMembers.push(member);
                   else target.push(renderMember(member));
                 }
 

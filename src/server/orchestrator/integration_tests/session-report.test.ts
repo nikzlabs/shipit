@@ -119,7 +119,7 @@ describe("Integration: session report (docs/233)", () => {
     return messages.filter((m) => m.sessionReport).map((m) => m.sessionReport!);
   }
 
-  it("a child resolves ITSELF, its parent, and its cohort", { timeout: 20_000 }, async () => {
+  it("a child resolves ITSELF and its parent, but never its siblings", { timeout: 20_000 }, async () => {
     const parentId = await createParent();
     const childA = await spawnChild(parentId, "Druid catalog");
     const childB = await spawnChild(parentId, "Elementalist catalog");
@@ -129,12 +129,12 @@ describe("Integration: session report (docs/233)", () => {
     const body = res.json() as {
       self: { id: string; title: string };
       parent?: { id: string };
-      siblings: { id: string }[];
       children: unknown[];
     };
     expect(body.self).toMatchObject({ id: childB, title: "Elementalist catalog" });
     expect(body.parent?.id).toBe(parentId);
-    expect(body.siblings.map((s) => s.id)).toEqual([childA]);
+    expect(body).not.toHaveProperty("siblings");
+    expect(res.body).not.toContain(childA);
     expect(body.children).toEqual([]);
 
     const parentRes = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/cohort` });

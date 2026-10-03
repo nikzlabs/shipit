@@ -6,7 +6,7 @@ import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
 import type { PresentStore } from "./present-store.js";
 import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, AnswerHoldStore, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
 import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
@@ -18,6 +18,8 @@ import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPos
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import { adoptInFlightTurn } from "./turn-adoption.js";
+import { reconcilePermissionCards } from "./permission-cards.js";
+import { workerReportsNoTurn } from "./restart-turn-reattach.js";
 import { originView, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
@@ -28,6 +30,10 @@ import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
+import { beginTurnSetup } from "./turn-stop-request.js";
+import { readAnswerHold } from "./turn-admission.js";
+import { forgetHeldEntries } from "./held-turns.js";
+import { modelListField } from "../shared/catalogue/model-list.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
   dependencyGapNotice,
@@ -227,7 +233,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   get running(): boolean { return this._isRunning; }
-  set running(v: boolean) { this._isRunning = v; }
+  set running(v: boolean) {
+    if (v && !this._isRunning) beginTurnSetup(this);
+    this._isRunning = v;
+  }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) {
     // Every acquisition is a new hold, including one taken while the flag is already set.
@@ -237,6 +246,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
+  get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
+  get answerHoldStore(): AnswerHoldStore | undefined { return this._systemTurnDeps?.answerHold; }
+  get rebindDelivery(): SystemTurnDeps["rebindDelivery"] { return this._systemTurnDeps?.rebindDelivery; }
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
@@ -353,6 +365,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
           ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
           ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+          ...modelListField(),
         },
         { timeoutMs: SUB_AGENT_TRANSPORT_TIMEOUT_MS, signal: controller.signal },
       );
@@ -413,7 +426,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get queueLength(): number { return this.turn.queueLength; }
   enqueue(msg: QueuedMessage): number { return this.turn.enqueue(msg); }
   dequeue(): QueuedMessage | undefined { return this.turn.dequeue(); }
-  clearQueue(): void { this.turn.clearQueue(); }
+  clearQueue(): void {
+    forgetHeldEntries(this.answerHoldStore, this.turn.messageQueue);
+    this.turn.clearQueue();
+  }
   getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
 
   activeDeliveryId: string | undefined;
@@ -733,6 +749,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       params,
       ...(runToken !== undefined ? { runToken } : {}),
       ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+      ...modelListField(),
     };
 
     try {
@@ -779,25 +796,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   // Adopt live turns before replay; skip completed turns to avoid persisting them twice.
-  private async reconcileWorkerTurnBeforeFirstConnect(): Promise<void> {
-    if (this.sse.isConnected) return;
+  private async reconcileWorkerTurnBeforeFirstConnect(): Promise<WorkerAgentStatus | null> {
+    if (this.sse.isConnected) return null;
     let status: WorkerAgentStatus;
     try {
       status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
     } catch {
-      return;
+      return null;
     }
 
     if (status.turnActive === true && !this._agent && !this._isRunning) {
-      if (await this.adoptWorkerTurn(status)) return;
-      return;
+      await this.adoptWorkerTurn(status);
+      return status;
     }
 
-    if (status.turnActive === true) return;
+    if (status.turnActive === true) return status;
     // Legacy workers cannot distinguish an active turn from an idle resident process.
-    if (status.turnActive === undefined && status.running) return;
+    if (status.turnActive === undefined && status.running) return status;
 
     this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+    return status;
   }
 
   private async adoptWorkerTurn(status: WorkerAgentStatus): Promise<boolean> {
@@ -868,9 +886,34 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   private async _doStartWorkerResources(): Promise<void> {
-    await this.reconcileWorkerTurnBeforeFirstConnect();
+    // A container still being created holds none of the requests saved cards refer to.
+    const newContainer = this.workerUrl === PLACEHOLDER_WORKER_URL;
+    const status = await this.reconcileWorkerTurnBeforeFirstConnect();
+    this.reconcileSavedPermissionCards(newContainer ? [] : status?.pendingPermissionIds);
+    // The boot sweep skips a worker it could not probe (docs/240-turn-survives-orchestrator-restart).
+    if (status && workerReportsNoTurn(status)) {
+      try {
+        this._systemTurnDeps?.listenerDeps.chatHistoryManager.finalizeInheritedInProgress(this.sessionId);
+      } catch (err) {
+        console.error(`[container-runner:${this.sessionId}] finalizing an ended turn's rows failed:`, err);
+      }
+    }
     await this.connectEventStream();
     if (!this._disposed) void this.startWorkerResources();
+  }
+
+  // Uses adoption's status reading, so the two cannot disagree, and runs before the first
+  // SSE connect, so no card can be saved while this reads them (docs/193).
+  private reconcileSavedPermissionCards(workerPendingIds: string[] | undefined): void {
+    const deps = this._systemTurnDeps?.listenerDeps;
+    // No reading, or an older worker image that cannot say which requests still wait.
+    if (!deps || !workerPendingIds) return;
+    try {
+      // With no agent here, nothing relays the user's answer to the worker or the worker's result back.
+      reconcilePermissionCards(this, this.sessionId, deps, this._agent ? workerPendingIds : []);
+    } catch (err) {
+      console.error(`[container-runner:${this.sessionId}] reconciling permission cards failed:`, err);
+    }
   }
 
   async startAgentOnWorker(agentId: AgentId, params: AgentRunParams): Promise<ProxyAgentProcess> {
@@ -883,7 +926,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.supersedeDisplacedAgent(proxy);
     this._agent = proxy;
 
-    await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken: proxy.runToken }, { timeoutMs: 0 });
+    await workerPost(
+      this.workerUrl,
+      "/agent/start",
+      { agentId, params, runToken: proxy.runToken, ...modelListField() } satisfies WorkerAgentStartBody,
+      { timeoutMs: 0 },
+    );
 
     return proxy;
   }

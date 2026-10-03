@@ -24,8 +24,9 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
-const { ServiceManager } = await import("./service-manager.js");
 const { LogStore } = await import("./log-store.js");
+const { testServiceManager } = await import("./compose-test-helpers.js");
+const { composeProjectName } = await import("./compose-stack-reaper.js");
 
 const MANUAL_COMPOSE =
   "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n    x-shipit-preview: manual\n";
@@ -63,7 +64,7 @@ describe("ServiceManager log-follower replay window (#2426)", () => {
 
     const logStore = new LogStore(storeRoot);
     const order: string[] = [];
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir,
       serviceEnvDir: path.join(tmpDir, "service-env"),
@@ -210,6 +211,17 @@ describe("ServiceManager log-follower replay window (#2426)", () => {
     const pollIdx = spawnCalls.findIndex((a, i) => a[0] === "__query__" && i > upIdx);
     expect(pollIdx).toBeGreaterThan(followerIdx);
 
+    await mgr.stop();
+  });
+
+  it("follows by project name, with no model file", async () => {
+    const { mgr } = makeManager();
+    await mgr.start();
+
+    mgr.streamLogs("web");
+
+    const args = followerArgs("web")!;
+    expect(args.slice(0, args.indexOf("logs"))).toEqual(["compose", "-p", composeProjectName("test-session")]);
     await mgr.stop();
   });
 });

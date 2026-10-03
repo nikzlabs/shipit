@@ -1785,6 +1785,33 @@ describe("CodexAdapter", () => {
     expect(reply.result).toEqual({ decision: "approved" });
   });
 
+  it("withdraws a pending approval Codex clears itself, and does not answer it", async () => {
+    await createAndInit("Run a command with extra access");
+    let signal: AbortSignal | undefined;
+    const requester = vi.fn((input: { signal?: AbortSignal }) => {
+      signal = input.signal;
+      return new Promise<{ behavior: "deny" }>((resolve) => {
+        input.signal?.addEventListener("abort", () => resolve({ behavior: "deny" }));
+      });
+    });
+    adapter.setPermissionRequester(requester);
+    fakeProc.stdin.written.length = 0;
+
+    fakeProc.stdout.emit("data", Buffer.from(`${JSON.stringify({
+      id: 9105,
+      method: "execCommandApproval",
+      params: { command: ["curl", "https://example.com"], reason: "requires network access" },
+    })}\n`));
+    await vi.waitFor(() => expect(requester).toHaveBeenCalled());
+    expect(signal?.aborted).toBe(false);
+
+    fakeProc.sendNotification("serverRequest/resolved", { threadId: "t", requestId: 9105 });
+
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9105)).toBeUndefined();
+  });
+
   it("replies with a JSON-RPC error to an unhandled server request (no hang)", async () => {
     await createAndInit("Hello");
     fakeProc.stdin.written.length = 0;

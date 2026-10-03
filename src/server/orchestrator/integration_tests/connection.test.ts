@@ -63,6 +63,7 @@ describe("Integration: Connection", () => {
       type: "session_container_freshness",
       sessionId: client.sessionId,
       freshness: { state: "unknown" },
+      restartScheduled: false,
     });
     const msg = await client.receiveType("preview_status");
 

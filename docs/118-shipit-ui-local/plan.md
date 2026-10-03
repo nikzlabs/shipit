@@ -339,6 +339,10 @@ ext4, already gitignored, and survives a service restart, so both sides of those
 renames land on one ordinary filesystem. Vite's default (`node_modules/.vite`)
 is unchanged everywhere else.
 
+Since 2026-10-01 an npm dep-dir overlay mounts with `redirect_dir=on`, which removes the cause on a
+host whose filesystem can store overlay xattrs (docs/183-overlay-dep-store `plan.md`, "Renaming a
+directory that lives in the base"). The `VITE_CACHE_DIR` setting stays.
+
 ### All-manual compose stacks must lazy-join the orchestrator network
 
 `ServiceManager.start()` skips `composeUp` entirely when every service in the compose file is `x-shipit-preview: manual` (the dogfood case — only `dev` exists, and it's manual). Compose only materializes the per-session `shipit-session-<id>` network during an `up`, so when `start()` then calls `networkJoinFn`, the network doesn't exist yet and the call silently fails. The user clicks "Start" → `startService()` → `composeUpService()` finally creates the network and attaches the dev container — but historically `networkJoinFn` was never re-invoked, so the **orchestrator** never joined. The preview proxy resolved a correct container IP that the orchestrator had no route to, surfacing as `Preview unreachable on port 3000 — connect ETIMEDOUT 172.x.y.z:3000` in the outer UI. Auto-preview repos worked fine because their `composeUp` at startup creates the network before the join attempt.

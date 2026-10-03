@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   EGRESS_TIER_A_RESOLVE_HOSTS,
+  extractNetworkGateways,
   isValidIp,
   isValidCidr,
   parseGitHubMetaCidrs,
@@ -162,5 +163,19 @@ describe("EGRESS_TIER_A_RESOLVE_HOSTS", () => {
       expect(h.startsWith(".")).toBe(false);
       expect(h).not.toContain("github");
     }
+  });
+});
+
+describe("extractNetworkGateways (docs/319)", () => {
+  it("reads IPAM gateways, and invents none where IPAM names none", () => {
+    // With no host address on the bridge, the first address may be a container's.
+    expect(extractNetworkGateways({
+      IPAM: { Config: [{ Subnet: "172.20.0.0/16", Gateway: "172.20.0.1" }, { Subnet: "10.9.8.0/24" }] },
+    })).toEqual(["172.20.0.1"]);
+  });
+
+  it("ignores garbage", () => {
+    expect(extractNetworkGateways({ IPAM: { Config: [{ Gateway: "nope" }, null] } })).toEqual([]);
+    expect(extractNetworkGateways(undefined)).toEqual([]);
   });
 });

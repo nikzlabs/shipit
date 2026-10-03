@@ -33,7 +33,7 @@ missing preview configuration suppresses the startup steps above them:
 |---|---|---|
 | A list of startup steps — *Fetching latest changes*, *Installing dependencies*, *Starting dev server* — one with an orange mark | A startup step failed. The failing step prints its message and the tail of its log right there | Read the log lines, fix the cause (usually `agent.install` in `shipit.yaml` or a broken lockfile), and start the service again |
 | **Docker Compose error**, with the raw error in a box | Usually the stack failing to come up, but the same overlay carries configuration problems ShipIt found in `shipit.yaml`/`docker-compose.yml` before anything started. For four causes the panel adds a plain-language hint: Docker out of network address space, a port already allocated, no disk space left, an image that could not be pulled | Read the raw error, not the headline. The port, image and configuration causes are yours — fix `docker-compose.yml` or `shipit.yaml`. The address-space and disk ones are on the **host**, outside every session; say so rather than trying |
-| **Your app can run here** — an invitation to set up a preview | The project declares no preview at all | If the repo really is a web or Android app, write the `docker-compose.yml` (`/shipit-docs/compose.md`). If it is a library or a CLI, say so — "no" is a correct answer here |
+| **Your app can run here** — an invitation to set up a preview | The project declares no preview at all | If the repo really is a web or Android app, write the `docker-compose.yml` and name it in `shipit.yaml`'s `compose:` key (`/shipit-docs/compose.md`). If it is a library or a CLI, say so — "no" is a correct answer here |
 | **`<service>` is not running**, or *Waiting for `<service>`…* | The pane is parked on a named Compose service that is stopped or still starting. It stays parked deliberately and returns by itself | `shipit service start <name>`. If it will not stay up, see "a service won't start" below |
 | **No preview running. Start a service to launch it.** | Every declared service is `x-shipit-preview: manual`, so nothing started on its own | Start the one the task needs — that decision is yours, not the user's |
 | **Preview not available over this host** | The user is reaching ShipIt on a hostname that cannot carry wildcard subdomains. Previews are served at `{session}--{port}.<host>` | Theirs: open ShipIt over `localhost`, a domain with a `*` DNS record, or Tailscale with MagicDNS. The overlay suggests a working host for their case when it can. Detail in [installing-and-updating.md](installing-and-updating.md) |
@@ -59,7 +59,7 @@ Separate three states before doing anything, because the fix differs:
 
 - **A turn is genuinely running.** The session row shows a pulsing green dot.
   The user's control is the **stop button in the composer** ("Stop the agent"),
-  which interrupts the turn.
+  which ends the turn and the background tasks inside the agent process.
 - **A turn is running and more messages are waiting.** The composer shows *"N
   messages queued"* with a cancel on each and on all. Nothing is wrong; the
   queue drains in order.
@@ -71,7 +71,7 @@ wedged session, and it summarises itself: *Agent running* / *Idle* / *Events
 stale* / *Agent state out of sync* / *Worker unreachable* / *Container
 \<state\>*. Read it and say what it shows before anyone restarts anything. Its
 controls, in increasing order of violence — **Diagnostics**, **Kill agent**,
-**Restart agent**, **Rescue session** — are covered in
+**Restart agent container**, **Restart all** — are covered in
 [sessions.md](sessions.md). All four are always on the strip, but **Kill agent**
 is greyed out unless the worker is reachable *and* reports an agent actually
 running, and all of them grey out while a restart is in progress. A greyed
@@ -193,6 +193,15 @@ Two neighbouring causes that look the same:
   **Settings → Git** holds it.
 - **A GitHub token that expired.** See the next entry — the same token pushes
   and opens pull requests.
+- **A Git LFS upload that failed.** A chat notice says the branch was not pushed
+  because its LFS objects could not be uploaded, and quotes git-lfs, or says the
+  upload did not finish within ShipIt's time limit. ShipIt withholds the whole
+  push on purpose: without the objects, every other clone gets pointer stubs. Run
+  `git lfs push origin <branch>` to read the cause. An LFS server on a host other
+  than `github.com` gets a credential from ShipIt only when `shipit.yaml` declares
+  that host (`lfs.host` and `lfs.credential`), so an undeclared one that requires
+  authentication fails this way. Details: the Git LFS section of
+  `/shipit-docs/environment.md`.
 
 Never reach for `git rebase` or `git reset --hard` on a published branch to
 "catch up". The sanctioned moves are in `/shipit-docs/github.md`.
@@ -250,23 +259,25 @@ Three distinct causes, each with its own banner:
 
 **Session disabled — agent container OOM-killed N times.** A circuit breaker:
 the orchestrator stopped recreating a container that keeps being killed for
-memory. **Rescue session** on the health strip resets the breaker and retries —
-that click is theirs. The banner's own advice to raise `agent.memory` in
-`shipit.yaml` is stale: that field was removed and is ignored with a warning.
-Session memory is now sized automatically from host capacity, and the only
-overrides are the deployment env vars `DEFAULT_SESSION_MEMORY_MB` and
-`MAX_SESSION_MEMORY_MB` — a host-level change, covered in
-[installing-and-updating.md](installing-and-updating.md).
+memory. **Restart all** on the health strip resets the breaker and retries —
+that click is theirs. Raising `agent.memory` in `shipit.yaml` does nothing: that
+field was removed and is ignored with a warning. Session memory is sized
+automatically from host capacity, and the only overrides are the deployment env
+vars `DEFAULT_SESSION_MEMORY_MB` and `MAX_SESSION_MEMORY_MB` — a host-level
+change, covered in [installing-and-updating.md](installing-and-updating.md).
 
 **Container creation failed**, with Docker's stderr under it, on the health
 strip. Read the error; it is usually the host — disk, image, or network space.
 
 **Update available for this session.** Not a failure at all: the session's agent
-container predates the running ShipIt build. **Restart agent** on that banner
-recreates just the agent container and leaves the Compose stack up. While a turn
-is running the button is **disabled** and reads *Restart after turn* — that is a
-label, not a promise: nothing is queued, and someone has to press it once the
-turn ends.
+container predates the running ShipIt build. **Restart agent container** on that
+banner recreates just the agent container and leaves the Compose stack up. While a turn
+is running the button reads **Restart after turn**: a click does not interrupt the
+turn, it schedules the restart for the turn's end. The banner then says that the
+container restarts when the turn ends, and shows **Cancel restart**, which removes
+the scheduled restart. No follow-up turn starts after that restart. If the turn
+leaves background work running, the restart waits for the end of the next turn;
+the banner says so, and **Restart agent container** on it then restarts at once.
 
 A container that has simply *stopped* is not automatically one of these. It may
 be idle reclaim, which is normal and explained in [sessions.md](sessions.md), or
@@ -336,14 +347,62 @@ the host is configured.
   sessions **fail to start**, with an error naming the missing image. Loud, and
   obvious.
 - **Enforcement was switched off at the deployment.** Sessions start fine and
-  run with **open egress** — no allowlist, no prompts, nothing blocked. This is
-  the one to surface: the user believes their sessions are contained and they
-  are not, and nothing else on screen says so.
+  run as **Open** — any internet host, no allowlist, no prompts. This is the
+  one to surface: the user believes their sessions are contained and they are
+  not, and nothing else on screen says so. The block on this machine, private
+  networks and the tailnet still applies wherever the host can run the egress
+  sidecar (next two sections).
 
 Either way the fix is on the host, not in a session — see
 [installing-and-updating.md](installing-and-updating.md). If a user is
 surprised that a session reached the internet freely, check this warning before
 looking anywhere else.
+
+## "It can't reach my LAN" / "…my tailnet" / "…this machine"
+
+In both Network modes, a session's containers — the agent, its Compose
+services, plugin containers, and containers started with Docker access —
+cannot reach the machine that runs ShipIt, private networks (the LAN,
+`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local) or the tailnet.
+That is deliberate: it keeps code running in a session away from ShipIt's host
+and the user's other machines. Open mode still reaches the internet and
+Contained keeps its allowlist, but an allowlisted host whose address is private
+is still blocked. So neither switching to Open nor an allowlist entry changes this; do
+not suggest either.
+
+The one exception is an **SSH destination**. A machine the user grants in
+**Session settings → SSH destinations** is reachable from that session on its
+SSH port, and on nothing else (`/shipit-docs/ssh.md`). If the work needs a local
+machine for anything other than SSH, say so plainly; there is no setting that
+opens it. This session's own services are not affected: reach them by name or
+by the `url` ShipIt lists, never through a port published on the host
+(`/shipit-docs/preview.md`).
+
+A Compose service the user gives the Docker socket (**Project Settings →
+Deployments → "Give this project's services the Docker socket"**) controls the
+machine, so ShipIt cannot hold it to any of this. That is part of what the user
+accepts with that toggle.
+
+## "I can't reach ShipIt over the tailnet or LAN any more"
+
+ShipIt installs the block above as a firewall in each session container, using
+its egress sidecar. A host that cannot run the sidecar (rootless Docker, or a
+locked-down kernel, for example) cannot apply the block, so there ShipIt listens
+only on loopback: setup leaves out a tailnet binding and puts a non-loopback
+bind address back to `127.0.0.1`, saying why, and ShipIt refuses to start if it
+finds a non-loopback binding anyway, with a log line naming it. On that host,
+contained sessions do not start either, and on Docker Desktop no session
+container starts at all.
+
+From the same machine, through Cloudflare Tunnel with Access, or through an SSH
+tunnel, ShipIt still works. Getting tailnet or LAN access back means making the
+host able to run the sidecar — a host change, outside every session
+([installing-and-updating.md](installing-and-updating.md)).
+
+One install shape sets all of this aside: ShipIt made public with **no
+sign-in**, through the Cloudflare setup's opt-out or a bind address the
+internet can reach. Then anyone on the internet has the user's access, and so
+does a session. If the user describes that setup, say so.
 
 ## "A service won't start" / "it says crashed"
 
@@ -383,7 +442,7 @@ before anything is sent.
 
 | The user does | You do |
 |---|---|
-| Clicks **Rescue session**, **Restart agent**, **Kill agent** | Read the health strip and diagnostics first, and say what they show |
+| Clicks **Restart all**, **Kill agent**, and **Restart agent container** when the agent cannot act (a wedged worker) | Read the health strip and diagnostics first, and say what they show. A change that needs a new agent container you apply yourself, with `shipit session restart --note "…"` |
 | Reconnects a provider or GitHub account | Name which account, and which panel it is in |
 | Decides an egress host, once, on the card | Say which host and why, in one line |
 | Trusts a repository | Nothing — this one is consent, not configuration |

@@ -13,6 +13,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { postInterruptCommitDepsFrom } from "./services/post-interrupt-commit.js";
+import { cancelUserRestart, deferRestartToTurnEnd } from "./services/agent-restart-request.js";
 import { getErrorMessage } from "./validation.js";
 import { accountServiceForHarness } from "./provider-account-manager.js";
 
@@ -133,10 +134,19 @@ export async function registerContainerRoutes(
     },
   );
 
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string }; Body: { afterTurn?: boolean } | undefined }>(
     "/api/sessions/:id/agent/container/restart",
     async (request, reply) => {
       try {
+        const { id } = request.params;
+        const deferDeps = {
+          sessionManager,
+          containerManager: deps.containerManager ?? null,
+          runnerRegistry: deps.runnerRegistry,
+        };
+        if (request.body?.afterTurn === true && deferRestartToTurnEnd(deferDeps, id)) {
+          return { ok: true, scheduled: true };
+        }
         const result = await restartAgent(
           {
             sessionManager: deps.sessionManager,
@@ -147,7 +157,7 @@ export async function registerContainerRoutes(
             ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
             ...postInterruptCommitDepsFrom(deps),
           },
-          request.params.id,
+          id,
         );
         return result;
       } catch (err) {
@@ -156,6 +166,21 @@ export async function registerContainerRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to restart agent: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/container/restart",
+    async (request, reply) => {
+      try {
+        return cancelUserRestart({ sessionManager }, request.params.id);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to cancel the scheduled restart: ${getErrorMessage(err)}` });
       }
     },
   );

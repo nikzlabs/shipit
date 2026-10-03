@@ -3,10 +3,11 @@ import { revokeOpenCodeSource } from "../openai-account-delivery.js";
 
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry, EligibleModel } from "../../shared/agent-registry.js";
+import type { ModelListDoc } from "../../shared/catalogue/index.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
-import { allHarnesses, allServices, credentialModeForStorageEnv, getMode, getModel, getService, loginIntegrationForService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
+import { allHarnesses, allServices, modelListField, credentialModeForStorageEnv, getMode, getModel, getService, loginIntegrationForService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
 import { backgroundWorkOptions, firstEligibleNonTurnSelection, resolveNonTurnModel, runnerForNonTurnSelection } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
@@ -191,9 +192,12 @@ export function buildAgentListPayload(
   nonTurnModel: NonTurnModelSelection | null;
   nonTurnModelResolved: NonTurnModelResolved | null;
   backgroundWorkModels: EligibleModel[];
+  /** docs/318 — present while a published model list is in effect; viewers apply it before the agents. */
+  modelList?: ModelListDoc;
 } {
   const nonTurn = buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   return {
+    ...modelListField(),
     agents: listAgents(agentRegistry),
     ...resolveHarnessOnboarding(agentRegistry, credentialStore),
     reviewers: buildReviewerSettings({ credentialStore, providerAccountManager }),

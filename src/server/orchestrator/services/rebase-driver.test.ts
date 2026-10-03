@@ -9,7 +9,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { SessionRunner, SessionRunnerRegistry, resetRunnerTurnState } from "../session-runner.js";
 import { createIdleEnforcer } from "../idle-enforcer.js";
 import { POST_TURN_HOLD_MAX_MS } from "../post-turn-hold.js";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { DockerMemoryStats } from "../../shared/types.js";
 import {
@@ -17,7 +17,9 @@ import {
   runAutoResolveAttempt,
   buildRebaseConflictPrompt,
   buildBranchSyncAgentNotice,
+  buildSyncFailureNotice,
   MAX_REBASE_ITERATIONS,
+  PLUGIN_SKILL_RESTORE_WAIT_MS,
   syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
 import { armFollowupNote, followupWindowOpen } from "./rebase-followup.js";
@@ -26,6 +28,13 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { testDispatch } from "../integration_tests/dispatch-test-helpers.js";
 import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "../../shared/types.js";
+import { PLUGIN_SKILL_MARKER, PLUGIN_SKILL_MARKER_ID } from "../../shared/plugin-skill-marker.js";
+import {
+  AUTO_RESOLVE_COOLDOWN_MS,
+  AUTO_RESOLVE_DEFERRED_COOLDOWN_MS,
+  AutoConflictResolveManager,
+  MAX_AUTO_RESOLVE_ATTEMPTS,
+} from "../auto-conflict-resolve-manager.js";
 
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
@@ -90,6 +99,32 @@ class FakeRebaseAgent extends EventEmitter {
   kill(): void { /* no-op */ }
 }
 
+/** A resolution turn that ends on a question card instead of resolving anything. */
+class AskingRebaseAgent extends FakeRebaseAgent {
+  override run(params: AgentRunParams): void {
+    setImmediate(() => {
+      this.emit("event", {
+        type: "agent_assistant",
+        content: [{
+          type: "tool_use",
+          id: "ask-1",
+          name: "AskUserQuestion",
+          input: {
+            questions: [{
+              question: "Keep which edit?",
+              header: "Conflict",
+              options: [{ label: "Ours", description: "The feature edit" }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      } as AgentEvent);
+      this.emit("event", { type: "agent_result", status: "success", sessionId: params.sessionId } as AgentEvent);
+      this.emit("done", 0);
+    });
+  }
+}
+
 function setupRepoWithRemote(tmpDir: string) {
   const bareDir = path.join(tmpDir, "bare.git");
   const workDir = path.join(tmpDir, "work");
@@ -136,6 +171,21 @@ function createCleanDivergence(bareDir: string, workDir: string) {
   fs.rmSync(tempClone, { recursive: true, force: true });
 }
 
+// The branch committed a build cache, then ignored it; the files stay on disk,
+// untracked, and replaying the first commit onto main must write over them.
+function commitThenIgnoreCache(bareDir: string, workDir: string): void {
+  createCleanDivergence(bareDir, workDir);
+  const cache = path.join(workDir, "cache");
+  fs.mkdirSync(cache);
+  for (const name of ["a.js", "b.js", "c.js", "d.js", "e.js"]) fs.writeFileSync(path.join(cache, name), "x\n");
+  execSync("git add -A && git commit -m 'Add build cache'", { cwd: workDir, stdio: "pipe" });
+  fs.writeFileSync(path.join(workDir, ".gitignore"), "cache/\n");
+  execSync("git rm -r -q --cached cache && git add .gitignore && git commit -m 'Ignore build cache'", {
+    cwd: workDir,
+    stdio: "pipe",
+  });
+}
+
 function makeStubAuth(authenticated: boolean): GitHubAuthManager {
   return { authenticated } as GitHubAuthManager;
 }
@@ -166,6 +216,7 @@ function makeStubSessionManager(notices: string[] = []): SessionManager {
     setLastTurnErrored: () => {},
     setPendingAgentNotice: (_id: string, notice: string) => { notices.push(notice); },
     track: () => {},
+    touchUnlessResolved: () => {},
     setMuted: () => null,
     list: () => [],
   } as unknown as SessionManager;
@@ -181,8 +232,12 @@ function makeStubUsageManager(): UsageManager {
 
 
 // Without this the runner has no system-turn deps, and a dispatch never starts a turn.
-function wireSystemTurnDeps(deps: Parameters<typeof runRebaseFlow>[0]): void {
+function wireSystemTurnDeps(
+  deps: Parameters<typeof runRebaseFlow>[0],
+  extra: Pick<SystemTurnDeps, "answerHold"> = {},
+): void {
   deps.runner.setSystemTurnDeps({
+    ...extra,
     agentFactory: deps.agentFactory!,
     autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null, hookFailure: null }),
     scheduleAutoPush: () => { /* postTurn: "none" skips this for rebase turns */ },
@@ -515,6 +570,47 @@ describe("rebase-driver: runRebaseFlow", () => {
     const assistantMsg = captured.find((m) => m.role === "assistant");
     expect(userMsg?.text).toContain("Rebasing onto");
     expect(assistantMsg?.text).toContain("Resolved shared.txt");
+  });
+
+  it("docs/322: a resolution turn that asks the user stops the flow instead of prompting again", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    let awaiting = false;
+    let agentInvocations = 0;
+    const deps: Parameters<typeof runRebaseFlow>[0] = {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => {
+        agentInvocations++;
+        return new AskingRebaseAgent(() => "") as unknown as AgentProcess;
+      },
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+    wireSystemTurnDeps(deps, {
+      answerHold: {
+        isAwaitingAnswer: () => awaiting,
+        setAwaitingAnswer: (_id, v) => { awaiting = v; },
+        holdTurn: () => 0,
+        heldTurns: () => [],
+        forgetHeldTurn: () => {},
+        hasHeldDelivery: () => false,
+      },
+    });
+
+    await expect(runRebaseFlow(deps, "main")).rejects.toMatchObject({ statusCode: 409 });
+
+    expect(agentInvocations).toBe(1);
+    expect(awaiting).toBe(true);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(fs.readFileSync(path.join(workDir, "shared.txt"), "utf-8")).toBe("feature edit\n");
+    expect(runner.systemTurnInProgress).toBe(false);
   });
 
   it("conflicts — preserves tool calls and splits assistant messages at tool-result boundary", async () => {
@@ -3382,5 +3478,573 @@ describe("rebase-driver: the flow releases its own hold, not whatever the flag h
     // Its owner may be mid-rebase itself; handing it a queued turn is what docs/304 stopped.
     expect(runner.systemTurnInProgress).toBe(true);
     expect(runner.queueLength).toBe(1);
+  });
+});
+
+describe("rebase-driver: a sync blocked by untracked files at paths a replayed commit adds", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-untracked-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("leaves the branch as it was, and the notice explains the cause instead of dumping stderr", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    commitThenIgnoreCache(bareDir, workDir);
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    let err: unknown = null;
+    try {
+      await runFlow({
+        git,
+        githubAuthManager: makeStubAuth(false),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+        recordSyncCard: true,
+      }, "main");
+    } catch (e) {
+      err = e;
+    }
+
+    expect(err).toBeInstanceOf(Error);
+    // Left for the route to report, which is where the notice below is built.
+    expect(syncFailureAlreadyExplained(err)).toBe(false);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+
+    const notice = buildSyncFailureNotice("main", (err as Error).message, false);
+    expect(notice).toMatch(/^Sync with `main` failed: a commit being replayed adds files/);
+    expect(notice).toContain("`cache/a.js`, `cache/b.js`, `cache/c.js` and 2 more");
+    expect(notice).toContain("Your branch was not changed by ShipIt.");
+    expect(notice).toContain("squash this branch");
+    expect(notice).not.toMatch(/warning:|hint:|Rebasing \(/);
+  });
+
+  it("the automatic path counts the refusal, stores git's summary for the PR card, and logs the raw error once", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    commitThenIgnoreCache(bareDir, workDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const deps = {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+    wireSystemTurnDeps(deps);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await runAutoResolveAttempt(deps, "main");
+    const second = await runAutoResolveAttempt(deps, "main");
+
+    const logged = consoleError.mock.calls.filter(([line]) => String(line).startsWith("[auto-resolve]"));
+    consoleError.mockRestore();
+    // Git refuses identically every time, so a free deferral would retry forever.
+    expect(first).toEqual({
+      outcome: "error",
+      lastError: "error: The following untracked working tree files would be overwritten by merge: "
+        + "`cache/a.js`, `cache/b.js`, `cache/c.js` and 2 more",
+      didWork: true,
+    });
+    expect(second).toEqual(first);
+    expect(logged).toHaveLength(1);
+    expect((logged[0]?.[1] as Error).message).toContain("hint:");
+    expect(await git.isRebaseInProgress()).toBe(false);
+  });
+});
+
+describe("rebase-driver: buildSyncFailureNotice", () => {
+  const untracked = "error: The following untracked working tree files would be overwritten by merge:\n\ta\n\tb\nAborting\n";
+
+  it("never claims an unchanged branch while the rebase is still in progress", () => {
+    for (const message of [untracked, "fatal: could not read HEAD\n"]) {
+      const notice = buildSyncFailureNotice("main", message, true);
+      expect(notice).toContain("still mid-rebase");
+      expect(notice).toContain("git rebase --abort");
+      expect(notice).not.toContain("was not changed");
+    }
+  });
+
+  it("claims neither outcome when git could not say whether the rebase is still in progress", () => {
+    for (const message of [untracked, "fatal: could not read HEAD\n"]) {
+      const notice = buildSyncFailureNotice("main", message, null);
+      expect(notice).toContain("could not check whether the rebase was aborted");
+      expect(notice).not.toContain("was not changed");
+      expect(notice).not.toContain("FAILED");
+    }
+  });
+
+  it("leads an unclassified failure with git's error line, without doubling its full stop", () => {
+    expect(buildSyncFailureNotice("main", "warning: noise\nfatal: invalid upstream 'origin/main'.\n", false)).toBe(
+      "Sync with `main` failed: fatal: invalid upstream 'origin/main'. Your branch was not changed by ShipIt; "
+      + "check the workspace state and try again.",
+    );
+  });
+
+  it("names every path when there are only a few", () => {
+    expect(buildSyncFailureNotice("main", untracked, false)).toContain("such as build caches: `a`, `b`.");
+  });
+
+  it("explains a directory the rebase replaces, whose untracked files `git status` hides", () => {
+    const notice = buildSyncFailureNotice(
+      "main",
+      "error: Updating the following directories would lose untracked files in them:\n\t.claude/skills\n\n"
+        + "Aborting\nerror: could not detach HEAD\n",
+      false,
+    );
+    expect(notice).toBe(
+      "Sync with `main` failed: the rebase replaces `.claude/skills` with a file or symlink, and git will not "
+      + "delete the untracked files still inside. They are usually ignored files, which `git status` does not "
+      + "show. Your branch was not changed by ShipIt. To sync, move or delete those files, then sync again.",
+    );
+  });
+});
+
+describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that becomes a symlink", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-plugin-skills-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const COPY = "plugins--tools--probe-0123456789ab";
+  const STAGING = `.${COPY}.staging-1a2b3c4d`;
+
+  // The incident's shape: main moved `.claude/skills` to `.agents/skills` and left a symlink.
+  function skillsRootBecomesSymlink(): { workDir: string; git: GitManager } {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    fs.mkdirSync(path.join(workDir, ".claude/skills/real"), { recursive: true });
+    fs.writeFileSync(path.join(workDir, ".claude/skills/real/SKILL.md"), "# real\n");
+    execSync("git add -A && git commit -m 'Add a skill' && git push", { cwd: workDir, stdio: "pipe" });
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const upstream = path.join(tmpDir, "upstream");
+    execSync(`git clone ${bareDir} ${upstream}`, { stdio: "pipe" });
+    fs.mkdirSync(path.join(upstream, ".agents"));
+    execSync("git mv .claude/skills .agents/skills", { cwd: upstream, stdio: "pipe" });
+    fs.symlinkSync("../.agents/skills", path.join(upstream, ".claude/skills"));
+    execSync("git add -A && git commit -m 'Symlink the skills root' && git push", { cwd: upstream, stdio: "pipe" });
+    return { workDir, git };
+  }
+
+  function writeOwnedDir(dir: string): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, PLUGIN_SKILL_MARKER),
+      JSON.stringify({ marker: PLUGIN_SKILL_MARKER_ID, source: "/checkout/skills/probe", name: path.basename(dir) }),
+    );
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "# copy\n");
+  }
+
+  // What preparePlugins leaves: the copies, a crashed pass's staging dir, and their exclude block.
+  function materializeCopies(workDir: string): void {
+    writeOwnedDir(path.join(workDir, ".claude/skills", COPY));
+    writeOwnedDir(path.join(workDir, ".claude/skills", STAGING));
+    fs.appendFileSync(
+      path.join(workDir, ".git/info/exclude"),
+      `/.claude/skills/.plugins--*.staging-*/\n/.claude/skills/${COPY}/\n`,
+    );
+  }
+
+  function flowDeps(git: GitManager, runner: SessionRunner, captured: { role: string; text: string }[] = []) {
+    return {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+    };
+  }
+
+  function runnerWithPrepare(workDir: string): { runner: SessionRunner; prepare: ReturnType<typeof vi.fn> } {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const prepare = vi.fn(() => Promise.resolve());
+    Object.assign(runner, { preparePlugins: prepare });
+    return { runner, prepare };
+  }
+
+  // Verbatim from git 2.39.5, the orchestrator image's git (node:24-slim, bookworm).
+  const GIT_239_REFUSAL = "error: Updating the following directories would lose untracked files in them:\n"
+    + "\t.claude/skills\n\nAborting\nerror: could not detach HEAD\n";
+
+  /**
+   * Newer git deletes ignored files in a directory it replaces, so CI's git would never refuse.
+   * This makes any git refuse the way the orchestrator's does: while the real `.claude/skills`
+   * still holds anything besides `tracked`.
+   */
+  function refuseLikeGit239(git: GitManager, workDir: string, tracked: readonly string[] = ["real"]): void {
+    const rebase = git.rebase.bind(git);
+    git.rebase = (onto: string) => {
+      const root = path.join(workDir, ".claude/skills");
+      const stat = fs.lstatSync(root, { throwIfNoEntry: false });
+      const blocking = stat?.isDirectory()
+        ? fs.readdirSync(root).filter((name) => !tracked.includes(name))
+        : [];
+      return blocking.length > 0 ? Promise.reject(new Error(GIT_239_REFUSAL)) : rebase(onto);
+    };
+  }
+
+  it("with this machine's own git, whichever way it treats the copies, rebases and prepares them again", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    const { runner, prepare } = runnerWithPrepare(workDir);
+
+    const outcome = await runFlow(flowDeps(git, runner), "main");
+
+    expect(outcome).toMatchObject({ status: "rebased" });
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY))).toBe(false);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("prepares the copies again when git deleted them itself, as git newer than 2.39 does", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    const rebase = git.rebase.bind(git);
+    git.rebase = (onto: string) => {
+      for (const name of [COPY, STAGING]) fs.rmSync(path.join(workDir, ".claude/skills", name), { recursive: true });
+      return rebase(onto);
+    };
+    const { runner, prepare } = runnerWithPrepare(workDir);
+
+    const outcome = await runFlow(flowDeps(git, runner), "main");
+
+    expect(outcome).toMatchObject({ status: "rebased" });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the copies git 2.39 refuses over, rebases, and prepares them again after the handback", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
+    const { runner, prepare } = runnerWithPrepare(workDir);
+
+    const outcome = await runFlow(flowDeps(git, runner), "main");
+
+    expect(outcome).toMatchObject({ status: "rebased", forcePushed: true });
+    expect(fs.lstatSync(path.join(workDir, ".claude/skills")).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills/real/SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY))).toBe(false);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", STAGING))).toBe(false);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    const handback = vi.mocked(handWorkspaceBackToWorker).mock.invocationCallOrder;
+    expect(Math.max(...handback)).toBeLessThan(prepare.mock.invocationCallOrder[0]);
+  });
+
+  it("holds the session until the copies are back, so a queued turn never spawns without them", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
+    const { runner, prepare } = runnerWithPrepare(workDir);
+    let finishPrepare: () => void = () => {};
+    prepare.mockImplementation(() => new Promise<void>((resolve) => { finishPrepare = resolve; }));
+    let settled = false;
+
+    const flow = runFlow(flowDeps(git, runner), "main").finally(() => { settled = true; });
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalled());
+    await new Promise((r) => setImmediate(r));
+
+    expect(settled).toBe(false);
+    expect(runner.systemTurnInProgress).toBe(true);
+    finishPrepare();
+    await flow;
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
+  it("stops waiting for a worker that never answers", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
+    const { runner, prepare } = runnerWithPrepare(workDir);
+    let prepareCalled: () => void = () => {};
+    const called = new Promise<void>((resolve) => { prepareCalled = resolve; });
+    prepare.mockImplementation(() => {
+      // The wait's own timer is armed right after this returns.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      prepareCalled();
+      return new Promise<void>(() => {});
+    });
+
+    try {
+      const flow = runFlow(flowDeps(git, runner), "main");
+      await called;
+      await vi.advanceTimersByTimeAsync(PLUGIN_SKILL_RESTORE_WAIT_MS);
+      await expect(flow).resolves.toMatchObject({ status: "rebased" });
+      expect(runner.systemTurnInProgress).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the automatic path resolves the same refusal instead of deferring it", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    materializeCopies(workDir);
+    refuseLikeGit239(git, workDir);
+    const { runner, prepare } = runnerWithPrepare(workDir);
+    const deps = { ...flowDeps(git, runner), recordSyncCard: undefined };
+    wireSystemTurnDeps(deps);
+
+    const result = await runAutoResolveAttempt(deps, "main");
+
+    expect(result).toEqual({ outcome: "success", forcePushed: true, didWork: true });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves copies alone, and prepares nothing, on a rebase that keeps them", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    materializeCopies(workDir);
+    const { runner, prepare } = runnerWithPrepare(workDir);
+
+    const outcome = await runFlow(flowDeps(git, runner), "main");
+
+    expect(outcome).toMatchObject({ status: "rebased" });
+    expect(fs.existsSync(path.join(workDir, ".claude/skills", COPY, "SKILL.md"))).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("never removes a directory ShipIt did not write, or a copy git tracks", async () => {
+    const { workDir, git } = skillsRootBecomesSymlink();
+    const tracked = `plugins--tracked--probe-ba9876543210`;
+    writeOwnedDir(path.join(workDir, ".claude/skills", tracked));
+    execSync("git add -A && git commit -m 'Commit a copy by hand'", { cwd: workDir, stdio: "pipe" });
+    const notes = path.join(workDir, ".claude/skills/local-notes");
+    fs.mkdirSync(notes);
+    fs.writeFileSync(path.join(notes, "todo.md"), "mine\n");
+    fs.appendFileSync(path.join(workDir, ".git/info/exclude"), "/.claude/skills/local-notes/\n");
+    materializeCopies(workDir);
+    refuseLikeGit239(git, workDir, ["real", tracked]);
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+    const { runner, prepare } = runnerWithPrepare(workDir);
+
+    const err = await runFlow(flowDeps(git, runner), "main").catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(fs.readFileSync(path.join(notes, "todo.md"), "utf8")).toBe("mine\n");
+    expect(fs.existsSync(path.join(workDir, ".claude/skills", tracked, "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(workDir, ".claude/skills", COPY))).toBe(false);
+    // What it cleared comes back even though the rebase still failed.
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(buildSyncFailureNotice("main", (err as Error).message, false))
+      .toContain("the rebase replaces `.claude/skills` with a file or symlink");
+  });
+});
+
+describe("rebase-driver: the hold a reconnect's banner reconcile relies on", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-reconcile-hold-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // route-registry reads "neither running nor systemTurnInProgress" as "no flow is left".
+  it("the runner is running or held at every message of a conflict flow, and in its turn", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const held = () => runner.running || runner.systemTurnInProgress;
+    const samples: { at: string; held: boolean }[] = [];
+    runner.on("message", (msg: WsServerMessage) => samples.push({ at: msg.type, held: held() }));
+
+    await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        samples.push({ at: "resolution turn", held: held() });
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged\n");
+        return "resolved";
+      }) as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(samples.map((s) => s.at)).toEqual(expect.arrayContaining([
+      "rebase_started", "rebase_conflicts", "resolution turn", "rebase_complete",
+    ]));
+    expect(samples.filter((s) => !s.held)).toEqual([]);
+    expect(held()).toBe(false);
+  });
+});
+
+describe("rebase-driver: repeated automatic attempts that fail before any agent runs", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-repeat-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const BANNER_OPENERS = new Set(["auto_resolve_started", "rebase_started", "rebase_conflicts"]);
+  const BANNER_TERMINATORS = new Set(["auto_resolve_result", "rebase_complete", "rebase_aborted"]);
+
+  function lastBannerMessage(messages: readonly WsServerMessage[]): string | undefined {
+    return messages.filter((m) => BANNER_OPENERS.has(m.type) || BANNER_TERMINATORS.has(m.type)).at(-1)?.type;
+  }
+
+  function wiredManager(git: GitManager, runner: SessionRunner) {
+    let now = 1_000_000;
+    const deps = {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+    wireSystemTurnDeps(deps);
+    const attempts = { count: 0 };
+    const manager = new AutoConflictResolveManager(
+      () => {},
+      () => runner,
+      () => true,
+      (_sessionId, baseBranch) => {
+        attempts.count++;
+        return runAutoResolveAttempt(deps, baseBranch);
+      },
+      () => now,
+    );
+    const poll = async (): Promise<void> => {
+      await manager.handleTransition("s1", {
+        sessionId: "s1",
+        prNumber: 1,
+        prUrl: "https://github.com/o/r/pull/1",
+        prTitle: "t",
+        prBody: "",
+        prState: "open",
+        baseBranch: "main",
+        headBranch: "feature",
+        insertions: 0,
+        deletions: 0,
+        checks: { state: "pending", total: 0, passed: 0, failed: 0, pending: 0 },
+        reviewDecision: "none",
+        autoMergeEnabled: false,
+        mergeable: "conflicting",
+      }, "main", "head-sha");
+      await vi.waitFor(() => expect(manager.get("s1")?.status).not.toBe("running"));
+    };
+    return { manager, attempts, poll, advance: (ms: number) => { now += ms; } };
+  }
+
+  it("an identical deferral after rebase_started leaves nothing unterminated to replay on reconnect", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    // Transient, so it stays a free deferral with the same reason on every retry. Git appends
+    // "could not detach HEAD" to any failed checkout, so that line alone must not count it.
+    git.rebase = () => Promise.reject(new Error(
+      "fatal: Unable to create '/w/.git/index.lock': File exists.\n\nAnother git process seems to be running "
+      + "in this repository.\nerror: could not detach HEAD\n",
+    ));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { manager, poll, advance } = wiredManager(git, runner);
+
+    for (let i = 0; i < 3; i++) {
+      await poll();
+      expect(manager.get("s1")?.status).toBe("deferred");
+      // What a viewer connecting now is replayed, and what the open one has already seen.
+      expect(lastBannerMessage(runner.getTurnEventBuffer())).toBe("auto_resolve_result");
+      advance(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1);
+    }
+    expect(runner.getTurnEventBuffer().filter((m) => m.type === "rebase_started")).toHaveLength(3);
+  });
+
+  it("a refusal git repeats every time is counted, exhausts, and names itself on the PR card", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    commitThenIgnoreCache(bareDir, workDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { manager, attempts, poll, advance } = wiredManager(git, runner);
+
+    for (let i = 0; i < MAX_AUTO_RESOLVE_ATTEMPTS + 3; i++) {
+      await poll();
+      advance(AUTO_RESOLVE_COOLDOWN_MS + 1);
+    }
+
+    expect(attempts.count).toBe(MAX_AUTO_RESOLVE_ATTEMPTS);
+    expect(manager.get("s1")).toMatchObject({
+      status: "exhausted",
+      lastError: expect.stringContaining("untracked working tree files would be overwritten") as unknown,
+    });
+    expect(lastBannerMessage(runner.getTurnEventBuffer())).toBe("auto_resolve_result");
   });
 });

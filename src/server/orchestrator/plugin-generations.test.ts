@@ -324,6 +324,32 @@ describe("pruning what a generation leaves behind", () => {
     expect(fs.existsSync(path.join(work, first))).toBe(false);
   });
 
+  it("removes a generation the lease declined at its swap on the next unchanged round", async () => {
+    let held: string | null = null;
+    const begin: BeginGenerationDeletion = async ({ generationId }) =>
+      (generationId === held ? null : () => undefined);
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: begin });
+    const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+    held = first;
+    const generations = path.join(stateDir, "plugins", "tools", "generations");
+    const work = path.join(stateDir, "plugins", "tools", "work");
+    fs.mkdirSync(path.join(work, first, "upper"), { recursive: true });
+
+    await commitFiles({ "second.txt": "x" }, "second");
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: begin });
+    expect(fs.readdirSync(generations)).toContain(first);
+
+    const stillHeld = await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: begin });
+    expect(stillHeld.status).toBe("unchanged");
+    expect(fs.readdirSync(generations)).toContain(first);
+
+    held = null;
+    const outcome = await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: begin });
+    expect(outcome.status).toBe("unchanged");
+    expect(fs.readdirSync(generations)).toEqual([readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit]);
+    expect(fs.existsSync(path.join(work, first))).toBe(false);
+  });
+
   it("sweeps an abandoned staging tree", async () => {
     await activateGeneration(repo({ branch: "main" }), deps());
     const generations = path.join(stateDir, "plugins", "tools", "generations");

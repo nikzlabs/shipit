@@ -20,6 +20,7 @@ describe("compose-stack-reaper", () => {
     Id: string;
     State?: string;
     Labels: Record<string, string>;
+    NetworkMode?: string;
   }
 
   interface FakeNetwork {
@@ -60,6 +61,11 @@ describe("compose-stack-reaper", () => {
         return [...live.values()].filter((c) => matchesLabelFilter(c.Labels, o.filters.label));
       }),
       getContainer: (id: string) => ({
+        inspect: async () => {
+          const c = live.get(id);
+          if (!c) fail(id, 404, "inspect");
+          return { HostConfig: { NetworkMode: c?.NetworkMode ?? "bridge" } };
+        },
         stop: async () => {
           calls.push(`stop:${id}`);
           const code = opts.stopFails?.[id];
@@ -179,6 +185,35 @@ describe("compose-stack-reaper", () => {
       expect(h.calls.indexOf("removeNetwork:n1")).toBeGreaterThan(
         h.calls.findIndex((c) => c.startsWith("remove:c2")),
       );
+    });
+
+    it("removes the egress sidecars of the service containers it removed, which are outside the project", async () => {
+      const sidecar = (id: string, parent: string, sessionId = SID): FakeContainer => ({
+        Id: id,
+        State: "running",
+        Labels: {
+          [PARENT_SESSION_LABEL]: sessionId,
+          [COMPOSE_PROJECT_LABEL]: "shipit",
+          "shipit-egress-service-sidecar": "true",
+          "shipit-egress-resolver": sessionId,
+          "shipit-egress-parent": parent,
+        },
+        NetworkMode: `container:${parent}`,
+      });
+      const h = fakeDocker({
+        containers: [
+          serviceContainer(SID, "c1"),
+          sidecar("c1-resolver", "c1"),
+          sidecar("c1-proxy", "c1"),
+          serviceContainer(OTHER, "other-1"),
+          sidecar("other-1-resolver", "other-1", OTHER),
+        ],
+      });
+
+      expect(await downComposeStackByProject(h.docker, SID)).toBe(1);
+
+      expect(h.removed).toEqual(["c1", "c1-resolver", "c1-proxy"]);
+      expect(h.live.has("other-1-resolver")).toBe(true);
     });
 
     it("leaves another session's stack alone", async () => {

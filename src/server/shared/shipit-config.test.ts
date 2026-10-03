@@ -504,10 +504,18 @@ describe("resolveShipitConfig", () => {
     expect(config.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
   });
 
+  // shipit-docs/shipit-yaml.md "Config resolution" states this rule; change both together.
   it("does not auto-detect compose files", () => {
     const dir = setup();
     fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent:\n  memory: 2048\n");
     fs.writeFileSync(path.join(dir, "docker-compose.yml"), "services: {}\n");
+    const config = resolveShipitConfig(dir);
+    expect(config.compose).toBeUndefined();
+  });
+
+  it("does not auto-detect compose files when there is no shipit.yaml", () => {
+    const dir = setup();
+    fs.writeFileSync(path.join(dir, "compose.yml"), "services: {}\n");
     const config = resolveShipitConfig(dir);
     expect(config.compose).toBeUndefined();
   });
@@ -772,5 +780,37 @@ issues:
   it("does not warn about `issues` as an unknown top-level key", () => {
     const config = parse("issues:\n  trackers: []\n");
     expect(config.warnings).toEqual([]);
+  });
+});
+
+describe("lfs (docs/320-lfs-host-credential)", () => {
+  const lfs = (body: string) => parseShipitConfig(parseYaml(`lfs:\n${body}`));
+
+  it("keeps one exact host and a secret name", () => {
+    const config = lfs("  host: LFS.Example.com:8443\n  credential: LFS_CREDENTIAL\n");
+    expect(config.lfs).toEqual({ host: "lfs.example.com:8443", credential: "LFS_CREDENTIAL" });
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("drops https's default port, so it matches the secret's URL", () => {
+    expect(lfs("  host: lfs.example.com:443\n  credential: LFS_CREDENTIAL\n").lfs?.host).toBe("lfs.example.com");
+  });
+
+  it("is absent when not declared", () => {
+    expect(parseShipitConfig(parseYaml("version: 1\n")).lfs).toBeUndefined();
+  });
+
+  it.each([
+    ["a wildcard host", "  host: \"*.example.com\"\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["a scheme", "  host: https://lfs.example.com\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["a path", "  host: lfs.example.com/lfs\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["github.com", "  host: github.com\n  credential: LFS_CREDENTIAL\n", "already authenticates"],
+    ["github.com with a trailing dot", "  host: github.com.\n  credential: LFS_CREDENTIAL\n", "one exact host"],
+    ["a secret name outside the compose and plugin name rule", "  host: lfs.example.com\n  credential: lfs-cred\n", "letters, digits and underscores"],
+    ["a missing credential", "  host: lfs.example.com\n", "needs both"],
+  ])("ignores %s, with a warning", (_what, body, warning) => {
+    const config = lfs(body);
+    expect(config.lfs).toBeUndefined();
+    expect(config.warnings.join("\n")).toContain(warning);
   });
 });

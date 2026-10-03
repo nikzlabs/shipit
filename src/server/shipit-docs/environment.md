@@ -60,8 +60,8 @@ What this means in practice:
 | Path | Description |
 |------|-------------|
 | `/workspace` | Project root. This is the git repo. Your working directory. |
-| `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Cleared only by a full session reset. |
-| `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
+| `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts and checkout reclaim, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). It is kept while the session is in use. After the session is archived or finished, ShipIt deletes it when a retention period ends — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
+| `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. It has the same retention period as `/persist`. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
 | `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
 | `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
@@ -217,7 +217,8 @@ health strip) under "Node runtime", which is where the user can see it too. It i
 never silently ignored — if `node -v` surprises you, that panel says why.
 
 Changing `.nvmrc` mid-session does not re-provision; the pin is resolved once at
-container start. Restart the container to pick up a new pin.
+container start. To pick up a new pin, restart the agent container — see
+[Restarting your agent container](#restarting-your-agent-container).
 
 ## Automatic behaviors
 
@@ -330,6 +331,121 @@ every other LFS file keeps its real content.
 A deployment can disable automatic LFS downloads (`SHIPIT_GIT_LFS=off`) to avoid
 the bandwidth cost on asset-heavy repos; a manual `git lfs pull` still works.
 
+**ShipIt's pushes upload LFS objects first, and stop when the upload fails.**
+Every push ShipIt makes for you (the auto-push after a turn, opening a pull
+request, the force-push after a sync) runs `git lfs push` before it pushes the
+branch. If that upload fails, the branch is **not pushed**: without its objects
+the remote would name LFS files that no store holds, and every other clone would
+get pointer stubs with a clean `git status`. The commits stay in the session's
+local history, a notice in the chat quotes git-lfs's error, and every later push
+retries the upload first. An upload still running after ShipIt's LFS time limit
+(five minutes unless the deployment changed it) is stopped and counts as failed;
+the notice then names the limit instead of an error. Objects that finished
+uploading are not sent again. A branch that adds no new LFS objects still pushes
+while the LFS server is down. To investigate, run `git lfs push origin <branch>`
+and read its error. Do not get around it by pushing with the LFS upload skipped
+(`--no-verify`, `GIT_LFS_SKIP_PUSH`); that publishes exactly the stubs this
+refusal prevents.
+
+Moving a repository to a new LFS server does not copy the objects already
+pushed. A push uploads only the objects of commits the remote does not have yet,
+so a commit that changes `lfs.url` and adds no LFS file uploads nothing.
+`git lfs push --all origin` does not copy them either: with no ref named it
+reads local refs only, and a session checkout has few local branches. It skips
+the objects of the other remote branches, and fails with `(missing)` on an
+object that neither the local store nor the new server holds. Instead, list
+every object of every branch and tag, get the ones the local store lacks from
+the old server, and push the list to the new server by object id:
+
+```bash
+git fetch --tags origin
+git lfs ls-files --all --long | cut -d' ' -f1 | sort -u > /tmp/oids
+git -c lfs.url=<old LFS URL> lfs fetch --all origin
+git -c lfs.url=<new LFS URL> -c lfs.pushurl=<new LFS URL> \
+  lfs push --object-id origin --stdin < /tmp/oids
+```
+
+For GitHub the old URL is `https://github.com/<owner>/<repo>.git/info/lfs`, and
+GitHub bills that fetch as a download. Then check the result: send the new
+server a download batch request (`POST <new LFS URL>/objects/batch`,
+`"operation": "download"`) with the `oid` and `size` of every object, which
+`git lfs ls-files --all --json` lists. Each object must come back with a
+`download` action. Write the new `lfs.url` into `.lfsconfig` only after that
+check passes. ShipIt commits the file when the turn ends, also when the turn
+fails part-way, and a clone that reads the new `lfs.url` before the new server
+holds the bytes gets pointer stubs with a clean `git status`.
+
+Branches made before the move can need the copy again. A sync rebases such a
+branch onto the new `lfs.url`, and the upload before its force-push sends every
+LFS object of the rebased commits to the new server. If neither the session's
+store nor the new server holds one of them, that upload fails with `(missing)`
+and ShipIt does not push: run the copy in that session. A merge of the base into
+the branch rewrites no commit, so the upload sends only the objects of commits
+not pushed before. So a branch that reaches the base with no sync after the
+move, or with only such a merge, makes the base name objects the new server
+lacks. The list covers every remote branch, so run the copy and the check again
+before such a branch merges, or immediately if it merged already. On a repeat,
+also run `git lfs fetch --all origin` before the push: the push by object id
+stops on an id the local store does not hold, and the new server then has
+objects of its own.
+
+**LFS objects are shared between sessions on one host.** ShipIt keeps one LFS
+object store per repository per ShipIt host, beside its bare git cache. This is
+what to use when you estimate LFS download volume:
+
+- **What the store downloads.** The objects at the tip of the default branch,
+  and nothing else: no other branch, no history. It fetches in the background
+  every 3 minutes and right after a session's pull request merges, and it
+  downloads only objects it does not hold yet.
+- **What a new session gets.** Its clone hardlinks **every** object the store
+  holds, not only those at its HEAD, so a workspace can show objects from old
+  commits, all with a link count above 1 and older than the workspace. The
+  session's own `git lfs pull` then downloads only what its checkout needs and
+  the store lacked: objects on its branch but not on the default-branch tip.
+- **What a fork gets.** The same links as a new session: the fork's clone of its
+  parent's workspace hardlinks every object the store holds, and its
+  `git lfs pull` downloads the rest. It gets nothing from the parent's own
+  `.git/lfs`, so an object the parent committed but has not pushed yet stays a
+  pointer stub in the fork until the parent pushes and the fork runs
+  `git lfs pull`.
+- **Objects a session creates** are uploaded by its push. Each host downloads
+  them once more when they reach the default branch.
+- **How long objects stay.** An object leaves the store only when no workspace
+  on the host links it any more and it was downloaded more than 14 days ago
+  (`DISK_JANITOR_LFS_OBJECT_DAYS`). Because every clone links every object, the
+  store keeps an object while any workspace of that repository on the host exists.
+- **A host with an empty store** (a new host, or one whose repository cache was
+  reclaimed): the first sessions cloned before the store's first fetch link
+  nothing and download every object at their HEAD themselves, and the store then
+  downloads the default-branch tip's objects again. Expect about two full
+  downloads of the tip's objects for the first session on a host, then only
+  what is new.
+
+A deployment can turn sharing off (`SHIPIT_GIT_LFS_SHARED_STORE=off`); then every
+session downloads its own objects.
+
+**An LFS server that is not GitHub needs an `lfs` declaration.** ShipIt
+presents its GitHub credential to `github.com` only. A repository whose
+committed `.lfsconfig` sets `lfs.url` to another host gets a credential for that
+host only when `shipit.yaml` declares it:
+
+```yaml
+lfs:
+  host: lfs.example.com
+  credential: LFS_CREDENTIAL
+```
+
+The user stores the secret `LFS_CREDENTIAL` in **Project Settings → Secrets**
+as one credential-store line, `https://<username>:<password>@lfs.example.com`.
+ShipIt then presents it on its own uploads and downloads, and your `git lfs`
+gets it through ShipIt's credential helper. Details and the refusal rules are in
+`/shipit-docs/shipit-yaml.md` § `lfs`. The session reaches the host only if the
+user allows it, and the storage host its server redirects downloads to (for
+Cloudflare R2, the bucket's `r2.cloudflarestorage.com` or custom-domain host),
+in the egress settings. Without the declaration, or when the secret names
+another host, an LFS server that requires authentication fails ShipIt's uploads
+and downloads, and the push refusal above says why.
+
 ## Session container lifecycle — idle containers are destroyed, not paused
 
 When a session sits idle (no one viewing it and no agent turn running), ShipIt
@@ -414,6 +530,83 @@ no durability guarantee and belong in `docker-compose.yml`.
   moment, and 24 hours idle takes it regardless. **Do not rely on any of it** —
   the cushion is incidental, not a guarantee.
 
+### What survives what
+
+`/persist` is the session's `scratch` directory on the host. A Compose service
+that mounts the `persist` volume sees the same directory, so it has the same
+lifecycle. A project's own named volumes are different:
+
+| Event | `/persist`, and `persist` mounts in services | The project's named Compose volumes |
+|---|---|---|
+| Container restart (idle reclaim, a ShipIt update, Restart all, Restart agent container) | Kept | Kept |
+| Idle reclaim that also stops the preview stack | Kept | Kept |
+| 24 hours idle | Kept | Can be deleted |
+| Checkout reclaim, then a fresh clone | Kept | Kept |
+| Archive | Kept for the retention period, then **deleted** | Can be deleted |
+| Restore from the archive | Kept, as it was, if the period did not end. Empty after that | Empty, if they were deleted |
+| The pull request merged or closed, and the session was not used since | Kept for the retention period, then **deleted** | Can be deleted |
+| Delete — there is no separate session delete; removing a repository archives its sessions | As archive | Can be deleted |
+| **Full reset** (Settings → Advanced) | **Deleted** | Deleted |
+
+So data that the session needs while it is in use goes in `/persist`, and a
+service that must keep data mounts `persist` instead of declaring a named
+volume. `/persist` is not an archive: data that must stay after the session is
+finished belongs in git, or outside ShipIt.
+
+### The retention period for `/persist` and `/uploads`
+
+ShipIt deletes everything in `/persist` and `/uploads` when the retention
+period of the session ends. That includes what a Compose service wrote through
+a `persist` mount.
+
+- **Which sessions.** A session that the user archived, and a session that is
+  finished: its pull request merged or closed and it was not used since. A
+  pinned session, and a session with **Keep preview running**, is not finished.
+  A session in use keeps its files with no time limit.
+- **How long.** 60 days. 14 days when the files use 100 MB or more. The person
+  who deploys ShipIt can change these values.
+- **From when.** For an archived session, from the archive. For a finished
+  session, from the merge or close, or from the last time it was used or
+  opened, the latest of these. A message in the session starts a new period.
+- **What the user sees.** The session's row in **All sessions** shows the date.
+  After the deletion, the transcript has a notice that says what was deleted,
+  and your next turn in that session starts with a `[System]` line that says
+  the same.
+- **A sandbox session that has no remote** also loses its `/workspace` checkout
+  when the period of its archive ends, because that checkout has no other copy.
+  Restore gives it an empty workspace.
+
+When a session holds data that the user must not lose — generated media that
+cost money to make, a database file — say so before they archive it, and before
+its pull request merges. To keep the data, the user restores or opens the
+session before the date, or pins it.
+
+### Restarting your agent container
+
+When a change applies only from the next container start, restart the agent
+container yourself — do not ask the user to:
+
+```bash
+shipit session restart --note "check that node -v prints 22, then run the tests"
+```
+
+That records the request; ShipIt restarts the agent container **after your
+turn ends**, so the turn that asked is not cut off. The preview services keep
+running. ShipIt then starts a new turn on the new container with your note, so
+write in it what to check or do next. Say in your reply what you restart and
+why. See [sessions.md](sessions.md) → `shipit session restart`.
+
+You cannot ask for **Restart all** (it also stops and restarts the Compose
+stack). When a session is wedged, or restarting the agent container did not
+help, ask the user, and name the button and where it is: **Restart all**, on
+the health strip at the top of the **Terminal** tab. Never say only "restart
+the container" — the user cannot tell which control that means. To restart a
+single preview service, use `shipit service restart <name>`.
+
+Where ShipIt shows a **Restart to apply now** button next to the change itself
+(Session settings, a plugin host grant card), point the user to that button
+instead.
+
 **If something needs to keep running or run on every (re)start, declare it —
 don't start it at runtime:**
 
@@ -448,3 +641,32 @@ Service containers declared in `docker-compose.yml` are separate containers, so
 they do **not** draw on the session's CPU budget — they get their own. ShipIt
 gives them a low scheduling weight so they yield to the platform under
 contention; set your own `deploy.resources` limits if a service needs a cap.
+
+## Network
+
+In both Network modes, no container in this session — this one, its Compose
+services, plugin containers, and containers started with Docker access — can
+reach the machine that runs ShipIt, private networks (the LAN, `10.0.0.0/8`,
+`172.16.0.0/12`, `192.168.0.0/16`, link-local) or the tailnet. This keeps code
+running in a session away from ShipIt's host and the user's other machines.
+From this container, what stays reachable:
+
+- ShipIt itself at `$SHIPIT_HOST:$SHIPIT_PORT`, and this session's own services
+  on the session network, by their Compose service name (`http://dev:3000/`;
+  a name with a dot, such as `dev.local`, does not resolve in a Contained
+  session) or by the `url` ShipIt lists for them ([preview.md](preview.md)).
+  Never through a port published on the host.
+- An SSH destination granted to this session, on its SSH port only
+  ([ssh.md](ssh.md)).
+- The internet: any host in an **Open** session, the allowlist in a
+  **Contained** one. An allowlisted name whose address is private stays blocked.
+
+So a refused or timed-out connection to a local address is this block, not a
+network fault, and no allowlist entry changes it. Tell the user which address
+the work needed and why. If it is a machine they reach over SSH, a destination
+grant in Session settings is the way in.
+
+A host that cannot run ShipIt's egress sidecar cannot apply this block. There
+ShipIt listens only on loopback, and contained sessions do not start. A Compose
+service given the Docker socket controls this machine, so none of this holds
+for it ([compose.md](compose.md)).

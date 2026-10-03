@@ -50,6 +50,7 @@ import {
   createWarmPreviewStarter,
   runRepoMigration,
   runRemoteCredentialScrub,
+  clearUnrecordedRepoAddresses,
   retireWarmSessions,
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
@@ -62,6 +63,7 @@ import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
+import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -70,6 +72,7 @@ import {
 } from "./background-harness-run.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
+import { announceEgressOnContainerStart } from "./egress-container-start.js";
 import { isOverlayEligible, isOverlayEnabled } from "./overlay-session.js";
 import {
   publishDepDirOverlayBases,
@@ -95,7 +98,13 @@ import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import { createStagedGenerationGate } from "./services/plugin-preflight.js";
 import type { PluginComposeService } from "./plugin-compose.js";
-import { emitPluginReposUpdated, trackComposeStop } from "./service-manager-setup.js";
+import {
+  emitPluginReposUpdated,
+  projectComposeAccessFor,
+  trackComposeStop,
+  type ComposeHelperConfig,
+} from "./service-manager-setup.js";
+import { composeRegistryLoginDir } from "./compose-helper.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
@@ -138,6 +147,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   await retireWarmSessions({
     repoStore, sessionManager, chatHistoryManager, usageManager, presentStore,
   });
+  clearUnrecordedRepoAddresses(sessionManager);
 
   const { containerManager, dockerProxyServer } = await setupContainerManager({
     deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, resolveEgressConfig,
@@ -217,6 +227,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   containerManager?.on("container_destroyed", (sessionId, previewsStopped) => {
     if (previewsStopped) announcePreviewsStopped(sessionId);
   });
+  if (containerManager) announceEgressOnContainerStart(containerManager, sseBroadcast);
 
   const latestMemoryStats: { value: DockerMemoryStats | null } = { value: null };
 
@@ -245,6 +256,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       },
       sseBroadcast,
       broadcastLog,
+      poolWarmSessionIds: () => new Set(
+        repoStore.list().flatMap((repo) => (repo.warmSessionId ? [repo.warmSessionId] : [])),
+      ),
     });
     idleEnforcer();
   };
@@ -274,6 +288,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // Keep service secrets outside the agent's workspace mount.
   const serviceEnvDir = process.env.SHIPIT_SERVICE_ENV_DIR
     ?? path.join(stateDir, "service-env");
+  // The confined Compose containers bind these by their Docker-host paths (docs/318).
+  const composeHelperConfig: ComposeHelperConfig = {
+    registryLoginDir: composeRegistryLoginDir(stateDir),
+    ...(process.env.SHIPIT_SERVICE_ENV_HOST_DIR
+      ? { serviceEnvHostDir: process.env.SHIPIT_SERVICE_ENV_HOST_DIR }
+      : {}),
+  };
+  const projectComposeAccess = deps.projectComposeAccess ?? ((sessionId: string, workspaceDir: string) => projectComposeAccessFor(
+    sessionId, workspaceDir, { containerManager, serviceEnvDir, composeHelperConfig, sessionManager, repoStore },
+  ));
 
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 
@@ -395,6 +419,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       validateStaged: createStagedGenerationGate({
         workspaceDir,
         containEgress: () => containerManager?.isEgressContained(sessionId) ?? false,
+        projectCompose: projectComposeAccess(sessionId, workspaceDir),
       }),
       ...(remoteUrl ? { consumerKey: remoteUrl } : {}),
       ensureCache: (cacheDir: string, repoUrl: string) => {
@@ -433,6 +458,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         : {}),
       containEgress: containerManager?.isEgressContained(sessionId) ?? false,
       stackName: process.env.DOCKER_STACK,
+      projectCompose: projectComposeAccess(sessionId, workspaceDir),
     });
 
   const refreshPluginReposForSession = async (
@@ -597,6 +623,25 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const settingsProposals = new SettingsProposalStore(databaseManager);
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
+  const restoreWorkspace = (sessionId: string) =>
+    restoreSessionWorkspace(
+      sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
+    );
+  // Resolves the registry at call time: it is built below, with this step wired into it.
+  const runRequestedRestartForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
+    const registry = registryHolder.ref;
+    if (!registry) return;
+    await runRequestedRestart({
+      sessionManager,
+      runnerRegistry: registry,
+      defaultAgentId,
+      credentialsDir,
+      credentialStore,
+      providerAccountManager,
+      containerManager,
+      restoreWorkspace,
+    }, turn);
+  };
 
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
@@ -607,6 +652,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     usageManager, runParamsPreps,
     markSessionAccountExhausted,
     getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
+    runRequestedRestart: runRequestedRestartForTurn,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -619,6 +665,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
+    composeHelperConfig,
     ...(credentialsDir ? { credentialsDir } : {}),
     ...(providerAccountManager ? { providerAccountManager } : {}),
     readSystemPrompt: readSystemPromptApp,
@@ -909,7 +956,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const preStartWarmPreview = containerManager
     ? createWarmPreviewStarter({
         repoStore, sessionManager, serviceManagers, composeStopPromises,
-        containerManager, secretStore, credentialStore, serviceEnvDir, logStore,
+        containerManager, secretStore, credentialStore, serviceEnvDir, composeHelperConfig, logStore,
         ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
         isSessionActive: (sessionId: string) => !!registryHolder.ref?.get(sessionId),
       })
@@ -949,7 +996,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // Adopt surviving turns before merge automation can mistake the empty registry for idle sessions.
   try {
     await reattachInFlightTurns({
-      containerManager, runnerRegistry, sessionManager, defaultAgentId,
+      containerManager, runnerRegistry, sessionManager, defaultAgentId, chatHistoryManager,
       orchestratorBuildId: process.env.SHIPIT_BUILD_ID,
     });
   } catch (err: unknown) {
@@ -1033,11 +1080,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     activatePluginRepos,
     refreshPluginReposForSession,
     runPluginCommandForSession,
+    projectComposeAccess,
     runnerRegistry,
     repoPrefetcher,
     drainQueueForSession,
     mergeWatchManager,
     quotaContinuationManager,
+    runRequestedRestartForTurn,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,

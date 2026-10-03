@@ -37,9 +37,9 @@ fi
 prune_build_artifacts() {
   # Never use image prune -a; session-worker images can be idle but required.
   docker image prune -f || true
-  # Use version-compatible flags to cap all BuildKit cache at 15 GB.
-  docker builder prune -af --max-used-space 15GB \
-    || docker builder prune -af --keep-storage 15GB \
+  # Use version-compatible flags to cap all BuildKit cache at 4 GB.
+  docker builder prune -af --max-used-space 4GB \
+    || docker builder prune -af --keep-storage 4GB \
     || docker builder prune -af \
     || true
 }
@@ -68,7 +68,7 @@ case "${FORCE_REBUILD:-0}" in
     BUILD_ARGS+=("--no-cache")
     ;;
 esac
-shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit egress-sidecar
+shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit egress-sidecar compose-helper
 
 # Build the Docker-capable image after its local base, without --pull.
 DOCKER_IMG_BUILD_ARGS=()
@@ -79,7 +79,18 @@ case "${FORCE_REBUILD:-0}" in
 esac
 shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${DOCKER_IMG_BUILD_ARGS[@]}" session-worker-docker
 
-docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
+# Recreate even an unchanged orchestrator: it pins the other images only at start.
+docker compose -f "$COMPOSE_FILE" up -d --no-build --force-recreate shipit
+
+# docs/319 req 6: a forwarder installed before this host lost the egress sidecar
+# would keep a non-loopback entrance open, so stop it.
+if [ -f /etc/systemd/system/shipit-tailscale-preview.service ] \
+  && ! docker run --rm --network none --cap-add NET_ADMIN \
+    --entrypoint /usr/local/bin/probe-firewall.sh shipit-egress-sidecar:prod >/dev/null 2>&1; then
+  echo "WARNING: this host cannot run the egress sidecar, so ShipIt stays on loopback only." >&2
+  echo "         Stopping the Tailscale forwarder; tailscale.sh reinstalls it on a host that can." >&2
+  systemctl disable --now shipit-tailscale-preview.service 2>/dev/null || true
+fi
 
 # Mark the new image live before slow cleanup can be interrupted.
 if [ -n "${SHIPIT_RESTART_MARKER:-}" ]; then

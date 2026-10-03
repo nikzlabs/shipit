@@ -147,6 +147,59 @@ async function reapOnce(
   return { removed, unresolved };
 }
 
+export const EGRESS_PARENT_LABEL = "shipit-egress-parent";
+
+/**
+ * Removes sidecars whose `shipit-egress-parent` container no longer exists. Stack teardown
+ * removes Compose service containers by project label, which the sidecars do not carry, so
+ * this is what reaps them. A parent that still exists, even stopped, keeps its sidecars.
+ */
+export async function reapParentlessEgressSidecars(
+  docker: Docker,
+  opts: { parentIds?: Iterable<string>; paceMs?: number } = {},
+): Promise<number> {
+  const filters = opts.parentIds
+    ? [...new Set(opts.parentIds)].filter(Boolean).map((id) => `${EGRESS_PARENT_LABEL}=${id}`)
+    : [EGRESS_PARENT_LABEL];
+  const byParent = new Map<string, string[]>();
+  for (const filter of filters) {
+    let list: Docker.ContainerInfo[];
+    try {
+      list = await docker.listContainers({ all: true, filters: { label: [filter] } });
+    } catch (err) {
+      console.warn("[egress-reaper] could not list egress sidecars by parent:", err);
+      return 0;
+    }
+    for (const c of list) {
+      const parent = c.Labels?.[EGRESS_PARENT_LABEL];
+      if (!parent) continue;
+      byParent.set(parent, [...(byParent.get(parent) ?? []), c.Id]);
+    }
+  }
+
+  let removed = 0;
+  for (const [parentId, sidecarIds] of byParent) {
+    try {
+      await docker.getContainer(parentId).inspect();
+      continue;
+    } catch (err) {
+      if (statusCode(err) !== 404) continue;
+    }
+    for (const id of sidecarIds) {
+      // The label alone is not proof: only a container joined to the missing netns is a sidecar.
+      let netnsParent: string | null;
+      try { netnsParent = await sidecarNetnsParent(docker, id); } catch { continue; }
+      if (netnsParent !== parentId) continue;
+      if (await removeContainer(docker, id)) {
+        removed++;
+        console.log(`[egress-reaper] removed sidecar ${id.slice(0, 12)} (parent ${parentId.slice(0, 12)} no longer exists)`);
+      }
+    }
+    if (opts.paceMs) await new Promise((r) => setTimeout(r, opts.paceMs));
+  }
+  return removed;
+}
+
 export async function reapOrphanEgressSidecars(
   docker: Docker,
   opts: { paceMs?: number } = {},

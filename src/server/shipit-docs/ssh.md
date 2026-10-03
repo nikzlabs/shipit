@@ -23,6 +23,24 @@ So `ssh prod 'df -h'` works, and so do `scp build.tar prod:/srv/`, `rsync -a dis
 
 If `~/.ssh/config` contains no `Host` block, this session has no destination granted. Say so and ask the user to grant one in the session's settings (Session settings → SSH destinations). Do not try to add a key yourself — there is nothing you can add that ShipIt will sign with.
 
+## Running git on a destination
+
+Run it through `ssh`, as a quoted remote command or as a heredoc on `ssh`'s stdin:
+
+```sh
+ssh prod 'cd /srv/app && git fetch -q origin && git checkout -q --detach origin/main'
+
+ssh prod bash -s <<'EOF'
+cd /srv/app
+git fetch -q origin
+git checkout -q --detach origin/main
+EOF
+```
+
+Quote the heredoc delimiter (`<<'EOF'`). With a bare `<<EOF`, bash expands `$(…)` and `$VAR` in the body here, before `ssh` sends it.
+
+ShipIt's branch guard is meant to refuse branch moves only for git that runs in this container, so it leaves both forms alone. It still judges a command chained after `ssh` — `ssh prod true && git checkout main` runs that checkout here — and a body behind a bare `<<EOF`. It also reads an `ssh` behind a wrapper such as `timeout 60 ssh …` like any other command, so give `ssh` its own limits instead: `-o ConnectTimeout=10 -o ServerAliveInterval=15`.
+
 ## What you cannot do
 
 **You cannot read the private key.** It lives in the orchestrator's credential store and never enters this container: not in the compose file, not in a compose service's environment, not under `/credentials`, not in a settings read. `~/.ssh` holds the config, `known_hosts`, and a `.pub` file — public material only.
@@ -50,7 +68,9 @@ The user clears the recorded key with **Forget** in Settings → Integrations �
 
 ## Reachability
 
-A granted destination is added to this session's egress allowlist at grant time. A destination addressed by IP is added as a CIDR, because an IP literal issues no DNS lookup and so cannot be admitted by name. A host that is **not** granted is unreachable even if you know its address.
+A granted destination is added to this session's egress allowlist at grant time. A destination addressed by IP is added as a CIDR, because an IP literal issues no DNS lookup and so cannot be admitted by name. In a contained session, a host that is **not** granted is unreachable even if you know its address.
+
+In both Network modes, this session's containers cannot reach the machine that runs ShipIt, private networks (the LAN) or the tailnet. A granted destination is the one exception, and only on its configured SSH port: a LAN or tailnet machine, or the ShipIt host itself, granted here answers on that port and on nothing else. A web server or database on the same machine stays unreachable. For a destination addressed by name, the exception covers the address the name had when the grant was applied; a changed address is covered from the next grant change or container start.
 
 A **network-off sandbox** is the one deliberate exception to "no user host widens the policy": SSH grants are composed into its effective policy explicitly, so a sandbox with Network access off can still reach exactly its granted destinations and nothing else new.
 

@@ -19,6 +19,8 @@ import {
   handleSessionNotifyOnMerge,
   handleSessionRename,
   handleSessionReport,
+  handleSessionRestart,
+  handleSessionStatus,
   handleSessionView,
   handleSessionWait,
   handleSessionWhoami,
@@ -100,6 +102,22 @@ Supported subcommands:
                           conflicts. That turn ends BEFORE the rebase does;
                           ShipIt gives your note back as a turn once the rebase
                           concludes. A rebase that is aborted delivers nothing.
+  shipit session restart --note "TEXT" [--json]
+                          Restart THIS session's agent container after your
+                          turn ends, for a change that applies only from the
+                          next container start. ShipIt gives your note back as
+                          a turn on the new container. Say in your reply what
+                          you restart and why.
+  shipit session status  [--json]
+                          Print THIS session's status card as it is stored: the
+                          status, the last-turn line, every manual step with its
+                          age, and every follow-up with its description, payload
+                          and whether the user has sent it. The card block in
+                          your turn prompt is size-capped and withholds payloads
+                          on a large card; this is uncapped, so it is how you
+                          drop a finished offer — \`replaceActions\` must repeat
+                          every offer you keep byte-exactly. A read: it writes
+                          nothing and does not count as the turn's card update.
   shipit session whoami  [--json]
   shipit session rename  --title T [--json]
                           Retitle THIS session (never another). Do it when you
@@ -426,8 +444,8 @@ children. Severity is \`fyi\` (default), \`warn\`, or \`blocker\`. You cannot
 target an arbitrary session id. A report costs the parent a turn, so batch
 findings into one report rather than sending a stream of them.
 
-\`shipit session whoami\` resolves THIS session: its id, branch, parent, cohort
-siblings, and any children it spawned. (\`view <id>\` is descendant-scoped, so
+\`shipit session whoami\` resolves THIS session: its id, branch, parent, and any
+children it spawned. (\`view <id>\` is descendant-scoped, so
 passing your own id doesn't work — use \`whoami\`.)
 
 In an Ops session, use \`shipit source *\` to read the ShipIt source code that
@@ -484,6 +502,10 @@ export function serverErrorMessage(
   res: { status: number; body: Record<string, unknown> },
   fallback: string,
 ): string {
+  // Fastify's own error reply names the HTTP status in `error` and the thrown error in `message`.
+  if (typeof res.body.statusCode === "number" && typeof res.body.message === "string" && res.body.message) {
+    return res.body.message;
+  }
   return typeof res.body.error === "string" ? res.body.error : fallback;
 }
 
@@ -555,7 +577,9 @@ const SESSION_HANDLERS: Record<
   wait: handleSessionWait,
   "notify-on-merge": handleSessionNotifyOnMerge,
   "continue-after-rebase": handleSessionContinueAfterRebase,
+  restart: handleSessionRestart,
   report: handleSessionReport,
+  status: handleSessionStatus,
   whoami: handleSessionWhoami,
   rename: handleSessionRename,
 };

@@ -76,6 +76,7 @@ import { registerIssueRoutes } from "./api-routes-issues.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
 import type { PluginRefreshResult } from "./services/plugin-refresh.js";
 import type { PluginCliRequest, PluginCliResult } from "./plugin-cli-run.js";
+import type { ProjectComposeAccess } from "./services/plugin-services.js";
 import type { SecretStore } from "./secret-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
@@ -114,6 +115,8 @@ export interface ApiDeps {
     workspaceDir: string,
     request: PluginCliRequest,
   ) => Promise<PluginCliResult>) | undefined;
+  /** Confined reads of a session's project compose file (docs/318-compose-remaining-escapes). */
+  projectComposeAccess?: (sessionId: string, workspaceDir: string) => ProjectComposeAccess;
   cancelAutoPush?: (sessionId: string) => void;
   scheduleAutoPush?: (git: GitManager, sessionId?: string) => void;
   chatHistoryManager: ChatHistoryManager;
@@ -165,6 +168,8 @@ export interface ApiDeps {
   serviceManagers?: Map<string, ServiceManager>;
   composeStopPromises?: Map<string, Promise<void>>;
   pruneSessionVolumes?: (sessionId: string) => Promise<void>;
+  /** docs/323-archived-session-data-retention — archive needs a pass to get its deletion date. */
+  kickDiskEscalation?: () => void;
   getLogBuffer?: (sessionId: string) => LogRingEntry[];
   removeSessionLogs?: (sessionId: string) => void;
   logStore: LogStoreReader | undefined;

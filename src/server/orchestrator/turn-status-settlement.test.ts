@@ -65,6 +65,7 @@ function harness(opts: {
       return { id, sessionStatus: cards.get(id) };
     },
     track: vi.fn(),
+    touchUnlessResolved: vi.fn(),
     setMuted: vi.fn(),
     list: () => [],
     setSessionStatus: (id: string, status: SessionStatus | null) => {
@@ -148,7 +149,6 @@ function harness(opts: {
 
   const statusDeps: SessionStatusDeps = {
     sessionManager: sessionManager as unknown as SessionStatusDeps["sessionManager"],
-    sseBroadcast: vi.fn(),
   };
 
   /** What the route does on an accepted `session_status` call. */

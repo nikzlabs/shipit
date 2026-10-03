@@ -58,9 +58,13 @@ services:
       - SHIPIT_GIT_LFS_SHARED_STORE=${SHIPIT_GIT_LFS_SHARED_STORE:-}
       - SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS=${SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS:-}
       - DISK_JANITOR_LFS_OBJECT_DAYS=${DISK_JANITOR_LFS_OBJECT_DAYS:-}
+      - SESSION_DATA_RETENTION_DAYS=${SESSION_DATA_RETENTION_DAYS:-}
+      - SESSION_DATA_RETENTION_LARGE_DAYS=${SESSION_DATA_RETENTION_LARGE_DAYS:-}
+      - SESSION_DATA_RETENTION_LARGE_MB=${SESSION_DATA_RETENTION_LARGE_MB:-}
       # Containment fails closed unless the operator explicitly opts out.
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
+      - SESSION_COMPOSE_HELPER_IMAGE=shipit-compose-helper:prod
     networks:
       - shipit
     logging:
@@ -85,6 +89,15 @@ services:
       context: ../../docker
       dockerfile: Dockerfile.egress-sidecar
     image: shipit-egress-sidecar:prod
+    profiles:
+      - build-only
+
+  # Runs the Compose commands that read a session's project files (docs/318).
+  compose-helper:
+    build:
+      context: ../../docker
+      dockerfile: Dockerfile.compose-helper
+    image: shipit-compose-helper:prod
     profiles:
       - build-only
 

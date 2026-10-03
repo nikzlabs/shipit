@@ -143,6 +143,11 @@ stop surfacing it as a place to put files.
 
 ### 3. Lifecycle
 
+> For archived and done sessions, `docs/323-archived-session-data-retention`
+> replaced the "retain until full reset" decision below: their `scratch/` is
+> deleted when a retention period ends. This section still holds for a session
+> in use.
+
 - **Idle eviction / restart** — `scratch/` is host-backed, so it persists exactly
   like `uploads/` and the git clone. The next container re-mounts it. ✅ the whole
   point.

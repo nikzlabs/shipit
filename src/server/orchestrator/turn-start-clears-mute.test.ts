@@ -65,6 +65,7 @@ async function startTurn(muteCleared: boolean): Promise<{
         setLastTurnErrored: vi.fn(),
         get: vi.fn(),
         track: vi.fn(),
+        touchUnlessResolved: vi.fn(),
         setMuted,
         list: vi.fn().mockReturnValue([]),
       } as never,

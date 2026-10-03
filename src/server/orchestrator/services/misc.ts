@@ -2,7 +2,6 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
 import type { RepoStore } from "../repo-store.js";
-import type { GitManager } from "../../shared/git.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { UsageManager } from "../usage.js";
@@ -13,8 +12,8 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listTemplates } from "../templates.js";
 import { ServiceError } from "./types.js";
 import type { BootstrapData, GlobalSettings } from "./types.js";
-import type { RuntimeMode } from "../../shared/types.js";
-import { listSessions } from "./session.js";
+import type { RuntimeMode, SessionInfo } from "../../shared/types.js";
+import { modelListField } from "../../shared/catalogue/index.js";
 import { resolveHarnessOnboarding, listAgents, getGlobalSettings } from "./settings.js";
 import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
@@ -39,10 +38,20 @@ async function readTailnetPreviewHost(): Promise<string | undefined> {
   return undefined;
 }
 
+// Never fill `remoteUrl` from the workspace's `origin`: repository trust, secrets and
+// grants key on it, so only the address the server recorded may reach them (planning#623).
+function listSessionsForBootstrap(sessionManager: SessionManager): SessionInfo[] {
+  try {
+    return sessionManager.list();
+  } catch (err) {
+    console.error("[bootstrap] Failed to list sessions:", err);
+    return [];
+  }
+}
+
 export async function getBootstrapData(deps: {
   sessionManager: SessionManager;
   repoStore?: RepoStore;
-  createGitManager: (dir: string) => GitManager;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
   credentialStore?: CredentialStore;
@@ -50,11 +59,8 @@ export async function getBootstrapData(deps: {
   workspaceDir: string;
   runtimeMode?: RuntimeMode;
 }): Promise<BootstrapData> {
-  const [sessions, settings, tailnetPreviewHost] = await Promise.all([
-    listSessions(deps.sessionManager, deps.createGitManager).catch((err: unknown) => {
-      console.error("[bootstrap] Failed to list sessions:", err);
-      return [] as Awaited<ReturnType<typeof listSessions>>;
-    }),
+  const sessions = listSessionsForBootstrap(deps.sessionManager);
+  const [settings, tailnetPreviewHost] = await Promise.all([
     getGlobalSettings(deps.agentRegistry, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown): GlobalSettings => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
@@ -101,6 +107,7 @@ export async function getBootstrapData(deps: {
     settings,
     runtimeMode: deps.runtimeMode ?? "containerized",
     ...(tailnetPreviewHost ? { tailnetPreviewHost } : {}),
+    ...modelListField(),
   };
 }
 

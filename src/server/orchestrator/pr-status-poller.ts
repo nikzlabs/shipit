@@ -154,6 +154,7 @@ export class PrStatusPoller {
     });
 
     const onSessionChange = (sessionId: string) => this.broadcastSessionStatus(sessionId);
+    const isAwaitingAnswer = (sessionId: string) => this.sessionManager.isAwaitingAnswer(sessionId);
     this.autoFix = new AutoFixManager(
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
@@ -163,6 +164,7 @@ export class PrStatusPoller {
       this.remediationArbiter,
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
       opts.ensureRunner,
+      isAwaitingAnswer,
     );
     this.autoMerge = new AutoMergeManager(
       this.githubAuth,
@@ -187,6 +189,7 @@ export class PrStatusPoller {
         undefined,
         this.remediationArbiter,
         opts.ensureRunner,
+        isAwaitingAnswer,
       );
     }
 
@@ -447,6 +450,16 @@ export class PrStatusPoller {
 
   getAllStatuses(): PrStatusSummary[] {
     return [...this.tracker.lastKnown.values()].map((s) => this.attachAutomationState(s));
+  }
+
+  /** As a viewer sees them; `lastKnown` holds every PR a session ever had. */
+  getStatusesFor(sessionIds: Iterable<string>): PrStatusSummary[] {
+    const out: PrStatusSummary[] = [];
+    for (const id of sessionIds) {
+      const summary = this.tracker.lastKnown.get(id);
+      if (summary) out.push(this.attachAutomationState(summary));
+    }
+    return out;
   }
 
   getAutoFixState(sessionId: string): AutoFixState | undefined {

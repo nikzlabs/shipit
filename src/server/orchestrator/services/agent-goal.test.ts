@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   describeGoalResult,
-  recordAgentGoal,
   recordGoalForThread,
   goalAgentFor,
   reconcileAgentGoal,
@@ -15,32 +14,16 @@ const GOAL = { objective: "Ship it", status: "active", tokenBudget: null, tokens
 function fakeSessions(over: Record<string, unknown> = {}) {
   return {
     setAgentGoal: vi.fn().mockReturnValue(true),
-    list: () => [],
     get: vi.fn(() => ({ agentSessionId: "thread-1" })),
     agentGoalChecked: vi.fn(() => false),
     ...over,
   };
 }
 
-describe("recordAgentGoal", () => {
-  it("broadcasts the session list only when the shown goal changed", () => {
-    const sessionManager = fakeSessions({ setAgentGoal: vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false) });
-    const sseBroadcast = vi.fn();
-    const deps = { sessionManager: sessionManager as never, sseBroadcast };
-
-    recordAgentGoal(deps, "s1", GOAL);
-    recordAgentGoal(deps, "s1", { ...GOAL, tokensUsed: 2000 });
-
-    expect(sessionManager.setAgentGoal).toHaveBeenCalledTimes(2);
-    expect(sseBroadcast).toHaveBeenCalledTimes(1);
-    expect(sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
-  });
-});
-
 describe("recordGoalForThread", () => {
   it("drops an answer about a thread the session no longer uses", () => {
     const sessionManager = fakeSessions({ get: vi.fn(() => ({ agentSessionId: "thread-2" })) });
-    recordGoalForThread({ sessionManager: sessionManager as never, sseBroadcast: vi.fn() }, "s1", "thread-1", GOAL);
+    recordGoalForThread({ sessionManager: sessionManager as never }, "s1", "thread-1", GOAL);
     expect(sessionManager.setAgentGoal).not.toHaveBeenCalled();
   });
 });
@@ -75,14 +58,14 @@ describe("reconcileAgentGoal (docs/154 req 6)", () => {
   it("reads a never-read goal once, for the session's thread", async () => {
     const sessionManager = fakeSessions();
     const agent = goalAgent();
-    await reconcileAgentGoal({ sessionManager: sessionManager as never, sseBroadcast: vi.fn() }, "s1", "codex", () => agent);
+    await reconcileAgentGoal({ sessionManager: sessionManager as never }, "s1", "codex", () => agent);
     expect(agent.goalCommand).toHaveBeenCalledWith("thread-1", { action: "get" });
     expect(sessionManager.setAgentGoal).toHaveBeenCalledWith("s1", GOAL);
   });
 
   it("does nothing for a goal already read, a session with no thread, or an agent without goals", async () => {
     const createAgent = vi.fn(goalAgent);
-    const deps = (over: Record<string, unknown>) => ({ sessionManager: fakeSessions(over) as never, sseBroadcast: vi.fn() });
+    const deps = (over: Record<string, unknown>) => ({ sessionManager: fakeSessions(over) as never });
     await reconcileAgentGoal(deps({ agentGoalChecked: vi.fn(() => true) }), "s1", "codex", createAgent);
     await reconcileAgentGoal(deps({ get: vi.fn(() => ({})) }), "s1", "codex", createAgent);
     await reconcileAgentGoal(deps({}), "s1", "opencode", createAgent);
@@ -95,7 +78,7 @@ describe("reconcileAgentGoal (docs/154 req 6)", () => {
     const sessionManager = fakeSessions();
     const createAgent = vi.fn(goalAgent);
     await reconcileAgentGoal(
-      { sessionManager: sessionManager as never, sseBroadcast: vi.fn() }, "s1", "claude", createAgent,
+      { sessionManager: sessionManager as never }, "s1", "claude", createAgent,
     );
     expect(createAgent).not.toHaveBeenCalled();
     expect(sessionManager.setAgentGoal).not.toHaveBeenCalled();
@@ -110,7 +93,7 @@ describe("refreshAgentGoalAfterTurn (docs/297 req 2)", () => {
     const sessionManager = fakeSessions({ get: vi.fn(() => ({ agentSessionId: "thread-1", agentGoal: GOAL })) });
     const agent = goalAgent(null);
     await refreshAgentGoalAfterTurn(
-      { sessionManager: sessionManager as never, sseBroadcast: vi.fn() }, "s1", "claude", () => agent,
+      { sessionManager: sessionManager as never }, "s1", "claude", () => agent,
     );
     expect(agent.goalCommand).toHaveBeenCalledWith("thread-1", { action: "get" });
     expect(sessionManager.setAgentGoal).toHaveBeenCalledWith("s1", null);
@@ -118,7 +101,7 @@ describe("refreshAgentGoalAfterTurn (docs/297 req 2)", () => {
 
   it("costs nothing for a session showing no goal, or an agent without goals", async () => {
     const agent = goalAgent();
-    const deps = (over: Record<string, unknown>) => ({ sessionManager: fakeSessions(over) as never, sseBroadcast: vi.fn() });
+    const deps = (over: Record<string, unknown>) => ({ sessionManager: fakeSessions(over) as never });
     // No goal on show; no thread; a harness with no goal store.
     await refreshAgentGoalAfterTurn(deps({}), "s1", "claude", () => agent);
     await refreshAgentGoalAfterTurn(deps({ get: vi.fn(() => ({ agentGoal: GOAL })) }), "s1", "claude", () => agent);
@@ -131,7 +114,6 @@ describe("refreshAgentGoalAfterTurn (docs/297 req 2)", () => {
   it("does nothing when nothing can answer", async () => {
     const deps = {
       sessionManager: fakeSessions({ get: vi.fn(() => ({ agentSessionId: "thread-1", agentGoal: GOAL })) }) as never,
-      sseBroadcast: vi.fn(),
     };
     await expect(refreshAgentGoalAfterTurn(deps, "s1", "claude", () => null)).resolves.toBeUndefined();
   });

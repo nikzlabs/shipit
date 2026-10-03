@@ -11,7 +11,7 @@ function productionSources(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) productionSources(full, out);
-    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) out.push(full);
+    else if (entry.name.endsWith(".ts") && !/(\.test|test-helpers)\.ts$/.test(entry.name)) out.push(full);
   }
   return out;
 }

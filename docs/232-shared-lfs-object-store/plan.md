@@ -58,7 +58,22 @@ clone — mirroring exactly what `clone --local` already does for `.git/objects`
   `.git/lfs/objects`, falling back to a copy on `EXDEV` (cache and sessions on
   different filesystems — costs disk instead of network, still the trade we
   want). Called from `RepoGit.cloneFromCache`, right beside the `clone --local`
-  it extends.
+  it extends, and from `forkSession` (`services/session-fork-merge.ts`).
+
+A fork clones its parent's workspace, not the cache, so it has no `.git/lfs` of
+its own. `forkSession` links it from the same cache store, and never from the
+parent's `.git/lfs/objects`: the parent's session owns those files and can
+rewrite them, and an inode has one owner across every link, so a link would put
+the fork's assets in the parent agent's hands. Like `cloneFromCache`, it first
+repairs a cache with a foreign owner (`ensureSharedTreeOwnedByShipIt`), since a
+link would share that owner too. The link runs after the fork's
+full `chownTreeToSessionWorker` (safe only because `--no-hardlinks` made the
+clone private) and is followed by `chownWorkspaceGitToSessionWorker`, which
+hands the fork its new fanout directories and leaves the shared object files
+alone. Objects that exist only in the parent — committed there and not yet
+uploaded — are not in the store, so the fork's pull cannot get them until the
+parent pushes; the fork is then told its assets are stubs, as for any failed
+pull (docs/231-git-lfs-support §7).
 
 The link step is deliberately **not authoritative**: it needn't be complete or
 even correct about what the session needs. Anything it misses — an object
@@ -296,6 +311,8 @@ the target repo. Unverified, and independent of everything above.
 - `src/server/orchestrator/session-worker-uid.ts` — `chownDirsOnlyRecursive` and
   the `.git/lfs/objects` branch
 - `src/server/orchestrator/repo-git.ts` — `cloneFromCache` seeds the clone
+- `src/server/orchestrator/services/session-fork-merge.ts` — `forkSession` seeds
+  a fork; its test proves the fork's pull downloads nothing the store holds
 - `src/server/orchestrator/repo-prefetch.ts` — populates the cache store off the
   critical path
 - `src/server/orchestrator/git-lfs.ts` — docs/231 detection + materialization
@@ -309,8 +326,8 @@ the target repo. Unverified, and independent of everything above.
   unverified `git lfs prune` or reimplementing its ref walk, to avoid a cost that
   is bounded by one download of a superseded asset version. Revisit only if the
   re-download rate turns out to matter.
-- **Only the clone path is seeded.** `refreshCloneToLatestMain` could seed from
-  the cache before its re-pull. Left out to keep the first cut to one call site —
+- **`refreshCloneToLatestMain` is not seeded.** Only a new clone and a fork are.
+  It could seed from the cache before its re-pull. Left out of the first cut —
   but note what that would and wouldn't buy, because it's easy to read as a
   latency fix and it isn't (see the next gap).
 - **Warm-reuse re-pull rewrites the whole worktree, on the claim hot path.**
@@ -338,3 +355,7 @@ the target repo. Unverified, and independent of everything above.
   equals HEAD — a change to the refresh path generally, not to the LFS work.
 - **The session-side egress allowlist entry** is unexercised — see "Still
   unexercised" above.
+- **Every clone links every cached object**, not only those its HEAD needs, so
+  `nlink > 1` holds for superseded objects while any workspace of the repository
+  exists, and the prune reclaims them only after the last such workspace goes.
+  Disk cost is one inode link per object per workspace; the bytes are shared.

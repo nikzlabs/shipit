@@ -23,6 +23,11 @@ import { clearActivationState } from "./services/plugin-activation.js";
 import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
+import { workspaceVolumeDaemonPath } from "./compose-persist.js";
+import type { DockerSocketGrant } from "./compose-generator.js";
+import type { EgressPolicy } from "./egress-firewall-install.js";
+import { ConfinedCompose, composeHelperDaemonPath } from "./compose-helper.js";
+import type { ProjectComposeAccess } from "./services/plugin-services.js";
 
 /**
  * Compose creates the session network with the first service, so a project whose services are all
@@ -137,8 +142,9 @@ export async function applyOverlayDepDirsForSession(
     const recreated = containerManager.consumeOverlayVolumesRecreated(sessionId);
     if (recreated) {
       warn(
-        `the dependency base advanced, so the compose services holding the previous ` +
-        `overlay were recreated over the new one. Services set to start automatically ` +
+        `the dependency overlay was recreated (its base advanced or its mount options ` +
+        `changed), so the compose services holding the previous one were removed. ` +
+        `Services set to start automatically ` +
         `come back on their own; a manually-started service needs starting again.`,
       );
     }
@@ -174,6 +180,7 @@ export function adoptExistingServiceManager(
     noProjectCompose?: boolean;
     secretsLoader?: () => Promise<Record<string, string>>;
     containServicesFn?: (serviceNames: string[]) => Promise<void>;
+    firewallPolicy?: EgressPolicy;
     containServiceDns?: boolean;
     containServiceProxy?: boolean;
     resetSessionNetwork?: () => Promise<void>;
@@ -212,6 +219,7 @@ export function adoptExistingServiceManager(
         deps.containServiceDns ?? false,
         deps.containServiceProxy ?? false,
         deps.prepareContainedStartFn,
+        deps.firewallPolicy,
       )
     : false;
   // Stop old-policy services before waiting for the worker, then reset their network.
@@ -325,13 +333,65 @@ const DEFAULT_COMPOSE_CONFIG = { file: "docker-compose.yml", dockerSocket: false
 export type ServiceManagerBuildDeps = Pick<
   ServiceSetupDeps,
   | "sessionManager"
+  | "repoStore"
   | "containerManager"
   | "secretStore"
   | "credentialStore"
   | "dockerSecretsConfig"
   | "serviceEnvDir"
+  | "composeHelperConfig"
   | "logStore"
 >;
+
+/** Where the confined Compose containers find ShipIt's files on the Docker host (docs/318). */
+export interface ComposeHelperConfig {
+  /** Root-only, in the workspace volume and outside every session; see `composeRegistryLoginDir`. */
+  registryLoginDir?: string;
+  /** SHIPIT_SERVICE_ENV_HOST_DIR: the service-env directory's Docker-host path, when it is outside the workspace volume. */
+  serviceEnvHostDir?: string;
+}
+
+export type ConfinedComposeDeps = Pick<ServiceSetupDeps, "containerManager" | "serviceEnvDir" | "composeHelperConfig">;
+
+/** The confined runner for one session's Compose commands, and its Docker-host path translation. */
+export function buildConfinedCompose(
+  sessionId: string,
+  workspaceDir: string,
+  deps: ConfinedComposeDeps,
+): { confined: ConfinedCompose; daemonPath: (orchestratorPath: string) => Promise<string> } {
+  const workspaceVolume = process.env.WORKSPACE_VOLUME;
+  const { serviceEnvHostDir, registryLoginDir } = deps.composeHelperConfig ?? {};
+  const daemonPath = composeHelperDaemonPath({
+    ...(deps.containerManager ? { docker: deps.containerManager.getDockerClient() } : {}),
+    ...(workspaceVolume ? { workspaceVolume } : {}),
+    serviceEnvDir: deps.serviceEnvDir,
+    ...(serviceEnvHostDir ? { serviceEnvHostDir } : {}),
+  });
+  const confined = new ConfinedCompose({
+    sessionId,
+    workspaceDir,
+    ...(workspaceVolume ? { workspaceVolume } : {}),
+    daemonPath,
+    ...(registryLoginDir ? { registryLoginDir } : {}),
+    ...(process.env.DOCKER_STACK ? { stackName: process.env.DOCKER_STACK } : {}),
+  });
+  return { confined, daemonPath };
+}
+
+/** Plugin readers' access to the project compose file: a confined read per call. */
+export function projectComposeAccessFor(
+  sessionId: string,
+  workspaceDir: string,
+  deps: ConfinedComposeDeps & Pick<ServiceSetupDeps, "sessionManager" | "repoStore">,
+): ProjectComposeAccess {
+  return {
+    // Built per read: the state directory is resolved only when a reader needs the file.
+    readProjectFile: async (file) =>
+      buildConfinedCompose(sessionId, workspaceDir, deps).confined.readProjectFile(file),
+    dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
+    opsSession: deps.sessionManager.get(sessionId)?.kind === "ops",
+  };
+}
 
 export function createSecretsLoader(
   sessionId: string,
@@ -387,6 +447,15 @@ export async function joinSessionNetworkEndpoints(
   }
 }
 
+/** A sandbox has no repository to hold the grant, whatever address its workspace names (planning#623). */
+export function dockerSocketGrantFor(
+  session: SessionInfo | undefined,
+  repoStore: Pick<RepoStore, "allowsDockerSocket">,
+): DockerSocketGrant {
+  if (!session || session.kind === "sandbox" || !session.remoteUrl) return "no_repository";
+  return repoStore.allowsDockerSocket(session.remoteUrl) ? "granted" : "not_granted";
+}
+
 export function buildServiceManager(args: {
   sessionId: string;
   workspaceDir: string;
@@ -399,10 +468,14 @@ export function buildServiceManager(args: {
 
   const wsVolume = process.env.WORKSPACE_VOLUME;
   const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
+  const daemonPath = wsVolume && containerManager
+    ? workspaceVolumeDaemonPath(containerManager.getDockerClient(), wsVolume)
+    : undefined;
 
   const accountAgentEnvLoader = credentialStore
     ? () => collectAccountAgentEnv(credentialStore)
     : undefined;
+  const helper = buildConfinedCompose(sessionId, workspaceDir, deps);
 
   return new ServiceManager({
     sessionId,
@@ -411,13 +484,19 @@ export function buildServiceManager(args: {
     ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
+    ...(daemonPath
+      ? { persistDevicePath: daemonPath, resolveWorkspaceDevice: () => daemonPath(workspaceDir) }
+      : {}),
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
+    dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
     secretsLoader: createSecretsLoader(sessionId, deps),
     accountAgentEnvLoader,
     pluginCredentialsLoader: () => collectPluginCredentialDeclarations(workspaceDir),
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
+    confinedCompose: helper.confined,
+    composeFileDaemonPath: helper.daemonPath,
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? (networkName: string) => joinSessionNetworkEndpoints(containerManager, sessionId, networkName)
@@ -427,17 +506,18 @@ export function buildServiceManager(args: {
           await containerManager.ensureConnectedToSessionNetwork(sessionId, networkName);
         }
       : undefined,
-    containServicesFn: containerManager?.isEgressContained(sessionId)
+    containServicesFn: containerManager?.isNetworkIsolated(sessionId)
       ? async (serviceNames: string[]) => {
           await containerManager.containComposeServices(sessionId, serviceNames);
         }
       : undefined,
+    firewallPolicy: containerManager?.isEgressContained(sessionId) ? "contained" : "open",
     containServiceDns: containerManager?.isEgressDnsContained(sessionId) ?? false,
     containServiceProxy: containerManager?.isEgressProxyContained(sessionId) ?? false,
     ensureSessionNetworkModeFn: containerManager
       ? async (internal: boolean) => containerManager.ensureSessionNetworkMode(sessionId, internal)
       : undefined,
-    prepareContainedStartFn: containerManager?.isEgressContained(sessionId)
+    prepareContainedStartFn: containerManager?.isNetworkIsolated(sessionId)
       ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(sessionId, serviceNames)
       : undefined,
     // API trust must track new containers even when egress is unrestricted.
@@ -511,6 +591,7 @@ export interface ServiceSetupDeps {
   secretStore?: SecretStore;
   dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
   serviceEnvDir: string;
+  composeHelperConfig?: ComposeHelperConfig;
   logStore?: LogStore;
   activatePluginRepos?: (
     sessionId: string,
@@ -676,7 +757,7 @@ export function setupServiceManager(
 
   const existing = serviceManagers.get(runner.sessionId);
   if (existing) {
-    const containServicesFn = containerManager?.isEgressContained(runner.sessionId)
+    const containServicesFn = containerManager?.isNetworkIsolated(runner.sessionId)
       ? async (serviceNames: string[]) => containerManager.containComposeServices(runner.sessionId, serviceNames)
       : undefined;
     adoptExistingServiceManager(runner, existing, {
@@ -688,12 +769,13 @@ export function setupServiceManager(
       onInstallDecision,
       secretsLoader: createSecretsLoader(runner.sessionId, deps),
       containServicesFn,
+      firewallPolicy: containerManager?.isEgressContained(runner.sessionId) ? "contained" : "open",
       containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
       containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
       resetSessionNetwork: containerManager
         ? async () => containerManager.resetSessionNetwork(runner.sessionId)
         : undefined,
-      prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
+      prepareContainedStartFn: containerManager?.isNetworkIsolated(runner.sessionId)
         ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
         : undefined,
       session,

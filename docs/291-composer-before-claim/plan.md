@@ -106,7 +106,7 @@ session resuming itself is not a switch" early return.
 
 ## Known limit of req 4
 
-An interactive claim may **reuse an ungraduated warm session from the same repository**
+An interactive claim may **reuse the ungraduated draft it gave the same tab before**
 (`claim-session.ts` ~340), and the connect handler prefers such a session's *persisted*
 harness/model/reasoning over the URL seeds, and refuses to seed a role onto a session that
 already holds one (`route-registry.ts`). So a pre-claim pick can be ignored when the claim

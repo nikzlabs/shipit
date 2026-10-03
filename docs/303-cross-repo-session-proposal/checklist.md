@@ -18,3 +18,17 @@
       appeared. Both lists hoisted to one module constant; guard derives the
       expectation from the bridge's own tool list
       (`agents/claude/shipit-tool-allowlist.test.ts`)
+
+## Decline, and telling the agent (reqs 10, 11)
+
+- [x] `declined` card state, `declinedAt`, `agentNotifiedState`
+- [x] Decline route; the start route refuses a declined card
+- [x] Card: Decline button and declined state; client handler keeps `declined` terminal
+- [x] `services/repo-session-outcome-notice.ts`, wired into both prompt paths
+- [x] Tool description, tool result, `shipit-docs/sessions.md`, wiki `chat.md`
+- [x] Row handlers: `onDismissBugReport` was never wired, so the bug-report Cancel
+      stayed local; handler keys are now a `Record` the compiler checks
+- [x] Tests: notice service, decline route, both prompt paths, card, handler, transcript wiring
+- [x] lint:dev + typecheck clean
+- [x] Independent review against reqs 10 and 11 (applied: persist before emit;
+      the start response updates a card with no runner; dropped an unused field)

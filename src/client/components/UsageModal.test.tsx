@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UsageModal } from "./UsageModal.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import type {
   SessionInfo, SessionUsage, TurnUsage, UsageStats, UsageTotals,
@@ -20,6 +21,10 @@ const mockSessions: SessionInfo[] = [
   { id: "sess-1", title: "Build landing page", createdAt: "2026-01-01", lastUsedAt: "2026-01-02", remoteUrl: "" },
   { id: "sess-2", title: "Fix API routes", createdAt: "2026-01-03", lastUsedAt: "2026-01-04", remoteUrl: "" },
 ];
+
+beforeEach(() => {
+  useSessionStore.setState({ sessions: mockSessions });
+});
 
 const mockCurrentUsage: SessionUsage = {
   sessionId: "sess-1",
@@ -50,7 +55,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -62,7 +66,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -74,7 +77,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -90,7 +92,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={null}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -102,7 +103,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -116,7 +116,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -135,7 +134,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -150,7 +148,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -166,7 +163,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -199,7 +195,7 @@ describe("UsageModal", () => {
       })),
     };
     render(
-      <UsageModal currentSessionUsage={null} allUsage={many} sessions={[]} onClose={() => {}} />
+      <UsageModal currentSessionUsage={null} allUsage={many} onClose={() => {}} />
     );
     const chart = screen.getByTestId("weekly-usage-chart");
     expect(chart.querySelectorAll("[title]")).toHaveLength(12);
@@ -213,7 +209,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -228,7 +223,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={{ ...mockCurrentUsage, turnCount: 1 }}
         allUsage={null}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -240,7 +234,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -256,7 +249,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
         turnUsage={turnUsage}
       />
@@ -270,7 +262,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -294,7 +285,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={null}
         allUsage={usageWithUnknownSession}
-        sessions={[]}
         onClose={() => {}}
       />
     );
@@ -307,7 +297,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={onClose}
       />
     );
@@ -322,7 +311,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={onClose}
       />
     );
@@ -337,7 +325,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={mockSessions}
         onClose={onClose}
       />
     );
@@ -356,7 +343,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={zeroUsage}
         allUsage={{ sessions: [], totals: totals(), groups: [], totalTurns: 0, weekly: [] }}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -376,7 +362,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={subCentUsage}
         allUsage={null}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -388,7 +373,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={null}
         allUsage={null}
-        sessions={[]}
         onClose={() => {}}
       />
     );
@@ -406,7 +390,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
         modelInfo={modelInfo}
       />
@@ -425,7 +408,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
         modelInfo={modelInfo}
         contextTokens={80000}
@@ -441,7 +423,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
       />
     );
@@ -459,7 +440,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
         turnUsage={turnUsage}
       />
@@ -478,7 +458,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
         turnUsage={turnUsage}
       />
@@ -492,7 +471,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
         turnUsage={[]}
       />
@@ -507,7 +485,6 @@ describe("UsageModal", () => {
       <UsageModal
         currentSessionUsage={mockCurrentUsage}
         allUsage={mockAllUsage}
-        sessions={[]}
         onClose={vi.fn()}
       />
     );
@@ -547,7 +524,7 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
 
   it("shows two headline figures and never adds them together", () => {
     render(
-      <UsageModal currentSessionUsage={mixed} allUsage={null} sessions={mockSessions} onClose={() => {}} />
+      <UsageModal currentSessionUsage={mixed} allUsage={null} onClose={() => {}} />
     );
     const headline = screen.getByTestId("usage-session-headline");
     // "Metered spend (est.)" — est. is load-bearing: the figure comes from four
@@ -566,7 +543,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
       <UsageModal
         currentSessionUsage={{ ...mixed, totals: totals({ atApiRatesUsd: 2.1, includedTurns: 9, includedTokens: 480_000 }) }}
         allUsage={null}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -579,7 +555,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
       <UsageModal
         currentSessionUsage={mixed}
         allUsage={null}
-        sessions={mockSessions}
         onClose={() => {}}
         subscriptionLimits={{
           "anthropic:sub": {
@@ -611,7 +586,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
       <UsageModal
         currentSessionUsage={{ ...mixed, groups: [...mixed.groups!, legacyGroup] }}
         allUsage={null}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -633,7 +607,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
           groups: [...mixed.groups!, { ...legacyGroup, costUsd: 0, tokens: 12_400, turns: 1 }],
         }}
         allUsage={null}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -659,7 +632,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
           totalTurns: 2,
           weekly: [],
         }}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );
@@ -682,7 +654,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
           totalTurns: 9,
           weekly: [],
         }}
-        sessions={mockSessions}
         onClose={() => {}}
         subscriptionLimits={{
           "anthropic:sub": {
@@ -702,7 +673,7 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
 
   it("shows no background-work label on an ordinary session-attributed row", () => {
     render(
-      <UsageModal currentSessionUsage={mixed} allUsage={null} sessions={mockSessions} onClose={() => {}} />
+      <UsageModal currentSessionUsage={mixed} allUsage={null} onClose={() => {}} />
     );
     expect(screen.queryByTestId("usage-group-install-level")).toBeNull();
   });
@@ -710,7 +681,7 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
   it("averages each figure over the turns that produced it", () => {
 
     render(
-      <UsageModal currentSessionUsage={mixed} allUsage={null} sessions={mockSessions} onClose={() => {}} />
+      <UsageModal currentSessionUsage={mixed} allUsage={null} onClose={() => {}} />
     );
     expect(screen.getByTestId("usage-session-avg")).toHaveTextContent("$0.03");            
     expect(screen.getByTestId("usage-session-avg-at-api-rates")).toHaveTextContent("≈$0.60");           
@@ -725,7 +696,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
       <UsageModal
         currentSessionUsage={mixed}
         allUsage={null}
-        sessions={mockSessions}
         onClose={() => {}}
         turnUsage={turns}
       />
@@ -753,7 +723,6 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
           totalTurns: 6,
           weekly: [],
         }}
-        sessions={mockSessions}
         onClose={() => {}}
       />
     );

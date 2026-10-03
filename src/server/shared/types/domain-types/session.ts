@@ -69,6 +69,15 @@ export interface SessionInfo {
   archived?: boolean;
   diskTier?: "hot" | "light" | "evicted";
   userArchived?: boolean;
+  /** docs/323-archived-session-data-retention — the start of an archived session's retention period. */
+  archivedAt?: string;
+  /** No retention period starts before this; set once, for sessions older than the feature. */
+  retentionFloorAt?: string;
+  /** Size of the files the retention sweep would delete; absent until it is measured. */
+  retainedDataBytes?: number;
+  retainedDataMeasuredAt?: string;
+  /** Derived on the session lists, never stored: when ShipIt deletes the kept files. */
+  dataDeletesAt?: string;
   /** Disk-idle clock only; viewing must not promote a resolved session to Active. */
   lastViewedAt?: string;
   /** Protects sidebar and disk persistence, not live capacity. */
@@ -127,6 +136,16 @@ export interface SessionInfo {
   /** docs/303 — the agent-written card shown at the end of the conversation. */
   sessionStatus?: SessionStatus;
 }
+
+/**
+ * A row of the session lists, which every tab receives again on each change. The
+ * status card and the goal reach only the open session's viewer, on `session_details`;
+ * the replay and the notice are for the agent.
+ */
+export type SessionListRow = Omit<
+  SessionInfo,
+  "sessionStatus" | "agentGoal" | "conversationReplay" | "pendingAgentNotice"
+>;
 
 /**
  * docs/303-session-status-card — an offer the agent made, as stored.
@@ -284,6 +303,8 @@ export interface RepoInfo {
   trusted?: boolean;
   /** Browser-only grant; never derive from agent-writable repository content. */
   allowAgentMerge?: boolean;
+  /** Browser-only grant of the Docker socket to Compose services (docs/318 req 8). */
+  allowDockerSocket?: boolean;
   hidden?: boolean;
   defaultBranch?: string;
   colorIndex?: number;

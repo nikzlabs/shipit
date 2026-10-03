@@ -23,7 +23,8 @@ import {
   PLAYWRIGHT_MCP_ARGS,
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
-import { CODEX_MODELS, CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { catalogueModelIdsForHarness } from "../../../shared/catalogue/index.js";
 import { codexProviderArgs } from "./spawn-shaping.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { codexHome, resolveAgentHome } from "../../../shared/agent-home.js";
@@ -170,7 +171,10 @@ export class CodexAdapter
     supportsPermissionModes: false,
     supportedPermissionModes: [],
     toolNames: [...CODEX_TOOL_NAMES],
-    models: CODEX_MODELS,
+    // Read per access: the worker adopts the orchestrator's model list (docs/318).
+    get models() {
+      return catalogueModelIdsForHarness("codex");
+    },
     supportsReview: true,
     supportsSteering: true,
     supportsCompaction: true,

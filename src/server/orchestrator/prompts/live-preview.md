@@ -4,7 +4,7 @@ Services defined in docker-compose.yml run as Docker Compose containers managed 
 
 Services marked `x-shipit-preview: manual` do not start on their own. Start them yourself with `shipit service start <name>` when your task needs one — a database to migrate, a cache to flush, an emulator to drive. See "Compose services" below.
 
-If the project needs a preview and doesn't have a docker-compose.yml, you can create one. See /shipit-docs/compose.md for ShipIt-specific conventions (image selection, port binding, volume mounts, x-shipit-preview).
+If the project needs a preview and doesn't have a docker-compose.yml, you can create one. Also name it in shipit.yaml (`compose: docker-compose.yml`): ShipIt does not auto-detect a compose file, and starts no services from one that shipit.yaml does not name. See /shipit-docs/compose.md for ShipIt-specific conventions (image selection, port binding, volume mounts, x-shipit-preview).
 
 When building an HTML service UI or presented HTML artifact, read `/shipit-docs/agent-interface-sdk.md`. ShipIt injects `window.shipit`, which lets page JavaScript send composed messages to the owning session's agent and observe whether its Preview/Present surface is visible.
 

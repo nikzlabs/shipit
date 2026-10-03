@@ -416,7 +416,7 @@ describe("string-delivered subscription failover", () => {
     expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_b" } });
   });
 
-  it("`balanced` keeps a session on its resident string credential (req 8)", () => {
+  it("`balanced` keeps a session on its current string credential (req 8)", () => {
     const routes = [
       sub("cred_a", { priority: 0, lastUsedAt: 900 }),
       sub("cred_b", { priority: 1, lastUsedAt: 100 }),
@@ -425,11 +425,11 @@ describe("string-delivered subscription failover", () => {
       credentialStore: store(routes, { cred_a: "k1", cred_b: "k2" }, "balanced"),
       env: {} as NodeJS.ProcessEnv,
       now: () => NOW,
-    }, { residentRouteId: "cred_a" });
+    }, { currentRouteId: "cred_a" });
     expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_a" } });
   });
 
-  it("`balanced` abandons a refusal-blocked resident string credential", () => {
+  it("`balanced` abandons a refusal-blocked current string credential", () => {
     const routes = [
       sub("cred_a", { priority: 0, lastUsedAt: 900, exhaustedUntil: NOW + 60_000, exhaustedAt: NOW - 1_000 }),
       sub("cred_b", { priority: 1, lastUsedAt: 100 }),
@@ -438,11 +438,11 @@ describe("string-delivered subscription failover", () => {
       credentialStore: store(routes, { cred_a: "k1", cred_b: "k2" }, "balanced"),
       env: {} as NodeJS.ProcessEnv,
       now: () => NOW,
-    }, { residentRouteId: "cred_a" });
+    }, { currentRouteId: "cred_a" });
     expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_b" } });
   });
 
-  it("`strict` ignores the resident string credential — the strategy is absolute", () => {
+  it("`strict` keeps a session on its current string credential — it never moves back (req 8)", () => {
     const routes = [
       sub("cred_a", { priority: 0 }),
       sub("cred_b", { priority: 1 }),
@@ -451,8 +451,8 @@ describe("string-delivered subscription failover", () => {
       credentialStore: store(routes, { cred_a: "k1", cred_b: "k2" }, "strict"),
       env: {} as NodeJS.ProcessEnv,
       now: () => NOW,
-    }, { residentRouteId: "cred_b" });
-    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_a" } });
+    }, { currentRouteId: "cred_b" });
+    expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_b" } });
   });
 
   it("ignores a lapsed bench", () => {
@@ -649,7 +649,7 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
   });
 });
 
-describe("residentRouteNeedsRelease — moving a live session back (docs/260-turn-level-account-routing req 8)", () => {
+describe("residentRouteNeedsRelease — a live session moves only when it must (docs/260-turn-level-account-routing req 8)", () => {
   const future = () => new Date(Date.now() + 3_600_000).toISOString();
   const past = () => new Date(Date.now() - 60_000).toISOString();
 
@@ -687,10 +687,19 @@ describe("residentRouteNeedsRelease — moving a live session back (docs/260-tur
     backgroundWorkDescriptions: backgroundWork,
   });
 
-  it("retires the secondary's process once the primary's window has reset", () => {
+  it("keeps the secondary's process after the primary's window has reset — no move back", () => {
     const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
       [primary]: { session: { usedPct: 100, resetAt: past() } },
       [secondary]: { session: { usedPct: 20, resetAt: future() } },
+    }));
+
+    expect(residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary), deps)).toBe(false);
+  });
+
+  it("retires the process once its own account is past its cutoff and the primary is clear", () => {
+    const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
+      [primary]: { session: { usedPct: 100, resetAt: past() } },
+      [secondary]: { session: { usedPct: 95, resetAt: future() } },
     }));
 
     expect(residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary), deps)).toBe(true);
@@ -705,10 +714,10 @@ describe("residentRouteNeedsRelease — moving a live session back (docs/260-tur
     expect(residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary), deps)).toBe(false);
   });
 
-  it("does not retire a process holding background work, even when the primary is back", () => {
+  it("does not retire a process holding background work, even when its account is past its cutoff", () => {
     const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
       [primary]: { session: { usedPct: 100, resetAt: past() } },
-      [secondary]: { session: { usedPct: 20, resetAt: future() } },
+      [secondary]: { session: { usedPct: 95, resetAt: future() } },
     }));
 
     expect(

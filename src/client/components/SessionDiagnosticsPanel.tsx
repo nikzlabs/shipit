@@ -567,7 +567,7 @@ function OomBreakerRows({ state }: { state: OomBreakerState | null }) {
       <KvRow
         label="status"
         value={state.tripped
-          ? `tripped — refusing new containers until "Rescue session" resets it`
+          ? `tripped — refusing new containers until "Restart all" resets it`
           : `healthy (${state.countInWindow}/${state.threshold} OOM kills in last ${windowLabel})`}
         valueClass={state.tripped ? "text-(--color-error)" : ""}
       />
@@ -589,7 +589,7 @@ function OomBreakerRows({ state }: { state: OomBreakerState | null }) {
           The agent container hit its memory cap repeatedly. Session memory is
           sized automatically from host capacity; a deployment that needs more
           per session raises {" "}<code>DEFAULT_SESSION_MEMORY_MB</code>. Use
-          {" "}<strong>Rescue session</strong> to retry — that clears the breaker.
+          {" "}<strong>Restart all</strong> on the health strip to retry — that clears the breaker.
         </p>
       )}
     </>

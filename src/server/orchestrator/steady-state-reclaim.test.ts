@@ -6,7 +6,8 @@ import Database from "better-sqlite3";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
-import { runSteadyStateReclaim } from "./steady-state-reclaim.js";
+import { runSteadyStateReclaim, ORPHAN_SESSION_DIR_GRACE_MS } from "./steady-state-reclaim.js";
+import { CLEANUP_CONTAINER_SESSION_ID } from "./shipit-own-sessions.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { liveOverlayScopeHashes, overlayRuntimeKey, sessionPnpmStoreDir } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
@@ -841,6 +842,123 @@ describe("runSteadyStateReclaim", () => {
       const result = await runSteadyStateReclaim({ repoStore, stateDir: tmpDir, lfsObjectDays: 14 });
 
       expect(result).toMatchObject({ lfsObjectsRemoved: 0, lfsBytesFreed: 0 });
+    });
+  });
+
+  describe("orphan session dirs", () => {
+    const OLD = new Date(Date.now() - ORPHAN_SESSION_DIR_GRACE_MS - 60_000);
+
+    function sessionDir(id: string, aged = true): string {
+      const dir = path.join(tmpDir, "sessions", id);
+      fs.mkdirSync(path.join(dir, "scratch"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "scratch", "note.txt"), "x");
+      if (aged) fs.utimesSync(dir, OLD, OLD);
+      return dir;
+    }
+
+    it("removes an old dir with no session row and keeps every other kind", async () => {
+      setup();
+      const orphan = sessionDir("aaaaaaaa-0000-4000-8000-000000000001");
+      const tracked = sessionDir("bbbbbbbb-0000-4000-8000-000000000002");
+      const fresh = sessionDir("cccccccc-0000-4000-8000-000000000003", false);
+      const own = sessionDir(CLEANUP_CONTAINER_SESSION_ID);
+
+      const result = await runSteadyStateReclaim({
+        repoStore: new RepoStore(dbManager!),
+        stateDir: tmpDir,
+        sessionsRoot: path.join(tmpDir, "sessions"),
+        sessionIds: () => new Set([path.basename(tracked)]),
+      });
+
+      expect(result.orphanSessionDirsRemoved).toBe(1);
+      expect(fs.existsSync(orphan)).toBe(false);
+      expect(fs.existsSync(tracked)).toBe(true);
+      expect(fs.existsSync(fresh)).toBe(true);
+      expect(fs.existsSync(own)).toBe(true);
+    });
+  });
+
+  describe("agent caches of evicted sessions", () => {
+    function codexHome(id: string): string {
+      const home = path.join(tmpDir, "credentials", "sessions", id, ".codex");
+      for (const sub of [".tmp/plugins", "cache/remote_plugin_catalog", "plugins/cache", "sessions/2026"]) {
+        fs.mkdirSync(path.join(home, sub), { recursive: true });
+      }
+      return home;
+    }
+
+    it("removes only the regenerable Codex caches, and only for evicted sessions", async () => {
+      setup();
+      const evicted = codexHome("evicted-session");
+      const hot = codexHome("hot-session");
+
+      const result = await runSteadyStateReclaim({
+        repoStore: new RepoStore(dbManager!),
+        stateDir: tmpDir,
+        credentialsDir: path.join(tmpDir, "credentials"),
+        isSessionEvicted: (id) => id === "evicted-session",
+      });
+
+      expect(result.agentCacheDirsRemoved).toBe(2);
+      expect(fs.existsSync(path.join(evicted, ".tmp"))).toBe(false);
+      expect(fs.existsSync(path.join(evicted, "cache"))).toBe(false);
+      expect(fs.existsSync(path.join(evicted, "plugins", "cache"))).toBe(true);
+      expect(fs.existsSync(path.join(evicted, "sessions", "2026"))).toBe(true);
+      expect(fs.existsSync(path.join(hot, ".tmp", "plugins"))).toBe(true);
+      expect(fs.existsSync(path.join(hot, "cache"))).toBe(true);
+    });
+
+    it("never deletes through a symlinked agent home", async () => {
+      setup();
+      const shared = path.join(tmpDir, "shared-codex");
+      fs.mkdirSync(path.join(shared, ".tmp", "plugins"), { recursive: true });
+      const sessionCreds = path.join(tmpDir, "credentials", "sessions", "evicted-session");
+      fs.mkdirSync(sessionCreds, { recursive: true });
+      fs.symlinkSync(shared, path.join(sessionCreds, ".codex"));
+
+      const result = await runSteadyStateReclaim({
+        repoStore: new RepoStore(dbManager!),
+        stateDir: tmpDir,
+        credentialsDir: path.join(tmpDir, "credentials"),
+        isSessionEvicted: () => true,
+      });
+
+      expect(result.agentCacheDirsRemoved).toBe(0);
+      expect(fs.existsSync(path.join(shared, ".tmp", "plugins"))).toBe(true);
+    });
+
+    it("keeps the caches of a session restored while the sweep runs", async () => {
+      setup();
+      const home = codexHome("restored-session");
+      let reads = 0;
+
+      await runSteadyStateReclaim({
+        repoStore: new RepoStore(dbManager!),
+        stateDir: tmpDir,
+        credentialsDir: path.join(tmpDir, "credentials"),
+        isSessionEvicted: () => (reads++ === 0),
+      });
+
+      expect(fs.existsSync(path.join(home, ".tmp"))).toBe(false);
+      expect(fs.existsSync(path.join(home, "cache"))).toBe(true);
+    });
+
+    it("keeps the caches of a session restored during the pacing delay", async () => {
+      setup();
+      const home = codexHome("restored-session");
+      let evicted = true;
+      setTimeout(() => { evicted = false; }, 10);
+
+      const result = await runSteadyStateReclaim({
+        repoStore: new RepoStore(dbManager!),
+        stateDir: tmpDir,
+        credentialsDir: path.join(tmpDir, "credentials"),
+        isSessionEvicted: () => evicted,
+        paceMs: 50,
+      });
+
+      expect(result.agentCacheDirsRemoved).toBe(0);
+      expect(fs.existsSync(path.join(home, ".tmp", "plugins"))).toBe(true);
     });
   });
 });

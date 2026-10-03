@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import {
   SessionManager,
   filterVisibleInSidebar,
   holdsActiveReservation,
   MAX_MERGED_SESSIONS_PER_REPO,
+  toListRow,
 } from "./sessions.js";
-import { isTerminalPrResolved } from "../shared/session-resolution.js";
+import { doneSessionTest, isTerminalPrResolved } from "../shared/session-resolution.js";
 import type { SessionInfo } from "../shared/types.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
@@ -22,6 +23,45 @@ describe("SessionManager", () => {
 
   afterEach(() => {
     dbManager.close();
+  });
+
+  describe("docs/316-done-sessions-return-memory req 5: touchUnlessResolved", () => {
+    function mergedEarlier(mgr: SessionManager): void {
+      mgr.track("sess-1");
+      dbManager.db.prepare(
+        "UPDATE sessions SET last_used_at = '2020-01-01T00:00:00.000Z', merged_at = '2020-01-01 00:00:05' WHERE id = ?",
+      ).run("sess-1");
+    }
+
+    it("does not reopen a session whose PR merged during the turn", () => {
+      const mgr = new SessionManager(dbManager);
+      mergedEarlier(mgr);
+      mgr.touchUnlessResolved("sess-1");
+      expect(isTerminalPrResolved(mgr.get("sess-1")!)).toBe(true);
+    });
+
+    it("still records use of a session that is not resolved", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1");
+      dbManager.db.prepare("UPDATE sessions SET last_used_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run("sess-1");
+      mgr.touchUnlessResolved("sess-1");
+      expect(mgr.get("sess-1")!.lastUsedAt > "2020-01-02").toBe(true);
+    });
+
+    it("records the merge to the millisecond, so a turn in the same second is ordered right", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1");
+      mgr.markMerged("sess-1");
+      expect(mgr.get("sess-1")!.mergedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+      expect(isTerminalPrResolved(mgr.get("sess-1")!)).toBe(true);
+    });
+
+    it("a new turn after the merge still reopens it", () => {
+      const mgr = new SessionManager(dbManager);
+      mergedEarlier(mgr);
+      mgr.track("sess-1");
+      expect(isTerminalPrResolved(mgr.get("sess-1")!)).toBe(false);
+    });
   });
 
   describe("originRoleName (docs/264-agent-roles req 14)", () => {
@@ -150,6 +190,50 @@ describe("SessionManager", () => {
     expect(new SessionManager(dbManager).get("sess-1")!.autoFixCiPaused).toBeUndefined();
   });
 
+  it("docs/322: the answer hold defaults to off and survives a new manager (req 5)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Asks");
+    expect(mgr.isAwaitingAnswer("sess-1")).toBe(false);
+
+    mgr.setAwaitingAnswer("sess-1", true);
+    expect(new SessionManager(dbManager).isAwaitingAnswer("sess-1")).toBe(true);
+
+    mgr.setAwaitingAnswer("sess-1", false);
+    expect(new SessionManager(dbManager).isAwaitingAnswer("sess-1")).toBe(false);
+    expect(mgr.isAwaitingAnswer("no-such-session")).toBe(false);
+  });
+
+  it("docs/322-question-holds-automatic-turns req 8: held turns are saved in order, survive a new manager, and keep one row per delivery", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Asks");
+    const settled: string[] = [];
+    mgr.holdTurn("sess-1", {
+      text: "[ci-fix] CI failed",
+      execution: "dispatched",
+      systemTurn: true,
+      automatic: true,
+      onTurnComplete: (o) => settled.push(o.status),
+    });
+    mgr.holdTurn("sess-1", { text: "Child PR #42 merged", execution: "dispatched", automatic: true, deliveryId: "watch-1:1" });
+    // A retried delivery is the same held turn.
+    mgr.holdTurn("sess-1", { text: "Child PR #42 merged", execution: "dispatched", automatic: true, deliveryId: "watch-1:1" });
+
+    const held = mgr.heldTurns("sess-1");
+    expect(held.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+    expect(held[0]).toMatchObject({ systemTurn: true, automatic: true });
+    held[0]!.onTurnComplete?.({ status: "completed" } as never);
+    expect(settled).toEqual(["completed"]);
+    expect(mgr.hasHeldDelivery("sess-1", "watch-1:1")).toBe(true);
+
+    // A restart keeps the turns, though not the process-bound callbacks.
+    const restarted = new SessionManager(dbManager).heldTurns("sess-1");
+    expect(restarted.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
+    expect(restarted[0]!.onTurnComplete).toBeUndefined();
+
+    mgr.forgetHeldTurn(held[0]!.heldId!);
+    expect(mgr.heldTurns("sess-1").map((m) => m.text)).toEqual(["Child PR #42 merged"]);
+  });
+
   it("docs/150: persists provider route kind and id", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Route me");
@@ -215,36 +299,7 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("findUngraduatedWarm", () => {
-    it("finds a warm session by remote URL", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("warm-1", "Warm session");
-      mgr.setWarm("warm-1", true);
-      mgr.setRemoteUrl("warm-1", "https://github.com/user/repo.git");
-
-      const found = mgr.findUngraduatedWarm("https://github.com/user/repo.git");
-      expect(found).toBeDefined();
-      expect(found!.id).toBe("warm-1");
-      expect(found!.warm).toBe(true);
-    });
-
-    it("returns undefined when no warm session matches", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("normal-1", "Normal");
-      mgr.setRemoteUrl("normal-1", "https://github.com/user/repo.git");
-
-      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git")).toBeUndefined();
-    });
-
-    it("excludes the specified session ID", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("warm-1", "Warm 1");
-      mgr.setWarm("warm-1", true);
-      mgr.setRemoteUrl("warm-1", "https://github.com/user/repo.git");
-
-      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git", "warm-1")).toBeUndefined();
-    });
-
+  describe("setRemoteUrl", () => {
     it("stores a remote URL without the credential someone embedded in it", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "S");
@@ -254,15 +309,6 @@ describe("SessionManager", () => {
       expect(
         dbManager.db.prepare("SELECT remote_url FROM sessions WHERE id = ?").get("sess-1"),
       ).toEqual({ remote_url: "https://github.com/user/repo.git" });
-    });
-
-    it("does not match warm sessions for a different repo", () => {
-      const mgr = new SessionManager(dbManager);
-      mgr.track("warm-1", "Warm 1");
-      mgr.setWarm("warm-1", true);
-      mgr.setRemoteUrl("warm-1", "https://github.com/user/other.git");
-
-      expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git")).toBeUndefined();
     });
   });
 
@@ -836,6 +882,16 @@ describe("SessionManager", () => {
       expect(mgr.list().map((s) => s.id)).toEqual(["active"]);
     });
 
+    it("listWarm() returns exactly the warm rows that listAll() leaves out", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("graduated", "Graduated");
+      mgr.track("draft", "Warm session");
+      mgr.setWarm("draft", true);
+
+      expect(mgr.listWarm().map((s) => s.id)).toEqual(["draft"]);
+      expect(mgr.listAll().map((s) => s.id)).toEqual(["graduated"]);
+    });
+
     // The boot sweep passes this set: an archived session in it is a container spared and
     // re-adopted at every deploy, since nothing else ever reclaims one.
     it("unarchivedIds() drops archived sessions that allIds() still reports", () => {
@@ -935,6 +991,23 @@ describe("SessionManager", () => {
     it("always keeps active (never-merged) sessions", () => {
       const sessions = [active("a"), active("b")];
       expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toEqual(["a", "b"]);
+    });
+
+    it("docs/316-done-sessions-return-memory req 2: hides only done sessions", () => {
+      const sessions: SessionInfo[] = [
+        merged("new", "2024-01-05 09:00:00"),
+        merged("plain", "2024-01-01 09:00:00"),
+        { ...merged("pinned", "2024-01-01 08:00:00"), pinnedAt: "2024-01-02 00:00:00" },
+        { ...merged("blocked", "2024-01-01 07:00:00"), workspaceBlock: "conflict" },
+        { ...merged("reserved", "2024-01-01 06:00:00"), keepPreviewRunning: true },
+        closed("closed", "2024-01-01 05:00:00"),
+        merged("reused", "2024-01-01 04:00:00", "2024-01-03 00:00:00"),
+      ];
+      const visible = new Set(filterVisibleInSidebar(sessions, 1).map((s) => s.id));
+      const isDone = doneSessionTest(sessions);
+      const hidden = sessions.filter((s) => !visible.has(s.id));
+      expect(hidden.map((s) => s.id).sort()).toEqual(["closed", "plain"]);
+      for (const s of hidden) expect(isDone(s)).toBe(true);
     });
 
     it("docs/241: keeps a reserved session visible through the merged cap", () => {
@@ -1140,6 +1213,30 @@ describe("SessionManager", () => {
         ];
         const visible = filterVisibleInSidebar(sessions, 2).map((s) => s.id).sort();
         expect(visible).toEqual(["other"]);
+      });
+
+      it("docs/316-done-sessions-return-memory: caps a spawn tree whose every session is merged", () => {
+        const sessions = [
+          merged("root", "2024-01-01 09:00:00"),
+          merged("other", "2024-01-05 09:00:00"),
+          { ...merged("child", "2024-01-02 09:00:00"), parentSessionId: "root", rootSessionId: "root" },
+        ];
+        expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id)).toEqual(["other"]);
+      });
+
+      it("docs/316-done-sessions-return-memory: the browser's done test agrees with the server's for every row it gets", () => {
+        const sessions = [
+          merged("root", "2024-01-01 09:00:00"),
+          merged("other", "2024-01-05 09:00:00"),
+          { ...merged("mid", "2024-01-02 09:00:00"), parentSessionId: "root", rootSessionId: "root", userArchived: true },
+          { ...active("low"), parentSessionId: "mid", rootSessionId: "root" },
+        ];
+        const visible = filterVisibleInSidebar(sessions, 1);
+        const onServer = doneSessionTest(sessions);
+        const inBrowser = doneSessionTest(visible);
+        expect(visible.map((s) => s.id).sort()).toEqual(["low", "other", "root"]);
+        expect(inBrowser(sessions[0])).toBe(false);
+        for (const s of visible) expect(inBrowser(s)).toBe(onServer(s));
       });
     });
   });
@@ -1397,20 +1494,15 @@ describe("setSessionStatus (docs/303 req 10)", () => {
     expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
   });
 
-  it("marks the card stale when the conversation is reset or rewound, and says it changed", () => {
+  it("marks the card stale when the conversation is reset or rewound", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("c1");
     mgr.setSessionStatus("c1", card);
     mgr.setAgentSessionId("c1", "thread-1");
 
     // The card is kept, not cleared: a rewind can remove the work it describes.
-    expect(mgr.clearAgentSessionId("c1")).toBe(true);
+    mgr.clearAgentSessionId("c1");
     expect(mgr.get("c1")?.sessionStatus).toEqual({ ...card, fresh: false });
-
-    // Nothing to broadcast the second time, and nothing at all without a card.
-    expect(mgr.clearAgentSessionId("c1")).toBe(false);
-    mgr.track("c2");
-    expect(mgr.clearAgentSessionId("c2")).toBe(false);
   });
 
   it("reads a corrupt or shapeless card as no card", () => {
@@ -1466,5 +1558,92 @@ describe("setAgentGoal (docs/154 req 6)", () => {
     mgr.clearAgentSessionId("g1");
     expect(mgr.get("g1")?.agentGoal).toBeUndefined();
     expect(mgr.agentGoalChecked("g1")).toBe(false);
+  });
+});
+
+// Every tab receives the list again on each change; only the open session's viewer reads these.
+describe("session list rows", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const goal = { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1 };
+  const card = { status: "Routes done.", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 };
+
+  function heavySession(mgr: SessionManager): void {
+    mgr.track("s1", "Heavy");
+    mgr.setSessionStatus("s1", card);
+    mgr.setAgentGoal("s1", goal);
+    mgr.setConversationReplay("s1", "User: the whole transcript");
+    mgr.setPendingAgentNotice("s1", "A notice for the agent.");
+  }
+
+  it("leave out the card, the goal, the replay and the notice", () => {
+    const mgr = new SessionManager(dbManager);
+    heavySession(mgr);
+
+    for (const row of [mgr.list()[0], mgr.listAll()[0]]) {
+      expect(row).not.toHaveProperty("sessionStatus");
+      expect(row).not.toHaveProperty("agentGoal");
+      expect(row).not.toHaveProperty("conversationReplay");
+      expect(row).not.toHaveProperty("pendingAgentNotice");
+    }
+    expect(mgr.get("s1")).toMatchObject({ sessionStatus: card, agentGoal: goal });
+  });
+
+  it("are what toListRow makes of the full session", () => {
+    const mgr = new SessionManager(dbManager);
+    heavySession(mgr);
+    expect(mgr.list()[0]).toEqual(toListRow(mgr.get("s1")!));
+  });
+});
+
+describe("onDetailsChanged", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const goal = { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1 };
+  const card = { status: "Routes done.", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 };
+
+  it("names the session on each card write, shown goal change and conversation clear", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    const changed: string[] = [];
+    mgr.onDetailsChanged((id) => changed.push(id));
+
+    mgr.setSessionStatus("s1", card);
+    mgr.setAgentGoal("s1", goal);
+    // Only the token count moved, which the chip does not show.
+    mgr.setAgentGoal("s1", { ...goal, tokensUsed: 50 });
+    mgr.clearAgentSessionId("s1");
+
+    expect(changed).toEqual(["s1", "s1", "s1"]);
+  });
+
+  it("stops after the unsubscribe", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    const changed: string[] = [];
+    const off = mgr.onDetailsChanged((id) => changed.push(id));
+    off();
+    mgr.setSessionStatus("s1", card);
+    expect(changed).toEqual([]);
+  });
+
+  it("keeps the write and the other listeners when one listener throws", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const changed: string[] = [];
+    mgr.onDetailsChanged(() => { throw new Error("socket gone"); });
+    mgr.onDetailsChanged((id) => changed.push(id));
+
+    mgr.setSessionStatus("s1", card);
+
+    expect(mgr.get("s1")?.sessionStatus).toEqual(card);
+    expect(changed).toEqual(["s1"]);
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
   });
 });

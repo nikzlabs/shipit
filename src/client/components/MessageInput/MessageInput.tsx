@@ -202,9 +202,9 @@ export function MessageInput({
    * docs/285 — the session's network mode, rendered as the second section of the
    * permission-mode control (reqs 5, 6). Supplied by the caller rather than read
    * here, because the two surfaces get it from different places: the chat
-   * composer from the server (through `useComposerNetworkMode`), Quick Capture
-   * from a local draft it sends with the create request, since that session does
-   * not exist yet.
+   * composer from the server (through `useComposerNetworkMode`) and edits it in
+   * the Session settings dialog (req 12), Quick Capture from a local draft it
+   * sends with the create request, since that session does not exist yet.
    *
    * Omitted for a sandbox session, whose network access IS one of its capability
    * grants (docs/211, docs/279) — two controls over one session's egress.
@@ -394,9 +394,10 @@ export function MessageInput({
     cleanup: cleanupEnabled,
     language: voiceLanguage || undefined,
     sttProvider,
-
-    // is its own short-lived surface and never "switches" underneath itself.
-    sessionId: isOverlay ? "overlay" : sessionId,
+    // Keyed on the draft, not the session: the new-session view claims its
+    // session while the user may already be dictating, and `focusKey` holds
+    // still through that claim. The overlay never switches under itself.
+    sessionId: isOverlay ? "overlay" : (focusKey ?? sessionId),
   });
 
   const { onTranscript, cancelRecording } = voice;

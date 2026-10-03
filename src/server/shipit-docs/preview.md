@@ -7,8 +7,9 @@ automatically as you edit files.
 
 ## How it works
 
-1. ShipIt reads `shipit.yaml` for the compose file path (or auto-detects
-   `docker-compose.yml` / `compose.yml` at the workspace root).
+1. ShipIt reads `shipit.yaml` for the compose file path (the `compose` key).
+   It does not auto-detect a compose file: without the key, ShipIt starts no
+   project services.
 2. If `agent.install` commands are specified, they run in the agent container.
    By default, every `auto` preview service **waits for install to finish**
    before it starts — it is held in `starting` ("waiting for install") rather
@@ -271,16 +272,18 @@ verify your work:
   `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`.
   A service carries a ready-to-use `url`
   (e.g. `"url":"http://172.20.0.2:5173/"`) — `browser_navigate` to it, or `curl`
-  it directly. The `url` is the service's own `containerIp` + `port`, and it is
+  it directly. The `url` is the service's address on this session's network,
+  the one network you share with it, plus its `port`. It is
   published as soon as the container has an address — including while the
   service still reads `status: "starting"`, because readiness is a separate
   question from where the service lives. So a `starting` service with a `url` is
   worth trying: connection-refused just means "not up yet, retry". A missing
-  `url` means no container address is known yet — wait and re-query.
+  `url` means no address on that network is known yet — wait and re-query.
   Do **not** use the `{sessionId}--{port}.<host>` subdomain form — that origin is
   for the user's preview pane (served by the orchestrator proxy) and does not
   resolve from the agent's browser. (Egress containment allows the agent to reach
-  its own session's service containers by IP; reaching the dev server this way is
+  its own session's service containers by IP or by a Compose service name
+  without a dot; reaching the dev server this way is
   expected and supported.)
 - **browser_snapshot** — read page content as an accessibility tree (preferred
   for understanding layout)

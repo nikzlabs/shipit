@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { allowEgressToSubnets } = vi.hoisted(() => ({
-  allowEgressToSubnets: vi.fn(async () => ["172.19.0.0/16"]),
+const { allowEgressToSubnets, readHostAddresses } = vi.hoisted(() => ({
+  allowEgressToSubnets: vi.fn(async (_docker: unknown, _opts: Record<string, unknown>) => ["172.19.0.0/16"]),
+  readHostAddresses: vi.fn(async (_docker: unknown, _image: string, _opts?: unknown) => ["203.0.113.7"]),
 }));
 vi.mock("./egress-firewall-install.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, allowEgressToSubnets };
+});
+vi.mock("./local-block.js", async (importActual) => {
+  const actual = (await importActual()) as Record<string, unknown>;
+  return { ...actual, hostAddresses: readHostAddresses };
 });
 vi.mock("./egress-firewall.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
@@ -13,13 +18,14 @@ vi.mock("./egress-firewall.js", async (importActual) => {
 });
 
 import { SessionContainerManager } from "./session-container.js";
+import { _setLocalBlockForTest } from "./local-block.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 
 const SESSION_ID = "sess-redisc-1";
 const NETWORK = "shipit-test";
 const COMPOSE_NETWORK = `shipit-session-${SESSION_ID}`;
 
-function createMockDocker() {
+function createMockDocker(agentNetworks: string[] = []) {
   const connect = vi.fn(async () => {});
   const docker = {
     ping: vi.fn(async () => true),
@@ -32,7 +38,12 @@ function createMockDocker() {
     ]),
     getContainer: vi.fn(() => ({
       inspect: vi.fn(async () => ({
-        NetworkSettings: { Networks: { [NETWORK]: { IPAddress: "172.18.0.7" } } },
+        NetworkSettings: {
+          Networks: {
+            [NETWORK]: { IPAddress: "172.18.0.7" },
+            ...Object.fromEntries(agentNetworks.map((name) => [name, { IPAddress: "172.19.0.2" }])),
+          },
+        },
       })),
     })),
     getNetwork: vi.fn(() => ({
@@ -46,8 +57,9 @@ function createMockDocker() {
 
 async function buildRediscoveredManager(
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig,
+  agentNetworks: string[] = [],
 ) {
-  const docker = createMockDocker();
+  const docker = createMockDocker(agentNetworks);
   const manager = new SessionContainerManager({
     docker: docker as any,
     imageName: "shipit-session-worker:test",
@@ -182,9 +194,69 @@ describe("connectToNetwork — egress allow ordered after the Tier-A install (do
     );
   });
 
+  // A reinstall (an SSH grant change) flushes the accepts; an adopted agent must still reopen its network.
+  it("reopenJoinedSessionEgress reopens the session network an adopted agent was already on", async () => {
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }), [COMPOSE_NETWORK]);
+    await manager.reopenJoinedSessionEgress(SESSION_ID);
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    expect(allowEgressToSubnets).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentContainerId: "agent-container-1", subnets: ["172.19.0.0/16"] }),
+    );
+  });
+
   it("reopenJoinedSessionEgress is a no-op when no network has been joined", async () => {
     const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
     await manager.reopenJoinedSessionEgress(SESSION_ID);
     expect(allowEgressToSubnets).not.toHaveBeenCalled();
+  });
+});
+
+// The agent's host drops date from its install. A session network that reuses a
+// range whose gateway was the host's then gives that address to a service, and
+// the drop hid it: every connection to the listed URL timed out.
+describe("connectToNetwork — host drops older than the session network", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+    process.env.SESSION_EGRESS_ENFORCE = "1";
+    process.env.SESSION_EGRESS_SIDECAR_IMAGE = "shipit-egress-sidecar:test";
+    allowEgressToSubnets.mockClear();
+    readHostAddresses.mockReset();
+    readHostAddresses.mockImplementation(async () => ["203.0.113.7"]);
+    _setLocalBlockForTest(true);
+  });
+  afterEach(() => {
+    process.env = savedEnv;
+    _setLocalBlockForTest(false);
+  });
+
+  it("reads the host's addresses fresh and hands them to the allow, which removes the stale drops", async () => {
+    const { docker, manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
+    await manager.connectToNetwork(SESSION_ID, COMPOSE_NETWORK);
+
+    expect(readHostAddresses).toHaveBeenCalledWith(docker, "shipit-egress-sidecar:test", { fresh: true });
+    expect(allowEgressToSubnets).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ subnets: ["172.19.0.0/16"], hostAddresses: ["203.0.113.7"] }),
+    );
+  });
+
+  it("still opens the subnet, keeping every drop, when the host's addresses cannot be read", async () => {
+    readHostAddresses.mockRejectedValue(new Error("helper failed"));
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
+    await manager.connectToNetwork(SESSION_ID, COMPOSE_NETWORK);
+
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    expect(allowEgressToSubnets.mock.calls[0]![1]).not.toHaveProperty("hostAddresses");
+  });
+
+  it("reads nothing without the local block, which installs no host drops", async () => {
+    _setLocalBlockForTest(false);
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
+    await manager.connectToNetwork(SESSION_ID, COMPOSE_NETWORK);
+
+    expect(readHostAddresses).not.toHaveBeenCalled();
+    expect(allowEgressToSubnets.mock.calls[0]![1]).not.toHaveProperty("hostAddresses");
   });
 });

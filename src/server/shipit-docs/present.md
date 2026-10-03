@@ -213,7 +213,9 @@ what the user sees and would defeat the point of the check.
   written to a truly ephemeral, non-persistent location would be gone after a
   restart and show a graceful "source no longer available" placeholder — which is
   exactly why presented artifacts go to `/persist`.) The Present tab is only fully
-  wiped on a session delete / full reset.
+  wiped on a session delete / full reset. A `/persist` artifact shows the same
+  placeholder after the session's retention period ended (environment.md, "The
+  retention period for `/persist` and `/uploads`").
 - There is no user-facing "save" button. A `/persist` throwaway already survives
   restarts; if the user wants it **committed to the repo**, they'll ask you to
   write it into the workspace — just `present` a file you've written there.

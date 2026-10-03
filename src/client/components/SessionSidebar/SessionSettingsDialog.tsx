@@ -28,6 +28,7 @@ import { DEFAULT_SANDBOX_CAPABILITIES } from "../../../server/shared/types.js";
 import {
   NETWORK_MODE_LABEL,
   enforcementWarning,
+  notifySessionNetworkModeChanged,
   useSessionNetworkMode,
 } from "../../hooks/useSessionNetworkMode.js";
 import type {
@@ -183,6 +184,9 @@ export function SessionSettingsDialog({
 
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
 
+      // The network half's pending flag lives in the shared hook, so it only
+      // clears when that hook re-reads what the new container started with.
+      notifySessionNetworkModeChanged(sessionId);
       setCapabilityPendingRestart(false);
       useUiStore.getState().setToast({
         message: isSandbox
@@ -218,7 +222,7 @@ export function SessionSettingsDialog({
             <DialogDescription className="text-xs">
               {isSandbox
                 ? "What the agent in this sandbox may use. GitHub access applies at once; Docker and Network apply the next time its container starts."
-                : "Network access for this session only. Applies the next time its container starts."}
+                : "Network access and SSH destinations for this session only."}
             </DialogDescription>
           </div>
         </div>
@@ -256,7 +260,7 @@ export function SessionSettingsDialog({
             <ModeOption
               icon={<ShieldSlashIcon size={ICON_SIZE.SM} />}
               title="Open"
-              desc="Unrestricted outbound network access — no allowlist, no prompts."
+              desc="Internet access with no allowlist or prompts — but not this machine, private networks or the tailnet."
               selected={mode === "open"}
               disabled={mode === undefined}
               onSelect={() => net.setMode("open")}

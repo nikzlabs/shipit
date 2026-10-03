@@ -509,8 +509,8 @@ describe("saved is not effective", () => {
   });
 
   it("says excluded when enforcement is switched off, which does contain nothing", async () => {
-    // `SESSION_EGRESS_ENFORCE=0` means `container-lifecycle.ts` installs no
-    // firewall at all, so the setting really does decide nothing.
+    // `SESSION_EGRESS_ENFORCE=0` turns egress limits off, so the setting really
+    // does decide nothing — but the local block still applies (docs/319).
     const entry = await getSettingForAgent(
       deps({ egressAllowlistStore: egressStore({}), egressEnforcementStatus: "disabled" }),
       "s1",
@@ -518,6 +518,7 @@ describe("saved is not effective", () => {
     );
     expect(entry.effect.state).toBe("excluded");
     expect(entry.effect.detail).toContain("SESSION_EGRESS_ENFORCE=0");
+    expect(entry.effect.detail).toContain("cannot reach this machine, private networks or the tailnet");
   });
 
   /*

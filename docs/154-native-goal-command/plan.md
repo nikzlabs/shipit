@@ -159,8 +159,9 @@ builds; these supersede them.
 - Every goal the CLI reports — from a command, from a notification during a
   turn (the `create_goal` case, req 1), or from rehydrate — goes through
   `recordAgentGoal`, which stores it in the new `sessions.agent_goal` column
-  and broadcasts `session_list` when what the chip shows (objective, status,
-  budget) changed. Usage-only updates are not written. A stored JSON `null`
+  and sends it to the session's open viewers (`session_details`, docs/303 →
+  Delivery) when what the chip shows (objective, status, budget) changed.
+  Usage-only updates are not written. A stored JSON `null`
   means "read, no goal"; SQL NULL means "never read". Clearing the
   conversation (`clearAgentSessionId`) also clears the goal.
 - **Read on open (req 6).** When a session is opened and its goal was never
@@ -177,7 +178,8 @@ builds; these supersede them.
 
 ### Client
 
-- `SessionInfo.agentGoal` drives `GoalChip`, shown above the composer while
+- `SessionInfo.agentGoal`, held on the client in `sessionDetails` (it is not on
+  the session list rows), drives `GoalChip`, shown above the composer while
   the session has a goal and the active agent supports goals. It names the
   status and objective and says how to remove it (`/goal clear`); it has no
   button (CLAUDE.md §5 — the command is the control). Because it reads the
@@ -241,7 +243,7 @@ which the continuation follow-up above would build on.
 - `src/server/orchestrator/proxy-agent-process.ts`, `container-session-runner.ts` — the container hop.
 - `src/server/shared/goal-command.ts` — `/goal` parser (shared with the client).
 - `src/server/orchestrator/ws-handlers/goal-command.ts`, `send-message.ts` — interception.
-- `src/server/orchestrator/services/agent-goal.ts` — persist + broadcast, notice text.
+- `src/server/orchestrator/services/agent-goal.ts` — persist, notice text.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts` — `agent_goal` column.
 - `src/server/shared/types/agent-types.ts` — `AgentGoal`, `AgentGoalCommand`, `agent_goal_updated`, `supportsGoals`.
 - `src/client/components/GoalChip.tsx`, `MessageInput/MessageInput.tsx`, `utils/send-handler.ts`.

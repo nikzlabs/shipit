@@ -11,22 +11,21 @@ import type Docker from "dockerode";
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import { ALLOWED_SERVICE_KEYS, parsePluginFragment } from "./plugin-compose.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
-import { ServiceManager, type ComposeQuery, type ComposeRunner } from "./service-manager.js";
-import {
-  COMPOSE_OVERRIDE_FILE,
-  SESSION_STATE_SUBDIR,
-  SESSION_WORKSPACE_SUBDIR,
-} from "./session-state-dir.js";
+import type { ComposeQuery, ComposeRunner } from "./service-manager.js";
+import { localProjectComposeAccess, recordedOverride, testServiceManager } from "./compose-test-helpers.js";
+import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
 import { LOOPBACK_ONLY_PREFIXES } from "../shared/worker-auth.js";
 import { releaseSessionGenerationHolds } from "./plugin-leases.js";
 
 const SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const COMMIT = "c".repeat(40);
+const WORKSPACE_DEVICE = `/var/lib/docker/volumes/shipit-ws/_data/sessions/${SESSION_ID}/workspace`;
 
 let stateRoot: string;
 let sessionDir: string;
 let workspaceDir: string;
 let stateDir: string;
+let overrideText: string;
 
 beforeEach(() => {
   stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-svc-boundary-"));
@@ -101,7 +100,7 @@ function writeProject(declaration: string): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), declaration);
   fs.writeFileSync(
     path.join(workspaceDir, "docker-compose.yml"),
-    "services:\n  web:\n    image: node:20\n    user: \"1000:1000\"\n",
+    "services:\n  web:\n    image: node:20\n    user: \"1000:1000\"\n    x-shipit-preview: auto\n",
   );
 }
 
@@ -163,8 +162,9 @@ async function emitProbeService(opts: RunOptions = {}): Promise<Record<string, u
     ...(opts.docker ? { docker: opts.docker } : {}),
     ...(opts.workspaceVolume ? { workspaceVolume: opts.workspaceVolume, stateRoot } : {}),
     containEgress: opts.containEgress ?? false,
+    projectCompose: localProjectComposeAccess(workspaceDir),
   });
-  const mgr = new ServiceManager({
+  const mgr = testServiceManager({
     sessionId: SESSION_ID,
     workspaceDir,
     serviceEnvDir: path.join(sessionDir, "service-env"),
@@ -176,6 +176,7 @@ async function emitProbeService(opts: RunOptions = {}): Promise<Record<string, u
       ? {
         workspaceVolume: opts.workspaceVolume,
         workspaceSubpath: path.posix.join("sessions", SESSION_ID, SESSION_WORKSPACE_SUBDIR),
+        resolveWorkspaceDevice: async () => WORKSPACE_DEVICE,
       }
       : {}),
     ...(opts.containEgress ? { containServicesFn: async () => { /* contained */ } } : {}),
@@ -183,11 +184,10 @@ async function emitProbeService(opts: RunOptions = {}): Promise<Record<string, u
   });
   mgr.setPluginServices(services);
   await mgr.start();
+  overrideText = recordedOverride(workspaceDir, "probe");
   await mgr.stop();
 
-  const override = parseYaml(
-    fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8"),
-  ) as { services: Record<string, Record<string, unknown>> };
+  const override = parseYaml(overrideText) as { services: Record<string, Record<string, unknown>> };
   expect(Object.keys(override.services).sort()).toEqual(["probe", "web"]);
   return override.services.probe;
 }
@@ -349,8 +349,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
     expect(probe.security_opt).toEqual(["no-new-privileges"]);
     expect(probe.restart).toBe("no");
     // A merged bridge would bypass containment; replace the network list.
-    expect(fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8"))
-      .toContain("networks: !override");
+    expect(overrideText).toContain("networks: !override");
   });
 
   it("mounts session paths as volume subpaths in the production layout, never as binds", async () => {
@@ -360,7 +359,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     expectBoundaryHolds(probe, {
       targets: ["/app", "/plugin", "/plugin-state", "/project"],
-      sources: ["shipit-workspace"],
+      sources: ["shipit-workspace", "shipit-session-workspace"],
       env: {
         PROBE_PORT: "4820",
         SHIPIT_PROJECT_DIR: "/project",
@@ -369,7 +368,6 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
     });
     expect(mounts(probe).map((m) => m.type)).not.toContain("bind");
     for (const mount of mounts(probe)) {
-      expect(mount.source).toBe("shipit-workspace");
       expect(mount.volume?.subpath).toBeTruthy();
     }
     const sessionSubpath = path.posix.join("sessions", SESSION_ID);
@@ -377,6 +375,15 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
       .toBe(`${sessionSubpath}/${SESSION_WORKSPACE_SUBDIR}`);
     expect(mounts(probe).find((m) => m.target === "/plugin-state")?.volume?.subpath)
       .toBe(`${sessionSubpath}/plugin-data/probe/state`);
+    // The fragment's directory is below the workspace, where the agent can plant a symlink.
+    expect(mounts(probe).find((m) => m.target === "/app")).toMatchObject({
+      source: "shipit-session-workspace",
+      volume: { subpath: "tools/probe" },
+    });
+    const override = parseYaml(overrideText) as {
+      volumes: Record<string, { driver_opts?: Record<string, string> }>;
+    };
+    expect(override.volumes["shipit-session-workspace"].driver_opts?.device).toBe(WORKSPACE_DEVICE);
   });
 
   it("delivers the plugin's OWN declared credential, and nothing else the store holds", async () => {
@@ -434,6 +441,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
       containEgress: false,
+      projectCompose: localProjectComposeAccess(workspaceDir),
     });
 
     expect(services).toEqual([]);

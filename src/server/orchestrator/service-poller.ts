@@ -19,9 +19,22 @@ export const DOCKER_UNREACHABLE_MESSAGE =
 // Preserve unknown and paused states; containment owns the paused transition.
 const INCONCLUSIVE_CONTAINER_STATES = new Set(["created", "removing"]);
 
+/**
+ * `ps -a` also lists the containers `docker compose run` leaves. Compose joins a row's labels
+ * with unescaped commas, so a value can mimic the label; every Compose container carries it,
+ * and a service's own `False` wins.
+ */
+function isOneOff(labels: unknown): boolean {
+  if (typeof labels !== "string") return false;
+  const pairs = labels.split(",");
+  return pairs.includes("com.docker.compose.oneoff=True") && !pairs.includes("com.docker.compose.oneoff=False");
+}
+
 export interface ServicePollerOptions {
   sessionId: string;
   workspaceDir: string;
+  /** Working directory for its queries; defaults to `workspaceDir`. */
+  queryCwd?: () => string;
   composeQuery: ComposeQueryFn;
   /** Zero disables periodic polling. */
   pollIntervalMs: number;
@@ -30,7 +43,8 @@ export interface ServicePollerOptions {
   getService: (name: string) => PollerService | undefined;
   listServices: () => PollerService[];
   isStartInFlight?: (name: string) => boolean;
-  setContainerIp: (serviceName: string, ip: string) => void;
+  /** Undefined clears the address. */
+  setContainerIp: (serviceName: string, ip: string | undefined) => void;
   updateServiceStatus: (
     name: string,
     status: "stopped" | "starting" | "running" | "error",
@@ -59,7 +73,7 @@ function withQueryTimeout(promise: Promise<string>, message: string): Promise<st
 
 export class ServicePoller {
   private readonly sessionId: string;
-  private readonly workspaceDir: string;
+  private readonly queryCwd: () => string;
   private readonly composeQuery: ComposeQueryFn;
   private readonly pollIntervalMs: number;
   private readonly composeArgs: (...extra: string[]) => string[];
@@ -67,7 +81,7 @@ export class ServicePoller {
   private readonly getService: (name: string) => PollerService | undefined;
   private readonly listServices: () => PollerService[];
   private readonly isStartInFlight: (name: string) => boolean;
-  private readonly setContainerIp: (serviceName: string, ip: string) => void;
+  private readonly setContainerIp: (serviceName: string, ip: string | undefined) => void;
   private readonly updateServiceStatus: ServicePollerOptions["updateServiceStatus"];
   private readonly onRunning: (name: string) => void;
   private readonly onLeftRunning: (name: string) => void;
@@ -78,10 +92,12 @@ export class ServicePoller {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private readonly missingSince = new Map<string, number>();
   private psFailingSince: number | null = null;
+  /** The container each service's current address was read from. */
+  private readonly addressSource = new Map<string, string>();
 
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
-    this.workspaceDir = opts.workspaceDir;
+    this.queryCwd = opts.queryCwd ?? (() => opts.workspaceDir);
     this.composeQuery = (args, cwd) => withQueryTimeout(
       opts.composeQuery(args, cwd),
       `docker ${args[0]} did not answer within ${COMPOSE_QUERY_TIMEOUT_MS}ms`,
@@ -105,7 +121,7 @@ export class ServicePoller {
     const args = this.composeArgs("ps", "--format", "json", "-a");
     let stdout: string;
     try {
-      stdout = await this.composeQuery(args, this.workspaceDir);
+      stdout = await this.composeQuery(args, this.queryCwd());
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
       // Query failure is not an empty container list; expire only sustained stale claims.
@@ -121,12 +137,13 @@ export class ServicePoller {
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let entry: { Service?: string; ID?: string; Name?: string; State?: string; ExitCode?: number };
+      let entry: { Service?: string; ID?: string; Name?: string; State?: string; ExitCode?: number; Labels?: unknown };
       try {
         entry = JSON.parse(trimmed) as typeof entry;
       } catch {
         continue;
       }
+      if (isOneOff(entry.Labels)) continue;
       const svc = entry.Service ? this.getService(entry.Service) : undefined;
       if (!svc) continue;
       if (!INCONCLUSIVE_CONTAINER_STATES.has(entry.State ?? "")) seen.add(svc.name);
@@ -265,12 +282,14 @@ export class ServicePoller {
   ): Promise<Map<string, boolean>> {
     const networkName = `shipit-session-${this.sessionId}`;
     const oomFlags = new Map<string, boolean>();
+    const found = new Map<string, string>();
+    const unread = new Set<string>();
 
     for (const [containerName, serviceName] of containerNames) {
       try {
         const stdout = await this.composeQuery(
           ["inspect", containerName],
-          this.workspaceDir,
+          this.queryCwd(),
         );
         const parsed = JSON.parse(stdout) as { State?: { OOMKilled?: boolean }; NetworkSettings?: { IPAddress?: string; Networks?: Record<string, { IPAddress?: string }> } }[];
         // Exited containers may have no networks, but their OOM flag still matters.
@@ -283,9 +302,9 @@ export class ServicePoller {
           try {
             await this.composeQuery(
               ["network", "connect", networkName, containerName],
-              this.workspaceDir,
+              this.queryCwd(),
             );
-            const stdout2 = await this.composeQuery(["inspect", containerName], this.workspaceDir);
+            const stdout2 = await this.composeQuery(["inspect", containerName], this.queryCwd());
             const parsed2 = JSON.parse(stdout2) as typeof parsed;
             nets = parsed2[0]?.NetworkSettings?.Networks;
           } catch {
@@ -293,19 +312,27 @@ export class ServicePoller {
           }
         }
 
-        if (!nets) continue;
-
-        let ip = nets[networkName]?.IPAddress;
-        if (!ip) {
-          for (const net of Object.values(nets)) {
-            if (net.IPAddress) { ip = net.IPAddress; break; }
-          }
-        }
-        if (ip) {
-          this.setContainerIp(serviceName, ip);
+        // Only the session network is shared with the agent and the preview proxy.
+        const ip = nets?.[networkName]?.IPAddress;
+        if (ip && !found.has(serviceName)) {
+          found.set(serviceName, ip);
+          this.addressSource.set(serviceName, containerName);
         }
       } catch (err) {
         console.warn(`[compose:${this.sessionId}] docker inspect ${containerName} failed:`, (err as Error).message);
+        if (this.addressSource.get(serviceName) === containerName) unread.add(serviceName);
+      }
+    }
+
+    // One service can have several containers (replicas), so decide per service.
+    for (const serviceName of new Set(containerNames.values())) {
+      const ip = found.get(serviceName);
+      if (ip) {
+        this.setContainerIp(serviceName, ip);
+      } else if (!unread.has(serviceName)) {
+        // A container that could not be read keeps its address; a replacement does not inherit it.
+        this.addressSource.delete(serviceName);
+        this.setContainerIp(serviceName, undefined);
       }
     }
 

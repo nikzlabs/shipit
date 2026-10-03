@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, resetRunnerTurnState, sessionHasLiveAgent } from "./session-runner.js";
+import type { QueuedMessage } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -162,7 +163,7 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn(),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: opts.replaceInProgress ?? vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -307,6 +308,97 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("docs/322: while the agent waits for an answer, an automatic dispatch is held and the user's is not", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const deps = steerDeps({ liveSteering: false });
+    const saved: QueuedMessage[] = [];
+    deps.answerHold = {
+      isAwaitingAnswer: () => true,
+      setAwaitingAnswer: vi.fn(),
+      holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry); return saved.length; },
+      heldTurns: () => [],
+      forgetHeldTurn: vi.fn(),
+      hasHeldDelivery: () => false,
+    };
+    runner.setSystemTurnDeps(deps);
+    const ran = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue();
+
+    const held = runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", systemTurn: true, automatic: true }));
+    expect(held.admitted).toBe("queued");
+    // req 8 — saved, not queued in the runner a stopped container would take with it.
+    expect(saved.map((m) => m.text)).toEqual(["[ci-fix] CI failed"]);
+    expect(runner.queueLength).toBe(0);
+    expect(runner.running).toBe(false);
+
+    const refused = runner.dispatch(
+      testDispatch({ text: "resolve conflicts", systemTurn: true, automatic: true, postTurn: "none" }),
+      { whenBusy: "refuse" },
+    );
+    expect(refused.admitted).toBe("refused");
+    expect((await refused.settled).detail).toContain("waiting for the user's answer");
+
+    const answer = runner.dispatch(testDispatch({ text: "Redis" }));
+    expect(answer.admitted).toBe("started");
+    expect(ran).toHaveBeenCalledTimes(1);
+    expect(ran.mock.calls[0]![0].text).toBe("Redis");
+
+    runner.dispose({ force: true });
+  });
+
+  it("docs/322-question-holds-automatic-turns req 8: automatic work stopped by any gate while the agent waits is saved, not queued", () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const deps = steerDeps({ liveSteering: true });
+    const saved: string[] = [];
+    deps.answerHold = {
+      isAwaitingAnswer: () => true,
+      setAwaitingAnswer: vi.fn(),
+      holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry.text); return saved.length; },
+      heldTurns: () => [],
+      forgetHeldTurn: vi.fn(),
+      hasHeldDelivery: () => false,
+    };
+    runner.setSystemTurnDeps(deps);
+    // The asking turn is still winding down, or a CLI-started turn is being stopped.
+    runner.running = true;
+
+    const handle = runner.dispatch(testDispatch({
+      text: "from the parent session",
+      automatic: true,
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    }));
+    expect(handle.admitted).toBe("queued");
+    expect(saved).toEqual(["from the parent session"]);
+    expect(runner.queueLength).toBe(0);
+
+    runner.dispatch(testDispatch({ text: "typed by the user" }));
+    expect(runner.queueLength).toBe(1);
+
+    runner.dispose({ force: true });
+  });
+
+  it("docs/322: automatic work is not steered into a turn that is ending on a question", () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+    runner.awaitingUserAnswer = true;
+
+    runner.dispatch(testDispatch({
+      text: "from the parent session",
+      automatic: true,
+      messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+    }));
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+
+    runner.dispatch(testDispatch({ text: "typed by the user" }));
+    expect(sent).toEqual(["typed by the user"]);
+
+    runner.dispose({ force: true });
+  });
+
   it("dispatch enqueues when the turn is not streaming (no resident streaming process to steer) (docs/163)", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
@@ -374,7 +466,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -416,7 +508,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -470,7 +562,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -521,7 +613,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -587,7 +679,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -653,7 +745,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -698,7 +790,7 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn(),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: {
           replaceInProgress: vi.fn(),
           finalizeInProgress: vi.fn(),
@@ -981,6 +1073,22 @@ describe("SessionRunnerRegistry", () => {
     expect(r1.disposed).toBe(true);
     expect(r2.disposed).toBe(true);
     expect(registry.size).toBe(0);
+  });
+
+  it("reports a replacement only when the disposed runner still had viewers", () => {
+    const orphaned = vi.fn();
+    const registry = new SessionRunnerRegistry({ onViewersOrphaned: orphaned });
+    const watched = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
+    watched.attachViewer();
+    registry.dispose("s1");
+    const replacement = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
+    expect(orphaned).toHaveBeenCalledWith("s1", 2);
+
+    orphaned.mockClear();
+    registry.dispose("s1");
+    registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId).dispose();
+    expect(replacement.disposed).toBe(true);
+    expect(orphaned).not.toHaveBeenCalled();
   });
 
   it("calls onRunnerIdle when runner emits idle", () => {

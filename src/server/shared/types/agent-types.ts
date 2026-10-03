@@ -309,7 +309,7 @@ export interface AgentPermissionRequestEvent {
   agentId?: AgentId;
 }
 
-/** Only the user's answer settles a request; no timeout or expiry. */
+/** The user's answer, or a deny once the agent stops waiting (its own timeout, Stop, exit). */
 export interface AgentPermissionResolvedEvent {
   type: "agent_permission_resolved";
   requestId: string;
@@ -331,6 +331,8 @@ export interface PermissionRequestInput {
   agentId?: AgentId;
   /** Broker idempotency key; retries share one pending card. */
   toolUseId?: string;
+  /** Aborted when the agent withdraws the request; the card then shows denied. */
+  signal?: AbortSignal;
 }
 
 export type PermissionRequester = (input: PermissionRequestInput) => Promise<PermissionDecision>;
@@ -499,6 +501,8 @@ export interface WorkerAgentStartBody {
   params: AgentRunParams;
   runToken?: string;
   deliveryId?: string;
+  /** docs/318 — the orchestrator's published model list; the worker's embedded one can predate it. */
+  modelList?: unknown;
 }
 
 export interface WorkerAgentKillBody {
@@ -524,4 +528,6 @@ export interface WorkerAgentStatus {
   /** A PTY exists; does not imply it is doing work. */
   terminalActive?: boolean;
   installRunning?: boolean;
+  /** Permission requests still waiting for the user; absent on workers from before docs/193's restart reconcile. */
+  pendingPermissionIds?: string[];
 }

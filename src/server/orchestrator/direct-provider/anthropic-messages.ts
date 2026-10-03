@@ -36,6 +36,7 @@ export function createAnthropicMessagesCall(fetchImpl: typeof fetch = fetch): Di
         model: req.apiModelId,
         max_tokens: MAX_OUTPUT_TOKENS,
         messages: [{ role: "user", content: req.prompt }],
+        ...(req.effort ? { output_config: { effort: req.effort } } : {}),
       },
       req.signal,
       LABEL,

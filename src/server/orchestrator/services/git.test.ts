@@ -7,7 +7,7 @@ import { execSync } from "node:child_process";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
-import { setGitRemote, gitPush } from "./git.js";
+import { setGitRemote, gitPush, summarizeGitError, untrackedOverwritePaths } from "./git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
 let dbManager: DatabaseManager;
@@ -71,6 +71,74 @@ describe("gitPush refuses a shared branch the caller names", () => {
     expect(result.success).toBe(true);
     expect(execSync("git rev-parse refs/heads/shipit/work", { cwd: bare }).toString().trim())
       .toBe(execSync("git rev-parse HEAD", { cwd: workspaceDir }).toString().trim());
+  });
+});
+
+// simple-git's message for a real sync failure: dropped-uid warnings first, and
+// the progress line ending in \r rather than \n before git's actual error.
+const UNTRACKED_OVERWRITE_STDERR = [
+  "warning: unable to access '/root/.config/git/attributes': Permission denied",
+  "warning: unable to access '/root/.config/git/attributes': Permission denied",
+  "Rebasing (1/8)\rerror: The following untracked working tree files would be overwritten by merge:",
+  "\tapp/.vite/deps/a.js",
+  "\tapp/.vite/deps/a.js.map",
+  "\tapp/.vite/deps/_metadata.json",
+  "\tapp/.vite/vitest/results.json",
+  "\tapp/.vite/deps/b.js",
+  "Please move or remove them before you merge.",
+  "Aborting",
+  "hint: Could not execute the todo command",
+  "hint: ",
+  "hint:     pick 0123456789abcdef0123456789abcdef01234567 add build output",
+  "hint: ",
+  "hint: It has been rescheduled; To edit the command before continuing, please",
+  "Could not apply 0123456... add build output",
+  "",
+].join("\n");
+
+describe("summarizeGitError", () => {
+  it("leads with git's error line, drops warnings, hints and progress, and caps the path list", () => {
+    expect(summarizeGitError(UNTRACKED_OVERWRITE_STDERR)).toBe(
+      "error: The following untracked working tree files would be overwritten by merge: "
+      + "`app/.vite/deps/a.js`, `app/.vite/deps/a.js.map`, `app/.vite/deps/_metadata.json` and 2 more",
+    );
+  });
+
+  it("keeps every error and fatal line, in order", () => {
+    expect(summarizeGitError("warning: x\nerror: first\nhint: y\nfatal: second\n"))
+      .toBe("error: first fatal: second");
+  });
+
+  it("lists a short path list in full", () => {
+    expect(summarizeGitError("error: would be overwritten:\n\ta\n\tb\nAborting\n"))
+      .toBe("error: would be overwritten: `a`, `b`");
+  });
+
+  it("falls back to the message without noise when git printed no error line", () => {
+    expect(summarizeGitError("Too many conflict iterations (>10) — rebase aborted"))
+      .toBe("Too many conflict iterations (>10) — rebase aborted");
+    expect(summarizeGitError("warning: noise\nRebasing (2/3)\rsomething odd\nhint: try again\n"))
+      .toBe("something odd");
+  });
+});
+
+describe("untrackedOverwritePaths", () => {
+  it("returns every path git refused to overwrite", () => {
+    expect(untrackedOverwritePaths(UNTRACKED_OVERWRITE_STDERR)).toEqual([
+      "app/.vite/deps/a.js",
+      "app/.vite/deps/a.js.map",
+      "app/.vite/deps/_metadata.json",
+      "app/.vite/vitest/results.json",
+      "app/.vite/deps/b.js",
+    ]);
+  });
+
+  it("returns null for any other failure", () => {
+    expect(untrackedOverwritePaths("error: could not apply 0123456... subject\n")).toBeNull();
+    expect(untrackedOverwritePaths("fatal: invalid upstream 'origin/nope'\n")).toBeNull();
+    expect(untrackedOverwritePaths(
+      "error: Your local changes to the following files would be overwritten by merge:\n\ta.txt\n",
+    )).toBeNull();
   });
 });
 

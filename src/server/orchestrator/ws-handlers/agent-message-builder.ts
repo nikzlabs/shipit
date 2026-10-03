@@ -95,7 +95,7 @@ export function attachToolResultsToGroup(
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
   text: string,
-  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface">,
+  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin" | "automatic">,
 ): void {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
   runner.steeredMessages = [
@@ -104,15 +104,30 @@ export function recordSteeredMessage(
       afterGroupIndex,
       text,
       agentInterface: extra?.agentInterface,
+      messageOrigin: extra?.messageOrigin,
       images: extra?.images,
       files: extra?.files,
       uploadPaths: extra?.uploadPaths,
       assembledPrompt: extra?.assembledPrompt,
+      ...(extra?.automatic ? { automatic: true } : {}),
     },
   ];
   console.log(
     `[steered] recordSteeredMessage afterGroupIndex=${afterGroupIndex} steered.len=${runner.steeredMessages.length} text=${JSON.stringify(text.slice(0, 60))}`,
   );
+}
+
+export function steerToQueuedMessage(s: SteeredMessage): QueuedMessage {
+  const queued: QueuedMessage = {
+    text: s.text,
+    execution: s.agentInterface ? "dispatched" : "interactive",
+    ...(s.agentInterface ? { agentInterface: s.agentInterface } : {}),
+    ...(s.messageOrigin ? { messageOrigin: s.messageOrigin } : {}),
+    ...(s.automatic ? { automatic: true } : {}),
+  };
+  if (s.images && s.images.length > 0) queued.images = s.images;
+  if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
+  return queued;
 }
 
 // Run before finalization and queue drain so resends do not leave duplicate user rows.
@@ -128,14 +143,7 @@ export function requeueUndeliveredSteers(
   if (undelivered.length === 0) return 0;
   runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
   for (const s of undelivered) {
-    const queued: QueuedMessage = {
-      text: s.text,
-      execution: s.agentInterface ? "dispatched" : "interactive",
-      ...(s.agentInterface ? { agentInterface: s.agentInterface } : {}),
-    };
-    if (s.images && s.images.length > 0) queued.images = s.images;
-    if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
-    const position = runner.enqueue(queued);
+    const position = runner.enqueue(steerToQueuedMessage(s));
     emit({ type: "message_queued", text: s.text, position });
     console.log(
       `[steer-requeue] runner=${runner.sessionId} un-acked steer re-queued at pos=${position} text=${JSON.stringify(s.text.slice(0, 60))}`,

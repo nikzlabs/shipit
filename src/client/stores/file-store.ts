@@ -43,6 +43,7 @@ interface FileState {
 
   previewFile: string | null;
   previewContent: string | null;
+  previewSize: number | null;
   previewType: FilePreviewType | null;
   previewLoading: boolean;
   previewActions: FilePreviewAction[];
@@ -108,6 +109,7 @@ const initialState = {
   sessionUploads: [] as UploadItem[],
   previewFile: null as string | null,
   previewContent: null as string | null,
+  previewSize: null as number | null,
   previewType: null as FilePreviewType | null,
   previewLoading: false,
   previewActions: [] as FilePreviewAction[],
@@ -406,6 +408,7 @@ export const useFileStore = create<FileState>((set, get) => ({
     set({
       previewFile: filePath,
       previewContent: null,
+      previewSize: null,
       previewType: detectedType,
       previewLoading: true,
       previewActions: opts?.actions ?? [],
@@ -421,7 +424,11 @@ export const useFileStore = create<FileState>((set, get) => ({
         const res = await fetch(`/api/sessions/${sessionId}/docs/${urlPath}`);
         if (!res.ok) throw new Error(`Failed to fetch doc: ${res.status}`);
         const { content } = await res.json() as { content: string };
-        set({ previewContent: content, previewLoading: false });
+        set({
+          previewContent: content,
+          previewSize: new TextEncoder().encode(content).byteLength,
+          previewLoading: false,
+        });
       } catch {
         set({ previewContent: "_Failed to load document._", previewLoading: false });
       }
@@ -430,13 +437,14 @@ export const useFileStore = create<FileState>((set, get) => ({
       try {
         const res = await fetch(`/api/sessions/${sessionId}/files/${urlPath}`);
         if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);
-        const data = await res.json() as { content: string | null; isBinary?: boolean; isImage?: boolean };
+        const data = await res.json() as { content: string | null; size?: number; isBinary?: boolean; isImage?: boolean };
+        const previewSize = data.size ?? null;
         if (data.isImage) {
-          set({ previewContent: data.content, previewType: "image", previewLoading: false });
+          set({ previewContent: data.content, previewSize, previewType: "image", previewLoading: false });
         } else if (data.isBinary) {
-          set({ previewContent: data.content, previewType: "binary", previewLoading: false });
+          set({ previewContent: data.content, previewSize, previewType: "binary", previewLoading: false });
         } else {
-          set({ previewContent: data.content, previewLoading: false });
+          set({ previewContent: data.content, previewSize, previewLoading: false });
         }
       } catch {
         set({ previewContent: null, previewType: "binary", previewLoading: false });
@@ -448,6 +456,7 @@ export const useFileStore = create<FileState>((set, get) => ({
     set({
       previewFile: filePath,
       previewContent: content,
+      previewSize: null,
       previewType: type,
       previewLoading: false,
       previewActions: actions ?? [],
@@ -460,6 +469,7 @@ export const useFileStore = create<FileState>((set, get) => ({
     set({
       previewFile: null,
       previewContent: null,
+      previewSize: null,
       previewType: null,
       previewLoading: false,
       previewActions: [],
@@ -473,6 +483,7 @@ export const useFileStore = create<FileState>((set, get) => ({
     set({
       previewFile: null,
       previewContent: null,
+      previewSize: null,
       previewType: null,
       previewLoading: false,
       previewActions: [],

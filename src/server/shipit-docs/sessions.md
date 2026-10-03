@@ -36,13 +36,15 @@ propose_repo_session({
 })
 ```
 
-Four things to know:
+Five things to know:
 
 - **You name the repository, and ShipIt verifies it before the card exists.**
   The call is refused — to you, in the same turn — if the name is not a GitHub
   repository, if it is the repository you are already in, or if the user's
-  connected GitHub account cannot write to it. So a name you got wrong is yours
-  to correct, not the user's to discover on the click.
+  connected GitHub account cannot see it. (Read-only access is accepted; the
+  card warns that the session will not be able to open a pull request.) So a
+  name you got wrong is yours to correct, not the user's to discover on the
+  click.
 - **The prompt must stand alone.** The session that receives it has a different
   repository checked out and none of this conversation. State the goal, the
   constraints and what to read there; say which repository the request came
@@ -53,6 +55,11 @@ Four things to know:
   prompt.
 - **It is non-blocking.** Post the card and end your turn; do not repeat the
   proposal in prose.
+- **You are told what the user did — don't ask.** The user can start the card
+  or decline it. At the start of your next turn a `[ShipIt]` line says which:
+  started (with the new session's id), declined, or a start that failed. That
+  line is from ShipIt, not the user. A card you have heard nothing about is
+  still waiting for the user.
 
 If the repository is one ShipIt has never seen, that is fine — the card says so,
 and starting it registers the repository. Nothing is added until the user clicks.
@@ -79,7 +86,7 @@ propose_session_message({
 })
 ```
 
-Four things to know:
+Five things to know:
 
 - **You name the session, and ShipIt resolves it before the card exists.** The
   call is refused — to you, in the same turn — if no session has that id, if it
@@ -91,10 +98,14 @@ Four things to know:
   this conversation and a different workspace. Say what it is answering and
   which session it is from.
 - **Approval delivers that one message.** It is not a channel: you get no
-  further access, and a second message means a second card. You will not hear
-  back — nothing returns a reply to you.
+  further access, and a second message means a second card. Nothing returns
+  the target's reply to you.
 - **It is non-blocking.** Post the card and end your turn; do not repeat the
   message in prose.
+- **You are told what the user did — don't ask.** The user can send the card or
+  decline it. At the start of your next turn a `[ShipIt]` line says which:
+  delivered (or queued there), declined, or a delivery that failed. That line is from ShipIt, not the user. A card you have
+  heard nothing about is still waiting for the user.
 
 Where do you get the id? From the prompt you were given — an orchestrating
 session that wants a report includes its own id (`shipit session whoami`) when
@@ -210,7 +221,9 @@ override the parent.
 | `shipit session notify-on-merge <id> [--json]` | **Async** — arm a watch and return immediately (exit `0`, "armed"); the turn ends. When the child's PR later **merges**, the orchestrator wakes *this* session with a queued, self-describing system turn (child id, branch, merged PR ref, merge SHA, and the intent: "proceed with the planned rebase unless the user has since redirected you") and surfaces a "Child PR merged" card in this chat. If the PR **closes without merging**, you get a *distinct* wake-turn telling you the work did **not** ship — don't proceed as if it had. Use this instead of blocking a turn on a human merge (which can take days). The child's PR need not exist yet — the watch fires once it appears and resolves. Fires once. Only the parent that spawned the child may watch it. If the wake-turn itself can't be delivered (this session's container won't resume, for instance) the orchestrator retries it on a backoff; after repeated failures it gives up and posts a "Couldn't resume this session" card in this chat naming the merged PR, so the merge is never silently dropped — send a message here to continue by hand. |
 | `shipit session notify-on-merge --self [--json]` | **Async, and about YOUR own PR.** Arm a watch on this session's currently-open PR and return immediately; the turn ends. When that PR merges — by hand, from ShipIt or GitHub, or via auto-merge — the orchestrator wakes **this** session with a turn telling you to run `shipit branch reset-to-base` and then continue the work you were already asked for. Use it when the user asked for several PRs in a row and the next step can only start after this one lands. Refuses if the branch has no open PR (open one first; if your PR has *already* merged, just keep going in this turn). Arming always **replaces** any previous self-watch, so re-arming mid-chain is normal. **Nothing re-arms on your behalf** — after you open the next PR, run it again if more work remains. See *Chaining several PRs* below. |
 | `shipit session continue-after-rebase --note "TEXT" [--json]` | **Only while ShipIt is driving a rebase of THIS session**, i.e. during the conflict-resolution turn it gave you. That turn ends *before* the rebase does — ShipIt stages your edits, continues the rebase, then force-pushes — so work that only makes sense on the finished result cannot be done in it. This arms that work: ShipIt gives your note back as a new turn once the rebase concludes, on both the manual Sync path and the idle auto-resolve path. `--note` is required, and arming again in a later conflict round appends rather than replaces. A rebase that does not conclude (aborted, refused, timed out) delivers nothing, and arming outside a driven rebase is refused. See [github.md](github.md) → *Work to do after a rebase concludes*. |
-| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its read-only sibling topology, and any children it spawned. Siblings shown here cannot receive messages from this child. `view <id>` reaches only the children you spawned, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
+| `shipit session restart --note "TEXT" [--json]` | Restart **this** session's agent container — what **Restart agent container** on the health strip does — when a change applies only from the next container start (`.nvmrc`, an image-level setting). It only records the request: the restart happens **after your turn ends**, including a turn the user stopped, so nothing you are doing is cut off. `/workspace`, `/persist` and the committed work are kept; processes and files elsewhere are not. ShipIt then gives your note back as a turn on the new container, so write in it what to check or do next. `--note` is required; a second call in the same turn replaces the note. Say in your reply what you restart and why — the user clicks nothing. There is no session-id argument and no way to ask for **Restart all**: that one stays the user's. If a turn is still running or a merge or rebase holds the session when your turn ends, the restart waits for the next turn's end. Refused where ShipIt runs sessions without containers. See [environment.md](environment.md) → *Restarting your agent container*. |
+| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, and any children it spawned. It does not list siblings: parallel children stay blind to each other's work, so a comparison of prompts or models is not polluted. `view <id>` reaches only the children you spawned, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
+| `shipit session status [--json]` | Print **this** session's status card as it is stored: the status, the last-turn line, every manual step with its age, and every follow-up with its description, payload and whether the user has sent it. A **read** — it writes nothing, changes no freshness, and does **not** count as the turn's `session_status` update. The card block in your turn prompt is size-capped, so a card with many or long offers rides it with some payloads withheld; this is uncapped, which is what makes dropping a finished offer possible, since `replaceActions` must repeat every offer you keep byte-exactly. The output ends with the offers as a copyable `actions` JSON array — copy a kept offer from **that**, not from the readable lines above it, which interpolate each value into a line of their own and so cannot always be copied back unambiguously. No session-id argument: another session's card is not readable. |
 | `shipit session rename --title T [--json]` | Retitle **this** session (never another — there is no session-id argument). A session is named automatically from your first message, so once it has done more than that first piece of work the sidebar name is stale; renaming is what keeps it honest. Do it when you open a PR and when you continue past a merged one. Max 60 characters, **rejected** if longer rather than truncated. It changes only the title — never the git branch, which usually has a PR attached by then. If the user has renamed the session by hand, this refuses (exit non-zero) and that name is final: leave it alone. |
 | `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent] [--json]` | Push a report **up** to the session that spawned you. The parent gets a card and a queued system turn. Sibling and cohort delivery is rejected. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
@@ -506,9 +519,6 @@ shipit session whoami
 # branch:   shipit/9fq2xa
 # parent:   Spell catalogs (ses_abc)
 #
-# siblings:
-#   ses_ghi  running  shipit/k1m4tz  Druid catalog
-#   ses_jkl  idle     shipit/p8w0rd  Necromancer catalog
 # children: (none)
 ```
 
@@ -745,6 +755,8 @@ The user picks a permission mode per turn from the chat input. There are three
 - **Auto** — autonomous with no classifier. The default. Safety here rests on
   the tool allowlist, the branch-block hook, and container isolation.
 
-Independently of the mode, the branch-block hook always prevents branch
-operations, and conversational boundaries the user states ("don't push until I
-review") are honored under guarded mode.
+Independently of the mode, the branch-block hook refuses the common
+branch-moving git commands you run in this container. It reads command text,
+so it is a guard against mistakes, not a sandbox; git run on an SSH destination
+is not judged (see `ssh.md`). Conversational boundaries the user states ("don't
+push until I review") are honored under guarded mode.

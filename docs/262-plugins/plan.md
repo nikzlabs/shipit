@@ -78,6 +78,7 @@ plugins:
         commands:
           reqs:
             as: rt-reqs           # command alias on collision (req 20)
+            memory: 4g            # req 30 — the command container's memory limit
         settings:                 # req 26 — values for plugin-declared settings
           root: docs
 ```
@@ -143,6 +144,21 @@ Rules (review findings, both rounds):
 - **Startup** (req 16): the plugin's compose fragment owns per-service
   defaults via the existing `x-shipit-preview` vocabulary; the consumer
   overrides per service. No plugin-level boolean exists.
+- **Command memory** (req 30): `overrides.commands.<cmd>.memory` replaces the
+  2 GiB default for that one command's container. Per command, like `as`,
+  because the heavy one is usually one command of several. The value is a
+  Docker-style size with a required unit (`4g`, `3584m`, `4GiB`): a bare
+  number is refused, because Compose reads it as bytes and a reader would
+  read it as MiB. There is no upper bound, only Docker's 6 MiB floor — a
+  plugin service's own `mem_limit` has none either, and the value is the
+  consuming project's, which is more trusted than the plugin. A value too large
+  to be a safe integer is refused all the same: it would serialize as `null`,
+  which Docker reads as no limit. A plugin's manifest may declare a default
+  for the command (req 31, §1b); the consumer's value replaces it, higher or
+  lower, because req 30 gives the project the last word. This is a deliberate
+  exception to docs/229-auto-resource-sizing, which removed repo-set session
+  sizes: the 2 GiB here is not host-derived, so without the field nothing
+  could move it.
 - **Fail-closed grammar**: unknown keys warn; an unknown `from:` reference,
   an unknown `plugin:` selector, or `branch`+`pin` together drop the entry
   with a warning; setting values are scalars. Within one repository, a selected export that fails validation
@@ -317,6 +333,7 @@ exports:
 
       cli:
         reqs: plugins/requirements/cli                  # command name → entry (req 17)
+        bake: { entry: plugins/requirements/bake, memory: 4g } # default limit (req 31)
       skills: plugins/requirements/skills               # dir shipped to sessions (req 22)
       install: npm --prefix . ci                        # see Install contract (req 7)
       install-inputs: [package-lock.json]                 # files whose content re-triggers install
@@ -1014,9 +1031,14 @@ instead of a repeat.
   plugin (keyed by `alias`) gets a per-session **state directory**, mounted
   read-write into its service containers at **`/plugin-state`** and named by
   **`SHIPIT_PLUGIN_STATE`** on both surfaces (concrete names set by the
-  fixture), surviving service restarts,
-  refreshes, and container restarts, deleted with the session. This is the
-  home of "same live state" between a CLI and a UI that is neither project
+  fixture). It survives service restarts, refreshes, container restarts,
+  archive, unarchive and disk-tier eviction, and only a Full reset deletes it —
+  what `shipit-docs/plugin-authoring.md` tells plugin authors. No per-session
+  path deletes it: `deleteSession` removes database rows only, runs only for
+  warm sessions, and leaves the session directory on disk. The docs/262 tests
+  in `services/session-archive.test.ts` and
+  `services/session-restore-freshness.test.ts` guard archive and unarchive.
+  This is the home of "same live state" between a CLI and a UI that is neither project
   data nor plugin source. Related mechanic for slice 2: a plugin service's
   **published port must stay stable per (session, service)** even if a
   tracked commit edits the fragment's port, because the preview origin is
@@ -1281,6 +1303,32 @@ instead of a repeat.
   session's network" is not enough and a second, slightly different copy of a
   security control is how the two drift.
 
+  **The memory ceiling is 2 GiB unless the consuming project sets
+  `overrides.commands.<cmd>.memory`** (req 30, §1a) **or the plugin's
+  manifest declares `cli.<cmd>.memory`** (req 31) — the project's value first.
+  It is read from the declaration on every call, like the rest of the run
+  boundary, so an edit applies to the next call with no refresh; a manifest
+  default comes from the pinned generation, so it moves with the plugin's
+  version. The planner (`shared/plugin-cli.ts`) resolves both onto the
+  surfaced command, so the case-insensitive match and the "names it more than
+  once" refusal are the same ones `as` has.
+
+  **The manifest grammar is a widening**, the same shape as `credentials` and
+  `hosts` in §1b: a bare string is still the entry path, and a mapping
+  `{ entry, memory }` adds the default. The parsed `cli` stays a plain map of
+  entry paths, with the defaults beside it in `cliMemoryBytes`, so nothing that
+  reads `cli` had to change. An invalid `memory` drops the whole export, as any
+  invalid manifest field does. There is no maximum (req 31, the user's answer
+  of 2026-09-30), the same as a plugin service's own `mem_limit`. When a call
+  exits non-zero and Docker reports the container as OOM-killed, the result's
+  `error` names the limit and the exact field to raise; the shim prints it to
+  stderr after the command's own output. That is the only place a heavy
+  command's failure can point at the fix, because the command itself only sees
+  `Killed`. Docker does not always report a child killed while the CLI lived
+  on, so the docs tell the agent to read an unexplained `Killed` the same way.
+  `install` keeps its own fixed 2 GiB: it is shared across projects through
+  the dependency store, so one project's value would have no clear owner.
+
   Three smaller decisions, each of which had a wrong-looking cheaper option.
   The agent's **cwd is carried across**: a cwd inside `/workspace` becomes the
   matching path under `/project`, and anything else falls back to the project
@@ -1463,11 +1511,52 @@ instead of a repeat.
   any of them exists. A `plugins--*` wildcard would also hide whatever the user
   happens to name that way, and would swallow a marketplace plugin called
   `plugins--acme` (installed as `plugins--acme__<skill>`), whose own
-  path-scoped `git add` then fails as an ignored path. Two limits are inherent
-  rather than fixed: an ignore rule does not apply to an already-tracked path
+  path-scoped `git add` then fails as an ignored path. **A harness root that is
+  a symlink inside the workspace also gets entries at its resolved path**
+  (`.claude/skills -> ../.agents/skills` puts the copies in `.agents/skills/`):
+  git does not follow a symlink, so the lexical entries alone missed the copies
+  and the auto-commit added them. The resolution uses the deepest existing
+  ancestor, as `writeSkill` does, because the exclude is written before the
+  root is created, and its glob characters are escaped because the path is the
+  user's. A known limit, accepted as rare: the resolution is per pass, so
+  retargeting the symlink leaves the copies at the old target unswept and, once
+  the next pass rewrites the block, unexcluded; a retarget between the exclude
+  write and the copy has the same effect. Two limits are inherent rather than
+  fixed: an ignore rule does not apply to an already-tracked path
   (an unmarked directory there is refused as foreign, so the copy never
   happens), and `git add -f` / `git clean -x` / `git stash --all` override any
   ignore, as they do for `.gitignore`.
+
+  **Rebasing across a skills root that changes shape.** An ignored copy is
+  still an untracked file, and git 2.39 — the orchestrator image's
+  (`node:24-slim`, bookworm) — refuses to replace a directory that holds one:
+  when the base turns a real `.claude/skills/` into a symlink, `git rebase`
+  stops at once ("Updating the following directories would lose untracked
+  files in them", then "could not detach HEAD"). Newer git (CI runs 2.55)
+  deletes the ignored files instead and rebases. A user-side `git clean` does
+  not last, because every container start and every `plugin_repos_updated`
+  prepares the copies again. So the rebase flow (`runRebaseFlow`,
+  `services/rebase-driver.ts`) handles it under the same workspace lock as the
+  rebase: on an untracked-files refusal it removes the copies and staging dirs
+  the marker claims, skips any that git tracks or that resolve outside the
+  workspace, and retries — twice at most, because a concurrent prepare pass can
+  put one back in between. It deletes the resolved path and checks containment
+  and the marker again just before each delete, because a symlink retargeted
+  during the `ls-files` await would otherwise redirect a recursive delete. The
+  walk and the ownership rule are shared with the worker's sweep
+  (`shared/plugin-skill-copies.ts`, kept apart from `plugin-skill-marker.ts`
+  because the browser bundle imports that one). The flow records which copies
+  exist just before it rebases; if any is gone when the flow ends — removed by
+  that sweep, or by newer git itself — then, successful or not, and after the
+  workspace is handed back to the worker uid, it awaits the runner's
+  `preparePlugins()` before it releases the session, so the copies
+  come back at the new resolved root with its excludes before a queued turn can
+  spawn; the wait is capped at 45s, because a worker that never became ready
+  would otherwise hold the session for ever. A rebase that keeps the copies
+  neither removes nor re-prepares them. The conflict-resolution turn of such a rebase runs without
+  the plugin skills. A known limit, not introduced here: that prepare pass's
+  stale sweep, like every container start's, removes a marker-owned copy whose
+  name left the plan without asking git whether it is tracked.
 
   **The block is rewritten in a fixed order, and never widens what it hides.**
   Sweep stale directories FIRST, then narrow the block, then write — dropping an

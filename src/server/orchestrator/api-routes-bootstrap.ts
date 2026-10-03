@@ -159,10 +159,7 @@ export async function registerBootstrapRoutes(
             deps.prStatusPoller?.broadcastAllSnapshots();
           },
           onSessionStatusCardEnabled: () => {
-            void markAllSessionStatusesStale({
-              sessionManager: deps.sessionManager,
-              sseBroadcast: deps.sseBroadcast,
-            });
+            void markAllSessionStatusesStale({ sessionManager: deps.sessionManager });
           },
           onSessionStatusCardToggled: (enabled) => {
             releaseResidentsOnStatusCardToggle(deps.runnerRegistry, enabled);

@@ -8,6 +8,7 @@ import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 import type { StagedGeneration } from "../plugin-generations.js";
 import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
+import { localProjectComposeAccess } from "../compose-test-helpers.js";
 
 let sessionDir: string;
 let workspaceDir: string;
@@ -74,6 +75,7 @@ function judge(
   return createStagedGenerationGate({
     workspaceDir,
     containEgress: () => opts.containEgress ?? false,
+    projectCompose: localProjectComposeAccess(workspaceDir),
   })({ repoName: "tools", source: TOOLS_SOURCE, commit: COMMIT, stagingDir, ...over });
 }
 
@@ -104,17 +106,17 @@ function makeLive(name: string, source: string, manifest: string, fragment: stri
 }
 
 describe("the phase-3 gate (reqs 13, 15, 20)", () => {
-  it("admits a candidate whose fragment is usable", () => {
-    expect(judge()).toEqual({ ok: true });
+  it("admits a candidate whose fragment is usable", async () => {
+    expect(await judge()).toEqual({ ok: true });
   });
 
-  it("refuses a candidate whose fragment cannot be used, naming what is wrong", () => {
+  it("refuses a candidate whose fragment cannot be used, naming what is wrong", async () => {
     writeStaged(MANIFEST, `
 services:
   probe:
     build: .
 `);
-    const verdict = judge();
+    const verdict = await judge();
 
     expect(verdict.ok).toBe(false);
     const reason = (verdict as { reason: string }).reason;
@@ -123,19 +125,19 @@ services:
     expect(reason).toContain(COMMIT.slice(0, 9));
   });
 
-  it("refuses a candidate whose service name the project already claims", () => {
+  it("refuses a candidate whose service name the project already claims", async () => {
     declareProjectStack(`
 services:
   probe:
     image: node:22-alpine
 `);
-    const verdict = judge();
+    const verdict = await judge();
 
     expect(verdict.ok).toBe(false);
     expect((verdict as { reason: string }).reason).toContain("collides");
   });
 
-  it("admits the same candidate once the consumer renames the colliding service", () => {
+  it("admits the same candidate once the consumer renames the colliding service", async () => {
     declareProjectStack(`
 services:
   probe:
@@ -156,10 +158,10 @@ plugins:
           probe:
             as: tools-probe
 `);
-    expect(judge()).toEqual({ ok: true });
+    expect(await judge()).toEqual({ ok: true });
   });
 
-  it("does not refuse a candidate over a companion-CLI command collision", () => {
+  it("does not refuse a candidate over a companion-CLI command collision", async () => {
     writeStaged(`
 exports:
   plugins:
@@ -169,10 +171,10 @@ exports:
         git: bin/probe.mjs
 `, FRAGMENT);
 
-    expect(judge()).toEqual({ ok: true });
+    expect(await judge()).toEqual({ ok: true });
   });
 
-  it("admits a candidate that exports no compose fragment at all", () => {
+  it("admits a candidate that exports no compose fragment at all", async () => {
     writeStaged(`
 exports:
   plugins:
@@ -181,7 +183,7 @@ exports:
         probe: bin/probe.mjs
 `, FRAGMENT);
 
-    expect(judge()).toEqual({ ok: true });
+    expect(await judge()).toEqual({ ok: true });
   });
 });
 
@@ -204,14 +206,14 @@ plugins:
       alias: other-probe
 `;
 
-  it("is unmoved by a live sibling whose own fragment is broken", () => {
+  it("is unmoved by a live sibling whose own fragment is broken", async () => {
     declare(OTHER);
     makeLive("other", "acme/other", MANIFEST, "services:\n  side:\n    build: .\n");
 
-    expect(judge()).toEqual({ ok: true });
+    expect(await judge()).toEqual({ ok: true });
   });
 
-  it("refuses a candidate that would take a live sibling's services away", () => {
+  it("refuses a candidate that would take a live sibling's services away", async () => {
     declare(OTHER);
     // Declaration order attributes this collision to the live sibling.
     makeLive("other", "acme/other", MANIFEST, `
@@ -224,7 +226,7 @@ services:
   side:
     image: node:22-alpine
 `);
-    const verdict = judge();
+    const verdict = await judge();
 
     expect(verdict.ok).toBe(false);
     const reason = (verdict as { reason: string }).reason;
@@ -234,25 +236,25 @@ services:
 });
 
 describe("the phase-3 gate fails closed (reqs 13, 15)", () => {
-  it("refuses a candidate whose declaration has gone away", () => {
+  it("refuses a candidate whose declaration has gone away", async () => {
     declare("plugins:\n  repos: []\n  use: []\n");
-    const verdict = judge();
+    const verdict = await judge();
 
     expect(verdict.ok).toBe(false);
     expect((verdict as { reason: string }).reason).toContain("changed while");
   });
 
-  it("refuses a candidate whose declaration was re-pointed at another repository", () => {
+  it("refuses a candidate whose declaration was re-pointed at another repository", async () => {
     declare(CONSUMER.replace("acme/tools", "acme/elsewhere"));
-    const verdict = judge();
+    const verdict = await judge();
 
     expect(verdict.ok).toBe(false);
     expect((verdict as { reason: string }).reason).toContain("changed while");
   });
 
-  it("refuses when the project's own compose file cannot be read", () => {
+  it("refuses when the project's own compose file cannot be read", async () => {
     declareProjectStack("services: [this is: : not yaml\n");
-    const verdict = judge();
+    const verdict = await judge();
 
     expect(verdict.ok).toBe(false);
     const reason = (verdict as { reason: string }).reason;
@@ -260,32 +262,32 @@ describe("the phase-3 gate fails closed (reqs 13, 15)", () => {
     expect(reason).toContain("not valid YAML");
   });
 
-  it("says a refused project compose file was refused, and why", () => {
+  it("says a refused project compose file was refused, and why", async () => {
     declareProjectStack(`
 services:
   web:
     image: node:22-alpine
-    user: "0"
+    extends: { file: base.yml, service: web }
 `);
-    const verdict = judge({}, { containEgress: true });
+    const verdict = await judge({}, { containEgress: true });
 
     expect(verdict.ok).toBe(false);
     const reason = (verdict as { reason: string }).reason;
     expect(reason).toContain("refuses this project's own compose file");
     expect(reason).not.toContain("could not read");
     expect(reason).toContain("`web`");
-    expect(reason).toContain("`user:`");
+    expect(reason).toContain("`extends`");
     expect(reason).toContain(COMMIT.slice(0, 9));
   });
 
-  it("puts that reason at the top of the repository's card", () => {
+  it("puts that reason at the top of the repository's card", async () => {
     declareProjectStack(`
 services:
   web:
     image: node:22-alpine
-    user: "0"
+    extends: { file: base.yml, service: web }
 `);
-    const reason = (judge({}, { containEgress: true }) as { reason: string }).reason;
+    const reason = (await judge({}, { containEgress: true }) as { reason: string }).reason;
 
     const snapshot = buildPluginReposSnapshot(
       resolveShipitConfig(workspaceDir).plugins,
@@ -296,16 +298,44 @@ services:
     );
 
     expect(snapshot.repos[0].issues[0]).toBe(reason);
-    expect(snapshot.repos[0].issues[0]).toContain("`user:`");
+    expect(snapshot.repos[0].issues[0]).toContain("`extends`");
   });
 
-  it("refuses when it cannot read the declaration at all", () => {
+  it("refuses when it cannot read the declaration at all", async () => {
     expectInvalidShipitConfig(() => {
       declare("plugins: [oh: : no\n");
     });
-    const verdict = judge();
+    const verdict = await judge();
 
     expect(verdict.ok).toBe(false);
     expect((verdict as { reason: string }).reason).toContain("could not check");
+  });
+});
+
+describe("the phase-3 gate reads the project file through its confined reader (docs/318)", () => {
+  it("reads the project file for each verdict and never admits unknown names", async () => {
+    declareProjectStack("services:\n  web:\n    image: node:22-alpine\n");
+    const reads: string[] = [];
+    const gate = createStagedGenerationGate({
+      workspaceDir,
+      containEgress: () => false,
+      projectCompose: {
+        readProjectFile: (file) => { reads.push(file); return Promise.reject(new Error("helper image missing")); },
+        dockerSocketGrant: () => "not_granted",
+        opsSession: false,
+      },
+    });
+    const verdict = await gate({ repoName: "tools", source: TOOLS_SOURCE, commit: COMMIT, stagingDir });
+    expect(reads).toEqual(["docker-compose.yml"]);
+    expect(verdict.ok).toBe(false);
+    expect((verdict as { reason: string }).reason).toContain("helper image missing");
+  });
+
+  it("refuses when it has no reader for the project file", async () => {
+    declareProjectStack("services:\n  web:\n    image: node:22-alpine\n");
+    const verdict = await createStagedGenerationGate({ workspaceDir, containEgress: () => false })(
+      { repoName: "tools", source: TOOLS_SOURCE, commit: COMMIT, stagingDir },
+    );
+    expect(verdict.ok).toBe(false);
   });
 });
