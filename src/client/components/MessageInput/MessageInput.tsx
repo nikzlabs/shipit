@@ -394,9 +394,10 @@ export function MessageInput({
     cleanup: cleanupEnabled,
     language: voiceLanguage || undefined,
     sttProvider,
-
-    // is its own short-lived surface and never "switches" underneath itself.
-    sessionId: isOverlay ? "overlay" : sessionId,
+    // Keyed on the draft, not the session: the new-session view claims its
+    // session while the user may already be dictating, and `focusKey` holds
+    // still through that claim. The overlay never switches under itself.
+    sessionId: isOverlay ? "overlay" : (focusKey ?? sessionId),
   });
 
   const { onTranscript, cancelRecording } = voice;
