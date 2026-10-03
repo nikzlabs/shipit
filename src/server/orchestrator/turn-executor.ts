@@ -1179,7 +1179,11 @@ export async function executeAgentTurn(
         console.error("[turn] pr re-arm (reset) flow failed:", err);
       }
     }
-    if (runner && deps.postTurnReleaseFlow && claimReleaseFlow(runner, thisTurnEpoch)) {
+    if (runner && deps.postTurnReleaseFlow) {
+      if (!claimReleaseFlow(runner, thisTurnEpoch)) {
+        console.log(`[turn] release flow skipped for ${sessionId}: a newer turn already ran it`);
+        return;
+      }
       try {
         await deps.postTurnReleaseFlow(sessionId, runner.sessionDir, turnText(), emit);
       } catch (err) {

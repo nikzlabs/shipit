@@ -16,6 +16,7 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { SettingsProposalStore } from "./settings-proposal-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
+import type { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { AgentId, AgentProcess, LogSource, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
@@ -48,6 +49,7 @@ import {
   repushSessionAgentToken,
 } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
+import { buildPostTurnReleaseFlow } from "./services/release-flow.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
 import { shouldCompactBeforeTurn } from "./compact-before-turn.js";
@@ -105,6 +107,8 @@ export interface RunnerRegistryDeps {
   generateText?: GenerateText;
   /** Lazy because the poller depends on this registry and is constructed later. */
   getPrStatusPoller?: () => PrStatusPoller | undefined;
+  /** Lazy for the same reason as `getPrStatusPoller`. */
+  getReleaseStatusPoller?: () => ReleaseStatusPoller | undefined;
   reconcileAgentMergeClaimsFor?: (sessionId: string) => void;
   isAgentMergeInFlight?: (sessionId: string) => boolean;
   getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
@@ -165,7 +169,7 @@ export function createRunnerRegistry(
     autoPushScheduler, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, composeHelperConfig, logStore, runtimeMode, broadcastLog,
-    credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
+    credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, getReleaseStatusPoller, rebindDelivery,
     reconcileAgentMergeClaimsFor,
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
@@ -501,6 +505,10 @@ export function createRunnerRegistry(
         // Appended, not set: a notice recorded while the failed turn ran describes a LATER
         // branch move, and this one must not overwrite it (planning#609).
         restorePendingAgentNotice: (sessionId, notice) => sessionManager.appendPendingAgentNotice(sessionId, notice),
+        postTurnReleaseFlow: buildPostTurnReleaseFlow({
+          getReleaseStatusPoller: () => getReleaseStatusPoller?.(),
+          sessionManager,
+        }),
         ...(generateText ? {
           postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
             const prStatusPoller = getPrStatusPoller?.();

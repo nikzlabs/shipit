@@ -72,6 +72,11 @@ text (`<!--shipit:release {…}-->`); the shared turn executor's post-turn step
 (`postTurnReleaseFlow`, fired every turn — a proposal turn makes no commit)
 parses it (`release-markers.ts`) and drives the poller via
 `services/release-flow.ts`. Confirmation is a normal chat reply from the card.
+Both sets of turn deps take that step from `buildPostTurnReleaseFlow`: the
+composer path (`ws-handlers/agent-execution.ts`) and every turn the server
+starts — dispatch, a session created with its prompt, a wake-up, an adopted
+turn (`runner-registry-factory.ts`). The dispatch path once had no release step,
+so those turns dropped their markers without a log line.
 
 ## Phase 2 — Multi-ecosystem detection + `release:` block
 
