@@ -10,12 +10,16 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   // Anthropic Opus 5.5 model page, 2026-09-22.
   "claude-opus-5.5": "yes",
   "claude-sonnet-5": "yes",
+  // Anthropic Sonnet 5.5 model page, 2026-09-29.
+  "claude-sonnet-5.5": "yes",
   "claude-haiku-4.5": "yes",
   "claude-fable-5": "yes",
   "claude-fable-5.1": "yes",
 
   // Verified from OpenAI's model page and Codex 0.153.2 metadata, 2026-09-04.
   "gpt-6-astra": "yes",
+  // OpenAI model page, 2026-09-29.
+  "gpt-6.1-sol": "yes",
   // OpenAI model pages, 2026-09-22.
   "gpt-6-sol": "yes",
   "gpt-6-luna": "yes",

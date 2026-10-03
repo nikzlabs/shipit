@@ -2,6 +2,8 @@ import path from "node:path";
 
 export const SESSION_STATE_SUBDIR = "state";
 export const SESSION_WORKSPACE_SUBDIR = "workspace";
+/** Mounted at /persist in the agent container and, on request, in compose services (docs/317). */
+export const SESSION_SCRATCH_SUBDIR = "scratch";
 
 export {
   CONTAINER_SESSION_STATE_DIR,
@@ -25,6 +27,17 @@ export function sessionStateDirForWorkspace(workspaceDir: string): string {
     );
   }
   return sessionStateDir(path.dirname(workspaceDir));
+}
+
+export function sessionScratchDirForWorkspace(workspaceDir: string): string {
+  return path.join(path.dirname(sessionStateDirForWorkspace(workspaceDir)), SESSION_SCRATCH_SUBDIR);
+}
+
+/** ShipIt's own Compose files for this session's starts (docs/318-compose-remaining-escapes). */
+export const SESSION_COMPOSE_SUBDIR = "compose";
+
+export function composeStateDirForWorkspace(workspaceDir: string): string {
+  return path.join(sessionStateDirForWorkspace(workspaceDir), SESSION_COMPOSE_SUBDIR);
 }
 
 // Mount only this subtree; the root contains orchestrator-only files such as .env.agent.

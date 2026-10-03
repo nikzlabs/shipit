@@ -9,7 +9,14 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useAttentionInfo } from "../../hooks/useAttentionInfo.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
-import { SessionStatusDot, AutoMergeBadge, DiskTierBadge } from "./SessionStatusIndicators.js";
+import { isTerminalPrResolved } from "../../../server/shared/session-resolution.js";
+import { SessionStatusDot, AutoMergeBadge, DataDeletionBadge, DiskTierBadge } from "./SessionStatusIndicators.js";
+
+function rowPrState(session: SessionInfo): "open" | "merged" | "closed" | undefined {
+  if (session.mergedAt) return "merged";
+  if (session.closedAt) return "closed";
+  return session.prNumber ? "open" : undefined;
+}
 
 interface SessionItemProps {
   session: SessionInfo;
@@ -36,7 +43,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(
-    session.id, !!session.mutedAt, session.workspaceBlock,
+    session.id, !!session.mutedAt, session.workspaceBlock, isTerminalPrResolved(session),
   );
   const needsAttention = attentionReason !== null && !isArchived;
   const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
@@ -162,7 +169,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           }
         </button>
       )}
-      <PrStateBadge sessionId={session.id} />
+      <PrStateBadge sessionId={session.id} rowState={rowPrState(session)} />
 
       {isEditing ? (
         <form
@@ -232,6 +239,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             {isArchived && <PhArchiveIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />}
             {!isArchived && <DiskTierBadge session={session} />}
             <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
+            <DataDeletionBadge session={session} />
             <AutoMergeBadge sessionId={session.id} />
           </div>
         </button>

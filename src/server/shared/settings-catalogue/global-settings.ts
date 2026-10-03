@@ -319,7 +319,8 @@ export const GLOBAL_SETTINGS = {
     label: "Contain outbound network access",
     description:
       "On (recommended): default-deny egress with an allowlist and inline prompts. Off: "
-      + "unrestricted egress, no prompts. Applies the next time each session's container starts.",
+      + "any internet host, no allowlist, no prompts. Either way, sessions cannot reach this machine, private "
+      + "networks or the tailnet. Applies the next time each session's container starts.",
     type: bool({ default: true }),
     store: { kind: "own-route", method: "PUT", path: "/api/egress/settings", bodyField: "globalEnabled" },
     emits: plain(),

@@ -8,6 +8,8 @@ import {
   USAGE_ATTRIBUTION_MIGRATION,
   CODEX_ROLLUP_REPAIR_MIGRATION,
   INSTALL_LEVEL_USAGE_MIGRATION,
+  STALE_PERMISSION_CARD_MIGRATION,
+  DATA_RETENTION_MIGRATION,
   DatabaseManager,
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
@@ -1131,5 +1133,125 @@ describe("docs/299 — install-level usage rows (real migration)", () => {
       background_work: 1,
     });
     reopened.close();
+  });
+});
+
+describe("docs/193 — permission cards left pending by older builds (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-perm-mig-"));
+    file = join(dir, "shipit.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function rewindAndSeed(prompts: (string | null)[]): void {
+    const m = new DatabaseManager(file);
+    const insert = m.db.prepare(
+      "INSERT INTO messages (session_id, role, content, permission_prompt) VALUES ('s', 'assistant', '', ?)",
+    );
+    for (const prompt of prompts) insert.run(prompt);
+    m.db.pragma(`user_version = ${STALE_PERMISSION_CARD_MIGRATION}`);
+    m.close();
+  }
+
+  function prompts(m: DatabaseManager): (string | null)[] {
+    return (m.db.prepare("SELECT permission_prompt FROM messages ORDER BY id").all() as {
+      permission_prompt: string | null;
+    }[]).map((r) => r.permission_prompt);
+  }
+
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+
+  it("denies a pending card past Claude's idle timeout and keeps the rest of it", () => {
+    const createdAt = minutesAgo(31);
+    rewindAndSeed([JSON.stringify({ requestId: "perm_1", phase: "pending", toolName: "Bash", summary: "Bash: curl x", createdAt })]);
+
+    const m = new DatabaseManager(file);
+    expect(JSON.parse(prompts(m)[0]!)).toEqual({
+      requestId: "perm_1",
+      phase: "denied",
+      toolName: "Bash",
+      summary: "Bash: curl x",
+      createdAt,
+    });
+    m.close();
+  });
+
+  it("denies a pending card with no createdAt, which only an older build could write", () => {
+    rewindAndSeed([JSON.stringify({ requestId: "perm_1", phase: "pending", toolName: "Bash" })]);
+
+    const m = new DatabaseManager(file);
+    expect(JSON.parse(prompts(m)[0]!)).toMatchObject({ phase: "denied" });
+    m.close();
+  });
+
+  // A worker survives an orchestrator restart, so a recent card may still be answerable.
+  it("leaves a pending card the agent may still be waiting on", () => {
+    const recent = JSON.stringify({ requestId: "perm_3", phase: "pending", toolName: "Bash", createdAt: minutesAgo(5) });
+    rewindAndSeed([recent]);
+
+    const m = new DatabaseManager(file);
+    expect(prompts(m)).toEqual([recent]);
+    m.close();
+  });
+
+  it("leaves answered cards, rows without a card, and unreadable JSON untouched", () => {
+    const approved = JSON.stringify({ requestId: "perm_2", phase: "approved", toolName: "Write", remembered: true, createdAt: minutesAgo(90) });
+    rewindAndSeed([approved, null, "{not json"]);
+
+    const m = new DatabaseManager(file);
+    expect(prompts(m)).toEqual([approved, null, "{not json"]);
+    m.close();
+  });
+});
+
+describe("docs/323-archived-session-data-retention — the retention columns (real migration)", () => {
+  let file: string;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("starts the period of each older session at the migration (req 5, req 12)", () => {
+    const m = new DatabaseManager(file);
+    for (const column of ["archived_at", "retention_floor_at", "retained_data_bytes", "retained_data_measured_at"]) {
+      m.db.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
+    }
+    const insert = m.db.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, user_archived) VALUES (?, ?, '2025-01-01', '2025-01-01', ?)",
+    );
+    insert.run("archived", "archived", 1);
+    insert.run("active", "active", 0);
+    m.db.pragma(`user_version = ${DATA_RETENTION_MIGRATION}`);
+    m.close();
+
+    const before = Date.now();
+    const migrated = new DatabaseManager(file);
+    const row = (id: string) => migrated.db.prepare(
+      "SELECT archived_at, retention_floor_at, retained_data_bytes FROM sessions WHERE id = ?",
+    ).get(id) as { archived_at: string | null; retention_floor_at: string | null; retained_data_bytes: number | null };
+
+    expect(Date.parse(row("archived").retention_floor_at!)).toBeGreaterThanOrEqual(before - 1000);
+    expect(row("archived").archived_at).toBe(row("archived").retention_floor_at);
+    expect(row("active").archived_at).toBeNull();
+    expect(row("active").retention_floor_at).toBe(row("archived").retention_floor_at);
+    expect(row("active").retained_data_bytes).toBeNull();
+
+    migrated.db.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at) VALUES ('new', 'new', '2026-10-02', '2026-10-02')",
+    ).run();
+    expect(row("new").retention_floor_at).toBeNull();
+    migrated.close();
   });
 });

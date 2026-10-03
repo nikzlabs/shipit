@@ -281,10 +281,11 @@ describe("agent_list producers all carry canRunTurns", () => {
 
   it("finds every producer docs/257 enumerated", () => {
     // Count changes require review; moving a producer must not fail this guard.
+    // docs/318 added the published model list's refresh in startup-monitors.ts.
     const producers = agentListProducers();
     expect(
       producers.length,
       producers.map((p) => `${p.where} — ${p.payload}`).join("\n"),
-    ).toBe(11);
+    ).toBe(12);
   });
 });

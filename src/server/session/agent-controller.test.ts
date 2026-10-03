@@ -13,12 +13,18 @@ import {
   startNodeRuntimeProvisioning,
 } from "./node-runtime.js";
 import type { AgentProcess, AgentRunParams } from "../shared/types.js";
+import { applyModelList, exportModelList, getModel, serializeModelList } from "../shared/catalogue/index.js";
+import { claudeModelArg } from "../shared/spawn-routing.js";
 
 class FakeAgent extends EventEmitter {
   readonly agentId = "claude" as const;
   lastParams: AgentRunParams | null = null;
+  messages: string[] = [];
   run(params: AgentRunParams): void {
     this.lastParams = params;
+  }
+  sendUserMessage(text: string): void {
+    this.messages.push(text);
   }
   writeStdin(): void {}
   kill(): void {}
@@ -95,6 +101,95 @@ describe("AgentController — Node pin notice on the first turn", () => {
       },
     });
   }
+
+  it("holds a message sent during the runtime wait until the agent exists, instead of 400ing it", async () => {
+    fs.writeFileSync(path.join(workspace, ".nvmrc"), "22\n");
+    let releaseRuntime!: () => void;
+    const runtimeGate = new Promise<never>((_resolve, reject) => {
+      releaseRuntime = () => reject(new Error("offline"));
+    });
+    startNodeRuntimeProvisioning({
+      workspaceDir: workspace,
+      cacheDir,
+      deps: { currentVersion: () => "v24.15.0", listRemoteVersions: () => runtimeGate },
+    });
+
+    const start = app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "first prompt", cwd: workspace } },
+    });
+    let running = false;
+    for (let i = 0; i < 50 && !running; i++) {
+      await new Promise((r) => setImmediate(r));
+      running = (await app.inject({ method: "GET", url: "/agent/status" })).json().running === true;
+    }
+    expect(running).toBe(true);
+    expect(agents).toHaveLength(0);
+    const secondStart = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "duplicate", cwd: workspace } },
+    });
+    expect(secondStart.statusCode).toBe(409);
+
+    const message = app.inject({ method: "POST", url: "/agent/message", payload: { text: "change of scope" } });
+    releaseRuntime();
+
+    const [startRes, messageRes] = await Promise.all([start, message]);
+    expect(startRes.statusCode, startRes.body).toBe(200);
+    expect(messageRes.statusCode, messageRes.body).toBe(200);
+    expect(agents).toHaveLength(1);
+    expect(agents[0].lastParams?.prompt).toContain("first prompt");
+    expect(agents[0].messages).toEqual(["change of scope"]);
+  });
+
+  it("refuses a message once the start outlasts the wait, and never applies it later", async () => {
+    let releaseRuntime!: () => void;
+    const runtimeGate = new Promise<never>((_resolve, reject) => {
+      releaseRuntime = () => reject(new Error("offline"));
+    });
+    fs.writeFileSync(path.join(workspace, ".nvmrc"), "22\n");
+    startNodeRuntimeProvisioning({
+      workspaceDir: workspace,
+      cacheDir,
+      deps: { currentVersion: () => "v24.15.0", listRemoteVersions: () => runtimeGate },
+    });
+    const shortApp = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const a = new FakeAgent();
+        agents.push(a);
+        return a as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+      messageStartWaitMs: 10,
+    }).registerRoutes(shortApp);
+    await shortApp.ready();
+    try {
+      const start = shortApp.inject({
+        method: "POST",
+        url: "/agent/start",
+        payload: { agentId: "claude", params: { prompt: "first prompt", cwd: workspace } },
+      });
+      for (let i = 0; i < 50; i++) {
+        await new Promise((r) => setImmediate(r));
+        if ((await shortApp.inject({ method: "GET", url: "/agent/status" })).json().running === true) break;
+      }
+      const message = await shortApp.inject({ method: "POST", url: "/agent/message", payload: { text: "late" } });
+      expect(message.statusCode).toBe(409);
+
+      releaseRuntime();
+      expect((await start).statusCode).toBe(200);
+      expect(agents[0].messages).toEqual([]);
+    } finally {
+      await shortApp.close();
+    }
+  });
 
   it("stays completely silent when the repo pins nothing", async () => {
     const prompt = await startTurn("fix the build");
@@ -534,5 +629,175 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
     retired.emit("event", { type: "agent_background_tasks", tasks: [{ id: "a" }, { id: "b" }] });
     retired.emit("event", { type: "agent_self_wake", taskId: "a" });
     expect(await status()).toMatchObject({ backgroundTaskCount: 1, selfWakeActive: false });
+  });
+});
+
+describe("AgentController — a permission request the agent stopped waiting for is denied (docs/193)", () => {
+  let app: FastifyInstance;
+  let agents: FakeAgent[];
+  let workspace: string;
+  let broker: PermissionBroker;
+  let brokerEvents: { type: string; requestId?: string; behavior?: string }[];
+
+  async function startTurn(): Promise<FakeAgent> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "hi", cwd: workspace } },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return agents.at(-1)!;
+  }
+
+  const denials = () => brokerEvents.filter((e) => e.type === "agent_permission_resolved");
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-perm-"));
+    agents = [];
+    brokerEvents = [];
+    resetNodeRuntimeForTests();
+    broker = new PermissionBroker({ broadcast: (e) => brokerEvents.push(e) });
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const a = new FakeAgent();
+        agents.push(a);
+        return a as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: broker,
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  // The shape the Claude CLI emits when its MCP idle timeout ends the gate call.
+  it("denies the request when the gated tool call gets its result", async () => {
+    const agent = await startTurn();
+    const { requestId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+    const { requestId: otherId } = broker.openRequest({ toolName: "Bash", input: { command: "curl y" }, toolUseId: "toolu_2" });
+
+    agent.emit("event", {
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "sent no response or progress for 1800s; aborting." }],
+    });
+
+    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId, behavior: "deny" }]);
+    expect(denials().some((e) => e.requestId === otherId)).toBe(false);
+  });
+
+  it("denies every unanswered request when the agent process exits", async () => {
+    const agent = await startTurn();
+    const { requestId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+
+    agent.emit("done", 143);
+
+    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId, behavior: "deny" }]);
+  });
+
+  it("denies a killed agent's requests at the kill, and its late exit leaves the replacement's alone", async () => {
+    const killed = await startTurn();
+    const { requestId: oldId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_old" });
+    const kill = await app.inject({ method: "POST", url: "/agent/kill", payload: {} });
+    expect(kill.statusCode).toBe(200);
+    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId: oldId, behavior: "deny" }]);
+
+    await startTurn();
+    const { requestId: newId } = broker.openRequest({ toolName: "Bash", input: { command: "curl y" }, toolUseId: "toolu_new" });
+    killed.emit("done", 143);
+    killed.emit("error", new Error("late"));
+
+    expect(denials().some((e) => e.requestId === newId)).toBe(false);
+    expect(broker.pendingCount).toBe(1);
+  });
+
+  it("reports the requests still waiting, so a restarted orchestrator can check its saved cards", async () => {
+    await startTurn();
+    const { requestId } = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+
+    const res = await app.inject({ method: "GET", url: "/agent/status" });
+
+    expect(res.json()).toMatchObject({ pendingPermissionIds: [requestId] });
+  });
+});
+
+describe("AgentController — the orchestrator's model list (docs/318)", () => {
+  let app: FastifyInstance;
+  let workspace: string;
+  let agents: FakeAgent[];
+  const opus6 = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-6" } as const;
+
+  async function start(extra: Record<string, unknown> = {}): Promise<void> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "hi", cwd: workspace }, ...extra },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    agents.at(-1)!.emit("done", 0);
+    await new Promise((r) => setImmediate(r));
+  }
+
+  function listWithOpus6(): unknown {
+    const doc = exportModelList();
+    doc.services.anthropic?.sub?.models.push({
+      id: "claude-opus-6",
+      label: "Opus 6",
+      canonicalModelKey: "claude-opus-6",
+      family: "claude",
+      styles: ["anthropic-messages"],
+      price: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: { default: 1_000_000 },
+    });
+    return JSON.parse(serializeModelList(doc));
+  }
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-ml-"));
+    agents = [];
+    resetNodeRuntimeForTests();
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const agent = new FakeAgent();
+        agents.push(agent);
+        return agent as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    applyModelList(undefined);
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("runs the agent on the list the start request carries", async () => {
+    await start({ modelList: listWithOpus6() });
+    expect(getModel(opus6)?.label).toBe("Opus 6");
+    expect(claudeModelArg("claude-opus-6")).toBe("claude-opus-6[1m]");
+    expect(agents[0]!.lastParams).not.toBeNull();
+  });
+
+  it("keeps an adopted list when a later request carries none", async () => {
+    await start({ modelList: listWithOpus6() });
+    await start();
+    expect(agents).toHaveLength(2);
+    expect(getModel(opus6)?.label).toBe("Opus 6");
   });
 });

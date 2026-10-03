@@ -59,8 +59,8 @@ export async function reconcileSessionEgress(
       offerRescue: true,
       message:
         "This session's container can't be rebuilt right now — it has been stopped "
-        + "repeatedly, so automatic restarts are paused. Rescue the session to try again, "
-        + "then change the network mode.",
+        + "repeatedly, so automatic restarts are paused. Use Restart all on the health strip "
+        + "in the Terminal tab to try again, then change the network mode.",
     };
   }
 

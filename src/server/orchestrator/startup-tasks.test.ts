@@ -8,7 +8,12 @@ import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionManager } from "./sessions.js";
-import { runRemoteCredentialScrub, retireWarmSessions, scheduleStartupTasks } from "./startup-tasks.js";
+import {
+  clearUnrecordedRepoAddresses,
+  runRemoteCredentialScrub,
+  retireWarmSessions,
+  scheduleStartupTasks,
+} from "./startup-tasks.js";
 import { repoUrlToHash } from "./git-utils.js";
 
 function legacyHash(repoUrl: string): string {
@@ -200,6 +205,22 @@ describe("runRemoteCredentialScrub", () => {
     expect(result.workspaces).toBe(0);
     expect(result.repoRows).toBe(1);
     expect(sessionManager.get("s1")?.remoteUrl).toBe(CLEAN);
+  });
+});
+
+describe("clearUnrecordedRepoAddresses", () => {
+  it("clears a stored address on ops and sandbox rows and keeps it on repository sessions", () => {
+    for (const [id, kind] of [["ops", "ops"], ["sandbox", "sandbox"], ["repo", undefined]] as const) {
+      sessionManager.track(id, id);
+      if (kind) sessionManager.setKind(id, kind);
+      sessionManager.setRemoteUrl(id, CLEAN);
+    }
+
+    expect(clearUnrecordedRepoAddresses(sessionManager)).toBe(2);
+    expect(sessionManager.get("ops")?.remoteUrl).toBe("");
+    expect(sessionManager.get("sandbox")?.remoteUrl).toBe("");
+    expect(sessionManager.get("repo")?.remoteUrl).toBe(CLEAN);
+    expect(sessionManager.findAllByRemoteUrl(CLEAN).map((s) => s.id)).toEqual(["repo"]);
   });
 });
 

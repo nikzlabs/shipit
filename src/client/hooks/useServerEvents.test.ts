@@ -4,8 +4,11 @@ import { useServerEvents } from "./useServerEvents.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { usePrStore } from "../stores/pr-store.js";
+import type { PrStatusSummary } from "../../server/shared/types.js";
 import { getParkedHarness, getSavedModelId } from "../utils/local-storage.js";
 import { persistHarnessPick } from "../utils/harness-seed.js";
+import { applyModelList, exportModelList, getModel, serializeModelList } from "../../server/shared/catalogue/index.js";
 
 class FakeEventSource {
   static CONNECTING = 0;
@@ -95,6 +98,98 @@ describe("useServerEvents — session_agent_started", () => {
     expect(store.activity).toBeUndefined();
 
     expect(store.activeRunnerSessions.has("other")).toBe(true);
+  });
+});
+
+describe("useServerEvents — session_list and the All sessions dialog", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  // docs/323-archived-session-data-retention req 7 — session_list has no archived rows,
+  // so the deletion date of an archived row reaches the open dialog only by a new fetch.
+  it("fetches all sessions again while the dialog is open, and not when it is closed", () => {
+    const fetchAllSessions = vi.fn().mockResolvedValue(undefined);
+    useSessionStore.setState({ fetchAllSessions, allSessionsDialogOpen: false });
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => { es.emit("session_list", { sessions: [] }); });
+    expect(fetchAllSessions).not.toHaveBeenCalled();
+
+    useSessionStore.setState({ allSessionsDialogOpen: true });
+    act(() => { es.emit("session_list", { sessions: [] }); });
+    expect(fetchAllSessions).toHaveBeenCalledTimes(1);
+  });
+
+  // Each frame parses into new objects; the store keeps the rows that did not change.
+  it("keeps the objects of rows a broadcast did not change", () => {
+    useSessionStore.setState({ sessions: [], allSessionsDialogOpen: false });
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+    const row = (id: string, lastUsedAt: string) => ({
+      id, title: id, createdAt: "2026-01-01T00:00:00.000Z", lastUsedAt, remoteUrl: "",
+    });
+
+    act(() => { es.emit("session_list", { sessions: [row("a", "t1"), row("b", "t1")] }); });
+    const first = useSessionStore.getState().sessions;
+
+    act(() => { es.emit("session_list", { sessions: [row("a", "t1"), row("b", "t1")] }); });
+    expect(useSessionStore.getState().sessions).toBe(first);
+
+    act(() => { es.emit("session_list", { sessions: [row("a", "t1"), row("b", "t2")] }); });
+    const third = useSessionStore.getState().sessions;
+    expect(third[0]).toBe(first[0]);
+    expect(third[1]).not.toBe(first[1]);
+    expect(third[1].lastUsedAt).toBe("t2");
+  });
+});
+
+describe("useServerEvents — pr_status connect snapshot", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    usePrStore.getState().reset();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  // The snapshot covers the sidebar; a session opened from All sessions got its status on its socket.
+  it("drops only what its scope covers", () => {
+    const pr = (sessionId: string): PrStatusSummary => ({
+      sessionId,
+      prNumber: 1,
+      prUrl: "https://github.com/o/r/pull/1",
+      prTitle: "t",
+      prBody: "",
+      prState: "merged",
+      baseBranch: "main",
+      headBranch: `shipit/${sessionId}`,
+      insertions: 0,
+      deletions: 0,
+      checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      mergeable: "unknown",
+      reviewDecision: "none",
+      autoMergeEnabled: false,
+    });
+    usePrStore.getState().applyPrStatusUpdates([pr("in-sidebar"), pr("archived")]);
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("pr_status", { updates: [], isSnapshot: true, scope: ["in-sidebar"] });
+    });
+
+    expect(usePrStore.getState().statusBySession["in-sidebar"]).toBeUndefined();
+    expect(usePrStore.getState().statusBySession.archived).toBeDefined();
   });
 });
 
@@ -490,7 +585,7 @@ describe("useServerEvents — foreground reconnect", () => {
   it.each([
     ["visibilitychange", () => document.dispatchEvent(new Event("visibilitychange"))],
 
-    ["pageshow", () => window.dispatchEvent(new Event("pageshow"))],
+    ["a bfcache pageshow", () => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }))],
     ["online", () => window.dispatchEvent(new Event("online"))],
   ])("reopens the stream on %s", (_name, fire) => {
     renderHook(() => useServerEvents());
@@ -503,20 +598,31 @@ describe("useServerEvents — foreground reconnect", () => {
     expect(FakeEventSource.created).toBe(2);
   });
 
+  // Each reopen makes the server send its whole connect snapshot again.
+  it("keeps the stream it opened through the first load's pageshow", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+    });
+
+    expect(FakeEventSource.created).toBe(1);
+  });
+
   it("opens one stream per resume, not one per event in the burst", () => {
     renderHook(() => useServerEvents());
 
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
       window.dispatchEvent(new Event("focus"));
-      window.dispatchEvent(new Event("pageshow"));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
     });
 
     expect(FakeEventSource.created).toBe(2);
 
     act(() => {
       vi.advanceTimersByTime(1000);
-      window.dispatchEvent(new Event("pageshow"));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
     });
     expect(FakeEventSource.created).toBe(3);
   });
@@ -863,5 +969,46 @@ describe("useServerEvents — update_notice (docs/304)", () => {
     });
 
     expect(useUiStore.getState().updateNotice).toBeNull();
+  });
+});
+
+describe("useServerEvents — agent_list carries the model list (docs/318)", () => {
+  const opus6 = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-6" } as const;
+
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    useUiStore.setState({ agentList: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    applyModelList(undefined);
+  });
+
+  it("applies the list before it stores the agents, so the re-render sees the new model", () => {
+    const doc = exportModelList();
+    doc.services.anthropic?.sub?.models.push({
+      id: "claude-opus-6",
+      label: "Opus 6",
+      canonicalModelKey: "claude-opus-6",
+      family: "claude",
+      styles: ["anthropic-messages"],
+      price: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: { default: 1_000_000 },
+    });
+    let labelAtStore: string | undefined;
+    const unsubscribe = useUiStore.subscribe((state, prev) => {
+      if (state.agentList !== prev.agentList) labelAtStore = getModel(opus6)?.label;
+    });
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("agent_list", { agents: [], modelList: JSON.parse(serializeModelList(doc)) });
+    });
+    unsubscribe();
+
+    expect(labelAtStore).toBe("Opus 6");
   });
 });

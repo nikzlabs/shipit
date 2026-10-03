@@ -112,6 +112,40 @@ still find them when ShipIt is not storing them outside the clone, which is not
 something your service can detect or rely on — so work that needs the project's
 installed dependencies belongs in a command.
 
+### Your command's memory limit is 2 GiB unless you declare another
+
+Each call to one of your commands runs in its own container with a **2 GiB
+memory limit** by default. That is not the session's limit, so a program that passes when
+you run it directly in your shell can be killed when it runs as your command.
+`repo: self` runs the command in the same kind of container with the same
+limit, so test the command through its wrapper on `PATH`, not only the program
+it starts.
+
+**If a command needs more, declare it in your manifest**, with the mapping
+form of that command's `cli` entry. A bare string stays the entry path:
+
+```yaml
+exports:
+  plugins:
+    assetgen:
+      cli:
+        list: cli/list.mjs
+        bake: { entry: cli/bake.mjs, memory: 4g }
+```
+
+- **The value is a size with a unit** — `4g`, `3584m`, `4GiB`, binary units,
+  at least `6m`, no maximum. An invalid value drops the whole export, as any
+  invalid manifest field does, and your repository's card says why.
+- **Declare what the command needs, not a large round number.** A consuming
+  project can replace your value with its own
+  `overrides.commands.<cmd>.memory`, higher or lower, and its value wins — see
+  [plugins.md → A plugin command's memory limit](plugins.md#a-plugin-commands-memory-limit).
+- **It applies under `repo: self` too**, so the wrapper test above uses it.
+- **Say it in the failure too.** ShipIt names the field to raise only when
+  Docker reports the container as OOM-killed. When your command outlives a
+  child that was killed by signal 9, print that it ran out of memory before
+  you exit.
+
 ### Your service does not choose its port
 
 An exported compose fragment **must not declare `ports:`**. A fragment that does
@@ -289,6 +323,14 @@ read-write but owned by the **consuming session's own uid** — a per-session nu
 in 2000000–2999999, not a fixed 1000 — so a service that declares some other
 `user:` can still be refused by the filesystem. Declare no `user:` and ShipIt
 supplies that identity; a fragment cannot name it, since no fragment can know it.
+
+**`/plugin-state` is per import, per session.** Every session that uses your
+plugin gets its own directory, and a project that imports the plugin under two
+aliases gets two. Your services and your CLI runs in one session share it. No
+other session sees it, so it cannot be a cache that later sessions reuse. It
+survives container restarts and archive, and only a Full reset deletes it. A
+fragment cannot mount the consuming project's `persist` volume (the session's
+`/persist`); keep plugin state in `/plugin-state`.
 
 Relocating one tool's writes is the weaker fix — the tool's next release writes
 somewhere new. The recipe below removes the need.

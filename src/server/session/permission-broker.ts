@@ -1,4 +1,5 @@
-// Approval decisions have no deadline. The orchestrator persists cards from broker events.
+// ShipIt sets no deadline, but a request the agent stopped waiting for is broadcast as denied.
+// The orchestrator persists cards from broker events.
 
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, PermissionDecision, PermissionRequestInput } from "../shared/types.js";
@@ -36,6 +37,17 @@ export function describePermissionRequest(toolName: string, path: string | undef
     return `${toolName}: ${oneLine.length > 100 ? `${oneLine.slice(0, 97)}…` : oneLine}`;
   }
   return toolName;
+}
+
+export function toolResultIds(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content as unknown[]) {
+    if (typeof block !== "object" || block === null) continue;
+    const { type, tool_use_id: id } = block as { type?: unknown; tool_use_id?: unknown };
+    if (type === "tool_result" && typeof id === "string") ids.push(id);
+  }
+  return ids;
 }
 
 export const PERMISSION_DETAILS_CHARS = 4_000;
@@ -80,6 +92,13 @@ export class PermissionBroker {
     const requestId = opened.requestId!;
     const entry = this.pending.get(requestId);
     if (!entry) return Promise.resolve({ behavior: "deny" });
+    const { signal } = input;
+    if (signal) {
+      const onAbort = () => this.expire(requestId);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+      void entry.decision.finally(() => signal.removeEventListener("abort", onAbort));
+    }
     return entry.decision.finally(() => this.drop(requestId));
   }
 
@@ -188,17 +207,36 @@ export class PermissionBroker {
     return true;
   }
 
-  // Teardown denies held calls silently; unanswered transcript cards remain pending.
+  // The gated call has a result, so the agent no longer waits: Claude's MCP idle timeout
+  // ends the call without cancelling it, and the bridge would otherwise poll forever.
+  endToolUse(toolUseId: string): void {
+    const requestId = this.byToolUse.get(toolUseId);
+    if (requestId) this.expire(requestId);
+  }
+
+  // The agent exited, so no held call can be answered any more.
   clearPending(): void {
-    for (const entry of this.pending.values()) {
-      entry.settled = true;
-      entry.settle({ behavior: "deny" });
-    }
+    for (const requestId of [...this.pending.keys()]) this.expire(requestId);
     this.pending.clear();
     this.byToolUse.clear();
   }
 
+  // An unanswered request the agent abandoned. A later poll for its id fails closed.
+  private expire(requestId: string): void {
+    const entry = this.pending.get(requestId);
+    if (!entry || entry.settled) return;
+    entry.settled = true;
+    entry.settle({ behavior: "deny" });
+    this.drop(requestId);
+    this.broadcast({ type: "agent_permission_resolved", requestId, behavior: "deny" });
+  }
+
   get pendingCount(): number {
     return this.pending.size;
+  }
+
+  // Answered requests can wait here for their poll; only unanswered ones still need the user.
+  get unansweredIds(): string[] {
+    return [...this.pending].filter(([, entry]) => !entry.settled).map(([id]) => id);
   }
 }

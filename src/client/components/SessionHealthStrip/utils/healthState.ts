@@ -56,7 +56,7 @@ export function summarize(
   isRestarting: boolean,
   phaseLabel: string | null,
 ): { severity: Severity; label: string } {
-  if (isRestarting) return { severity: "warn", label: phaseLabel ?? "Rescuing…" };
+  if (isRestarting) return { severity: "warn", label: phaseLabel ?? "Restarting…" };
   if (!health) return { severity: "unknown", label: "Checking…" };
 
   if (health.containerState !== "running") {

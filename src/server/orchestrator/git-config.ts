@@ -38,6 +38,20 @@ function removeSafeDirectoryGrant(): void {
 export const GLOBAL_CREDENTIAL_FILENAME = ".git-credential-github";
 const MIN_PLAUSIBLE_GITHUB_TOKEN_LENGTH = 20;
 
+// Host-scoped: a repository's remote or committed `.lfsconfig` can name any host, and an
+// unscoped helper hands that host the GitHub token on its first 401 (docs/231-git-lfs-support §9).
+export const GLOBAL_CREDENTIAL_HELPER_KEY = "credential.https://github.com.helper";
+// Builds before that scoping installed the helper here; it must not survive an upgrade.
+const LEGACY_GLOBAL_CREDENTIAL_HELPER_KEY = "credential.helper";
+
+function unsetGlobalKey(key: string): void {
+  try {
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--unset-all", key]), { stdio: "ignore" });
+  } catch {
+    // Already unset.
+  }
+}
+
 function globalCredentialFilePath(): string {
   const configPath = process.env.GIT_CONFIG_GLOBAL;
   return path.join(configPath ? path.dirname(configPath) : "/credentials", GLOBAL_CREDENTIAL_FILENAME);
@@ -86,7 +100,7 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     }
   }
 
-  pinGlobalExcludesFile(credentialsDir);
+  pinHomeDefaultFiles(credentialsDir);
   shareGlobalGitConfigWithWorker(credentialsDir);
 
   if (!process.env.GIT_EDITOR) {
@@ -121,35 +135,46 @@ function reshareGlobalGitConfig(): void {
   shareGlobalGitConfigWithWorker(path.dirname(configPath));
 }
 
-const GLOBAL_EXCLUDES_FILENAME = "gitignore-global";
+// With GIT_CONFIG_GLOBAL set, these two defaults are the only files git reads
+// under $HOME. Dropped-UID git cannot reach /root, and each EACCES warning led
+// the stderr of a real failure, so a rebase notice read as a permissions problem.
+const HOME_DEFAULT_FILES = [
+  ["core.excludesFile", "gitignore-global"],
+  ["core.attributesFile", "gitattributes-global"],
+] as const;
 
-// Avoid EACCES noise from dropped-UID git probing /root/.config/git/ignore.
-function pinGlobalExcludesFile(credentialsDir: string): void {
+function pinHomeDefaultFiles(credentialsDir: string): void {
   if (sessionWorkerUid() === null) return;
+  for (const [key, filename] of HOME_DEFAULT_FILES) pinGlobalFile(credentialsDir, key, filename);
+}
+
+function pinGlobalFile(credentialsDir: string, key: string, filename: string): void {
   try {
     const existing = execFileSync(
       "git",
-      gitArgsWithHooksDisabled(["config", "--global", "core.excludesFile"]),
+      gitArgsWithHooksDisabled(["config", "--global", key]),
       { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
     if (existing) return;
   } catch {
     // Unset key.
   }
-  const target = path.join(credentialsDir, GLOBAL_EXCLUDES_FILENAME);
+  const target = path.join(credentialsDir, filename);
   try {
-    // Preserve operator patterns across restarts.
+    // Preserve operator entries across restarts.
     if (!fs.existsSync(target)) fs.writeFileSync(target, "", { mode: 0o644 });
     tightenMode(target, 0o644);
+    // Root-side git reads it too, so the worker must not be able to edit it.
+    restoreRootOwnership(target);
   } catch (err) {
     console.warn(
-      `[git-config] could not create the global excludes file at ${target}:`,
+      `[git-config] could not create the ${key} file at ${target}:`,
       err instanceof Error ? err.message : String(err),
     );
     return;
   }
   try {
-    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "core.excludesFile", target]));
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", key, target]));
   } catch {
     // git may not be installed yet.
   }
@@ -300,16 +325,14 @@ export function setGlobalCredentialHelper(token: string): void {
   // Missing is a fault; unreadable is expected for dropped-UID git, which uses a repo-scoped helper.
   const quoted = singleQuote(credentialPath);
   const helper = `!f() { [ -e ${quoted} ] || { echo "shipit: git credential file missing at ${credentialPath}" >&2; return 1; }; cat ${quoted} 2>/dev/null; }; f`;
-  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "credential.helper", helper]));
+  unsetGlobalKey(LEGACY_GLOBAL_CREDENTIAL_HELPER_KEY);
+  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--replace-all", GLOBAL_CREDENTIAL_HELPER_KEY, helper]));
   reshareGlobalGitConfig();
 }
 
 export function clearGlobalCredentialHelper(): void {
-  try {
-    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--unset", "credential.helper"]));
-  } catch {
-    // Already unset.
-  }
+  unsetGlobalKey(GLOBAL_CREDENTIAL_HELPER_KEY);
+  unsetGlobalKey(LEGACY_GLOBAL_CREDENTIAL_HELPER_KEY);
   try {
     fs.rmSync(globalCredentialFilePath(), { force: true });
   } catch (err) {

@@ -59,6 +59,10 @@ both a sender and a recipient, so one finding could cause a message storm.
     valid child-to-parent delivery, all severities, direct parent-to-child
     resolved-session behavior, and sender-visible errors.
 
+12. A child session must not be able to see its siblings: the session topology
+    shown to an agent must not list them or expose their work. Parallel children
+    that compare prompts or models must not learn of each other.
+
 ## Open questions
 
 _None._
@@ -100,3 +104,7 @@ _None._
 - 2026-08-27 — Child sessions must not message one another. Cohort broadcasts
   are an anti-pattern that causes message storms. All child reports go only to
   the direct parent, which coordinates other children when needed.
+- 2026-09-23 — Should a child still see its siblings as read-only topology in
+  `shipit session whoami`? Chosen: no. The user compares prompts and models in
+  parallel child sessions, and sibling visibility pollutes those results. The
+  parent gives scope limits in each spawn prompt instead (req 12).

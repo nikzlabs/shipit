@@ -923,7 +923,7 @@ describe("shipit session view", () => {
     const out = await run(["session", "view"], {
       "GET /agent-ops/session/cohort": {
         status: 200,
-        body: { self: { id: "ses_self", title: "Me", status: "running" }, siblings: [], children: [] },
+        body: { self: { id: "ses_self", title: "Me", status: "running" }, children: [] },
       },
     });
     expect(out.exitCode).toBe(0);
@@ -1421,12 +1421,11 @@ describe("shipit session archive (removed — docs/117)", () => {
 const COHORT_BODY = {
   self: { id: "ses_me", title: "Elementalist catalog", branch: "shipit/elem", status: "running" },
   parent: { id: "ses_parent", title: "Spell catalogs", branch: "shipit/plan", status: "idle" },
-  siblings: [{ id: "ses_druid", title: "Druid catalog", branch: "shipit/druid", status: "idle" }],
-  children: [],
+  children: [{ id: "ses_rune", title: "Rune tables", branch: "shipit/rune", status: "idle" }],
 };
 
 describe("shipit session whoami", () => {
-  it("prints this session, its parent, and its cohort", async () => {
+  it("prints this session, its parent, and its children, with no siblings section", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "whoami"], {
       "GET /agent-ops/session/cohort": { status: 200, body: COHORT_BODY },
@@ -1435,8 +1434,8 @@ describe("shipit session whoami", () => {
     expect(out.calls[0]).toMatchObject({ method: "GET", path: "/agent-ops/session/cohort" });
     expect(out.stdout).toContain("session:  Elementalist catalog (ses_me)");
     expect(out.stdout).toContain("parent:   Spell catalogs (ses_parent)");
-    expect(out.stdout).toContain("ses_druid");
-    expect(out.stdout).toContain("children: (none)");
+    expect(out.stdout).toContain("ses_rune");
+    expect(out.stdout).not.toContain("siblings");
   });
 
   it("says so when this session has no parent (report is unavailable)", async () => {
@@ -1444,7 +1443,7 @@ describe("shipit session whoami", () => {
     const out = await run(["session", "whoami"], {
       "GET /agent-ops/session/cohort": {
         status: 200,
-        body: { self: { id: "ses_solo", title: "Solo", status: "idle" }, siblings: [], children: [] },
+        body: { self: { id: "ses_solo", title: "Solo", status: "idle" }, children: [] },
       },
     });
     expect(out.exitCode).toBe(0);
@@ -1459,6 +1458,54 @@ describe("shipit session whoami", () => {
     });
     expect(out.exitCode).toBe(0);
     expect(JSON.parse(out.stdout)).toEqual(COHORT_BODY);
+  });
+});
+
+describe("shipit session status (docs/303 req 48)", () => {
+  const CARD_BODY = {
+    ok: true,
+    hasCard: true,
+    text: "<session_status_card_full>\nStatus:\nRoutes done.\n  payload: Open the PR.\n</session_status_card_full>",
+    card: { status: "Routes done.", actions: [{ id: "pr", payload: "Open the PR.", taken: false }] },
+  };
+
+  it("reads THIS session's card from the self-scoped route and prints it whole", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status"], {
+      "GET /agent-ops/session/status": { status: 200, body: CARD_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({ method: "GET", path: "/agent-ops/session/status" });
+    expect(out.stdout).toContain("payload: Open the PR.");
+  });
+
+  it("--json passes the broker response through verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status", "--json"], {
+      "GET /agent-ops/session/status": { status: 200, body: CARD_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(CARD_BODY);
+  });
+
+  it("takes no session id — another session's card is not readable", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status", "ses_other"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("fails with the server's reason when the card is off", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "status"], {
+      "GET /agent-ops/session/status": {
+        status: 409,
+        body: { error: "The session status card is off, so there is no card to read." },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("is off");
   });
 });
 
@@ -1588,6 +1635,61 @@ describe("shipit session continue-after-rebase (docs/303)", () => {
     const out = await run(["session", "continue-after-rebase", "--note", "x", "--when", "later"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Unsupported flag for shipit session continue-after-rebase");
+  });
+});
+
+describe("shipit session restart (docs/321)", () => {
+  const REQUESTED = { status: 200, body: { requested: true } };
+
+  it("posts the note to the self-scoped route and says the restart waits for the turn's end", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "restart", "--note", "check node -v"],
+      { "POST /agent-ops/session/restart": REQUESTED },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/session/restart",
+      body: { note: "check node -v" },
+    });
+    expect(out.stdout).toContain("requested");
+  });
+
+  it("requires --note: the note is what the agent continues from", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--note");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects a positional session id rather than restarting another session", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart", "ses_other", "--note", "x"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("surfaces the orchestrator's refusal when there is no container to restart", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart", "--note", "x"], {
+      "POST /agent-ops/session/restart": {
+        status: 503,
+        body: { error: "This ShipIt runs sessions without containers" },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("without containers");
+  });
+
+  it("rejects unsupported flags, including a request for Restart all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "restart", "--note", "x", "--all"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported flag for shipit session restart");
+    expect(out.calls).toHaveLength(0);
   });
 });
 

@@ -54,6 +54,7 @@ import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
 import type { FastifyReply } from "fastify";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { resolveLfsHost } from "../shared/git-remote-credential.js";
 import { assessMergeAutoPublish } from "./release-autopublish-check.js";
 import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
@@ -476,6 +477,18 @@ export async function registerGitHubRoutes(
       if (!gitCredentialAllowed(session)) {
         reply.code(403).send({ error: "GitHub access is not granted for this sandbox session" });
         return;
+      }
+      const host = request.body?.host?.toLowerCase();
+      if (host && host !== "github.com" && session.workspaceDir) {
+        // docs/320-lfs-host-credential req 10: the declared LFS host, and only that host.
+        const lfs = await resolveLfsHost(session.workspaceDir);
+        if (lfs && "credential" in lfs && request.body?.protocol === "https" && lfs.credential.origin === `https://${host}`) {
+          return { username: lfs.credential.username, password: lfs.credential.password };
+        }
+        if (lfs && "refusal" in lfs && lfs.host === host) {
+          reply.code(404).send({ error: "No credential available for host", warning: lfs.refusal });
+          return;
+        }
       }
       const repo = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
       const cred = await getRepoScopedGitCredential(deps.githubAuthManager, {

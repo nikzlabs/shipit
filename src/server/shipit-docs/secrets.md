@@ -7,6 +7,12 @@ secret store. Declare what each service needs in its compose definition with
 **Project Settings → Secrets** panel; the values are then auto-loaded into every
 session for that repo and survive container restarts.
 
+ShipIt reads these declarations only from the compose file that `shipit.yaml`
+names (`compose: docker-compose.yml`). In a file it does not name, they do
+nothing: the panel shows no declared-secret row for them and ShipIt injects no
+value. See
+[shipit-yaml.md](shipit-yaml.md) → "Config resolution".
+
 ## Why declare secrets?
 
 - **Self-describing projects.** When you list `STRIPE_KEY` in the compose
@@ -120,10 +126,18 @@ services:
 
 ```
 # .env.api (generated)
-DATABASE_URL=postgres://...
-REDIS_URL=redis://...
-STRIPE_SECRET_KEY=sk_test_...
+DATABASE_URL="postgres://..."
+REDIS_URL="redis://..."
+STRIPE_SECRET_KEY="sk_test_..."
 ```
+
+Each value is double-quoted and escaped so that Compose reads back exactly what
+the user stored — `$`, quotes, backslashes, `#`, leading or trailing spaces, and
+line breaks (a PEM key, for example) all arrive unchanged. The only values
+ShipIt refuses are ones no environment variable can hold: a value with a NUL
+character or invalid Unicode. Saving one fails with the reason. If one was
+stored before this check existed, ShipIt leaves that variable unset, counts
+the secret as missing, and writes the reason to the service's log.
 
 **Service-only env files are NOT in your workspace.** In containerized runtime
 ShipIt writes them to an orchestrator-private directory *outside* the workspace
@@ -146,11 +160,21 @@ agent; everything else stays service-only.
 When the orchestrator is started with `SHIPIT_SECRETS_INTERNAL_DIR` set,
 secrets are delivered via Docker Compose's native `secrets:` mechanism
 instead of `env_file:`. Each value is written to a per-secret file outside
-the workspace volume; compose mounts it as a tmpfs file at
+the workspace volume; compose bind-mounts it read-only at
 `/run/secrets/shipit-<NAME>` inside only the service containers that
 declared the secret. A small entrypoint wrapper baked into the
 orchestrator image (`secrets-entrypoint.sh`) reads those files and
-exports them as env vars before exec'ing the original command. The wrapper is
+exports them as env vars before exec'ing the original command. Each value
+arrives byte for byte, trailing newlines included (a PEM key, for example), and
+ShipIt refuses the same values as in env-file mode. If the wrapper finds no
+secret file or cannot read one, the service does not start and its log shows
+the reason, so the service never gets an empty value in place of a secret. The
+same happens for a secret whose name the image's shell keeps for itself: the
+wrapper always refuses `PIPESTATUS`, `SHLVL`, `_`, `BASH_ARGC`, `BASH_ARGV`,
+`BASH_LINENO` and `BASH_SOURCE`, which bash would change or drop without an
+error, and the shell itself refuses names such as `UID`, `EUID` and `PPID`
+under bash or `OPTIND` under dash. Give such a secret another name, or use
+env-file mode. The wrapper is
 staged next to the secret files (`<SHIPIT_SECRETS_INTERNAL_DIR>/_entrypoint/`)
 and bind-mounted into each service container from there — never into your git
 clone, so it can't be committed to your repository.
@@ -160,7 +184,7 @@ Required environment variables on the orchestrator:
 | Variable | Purpose |
 |----------|---------|
 | `SHIPIT_SECRETS_INTERNAL_DIR` | Orchestrator-side directory where secret files are written (e.g. `/var/shipit/secrets`). |
-| `SHIPIT_SECRETS_HOST_DIR` | Host-side path the Docker daemon sees for the same directory. Required when the orchestrator runs in a container; omit for orchestrator-on-host setups. Covers both the per-secret `file:` references and the staged entrypoint wrapper's bind mount. |
+| `SHIPIT_SECRETS_HOST_DIR` | Host-side path the Docker daemon sees for the same directory. Required when that path differs from the orchestrator's (for example, a directory inside a Docker volume); omit it when the orchestrator mounts the directory at its host path. Covers both the per-secret `file:` references and the staged entrypoint wrapper's bind mount. |
 | `SHIPIT_SECRETS_ENTRYPOINT` | Path to `secrets-entrypoint.sh` inside the orchestrator image. Defaults to `/usr/local/share/shipit/secrets-entrypoint.sh`. |
 
 What this does NOT buy you: the agent already cannot read the per-service env
@@ -220,10 +244,13 @@ Containment is **on by default and fail-closed** — a session refuses to start 
 a host that can't enforce it — but an operator **can** disable it
 (`SESSION_EGRESS_ENFORCE=0`, e.g. when the host can't run the required NET_ADMIN
 sidecar; the installer detects this and asks). When containment is disabled or
-unenforceable, the old unrestricted-egress exposure returns, so still scope
-`agent: true` to non-sensitive values. The Settings → Network panel shows
-whether containment is actually **enforced** on this deployment (it warns
-"Contained — NOT enforced" when policy says contain but the host can't).
+unenforceable, code in the container can reach any internet host again, so
+still scope `agent: true` to non-sensitive values. (The machine running ShipIt,
+private networks and the tailnet stay out of reach in either case wherever the
+host can run the egress sidecar — see Network in `environment.md`.) The
+Settings → Network panel shows whether containment is actually **enforced** on
+this deployment (it warns "Contained — NOT enforced" when policy says contain
+but the host can't).
 
 ## When secrets change
 
@@ -255,7 +282,9 @@ Users can also add ad-hoc env vars in the secrets panel that aren't
 declared in any compose service. Those are kept in the per-repo secret
 store but are NOT injected anywhere — declaring them in
 `x-shipit-secrets` is what wires them up. This keeps services scoped to
-exactly what they asked for.
+exactly what they asked for. One custom secret has a use without being
+injected: the one `shipit.yaml`'s `lfs.credential` names, which ShipIt's own git
+presents to a declared Git LFS host (`/shipit-docs/shipit-yaml.md` § `lfs`).
 
 **So deleting a service is also a secrets change.** A declaration is the only
 thing that injects a value, and it lives on a service. Delete the last service

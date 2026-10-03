@@ -1,7 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, within } from "@testing-library/react";
+import { act, render, renderHook, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HarnessSelector, ModelSelector } from "./ModelPicker.js";
+import {
+  HarnessSelector,
+  ModelSelector,
+  useBoundModelSelection,
+  useHarnessPickerState,
+  useModelPickerState,
+} from "./ModelPicker.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { AgentOption } from "../agent-types.js";
 import type { SessionInfo } from "../../server/shared/types.js";
@@ -571,5 +577,39 @@ describe("ModelSelector", () => {
     await user.click(screen.getByTestId("model-trigger"));
     expect(screen.getAllByTestId("model-option-claude-sonnet-5")[0]!.className)
       .toContain("color-accent-subtle");
+  });
+});
+
+describe("session row reads", () => {
+  const hooks = {
+    useBoundModelSelection: () => useBoundModelSelection(false)?.modelId,
+    useHarnessPickerState: () =>
+      useHarnessPickerState({ agents, activeAgentId: "claude", hasActiveSession: true }).currentAgentId,
+    useModelPickerState: () =>
+      useModelPickerState({ agents, activeAgentId: "claude", modelInfo: null, hasActiveSession: true })
+        .selectedModel,
+  };
+
+  it.each(Object.entries(hooks))("%s follows the current row and ignores another one", (_name, read) => {
+    const current = makeSession({ id: "s1", agentId: "claude", serviceId: "anthropic", billingMode: "sub", model: "claude-sonnet-5" });
+    const other = makeSession({ id: "s2" });
+    useSessionStore.setState({ sessionId: "s1", sessions: [current, other] });
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders += 1;
+      return read();
+    });
+    const before = result.current;
+    const settled = renders;
+
+    act(() => useSessionStore.setState({ sessions: [current, { ...other, title: "renamed" }] }));
+    expect(renders).toBe(settled);
+
+    act(() =>
+      useSessionStore.setState({
+        sessions: [{ ...current, agentId: "codex", serviceId: "openai", model: "gpt-5.6-sol" }, other],
+      }),
+    );
+    expect(result.current).not.toBe(before);
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type Docker from "dockerode";
-import { reloadEgressSidecars } from "./egress-reload.js";
-import { EGRESS_RESOLVER_LABEL, OPS_DOCKER_PROXY_DNS_NAME } from "./egress-dns-install.js";
+import { reloadEgressSidecars, staleEgressSidecars } from "./egress-reload.js";
+import { buildResolverConfigB64, EGRESS_RESOLVER_LABEL, OPS_DOCKER_PROXY_DNS_NAME } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
 interface CreatedContainer {
@@ -54,7 +54,10 @@ describe("reloadEgressSidecars", () => {
     expect(cfg.HostConfig?.NetworkMode).toBe("container:agent1");
     expect(cfg.Labels?.[EGRESS_RESOLVER_LABEL]).toBe("s1");
     const b64 = (cfg.Env ?? []).find((e) => e.startsWith("EGRESS_DNSMASQ_CONFIG_B64="))?.split("=")[1] ?? "";
-    expect(Buffer.from(b64, "base64").toString("utf-8")).toContain("new.example.com");
+    const config = Buffer.from(b64, "base64").toString("utf-8");
+    expect(config).toContain("new.example.com");
+    // The reloaded resolver still finds the session's Compose services by name.
+    expect(config.split("\n")).toContain("server=//127.0.0.11");
   });
 
   it("re-emits the docker-socket-proxy resolver rule for an ops session (planning#92)", async () => {
@@ -98,5 +101,80 @@ describe("reloadEgressSidecars", () => {
     await reloadEgressSidecars({ docker, ...baseOpts, reloadResolver: false, reloadProxy: false });
     expect(created).toHaveLength(0);
     expect(removed).toHaveLength(0);
+  });
+});
+
+/** planning#626 — a kept agent's sidecars keep the names ShipIt had when it started them. */
+describe("staleEgressSidecars", () => {
+  const RESOLVER = `${EGRESS_RESOLVER_LABEL}=s1`;
+  const PROXY = `${EGRESS_PROXY_LABEL}=s1`;
+  const CURRENT_URL = "http://new-host:4123/api/egress/decision";
+
+  function sidecarDocker(sidecars: { label: string; env: string[] }[]) {
+    const docker = {
+      listContainers: vi.fn(async (opts: { filters: { label: string[] } }) =>
+        sidecars.flatMap((s, i) => (s.label === opts.filters.label[0] ? [{ Id: `sidecar-${i}` }] : []))),
+      getContainer: vi.fn((id: string) => ({
+        inspect: vi.fn(async () => ({ Config: { Env: sidecars[Number(id.slice("sidecar-".length))].env } })),
+      })),
+    };
+    return docker as unknown as Docker & { listContainers: ReturnType<typeof vi.fn> };
+  }
+
+  const resolverEnv = (names: string[], unqualifiedInternalNames = true) => [
+    `EGRESS_DNSMASQ_CONFIG_B64=${buildResolverConfigB64({
+      internalDomains: names, extraDomains: ["fal.run"], unqualifiedInternalNames,
+    })}`,
+  ];
+  const check = (docker: Docker, overrides: { internalNames?: string[]; decisionUrl?: string } = {}) =>
+    staleEgressSidecars(docker, {
+      sessionId: "s1",
+      agentContainerId: "agent1",
+      internalNames: ["new-host", "shipit"],
+      decisionUrl: CURRENT_URL,
+      ...overrides,
+    });
+
+  it("finds a resolver that forwards only the previous ShipIt's hostname", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["old-host"]) }]);
+    await expect(check(docker)).resolves.toEqual({ resolver: true, proxy: false });
+  });
+
+  it("finds a resolver that lacks the worker's fallback name", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["new-host"]) }]);
+    await expect(check(docker)).resolves.toMatchObject({ resolver: true });
+  });
+
+  it("finds a resolver that cannot look up the session's Compose services by name", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["new-host", "shipit"], false) }]);
+    await expect(check(docker)).resolves.toEqual({ resolver: true, proxy: false });
+  });
+
+  it("accepts a resolver that forwards every current name, as after a plain restart", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["new-host", "shipit"]) }]);
+    await expect(check(docker)).resolves.toEqual({ resolver: false, proxy: false });
+  });
+
+  it("finds a proxy that asks the previous ShipIt for decisions", async () => {
+    const docker = sidecarDocker([
+      { label: PROXY, env: ["EGRESS_PROXY_DECISION_URL=http://old-host:4123/api/egress/decision"] },
+    ]);
+    await expect(check(docker)).resolves.toEqual({ resolver: false, proxy: true });
+  });
+
+  it("accepts a proxy that asks this process", async () => {
+    const docker = sidecarDocker([{ label: PROXY, env: [`EGRESS_PROXY_DECISION_URL=${CURRENT_URL}`] }]);
+    await expect(check(docker)).resolves.toEqual({ resolver: false, proxy: false });
+  });
+
+  it("reports nothing stale where there is no sidecar to replace", async () => {
+    await expect(check(sidecarDocker([]))).resolves.toEqual({ resolver: false, proxy: false });
+  });
+
+  it("does not look for a tier this install does not run", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["old-host"]) }]);
+    await expect(check(docker, { internalNames: undefined, decisionUrl: undefined }))
+      .resolves.toEqual({ resolver: false, proxy: false });
+    expect(docker.listContainers).not.toHaveBeenCalled();
   });
 });

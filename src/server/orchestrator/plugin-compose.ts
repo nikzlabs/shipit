@@ -33,8 +33,11 @@ import {
 } from "./plugin-generations.js";
 import {
   escapeDollars,
+  NO_DOCKER_SOCKET,
   OVERRIDE_SENTINELS,
   validateServiceSecurity,
+  WORKSPACE_VOLUME_ALIAS,
+  workspaceVolumeMount,
   type ComposeService,
 } from "./compose-generator.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
@@ -418,7 +421,7 @@ function parseFragmentService(
   }
 
   // A project's Docker socket grant never extends to imported plugins.
-  validateServiceSecurity(name, svc, false, containEgress, false);
+  validateServiceSecurity(name, svc, NO_DOCKER_SOCKET, containEgress, false);
 
   validateFragmentVolumes(name, svc.volumes);
   validateFragmentEnvironment(name, svc.environment);
@@ -472,8 +475,8 @@ function requireRelativeSource(name: string, source: string): void {
   if (source === "." || source === "./" || source.startsWith("./")) return;
   throw new PluginFragmentError(
     `its compose service \`${name}\`: \`${source}\` is not a path inside the plugin. A plugin may `
-    + "mount its own files (`./…`) and anonymous volumes; named volumes and host paths are not "
-    + "available, and session-scoped state belongs in `/plugin-state`.",
+    + "mount its own files (`./…`) and anonymous volumes; named volumes (the project's `persist` "
+    + "included) and host paths are not available, and session-scoped state belongs in `/plugin-state`.",
   );
 }
 
@@ -518,8 +521,6 @@ export interface PluginMountOptions {
   workspaceSubpath?: string;
   pluginVolumes: ReadonlyMap<string, string>;
 }
-
-const WORKSPACE_VOLUME_ALIAS = "shipit-workspace";
 
 interface SessionVolume {
   workspaceSubpath: string;
@@ -633,10 +634,8 @@ function rewriteFragmentVolume(
   }
   if (volume) {
     return {
-      type: "volume",
-      source: WORKSPACE_VOLUME_ALIAS,
+      ...workspaceVolumeMount(withinRepo, volume.workspaceSubpath),
       target,
-      volume: { subpath: joinPosix(volume.workspaceSubpath, withinRepo) },
       ...(readOnly ? { read_only: true } : {}),
     };
   }
@@ -656,14 +655,7 @@ function pluginTreeMount(
   if (volumeName) {
     return { type: "volume", source: volumeName, target: CONTAINER_PLUGIN_DIR, read_only: true };
   }
-  if (volume) {
-    return {
-      type: "volume",
-      source: WORKSPACE_VOLUME_ALIAS,
-      target: CONTAINER_PLUGIN_DIR,
-      volume: { subpath: volume.workspaceSubpath },
-    };
-  }
+  if (volume) return { ...workspaceVolumeMount("", volume.workspaceSubpath), target: CONTAINER_PLUGIN_DIR };
   return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PLUGIN_DIR };
 }
 
@@ -671,14 +663,7 @@ function projectMount(
   opts: PluginMountOptions,
   volume: SessionVolume | undefined,
 ): Record<string, unknown> {
-  if (volume) {
-    return {
-      type: "volume",
-      source: WORKSPACE_VOLUME_ALIAS,
-      target: CONTAINER_PROJECT_DIR,
-      volume: { subpath: volume.workspaceSubpath },
-    };
-  }
+  if (volume) return { ...workspaceVolumeMount("", volume.workspaceSubpath), target: CONTAINER_PROJECT_DIR };
   return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PROJECT_DIR };
 }
 

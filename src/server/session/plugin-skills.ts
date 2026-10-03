@@ -4,14 +4,17 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { HARNESSES } from "../shared/catalogue/harnesses.js";
 import { parsePluginExports, type PluginExport } from "../shared/plugin-repos.js";
 import {
-  markerClaimsOwnership,
   PLUGIN_SKILL_MARKER,
   PLUGIN_SKILL_MARKER_ID,
   PLUGIN_SKILL_PREFIX,
 } from "../shared/plugin-skill-marker.js";
+import {
+  ownedPluginSkillDirs,
+  pluginSkillOwnership as ownershipOf,
+  pluginSkillRoots as skillsRoots,
+} from "../shared/plugin-skill-copies.js";
 import { getErrorMessage } from "../shared/utils.js";
 
 export { PLUGIN_SKILL_MARKER, PLUGIN_SKILL_MARKER_ID, PLUGIN_SKILL_PREFIX };
@@ -19,20 +22,39 @@ export { PLUGIN_SKILL_MARKER, PLUGIN_SKILL_MARKER_ID, PLUGIN_SKILL_PREFIX };
 export const PLUGIN_SKILL_EXCLUDE_BLOCK = "shipit plugin skills";
 
 // Exact published paths avoid hiding user or marketplace skills with the same prefix.
-export function pluginSkillExcludeEntries(names: readonly string[]): string[] {
-  return skillsRoots("").flatMap((rel) => [
-    // Staging can overlap auto-commit or survive a crash.
-    `/${rel}/${STAGING_GLOB}`,
-    ...names.map((name) => `/${rel}/${name}/`),
-  ]);
+export function pluginSkillExcludeEntries(workspaceDir: string, names: readonly string[]): string[] {
+  const rels = new Set<string>();
+  for (const rel of skillsRoots("")) {
+    rels.add(rel);
+    // Git does not follow a symlinked root, so also exclude where the copies really land.
+    const real = realRootRel(workspaceDir, rel);
+    if (real !== null) rels.add(real);
+  }
+  return [...rels].flatMap((rel) => {
+    // A resolved path is the user's, so its glob characters must match only themselves.
+    const prefix = rel ? `/${rel.replace(/[\\*?[]/g, "\\$&")}/` : "/";
+    return [
+      // Staging can overlap auto-commit or survive a crash.
+      `${prefix}${STAGING_GLOB}`,
+      ...names.map((name) => `${prefix}${name}/`),
+    ];
+  });
 }
 
 const STAGING_GLOB = `.${PLUGIN_SKILL_PREFIX}*.staging-*/`;
-const STAGING_RE = new RegExp(`^\\.${PLUGIN_SKILL_PREFIX}.*\\.staging-`);
 
-function skillsRoots(workspaceDir: string): string[] {
-  const names = [...new Set(HARNESSES.map((h) => h.capabilities.skillsDirName))];
-  return names.map((name) => (workspaceDir ? path.join(workspaceDir, name, "skills") : `${name}/skills`));
+// Null when the root resolves outside the workspace, where writeSkill refuses to write.
+function realRootRel(workspaceDir: string, rel: string): string | null {
+  try {
+    const lexical = path.join(workspaceDir, rel);
+    const existing = nearestExisting(lexical);
+    const real = path.join(fs.realpathSync(existing), path.relative(existing, lexical));
+    const inside = path.relative(fs.realpathSync(workspaceDir), real);
+    if (inside === ".." || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) return null;
+    return inside.split(path.sep).join("/");
+  } catch {
+    return null;
+  }
 }
 
 export interface PluginSkillSource {
@@ -322,18 +344,6 @@ function isSymlink(p: string): boolean {
   }
 }
 
-// Ownership requires valid marker content, not just a filename or symlink.
-function ownershipOf(p: string): "ours" | "absent" | "foreign" {
-  if (!fs.existsSync(p)) return "absent";
-  const marker = path.join(p, PLUGIN_SKILL_MARKER);
-  try {
-    if (!fs.lstatSync(marker).isFile()) return "foreign";
-    return markerClaimsOwnership(fs.readFileSync(marker, "utf-8")) ? "ours" : "foreign";
-  } catch {
-    return "foreign";
-  }
-}
-
 // Frontmatter takes precedence over the directory name during skill discovery.
 function rewriteSkillName(skillMdPath: string, name: string): void {
   let body: string;
@@ -353,32 +363,12 @@ function rewriteSkillName(skillMdPath: string, name: string): void {
 
 function removeStaleSkills(workspaceDir: string, wanted: ReadonlySet<string>): string[] {
   const removed: string[] = [];
-  for (const root of skillsRoots(workspaceDir)) {
-    let entries: fs.Dirent[];
+  for (const { dir, name, staging } of ownedPluginSkillDirs(workspaceDir, wanted)) {
     try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory() && STAGING_RE.test(entry.name) && ownershipOf(path.join(root, entry.name)) === "ours") {
-        try {
-          fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
-        } catch (err) {
-          console.warn(`[plugins] could not remove staging dir ${entry.name}: ${getErrorMessage(err)}`);
-        }
-        continue;
-      }
-      if (!entry.isDirectory() || !entry.name.startsWith(PLUGIN_SKILL_PREFIX)) continue;
-      if (wanted.has(entry.name)) continue;
-      const dir = path.join(root, entry.name);
-      if (ownershipOf(dir) !== "ours") continue;
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-        if (!removed.includes(entry.name)) removed.push(entry.name);
-      } catch (err) {
-        console.warn(`[plugins] could not remove skill ${entry.name}: ${getErrorMessage(err)}`);
-      }
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (!staging && !removed.includes(name)) removed.push(name);
+    } catch (err) {
+      console.warn(`[plugins] could not remove ${staging ? "staging dir" : "skill"} ${name}: ${getErrorMessage(err)}`);
     }
   }
   return removed;

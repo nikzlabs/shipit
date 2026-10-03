@@ -84,6 +84,12 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/session-status", request.body ?? {}, reply),
   );
 
+  // docs/303 req 48 — the read behind `shipit session status`: the stored card in full.
+  app.get(
+    "/agent-ops/session/status",
+    async (_request, reply) => relay("GET", "/session-status", undefined, reply),
+  );
+
   app.post<{ Body: { repo?: string; title?: string; prompt?: string } }>(
     "/agent-ops/propose-repo-session",
     async (request, reply) => relay("POST", "/propose-repo-session", request.body ?? {}, reply),
@@ -634,6 +640,11 @@ export function registerAgentOpsRoutes(
   app.post<{ Body: { note?: string } }>(
     "/agent-ops/session/continue-after-rebase",
     async (request, reply) => relay("POST", "/continue-after-rebase", request.body ?? {}, reply),
+  );
+
+  app.post<{ Body: { note?: string } }>(
+    "/agent-ops/session/restart",
+    async (request, reply) => relay("POST", "/restart-after-turn", request.body ?? {}, reply),
   );
 
   app.post<{ Body: { title?: string } }>(

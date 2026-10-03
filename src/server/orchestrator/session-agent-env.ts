@@ -17,6 +17,7 @@ import {
   provisionAgentCredentials,
   provisionRepoMemory,
   readSessionAccountMarker,
+  readSessionResidentRoute,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
   syncAgentTokenBack,
@@ -128,6 +129,7 @@ export function agentEnvTurnArgs(envOpts: PrepareAgentEnvOpts | undefined): {
   reusingResidentAgent?: boolean;
   excludeRouteIds?: readonly string[];
   residentRoute?: { kind: ProviderRouteKind; id: string };
+  previousRouteId?: string;
   requireResidentRoute?: boolean;
   ownUserText?: string;
 } {
@@ -135,6 +137,7 @@ export function agentEnvTurnArgs(envOpts: PrepareAgentEnvOpts | undefined): {
     ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
     ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
     ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
+    ...(envOpts?.previousRouteId ? { previousRouteId: envOpts.previousRouteId } : {}),
     ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
     ...(envOpts?.ownUserText !== undefined ? { ownUserText: envOpts.ownUserText } : {}),
   };
@@ -246,6 +249,7 @@ function selectTurnRoute(
   opts: {
     excludeRouteIds?: readonly string[] | undefined;
     residentRoute?: { kind: ProviderRouteKind; id: string } | undefined;
+    previousRouteId?: string | undefined;
     requireResidentRoute?: boolean;
   },
 ): ProviderRoute | undefined {
@@ -259,7 +263,11 @@ function selectTurnRoute(
         : !id.startsWith("cred_") || deps.credentialStore.getCredentialRoute(id) !== undefined;
     if (stillExists) return { kind, id };
   }
-  const residentRouteId = opts.residentRoute?.id;
+  // A process that ended between turns leaves no resident route. The spawn record also
+  // covers a turn that died before its result; usage history covers local mode, which has none.
+  const currentRouteId = opts.residentRoute?.id
+    ?? readSessionResidentRoute(deps.credentialsDir, session.id)[agentId]?.id
+    ?? opts.previousRouteId;
   // This turn attempts the result; only actual refusals in its exclusion list are final.
   const selection = selectRouteForSelection(
     agentId,
@@ -271,7 +279,7 @@ function selectTurnRoute(
     {
       optimistic: true,
       ...(opts.excludeRouteIds ? { exclude: opts.excludeRouteIds } : {}),
-      ...(residentRouteId ? { residentRouteId } : {}),
+      ...(currentRouteId ? { currentRouteId } : {}),
     },
   );
   return routeFromSelection(agentId, selection, blockedSubjectFor(agentId, session));
@@ -306,6 +314,7 @@ export async function prepareSessionAgentEnvironment(
     enforceAccountRouting?: boolean;
     excludeRouteIds?: readonly string[];
     residentRoute?: { kind: ProviderRouteKind; id: string };
+    previousRouteId?: string;
     requireResidentRoute?: boolean;
     // Subtree repair removes files a live CLI can reread; defer repair until a fresh spawn.
     reusingResidentAgent?: boolean;
@@ -347,6 +356,7 @@ export async function prepareSessionAgentEnvironment(
     ? selectTurnRoute(agentId, session, deps, {
         excludeRouteIds: args.excludeRouteIds,
         residentRoute: args.residentRoute,
+        previousRouteId: args.previousRouteId,
         requireResidentRoute: args.requireResidentRoute === true,
       })
     : undefined;

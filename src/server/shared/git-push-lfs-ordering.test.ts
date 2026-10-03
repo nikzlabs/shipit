@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
+import type * as LfsPushModule from "./git-lfs-push.js";
 
 // Stub only the upload to observe whether the real remote already has the ref.
 const hooks = vi.hoisted(() => ({
@@ -12,15 +13,16 @@ const hooks = vi.hoisted(() => ({
   outcome: { status: "pushed" } as { status: string; detail?: string },
 }));
 
-vi.mock("./git-lfs-push.js", () => ({
-  lfsDeclarationGrepArgs: (ref = "HEAD") => ["grep", ref],
-  pushLfsObjects: vi.fn(async (_git: unknown, remote: string, branch: string) => {
+vi.mock("./git-lfs-push.js", async (importOriginal) => ({
+  ...await importOriginal<typeof LfsPushModule>(),
+  pushLfsObjects: vi.fn(async (_dir: string, _credential: unknown, remote: string, branch: string) => {
     hooks.observations.push({ remote, branch, remoteHadBranch: hooks.probeRemote?.() ?? false });
     return hooks.outcome;
   }),
 }));
 
 const { GitManager } = await import("./git.js");
+const { LfsUploadError } = await import("./git-lfs-push.js");
 
 describe("orchestrator push paths upload LFS objects before the ref", () => {
   let root: string;
@@ -92,10 +94,55 @@ describe("orchestrator push paths upload LFS objects before the ref", () => {
       .toBe(run("git rev-parse HEAD", workDir).trim());
   });
 
-  it("pushes the ref even when the upload failed", async () => {
+  it("does not push the ref when the upload failed", async () => {
     hooks.outcome = { status: "failed", detail: "LFS: connection refused" };
+
+    const push = new GitManager(workDir).push("origin", "main");
+    await expect(push).rejects.toBeInstanceOf(LfsUploadError);
+    await expect(push).rejects.toThrow(/LFS: connection refused/);
+    expect(remoteHasBranch("main")).toBe(false);
+  });
+
+  it("does not force-push the ref when the upload failed", async () => {
+    run("git push origin main", workDir);
+    const tip = run("git rev-parse refs/heads/main", bareDir).trim();
+    fs.writeFileSync(path.join(workDir, "readme.md"), "rewritten\n");
+    run("git add -A && git commit --amend -m rewritten", workDir);
+    hooks.outcome = { status: "failed", detail: "LFS: connection refused" };
+
+    await expect(new GitManager(workDir).forcePushWithLease("origin", "main", tip))
+      .rejects.toBeInstanceOf(LfsUploadError);
+    expect(run("git rev-parse refs/heads/main", bareDir).trim()).toBe(tip);
+  });
+
+  it("pushes the ref when the branch tracks nothing with LFS", async () => {
+    hooks.outcome = { status: "not-an-lfs-repo" };
 
     await expect(new GitManager(workDir).push("origin", "main")).resolves.toContain("Pushed to");
     expect(remoteHasBranch("main")).toBe(true);
+  });
+
+  it("uploads for a tag before pushing it, and withholds the tag when that fails", async () => {
+    const remoteHasTag = (tag: string): boolean => {
+      try {
+        run(`git rev-parse refs/tags/${tag}`, bareDir);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    hooks.probeRemote = () => remoteHasTag("v1.0.0-rc.1");
+
+    await new GitManager(workDir).createAndPushTag("v1.0.0-rc.1", "rc");
+    expect(hooks.observations).toEqual([
+      { remote: "origin", branch: "v1.0.0-rc.1", remoteHadBranch: false },
+    ]);
+    expect(remoteHasTag("v1.0.0-rc.1")).toBe(true);
+
+    hooks.outcome = { status: "failed", detail: "LFS: connection refused" };
+    await expect(new GitManager(workDir).createAndPushTag("v1.0.0-rc.2", "rc"))
+      .rejects.toBeInstanceOf(LfsUploadError);
+    expect(remoteHasTag("v1.0.0-rc.2")).toBe(false);
+    expect(run("git tag --list v1.0.0-rc.2", workDir).trim()).toBe("");
   });
 });

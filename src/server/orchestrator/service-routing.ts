@@ -10,6 +10,7 @@ import {
   accountServiceForHarness,
   isOverCutoff,
   orderForSelectionMode,
+  pickKeepingCurrent,
   snapshotExhaustedResetAt,
 } from "./provider-account-manager.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -200,13 +201,6 @@ export function stringRouteForSelection(
     const mode = deps.credentialStore.getSelectionMode(selection.serviceId, selection.billingMode);
     const ordered = orderStringCredentials(stored, mode)
       .filter((route) => !exclude.has(route.id));
-    // Balanced mode spreads sessions; rotating each turn would restart resident processes.
-    if (mode === "balanced" && opts.residentRouteId) {
-      const resident = ordered.find(
-        (route) => route.id === opts.residentRouteId && refusalBlockedUntil(route, now) === null,
-      );
-      if (resident) return { ok: true, route: { kind: "reserved", id: resident.id } };
-    }
     // Quota telemetry changes order. Only refusal memory excludes a credential.
     const limits = deps.providerAccountManager?.subscriptionLimitsFor(
       selection.serviceId,
@@ -225,7 +219,7 @@ export function stringRouteForSelection(
       else if (isOverCutoff(limits[route.id], cutoffs, now)) overCutoff.push(route);
       else clear.push(route);
     }
-    const next = [...clear, ...overCutoff, ...looksSpent][0];
+    const next = pickKeepingCurrent([clear, overCutoff, looksSpent], opts.currentRouteId);
     if (next) return { ok: true, route: { kind: "reserved", id: next.id } };
     const probe = ordered[0];
     if (opts.optimistic && probe) return { ok: true, route: { kind: "reserved", id: probe.id } };
@@ -281,7 +275,7 @@ export function residentRouteNeedsRelease(
   if ((runner?.backgroundWorkDescriptions?.length ?? 0) > 0) return false;
   const selection = selectRouteForSelection(harnessId, selectionOf(session), deps, {
     optimistic: true,
-    residentRouteId: resident.id,
+    currentRouteId: resident.id,
   });
   if (!selection.ok) return false;
   return selection.route.kind !== resident.kind || selection.route.id !== resident.id;

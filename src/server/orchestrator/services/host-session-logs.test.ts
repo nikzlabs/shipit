@@ -27,6 +27,7 @@ const PUSH_FAILURE_CLASSES = Object.keys({
   "non-fast-forward": true,
   "invalid-refspec": true,
   auth: true,
+  "lfs-upload": true,
   lfs: true,
   "remote-rejected": true,
   network: true,
@@ -607,6 +608,13 @@ describe("template patterns vs the strings their producers actually build", () =
       text: "Agent process exited with code 1; stderr: cat /workspace/.env",
       allowed: false,
       why: "anchoring stops anything being appended to a safe prefix",
+    },
+    {
+      text: "Auto-push stopped: uploading this branch's Git LFS objects failed, so its commits were "
+        + "not pushed. The commit stays in this session's local history, and the next push "
+        + "retries the upload.",
+      allowed: true,
+      why: "auto-push-scheduler.ts LFS upload refusal; git-lfs's own output goes on a separate `Git said:` line",
     },
     {
       text: "Restarting reserved preview runtime (attempt 2/3).",

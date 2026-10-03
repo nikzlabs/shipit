@@ -314,6 +314,11 @@ export interface ResolvedEgressConfig {
    * `init-firewall.sh:68` rebuilds the sets whenever the firewall reinstalls.
    */
   extraCidrs?: string[];
+  /**
+   * docs/319 req 5 — every granted destination with its port: the one
+   * exception to the local block, on that port only.
+   */
+  sshTargets?: { address: string; port: number }[];
   /** Omitted means the full default base. */
   base?: string[];
   identityRules?: string;
@@ -326,6 +331,8 @@ export interface SshEgressTargets {
   names: string[];
   /** IP-literal destinations as /32 CIDRs, for the Tier A ipset. */
   cidrs: string[];
+  /** Every destination with its port, for the firewall's SSH chain. */
+  targets: { address: string; port: number }[];
 }
 
 /**
@@ -335,16 +342,20 @@ export interface SshEgressTargets {
  * an orphaned row behind and a rebuilt firewall re-applies the same set.
  */
 export function sshEgressTargets(
-  hosts: Iterable<{ address: string }>,
+  hosts: Iterable<{ address: string; port?: number }>,
   classify: { isIpLiteral(address: string): boolean; ipLiteralCidr(address: string): string },
 ): SshEgressTargets {
   const names: string[] = [];
   const cidrs: string[] = [];
-  for (const { address } of hosts) {
-    if (classify.isIpLiteral(address)) cidrs.push(classify.ipLiteralCidr(address));
+  const targets = new Map<string, { address: string; port: number }>();
+  for (const { address, port } of hosts) {
+    const literal = classify.isIpLiteral(address);
+    if (literal) cidrs.push(classify.ipLiteralCidr(address));
     else names.push(normalizeHost(address));
+    const target = { address: literal ? address.trim() : normalizeHost(address), port: port ?? 22 };
+    targets.set(`${target.address} ${target.port}`, target);
   }
-  return { names: [...new Set(names)], cidrs: [...new Set(cidrs)] };
+  return { names: [...new Set(names)], cidrs: [...new Set(cidrs)], targets: [...targets.values()] };
 }
 
 /**
@@ -358,7 +369,7 @@ export function sshEgressTargets(
 export function sandboxLifelineEgressConfig(
   session: Pick<SessionInfo, "kind" | "capabilities"> | undefined,
   identityRules: string,
-  ssh: SshEgressTargets = { names: [], cidrs: [] },
+  ssh: SshEgressTargets = { names: [], cidrs: [], targets: [] },
 ): ResolvedEgressConfig | null {
   if (session?.kind !== "sandbox" || session.capabilities?.network !== false) return null;
   return {
@@ -366,6 +377,7 @@ export function sandboxLifelineEgressConfig(
     extraHosts: [],
     base: [...sandboxLifelineBase({ git: session.capabilities.git }), ...ssh.names],
     ...(ssh.cidrs.length > 0 ? { extraCidrs: ssh.cidrs } : {}),
+    ...(ssh.targets.length > 0 ? { sshTargets: ssh.targets } : {}),
     ...(identityRules ? { identityRules } : {}),
     userHostsExcluded: true,
   };

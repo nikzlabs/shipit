@@ -22,6 +22,7 @@ import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
 import { reclaimRegenerableSessionDirs } from "./disk-utils.js";
 import { hasUrlCredentials, repoUrlToHash, stripRemoteUrlCredentials } from "./git-utils.js";
+import { denyAbandonedPermissionCards } from "./permission-cards.js";
 
 export interface StartupDeps {
   repoStore: RepoStore;
@@ -180,6 +181,22 @@ async function scrubGitRemotes(dir: string): Promise<boolean> {
   return changed;
 }
 
+// planning#623 — no server path records an address for an ops or sandbox session, so a stored
+// one was copied from the workspace's `origin` by an older build and must not grant anything.
+export function clearUnrecordedRepoAddresses(sessionManager: SessionManager): number {
+  let cleared = 0;
+  for (const session of sessionManager.listAllIncludingWarm()) {
+    if ((session.kind === "ops" || session.kind === "sandbox") && session.remoteUrl) {
+      sessionManager.setRemoteUrl(session.id, undefined);
+      cleared++;
+    }
+  }
+  if (cleared > 0) {
+    console.log(`[startup] cleared a workspace-derived repository address from ${cleared} ops/sandbox session(s)`);
+  }
+  return cleared;
+}
+
 // Run before container discovery so old-image standbys are not adopted; startup rewarms the pool.
 export async function retireWarmSessions(deps: {
   repoStore: RepoStore;
@@ -276,7 +293,7 @@ export function scheduleStartupTasks(
         if (repo.warmSessionId) activeWarmIds.add(repo.warmSessionId);
       }
 
-      // Remove abandoned drafts so findUngraduatedWarm cannot offer them for reuse.
+      // Remove abandoned drafts: after a restart no tab can claim them back.
       let zombieCount = 0;
       for (const id of sessionManager.allIds()) {
         if (activeWarmIds.has(id)) continue;
@@ -336,6 +353,7 @@ export function handleContainerExited(
   runnerRegistry: SessionRunnerRegistry,
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void,
   chatHistoryManager?: ChatHistoryManager,
+  sseBroadcast?: (event: string, data: unknown) => void,
 ): void {
   console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
   const exitDetail = error
@@ -348,6 +366,14 @@ export function handleContainerExited(
   }
   const runner = runnerRegistry.get(sessionId);
   if (runner) {
+    // The worker died with its requests, so it cannot deny them itself.
+    if (chatHistoryManager && sseBroadcast) {
+      try {
+        denyAbandonedPermissionCards(runner, sessionId, { chatHistoryManager, sseBroadcast });
+      } catch (err) {
+        console.error(`[container] Failed to deny permission cards for ${sessionId}:`, err);
+      }
+    }
     if (chatHistoryManager) {
       preservePartialTurnOnWorkerLoss(
         sessionId,
@@ -401,6 +427,7 @@ export function setupContainerHealthMonitoring(
   oomBreaker?: SessionOomCircuitBreaker,
   chatHistoryManager?: ChatHistoryManager,
   onContainerExited?: (sessionId: string) => void,
+  sseBroadcast?: (event: string, data: unknown) => void,
 ): void {
   const emitBreakerTrip = (
     trip: { justTripped: boolean; countInWindow: number; windowMs: number; threshold: number },
@@ -408,7 +435,8 @@ export function setupContainerHealthMonitoring(
     summary: string,
   ): void => {
     if (!trip.justTripped) return;
-    const msg = `Session disabled — ${summary}. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
+    const msg = `Session disabled — ${summary}. Use "Restart all" on the health strip in the Terminal tab to retry. `
+      + "Session memory is sized from host capacity; to give sessions more, raise `DEFAULT_SESSION_MEMORY_MB` on the ShipIt host.";
     console.error(`[oom-breaker] ${msg} (session=${sessionId})`);
     if (broadcastLog) broadcastLog(sessionId, "server", msg);
     const runner = runnerRegistry.get(sessionId);
@@ -435,7 +463,7 @@ export function setupContainerHealthMonitoring(
         `agent container OOM-killed ${trip.countInWindow} times in last ${windowLabel}`,
       );
     }
-    handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog, chatHistoryManager);
+    handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog, chatHistoryManager, sseBroadcast);
     onContainerExited?.(sessionId);
   });
 

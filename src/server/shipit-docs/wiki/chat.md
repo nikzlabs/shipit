@@ -17,7 +17,7 @@ One box, with a row of controls under it:
 | Control | Does |
 |---|---|
 | **+** | Opens a file picker. Also the drop target: files dragged anywhere onto the composer are attached |
-| **Permission mode** | Plan / Guarded / Auto, below. The same control carries the session's **network access** — see [sessions.md](sessions.md) — except in a sandbox session, where egress is one of the capability grants instead |
+| **Permission mode** | Plan / Guarded / Auto, below. The same control shows the session's **network access** and opens **Session settings** to change it or grant SSH destinations, before the first message too — see [sessions.md](sessions.md). Quick Capture offers the network choices inline instead — except in a sandbox session, where egress is one of the capability grants instead |
 | **Harness · model · reasoning**, or a **role** in their place | What this session runs on. `shipit agent params` and `shipit agent roles` for what this install offers |
 | **The ring** | The context dial — how full the conversation is, and what it has spent. Below |
 | **Mic** | Dictation. Present only when the user has turned voice input on |
@@ -146,7 +146,11 @@ can also send:
   queue while a turn runs** — they wait, or they stop the turn.
 
 **Stop** interrupts you where you are — and in an ordinary session ShipIt still
-commits whatever the turn had already written, so nothing is lost by stopping. A
+commits whatever the turn had already written, so nothing is lost by stopping.
+Stop ends the agent process too, with the background tasks running inside it (a
+background shell, a background subagent), so none of them can wake it into a
+new turn; the next message resumes the conversation. A brokered
+`shipit agent run` is not inside it and keeps running. A
 stop that does not take is what **Force-kill the agent** on the Terminal tab's
 health strip is for ([sessions.md](sessions.md)).
 
@@ -163,13 +167,27 @@ Three things stop and wait for an answer, and they look different on purpose.
 
 | Card | Appears when | The user can |
 |---|---|---|
-| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. There is no timeout; it waits |
+| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. ShipIt sets no deadline, but the agent can stop waiting — Claude Code gives up on an unanswered prompt after 30 minutes, and Stop ends it too. The card then reads **Denied** and the session no longer asks for attention |
 | **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn |
 | **Plan ready** | You end plan mode with `ExitPlanMode` — the card hangs off that tool call, so plan-shaped prose alone does not produce one | Accept, accept guarded, or suggest changes (above) |
 
 A permission prompt counts as you still working, so the session is not "waiting
 on the user" in the sidebar's sense and cannot be muted — see
 [sessions.md](sessions.md). A question does put the session in that state.
+
+While a question card or a plan card waits, ShipIt starts **no automatic turn**
+in the session: no CI auto-fix, no automatic conflict resolution, no merge
+notice, child report, message from a parent session, finished consult or preview
+auto-fix. They wait, and run after the user's reply turn ends — unless that turn
+ends on a new question. The hold and the held turns are saved, so a stopped or
+restarted container, or a ShipIt restart, loses neither. A turn your own CLI
+starts by itself — a background job of yours finishing — is stopped at once; you
+read what the job returned together with the user's reply. What the user starts
+by hand — **Fix CI**, **Resolve conflicts**, **Retry** on a stopped auto-resolve
+— is not held. A message the user typed while the card appeared runs as their
+reply. If a conflict-resolution turn of yours asks a question, ShipIt aborts
+that rebase instead of prompting you again; the automatic resolver tries again
+after the answer.
 
 Answered cards stay in the transcript and survive a reload. A question keeps the
 answer that was chosen; a plan card reloads as simply resolved, without saying
@@ -325,6 +343,13 @@ transcript. Your own tool list is the answer to which one applies — do not
 assume, and read the setting with `shipit settings get advanced.sessionStatusCard`
 if you need to say what it is set to.
 
+**Work for another repository.** When a change belongs in a different
+repository, `propose_repo_session` puts a card in the transcript naming the
+repository and showing your prompt. **Start in owner/repo** starts an
+independent session there with the prompt already sent; **Decline** closes the
+card. Either way, a `[ShipIt]` line at the start of your next turn says what the
+user did, so never ask them. Details: `/shipit-docs/sessions.md`.
+
 ## Quoting and re-using what is on screen
 
 Selecting text anywhere in the conversation raises a floating **Reply** button,
@@ -343,3 +368,5 @@ to say "this part, specifically".
 | Sets and clears a goal | Work toward it |
 | Chooses the permission mode | Say what the work needs, and why |
 | Ticks a proposed action | Offer them; then do the work |
+| Starts or declines a card for work in another repository | Propose it with `propose_repo_session`; read the outcome on your next turn |
+| Sends or declines a card with a message for another session | Propose it with `propose_session_message`; read the outcome on your next turn |

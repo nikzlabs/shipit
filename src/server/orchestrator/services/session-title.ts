@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SessionInfo, SessionRenamedCard, SessionTitleSource } from "../../shared/types.js";
-import type { SessionManager } from "../sessions.js";
+import { toListRow, type SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { emitChatCard, type InProgressPersister } from "../chat-card-persistence.js";
 import { ServiceError } from "./types.js";
@@ -70,7 +70,7 @@ export function renameSessionByAgent(
   const updated = deps.sessionManager.rename(sessionId, title, "agent");
   if (!updated) throw new ServiceError(404, "Session not found");
 
-  deps.sseBroadcast("session_renamed", { session: updated });
+  deps.sseBroadcast("session_renamed", { session: toListRow(updated) });
 
   const runner = deps.runnerRegistry.get(sessionId);
   if (runner) {

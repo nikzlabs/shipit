@@ -17,9 +17,12 @@ import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
+import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
+import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
+import { stoppedByUser } from "../turn-stop-request.js";
 import {
   agentEnvTurnArgs,
   prepareSessionAgentEnvironment,
@@ -85,7 +88,10 @@ export async function drainNextQueuedMessage(
     runner.systemTurnInProgress = false;
     if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
   }
-  if (runner.wasInterrupted && !compactionTurn) {
+  // A stop discards the queue. docs/322 — a question's own interrupt does not: what the
+  // user queued is their reply, and the take below holds the automatic entries.
+  const questionInterrupt = runner.awaitingUserAnswer && !stoppedByUser(runner);
+  if (runner.wasInterrupted && !questionInterrupt && !compactionTurn) {
     if (messageQueue.length > 0) {
       runner.clearQueue();
       emit({ type: "queue_updated", queue: [] });
@@ -483,6 +489,19 @@ async function composeAndRunAgentTurn(
           capturedSessionId,
         )
       : null;
+  // docs/303-cross-repo-session-proposal req 11 — at-least-once, with the same
+  // exclusions as the settings outcome above.
+  const repoSessionOutcome =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? prepareRepoSessionOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
+      : null;
+  // docs/314-session-message-proposal req 14 — the same again.
+  const sessionMessageOutcome =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? prepareSessionMessageOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
+      : null;
+  const noticeDeliveries = [settingsOutcome, repoSessionOutcome, sessionMessageOutcome]
+    .filter((d) => d !== null);
 
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
@@ -502,6 +521,8 @@ async function composeAndRunAgentTurn(
     pendingAgentNotice,
     bugOutcomeNotice,
     settingsOutcome?.notice,
+    repoSessionOutcome?.notice,
+    sessionMessageOutcome?.notice,
     resetAgentPrefix,
     dependencyPrefix,
     statusContext,
@@ -557,6 +578,7 @@ async function composeAndRunAgentTurn(
   };
 
   const deps: SystemTurnDeps = {
+    answerHold: ctx.sessionManager,
     agentFactory: (id) => ctx.agentFactory(id),
     ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
     autoCommit: async (sessionDir, summary) => {
@@ -709,6 +731,7 @@ async function composeAndRunAgentTurn(
         console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
       }
     },
+    ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
     postTurnReleaseFlow: async (sessionId, sessionDir, turnText) => {
       await reactToReleaseMarkers({
         deps: {
@@ -740,6 +763,8 @@ async function composeAndRunAgentTurn(
       agentId,
       sessionId,
       prompt,
+      // Use was recorded when the turn started, before its async setup.
+      continuesTurn: true,
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
@@ -763,7 +788,7 @@ async function composeAndRunAgentTurn(
       reuseExistingAgent: existingAgent !== null,
       emitErrorOnNoResult: true,
       onInterruptedTurn,
-      ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
+      ...(noticeDeliveries.length > 0 ? { noticeDeliveries } : {}),
       ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
     });
   } finally {

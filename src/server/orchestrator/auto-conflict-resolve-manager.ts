@@ -1,8 +1,9 @@
 import type { PrStatusSummary, PrMergeableState } from "../shared/types/github-types.js";
+import type { WsAutoResolveResult } from "../shared/types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { residentBackgroundWork } from "./turn-admission.js";
 import { getErrorMessage } from "./validation.js";
-import { AutoRemediationManager } from "./auto-remediation-manager.js";
+import { AutoRemediationManager, type FireOptions } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
 
 export const MAX_AUTO_RESOLVE_ATTEMPTS = 3;
@@ -26,6 +27,7 @@ export type AutoResolveResult =
 export type RebaseAndResolveCb = (
   sessionId: string,
   baseBranch: string,
+  opts?: FireOptions,
 ) => Promise<AutoResolveResult>;
 
 interface ConflictSignal {
@@ -54,6 +56,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     now: () => number = () => Date.now(),
     arbiter?: RemediationArbiter,
     ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
+    isAwaitingAnswer?: (sessionId: string) => boolean,
   ) {
     super({
       name: "auto-resolve",
@@ -64,6 +67,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       now,
       ...(arbiter ? { arbiter } : {}),
       ...(ensureRunner ? { ensureRunner } : {}),
+      ...(isAwaitingAnswer ? { isAwaitingAnswer } : {}),
     });
     this.rebaseAndResolveCb = rebaseAndResolveCb;
   }
@@ -135,16 +139,17 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     baseBranch: string,
     headSha: string,
     baseSha?: string,
+    opts: FireOptions = {},
   ): Promise<void> {
     const signal: ConflictSignal = {
       mergeable: current.mergeable,
       baseBranch,
       ...(baseSha ? { baseSha } : {}),
     };
-    return this.runTransition(sessionId, signal, headSha);
+    return this.runTransition(sessionId, signal, headSha, opts);
   }
 
-  protected fireAttempt(sessionId: string, signal: ConflictSignal, attempt: number): void {
+  protected fireAttempt(sessionId: string, signal: ConflictSignal, attempt: number, opts: FireOptions): void {
     const baseBranch = signal.baseBranch;
     this.baseBranchCache.set(sessionId, baseBranch);
     const cb = this.rebaseAndResolveCb;
@@ -166,7 +171,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       attempt,
     });
 
-    void this.runAttempt(sessionId, baseBranch, attempt, cb);
+    void this.runAttempt(sessionId, baseBranch, attempt, cb, opts);
   }
 
   private async runAttempt(
@@ -174,9 +179,10 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     baseBranch: string,
     attempt: number,
     cb: RebaseAndResolveCb,
+    opts: FireOptions,
   ): Promise<void> {
     try {
-      const result = await cb(sessionId, baseBranch);
+      const result = await cb(sessionId, baseBranch, opts);
       this.writeBack(sessionId, result, attempt);
     } catch (err: unknown) {
       // Count unexpected errors so a failing wrapper cannot retry forever.
@@ -188,6 +194,20 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     }
   }
 
+  /**
+   * fireAttempt announced this attempt, so the banner needs a terminator every time — a
+   * deduplicated one left "Rebasing onto main…" up, with Sync disabled, on every repeat of
+   * the same deferral. Only a flow that ended the banner itself (`rebase_complete`) opts out.
+   */
+  private emitResult(
+    sessionId: string,
+    result: AutoResolveResult,
+    fields: Omit<WsAutoResolveResult, "type" | "sessionId">,
+  ): void {
+    if (result.outcome === "deferred" && result.suppressEmit === true) return;
+    this.cfg.getRunner(sessionId)?.emitMessage({ type: "auto_resolve_result", sessionId, ...fields });
+  }
+
   private writeBack(sessionId: string, result: AutoResolveResult, attempt: number): void {
     const state = this.states.get(sessionId);
     if (!state) {
@@ -195,6 +215,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       this.releaseClaim(sessionId, {
         pushed: result.outcome === "success" && result.forcePushed,
       });
+      this.emitResult(sessionId, result, { outcome: result.outcome, attempt });
       return;
     }
 
@@ -254,27 +275,12 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
 
     this.onChange(sessionId);
 
-    const runner = this.cfg.getRunner(sessionId);
-    const suppressEmit = !this.cfg.isGlobalEnabled()
-      || (result.outcome === "deferred" && "suppressEmit" in result && result.suppressEmit === true);
-    if (result.outcome === "deferred" && state.lastEmittedDeferred === (result.lastError ?? "")) {
-      // Suppress duplicate deferred events.
-    } else if (!suppressEmit) {
-      runner?.emitMessage({
-        type: "auto_resolve_result",
-        sessionId,
-        outcome: emitOutcome,
-        attempt,
-        ...(emitForcePushed !== undefined ? { forcePushed: emitForcePushed } : {}),
-        ...(emitLastError !== undefined ? { lastError: emitLastError } : {}),
-      });
-    }
-
-    if (result.outcome === "deferred") {
-      state.lastEmittedDeferred = result.lastError ?? "";
-    } else {
-      delete state.lastEmittedDeferred;
-    }
+    this.emitResult(sessionId, result, {
+      outcome: emitOutcome,
+      attempt,
+      ...(emitForcePushed !== undefined ? { forcePushed: emitForcePushed } : {}),
+      ...(emitLastError !== undefined ? { lastError: emitLastError } : {}),
+    });
 
     // User activity resets the budget even if this attempt exhausted it.
     this.applyPendingReset(sessionId, state);

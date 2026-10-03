@@ -1,3 +1,4 @@
+import { initLocalBlock, assertLoopbackOnlyWithoutBlock } from "./local-block.js";
 import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import {
   credentialHarnessForLogin,
@@ -17,6 +18,11 @@ import type { PresentStore } from "./present-store.js";
 import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
+import {
+  COMPOSE_HELPER_IMAGE_ENV,
+  resolveComposeHelperImage,
+  setComposeHelperImage,
+} from "./compose-helper.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
 import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
@@ -108,6 +114,7 @@ export type { WarmPreviewDeps } from "./warm-preview.js";
 export {
   runRepoMigration,
   runRemoteCredentialScrub,
+  clearUnrecordedRepoAddresses,
   runMcpOAuthStartupRefresh,
   retireWarmSessions,
   scheduleStartupTasks,
@@ -135,6 +142,19 @@ export interface ContainerSetupResult {
   dockerProxyServer: HttpServer | null;
 }
 
+/**
+ * Without the workspace volume, Docker gets a session's workspace paths as host paths, which the
+ * session can redirect, so ShipIt does not run session containers (docs/318-compose-remaining-escapes req 9).
+ */
+export function assertWorkspaceVolumeConfigured(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.WORKSPACE_VOLUME) return;
+  throw new Error(
+    "ShipIt does not start: WORKSPACE_VOLUME is not set. Set it to the Docker volume that holds "
+    + "/workspace, as ShipIt's deployments do (deployment/README.md). Without it, ShipIt cannot keep "
+    + "a session's Compose mounts inside that session.",
+  );
+}
+
 export async function setupContainerManager(
   setupDeps: ContainerSetupDeps,
 ): Promise<ContainerSetupResult> {
@@ -149,6 +169,7 @@ export async function setupContainerManager(
   if (deps.sessionContainerManager) {
     containerManager = deps.sessionContainerManager;
   } else if (!isTestMode && !deps.runnerFactory) {
+    assertWorkspaceVolumeConfigured();
     containerManager = new SessionContainerManager({
       workspaceVolume: process.env.WORKSPACE_VOLUME,
       stateDir: setupDeps.stateDir,
@@ -159,6 +180,22 @@ export async function setupContainerManager(
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
       await containerManager.ensureNetwork();
+      // docs/319: decide once whether session containers get the local block,
+      // and refuse a non-loopback binding where they cannot.
+      await initLocalBlock(containerManager.getDockerClient());
+      await assertLoopbackOnlyWithoutBlock(containerManager.getDockerClient());
+      const helperImage = await resolveComposeHelperImage(
+        containerManager.getDockerClient(), process.env[COMPOSE_HELPER_IMAGE_ENV],
+      );
+      setComposeHelperImage(helperImage);
+      if (helperImage.status === "ready") {
+        console.log(`[server] Compose helper image ${helperImage.name} pinned to ${helperImage.id}`);
+      } else {
+        console.warn(
+          `[server] Compose helper image unavailable (${helperImage.reason}) — `
+          + "Compose commands that read project files will be refused",
+        );
+      }
       if (isOverlayEnabled() && !process.env.SESSION_WORKER_IMAGE_ID) {
         const workerImageId = await containerManager.resolveWorkerImageId();
         if (workerImageId) {
@@ -266,6 +303,10 @@ export async function setupContainerManager(
     } catch (err) {
       console.warn(`[server] Docker API proxy setup skipped: ${(err as Error).message}`);
     }
+    // After the Docker proxy: its port is one of ShipIt's own that agents may use.
+    void containerManager.reconcileAdoptedFirewalls().catch((err: unknown) => {
+      console.warn("[egress] reconciling adopted firewalls failed:", err);
+    });
   }
 
   return { containerManager, dockerProxyServer };
@@ -315,7 +356,8 @@ async function createContainerForRunner(opts: CreateContainerForRunnerOpts): Pro
   const { mgr, runner, sessionId } = opts;
 
   if (opts.oomBreaker?.isTripped(sessionId)) {
-    const errMsg = `Session disabled — agent container OOM-killed too many times. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
+    const errMsg = "Session disabled — agent container OOM-killed too many times. Use \"Restart all\" on the health strip in the Terminal tab to retry. "
+      + "Session memory is sized from host capacity; to give sessions more, raise `DEFAULT_SESSION_MEMORY_MB` on the ShipIt host.";
     console.warn(`[container] Refusing to create container for ${sessionId}: OOM circuit breaker tripped`);
     mgr.recordCreateError(sessionId, errMsg);
     opts.broadcastLog?.(sessionId, "server", errMsg);
@@ -620,7 +662,8 @@ const VANISHED_NOTICE =
 
 const WEDGED_NOTICE =
   "This session's agent container is running but its worker has stopped responding, so the session is not live. "
-  + "The agent's progress up to this point has been preserved. Restart the agent container to recover it.";
+  + "The agent's progress up to this point has been preserved. To recover it, use Restart agent container "
+  + "on the health strip in the Terminal tab.";
 
 async function probeWorkerHealth(workerUrl: string): Promise<boolean> {
   try {
@@ -780,7 +823,7 @@ export function createPrStatusPoller(
 
   let rebaseAndResolveCb: RebaseAndResolveCb | undefined;
   if (createGitManager && chatHistoryManager && usageManager) {
-    rebaseAndResolveCb = async (sessionId, baseBranch): Promise<AutoResolveResult> => {
+    rebaseAndResolveCb = async (sessionId, baseBranch, opts): Promise<AutoResolveResult> => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) {
         return { outcome: "deferred", lastError: "no_runner", didWork: false };
@@ -814,6 +857,7 @@ export function createPrStatusPoller(
           prStatusPoller: pollerHolder.current,
           ...(agentFactory ? { agentFactory } : {}),
           ...(drainQueueForSession ? { drainQueue: () => drainQueueForSession(sessionId) } : {}),
+          ...(opts?.byUser ? { userStarted: true } : {}),
         },
         baseBranch,
       );
@@ -867,6 +911,8 @@ export function createPrStatusPoller(
         agentInterface: undefined,
         activity: "Auto-fixing CI...",
         systemTurn: true,
+        automatic: true,
+        heldId: undefined,
         onTurnComplete: undefined,
         execution: undefined,
         images: undefined,

@@ -36,6 +36,8 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
 
 Reflect.deleteProperty(process.env, "SHIPIT_WORKER_TOKEN");
 Reflect.deleteProperty(process.env, "SHIPIT_AGENT_DEPTH");
+// An in-process worker opens this socket, and removes it on stop: inside a session that is the live one.
+Reflect.deleteProperty(process.env, "SSH_AUTH_SOCK");
 
 if (process.env.GIT_ALLOW_PROTOCOL === undefined) {
   process.env.GIT_ALLOW_PROTOCOL = "file";

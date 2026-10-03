@@ -159,3 +159,82 @@ jobs:
             -v "$PWD/docker/egress-sidecar/image-checks.sh:/image-checks.sh:ro" \
             --entrypoint sh shipit-egress-sidecar:ci \
             /image-checks.sh "$resolver_uid" "$proxy_uid"
+      # docs/319: the local block, installed in a real namespace, refuses what it must.
+      - name: Verify the local block in a real network namespace
+        run: |
+          set -euo pipefail
+          image=shipit-egress-sidecar:ci
+          docker network create shipit-ci-block >/dev/null
+          gw=$(docker network inspect shipit-ci-block --format '{{(index .IPAM.Config 0).Gateway}}')
+          # A dropped UDP send fails at once with EPERM; a dropped TCP connect only hangs.
+          refused() {
+            local out
+            out=$(docker run --rm --network container:shipit-ci-target --entrypoint bash "$image" \
+              -c "timeout 3 bash -c 'exec 3<>/dev/udp/$1/$2 && echo probe >&3' 2>&1 || true")
+            [[ "$out" == *"not permitted"* ]]
+          }
+          # Packets the SSH chain accepted: an accepted TCP connect leaves the namespace.
+          ssh_accepts() {
+            docker run --rm --network container:shipit-ci-target --entrypoint bash "$image" \
+              -c "timeout 3 bash -c 'exec 3<>/dev/tcp/$1/$2' >/dev/null 2>&1 || true" >/dev/null
+            docker run --rm --network container:shipit-ci-target --cap-add NET_ADMIN --entrypoint iptables "$image" \
+              -L SHIPIT-SSH -v -x -n | awk -v d="$1" '$0 ~ d {print $1}' | head -n1
+          }
+          for policy in open contained; do
+            docker run -d --name shipit-ci-target --network shipit-ci-block --entrypoint sleep "$image" 300 >/dev/null
+            docker run --rm --network container:shipit-ci-target --cap-add NET_ADMIN \
+              -e EGRESS_POLICY="$policy" \
+              -e EGRESS_HOST_ADDRS="$(hostname -I)" \
+              -e EGRESS_SSH_TARGETS="10.1.2.3:22" \
+              -e EGRESS_LOCAL_TCP="10.9.9.9/32:4123" \
+              -e EGRESS_ALLOWED_CIDRS="1.1.1.1/32 10.1.2.0/24" \
+              "$image"
+            for target in "$gw 22" "10.1.2.3 80" "100.64.0.1 80" "192.168.1.1 80" "169.254.169.254 80" \
+                "$(hostname -I | awk '{print $1}') 22"; do
+              if ! refused $target; then echo "$policy: $target was not refused"; exit 1; fi
+            done
+            accepted=$(ssh_accepts 10.1.2.3 22)
+            if ! [ "${accepted:-0}" -gt 0 ] 2>/dev/null; then echo "$policy: the SSH destination's port was refused"; exit 1; fi
+            out=$(docker run --rm --network container:shipit-ci-target --entrypoint bash "$image" \
+              -c "timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443 && echo connected' 2>&1 || true")
+            if [[ "$out" != *connected* ]]; then echo "$policy: an internet address did not connect: $out"; exit 1; fi
+            if [ "$policy" = contained ] && ! refused 8.8.8.8 443; then
+              echo "contained: an address outside the allowlist was not refused"; exit 1
+            fi
+            docker rm -f shipit-ci-target >/dev/null
+            echo "$policy policy: ok"
+          done
+          docker run --rm --network none --cap-add NET_ADMIN --entrypoint /usr/local/bin/probe-firewall.sh "$image"
+          docker network rm shipit-ci-block >/dev/null
+      # A host drop from install time names an address Docker later gave to a session's service.
+      - name: Verify a stale host drop does not hide a session's service
+        run: |
+          set -euo pipefail
+          image=shipit-egress-sidecar:ci
+          refused() {
+            local out
+            out=$(docker run --rm --network container:shipit-ci-agent --entrypoint bash "$image" \
+              -c "timeout 3 bash -c 'exec 3<>/dev/udp/$1/$2 && echo probe >&3' 2>&1 || true")
+            [[ "$out" == *"not permitted"* ]]
+          }
+          docker network create shipit-ci-agent-net >/dev/null
+          docker network create --internal -o com.docker.network.bridge.inhibit_ipv4=true shipit-ci-session >/dev/null
+          subnet=$(docker network inspect shipit-ci-session --format '{{(index .IPAM.Config 0).Subnet}}')
+          docker run -d --name shipit-ci-service --network shipit-ci-session busybox:1.37 httpd -f -p 3000 >/dev/null
+          service=$(docker inspect shipit-ci-service --format '{{(index .NetworkSettings.Networks "shipit-ci-session").IPAddress}}')
+          docker run -d --name shipit-ci-agent --network shipit-ci-agent-net --entrypoint sleep "$image" 300 >/dev/null
+          docker run --rm --network container:shipit-ci-agent --cap-add NET_ADMIN \
+            -e EGRESS_POLICY=open -e EGRESS_HOST_ADDRS="$(hostname -I) $service" "$image"
+          docker network connect shipit-ci-session shipit-ci-agent
+          if ! refused "$service" 3000; then echo "the install did not refuse $service"; exit 1; fi
+          docker run --rm --network container:shipit-ci-agent --cap-add NET_ADMIN \
+            --entrypoint /usr/local/bin/allow-subnet.sh \
+            -e EGRESS_ALLOW_SUBNETS="$subnet" -e EGRESS_HOST_ADDRS="$(hostname -I)" "$image"
+          # Any HTTP status proves the connection; 000 is a timeout or a refusal.
+          code=$(docker run --rm --network container:shipit-ci-agent --entrypoint curl "$image" \
+            -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$service:3000/" || true)
+          if [ -z "$code" ] || [ "$code" = 000 ]; then echo "the session's service at $service did not answer"; exit 1; fi
+          if ! refused "$(hostname -I | awk '{print $1}')" 22; then echo "the host is no longer refused"; exit 1; fi
+          docker rm -f shipit-ci-agent shipit-ci-service >/dev/null
+          docker network rm shipit-ci-session shipit-ci-agent-net >/dev/null
+          echo "stale host drop: ok"

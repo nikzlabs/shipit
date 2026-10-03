@@ -261,9 +261,12 @@ function tokenize(text) {
   // an argument to one. `echo pgrep -f x` prints; it does not run pgrep, and
   // reading the two the same way refuses ordinary work.
   let atCommandStart = true;
-  const push = () => {
+  // Whether the word holds a `$(` or a backtick outside single quotes, which
+  // the shell runs here before the word reaches its program.
+  let expands = false;
+  const push = (end) => {
     if (value !== null) {
-      tokens.push({ value, quoted, command: atCommandStart });
+      tokens.push({ value, quoted, command: atCommandStart, expands, end });
       // An env assignment and a reserved word PRESERVE command position; they
       // cannot create one. `echo time pgrep -f x` prints three words, and
       // reading `time` as a keyword there refused an echo. A quoted keyword is
@@ -277,9 +280,11 @@ function tokenize(text) {
     }
     value = null;
     quoted = false;
+    expands = false;
   };
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
+    if (quote !== "'" && (ch === "`" || (ch === "$" && text[i + 1] === "("))) expands = true;
     if (quote) {
       if (ch === quote) { quote = null; continue; }
       // Inside double quotes bash KEEPS a backslash unless it escapes one of
@@ -323,19 +328,194 @@ function tokenize(text) {
       // `args=(one two)` is an array, not a subshell: its words are data. Only
       // `$(`, or a `(` that opens a real subshell, starts a command.
       const arrayAssignment = ch === "(" && text[i - 1] === "=";
-      push();
+      push(i);
       const doubled = (ch === "&" || ch === "|") && text[i + 1] === ch;
       if (doubled) i++;
-      tokens.push({ value: doubled ? ch + ch : ch === "\n" ? ";" : ch, quoted: false, operator: true });
+      tokens.push({ value: doubled ? ch + ch : ch === "\n" ? ";" : ch, quoted: false, operator: true, end: i + 1 });
       atCommandStart = !arrayAssignment;
       continue;
     }
-    if (/\s/.test(ch)) { push(); continue; }
+    if (/\s/.test(ch)) { push(i); continue; }
     if (ch === "\\" && i + 1 < text.length) { value = (value ?? "") + text[++i]; continue; }
     value = (value ?? "") + ch;
   }
-  push();
+  push(text.length);
   return quote ? null : tokens;
+}
+
+/** The program a command word names: `/usr/bin/cat>notes.md` is `cat`. */
+function programName(word) {
+  return word.replace(/[<>].*$/s, "").replace(/^.*\//, "");
+}
+
+/**
+ * The words of the simple command whose command word is `tokens[i]`, up to the
+ * next operator.
+ */
+function wordsAfter(tokens, i) {
+  let j = i + 1;
+  while (j < tokens.length && tokens[j].operator !== true) j++;
+  return tokens.slice(i + 1, j);
+}
+
+/**
+ * Whether these ssh words run something here before ssh connects: a `$(` or
+ * backtick outside single quotes, an option that runs a command
+ * (`ProxyCommand`, `LocalCommand`, `KnownHostsCommand`, `Match exec`), or a
+ * `-F` config that can hold one. Such a command can also read the heredoc
+ * (`-o 'ProxyCommand=bash /dev/fd/2' host 2<<'EOF'`).
+ */
+function sshRunsHere(words) {
+  return words.some(
+    (t) =>
+      t.expands
+      || /^-F/.test(t.value)
+      || /^(?:-o)?\s*(?:proxycommand|localcommand|knownhostscommand|match)\b/i.test(t.value),
+  );
+}
+
+/**
+ * The text with each `ssh` command's words cut out: its destination and remote
+ * command run on another machine. Quoting is read, so a `&&` inside the remote
+ * command stays inside and one outside ends it — `ssh host true && git checkout
+ * main` keeps its local checkout. Nothing is cut from unreadable quoting, or
+ * from an ssh that runs something here first.
+ */
+function withoutSshRemoteCommands(text) {
+  const tokens = tokenize(text);
+  if (!tokens) return text;
+  const cuts = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].command !== true || programName(tokens[i].value) !== "ssh") continue;
+    const words = wordsAfter(tokens, i);
+    if (!sshRunsHere(words)) cuts.push([tokens[i].end, (words.at(-1) ?? tokens[i]).end]);
+    i += words.length;
+  }
+  let out = text;
+  for (const [from, to] of cuts.reverse()) out = out.slice(0, from) + out.slice(to);
+  return out;
+}
+
+// Programs that read a heredoc as data and never run it; ssh sends it away.
+const DATA_READERS = new Set(["cat", "tee", "gh", "shipit", "ssh"]);
+
+/**
+ * Whether the quoted-delimiter heredoc opened at offset `at` of this command is
+ * data: every command in the pipeline it feeds is a data reader, an ssh among
+ * them runs nothing here, and the pipeline is finished on this line. Anything
+ * else — a shell, `source /dev/stdin`, a `{ …; }` group, a wrapper, a name only
+ * known at run time — may run it here.
+ */
+function feedsOnlyDataReaders(command, at) {
+  const tokens = tokenize(command);
+  if (!tokens) return false;
+  let from = 0;
+  let to = tokens.length;
+  for (let k = 0; k < tokens.length; k++) {
+    if (!tokens[k].operator || !["&&", "||", ";", "&"].includes(tokens[k].value)) continue;
+    if (tokens[k].end <= at) from = k + 1;
+    else { to = k; break; }
+  }
+  const pipeline = tokens.slice(from, to);
+  if (pipeline.at(-1)?.value === "|") return false;
+  // The opener's own `<<EOF` word is in the pipeline, and when no command
+  // precedes it, it is the command word and no reader's name.
+  for (const [k, t] of pipeline.entries()) {
+    if (t.command !== true || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.value)) continue;
+    const name = programName(t.value);
+    if (!DATA_READERS.has(name) || (name === "ssh" && sshRunsHere(wordsAfter(pipeline, k)))) return false;
+  }
+  return true;
+}
+
+// Only a delimiter that ends where its word ends, and whose quotes need no
+// unescaping, is read. `<<EOF.txt`, `<<E"OF"` and `<<"E\\OF"` are words bash
+// reads differently, and `$((1<<2))` is no heredoc.
+const DELIMITER =
+  /<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n\\]*)"|\\([A-Za-z0-9_][A-Za-z0-9_-]*)|([A-Za-z0-9_][A-Za-z0-9_-]*))(?=$|[\s;|&<>])/y;
+
+// Reserved words and braces that open or close a compound command.
+const COMPOUND_WORDS = new Set([
+  "{", "}", "if", "then", "elif", "else", "fi", "while", "until", "for", "do", "done", "case", "esac",
+  "select", "function",
+]);
+
+/**
+ * The text the git rules judge: what runs in this container. Each command has
+ * its ssh remote words cut, and a heredoc body is cut when it is data — its
+ * delimiter is quoted, so bash expands nothing in it, and only data readers
+ * take it. Every other body is kept as written, and so is every body when the
+ * text holds a group or a substitution anywhere outside data bodies: an
+ * unquoted `(`, `)` or backtick, or a compound word as a command. Its output
+ * may be run here (`{ cat <<'EOF' … } | bash`, `source <(cat <<'EOF' …)`), and
+ * telling where one ends means parsing bash. Quotes and comments are read
+ * across lines, so `'a <<EOF'` opens nothing, and a `\` continuation starts
+ * the body after the joined line, as in bash. Null where the body's end is not
+ * certain; the caller then judges the text as written.
+ */
+function commandsRunHere(text) {
+  const lines = text.split("\n");
+  const kept = [];
+  let quote = null;
+  let compound = false;
+  let command = "";
+  let openers = [];
+  let n = 0;
+  while (n < lines.length) {
+    const one = lines[n++];
+    const base = command.length;
+    command += one;
+    let continues = false;
+    for (let i = 0; i < one.length; i++) {
+      const ch = one[i];
+      if (quote) {
+        if (ch === quote) quote = null;
+        else if (quote === '"' && ch === "\\") i++;
+        continue;
+      }
+      if (ch === "\\") {
+        continues = i === one.length - 1;
+        i++;
+        continue;
+      }
+      if (ch === "'" || ch === '"') { quote = ch; continue; }
+      if (ch === "#" && (i === 0 || /[\s;|&()]/.test(one[i - 1]))) break;
+      if (ch === "(" || ch === ")" || ch === "`") compound = true;
+      if (ch !== "<" || one[i + 1] !== "<") continue;
+      if (one[i + 2] === "<") { i += 2; continue; }
+      DELIMITER.lastIndex = i;
+      const m = DELIMITER.exec(one);
+      if (!m) return null;
+      openers.push({ at: base + i, dash: m[1] === "-", word: m[2] ?? m[3] ?? m[4] ?? m[5], quoted: m[5] === undefined });
+      i = DELIMITER.lastIndex - 1;
+    }
+    if (quote !== null || continues) {
+      command += "\n";
+      continue;
+    }
+    const tokens = tokenize(command);
+    if (!tokens || tokens.some((t) => t.command === true && !t.quoted && COMPOUND_WORDS.has(t.value))) {
+      compound = true;
+    }
+    kept.push(withoutSshRemoteCommands(command));
+    for (const opener of openers) {
+      const body = [];
+      while (n < lines.length) {
+        const line = lines[n++];
+        // `<<-` strips leading tabs from the delimiter line.
+        if ((opener.dash ? line.replace(/^\t+/, "") : line) === opener.word) break;
+        body.push(line);
+      }
+      // bash joins a `\`-ended line before it looks for an unquoted delimiter.
+      if (!opener.quoted && body.some((line) => line.endsWith("\\"))) return null;
+      if (opener.quoted && feedsOnlyDataReaders(command, opener.at)) kept.push({ data: body });
+      else kept.push(...body);
+    }
+    openers = [];
+    command = "";
+  }
+  if (command) kept.push(command);
+  return kept.flatMap((k) => (typeof k === "string" ? [k] : compound ? k.data : [])).join("\n");
 }
 
 /** A redirection word — `>`, `2>`, `>>/dev/null`, `&>`. Not an argument, not a command. */
@@ -482,7 +662,17 @@ function offendsSelfMatchingProcessTest(line) {
 // The orchestrator enables this only during merged-branch recovery.
 const guardDestructiveGit = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
 
-for (const seg of sandboxSession ? [] : segments(command)) {
+// The git rules judge only what runs in this container: a heredoc that is data
+// for another program and an ssh remote command are cut first (docs/130). What
+// this cannot read, or a throw, judges the text as written.
+let runsHere = command;
+try {
+  runsHere = commandsRunHere(command) ?? command;
+} catch {
+  runsHere = command;
+}
+
+for (const seg of sandboxSession ? [] : segments(runsHere)) {
   const reason = offends(seg);
   if (reason) {
     process.stderr.write(

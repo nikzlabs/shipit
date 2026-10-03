@@ -18,7 +18,7 @@ import { usePreviewStore, type DeclaredSecretState } from "../stores/preview-sto
 import { usePluginReposStore } from "../stores/plugin-repos-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { useApi } from "../hooks/useApi.js";
+import { ApiError, useApi } from "../hooks/useApi.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 
 /**
@@ -233,8 +233,9 @@ function SecretsPanel({ repoUrl }: { repoUrl: string | null }) {
       if (SAVES.get(repoUrl) !== mine) return;
       // Named, because the panel it failed for may be gone by now: the dialog
       // can have been closed, or opened for another repository.
+      const reason = err instanceof ApiError && err.status === 400 ? ` — ${err.message}` : "";
       useUiStore.getState().setToast({
-        message: `Failed to save secrets for ${parseRepoLabel(repoUrl)}`,
+        message: `Failed to save secrets for ${parseRepoLabel(repoUrl)}${reason}`,
       });
     } finally {
       setSaving(false);

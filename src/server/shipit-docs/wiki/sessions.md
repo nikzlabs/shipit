@@ -84,12 +84,18 @@ Every row has an overflow menu. In order:
 - **Download chat** — the conversation as a file.
 - **Investigate in Ops session** — opens ShipIt's own operations session pointed
   at this one. On any row except an Ops session's own.
-- **Session settings** — currently the per-session network choice, three ways:
-  **Inherit** (follow the workspace setting, changed in Settings → Network),
-  **Contained** (default-deny: only the allowlist — the LLM API, GitHub, package
-  registries, and hosts the user has added — is reachable, with an inline prompt
-  when something new is wanted), or **Open** (unrestricted outbound, no
-  allowlist, no prompts). Changing it restarts the session's container to apply.
+- **Session settings** — the session's network access and its SSH destination
+  grants. Network access is three ways: **Inherit** (follow the workspace setting,
+  changed in Settings → Network), **Contained** (default-deny: only the allowlist
+  — the LLM API, GitHub, package registries, and hosts the user has added — is
+  reachable, with an inline prompt when something new is wanted), or **Open**
+  (any internet host, no allowlist, no prompts). In both modes a session cannot
+  reach the machine that runs ShipIt, private networks (the LAN) or the tailnet;
+  an SSH destination granted in the same dialog is reachable on its own port
+  only. Changing the mode restarts the session's container to apply. The same
+  dialog also opens from the composer's permission-mode control, **including on
+  a new session before its first message**, so the user can pick the network
+  mode and grant SSH destinations in advance.
 
 **Recover recent rewind**, **Download chat** and **Session settings** are on the
 **open** session's row only, not on every row in the list. An archived row
@@ -121,11 +127,20 @@ for a wedged session is on it, in increasing order of violence:
 
 | Control | Does |
 |---|---|
-| Show diagnostics | Expands the health detail in place |
-| Open the full diagnostics panel | Services, runner state, recent logs — and a copy button that yields the whole payload as JSON, which is what a bug report wants |
-| Force-kill the agent | SIGKILL on the agent process. For when an interrupt did not take |
-| Restart the agent container | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine |
-| Rescue session | Stops the Compose stack, destroys the agent container, rebuilds everything |
+| **details** | Expands the health detail in place |
+| **Diagnostics** | Opens the full diagnostics panel: services, runner state, recent logs — and a copy button that yields the whole payload as JSON, which is what a bug report wants |
+| **Kill agent** | SIGKILL on the agent process. For when an interrupt did not take |
+| **Restart agent container** | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine |
+| **Restart all** | Stops the Compose stack, destroys the agent container, rebuilds it and starts the `auto` services again. `manual` services stay stopped until started |
+
+The agent restarts its own agent container: when a change applies only from the
+next container start, run `shipit session restart --note "…"`. The restart
+happens after the turn ends, and the note comes back as a new turn on the new
+container, so the user clicks nothing. **Restart all** stays the user's.
+
+When the user has to restart, name the button and say where it is: "click
+**Restart all** on the health strip in the Terminal tab". "Restart the
+container" alone does not tell them which control to use.
 
 Read the diagnostics before reaching for a restart, and say what they show. A
 restart that fixes nothing twice is worth a bug report rather than a third.
@@ -209,6 +224,22 @@ The exemption here is **Keep preview running** on the session menu, which
 reserves that session against the memory reclaim. Nothing else exempts it —
 pinning does not.
 
+**Done sessions.** A session under **Recently resolved**, or one the sidebar
+hides because of the resolved-session cap, is *done*. About 10 minutes after
+its pull request merged or closed, ShipIt stops its agent container and its
+whole Compose stack, whatever the memory budget says — also while the user has
+it open, but never while its agent is working. A pin, **Keep preview running**,
+a broken workspace or a spawned session that is not done makes a session not
+done. A merged session moves under **Recently resolved** at once, also when
+the merge happens during one of its turns. A message sent after the merge makes
+it active again, and the next message restarts it.
+
+**New sessions nobody used.** Picking a repository for a new session hands the
+user a ready session before they type anything. If it has no first message and
+nobody has looked at it for about 10 minutes, ShipIt stops its agent container
+and its whole Compose stack, whatever the memory budget says. Its files stay;
+opening it again starts a fresh container.
+
 **Disk.** Independently of memory, a session that has been idle long enough
 descends a disk ladder. This happens even when memory is plentiful.
 
@@ -258,6 +289,29 @@ development database, an upload directory, a cache built up over weeks of work.
 That data was never durable and no backup covers it. If it matters to the user,
 say so *before* they archive, and get it out first.
 
+**The session's `/persist` files and uploads stay for a retention period, not
+for ever.** Checkout reclaim and idle reclaim keep them. Archive starts a
+period: 60 days by default, and 14 days when the files use 100 MB or more. When
+it ends, ShipIt deletes the files. That includes what a service writes through a
+`persist` mount (`/shipit-docs/compose.md`, "Data a service must keep").
+
+- The archived row in **All sessions** shows the date of the deletion. Read the
+  date from there; do not calculate it.
+- Restore before the date keeps the files, and a later archive starts a new
+  period. Restore after the date still works: the session opens with an empty
+  `/persist`, no uploads, and a notice in the transcript that says what was
+  deleted.
+- A **finished** session that the user did not archive has the same period: one
+  whose pull request merged or closed, and that was not used since. Its period
+  starts at the merge or close, or at the last time it was used or opened. A
+  pinned session is not finished, so a pin keeps its files.
+- An archived **sandbox** session that has no remote also loses its checkout
+  when the period ends, because nothing else holds that work. Restore gives it
+  an empty workspace.
+
+So when a user asks "can I archive this?", check what is in `/persist` first.
+If it holds something they must not lose, say so before they archive.
+
 **"If I archive this, do I lose my work?"** is the question users actually ask,
 and the answer is no, for a reason worth giving them: before ShipIt reclaims a
 checkout it commits anything outstanding and **verifies the branch is on the
@@ -287,7 +341,8 @@ for when that is the right shape and when a sub-agent or a consult is better.
 Four things users ask about children:
 
 - They report **upward only**. A child can raise a blocker to its parent; it
-  cannot talk to its siblings.
+  cannot talk to its siblings, and cannot see them either — so children run as
+  parallel trials of different prompts or models do not learn of each other.
 - **A parent cannot end a child.** It can wait on one, message one, and be woken
   when one merges; archiving is the user's, above. A child steered by the user in
   its own chat is doing exactly that, and the parent has no way to see it.
@@ -306,12 +361,13 @@ a session that handed an agent a prompt without spawning it.
 
 For that case the agent posts a **"Message for another session"** card naming
 the target session and showing the whole message. The user reads it and sends
-it; that click is what delivers it, and it starts a turn there just as typing
-it would. Approving one card sends one message — the agent gets no continuing
-access, so a second message means a second card. The receiving session's
-transcript marks the message "From another session, approved by you", with the
-sender's name, and the card stays in the sender's transcript recording that it
-was delivered.
+it or declines it; the send is what delivers it, and it starts a turn there just
+as typing it would. Approving one card sends one message — the agent gets no
+continuing access, so a second message means a second card. The receiving
+session's transcript marks the message "From another session, approved by you",
+with the sender's name, and the card stays in the sender's transcript recording
+whether it was delivered or declined. Either way, a `[ShipIt]` line at the start
+of the sender's next turn says what the user did, so the agent never asks.
 
 ## Kinds of session
 

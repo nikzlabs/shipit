@@ -12,6 +12,8 @@ import {
   buildTierAEgressInputs,
   installEgressFirewall,
   allowEgressToSubnets,
+  buildFirewallEnv,
+  formatSshTargets,
   _resetEgressCidrCache,
 } from "./egress-firewall-install.js";
 import { EGRESS_GITHUB_CIDRS_FALLBACK, EGRESS_TIER_A_RESOLVE_HOSTS } from "./egress-firewall.js";
@@ -261,5 +263,85 @@ describe("allowEgressToSubnets", () => {
       allowEgressToSubnets(docker, { agentContainerId: "a", sidecarImage: "egress:1", subnets: ["172.19.0.0/16"] }),
     ).rejects.toThrow(/exited 1/);
     expect(container.remove).toHaveBeenCalled();
+  });
+});
+
+describe("buildFirewallEnv (docs/319)", () => {
+  const inputs = { hosts: ["github.com"], cidrs: ["140.82.112.0/20"] };
+
+  it("gives the open policy no allowlist, resolver or proxy", () => {
+    const env = buildFirewallEnv({ inputs, policy: "open", resolverUid: 911, proxyUid: 912, proxyPort: 8443 });
+    expect(env).toContain("EGRESS_POLICY=open");
+    expect(env).toContain("EGRESS_ALLOWED_HOSTS=");
+    expect(env).toContain("EGRESS_ALLOWED_CIDRS=");
+    expect(env.some((e) => e.startsWith("EGRESS_DNS_RESOLVER_UID") || e.startsWith("EGRESS_PROXY_UID"))).toBe(false);
+  });
+
+  it("keeps the contained inputs and adds the block's", () => {
+    const env = buildFirewallEnv({
+      inputs,
+      hostAddresses: ["203.0.113.7", "not-an-ip"],
+      localTcp: [{ subnet: "172.18.0.0/16", port: 4123 }, { subnet: "bogus", port: 1 }],
+      resolverUid: 911,
+    });
+    expect(env).toContain("EGRESS_POLICY=contained");
+    expect(env).toContain("EGRESS_ALLOWED_HOSTS=github.com");
+    expect(env).toContain("EGRESS_HOST_ADDRS=203.0.113.7");
+    expect(env).toContain("EGRESS_LOCAL_TCP=172.18.0.0/16:4123");
+    expect(env).toContain("EGRESS_DNS_RESOLVER_UID=911");
+  });
+
+  it("formats SSH destinations with their port and drops what the script could misread", () => {
+    expect(formatSshTargets([
+      { address: "nas.example", port: 2222 },
+      { address: "2001:db8::5", port: 22 },
+      { address: "10.0.0.5", port: 22 },
+      { address: "bad host", port: 22 },
+      { address: "10.0.0.6", port: 0 },
+    ])).toEqual(["nas.example:2222", "[2001:db8::5]:22", "10.0.0.5:22"]);
+  });
+});
+
+describe("allowEgressToSubnets — gateways (docs/319)", () => {
+  it("passes the networks' gateways so the host is refused first", async () => {
+    const created: { Env?: string[] }[] = [];
+    const docker = {
+      createContainer: async (spec: { Env?: string[] }) => {
+        created.push(spec);
+        return { start: async () => {}, wait: async () => ({ StatusCode: 0 }), remove: async () => {} };
+      },
+    } as unknown as Docker;
+    await allowEgressToSubnets(docker, {
+      agentContainerId: "agent",
+      sidecarImage: "sidecar:test",
+      subnets: ["172.20.0.0/24"],
+      gateways: ["172.20.0.1", "garbage"],
+    });
+    expect(created[0]!.Env).toEqual(["EGRESS_ALLOW_SUBNETS=172.20.0.0/24", "EGRESS_BLOCK_ADDRS=172.20.0.1"]);
+  });
+
+  it("passes the host's current addresses only when the caller read them", async () => {
+    const created: { Env?: string[] }[] = [];
+    const docker = {
+      createContainer: async (spec: { Env?: string[] }) => {
+        created.push(spec);
+        return { start: async () => {}, wait: async () => ({ StatusCode: 0 }), remove: async () => {} };
+      },
+    } as unknown as Docker;
+    await allowEgressToSubnets(docker, {
+      agentContainerId: "agent",
+      sidecarImage: "sidecar:test",
+      subnets: ["172.20.0.0/24"],
+      hostAddresses: ["203.0.113.7", "garbage"],
+    });
+    expect(created[0]!.Env).toContain("EGRESS_HOST_ADDRS=203.0.113.7");
+    // Empty is a real answer the script acts on, so it must still be passed.
+    await allowEgressToSubnets(docker, {
+      agentContainerId: "agent",
+      sidecarImage: "sidecar:test",
+      subnets: ["172.20.0.0/24"],
+      hostAddresses: [],
+    });
+    expect(created[1]!.Env).toContain("EGRESS_HOST_ADDRS=");
   });
 });

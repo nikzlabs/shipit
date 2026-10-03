@@ -96,10 +96,11 @@ function recordingCb(outcome: () => AutoFixResult | Promise<AutoFixResult>): Rec
   return cb as RecordingCb;
 }
 
-function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb; paused?: boolean; ensureRunner?: () => Promise<RunnerStub | undefined>; arbiter?: RemediationArbiter }) {
+function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb; paused?: boolean; ensureRunner?: () => Promise<RunnerStub | undefined>; arbiter?: RemediationArbiter; awaitingAnswer?: boolean }) {
   let time = 1_000_000;
   let enabled = opts?.enabled ?? true;
   let paused = opts?.paused ?? false;
+  let awaitingAnswer = opts?.awaitingAnswer ?? false;
   let runner: RunnerStub | undefined = opts?.runner ?? makeRunner(false);
   const changes: string[] = [];
   const cb = opts?.cb ?? recordingCb(() => ({ outcome: "fixed" }));
@@ -114,6 +115,7 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     opts?.ensureRunner
       ? async () => await opts.ensureRunner!() as unknown as SessionRunnerInterface | undefined
       : undefined,
+    () => awaitingAnswer,
   );
   return {
     manager,
@@ -121,6 +123,7 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     changes,
     setEnabled: (v: boolean) => { enabled = v; },
     setPaused: (v: boolean) => { paused = v; },
+    setAwaitingAnswer: (v: boolean) => { awaitingAnswer = v; },
     setRunner: (r: RunnerStub | undefined) => { runner = r; },
     advance: (ms: number) => { time += ms; },
     fail: (oid = "sha1") => manager.handleTransition("s1", makeSummary("failure"), makeNode(oid), "o", "r"),
@@ -303,6 +306,27 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(0);
     expect(fx.manager.get("s1")?.status).toBe("deferred");
     runner.running = false;
+    await fx.manager.onRunnerIdle("s1");
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+  });
+
+  it("docs/322 — waits while the agent waits for an answer, without booting a runner; the idle after the reply fires it", async () => {
+    let ensured = 0;
+    fx = makeFixture({ awaitingAnswer: true, ensureRunner: async () => { ensured++; return makeRunner(false); } });
+    fx.setRunner(undefined);
+
+    await fx.fail();
+    await tick();
+    expect(fx.cb.count()).toBe(0);
+    expect(ensured).toBe(0);
+    expect(fx.manager.get("s1")?.status).toBe("deferred");
+
+    await fx.manager.onRunnerIdle("s1");
+    await tick();
+    expect(fx.cb.count()).toBe(0);
+
+    fx.setAwaitingAnswer(false);
     await fx.manager.onRunnerIdle("s1");
     await tick();
     expect(fx.cb.count()).toBe(1);

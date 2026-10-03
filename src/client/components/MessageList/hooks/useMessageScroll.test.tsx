@@ -44,20 +44,12 @@ function user(text: string): ChatMessage {
 }
 
 /**
- * Put the clock past the hold a session gets while it is OPENING (planning#595,
- * `OPENING_HOLD_MS`), so that what follows is an ESTABLISHED reader.
- *
- * Only the position stand-down needs this, and only because of the fixture: the
- * fake geometry is installed after mount, so the mount pin records a 0 that the
- * test's own "scrolled away" position then equals by accident. A real container
- * CAN pin at 0 — one whose content does not overflow — but then there is nowhere
- * to have scrolled away to, which is what makes the coincidence an artefact of
- * replacing the geometry afterwards. A SELECTION needs no such move: the open
- * never suspends one.
+ * Where a test's reader scrolls to when it scrolls away. Not 0: the fake
+ * geometry is installed after mount, so the mount pin records 0, and a scroll
+ * event reporting the position the hook itself wrote is its own echo rather
+ * than the reader's.
  */
-function advancePastOpen(): void {
-  clock += 5000;
-}
+const SCROLLED_AWAY = 300;
 
 function Harness({ messages }: { messages: ChatMessage[] }) {
   const { containerRef, contentRef } = useMessageScroll(messages, false, undefined, "s1");
@@ -266,16 +258,74 @@ describe("useMessageScroll", () => {
       },
     });
 
-    advancePastOpen();
-
     act(() => {
+      scrollTop = SCROLLED_AWAY;
       div.dispatchEvent(new Event("scroll"));
     });
 
     height = 2600;
     growContent();
 
-    expect(scrollTop).toBe(0);
+    expect(scrollTop).toBe(SCROLLED_AWAY);
+  });
+
+  it("hears a reader who scrolls away and comes back to the exact position the hook wrote", () => {
+    const state = { height: 2000, scrollTop: 0 };
+    const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => state.height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => state.scrollTop,
+      set: (v: number) => { state.scrollTop = Math.min(Math.max(v, 0), state.height - 500); },
+    });
+    growContent();
+    expect(state.scrollTop).toBe(1500);
+
+    act(() => {
+      state.scrollTop = SCROLLED_AWAY;
+      div.dispatchEvent(new Event("scroll"));
+    });
+    act(() => {
+      state.scrollTop = 1500;
+      div.dispatchEvent(new Event("scroll"));
+    });
+
+    state.height = 2400;
+    growContent();
+
+    expect(state.scrollTop).toBe(1900);
+  });
+
+  it("hears a reader whose wheel lands back on the position the hook wrote", () => {
+    const state = { height: 2000, scrollTop: 0 };
+    const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => state.height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => state.scrollTop,
+      set: (v: number) => { state.scrollTop = Math.min(Math.max(v, 0), state.height - 500); },
+    });
+    growContent();
+    expect(state.scrollTop).toBe(1500);
+    clock += 5000;
+
+    // A group paints 100px taller and the browser anchors the view down; the
+    // reader wheels back up before the event, which then reports only 1500.
+    state.height = 2100;
+    act(() => {
+      div.dispatchEvent(new Event("wheel"));
+      div.dispatchEvent(new Event("scroll"));
+    });
+
+    clock += 1000;
+    state.height = 2400;
+    growContent();
+
+    expect(state.scrollTop).toBe(1500);
   });
 
   it("stops the in-flight settle loop the instant the user wheels — even within the near-bottom band", () => {
@@ -494,9 +544,8 @@ describe("useMessageScroll", () => {
       },
     });
 
-    advancePastOpen();
-
     act(() => {
+      scrollTop = SCROLLED_AWAY;
       div.dispatchEvent(new Event("scroll"));
     });
 
@@ -506,7 +555,7 @@ describe("useMessageScroll", () => {
     });
     flushFrame();
 
-    expect(scrollTop).toBe(0);
+    expect(scrollTop).toBe(SCROLLED_AWAY);
   });
 
   it("holds the end through a scroll reported while a session is still opening", () => {
@@ -601,6 +650,81 @@ describe("useMessageScroll", () => {
     growContent();
 
     expect(scrollTop).toBe(300);
+  });
+});
+
+describe("useMessageScroll — the session's PR merges (docs/303-session-status-card req 47)", () => {
+  const messages: ChatMessage[] = [{ role: "assistant", text: "done" }];
+
+  function MergeHarness({ prMerged }: { prMerged: boolean | undefined }) {
+    const { containerRef, contentRef } = useMessageScroll(messages, false, undefined, "s1", prMerged);
+    return (
+      <div ref={containerRef} data-testid="scroller">
+        <div ref={contentRef} data-testid="content" />
+      </div>
+    );
+  }
+
+  function mountScrolledUp(prMerged: boolean | undefined) {
+    const state = { height: 2000, client: 500, scrollTop: 0 };
+    const view = render(<MergeHarness prMerged={prMerged} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => state.height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => state.client });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => state.scrollTop,
+      set: (v: number) => { state.scrollTop = Math.min(Math.max(v, 0), state.height - state.client); },
+    });
+    act(() => {
+      state.scrollTop = SCROLLED_AWAY;
+      div.dispatchEvent(new Event("scroll"));
+    });
+    const fromBottom = () => state.height - state.scrollTop - state.client;
+    return { view, div, state, fromBottom };
+  }
+
+  it("brings a reader who scrolled up to the end, and keeps following as the composer grows", () => {
+    const { view, state, fromBottom } = mountScrolledUp(false);
+
+    act(() => { view.rerender(<MergeHarness prMerged={true} />); });
+    expect(fromBottom()).toBe(0);
+
+    // The reset controls appear under the composer later and shorten the view.
+    state.client = 350;
+    resizeContainer();
+    expect(fromBottom()).toBe(0);
+  });
+
+  it("keeps following when the view gets shorter before the pin's own scroll event arrives", () => {
+    const { view, div, state, fromBottom } = mountScrolledUp(false);
+
+    act(() => { view.rerender(<MergeHarness prMerged={true} />); });
+    // The reset controls land between the pin and the next frame, so the
+    // browser reports the pin's position after the view has become shorter.
+    // Measured in the real app: the view stopped short by the composer's growth.
+    state.client = 350;
+    act(() => { div.dispatchEvent(new Event("scroll")); });
+    resizeContainer();
+
+    expect(fromBottom()).toBe(0);
+  });
+
+  it("outranks a scroll gesture still in its grace window", () => {
+    const { view, div, fromBottom } = mountScrolledUp(false);
+    act(() => { div.dispatchEvent(new Event("wheel")); });
+
+    act(() => { view.rerender(<MergeHarness prMerged={true} />); });
+
+    expect(fromBottom()).toBe(0);
+  });
+
+  it("leaves the view alone when the PR card arrives already merged", () => {
+    const { view, state } = mountScrolledUp(undefined);
+
+    act(() => { view.rerender(<MergeHarness prMerged={true} />); });
+
+    expect(state.scrollTop).toBe(SCROLLED_AWAY);
   });
 });
 

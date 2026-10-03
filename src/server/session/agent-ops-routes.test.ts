@@ -84,6 +84,23 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(409);
   });
 
+  it("POST /agent-ops/session/restart forwards the note to /restart-after-turn (docs/321)", async () => {
+    client.setResponse("POST", "/restart-after-turn", {
+      ok: true, status: 200, body: { requested: true },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/restart",
+      payload: { note: "check node -v" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0]).toMatchObject({
+      method: "POST", path: "/restart-after-turn", body: { note: "check node -v" },
+    });
+  });
+
   it("POST /agent-ops/session-status forwards the delta to /session-status", async () => {
     client.setResponse("POST", "/session-status", {
       ok: true, status: 200,
@@ -118,6 +135,32 @@ describe("agent-ops routes", () => {
     });
 
     expect(res.statusCode).toBe(400);
+  });
+
+  it("GET /agent-ops/session/status reads /session-status, body and all (docs/303 req 48)", async () => {
+    client.setResponse("GET", "/session-status", {
+      ok: true, status: 200,
+      body: { ok: true, hasCard: true, text: "<session_status_card_full>…", card: { status: "Done." } },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/session/status" });
+
+    expect(res.statusCode).toBe(200);
+    // A GET, so the orchestrator route cannot be the write one, and no body rides it.
+    expect(client.calls).toEqual([{ method: "GET", path: "/session-status", body: undefined }]);
+    expect(res.json()).toMatchObject({ hasCard: true, text: "<session_status_card_full>…" });
+  });
+
+  it("GET /agent-ops/session/status relays the orchestrator's refusal status", async () => {
+    client.setResponse("GET", "/session-status", {
+      ok: false, status: 409,
+      body: { error: "The session status card is off" },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/session/status" });
+
+    expect(res.statusCode).toBe(409);
+    expect((res.json() as { error: string }).error).toContain("is off");
   });
 
   it("POST /agent-ops/pr/create forwards to /pr/agent-create with body", async () => {
@@ -675,7 +718,7 @@ describe("agent-ops routes", () => {
   it("GET /agent-ops/session/cohort forwards to /cohort with no agent-supplied target", async () => {
     client.setResponse("GET", "/cohort", {
       ok: true, status: 200,
-      body: { self: { id: "ses_me" }, siblings: [], children: [] },
+      body: { self: { id: "ses_me" }, children: [] },
     });
     const res = await app.inject({ method: "GET", url: "/agent-ops/session/cohort" });
     expect(res.statusCode).toBe(200);

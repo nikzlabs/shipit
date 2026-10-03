@@ -5,6 +5,7 @@ import {
   OrchestratorClient,
   resolveOrchestratorBaseUrls,
 } from "./orchestrator-client.js";
+import { orchestratorFallbackHosts } from "../shared/orchestrator-hosts.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -23,6 +24,17 @@ describe("resolveOrchestratorBaseUrls", () => {
       "http://old-container-id:4123",
       "http://shipit:4123",
     ]);
+  });
+
+  it("falls back to the shared list's default, which the contained resolver forwards (planning#626)", () => {
+    process.env.SHIPIT_HOST = "old-container-id";
+    process.env.SHIPIT_PORT = "4123";
+    delete process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS;
+
+    expect(resolveOrchestratorBaseUrls()).toEqual(
+      ["old-container-id", ...orchestratorFallbackHosts()].map((h) => `http://${h}:4123`),
+    );
+    expect(orchestratorFallbackHosts()).toEqual(["shipit"]);
   });
 
   it("returns no URLs when the orchestrator env is missing", () => {

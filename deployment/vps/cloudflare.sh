@@ -99,6 +99,8 @@ elif [ "$ALLOW_PUBLIC_UNAUTHENTICATED" = "1" ]; then
   echo ""
   echo "WARNING: Cloudflare Zero Trust is disabled by explicit override."
   echo "Anyone who can reach https://$DOMAIN or https://*.$DOMAIN can reach ShipIt."
+  echo "That includes ShipIt's own sessions: with no sign-in, a session is no different"
+  echo "from any internet client, so ShipIt cannot keep it away from its own API."
   echo "Only use this for deliberate testing or when another access layer protects the hostname."
 else
   ZERO_TRUST_REQUIRED=true

@@ -84,3 +84,47 @@ describe("setRepoAllowAgentMerge", () => {
     expect(grant()).toBe(true);
   });
 });
+
+// docs/318-compose-remaining-escapes req 8 — the same permission semantics, on the other grant.
+describe("setRepoAllowDockerSocket", () => {
+  function socketGrant(): boolean | undefined {
+    return useRepoStore.getState().repos.find((r) => r.url === URL)?.allowDockerSocket;
+  }
+
+  it("sends allowDockerSocket, and only it, and keeps the optimistic value on success", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }) as Response);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    await expect(useRepoStore.getState().setRepoAllowDockerSocket(URL, true)).resolves.toBe(true);
+    expect(socketGrant()).toBe(true);
+    expect(grant()).toBe(false);
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(JSON.parse(init.body as string)).toEqual({ allowDockerSocket: true });
+  });
+
+  it("reverts on a rejected request", async () => {
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }) as Response);
+
+    await expect(useRepoStore.getState().setRepoAllowDockerSocket(URL, true)).resolves.toBe(false);
+    expect(socketGrant()).toBeFalsy();
+  });
+
+  it("re-reads the server when the request throws, rather than guessing", async () => {
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "PATCH") throw new Error("network");
+      return { ok: true, status: 200, json: async () => ({ repos: [repo({ allowDockerSocket: true })] }) } as Response;
+    }) as unknown as typeof globalThis.fetch;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(useRepoStore.getState().setRepoAllowDockerSocket(URL, true)).resolves.toBe(false);
+    expect(socketGrant()).toBe(true);
+  });
+
+  it("reverts a revoke back to granted", async () => {
+    useRepoStore.getState().setRepos([repo({ allowDockerSocket: true })]);
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) }) as Response);
+
+    await useRepoStore.getState().setRepoAllowDockerSocket(URL, false);
+    expect(socketGrant()).toBe(true);
+  });
+});

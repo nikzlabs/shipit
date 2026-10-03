@@ -10,7 +10,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
+import type { AgentId, SessionListRow, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption, GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
@@ -29,6 +29,7 @@ import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-a
 import { useForegroundSignal } from "./useForegroundSignal.js";
 import { notifySessionNetworkModeChanged } from "./useSessionNetworkMode.js";
 import { notifyPreviewsStopped } from "./usePreviewsStopped.js";
+import { adoptModelList } from "../../server/shared/catalogue/model-list.js";
 
 let reloadingForClientUpdate = false;
 
@@ -155,12 +156,15 @@ export function useServerEvents(): void {
     eventSourceRef.current = es;
 
     es.addEventListener("session_list", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { sessions: SessionInfo[] };
-      useSessionStore.getState().setSessions(data.sessions);
+      const data = JSON.parse(e.data as string) as { sessions: SessionListRow[] };
+      const store = useSessionStore.getState();
+      store.setSessions(data.sessions);
+      // This list has no archived rows, and All sessions has its own copy of every row.
+      if (store.allSessionsDialogOpen) void store.fetchAllSessions();
     });
 
     es.addEventListener("session_started", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { session: SessionInfo };
+      const data = JSON.parse(e.data as string) as { session: SessionListRow };
       useSessionStore.getState().setSessions((prev) => {
         const exists = prev.some((s) => s.id === data.session.id);
         if (exists) return prev.map((s) => s.id === data.session.id ? data.session : s);
@@ -169,7 +173,7 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("session_renamed", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { session: SessionInfo };
+      const data = JSON.parse(e.data as string) as { session: SessionListRow };
       useSessionStore.getState().setSessions((prev) =>
         prev.map((s) => s.id === data.session.id ? data.session : s),
       );
@@ -517,6 +521,8 @@ export function useServerEvents(): void {
         } | null;
 
         backgroundWorkModels?: EligibleModelOption[];
+
+        modelList?: unknown;
       };
       if (data.reviewers) {
         useSettingsStore.getState().setReviewers(data.reviewers);
@@ -557,6 +563,8 @@ export function useServerEvents(): void {
         supportsGoals: a.supportsGoals ?? false,
         supportedPermissionModes: a.supportedPermissionModes,
       }));
+      // docs/318 — before the agent list, whose store update re-renders the pickers.
+      adoptModelList(data.modelList);
       useUiStore.getState().setAgentList(agents);
 
       // on a Codex-only install. Persisting matters because the per-session WS
@@ -694,8 +702,9 @@ export function useServerEvents(): void {
         removals?: string[];
 
         isSnapshot?: boolean;
+        scope?: string[];
       };
-      usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot);
+      usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot, data.scope);
     });
 
     es.addEventListener("gh_rate_limited", (e: MessageEvent) => {

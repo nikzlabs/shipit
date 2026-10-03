@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { getErrorMessage } from "../shared/utils.js";
+import { orchestratorFallbackHosts } from "../shared/orchestrator-hosts.js";
 
 export interface OrchestratorClientOptions {
   baseUrl?: string;
@@ -18,13 +19,7 @@ export function resolveOrchestratorBaseUrls(): string[] {
   const host = process.env.SHIPIT_HOST;
   const port = process.env.SHIPIT_PORT;
   if (!host || !port) return [];
-  const hosts = [
-    host,
-    ...((process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS ?? "shipit")
-      .split(",")
-      .map((h) => h.trim())
-      .filter(Boolean)),
-  ];
+  const hosts = [host, ...orchestratorFallbackHosts()];
   return [...new Set(hosts)].map((h) => `http://${h}:${port}`);
 }
 

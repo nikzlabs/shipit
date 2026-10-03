@@ -26,6 +26,7 @@ import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
 import type { GenerateText } from "../non-turn-model.js";
+import type { RequestedRestartTurn } from "../services/agent-restart-request.js";
 
 export type { QueuedMessage };
 
@@ -113,6 +114,8 @@ export interface AppCtx {
   getSharedRepoDir: (repoUrl: string) => string;
   prStatusPoller: PrStatusPoller;
   releaseStatusPoller: ReleaseStatusPoller;
+  /** docs/321 — the same post-turn step dispatched turns get. */
+  runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
 
   recordAgentRateLimits?: (
     agentId: AgentId,

@@ -5,7 +5,7 @@ import { createOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
-import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
+import { SessionRunnerRegistry, type SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { PostInterruptCommitDeps } from "./post-interrupt-commit.js";
 import type { WsServerMessage, WsContainerRestarting } from "../../shared/types.js";
@@ -626,5 +626,95 @@ describe("restartAgent — the killed turn's work is flushed before the runner g
     );
 
     expect(result).toMatchObject({ ok: true });
+  });
+});
+
+describe("restartAgent carryQueue — queued messages survive an agent-requested restart (docs/321)", () => {
+  function queueTwo(runner: SessionRunnerInterface): { dropped: number } {
+    const counts = { dropped: 0 };
+    runner.enqueue({
+      text: "first",
+      execution: "dispatched",
+      onTurnComplete: (outcome) => { if (outcome.status === "dropped") counts.dropped += 1; },
+    });
+    runner.enqueue({ text: "second", execution: "interactive" });
+    return counts;
+  }
+
+  it("moves the queue to the replacement, in order, and holds it until the caller releases", async () => {
+    const registry = new SessionRunnerRegistry();
+    const old = registry.getOrCreate("rescue-1", "/tmp/ws", "claude");
+    const counts = queueTwo(old);
+
+    const result = await restartAgent(
+      {
+        sessionManager,
+        containerManager: makeStubContainerManager({ hasExisting: true, finalState: "running" }),
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+      { carryQueue: true },
+    );
+
+    const replacement = registry.get("rescue-1");
+    expect(old.disposed).toBe(true);
+    expect(replacement).toBeDefined();
+    expect(replacement).not.toBe(old);
+    expect(replacement!.messageQueue.map((m) => m.text)).toEqual(["first", "second"]);
+    expect(counts.dropped).toBe(0);
+    expect(replacement!.systemTurnInProgress).toBe(true);
+    // Leased too: the idle enforcer must not reclaim the runner holding the carried queue.
+    expect(replacement!.postTurnWorkInFlight).toBe(true);
+    expect(result.held?.runner).toBe(replacement);
+
+    result.held!.release();
+    result.held!.release();
+    expect(replacement!.systemTurnInProgress).toBe(false);
+    expect(replacement!.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("carries a message sent while no runner was registered, which queued on the held old runner", async () => {
+    const registry = new SessionRunnerRegistry();
+    const old = registry.getOrCreate("rescue-1", "/tmp/ws", "claude");
+    old.systemTurnInProgress = true;
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+    const destroy = cm.destroyAgentContainer.bind(cm);
+    (cm as unknown as { destroyAgentContainer: (id: string) => Promise<void> }).destroyAgentContainer =
+      async (id: string) => {
+        // The chat path resolves the socket's attached runner while the registry is empty.
+        expect(registry.get("rescue-1")).toBeUndefined();
+        old.enqueue({ text: "sent in the gap", execution: "interactive" });
+        await destroy(id);
+      };
+
+    await restartAgent(
+      { sessionManager, containerManager: cm, runnerRegistry: registry, defaultAgentId: "claude" as never },
+      "rescue-1",
+      { carryQueue: true },
+    );
+
+    expect(registry.get("rescue-1")!.messageQueue.map((m) => m.text)).toEqual(["sent in the gap"]);
+  });
+
+  it("the Restart agent container button, which does not ask, still drops the queue", async () => {
+    const registry = new SessionRunnerRegistry();
+    const old = registry.getOrCreate("rescue-1", "/tmp/ws", "claude");
+    const counts = queueTwo(old);
+
+    const result = await restartAgent(
+      {
+        sessionManager,
+        containerManager: makeStubContainerManager({ hasExisting: true, finalState: "running" }),
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+    );
+
+    expect(counts.dropped).toBe(1);
+    expect(registry.get("rescue-1")!.queueLength).toBe(0);
+    expect(registry.get("rescue-1")!.systemTurnInProgress).toBe(false);
+    expect(result.held).toBeUndefined();
   });
 });

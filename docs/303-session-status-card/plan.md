@@ -63,8 +63,9 @@ toggle therefore applies from the next turn on every harness.
 
 **Re-enable (req 23).** A save hook for the key (`services/settings.ts`,
 `SAVE_HOOKS`, the `advanced.autoFixCi` pattern) runs on false → true: every
-stored card is marked stale and `session_list` is broadcast, so the earlier
-card reappears at once, marked, and the next turn refreshes it. Off hides the
+stored card is marked stale, and each write reaches that session's open viewers
+(`session_details`, below), so the earlier card reappears at once, marked, and the
+next turn refreshes it. Off hides the
 card and changes nothing stored.
 
 **Prompt.** Two variants of the system prompt, both rendered once at module
@@ -76,7 +77,7 @@ load and picked per turn by the flag — the prompt-cache contract of the
 | Piece | Precedent |
 |---|---|
 | Agent tool `session_status` | `propose_actions` (`src/server/session/mcp-tools/propose-actions.ts`), which it stands in for while the flag is on |
-| Session-record column, broadcast with `session_list` | `agent_goal` (docs/154, `services/agent-goal.ts`) |
+| Session-record column, sent on the session's own socket (`session_details`) | `agent_goal` (docs/154, `services/agent-goal.ts`) |
 | Last element of the scrolling conversation | the trailing rewind point at the end of the `contentRef` element in `src/client/components/MessageList/MessageList.tsx` |
 | Standing text in a turn's prompt | the `agentPrefix` notices (`ws-handlers/agent-execution.ts`, `dispatched-turn.ts`) |
 
@@ -93,8 +94,8 @@ Nothing enters the transcript at all, so none of the persisted-card machinery
 |---|---|---|
 | `lastTurn` | optional, plain prose, ≤ 400 chars; **not a delta** — an accepted call that omits it CLEARS the stored line (req 31) | One or two sentences on what the agent did in the turn that is ending, or the direct answer when the user asked something. |
 | `status` | optional, markdown, ≤ 1200 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
-| `needsYou` | optional repeated field: a list of strings, each ≤ 240 chars, at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
-| `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the rule is `requireOfferDescriptions` (`shared/session-status-offers.ts`), applied by the tool and by the route on the validated items rather than by the shared item validator, which serves both tools | Agent work the user approves with a click. |
+| `needsYou` | optional repeated field: a list of strings, each ≤ 1000 chars (req 45), at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
+| `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars), `description` ≤ 1000 chars (req 45) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the rule is `requireOfferDescriptions` (`shared/session-status-offers.ts`), applied by the tool and by the route on the validated items rather than by the shared item validator, which serves both tools | Agent work the user approves with a click. |
 | `replaceActions` | optional boolean, default false | `false`: add the given items to the offered list. `true`: the given list becomes the offered list; an empty list clears it. |
 
 An empty `actions` is valid only with `replaceActions: true`. There is no
@@ -138,7 +139,7 @@ in `agent-ops-routes.ts`) → orchestrator
 `POST /api/sessions/:sessionId/session-status` (`containerAccessible: true`,
 `api-routes-session-status.ts`). The route validates, captures `branch` and
 `headSha` for the offers it creates (as `api-routes-propose-actions.ts` does),
-persists, broadcasts, sets the turn's `statusUpdated`, and answers with one
+persists (which sends the card to the open viewers), sets the turn's `statusUpdated`, and answers with one
 line saying the card is on screen, followed by the offered list with each
 item's taken state, so the agent can keep or replace offers knowingly. It reads
 `runner.turnEpoch` before the provenance and persist awaits and sets
@@ -166,11 +167,29 @@ while it is on, so neither card can be written from the other side of a toggle.
   ifWriteSeq)` (no-op when `writeSeq` moved), `takeOfferedActions(sessionId,
   offerIds)` (stamps `takenAt`; an unknown `offerId` marks nothing). Each runs
   inside `runStatusExclusive`, the `runGoalExclusive` chain copied from
-  `agent-goal.ts:31`, and broadcasts `session_list` when something shown
-  changed.
+  `agent-goal.ts:31`.
 
-Because the value rides `SessionInfo`, every viewer, a reload, a switch and
-an orchestrator restart show the same card with no extra request.
+**Delivery.** The card is NOT on the session lists (`SessionListRow`): every tab
+receives `session_list` again on each change, and a card with a few offers is
+3–8 KB per row, 85–93% of the frame. Measured with realistic rows: 50 sidebar
+sessions with one-offer cards made a 188 KB frame, 27 KB without the cards. Only
+the open session's viewer reads it, so it travels on that session's WebSocket as
+`session_details` (`{ sessionId, sessionStatus, agentGoal }`, the goal of docs/154
+with it): `route-registry.ts` sends it when the session activates — after the
+runner's attach frames, because clients (the integration tests above all) read the
+first frame on connect as the runner being ready, and also on the failed-restore
+and archived paths, which attach no runner, so a lost workspace does not hide the
+card — and again each
+time `SessionManager.setSessionStatus`, `setAgentGoal` or `clearAgentSessionId`
+reports a write through `onDetailsChanged` for the connection's active session.
+Each send reads the record when it is sent, on one socket, so the last frame to
+arrive is the newest; the attach send and the change sends cannot reorder the way
+two channels could. The client keeps the details by session id
+(`sessionDetails` in `session-store.ts`) and drops them on a switch, so a session
+never shows a copy left from an earlier visit. Every viewer, a reload, a switch
+and an orchestrator restart still show the same card with no extra request. A
+session that is not on the sidebar list (archived, or an older done one) now shows
+its card too; while the card rode the list rows, it had none.
 
 **Lifecycle.**
 
@@ -179,13 +198,11 @@ an orchestrator restart show the same card with no extra request.
   rewind the card may describe work that is gone; "Stale" says so. The mark
   lives inside `SessionManager.clearAgentSessionId`, beside the goal's clear,
   because that one method is what every reset and rewind reaches — nine call
-  sites, of which a shared helper would only be remembered by some. It returns
-  whether the card changed, and `clearConversationThread`
-  (`services/session-status.ts`) pairs that with the `session_list` broadcast,
-  so a viewer cannot keep a card that reads current. The two recovery paths that
-  discard a thread — `recoverMissingConversation` and the credential-repair
-  `onRecover` — go through it too; `SessionAgentEnvDeps` gained an optional
-  `sseBroadcast` for the second.
+  sites, of which a shared helper would only be remembered by some. The write
+  reaches the open viewers like any other, so a viewer cannot keep a card that
+  reads current. The two recovery paths that discard a thread —
+  `recoverMissingConversation` and the credential-repair `onRecover` — go
+  through `clearConversationThread` (`services/session-status.ts`) too.
 - Fork (`forkSession`, `session-fork-merge.ts`): copy the parent's card,
   marked stale. It is the fork's starting point.
 - Archive: the row keeps the column; restore brings the card back.
@@ -241,6 +258,15 @@ four turns: one that wrote the card; one that ended with a question card or a pl
 approve (`awaitingAnswer`, req 13); one that crashed; and one the harness answered by
 compacting (`harnessCommand`, req 36).
 
+A turn that only answers a question (req 46) is none of the four, on purpose: it is
+told in the prompt that it needs no call (`prompts/session-status.md` and both card
+texts), and it settles as a miss — stale, and asked about next turn. No code detects
+it. The prompt text is what fixes the answer that opus-5-5 otherwise never wrote
+(planning#617). The sentence is the last line of `status-card-reconcile.md`, the exact
+position that was benchmarked: it is part of what to do about the card, so the block
+still closes on that instruction (req 39). The `session_status` tool description names
+the same exception, so the tool does not contradict the prompt.
+
 "Crashed" is `!receivedResult && !userStopped`, not `!receivedResult`. `wasInterrupted`
 latches on the Stop button and on `killAgent` and a crash does not, so it is what
 separates a turn the user ended — which did the session's work — from one that fell over.
@@ -270,7 +296,7 @@ gates dropped — 52% of them on production — are now asked about.
 recorded it and the process that would have delivered it, so it lives where the card
 does. `settleSessionStatusCard` is the one write a settling turn makes: it marks the
 card stale when the turn missed, records `nudgePending`, and bumps `turnSeq` — which is
-req 40's clock. It broadcasts only when the freshness the user reads changed, so the
+req 40's clock. Like every write, it reaches only that session's open viewers, so the
 per-turn write costs no SSE traffic. A turn that DID write says nothing about freshness or
 the ask — its own call settled both, and a successor may have written or missed in between
 — so it only counts itself; that is also why it cannot use the `ifWriteSeq` guard, which
@@ -957,11 +983,11 @@ Chrome's own choice of when a group paints. Four things were written and then
 short of the bottom only between a growth and the resize that corrects it, and
 those are the same frame), the layout effect's own bypass of a stale gesture and
 the settle loop's (the observer reaches both a frame later), and a `pinnedTopRef`
-reset at the switch that the same effect's pin immediately overwrites. Two
-existing cases in `useMessageScroll.test.tsx` advance the clock past the hold for
-a fixture reason rather than a behavioural one: their geometry is installed after
-mount, so the pin records a 0 that their own "scrolled away" position equals by
-accident.
+reset at the switch that the same effect's pin immediately overwrites. The
+cases in `useMessageScroll.test.tsx` that scroll away go to `SCROLLED_AWAY`
+(300), never 0, for a fixture reason rather than a behavioural one: their
+geometry is installed after mount, so the pin records a 0, and a scroll event at
+the position the hook wrote is its own echo (req 47, below).
 
 **And `session-open-scroll.test.tsx`'s own claim narrowed, which its preamble now
 says.** When the first fix shipped, removing the follow flag or either gesture
@@ -1012,6 +1038,34 @@ rather than assumed: traced per frame across a session switch, the card's bottom
 was at the scroller's bottom with no rows and unchanged when 40 rows landed, and
 a scroll to the top made in the gap was discarded, the session opening at the end
 of its conversation.
+
+### In view when the pull request merges (req 47)
+
+`MessageList` reads the displayed session's PR card phase and hands
+`useMessageScroll` a `prMerged` flag. A change from `false` to `true` takes the
+same path as a sent message: it clears the gesture state, re-arms auto-follow and
+pins to the end. Re-arming is what keeps the view there afterwards, because the
+composer's reset controls arrive with a later `reset_eligible` and shrink the
+scroller, and the observer only corrects that while auto-follow is on. A card
+that arrives already merged (`undefined` to `true`) does not count, and a session
+switch needs no rule of its own, since opening a session already lands at the
+end. A live text selection still stands it down, as for a sent message.
+
+The first version stopped short of the end in the real app, and the unit test
+could not see it. The browser reports a `scroll` event a frame after the write,
+and `handleScroll` read the position against the layout of THAT moment. When
+the reset controls land between the pin and the next frame (a separate task,
+so React does not batch them with the phase change), the view is already
+shorter, so the pin's own position read as "scrolled away": auto-follow turned
+off, and the observer then declined to correct the shrink. Reproduced in the
+real app: the view stopped short by exactly the composer's growth. So
+`handleScroll` now ignores an event that reports the position the hook last
+wrote (`pinnedTopRef`) at every moment, not only while a session is opening. Any
+other position is the reader's and resets `pinnedTopRef`, so a reader who
+scrolls away and comes back to that exact position still re-arms auto-follow.
+Outside the open, a live gesture makes even the written position the reader's:
+browser scroll anchoring can move the view and a wheel can bring it back before
+the event, which then reports only the written position.
 
 ### A card that waits for an answer goes last (req 32)
 
@@ -1300,17 +1354,22 @@ whole of what req 35 asks the agent to reconcile.
   is absent for the same reason: the agent is being asked to reconcile the
   card's contents, and whether it currently reads stale changes none of them.
 - **The cap is 8000 characters** (`MAX_STATUS_CONTEXT_CHARS`), and **it falls on
-  the payloads, not on the offers**. The fixed part is already bounded by the
-  field limits the validator enforces — `status` 1200, ten `needsYou` entries of
-  240 — so only the offer list, which has no count limit (req 18), can grow. The
+  the payloads, not on the offers**. The fixed part is bounded by the field
+  limits the validator enforces — `status` 1200, ten `needsYou` entries of 1000
+  (req 45) — and the offer list, which has no count limit (req 18), is the part
+  that grows. Since req 45 the fixed part alone can pass 8000 on a worst-case
+  card; the block then lists no offers and forbids `replaceActions`, and runs
+  past the cap by what the steps hold, because steps are never dropped. The
   block is rendered at the fullest detail that fits: every payload, then none,
   then no descriptions either, and only when the ids and labels alone will not
   fit does the listing itself shrink. Dropping offers first would be the wrong
   order twice over — req 35 asks that the agent see *each* offer, and an offer it
   cannot see is exactly the one a `replaceActions` would silently drop. So
-  whenever the listing is anything less than complete the block says so and tells
-  the agent not to replace the list that turn: a large card costs reconciliation
-  power, never offers. **No field is ever truncated mid-value**: a half-printed
+  whenever the listing is anything less than complete the block says so and sends the
+  agent to `shipit session status` (req 48), which prints the card whole: before req 48
+  it told the agent not to replace the list that turn, which left a finished offer past
+  the cap visible and undroppable. A large card now costs a fetch before a replacement,
+  never offers. **No field is ever truncated mid-value**: a half-printed
   payload is one the agent would echo back as a changed offer, which silently
   re-creates the offer it meant to keep.
   A worst-case card therefore costs about 2k tokens a turn; a real one costs a
@@ -1389,6 +1448,95 @@ attempt that failed produced no result, and that message is the turn. What stops
 agent redoing finished work is the block, which now says the offer was already sent and
 what the last attempt wrote — so the record and the prompt agree again.
 
+## Fetching the card in full (req 48)
+
+The per-turn block withholds the payloads before it drops an offer, by design
+(req 35: an offer the agent cannot see is the one a replacement would silently
+drop) — so the usual shape past the cap is every offer listed and no payload
+printed, and only a card whose ids and labels alone will not fit loses offers from
+the listing too. `replaceActions` requires every kept offer to be repeated
+**byte-exactly** (req 17: `id` is a name, the server owns identity, so an offer
+whose payload differs by a byte arrives as a new untaken one). Those two correct
+decisions met and made a dead end: past the cap the agent could see
+a finished offer and had no call that removed it — the payloads it would have to
+repeat were the part not printed — and the notice sent it to `actions` *without*
+`replaceActions`, which is the one path that can only add. The card then filled
+with finished offers, reported by the agent it happened to:
+
+> Three done follow-ups still show on the card … I could not remove them,
+> because the card did not print the other offers in full.
+
+**The mechanism: a read of its own.** `shipit session status [--json]`, backed by
+`GET /api/sessions/:sessionId/session-status` (`containerAccessible: true`, the
+same path as the write, beside it in `api-routes-session-status.ts`), relayed by
+the worker as `GET /agent-ops/session/status`, rendered by
+`formatSessionStatusCardFull` (`services/session-status.ts`) — which shares
+`offerBlock` and `turnsAgo` with the block, so the fetched copy and the per-turn
+copy read the same and an offer can be copied from either.
+
+It is **uncapped and withholds nothing**: the status, the last-turn line, every
+manual step with its age, and every offer with its description, `defaultChecked`,
+payload, sent state and both ages. `--json` adds the same thing structured, with
+the ages as numbers (`turnsAgoCount`).
+
+**And it ends with the offers as a copyable JSON array** — exactly the `actions`
+items the tool takes, nothing server-owned beside them (`copyableOffer`). Found by
+the independent review, and the reason the readable listing is not enough on its
+own: `offerBlock` interpolates each value into a line of its own, so a payload
+holding a line like `  payload: …` is indistinguishable from the field boundary and
+two different offers can render **identically** — reproduced against the real
+formatter and the real validator. A replacement built from that re-creates the offer
+it meant to keep, which is the harm req 48 exists to remove, so the fetch tells the
+agent to copy from the JSON and not from the lines above it.
+
+The payload is therefore printed twice — once in the readable listing, once in the
+JSON — which doubles the biggest field. Kept on purpose: the readable listing is what
+the per-turn block looks like, so the fetched copy reads the same as the one the agent
+already knows, and the cost is a rarely-run deliberate read whose size the card bounds.
+Printing it only as JSON would save that, and would make the agent read escaped strings
+to decide which offer is finished.
+
+**It is a read.** The route writes nothing: no `writeSeq`, no `fresh`, no
+`nudgePending`, and it does **not** set the turn's `statusUpdated`, so fetching
+the card never answers the update the turn owes. It needs no runner either —
+unlike the write, whose 409 exists to pin the credit on a turn. Guarded by
+`integration_tests/session-status-route.test.ts` → "is a read".
+
+**Why not the three cheaper shapes.**
+
+- **Widening the `session_status` reply.** A bare call *is* the "nothing moved"
+  confirmation (req 14), and it is a write: it bumps `writeSeq`, marks the card
+  current and credits the turn. Reading through it would cost a write every time
+  and would mark the card current *before* the agent had reconciled it — and the
+  reconciliation needs the payloads *first*, so the read has to precede the
+  write it informs. The reply therefore keeps naming ids and labels only.
+- **Raising `MAX_STATUS_CONTEXT_CHARS`.** A card can grow past any cap, so this
+  moves the dead end rather than removing it, and it pays per turn in a cost that
+  accumulates down the conversation. The cap stays where it is.
+- **An id-based `removeActions: ["id"]`.** It would remove the symptom by routing
+  around req 17's identity rule, and req 48 asks for the fetch. Left as a question
+  for the user rather than shipped beside it.
+
+**`lastTurn` is in the fetch and absent from the block.** The block omits it
+because showing the previous turn's line invites carrying it forward, which req 31
+rules out; the fetch is a deliberate read of the whole stored card, and its label
+("not a delta: your next call rewrites this line or clears it") turns the same
+risk into the reminder.
+
+**What the fetch cannot carry: a manual step's reported state.** Nothing stores it
+— a tick and a note ride one message and are gone (the req 37 and req 44
+receipts), and the record of a tick is per-browser React state in
+`SessionStatusCard.tsx`. So the fetch lists the steps as the agent wrote them,
+with their ages, exactly as the block does; a step the user has done is learned
+from the submit message, as before. The fetch claims nothing about it.
+
+**The notice at the cap now names the way out** rather than forbidding the only
+call that could tidy the card: `REPLACE_UNSAFE` sends the agent to
+`shipit session status`, still refusing a replacement composed from the
+incomplete listing alone. `prompts/status-card-reconcile.md`, the injected
+`prompts/session-status.md`, the tool description and
+`src/server/shipit-docs/sessions.md` say the same thing in their own words.
+
 ## Tests
 
 Names below are the design's; where the build put a test somewhere else, the
@@ -1403,15 +1551,14 @@ built file is named in brackets. Every one of them exists.
   clear); `takeOfferedActions` with an unknown id marks nothing; `writeSeq`
   moves only on agent writes; `settleSessionStatusCard` with an old `writeSeq`
   touches nothing, counts a turn that wrote as well as one that missed,
-  broadcasts only when the freshness the user reads moved, and is cleared by the
-  next call; writes serialize per session; `lastTurn` rewritten by each write and
+  and is cleared by the next call; writes serialize per session; `lastTurn` rewritten by each write and
   dropped by one that omits it, the bare confirmation included (req 31); the ask
   decision table on a snapshot (each "no" condition; plain turn → ask); the block
   closing with the instruction (req 39), carrying the miss notice only while one
   is outstanding, and printing each step's and each offer's age, with an entry
   stored before req 40 saying it has none.
 - `api-routes-session-status.test.ts`
-  [`integration_tests/session-status-route.test.ts`] — validate → persist → broadcast →
+  [`integration_tests/session-status-route.test.ts`] — validate → persist →
   `statusUpdated`; a bare call with a stored card → current, `writeSeq`
   moved, nothing else changed; a bare call with no stored card → 400
   naming `status`; 409 without a runner; the reply lists offers; the last-turn
@@ -1420,6 +1567,16 @@ built file is named in brackets. Every one of them exists.
 - `api-routes-propose-actions.test.ts`
   [`integration_tests/propose-actions-route.test.ts`] — 409 under the flag;
   unchanged otherwise.
+- Delivery — `sessions.test.ts`: list rows leave out the card, the goal, the
+  replay and the notice, and equal `toListRow` of the full session;
+  `onDetailsChanged` names the session on each card write, shown goal change and
+  conversation clear, and survives a throwing listener.
+  `integration_tests/sse-snapshot.test.ts`: the card and the goal are not on the
+  `session_list` frame, and reach the open session's socket at attach and on each
+  change, and only its own. Client: `session-details.test.ts` (kept by session
+  id, dropped on a switch), `session-rows.test.ts` and `useServerEvents.test.ts`
+  (unchanged rows keep their objects), `MessageList.test.tsx` (another session's
+  card is not shown).
 - `prepared-dispatch.test.ts`, `queue-drain.test.ts` — `silent` survives
   `toQueuedMessage` → `queuedMessageToDispatchOptions`.
 - `integration_tests/dispatched-turn-race.test.ts` — a dispatched turn retires a
@@ -1572,20 +1729,22 @@ tests.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts`, `src/server/orchestrator/dispatched-turn.ts` — resident reuse check against the flag, one helper for both.
 - `src/server/orchestrator/resident-spawn-guard.ts` — `releaseResidentOnStatusCardChange` and the per-process record of the value it was spawned with.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
-- `src/server/orchestrator/api-routes-session-status.ts` — the route; `api-routes-propose-actions.ts` — refuses under the flag.
+- `src/server/orchestrator/api-routes-session-status.ts` — the write route and the req 48 read beside it; `api-routes-propose-actions.ts` — refuses under the flag.
+- `src/server/session/agent-shim/shipit-session.ts` (`handleSessionStatus`), `agent-shim/shipit.ts` — `shipit session status`, the agent's fetch (req 48).
 - `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope; shared `validateActionItems`.
-- `src/server/orchestrator/services/session-status.ts` — record, settle, take, the block (`formatSessionStatusContext`), `shouldCarryStatusNudge`, the seq bookkeeping behind req 40.
+- `src/server/orchestrator/services/session-status.ts` — record, settle, take, the block (`formatSessionStatusContext`), the uncapped fetch rendering (`formatSessionStatusCardFull`, req 48), `shouldCarryStatusNudge`, the seq bookkeeping behind req 40.
 - `src/server/orchestrator/prompts/status-card-reconcile.md`, `status-card-missed.md`, `status-card-absent.md` — the block's three pieces of prose.
 - `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts` and the one card write it makes; `harnessCommand` and `statusContext` on `TurnInput`, the latter swapped for the current rendering on every attempt.
 - `src/server/orchestrator/turn-accumulator.ts` — `statusUpdated` and `awaitingUserAnswer`; `ws-handlers/agent-listeners.ts` sets the second from the turn's tool blocks.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — acceptance after admission.
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
+- `src/server/orchestrator/route-registry.ts` (`sendSessionDetails`), `SessionManager.onDetailsChanged`, `SessionListRow` / `toListRow`, `src/client/hooks/message-handlers/session-details.ts`, `sessionDetails` in `src/client/stores/session-store.ts` — Delivery: the card on the open session's socket, off the session lists.
 - `src/server/orchestrator/prompts/skeleton.md` (the `{{FOLLOW_UP_ACTIONS}}` slot), `prompts/propose-actions.md`, `prompts/session-status.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
 - `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx`, `src/client/components/message-markdown.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation, and the markdown every field renders through.
 - `src/client/utils/local-storage.ts` — `getSavedStatusCardCollapsed` / `saveStatusCardCollapsed`, the per-session collapsed state (req 42).
 - `src/client/components/MessageList/pending-answer.ts` — which elements render a card the user answers, and which one the conversation ends with (req 32).
-- `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595).
+- `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595) and re-armed when its PR merges (req 47).
 
 ## Rejected alternatives
 
@@ -1603,6 +1762,13 @@ tests.
 - **An `idle` listener for the decision** — `idle` fires twice on the
   streaming path and once from worker reconciliation with no turn behind it.
 - **An alias for `propose_actions` under the flag** — see "Evolving".
+- **The card on every session list row** — what shipped first. Every tab got every
+  sidebar session's card again on each `session_list`, two or more times per turn of
+  any session. See "Delivery".
+- **Change notices over SSE, the first value on the socket** — two channels have no
+  shared order, so an attach-time read could land after a newer notice and show an
+  older card. One socket carries both.
+- **A second MCP tool for the req 48 fetch** — a tool's schema rides every turn on every harness and would need the five adapter tool lists and the two Claude allowlists the setting already threads through, for a read the agent needs rarely. The shim subcommand costs nothing per turn and is reached identically from every harness.
 - **Opacity, colored rails, state words in a header, a transcript notice**
   for freshness — the label in the corner is what the user chose.
 

@@ -5,13 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import type Docker from "dockerode";
 
-const { installEgressFirewall, buildTierAEgressInputs } = vi.hoisted(() => ({
+const { installEgressFirewall, buildTierAEgressInputs, launchEgressResolver } = vi.hoisted(() => ({
   installEgressFirewall: vi.fn(async () => {}),
   buildTierAEgressInputs: vi.fn(async () => ({ hosts: [], cidrs: [] })),
+  launchEgressResolver: vi.fn(async (_docker: unknown, _opts: { configB64: string }) => "resolver-id"),
 }));
 vi.mock("./egress-firewall-install.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, installEgressFirewall, buildTierAEgressInputs };
+});
+vi.mock("./egress-dns-install.js", async (importActual) => {
+  const actual = (await importActual()) as Record<string, unknown>;
+  return { ...actual, launchEgressResolver };
 });
 
 import { createContainer, type LifecycleDeps } from "./container-lifecycle.js";
@@ -147,5 +152,59 @@ describe("createContainer — the applied egress exclusion it records", () => {
     );
 
     expect(sc.egressUserHostsExcluded).toBe(false);
+  });
+});
+
+describe("createContainer — the agent's resolver", () => {
+  it("lets a contained agent look up its session's Compose services by name", async () => {
+    launchEgressResolver.mockClear();
+    await createWith(
+      { contained: true, extraHosts: [] },
+      { egressEnforce: true, egressSidecarImage: "shipit-egress-sidecar:test", egressDns: true } as Partial<LifecycleDeps>,
+    );
+    expect(launchEgressResolver).toHaveBeenCalledTimes(1);
+    const config = Buffer.from(launchEgressResolver.mock.calls[0]![1].configB64, "base64").toString("utf-8");
+    expect(config.split("\n")).toContain("server=//127.0.0.11");
+  });
+});
+
+/** docs/319 req 2 — the local block reaches the agent in open mode too. */
+describe("createContainer — the local block in open mode", () => {
+  const blockDeps = {
+    egressEnforce: true,
+    egressSidecarImage: "shipit-egress-sidecar:test",
+    localBlock: true,
+    hostAddresses: async () => ["203.0.113.7"],
+    orchestratorTcp: async () => [{ subnet: "172.20.0.0/16", port: 4123 }],
+  } as Partial<LifecycleDeps>;
+
+  it("installs the open policy for an open session, with the host, orchestrator and SSH inputs", async () => {
+    const sc = await createWith(
+      { contained: false, extraHosts: [], sshTargets: [{ address: "10.0.0.5", port: 22 }] },
+      blockDeps,
+    );
+    expect(installEgressFirewall).toHaveBeenCalledTimes(1);
+    const calls = installEgressFirewall.mock.calls as unknown as [unknown, Record<string, unknown>][];
+    expect(calls[0]![1]).toMatchObject({
+      policy: "open",
+      inputs: { hosts: [], cidrs: [] },
+      hostAddresses: ["203.0.113.7"],
+      localTcp: [{ subnet: "172.20.0.0/16", port: 4123 }],
+      sshTargets: [{ address: "10.0.0.5", port: 22 }],
+      resolverUid: undefined,
+      proxyUid: undefined,
+    });
+    expect(sc).toMatchObject({ egressUserHostsExcluded: false });
+  });
+
+  it("installs the open policy when egress limits are off for the whole install", async () => {
+    await createWith({ contained: true, extraHosts: [] }, { ...blockDeps, egressEnforce: false });
+    const calls = installEgressFirewall.mock.calls as unknown as [unknown, Record<string, unknown>][];
+    expect(calls[0]![1]).toMatchObject({ policy: "open" });
+  });
+
+  it("installs nothing where the host cannot run the block and egress is open", async () => {
+    await createWith({ contained: false, extraHosts: [] }, { ...blockDeps, localBlock: false });
+    expect(installEgressFirewall).not.toHaveBeenCalled();
   });
 });

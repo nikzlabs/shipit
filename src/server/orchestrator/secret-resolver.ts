@@ -16,12 +16,19 @@ export interface SecretResolution {
   perServiceEnv: Record<string, string>;
   missingByService: Record<string, string[]>;
   missingRequiredByService: Record<string, string[]>;
+  refusedByService: Record<string, RefusedSecret[]>;
   declaredNames: string[];
   declared: DeclaredSecret[];
   agentEnv: string;
   agentValues: Record<string, string>;
   perServiceValues: Record<string, Record<string, string>>;
   platformSourceWarnings: PlatformSourceWarning[];
+}
+
+/** A stored value no environment variable can carry; it is reported as missing, never altered. */
+export interface RefusedSecret {
+  name: string;
+  reason: string;
 }
 
 export interface PlatformSourceWarning {
@@ -46,6 +53,7 @@ export function resolveSecrets(opts: {
   const perServiceValues: Record<string, Record<string, string>> = {};
   const missingByService: Record<string, string[]> = {};
   const missingRequiredByService: Record<string, string[]> = {};
+  const refusedByService: Record<string, RefusedSecret[]> = {};
   const declaredByName = new Map<string, DeclaredSecret>();
   const agentValues: Record<string, string> = {};
   const platformSourceWarnings: PlatformSourceWarning[] = [];
@@ -66,6 +74,7 @@ export function resolveSecrets(opts: {
     const present: { key: string; value: string }[] = [];
     const missing: string[] = [];
     const missingRequired: string[] = [];
+    const refused: RefusedSecret[] = [];
 
     for (const req of unique) {
       mergeDeclared(declaredByName, req, svc.name);
@@ -79,7 +88,9 @@ export function resolveSecrets(opts: {
         });
       }
       const value = resolveValue(req, userSecrets);
-      if (typeof value === "string" && value.length > 0) {
+      const refusal = value === undefined ? undefined : envValueRefusal(value);
+      if (refusal) refused.push({ name: req.name, reason: refusal });
+      if (value !== undefined && !refusal) {
         present.push({ key: req.name, value });
         if (req.agent && agentValues[req.name] === undefined) {
           agentValues[req.name] = value;
@@ -95,6 +106,9 @@ export function resolveSecrets(opts: {
     }
     if (missingRequired.length > 0) {
       missingRequiredByService[svc.name] = missingRequired;
+    }
+    if (refused.length > 0) {
+      refusedByService[svc.name] = refused;
     }
 
     perServiceEnv[svc.name] = renderEnvFile(present);
@@ -113,6 +127,7 @@ export function resolveSecrets(opts: {
     perServiceEnv,
     missingByService,
     missingRequiredByService,
+    refusedByService,
     declaredNames: declared.map((d) => d.name),
     declared,
     agentEnv,
@@ -225,12 +240,37 @@ function renderEnvFile(entries: { key: string; value: string }[]): string {
     "# session activation and on PUT /api/secrets.",
   ];
   for (const { key, value } of sorted) {
-    if (value.includes("\n") || value.includes("\r")) {
-      continue;
-    }
-    lines.push(`${key}=${value}`);
+    if (envValueRefusal(value)) continue;
+    lines.push(`${key}=${quoteEnvFileValue(value)}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+// Compose's env-file reader interpolates `$` and expands backslash escapes, even
+// inside double quotes; these escapes make it read back verbatim any value
+// envValueRefusal accepts (verified against Compose 5.5.1, planning#624).
+const ENV_FILE_ESCAPES: Record<string, string> = {
+  "\\": "\\\\",
+  '"': '\\"',
+  $: "$$",
+  "\n": "\\n",
+  "\r": "\\r",
+};
+
+function quoteEnvFileValue(value: string): string {
+  return `"${value.replace(/[\\"$\n\r]/g, (c) => ENV_FILE_ESCAPES[c])}"`;
+}
+
+/** Why an environment variable cannot carry `value`, or undefined when it can. */
+export function envValueRefusal(value: string): string | undefined {
+  if (value.includes("\0")) {
+    return "contains a NUL character, which an environment variable cannot hold";
+  }
+  // Writing it as UTF-8 would replace the unpaired half with U+FFFD.
+  if (/\p{Cs}/u.test(value)) {
+    return "is not valid Unicode text (it contains an unpaired surrogate)";
+  }
+  return undefined;
 }
 
 export function writeServiceEnvFilesToRoot(opts: {

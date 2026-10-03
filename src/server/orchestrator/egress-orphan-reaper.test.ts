@@ -5,6 +5,8 @@ import {
   isOrphanedSidecar,
   reapSessionEgressSidecars,
   reapOrphanEgressSidecars,
+  reapParentlessEgressSidecars,
+  EGRESS_PARENT_LABEL,
 } from "./egress-orphan-reaper.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
@@ -44,7 +46,7 @@ function fakeDocker(
           if (actual === undefined) return false;
           return value === undefined || actual === value;
         })
-        .map(([Id]) => ({ Id }));
+        .map(([Id, c]) => ({ Id, Labels: c.labels ?? {} }));
     }),
     getContainer: vi.fn((id: string) => ({
       inspect: vi.fn(async () => {
@@ -439,5 +441,62 @@ describe("reapOrphanEgressSidecars (boot crash-recovery sweep)", () => {
     } as unknown as Docker;
 
     await expect(reapOrphanEgressSidecars(docker)).resolves.toBe(0);
+  });
+});
+
+describe("reapParentlessEgressSidecars (sidecars whose parent was removed)", () => {
+  const serviceSidecar = (tier: "resolver" | "proxy", parent: string, sid = "s1"): FakeContainer => ({
+    labels: {
+      [tier === "resolver" ? EGRESS_RESOLVER_LABEL : EGRESS_PROXY_LABEL]: sid,
+      "shipit-parent-session": sid,
+      "shipit-egress-service-sidecar": "true",
+      [EGRESS_PARENT_LABEL]: parent,
+    },
+    networkMode: `container:${parent}`,
+    running: true,
+  });
+
+  it("removes the sidecar pair of a removed parent and keeps pairs whose parent still exists", async () => {
+    const { docker, removed } = fakeDocker({
+      "svc-live": agent(true),
+      "svc-stopped": agent(false),
+      "res-gone": serviceSidecar("resolver", "svc-gone"),
+      "prx-gone": serviceSidecar("proxy", "svc-gone"),
+      "res-live": serviceSidecar("resolver", "svc-live"),
+      "prx-live": serviceSidecar("proxy", "svc-live"),
+      "res-stopped": serviceSidecar("resolver", "svc-stopped"),
+    });
+
+    expect(await reapParentlessEgressSidecars(docker)).toBe(2);
+    expect(removed.sort()).toEqual(["prx-gone", "res-gone"]);
+  });
+
+  it("considers only the named parents when parentIds is given", async () => {
+    const { docker, removed } = fakeDocker({
+      "res-a": serviceSidecar("resolver", "svc-a"),
+      "res-b": serviceSidecar("resolver", "svc-b"),
+    });
+
+    expect(await reapParentlessEgressSidecars(docker, { parentIds: ["svc-a"] })).toBe(1);
+    expect(removed).toEqual(["res-a"]);
+  });
+
+  it("keeps a container that carries the parent label but is not joined to that netns", async () => {
+    const { docker, removed } = fakeDocker({
+      forged: { labels: { [EGRESS_PARENT_LABEL]: "svc-gone" }, networkMode: "bridge", running: true },
+    });
+
+    expect(await reapParentlessEgressSidecars(docker)).toBe(0);
+    expect(removed).toEqual([]);
+  });
+
+  it("keeps the sidecars when Docker cannot say whether the parent exists", async () => {
+    const { docker, removed } = fakeDocker(
+      { "res-1": serviceSidecar("resolver", "svc-1") },
+      { inspectError: (id) => (id === "svc-1" ? Object.assign(new Error("daemon busy"), { statusCode: 500 }) : undefined) },
+    );
+
+    expect(await reapParentlessEgressSidecars(docker)).toBe(0);
+    expect(removed).toEqual([]);
   });
 });

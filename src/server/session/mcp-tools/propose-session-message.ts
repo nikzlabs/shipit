@@ -7,16 +7,19 @@ import {
 
 const TOOL_DESCRIPTION = [
   "Propose a message for a session you cannot address, as a card the user",
-  "approves with one click. `shipit session message` reaches only the sessions",
-  "YOU spawned; every other session on this host — the one that spawned the",
-  "prompt you are working from, a sibling, an unrelated session — is",
+  "approves with one click. You reach two kinds of session directly: the ones",
+  "you spawned (`shipit session message`) and the one that spawned you",
+  "(`shipit session report`). Every other session on this host — a sibling, one",
+  "further up the chain than your parent, an unrelated session — is",
   "unreachable, and this is the way to reach it. Use it when you have been",
   "asked to report a result back to a session you cannot message. ShipIt checks",
   "the session id when you call, so you find out now rather than the user",
   "finding out on the click. Approval delivers this one message and nothing",
-  "more: it starts a turn there, it grants you no further access, and you will",
-  "not hear back — put everything the reader needs in the message. A session",
-  "you spawned is NOT a target; message it directly.",
+  "more: it starts a turn there, it grants you no further access, and no reply",
+  "comes back to you — put everything the reader needs in the message. The user",
+  "can also decline the card. Either way ShipIt tells you what they did at the",
+  "start of your next turn, so do not ask them. Your own children and your",
+  "parent are refused as targets; reach them directly.",
 ].join(" ");
 
 const inputSchema = {
@@ -43,9 +46,9 @@ const inputSchema = {
 };
 
 const INSTRUCTIONS = [
-  "When you need to reach a session `shipit session message` cannot address —",
-  "the session that wrote the prompt you are working from, a sibling, any",
-  "session you did not spawn — propose the message with",
+  "When you need to reach a session you cannot address directly — not one you",
+  "spawned (`shipit session message`) nor the one that spawned you (`shipit",
+  "session report`), but a sibling or any other session — propose the message with",
   "`propose_session_message` instead of printing it in chat for the user to",
   "carry across. One click delivers it there. The message must be",
   "self-contained: the session that receives it has none of this conversation.",
@@ -85,16 +88,19 @@ export const proposeSessionMessageTool: ToolDescriptor = {
           isError: true,
         };
       }
-      const target = body.targetTitle ?? pre.sessionId;
+      // Another session's agent can rename it, so its title is quoted data here.
+      const target = body.targetTitle
+        ? `"${body.targetTitle.replace(/\s+/g, " ").replace(/["[\]]/g, "").trim().slice(0, 200)}"`
+        : pre.sessionId;
       return {
         content: [
           {
             type: "text",
             text:
               `Posted a card proposing a message to ${target}. `
-              + "The user approves it with one click, and it is delivered once — you will not hear "
-              + "back, and you cannot send another without proposing another card. Do not repeat the "
-              + "message in prose; end your turn.",
+              + "The user sends or declines it from the card, and ShipIt tells you which at the start "
+              + "of your next turn. It is delivered once — no reply comes back to you, and you cannot "
+              + "send another without proposing another card. Do not repeat the message in prose.",
           },
         ],
       };

@@ -1,0 +1,251 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ABANDONED_DRAFT_RECLAIM_AFTER_MS, createIdleEnforcer, DONE_SESSION_RECLAIM_AFTER_MS } from "./idle-enforcer.js";
+import type { IdleServiceHooks } from "./idle-enforcer.js";
+import type { SessionContainerManager } from "./session-container.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionManager } from "./sessions.js";
+import type { DockerMemoryStats, SessionInfo } from "../shared/types.js";
+
+const ID = "22222222-2222-4222-8222-222222222222";
+
+const WAIT = DONE_SESSION_RECLAIM_AFTER_MS;
+
+function session(overrides: Partial<SessionInfo> = {}): SessionInfo {
+  const resolved = new Date(Date.now() - 60_000).toISOString();
+  return {
+    id: ID,
+    title: "Done",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    lastUsedAt: "2026-09-01T00:00:00.000Z",
+    remoteUrl: "https://github.com/o/r",
+    mergedAt: resolved,
+    ...overrides,
+  };
+}
+
+// Below budget: nothing here is reclaimed for memory.
+const underBudget: DockerMemoryStats = { usedBytes: 10, totalBytes: 100, budgetBytes: 100, bySession: {} };
+
+type FakeRunner = Partial<SessionRunnerInterface>;
+
+function harness(
+  sessions: SessionInfo[],
+  runner?: FakeRunner | (() => FakeRunner | undefined),
+  opts: { poolWarm?: string[]; standby?: boolean; declineDispose?: boolean; noContainer?: boolean } = {},
+) {
+  const current = () => (typeof runner === "function" ? runner() : runner);
+  const destroy = vi.fn().mockResolvedValue(undefined);
+  const stopServices = vi.fn();
+  const dispose = vi.fn(() => {
+    const r = current();
+    if (r && !opts.declineDispose) (r as { disposed: boolean }).disposed = true;
+  });
+  const containerManager = {
+    get: (id: string) => (id === ID && !opts.noContainer ? { sessionId: ID } : undefined),
+    getAll: () => [{ sessionId: ID }],
+    isStandby: () => opts.standby ?? false,
+    destroy,
+    destroyAgentContainer: vi.fn().mockResolvedValue(undefined),
+  } as unknown as SessionContainerManager;
+  const services: IdleServiceHooks = { liveSessions: () => [ID], has: (id) => id === ID, stop: stopServices };
+  // The real queries split on the warm column: listAll() never returns a draft.
+  const sessionManager = {
+    listAll: () => sessions.filter((s) => !s.warm),
+    listWarm: () => sessions.filter((s) => s.warm),
+    get: (id: string) => sessions.find((s) => s.id === id),
+  } as unknown as SessionManager;
+  const runnerRegistry = {
+    get: (id: string) => (id === ID ? current() : undefined),
+    dispose,
+  } as unknown as SessionRunnerRegistry;
+  const enforce = createIdleEnforcer({
+    containerManager, runnerRegistry, sessionManager, services, getMemoryStats: () => underBudget,
+    poolWarmSessionIds: () => new Set(opts.poolWarm ?? []),
+  });
+  return { enforce, destroy, stopServices, dispose };
+}
+
+describe("docs/316-done-sessions-return-memory — done sessions return their memory", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-24T12:00:00.000Z")); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function afterWait(enforce: () => void): void {
+    enforce();
+    vi.advanceTimersByTime(WAIT);
+    enforce();
+  }
+
+  it("stops the container and the whole stack of a done session below the budget (reqs 3, 6)", () => {
+    const { enforce, destroy, stopServices } = harness([session()]);
+    afterWait(enforce);
+    expect(stopServices).toHaveBeenCalledWith(ID);
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("waits 10 minutes after the session becomes done (reqs 4, 9)", () => {
+    const { enforce, destroy } = harness([session()]);
+    enforce();
+    vi.advanceTimersByTime(WAIT - 1_000);
+    enforce();
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("starts the wait when the session becomes done, not when its PR resolved (req 4)", () => {
+    const sessions = [session({ mergedAt: "2026-09-01T00:00:00.000Z", pinnedAt: "2026-09-01T00:00:00.000Z" })];
+    const { enforce, destroy } = harness(sessions);
+    enforce();
+    delete sessions[0].pinnedAt;
+    enforce();
+    expect(destroy).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(WAIT);
+    enforce();
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("leaves a session the user continued after the merge (req 5)", () => {
+    const { enforce, destroy } = harness([session({ lastUsedAt: new Date().toISOString() })]);
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves a session with Keep preview running set (req 7)", () => {
+    const { enforce, destroy, stopServices } = harness([session({ keepPreviewRunning: true })]);
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+    expect(stopServices).not.toHaveBeenCalled();
+  });
+
+  it("stops a done session the user has open, 10 minutes after it became done (req 8)", () => {
+    const runner = { viewerCount: 1, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    const { enforce, destroy, dispose } = harness([session()], runner);
+    enforce();
+    vi.advanceTimersByTime(WAIT - 60_000);
+    runner.lastViewerDetachAt = Date.now();
+    enforce();
+    expect(destroy).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60_000);
+    enforce();
+    expect(dispose).toHaveBeenCalledWith(ID);
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("leaves an open session with memory below the budget when it is not done", () => {
+    const runner = { viewerCount: 1, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    const { enforce, destroy } = harness([session({ mergedAt: undefined })], runner);
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves a done session whose agent is busy", () => {
+    const runner = { viewerCount: 0, agentBusy: true, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    const { enforce, destroy } = harness([session()], runner);
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves a merged parent with an unfinished child", () => {
+    const child = session({ id: "child", parentSessionId: ID, rootSessionId: ID, mergedAt: undefined });
+    const { enforce, destroy } = harness([session(), child]);
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("stops a merged parent whose children are all merged", () => {
+    const child = session({ id: "child", parentSessionId: ID, rootSessionId: ID });
+    const { enforce, destroy } = harness([session(), child]);
+    afterWait(enforce);
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+});
+
+describe("abandoned warm drafts return their memory", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-27T12:00:00.000Z")); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const draft = (overrides: Partial<SessionInfo> = {}) =>
+    session({ title: "Warm session", warm: true, mergedAt: undefined, ...overrides });
+  const unviewed = () => ({ viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 });
+
+  function afterWait(enforce: () => void): void {
+    enforce();
+    vi.advanceTimersByTime(ABANDONED_DRAFT_RECLAIM_AFTER_MS);
+    enforce();
+  }
+
+  it("stops the standby and the whole stack of a draft no tab ever opened, below the budget", () => {
+    const { enforce, destroy, stopServices } = harness([draft()], undefined, { standby: true });
+    afterWait(enforce);
+    expect(stopServices).toHaveBeenCalledWith(ID);
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("waits 10 minutes before it stops a draft", () => {
+    const { enforce, destroy } = harness([draft()]);
+    enforce();
+    vi.advanceTimersByTime(ABANDONED_DRAFT_RECLAIM_AFTER_MS - 1_000);
+    enforce();
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("stops a draft the user opened and then left", () => {
+    const runner = unviewed();
+    const { enforce, destroy, dispose } = harness([draft()], runner);
+    afterWait(enforce);
+    expect(dispose).toHaveBeenCalledWith(ID);
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("restarts the wait when the user looks at the draft between two passes", () => {
+    const runner = unviewed();
+    const { enforce, destroy } = harness([draft()], runner);
+    enforce();
+    vi.advanceTimersByTime(ABANDONED_DRAFT_RECLAIM_AFTER_MS - 60_000);
+    runner.lastViewerDetachAt = Date.now();
+    vi.advanceTimersByTime(60_000);
+    enforce();
+    expect(destroy).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(ABANDONED_DRAFT_RECLAIM_AFTER_MS);
+    enforce();
+    expect(destroy).toHaveBeenCalledWith(ID);
+  });
+
+  it("leaves the repo's pool warm session", () => {
+    const { enforce, destroy, stopServices } = harness([draft()], undefined, { poolWarm: [ID], standby: true });
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+    expect(stopServices).not.toHaveBeenCalled();
+  });
+
+  it("leaves a draft the user has open", () => {
+    const { enforce, destroy } = harness([draft()], { ...unviewed(), viewerCount: 1 });
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves a draft whose agent is busy", () => {
+    const { enforce, destroy } = harness([draft()], { ...unviewed(), agentBusy: true });
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves the container and stack of a draft whose runner declines disposal", () => {
+    const { enforce, dispose, destroy, stopServices } = harness([draft()], unviewed(), { declineDispose: true });
+    afterWait(enforce);
+    expect(dispose).toHaveBeenCalledWith(ID);
+    expect(destroy).not.toHaveBeenCalled();
+    expect(stopServices).not.toHaveBeenCalled();
+  });
+
+  it("stops the stack of a draft whose agent container is already gone", () => {
+    const { enforce, destroy, stopServices } = harness([draft()], undefined, { noContainer: true });
+    afterWait(enforce);
+    expect(stopServices).toHaveBeenCalledWith(ID);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves an idle session after its first message while memory is below the budget", () => {
+    const { enforce, destroy } = harness([draft({ warm: false })], unviewed());
+    afterWait(enforce);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+});

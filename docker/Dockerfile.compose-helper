@@ -1,0 +1,20 @@
+# Runs the Compose commands that read a session's project files, confined to that session
+# (docs/318-compose-remaining-escapes, Mechanism 1). A symlink in a project can reach this image's
+# own files, so it holds nothing of ShipIt's and stays as small as practical (requirements Q10).
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS keyring
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /docker.gpg
+
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+COPY --from=keyring /docker.gpg /etc/apt/keyrings/docker.gpg
+# The Docker packages and flags of docker/Dockerfile.prod, so Compose builds as it does there; all
+# three files pin the same Compose version (docker-build-cache.test.ts).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin=5.5.1-1~debian.12~bookworm \
+    && rm -rf /var/lib/apt/lists/*
+
+# `config` runs as the session's uid with the orchestrator's HOME (/root); a traversable /root lets
+# the CLI find no config file there instead of warning that it cannot open one.
+RUN chmod 0755 /root

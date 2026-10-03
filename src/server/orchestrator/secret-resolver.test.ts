@@ -1,7 +1,9 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   resolveSecrets,
   collectMcpAgentEnv,
@@ -106,9 +108,19 @@ describe("collectMcpAgentEnv (docs/088)", () => {
 describe("renderAgentEnvBody (docs/088)", () => {
   it("renders sorted KEY=VALUE lines and a ShipIt header", () => {
     const body = renderAgentEnvBody({ B_KEY: "2", A_KEY: "1" });
-    expect(body).toContain("A_KEY=1");
-    expect(body).toContain("B_KEY=2");
+    expect(body).toContain('A_KEY="1"');
+    expect(body).toContain('B_KEY="2"');
     expect(body.indexOf("A_KEY")).toBeLessThan(body.indexOf("B_KEY"));
+  });
+
+  it("quotes values the same way as a service env file (planning#624)", () => {
+    expect(renderAgentEnvBody({ K: 'sv-$x-1 "q" \\' })).toContain('K="sv-$$x-1 \\"q\\" \\\\"\n');
+  });
+
+  it("leaves out a value no environment variable can carry, instead of altering it", () => {
+    const body = renderAgentEnvBody({ NUL: "a\0b", OK: "v" });
+    expect(body).not.toContain("NUL=");
+    expect(body).toContain('OK="v"');
   });
 
   it("returns an empty string for an empty map", () => {
@@ -136,7 +148,7 @@ describe("resolveSecrets", () => {
       services,
       userSecrets: { STRIPE_KEY: "sk_test_123", UNUSED: "x" },
     });
-    expect(result.perServiceEnv.web).toContain("STRIPE_KEY=sk_test_123");
+    expect(result.perServiceEnv.web).toContain('STRIPE_KEY="sk_test_123"');
     expect(result.perServiceEnv.web).not.toContain("UNUSED");
     expect(result.declaredNames).toEqual(["STRIPE_KEY"]);
   });
@@ -195,7 +207,7 @@ describe("resolveSecrets", () => {
       userSecrets: { ZED: "z", ALPHA: "a", MIDDLE: "m" },
     });
     const lines = result.perServiceEnv.api.trim().split("\n").filter(l => !l.startsWith("#"));
-    expect(lines).toEqual(["ALPHA=a", "MIDDLE=m", "ZED=z"]);
+    expect(lines).toEqual(['ALPHA="a"', 'MIDDLE="m"', 'ZED="z"']);
   });
 
   it("de-duplicates within a service if the user repeats a name", () => {
@@ -210,15 +222,15 @@ describe("resolveSecrets", () => {
     expect(matches?.length).toBe(1);
   });
 
-  it("skips multi-line values (env_file format can't express them)", () => {
+  it("writes a multi-line value as one escaped line", () => {
     const services: ComposeService[] = [
       { name: "api", secrets: ["MULTILINE"] },
     ];
     const result = resolveSecrets({
       services,
-      userSecrets: { MULTILINE: "line1\nline2" },
+      userSecrets: { MULTILINE: "line1\nline2\r\n" },
     });
-    expect(result.perServiceEnv.api).not.toContain("MULTILINE=");
+    expect(result.perServiceEnv.api).toContain('MULTILINE="line1\\nline2\\r\\n"\n');
   });
 
   it("collects unique declared names across services", () => {
@@ -228,6 +240,295 @@ describe("resolveSecrets", () => {
     ];
     const result = resolveSecrets({ services, userSecrets: {} });
     expect(result.declaredNames).toEqual(["DATABASE_URL", "STRIPE_KEY"]);
+  });
+});
+
+// Values Compose's env-file reader would otherwise change (planning#624).
+const AWKWARD_VALUES: Record<string, string> = {
+  DOLLAR: "sv-$x-1",
+  BRACED: `$\{HOME_PROBE}-$$-$`,
+  QUOTES: `it's "quoted"`,
+  BACKSLASHES: "a\\b\\\\c\\n\\$x\\",
+  HASH: "a #not-a-comment#",
+  SPACES: "  lead and trail  ",
+  NEWLINES: "-----BEGIN KEY-----\nabc\n-----END KEY-----\n",
+  CARRIAGE: "a\rb\r\n",
+  QUOTED_START: "'single",
+  UNICODE: "é 中文 🚀 ﻿",
+};
+
+describe("service env file quoting (planning#624)", () => {
+  function envLine(name: string, value: string): string | undefined {
+    const { perServiceEnv } = resolveSecrets({
+      services: [{ name: "api", secrets: [name] }],
+      userSecrets: { [name]: value },
+    });
+    return perServiceEnv.api.split("\n").find((l) => l.startsWith(`${name}=`));
+  }
+
+  it.each([
+    ["sv-$x-1", '"sv-$$x-1"'],
+    [`$\{HOME}`, `"$$\{HOME}"`],
+    [`say "hi"`, '"say \\"hi\\""'],
+    ["a\\b\\", '"a\\\\b\\\\"'],
+    ["x #y", '"x #y"'],
+    ["  padded  ", '"  padded  "'],
+    ["a\nb\rc", '"a\\nb\\rc"'],
+    ["'single'", `"'single'"`],
+  ])("writes %j as %s", (value, written) => {
+    expect(envLine("K", value)).toBe(`K=${written}`);
+  });
+
+  it.each([
+    ["a NUL character", "a\0b", /NUL character/],
+    ["an unpaired surrogate", "a\ud800b", /unpaired surrogate/],
+  ])("refuses a value with %s rather than altering it", (_label, value, reason) => {
+    const result = resolveSecrets({
+      services: [{
+        name: "api",
+        secrets: ["BAD", "GOOD"],
+        secretRequirements: [{ name: "BAD", required: true, agent: true }, { name: "GOOD" }],
+      }],
+      userSecrets: { BAD: value, GOOD: "ok" },
+    });
+    expect(result.perServiceEnv.api).not.toContain("BAD=");
+    expect(result.perServiceEnv.api).toContain('GOOD="ok"');
+    expect(result.perServiceValues.api).toEqual({ GOOD: "ok" });
+    expect(result.agentValues).toEqual({});
+    expect(result.missingByService.api).toEqual(["BAD"]);
+    expect(result.missingRequiredByService.api).toEqual(["BAD"]);
+    expect(result.refusedByService.api).toEqual([{ name: "BAD", reason: expect.stringMatching(reason) }]);
+  });
+
+  it("accepts a value whose surrogates are paired", () => {
+    expect(envLine("K", "🚀")).toBe('K="🚀"');
+  });
+});
+
+function composeCommand(): string[] | undefined {
+  for (const cmd of [["docker", "compose"], ["docker-compose"]]) {
+    if (spawnSync(cmd[0], [...cmd.slice(1), "version"], { stdio: "ignore" }).status === 0) return cmd;
+  }
+  return undefined;
+}
+const compose = composeCommand();
+
+// The unit tests above pin the encoding; this checks it against Compose's own reader.
+describe.skipIf(!compose)("Compose reads a service env file back verbatim (planning#624)", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("delivers every awkward value unchanged", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-env-roundtrip-"));
+    const { perServiceEnv } = resolveSecrets({
+      services: [{ name: "svc", secrets: Object.keys(AWKWARD_VALUES) }],
+      userSecrets: AWKWARD_VALUES,
+    });
+    const envFile = path.join(tmpDir, ".env.svc");
+    fs.writeFileSync(envFile, perServiceEnv.svc);
+    const composeFile = path.join(tmpDir, "compose.yml");
+    fs.writeFileSync(composeFile, [
+      "services:",
+      "  svc:",
+      "    image: alpine",
+      `    env_file: [${JSON.stringify(envFile)}]`,
+      "    environment:",
+      '      CONTROL: "a$$b"',
+      "",
+    ].join("\n"));
+
+    const [bin, ...pre] = compose!;
+    const out = execFileSync(bin, [...pre, "-p", "roundtrip", "-f", composeFile, "config", "--format", "json"], {
+      // Referenced names are set, so any interpolation would show.
+      env: { ...process.env, x: "LEAKED", HOME_PROBE: "LEAKED" },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const environment = JSON.parse(out.toString("utf-8")).services.svc.environment as Record<string, string>;
+    // `config` writes each literal `$` as `$$`; CONTROL shows whether this version does.
+    const unescape = environment.CONTROL === "a$$b"
+      ? (v: string) => v.replaceAll("$$", "$")
+      : (v: string) => v;
+    expect(unescape(environment.CONTROL)).toBe("a$b");
+    for (const [name, value] of Object.entries(AWKWARD_VALUES)) {
+      expect(unescape(environment[name]), name).toBe(value);
+    }
+  });
+});
+
+const ENTRYPOINT = fileURLToPath(new URL("../../../docker/secrets-entrypoint.sh", import.meta.url));
+
+// Service images start the wrapper with whatever /bin/sh they ship; bash runs it in POSIX mode.
+const SHELLS = [["sh"], ["dash"], ["bash"], ["bash", "--posix"], ["busybox", "sh"]]
+  .filter(([bin, ...pre]) => spawnSync(bin, [...pre, "-c", "exit 0"], { stdio: "ignore" }).status === 0)
+  .map((shell) => [shell.join(" "), shell] as const);
+const CAT = execFileSync("sh", ["-c", "command -v cat"]).toString("utf-8").trim();
+
+// busybox can run its own cat applet without looking at PATH, so a cat placed
+// on PATH reaches only the other shells.
+const SHELLS_FINDING_CAT_ON_PATH = SHELLS.filter(([, shell]) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cat-lookup-"));
+  try {
+    fs.writeFileSync(path.join(dir, "cat"), "#!/bin/sh\nprintf stub\n", { mode: 0o755 });
+    const [bin, ...pre] = shell;
+    const result = spawnSync(bin, [...pre, "-c", "cat /dev/null"], { env: { PATH: `${dir}:${process.env.PATH}` } });
+    return result.stdout?.toString("utf-8") === "stub";
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Names a shell treats specially, plus every variable bash knows when it is installed.
+const SHELL_NAMES = [...new Set([
+  "PIPESTATUS", "SHLVL", "_", "UID", "PPID", "OPTIND", "IFS", "PS4", "LANG", "LC_ALL", "RANDOM", "SECONDS",
+  "LINENO", "PATH", "FUNCNEST", "EXECIGNORE", "GLOBIGNORE", "POSIXLY_CORRECT", "LD_PRELOAD",
+  ...(spawnSync("bash", ["-c", "compgen -v"], { env: { PATH: process.env.PATH } })
+    .stdout?.toString("utf-8").split("\n") ?? []),
+])].filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+
+describe("Docker-secrets mode delivers values verbatim (planning#625)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "secrets-entrypoint-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Stands in for Compose, which mounts each file at /run/secrets/shipit-<NAME>.
+  function mountSecrets(files: Record<string, string | Buffer>): { script: string; mountDir: string } {
+    const mountDir = fs.mkdtempSync(path.join(tmpDir, "run-secrets-"));
+    for (const [name, body] of Object.entries(files)) {
+      fs.writeFileSync(path.join(mountDir, `shipit-${name}`), body);
+    }
+    const source = fs.readFileSync(ENTRYPOINT, "utf-8");
+    expect(source).toContain("/run/secrets/shipit-");
+    const script = `${mountDir}.sh`;
+    fs.writeFileSync(script, source.replaceAll("/run/secrets", mountDir));
+    return { script, mountDir };
+  }
+
+  // The service's command writes out the environment it was started with.
+  function start(shell: readonly string[], script: string, envPath = process.env.PATH) {
+    const [bin, ...pre] = shell;
+    const result = spawnSync(bin, [...pre, script, CAT, "/proc/self/environ"], {
+      cwd: tmpDir,
+      env: { PATH: envPath },
+    });
+    const env = new Map<string, string>();
+    for (const entry of result.stdout.toString("utf-8").split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq > 0) env.set(entry.slice(0, eq), entry.slice(eq + 1));
+    }
+    return { status: result.status, stderr: result.stderr.toString("utf-8"), env };
+  }
+
+  const values: Record<string, string> = {
+    ...AWKWARD_VALUES,
+    TRAILING_NEWLINES: "value\n\n\n",
+    ONLY_NEWLINES: "\n\n",
+    TRAILING_DOT: "value.",
+    ONLY_DOT: ".",
+    SHELL_SYNTAX: "`id` $(id) $HOME \"$@\" * -n",
+    ENDS_IN_READ_MARKER: "x.0",
+    // The old wrapper's loop variable, which later iterations overwrote.
+    f: "not a path",
+    // Each of these, set before the other files are read, would stop the reads.
+    PATH: "/nonexistent-bin",
+    EXECIGNORE: "*cat*",
+    FUNCNEST: "1",
+    LC_ALL: "C",
+    zz_after_the_others: "z",
+  };
+
+  it.each(SHELLS)("%s exports every stored value unchanged", (_label, shell) => {
+    const { perServiceValues } = resolveSecrets({
+      services: [{ name: "svc", secrets: Object.keys(values) }],
+      userSecrets: values,
+    });
+    const { sessionDir, written } = writeIsolatedSecretFiles({
+      rootDir: path.join(tmpDir, "secrets"),
+      sessionId: "s1",
+      values: perServiceValues.svc,
+    });
+    expect(written).toEqual(Object.keys(values).sort());
+    const { script } = mountSecrets(Object.fromEntries(
+      written.map((name) => [name, fs.readFileSync(path.join(sessionDir, name))]),
+    ));
+    // A PATH entry that runs code if the wrapper ever puts it into eval, and a
+    // cat that fails if any secret is already set while it reads (busybox may
+    // use its own cat instead).
+    const trap = path.join(tmpDir, "bin$(touch pwned)");
+    fs.mkdirSync(trap);
+    fs.writeFileSync(path.join(trap, "cat"), [
+      "#!/bin/sh",
+      ...Object.keys(values).filter((name) => name !== "PATH").map((name) =>
+        `[ -z "\${${name}+x}" ] || { echo "cat saw secret ${name}" >&2; exit 1; }`),
+      `exec '${CAT}' "$@"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    const { status, stderr, env } = start(shell, script, `${trap}:${process.env.PATH}`);
+    expect(stderr).toBe("");
+    expect(status).toBe(0);
+    for (const [name, value] of Object.entries(values)) {
+      expect(env.get(name), name).toBe(value);
+    }
+    expect(fs.existsSync(path.join(tmpDir, "pwned"))).toBe(false);
+  });
+
+  it.each(SHELLS)("%s delivers each name a shell treats specially exactly, or stops with a reason", (_label, shell) => {
+    const wrong: string[] = [];
+    for (const name of SHELL_NAMES) {
+      const { script } = mountSecrets({ [name]: "v\n", AAAA: "a\n", zzzz: "z\n" });
+      const { status, stderr, env } = start(shell, script);
+      const exact = status === 0 && env.get(name) === "v\n" && env.get("AAAA") === "a\n" && env.get("zzzz") === "z\n";
+      const refused = status !== 0 && stderr.trim() !== "" && env.size === 0;
+      if (!exact && !refused) wrong.push(`${name}: status ${status}, got ${JSON.stringify(env.get(name))}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it.each(SHELLS)("%s stops the start for a file not named after an environment variable", (_label, shell) => {
+    const { script } = mountSecrets({ "A;touch pwned": "v" });
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("is not named after an environment variable");
+    expect(fs.existsSync(path.join(tmpDir, "pwned"))).toBe(false);
+  });
+
+  it.each(SHELLS)("%s stops the start when it finds no secret file", (_label, shell) => {
+    const { script } = mountSecrets({});
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("no secret file is readable");
+  });
+
+  it.each(SHELLS)("%s stops the start when a secret file cannot be read", (_label, shell) => {
+    const { script, mountDir } = mountSecrets({ AAAA: "a" });
+    fs.mkdirSync(path.join(mountDir, "shipit-K"));
+    const { status, stderr, env } = start(shell, script);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("secret K could not be read");
+  });
+
+  it.each(SHELLS_FINDING_CAT_ON_PATH)("%s does not take partial output from a failing cat for a read", (_label, shell) => {
+    const { script } = mountSecrets({ K: "v" });
+    // Its partial output even ends like a successful read.
+    const failing = path.join(tmpDir, "failing-bin");
+    fs.mkdirSync(failing);
+    fs.writeFileSync(path.join(failing, "cat"), "#!/bin/sh\nprintf 'partial.0'\nexit 1\n", { mode: 0o755 });
+    const { status, stderr, env } = start(shell, script, `${failing}:${process.env.PATH}`);
+    expect(status).not.toBe(0);
+    expect(env.size).toBe(0);
+    expect(stderr).toContain("secret K could not be read");
   });
 });
 
@@ -358,7 +659,7 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
       userSecrets: { DATABASE_URL: "postgres://u:p@db:5432/app", STRIPE_KEY: "sk_test" },
     });
     expect(result.agentValues).toEqual({ DATABASE_URL: "postgres://u:p@db:5432/app" });
-    expect(result.agentEnv).toContain("DATABASE_URL=postgres://u:p@db:5432/app");
+    expect(result.agentEnv).toContain('DATABASE_URL="postgres://u:p@db:5432/app"');
     expect(result.agentEnv).not.toContain("STRIPE_KEY");
   });
 
@@ -407,7 +708,7 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
     });
     expect(result.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
     const lines = result.agentEnv.trim().split("\n").filter((l) => !l.startsWith("#"));
-    expect(lines).toEqual(["DATABASE_URL=postgres://x"]);
+    expect(lines).toEqual(['DATABASE_URL="postgres://x"']);
   });
 });
 
@@ -488,7 +789,7 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
       services,
       userSecrets: { GITHUB_TOKEN: "ghp_user_supplied" },
     });
-    expect(result.perServiceEnv.orchestrator).toContain("GITHUB_TOKEN=ghp_user_supplied");
+    expect(result.perServiceEnv.orchestrator).toContain('GITHUB_TOKEN="ghp_user_supplied"');
     expect(result.missingByService).toEqual({});
   });
 
@@ -553,7 +854,7 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
       services,
       userSecrets: { GITHUB_TOKEN: "ghp_user_dedicated" },
     });
-    expect(withSecret.perServiceEnv.evil).toContain("GITHUB_TOKEN=ghp_user_dedicated");
+    expect(withSecret.perServiceEnv.evil).toContain('GITHUB_TOKEN="ghp_user_dedicated"');
   });
 
   it("still preserves the source field on the declared aggregate (parsed, not honored)", () => {

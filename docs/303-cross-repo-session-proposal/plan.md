@@ -115,6 +115,45 @@ Every state lands in persisted chat history, not only on the wire — `started` 
 terminal state a user expects to still be there tomorrow, which is the dividing
 line in `CLAUDE.md`'s transcript-persistence rule (req 9).
 
+## Declining, and telling the agent (reqs 10, 11)
+
+```
+user clicks "Decline"
+  → POST    /api/sessions/:sessionId/repo-session-proposals/:cardId/decline
+            refused while a start is in flight, or once started
+            patch state=declined + declinedAt   (emit + persist)
+
+next turn of the proposing session (any kind but compaction)
+  → prepareRepoSessionOutcomeNotice: cards whose state is started / failed /
+    declined and differs from agentNotifiedState
+  → "[ShipIt] Since your last turn, the user acted on a card you posted…"
+  → on the agent's result: agentNotifiedState = the state the notice carried
+```
+
+**Declined is terminal.** The start route refuses a declined card, and the card
+offers nothing more. A user who changes their mind asks the agent, which
+proposes again.
+
+**The notice follows the settings notice, not the bug-report one.** Both prefix
+the next turn and neither starts one: a click on a card is not a reason to wake
+an idle session. The bug-report notice is marked when the prompt is assembled,
+so a turn that never reaches the agent loses it; this one is marked through the
+turn's `NoticeDelivery` receipt, only once the agent produced a result for that
+prompt (the argument is in docs/299-agent-settings-access `plan.md`).
+
+**A failed start is reported too.** Req 11 says "starts or declines", and a user
+who clicked Start accepted the work whether or not the spawn succeeded. The
+notice says the start failed and that the card offers a retry. That is why the
+card records `agentNotifiedState` — the last state the agent heard — and not a
+flag: a retry that then starts the session is a second thing to tell. The mark
+writes the state the notice CARRIED, not the card's state at mark time, so a card
+that moved on during the turn is reported on the next one.
+
+**What reaches the agent in ShipIt's voice.** The repository label (built from
+the resolved identity), the started session's id, and fixed text. The title the
+agent wrote and a failure reason are quoted as data, flattened to one line, with
+their quote and bracket characters stripped. The prompt is never carried.
+
 ## Key files
 
 | File | Role |
@@ -122,7 +161,8 @@ line in `CLAUDE.md`'s transcript-persistence rule (req 9).
 | `src/server/shared/repo-session-proposal-validation.ts` | Shared field validation (lengths, required fields), used by the tool and the route so the two cannot drift. |
 | `src/server/session/mcp-tools/propose-repo-session.ts` | The MCP tool: schema, agent-facing description, worker relay. |
 | `src/server/session/agent-ops-routes.ts` | Worker relay `/agent-ops/propose-repo-session`. |
-| `src/server/orchestrator/api-routes-propose-repo-session.ts` | Both routes: the agent's emit and the user's start (ensure repo ready, detached spawn, card state transitions). |
+| `src/server/orchestrator/api-routes-propose-repo-session.ts` | The routes: the agent's emit, the user's start (ensure repo ready, detached spawn, card state transitions) and the user's decline. |
+| `src/server/orchestrator/services/repo-session-outcome-notice.ts` | The next-turn notice and its delivery receipt (req 11). |
 | `src/server/orchestrator/services/repos.ts` | `ensureRepoReady()` — register + bare-clone a repository synchronously. |
 | `src/client/components/RepoSessionProposalCard.tsx` | The card: proposed / starting / started / failed. |
 | `src/server/shared/types/domain-types/chat.ts` | `RepoSessionProposalCard` type. |
@@ -135,7 +175,9 @@ line in `CLAUDE.md`'s transcript-persistence rule (req 9).
   step.
 - **No follow-up channel to the started session.** Independent means
   independent (req 6). If the two changes must land together, that is a
-  different feature and it starts with a different requirement.
+  different feature and it starts with a different requirement. The next-turn
+  notice (req 11) says the session started and names it; it reports nothing the
+  started session does after that.
 
 ## Known limitations
 
@@ -157,6 +199,11 @@ because they are unknown.
   card says `failed` while a session exists, and a retry creates a second one. The
   duplicate is visible in the sidebar and archivable; persisting the card→target
   association at allocation is the real fix.
+- **A second failed start is not reported again.** The notice compares the
+  card's state with the last state the agent heard, so failed → retry → failed
+  reads as nothing new. The agent already knows the start failed and that a retry
+  is possible, and it is still told when the card finally starts or is declined;
+  an attempt counter was judged more mechanism than that case is worth.
 - **A card left `starting` by a crashed orchestrator is retryable, deliberately.**
   The process-local in-flight set is what refuses a genuine double-start; a
   persisted `starting` that no process is working on is treated as a leftover, on

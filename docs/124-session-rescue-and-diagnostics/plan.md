@@ -1,6 +1,9 @@
 
 # Session rescue & diagnostics — surfacing silent failures and giving the user a real escape hatch
 
+> **Label renamed (2026-09-30):** the **Rescue session** button is now **Restart all**.
+> The name below is the original.
+
 ## Problem
 
 Sessions periodically enter a state where "nothing works" — agent

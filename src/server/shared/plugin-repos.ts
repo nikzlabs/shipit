@@ -23,9 +23,15 @@ export interface PluginServiceOverride {
   port?: number;
 }
 
+export interface PluginCommandOverride {
+  as?: string;
+  /** Replaces the command container's default memory limit. */
+  memoryBytes?: number;
+}
+
 export interface PluginUseOverrides {
   services: Record<string, PluginServiceOverride>;
-  commands: Record<string, { as?: string }>;
+  commands: Record<string, PluginCommandOverride>;
   settings: Record<string, string | number | boolean>;
 }
 
@@ -53,6 +59,8 @@ export interface PluginExport {
   name: string;
   compose?: string;
   cli: Record<string, string>;
+  /** Manifest default per command in `cli`; a consumer's `overrides.commands.<cmd>.memory` replaces it. */
+  cliMemoryBytes?: Record<string, number>;
   skills?: string;
   install?: string;
   installInputs: string[];
@@ -126,7 +134,28 @@ const KNOWN_REPO_KEYS = new Set(["repo", "name", "branch", "pin"]);
 const KNOWN_USE_KEYS = new Set(["plugin", "from", "alias", "overrides"]);
 const KNOWN_OVERRIDE_KEYS = new Set(["services", "commands", "settings"]);
 const KNOWN_SERVICE_OVERRIDE_KEYS = new Set(["autostart", "as", "port"]);
-const KNOWN_COMMAND_OVERRIDE_KEYS = new Set(["as"]);
+const KNOWN_COMMAND_OVERRIDE_KEYS = new Set(["as", "memory"]);
+
+const MEMORY_UNITS: Readonly<Record<string, number>> = { k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+const MEMORY_SIZE_RE = /^(\d+(?:\.\d+)?)\s*([kmg])(?:i?b)?$/i;
+// Docker refuses to create a container with a smaller limit.
+const MIN_MEMORY_BYTES = 6 * 1024 ** 2;
+
+/** Docker-style size with a required unit (`4g`, `3584m`, `4GiB`); a bare number is refused as ambiguous. */
+export function parseMemorySize(raw: unknown): number | undefined {
+  if (typeof raw !== "string") return undefined;
+  const match = MEMORY_SIZE_RE.exec(raw.trim());
+  if (!match) return undefined;
+  const bytes = Math.floor(Number(match[1]) * MEMORY_UNITS[match[2].toLowerCase()]);
+  // An overflowed value serializes as null, which Docker reads as no limit at all.
+  return Number.isSafeInteger(bytes) && bytes >= MIN_MEMORY_BYTES ? bytes : undefined;
+}
+
+export function formatMemorySize(bytes: number): string {
+  const gib = bytes / 1024 ** 3;
+  if (gib >= 1 && Number.isInteger(gib * 100)) return `${gib} GiB`;
+  return `${Number((bytes / 1024 ** 2).toFixed(2))} MiB`;
+}
 
 function isMapping(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -429,7 +458,7 @@ function parseOverrides(
     }
   }
 
-  const commands: Record<string, { as?: string }> = {};
+  const commands: Record<string, PluginCommandOverride> = {};
   if (raw.commands !== undefined && raw.commands !== null) {
     if (!isMapping(raw.commands)) return fail("overrides.commands", "must be a mapping keyed by command name");
     for (const [cmd, val] of Object.entries(raw.commands)) {
@@ -440,11 +469,18 @@ function parseOverrides(
           warnings.push(`Unknown key \`plugins.use[${useIndex}].${field}.${key}\` in shipit.yaml.`);
         }
       }
-      const out: { as?: string } = {};
+      const out: PluginCommandOverride = {};
       if (val.as !== undefined && val.as !== null) {
         const as = parseAlias(val.as);
         if (!as) return fail(`${field}.as`, "must be letters, digits, `.`, `_` or `-`");
         out.as = as;
+      }
+      if (val.memory !== undefined && val.memory !== null) {
+        const memoryBytes = parseMemorySize(val.memory);
+        if (memoryBytes === undefined) {
+          return fail(`${field}.memory`, "must be a size with a unit, like `4g` or `3072m`, of at least `6m`");
+        }
+        out.memoryBytes = memoryBytes;
       }
       commands[cmd] = out;
     }
@@ -478,6 +514,8 @@ const KNOWN_EXPORT_KEYS = new Set([
   "hosts",
   "settings",
 ]);
+
+const KNOWN_CLI_KEYS = new Set(["entry", "memory"]);
 
 /** Duplicate the config default to avoid its filesystem imports. */
 export const DEFAULT_PLUGIN_DEP_DIRS: readonly string[] = ["node_modules"];
@@ -605,11 +643,30 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
   }
 
   const cli: Record<string, string> = {};
+  const cliMemoryBytes: Record<string, number> = {};
   if (entry.cli !== undefined && entry.cli !== null) {
     if (!isMapping(entry.cli)) return drop("`cli` must be a mapping of command name → entrypoint path");
-    for (const [cmd, p] of Object.entries(entry.cli)) {
+    for (const [cmd, val] of Object.entries(entry.cli)) {
       if (!PLUGIN_NAME_RE.test(cmd)) return drop(`command name \`${cmd}\` must be letters, digits, \`.\`, \`_\` or \`-\``);
-      const rel = optionalRelPath(p, `exports.plugins.${name}.cli.${cmd}`);
+      let p: unknown = val;
+      let pathLabel = `exports.plugins.${name}.cli.${cmd}`;
+      if (isMapping(val)) {
+        for (const key of Object.keys(val)) {
+          if (!KNOWN_CLI_KEYS.has(key)) {
+            warnings.push(`Unknown key \`exports.plugins.${name}.cli.${cmd}.${key}\` in shipit.yaml.`);
+          }
+        }
+        p = val.entry;
+        pathLabel = `${pathLabel}.entry`;
+        if (val.memory !== undefined && val.memory !== null) {
+          const memoryBytes = parseMemorySize(val.memory);
+          if (memoryBytes === undefined) {
+            return drop(`\`cli.${cmd}.memory\` must be a size with a unit, like \`4g\` or \`3072m\`, of at least \`6m\``);
+          }
+          cliMemoryBytes[cmd] = memoryBytes;
+        }
+      }
+      const rel = optionalRelPath(p, pathLabel);
       if (rel === undefined || typeof rel === "object") {
         return drop(typeof rel === "object" ? rel.error : `\`cli.${cmd}\` needs an entrypoint path`);
       }
@@ -684,6 +741,7 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     name,
     ...(compose !== undefined ? { compose } : {}),
     cli,
+    ...(Object.keys(cliMemoryBytes).length > 0 ? { cliMemoryBytes } : {}),
     ...(skills !== undefined ? { skills } : {}),
     ...(install !== undefined ? { install } : {}),
     installInputs,

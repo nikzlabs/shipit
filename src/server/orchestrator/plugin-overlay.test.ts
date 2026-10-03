@@ -9,6 +9,7 @@ import {
   pluginOverlayVolumeName,
   pluginWorkDir,
 } from "./plugin-overlay.js";
+import { overlayDriverOpts } from "./overlay-volume.js";
 
 const base = {
   sessionId: "0123abcd-4567-89ef-0123-456789abcdef",
@@ -60,6 +61,10 @@ describe("buildPluginOverlaySpec", () => {
       volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
     });
     expect(spec.lowerdir).toBe("/elsewhere/checkout");
+  });
+
+  it("mounts without redirect_dir, because promotion moves directories out of the raw upper", () => {
+    expect(overlayDriverOpts(buildPluginOverlaySpec(base))).not.toContain("redirect_dir");
   });
 
   it("gives staging and published lowerdirs the same upper layer", () => {

@@ -840,8 +840,10 @@ if [ "$TAILSCALE_FAILED" = "true" ]; then
 fi
 if [ "${ZERO_TRUST_DONE:-}" != "true" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   echo "  WARNING: Cloudflare Zero Trust was disabled by explicit override, so this"
-  echo "  instance is public unless another access layer protects it. To enable it,"
-  echo "  re-run cloudflare.sh without SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1."
+  echo "  instance is public unless another access layer protects it. A session is"
+  echo "  then no different from any internet client, so ShipIt cannot keep it away"
+  echo "  from its own API. To enable Zero Trust, re-run cloudflare.sh without"
+  echo "  SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1."
   echo ""
 fi
 echo "  Sign in with your Claude account when ShipIt opens."

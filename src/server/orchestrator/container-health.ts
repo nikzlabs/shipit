@@ -5,7 +5,7 @@ import type {
   SessionContainerManagerEvents,
 } from "./session-container.js";
 import { CONTAINER_SESSION_ID_LABEL } from "./session-container.js";
-import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
+import { reapParentlessEgressSidecars, reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
 import { COMPOSE_EGRESS_SIDECAR_LABEL } from "./compose-service-egress.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
@@ -14,6 +14,7 @@ import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 const COMPOSE_PARENT_SESSION_LABEL = "shipit-parent-session";
 const COMPOSE_SERVICE_NAME_LABEL = "shipit-service-name";
 const DOCKER_COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
+const DOCKER_COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff";
 
 export interface HealthDeps {
   docker: Docker;
@@ -80,7 +81,7 @@ export async function startHealthMonitor(
     state.eventStream = await deps.docker.getEvents({
       filters: {
         type: ["container"],
-        event: ["die", "oom", "start"],
+        event: ["die", "oom", "start", "destroy"],
       },
     });
 
@@ -108,8 +109,16 @@ export async function startHealthMonitor(
         if (action === "start" && attrs[COMPOSE_PARENT_SESSION_LABEL]) {
           deps.onLabelledContainerStarted?.();
         }
-        if (action !== "die" && action !== "oom") return;
         const containerId = event.Actor?.ID ?? "";
+        // Compose down removes a service without its egress sidecars, which are not in its project.
+        if (action === "destroy") {
+          if (containerId && (attrs[COMPOSE_PARENT_SESSION_LABEL] || attrs[CONTAINER_SESSION_ID_LABEL])
+            && !attrs[EGRESS_RESOLVER_LABEL] && !attrs[EGRESS_PROXY_LABEL]) {
+            void reapParentlessEgressSidecars(deps.docker, { parentIds: [containerId] });
+          }
+          return;
+        }
+        if (action !== "die" && action !== "oom") return;
 
         const sessionId = attrs[CONTAINER_SESSION_ID_LABEL];
         if (sessionId) {
@@ -152,7 +161,9 @@ export async function startHealthMonitor(
               || attrs[EGRESS_RESOLVER_LABEL]
               || attrs[EGRESS_PROXY_LABEL],
           );
-          const serviceName = egressSidecar
+          // A `docker compose run` container carries its service's labels but is not the service.
+          const oneOff = attrs[DOCKER_COMPOSE_ONEOFF_LABEL] === "True";
+          const serviceName = egressSidecar || oneOff
             ? undefined
             : attrs[COMPOSE_SERVICE_NAME_LABEL] || attrs[DOCKER_COMPOSE_SERVICE_LABEL];
           if (serviceName) {

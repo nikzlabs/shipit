@@ -6,17 +6,17 @@ import {
   type GenerationRecord,
   type LiveGenerations,
   type StagedGeneration,
-  type ValidateStagedGeneration,
 } from "../plugin-generations.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { destinationKey, declaredRefLabel, type DeclaredPluginRepo } from "../../shared/plugin-repos.js";
-import { readProjectServices, type ProjectServices } from "./plugin-services.js";
+import { readProjectServices, type ProjectComposeAccess, type ProjectServices } from "./plugin-services.js";
 
 export interface StagedGenerationGateDeps {
   workspaceDir: string;
   // Read at publication: network mode may change during fetch and install.
   containEgress: () => boolean;
+  projectCompose?: ProjectComposeAccess;
 }
 
 type Verdict = { ok: true } | { ok: false; reason: string };
@@ -24,8 +24,8 @@ type Verdict = { ok: true } | { ok: false; reason: string };
 // Re-read declarations and live generations at publication, not when activation starts.
 export function createStagedGenerationGate(
   deps: StagedGenerationGateDeps,
-): ValidateStagedGeneration {
-  return (staged) => {
+): (staged: StagedGeneration) => Promise<Verdict> {
+  return async (staged) => {
     try {
       const config = resolveShipitConfig(deps.workspaceDir);
       const declaration = config.plugins.repos.find(
@@ -41,7 +41,7 @@ export function createStagedGenerationGate(
       }
 
       const containEgress = deps.containEgress();
-      const project = readProjectServices(deps.workspaceDir, config, containEgress);
+      const project = await readProjectServices(config, containEgress, deps.projectCompose);
       // Unknown service names cannot be checked for collisions.
       if (project.unknown) {
         return { ok: false, reason: projectStackUnreadable(staged, project) };

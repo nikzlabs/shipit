@@ -1,6 +1,6 @@
 {
   "name": "shipit",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Browser-based AI editor for building, reviewing, and shipping software through chat.",
   "private": false,
   "license": "Apache-2.0",
@@ -30,6 +30,7 @@
     "typecheck": "NODE_OPTIONS=--max-old-space-size=3072 tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/.tsbuildinfo",
     "check-deps": "tsx scripts/check-dependency-age.ts",
     "check-audit": "tsx scripts/check-audit.ts",
+    "catalogue:export": "tsx scripts/export-model-list.ts",
     "release": "tsx scripts/release.ts",
     "measure-pr-poll-cost": "tsx scripts/measure-pr-poll-cost.ts"
   },
@@ -57,7 +58,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "dockerode": "5.0.0",
-    "fastify": "5.12.1",
+    "fastify": "5.12.5",
     "highlight.js": "11.11.1",
     "node-pty": "1.1.0",
     "react": "19.3.0",
@@ -103,14 +104,17 @@
     "uuid": "11.1.1",
     "ws": "8.21.0",
     "protobufjs": "7.6.5",
+    "@grpc/grpc-js": "1.14.5",
     "@protobufjs/utf8": "1.1.1",
     "dompurify": "3.4.13",
-    "fast-uri": "3.1.6",
+    "fast-uri": "3.1.8",
     "postcss": "8.5.23",
     "nanoid": "3.3.18",
     "@hono/node-server": "2.0.12",
+    "undici": "8.10.2",
+    "@fastify/busboy": "3.2.2",
     "@fastify/static": {
-      "brace-expansion": "5.0.9"
+      "brace-expansion": "5.0.12"
     },
     "@radix-ui/react-focus-scope": "1.1.12",
     "@radix-ui/react-focus-guards": "1.1.4",

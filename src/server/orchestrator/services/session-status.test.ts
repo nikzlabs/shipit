@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   clearConversationThread,
+  formatSessionStatusCardFull,
   formatSessionStatusContext,
   MAX_STATUS_CONTEXT_CHARS,
   markAllSessionStatusesStale,
@@ -23,7 +24,6 @@ function fakeSessions(seed: Record<string, SessionStatus | undefined> = {}) {
     cards,
     track: (id: string) => known.add(id),
     get: (id: string) => (known.has(id) ? { id, sessionStatus: cards.get(id) } : undefined),
-    list: () => [],
     setSessionStatus: vi.fn((id: string, status: SessionStatus | null) => {
       cards.set(id, status ?? undefined);
     }),
@@ -32,11 +32,7 @@ function fakeSessions(seed: Record<string, SessionStatus | undefined> = {}) {
 }
 
 function deps(sessions: ReturnType<typeof fakeSessions>) {
-  const sseBroadcast = vi.fn<(event: string, data: unknown) => void>();
-  return {
-    sessionManager: sessions as unknown as SessionStatusDeps["sessionManager"],
-    sseBroadcast,
-  };
+  return { sessionManager: sessions as unknown as SessionStatusDeps["sessionManager"] };
 }
 
 const item = (over: Record<string, unknown> = {}) => ({
@@ -64,14 +60,13 @@ async function seededCard(): Promise<{
 }
 
 describe("recordSessionStatus", () => {
-  it("stores the card, marks it current and broadcasts", async () => {
-    const { d, card } = await seededCard();
+  it("stores the card and marks it current", async () => {
+    const { card } = await seededCard();
 
     expect(card).toMatchObject({ status: "Routes done.", fresh: true, writeSeq: 1, turnSeq: 0 });
     expect(card.actions).toHaveLength(2);
     expect(card.actions[0]).toMatchObject({ branch: "shipit/x", headSha: "abc12345" });
     expect(card.actions[0].offerId).not.toBe(card.actions[1].offerId);
-    expect(d.sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
   });
 
   it("rewrites or drops the last-turn line on every write, never carrying it (req 31)", async () => {
@@ -90,14 +85,6 @@ describe("recordSessionStatus", () => {
     expect(confirmed).toMatchObject({ status: "Routes done." });
   });
 
-  it("broadcasts when only the last-turn line moved", async () => {
-    const { d } = await seededCard();
-    d.sseBroadcast.mockClear();
-
-    await recordSessionStatus(d, "s1", { status: "Routes done.", lastTurn: "Ran the suite." });
-    expect(d.sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
-  });
-
   it("leaves an omitted field alone and clears needsYou on an empty list", async () => {
     const { d } = await seededCard();
 
@@ -113,29 +100,24 @@ describe("recordSessionStatus", () => {
     expect(cleared?.needsYou).toBeUndefined();
   });
 
-  it("counts an unchanged confirmation as a write, and shows nothing new", async () => {
+  it("counts an unchanged confirmation as a write", async () => {
     const { d, card } = await seededCard();
-    d.sseBroadcast.mockClear();
 
     const confirmed = await recordSessionStatus(d, "s1", {});
 
-    // req 14 — the agent confirmed the whole card. Nothing a viewer reads moved,
-    // so there is nothing to broadcast, but the turn DID write.
+    // req 14 — the agent confirmed the whole card.
     expect(confirmed?.writeSeq).toBe(card.writeSeq + 1);
     expect(confirmed?.fresh).toBe(true);
-    expect(d.sseBroadcast).not.toHaveBeenCalled();
   });
 
   it("makes a bare call on a stale card current, and counts as a write", async () => {
     const { d, card } = await seededCard();
     await settleSessionStatusCard(d, "s1", { ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: false });
-    d.sseBroadcast.mockClear();
 
     const confirmed = await recordSessionStatus(d, "s1", {});
 
     // The settled turn was counted; the call makes the card current again.
     expect(confirmed).toMatchObject({ fresh: true, writeSeq: 2, turnSeq: 1 });
-    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
   it("writes nothing for a bare call with no card, or for a session that is gone", async () => {
@@ -146,7 +128,6 @@ describe("recordSessionStatus", () => {
     expect(await recordSessionStatus(d, "s1", {})).toBeNull();
     expect(await recordSessionStatus(d, "deleted", { status: "x" })).toBeNull();
     expect(sessions.setSessionStatus).not.toHaveBeenCalled();
-    expect(d.sseBroadcast).not.toHaveBeenCalled();
 
     expect(await recordSessionStatus(d, "s1", { status: "First." })).not.toBeNull();
   });
@@ -208,17 +189,16 @@ describe("offer reconciliation", () => {
 
 describe("takeOfferedActions", () => {
   it("stamps the named offers and marks nothing for an unknown id", async () => {
-    const { d, card } = await seededCard();
-    d.sseBroadcast.mockClear();
+    const { sessions, d, card } = await seededCard();
+    sessions.setSessionStatus.mockClear();
 
     await takeOfferedActions(d, "s1", ["not-an-offer"]);
-    expect(d.sseBroadcast).not.toHaveBeenCalled();
+    expect(sessions.setSessionStatus).not.toHaveBeenCalled();
 
     await takeOfferedActions(d, "s1", [card.actions[1].offerId]);
     const stored = d.sessionManager.get("s1")!.sessionStatus!;
     expect(stored.actions[0].takenAt).toBeUndefined();
     expect(stored.actions[1].takenAt).toBeDefined();
-    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
   it("does not move writeSeq: the, turnSeq: 0 user acted, the agent did not write", async () => {
@@ -229,7 +209,7 @@ describe("takeOfferedActions", () => {
 });
 
 describe("markAllSessionStatusesStale", () => {
-  it("marks every stored card once and broadcasts once", async () => {
+  it("marks every stored card once", async () => {
     const sessions = fakeSessions({
       s1: { status: "a", actions: [], fresh: true, writeSeq: 3, turnSeq: 0 },
       s2: { status: "b", actions: [], fresh: false, writeSeq: 1, turnSeq: 0 },
@@ -242,7 +222,6 @@ describe("markAllSessionStatusesStale", () => {
     // Unchanged records are not rewritten, and `writeSeq` never moves here.
     expect(sessions.setSessionStatus).toHaveBeenCalledTimes(1);
     expect(sessions.cards.get("s1")!.writeSeq).toBe(3);
-    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
   // The sweep queues sessions one at a time, so a turn can accept a write for a
@@ -281,14 +260,13 @@ describe("markAllSessionStatusesStale", () => {
     expect(sessions.cards.get("s1")!.fresh).toBe(true);
     expect(sessions.cards.get("s2")!.fresh).toBe(false);
     expect(logged).toHaveBeenCalledWith(expect.stringContaining("s1"), expect.any(Error));
-    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
     logged.mockRestore();
   });
 
-  it("broadcasts nothing when every card is already stale", async () => {
-    const d = deps(fakeSessions({ s1: { status: "a", actions: [], fresh: false, writeSeq: 1, turnSeq: 0 } }));
-    await markAllSessionStatusesStale(d);
-    expect(d.sseBroadcast).not.toHaveBeenCalled();
+  it("writes nothing when every card is already stale", async () => {
+    const sessions = fakeSessions({ s1: { status: "a", actions: [], fresh: false, writeSeq: 1, turnSeq: 0 } });
+    await markAllSessionStatusesStale(deps(sessions));
+    expect(sessions.setSessionStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -363,34 +341,9 @@ describe("runStatusExclusive", () => {
 });
 
 describe("clearConversationThread", () => {
-  it("marks the card stale and tells viewers, once", async () => {
-    const { d } = await seededCard();
-    const cleared = { calls: 0 };
-    const sessions = {
-      clearAgentSessionId: () => {
-        cleared.calls += 1;
-        const stored = d.sessionManager.get("s1")!.sessionStatus!;
-        if (!stored.fresh) return false;
-        d.sessionManager.setSessionStatus("s1", { ...stored, fresh: false });
-        return true;
-      },
-      list: () => [],
-    };
-    const deps = { sessionManager: sessions as never, sseBroadcast: vi.fn() };
-
-    clearConversationThread(deps, "s1");
-    expect(d.sessionManager.get("s1")!.sessionStatus!.fresh).toBe(false);
-    expect(deps.sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
-
-    // An already-stale card is not a change, so viewers are not told again.
-    clearConversationThread(deps, "s1");
-    expect(cleared.calls).toBe(2);
-    expect(deps.sseBroadcast).toHaveBeenCalledTimes(1);
-  });
-
-  it("clears the thread even where no broadcast is wired", () => {
+  it("clears the thread", () => {
     const cleared: string[] = [];
-    const sessions = { clearAgentSessionId: (id: string) => { cleared.push(id); return true; }, list: () => [] };
+    const sessions = { clearAgentSessionId: (id: string) => { cleared.push(id); } };
     clearConversationThread({ sessionManager: sessions as never }, "s1");
     expect(cleared).toEqual(["s1"]);
   });
@@ -510,19 +463,13 @@ describe("settleSessionStatusCard (docs/303 req 11, 38, 40)", () => {
     expect(d.sessionManager.get("s1")!.sessionStatus!.nudgePending).toBeUndefined();
   });
 
-  it("broadcasts only when the freshness the user sees changed", async () => {
+  it("counts a turn on a card that is already stale", async () => {
     const { d, card } = await seededCard();
-    d.sseBroadcast.mockClear();
-    await settleSessionStatusCard(d, "s1", {
-      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
-    });
-    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
-    d.sseBroadcast.mockClear();
-    // Already stale: the turn is still counted, but nothing on screen moved.
-    await settleSessionStatusCard(d, "s1", {
-      ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
-    });
-    expect(d.sseBroadcast).not.toHaveBeenCalled();
+    for (let i = 0; i < 2; i++) {
+      await settleSessionStatusCard(d, "s1", {
+        ifWriteSeq: card.writeSeq, statusUpdated: false, nudgePending: true,
+      });
+    }
     expect(d.sessionManager.get("s1")!.sessionStatus!.turnSeq).toBe(card.turnSeq + 2);
   });
 });
@@ -686,8 +633,10 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     expect(block.length).toBeLessThanOrEqual(MAX_STATUS_CONTEXT_CHARS);
     // req 35 asks that the agent see each offer, so the cap falls on the payloads.
     for (const offer of card.actions) expect(block).toContain(`- id: ${offer.id}`);
-    // And it says so, because a replacement it cannot copy exactly would drop them.
-    expect(block).toContain("Do NOT use `replaceActions` this turn");
+    // And it says so, because a replacement it cannot copy exactly would drop them —
+    // naming the fetch that does print them, so the offer can still be dropped (req 48).
+    expect(block).toContain("Do NOT use `replaceActions` from this listing alone");
+    expect(block).toContain("Run `shipit session status`");
     // Never half a payload: a truncated one is echoed back as a changed offer.
     const printed = block.split("\n").filter((line) => line.startsWith("  payload: "));
     for (const line of printed) {
@@ -706,7 +655,8 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
     expect(block.length).toBeLessThanOrEqual(MAX_STATUS_CONTEXT_CHARS);
     expect(block).toContain("further offer(s) are on the card, not listed here.");
-    expect(block).toContain("Do NOT use `replaceActions` this turn");
+    expect(block).toContain("Do NOT use `replaceActions` from this listing alone");
+    expect(block).toContain("Run `shipit session status`");
   });
 
   it("prints every payload and no warning on an ordinary card", async () => {
@@ -714,6 +664,169 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
     const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
     expect(block).not.toContain("not printed this turn");
     expect(block).not.toContain("Do NOT use `replaceActions`");
+    expect(block).not.toContain("This listing is incomplete");
+  });
+});
+
+describe("formatSessionStatusCardFull (docs/303 req 48)", () => {
+  /** The shape the per-turn block cannot print: more payload than the cap holds. */
+  async function bulkyCard() {
+    const { d } = await seededCard();
+    const bulky = Array.from({ length: 12 }, (_, i) =>
+      item({ id: `big-${i}`, label: `Offer ${i}`, description: `Does ${i}`, payload: `p${i}-${"x".repeat(1500)}` }),
+    );
+    await recordSessionStatus(d, "s1", {
+      lastTurn: "Wired the webhook route.",
+      needsYou: ["Paste the Stripe key."],
+      actions: bulky,
+      replaceActions: true,
+    });
+    return { d, card: d.sessionManager.get("s1")!.sessionStatus! };
+  }
+
+  it("prints every payload the per-turn block withheld, so a replacement can repeat them", async () => {
+    const { card } = await bulkyCard();
+    const block = formatSessionStatusContext(card);
+    const full = formatSessionStatusCardFull(card);
+
+    // The dead end: the block lists the offer and withholds what a replacement must repeat.
+    expect(block).toContain("payload: (not printed this turn — too long)");
+    expect(full).not.toContain("not printed this turn");
+    expect(full.length).toBeGreaterThan(MAX_STATUS_CONTEXT_CHARS);
+    for (const offer of card.actions) {
+      expect(full).toContain(`- id: ${offer.id}`);
+      expect(full).toContain(`  payload: ${offer.payload}`);
+      expect(full).toContain(`  description: ${offer.description}`);
+    }
+  });
+
+  it("carries the status, each manual step with its age, and the last-turn line", async () => {
+    const { card } = await bulkyCard();
+    const full = formatSessionStatusCardFull(card);
+    expect(full).toContain("Routes done.");
+    expect(full).toContain("- Paste the Stripe key. — added this turn");
+    // Absent from the per-turn block (req 31), present here: the fetch is the whole card.
+    expect(full).toContain("Wired the webhook route.");
+    expect(full).toContain("not a delta");
+  });
+
+  it("reports a sent offer as sent, and its age, so provenance survives a replacement", async () => {
+    const { d, card } = await bulkyCard();
+    await takeOfferedActions(d, "s1", [card.actions[0]!.offerId]);
+    const full = formatSessionStatusCardFull(d.sessionManager.get("s1")!.sessionStatus!);
+    expect(full).toContain("id: big-0 — offered this turn, ALREADY SENT to you this turn");
+    expect(full).not.toContain("id: big-1 — offered this turn, ALREADY SENT");
+  });
+
+  it("says whether the card reads stale, and names `replaceActions` as the way to drop one", async () => {
+    const { d, card } = await bulkyCard();
+    expect(formatSessionStatusCardFull(card)).toContain("reads current to the user");
+    await settleSessionStatusCard(d, "s1", {
+      ifWriteSeq: card.writeSeq,
+      statusUpdated: false,
+      nudgePending: true,
+    });
+    const stale = formatSessionStatusCardFull(d.sessionManager.get("s1")!.sessionStatus!);
+    expect(stale).toContain("reads STALE to the user");
+    expect(stale).toContain("`replaceActions: true`");
+  });
+
+  /**
+   * The promise of req 48, exercised rather than asserted about: take what the fetch
+   * printed, drop one offer, send the rest back — and the kept ones must keep their
+   * identity. The values are block-shaped on purpose: an independent review showed two
+   * different offers rendering IDENTICALLY in the readable listing, so this round-trips
+   * through the copyable JSON the fetch ends with, which is what the agent is told to use.
+   */
+  it("round-trips through its JSON: a replacement drops one and keeps the rest exactly", async () => {
+    const sessions = fakeSessions();
+    sessions.track("s1");
+    const d = deps(sessions);
+    const nasty = [
+      item({
+        id: "keep",
+        label: "Keep me",
+        description: "Has a line that looks like a field.",
+        // Block-shaped: in the readable listing this is indistinguishable from a boundary.
+        payload: "First line.\n  payload: not really\n- id: not an offer either",
+        defaultChecked: true,
+      }),
+      item({ id: "sent", label: "Already sent", description: "Taken by the user.", payload: "Do it." }),
+      item({ id: "drop", label: "Finished", description: "Done, so it goes.", payload: "Gone." }),
+    ];
+    await recordSessionStatus(d, "s1", { status: "Three offers.", actions: nasty, replaceActions: true });
+    const before = d.sessionManager.get("s1")!.sessionStatus!;
+    await takeOfferedActions(d, "s1", [before.actions[1]!.offerId]);
+    // Two settled turns, so the ages are non-zero and a dropped seq would show.
+    for (const _ of [0, 1]) {
+      const card = d.sessionManager.get("s1")!.sessionStatus!;
+      await settleSessionStatusCard(d, "s1", {
+        ifWriteSeq: card.writeSeq, statusUpdated: true, nudgePending: false,
+      });
+    }
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+
+    // Parse the copyable JSON out of the fetch, exactly as the agent is told to.
+    const full = formatSessionStatusCardFull(stored);
+    const json = full.slice(full.indexOf("[\n"), full.lastIndexOf("]") + 1);
+    const copied = JSON.parse(json) as { id: string }[];
+    expect(copied.map((o) => o.id)).toEqual(["keep", "sent", "drop"]);
+    expect(copied[0]).toEqual({
+      id: "keep",
+      label: "Keep me",
+      description: "Has a line that looks like a field.",
+      defaultChecked: true,
+      payload: "First line.\n  payload: not really\n- id: not an offer either",
+    });
+
+    await recordSessionStatus(d, "s1", {
+      actions: copied.filter((o) => o.id !== "drop") as never,
+      replaceActions: true,
+    });
+
+    const after = d.sessionManager.get("s1")!.sessionStatus!;
+    expect(after.actions.map((o) => o.id)).toEqual(["keep", "sent"]);
+    // Identity, provenance and the sent state all survive, which is what byte-exact means.
+    expect(after.actions[0]).toMatchObject({
+      offerId: stored.actions[0]!.offerId,
+      offeredAt: stored.actions[0]!.offeredAt,
+      offeredSeq: stored.actions[0]!.offeredSeq,
+      defaultChecked: true,
+    });
+    expect(after.actions[1]).toMatchObject({
+      offerId: stored.actions[1]!.offerId,
+      takenAt: stored.actions[1]!.takenAt,
+      takenSeq: stored.actions[1]!.takenSeq,
+    });
+    // And the fetch reported the ages the settled turns gave them.
+    expect(full).toContain("id: keep — offered 2 turns ago");
+    expect(full).toContain("id: sent — offered 2 turns ago, ALREADY SENT to you 2 turns ago");
+  });
+
+  it("renders two offers that differ only in block-shaped values distinguishably", async () => {
+    const sessions = fakeSessions();
+    sessions.track("a");
+    sessions.track("b");
+    const d = deps(sessions);
+    const shared = { id: "keep", description: "D" };
+    await recordSessionStatus(d, "a", {
+      status: "s",
+      actions: [{ ...shared, label: "L\n  description: D\n  payload: first", payload: "second" }],
+    });
+    await recordSessionStatus(d, "b", {
+      status: "s",
+      actions: [{ ...shared, label: "L", payload: "first\n  description: D\n  payload: second" }],
+    });
+    const a = formatSessionStatusCardFull(d.sessionManager.get("a")!.sessionStatus!);
+    const b = formatSessionStatusCardFull(d.sessionManager.get("b")!.sessionStatus!);
+    expect(a).not.toBe(b);
+  });
+
+  it("says so plainly when the card offers nothing", async () => {
+    const { d } = await seededCard();
+    await recordSessionStatus(d, "s1", { actions: [], replaceActions: true });
+    const full = formatSessionStatusCardFull(d.sessionManager.get("s1")!.sessionStatus!);
+    expect(full).toContain("Follow-ups offered: none.");
   });
 });
 

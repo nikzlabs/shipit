@@ -165,7 +165,7 @@ Remove `SessionSelector.tsx` and `SessionSelector.test.tsx` after sidebar is ver
 ### Integration tests (add to `src/server/integration_tests/session-management.test.ts`)
 
 1. `list_sessions` returns `remoteUrl` when cached in metadata
-2. `list_sessions` lazy-populates `remoteUrl` from git config
+2. `list_sessions` does **not** fill `remoteUrl` from the workspace's git config — removed in planning#623, because trust, secrets and repository grants key on it
 3. `github_set_remote` caches `remoteUrl` in session metadata
 4. `list_sessions` handles missing workspace dirs gracefully
 

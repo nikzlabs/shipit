@@ -7,7 +7,8 @@
     "docker/Dockerfile.session-worker.prod",
     "docker/Dockerfile.session-worker.dev",
     "docker/Dockerfile.android-dev",
-    "docker/Dockerfile.egress-sidecar"
+    "docker/Dockerfile.egress-sidecar",
+    "docker/Dockerfile.compose-helper"
   ],
   "rangeStrategy": "pin",
   "packageRules": [
@@ -24,10 +25,11 @@
       "automerge": false
     },
     {
-      "description": "Base images in docker/Dockerfile.android-dev and docker/Dockerfile.egress-sidecar (debian, alpine, golang). These were unpinned or tag-pinned, which is not a pin: Debian re-pushes `bookworm-slim`, `alpine:3.20` moves across patch releases, and Docker rebuilds `golang:1.23.5-alpine3.20` in place for base security updates. Each move invalidated everything below it — for android-dev that is ~1.9GB of JDK + Android SDK + Gradle. They are digest-pinned now, so this rule exists to keep those digests fresh rather than frozen; unlike the node bases below, nothing duplicates these digests elsewhere, so a Renovate bump is self-contained. A human reviews and merges.",
+      "description": "Base images in docker/Dockerfile.android-dev, docker/Dockerfile.egress-sidecar, and docker/Dockerfile.compose-helper (debian, alpine, golang). These were unpinned or tag-pinned, which is not a pin: Debian re-pushes `bookworm-slim`, `alpine:3.20` moves across patch releases, and Docker rebuilds `golang:1.23.5-alpine3.20` in place for base security updates. Each move invalidated everything below it — for android-dev that is ~1.9GB of JDK + Android SDK + Gradle. They are digest-pinned now, so this rule exists to keep those digests fresh rather than frozen; unlike the node bases below, nothing duplicates these digests elsewhere, so a Renovate bump is self-contained. A human reviews and merges.",
       "matchFileNames": [
         "docker/Dockerfile.android-dev",
-        "docker/Dockerfile.egress-sidecar"
+        "docker/Dockerfile.egress-sidecar",
+        "docker/Dockerfile.compose-helper"
       ],
       "matchPackageNames": ["debian", "alpine", "golang"],
       "groupName": "container base images",

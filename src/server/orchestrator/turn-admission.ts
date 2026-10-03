@@ -1,4 +1,43 @@
-import type { SessionRunnerInterface } from "./session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
+
+export const ANSWER_HOLD_REASON = "the agent is waiting for the user's answer";
+
+/** A failed read counts as not held: a closed database must not freeze the queue. */
+export function readAnswerHold(
+  deps: Pick<SystemTurnDeps, "answerHold"> | null,
+  sessionId: string,
+): boolean {
+  if (!deps?.answerHold) return false;
+  try {
+    return deps.answerHold.isAwaitingAnswer(sessionId);
+  } catch (err) {
+    console.error(`[admission] reading the answer hold for ${sessionId} failed:`, err);
+    return false;
+  }
+}
+
+/** Never throws: its callers sit where a throw would abandon a turn's start or its commit. */
+export function writeAnswerHold(
+  deps: Pick<SystemTurnDeps, "answerHold">,
+  sessionId: string,
+  awaiting: boolean,
+): void {
+  if (!deps.answerHold) return;
+  try {
+    deps.answerHold.setAwaitingAnswer(sessionId, awaiting);
+  } catch (err) {
+    console.error(`[admission] writing the answer hold for ${sessionId} failed:`, err);
+  }
+}
+
+/** docs/322 — why an automatic turn cannot start now, or null. Read by dispatch and by the drain. */
+export function automaticTurnHeldForAnswer(
+  runner: Pick<SessionRunnerInterface, "answerHold">,
+  automatic: boolean | undefined,
+): string | null {
+  if (automatic !== true) return null;
+  return runner.answerHold ? ANSWER_HOLD_REASON : null;
+}
 
 /** Everything an admission gate may read; a drain site holds no more than this. */
 export type AdmissionRunner = Pick<

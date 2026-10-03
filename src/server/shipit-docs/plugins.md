@@ -35,7 +35,7 @@ plugins:
         services:
           api: { port: 4300, autostart: false, as: reqs-api }
         commands:
-          reqs: { as: requirements }
+          reqs: { as: requirements, memory: 4g } # memory: see below.
 ```
 
 **A plugin service's `port:` is required if you want to preview it.** The port
@@ -44,6 +44,10 @@ stack already runs — so an exported fragment declares none, and naming one her
 is what makes the service reachable in the Preview pane. A plugin service you
 name no port for still runs; it just is not previewable. Two services given one
 port is refused, naming both: change one of them.
+
+A command's `memory` replaces its container's limit — ShipIt's 2 GiB, or the
+plugin's own default — see
+[A plugin command's memory limit](#a-plugin-commands-memory-limit).
 
 **`overrides` is the consumer's whole say**, and it is one level deeper than it
 looks like it should be. `settings`, `services` and `commands` go **under
@@ -67,6 +71,7 @@ exports:
       compose: plugins/requirements/docker-compose.yml
       cli:
         reqs: plugins/requirements/cli
+        bake: { entry: plugins/requirements/bake, memory: 4g }
       skills: plugins/requirements/skills
       install: npm ci
       install-inputs: [package-lock.json]
@@ -132,6 +137,13 @@ repository is running. The one writer is the plugin's `install`, which runs
 before a commit goes live. A plugin's writable surfaces are its state directory
 and this project's workspace, never its own source.
 
+**A plugin's state directory (`/plugin-state` in its containers) belongs to one
+import in one session.** Each alias under `plugins.uses` gets its own directory
+in each session. That import's services and CLI runs in this session share it; no
+other session and no other alias sees it. It survives container restarts and
+archive, removing the import keeps it, and only Full reset deletes it. It is not
+this session's `/persist`, and a plugin cannot mount `/persist`.
+
 ## Plugin code does not run in your container
 
 Everything a plugin *ships* — its `install`, its CLIs, its services — runs in a
@@ -161,6 +173,55 @@ A plugin's **service** is the exception. ShipIt starts it without waiting for
 them — when ShipIt is not storing them outside the clone, they are ordinary
 files in your tree like any others — so treat a service that reads your
 dependencies as working by accident, and put work that needs them in a command.
+
+## A plugin command's memory limit
+
+**Each call to a plugin's command runs in a container with a 2 GiB memory
+limit**, unless the plugin's manifest declares a different default for that
+command (`cli.<cmd>.memory` — read the manifest to see it). That is not your
+container's limit, so work that passes in your own shell can be killed when the
+same work runs through the plugin's command. The usual case is a command that
+starts a heavy child program — a Blender bake, a model, a large build.
+
+The consuming project sets its own limit for one command, under
+`overrides.commands`. It replaces the plugin's default, higher or lower:
+
+```yaml
+plugins:
+  use:
+    - plugin: assetgen
+      from: tools
+      overrides:
+        commands:
+          bake: { memory: 4g }
+```
+
+- **The key is the command's name in the plugin's manifest**, not the name
+  you gave it with `as`.
+- **The value is a size with a unit** — `4g`, `3584m`, `4GiB`; the units are
+  binary. A bare number is refused, because it is not clear if it means bytes
+  or MiB. The minimum is `6m`. There is no maximum, but the machine must have
+  the memory.
+- **The next call uses it.** No refresh or restart is necessary. A plugin's
+  own default changes with the plugin's version, like the rest of its manifest.
+- **An invalid value drops the whole `use` entry**, the same as any other
+  invalid override: the plugin's commands, services and skills go away, and
+  the Plugins card and `shipit plugin status` say which field is wrong.
+- **It changes only that command's container.** A plugin's services set their
+  own limit in their compose fragment (`mem_limit`), and its `install` keeps a
+  fixed 2 GiB.
+
+**How you know it is the limit.** When the command exits with an error and
+Docker reports that the kernel killed a process in its container for memory,
+the command's stderr ends with a ShipIt error that names the limit and the
+exact field to set. Docker does not always report it when only a child process
+was killed and the command itself continued. Then you see only the child's
+failure, often `Killed` or exit status 137 — read that the same way.
+
+Setting the limit is an edit to this project's `shipit.yaml`, so tell the user
+what you changed and why. **Do not work around the limit by running the
+plugin's code from `/plugins/<name>` in your own shell.** That runs it beside
+ShipIt's credential broker, which is what its own container prevents.
 
 ## What containment does not cover
 

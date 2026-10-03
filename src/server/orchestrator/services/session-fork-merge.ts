@@ -13,8 +13,14 @@ import type { RepoGit } from "../repo-git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
-import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import {
+  chownTreeToSessionWorker,
+  chownWorkspaceGitToSessionWorker,
+  handWorkspaceBackToWorker,
+} from "../session-worker-uid.js";
 import { allocateAndSealSessionDir } from "../session-uid-allocator.js";
+import { linkLfsObjectsIntoClone } from "../git-lfs-store.js";
+import { ensureSharedTreeOwnedByShipIt } from "../shared-tree-ownership.js";
 import {
   buildLfsUnresolvedAgentNotice,
   materializeLfsWithWarning,
@@ -163,6 +169,13 @@ export async function forkSession(
   // Full chown is safe here because --no-hardlinks made every object private.
   allocateAndSealSessionDir(newSessionDir);
   chownTreeToSessionWorker(newWorkspaceDir);
+  // Seed from the shared store after the full chown, which would take its inodes.
+  // Never from the parent's store: the parent's session owns and can rewrite those files.
+  if (bareCacheDir) {
+    ensureSharedTreeOwnedByShipIt(bareCacheDir, "fork LFS seed from bare cache");
+    linkLfsObjectsIntoClone(bareCacheDir, newWorkspaceDir);
+    chownWorkspaceGitToSessionWorker(newWorkspaceDir);
+  }
 
   const newGit = safeSimpleGit(newWorkspaceDir);
   await newGit.raw(["config", "gc.auto", "0"]);
@@ -194,12 +207,14 @@ export async function forkSession(
   if (startPoint) branchArgs.push(startPoint);
   await newGit.raw(branchArgs);
 
-  // Local clone omits .git/lfs and orchestrator checkout disables smudge.
-  // Materialize only after the final checkout, using the fork's identity.
+  // Orchestrator checkout disables smudge; the pull downloads what the store lacked.
+  // Materialize only after the final checkout, using the fork's identity. The fork has
+  // no session row yet, so it names its repository for a declared LFS host's secret.
   const lfs = await materializeLfsWithWarning(
     newWorkspaceDir,
     activeSession?.remoteUrl ?? newWorkspaceDir,
     warn,
+    activeSession?.remoteUrl ? { repoUrl: activeSession.remoteUrl } : undefined,
   );
 
   const resolvedTitle = title?.trim() || `${activeSession?.title ?? "Session"} (${trimmed})`;

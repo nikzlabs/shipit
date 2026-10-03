@@ -127,6 +127,9 @@ export function useMessageScroll(
   isLoading: boolean,
   currentMatch: SearchMatch | undefined,
   sessionId: string | null,
+  // Whether the displayed session's pull request has merged; `undefined` while
+  // it has no pull request card.
+  prMerged?: boolean,
 ): {
   containerRef: React.RefObject<HTMLDivElement | null>;
   contentRef: React.RefObject<HTMLDivElement | null>;
@@ -148,6 +151,7 @@ export function useMessageScroll(
   const lastGestureAtRef = useRef(-Infinity);
 
   const shownSessionRef = useRef<string | null>(sessionId);
+  const prMergedRef = useRef(prMerged);
 
   /**
    * planning#595 — until when is the session still OPENING?
@@ -214,11 +218,12 @@ export function useMessageScroll(
    *
    * It is a coordinate, not proof of ownership. The browser moves the view
    * too — clamping when content shrinks, and scroll anchoring when it grows
-   * above the viewport — and those end the open early. Both normally land at or
-   * near the bottom, where auto-follow stays on and the observer goes on
-   * correcting, so the cost is a shortened hold rather than a stranded view.
-   * Nothing here touches anything but refs and the argument, so the
-   * `[]`-dependency effect may hold the first render's copy.
+   * above the viewport — and those read as the reader's and end the open early.
+   * Both normally land at or near the bottom, where auto-follow stays on and the
+   * observer goes on correcting, so the cost is a shortened hold rather than a
+   * stranded view. `-1` once any other position has been reported. Nothing here
+   * touches anything but refs and the argument, so the `[]`-dependency effect
+   * may hold the first render's copy.
    */
   const pinnedTopRef = useRef(-1);
   const pin = (container: HTMLElement) => {
@@ -233,16 +238,18 @@ export function useMessageScroll(
     if (!container) return;
 
     const handleScroll = () => {
-      // While the session is opening, a position WE wrote is not news: the pin
-      // lands on an estimated height and the real one arrives frames later, so
-      // reading it back says "scrolled away" about a conversation nobody has
-      // touched — and recording that stands down every path that closes the
-      // gap. A position we did not write is the reader's, wherever it came
-      // from, and it ends the open. This is the only place the open ends; the
-      // commit that first renders the conversation is the only place it comes
-      // back (`conversationShownRef`).
+      // A position WE wrote is not news: its event arrives a frame late, and a
+      // layout change in between reads it as "scrolled away", which stands the
+      // observer down (docs/303-session-status-card req 47). Outside the open, a
+      // live gesture may have landed back on it, and then it is the reader's.
+      const ownEcho = container.scrollTop === pinnedTopRef.current
+        && (isOpening() || !userIsDriving(touchDraggingRef, lastGestureAtRef));
+      if (ownEcho) return;
+      // Anything else is the reader's. It spends our write, so a reader who
+      // comes back to that spot later is heard. It also ends the open, the only
+      // place it ends; it comes back only at `conversationShownRef`.
+      pinnedTopRef.current = -1;
       if (isOpening()) {
-        if (container.scrollTop === pinnedTopRef.current) return;
         openUntilRef.current = -Infinity;
         // Taking a position while a conversation IS on screen is the reader
         // choosing where in it to be, which no later arrival may discard. That
@@ -382,6 +389,15 @@ export function useMessageScroll(
       && messages.length > previousMessageCount
       && latestMessage?.role === "user";
 
+    // docs/303-session-status-card req 47 — a merge brings the status card's
+    // follow-ups into view wherever the reader was, as a sent message does.
+    // Only a PR seen unmerged first counts, so a card that arrives already
+    // merged does not move the view.
+    const wasMerged = prMergedRef.current;
+    prMergedRef.current = prMerged;
+    const prJustMerged = wasMerged === false && prMerged === true;
+    const forceFollow = appendedUserMessage || prJustMerged;
+
     const hadRowsLastCommit = renderedCountRef.current > 0;
     renderedCountRef.current = messages.length;
 
@@ -408,9 +424,9 @@ export function useMessageScroll(
     // No `opening` term here on purpose: an open begins with `autoScrollRef`
     // true and the one path that clears it ends the open in the same breath, so
     // "opening and not following" cannot happen.
-    if (!autoScrollRef.current && !appendedUserMessage) return;
+    if (!autoScrollRef.current && !forceFollow) return;
 
-    if (appendedUserMessage) {
+    if (forceFollow) {
       touchDraggingRef.current = false;
       lastGestureAtRef.current = -Infinity;
     } else if (userIsDriving(touchDraggingRef, lastGestureAtRef)) {
@@ -439,7 +455,7 @@ export function useMessageScroll(
       cancel();
       if (cancelSettleRef.current === cancel) cancelSettleRef.current = null;
     };
-  }, [messages, isLoading, sessionId]);
+  }, [messages, isLoading, sessionId, prMerged]);
 
   // auto` sits on GROUPS of 20 rows, and a group that has never been on screen
 

@@ -42,6 +42,7 @@ services:
       - DOCKER_STACK=shipit-prod
       - SHIPIT_DEPLOYMENT=local
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
+      - SESSION_COMPOSE_HELPER_IMAGE=shipit-compose-helper:prod
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
       - SHIPIT_ALLOWED_ORIGINS=${SHIPIT_ALLOWED_ORIGINS:-}
     networks:
@@ -53,6 +54,9 @@ services:
       dockerfile: docker/Dockerfile.session-worker.prod
       args:
         SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
+        # Becomes the image's shipit-build-id label. Without it every worker's build reads as
+        # unknown, so an update never replaces idle workers from an older build (docs/242).
+        SHIPIT_BUILD_ID: ${SHIPIT_BUILD_ID:-}
     image: shipit-session-worker:prod
     profiles:
       - build-only
@@ -62,6 +66,15 @@ services:
       context: ../..
       dockerfile: Dockerfile.egress-sidecar
     image: shipit-egress-sidecar:prod
+    profiles:
+      - build-only
+
+  # Runs the Compose commands that read a session's project files (docs/318).
+  compose-helper:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.compose-helper
+    image: shipit-compose-helper:prod
     profiles:
       - build-only
 

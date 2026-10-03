@@ -984,6 +984,73 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "session_message_proposal")) return;
     db.exec("ALTER TABLE messages ADD COLUMN session_message_proposal TEXT");
   },
+
+  // docs/318-compose-remaining-escapes req 8 — no backfill: `compose.docker-socket`
+  // in a repository file no longer grants the socket on its own.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "allow_docker_socket")) return;
+    db.exec("ALTER TABLE repos ADD COLUMN allow_docker_socket INTEGER NOT NULL DEFAULT 0");
+  },
+
+  // docs/193 — permission cards stuck pending by builds before the worker denied abandoned
+  // requests. Past Claude's 30-minute MCP idle timeout no agent still waits; a younger card
+  // may be live in a worker that outlived this restart. CASE keeps bad JSON from failing boot.
+  (db) => {
+    db.exec(`
+      UPDATE messages SET permission_prompt = json_set(permission_prompt, '$.phase', 'denied')
+      WHERE CASE WHEN json_valid(permission_prompt) THEN
+        json_extract(permission_prompt, '$.phase') = 'pending'
+        AND COALESCE(json_extract(permission_prompt, '$.createdAt'), '')
+          < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 minutes')
+      END
+    `);
+  },
+
+  // docs/321-agent-requested-restart — persisted so an orchestrator restart keeps the request.
+  (db) => {
+    addSessionColumnIfMissing(db, "pending_restart_note");
+  },
+
+  // docs/322-question-holds-automatic-turns — the agent's last turn ended waiting for the
+  // user's answer, and the automatic turns held until the user replies (req 8: they
+  // outlive a restart).
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "awaiting_answer")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN awaiting_answer INTEGER NOT NULL DEFAULT 0");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS held_turns (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        delivery_id TEXT,
+        entry       TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_held_turns_session ON held_turns(session_id, id);
+    `);
+  },
+
+  // docs/242-stale-session-container-indicator req 9 — the user's "Restart after turn".
+  (db) => {
+    addSessionColumnIfMissing(db, "pending_user_restart");
+  },
+
+  // docs/323-archived-session-data-retention req 5, req 12 — a session older than the
+  // feature starts its retention period at this migration, never before it.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "archived_at")) return;
+    db.exec(`
+      ALTER TABLE sessions ADD COLUMN archived_at TEXT;
+      ALTER TABLE sessions ADD COLUMN retention_floor_at TEXT;
+      ALTER TABLE sessions ADD COLUMN retained_data_bytes INTEGER;
+      ALTER TABLE sessions ADD COLUMN retained_data_measured_at TEXT;
+      UPDATE sessions SET retention_floor_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+      UPDATE sessions SET archived_at = retention_floor_at WHERE user_archived = 1;
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1003,6 +1070,10 @@ export const USAGE_ATTRIBUTION_MIGRATION = 69;
 export const CODEX_ROLLUP_REPAIR_MIGRATION = 73;
 
 export const INSTALL_LEVEL_USAGE_MIGRATION = 91;
+
+export const STALE_PERMISSION_CARD_MIGRATION = 101;
+
+export const DATA_RETENTION_MIGRATION = 105;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
@@ -1037,6 +1108,7 @@ export class DatabaseManager {
       // Delete revisions after messages, whose triggers would recreate them.
       this.db.prepare("DELETE FROM transcript_revisions").run();
       this.db.prepare("DELETE FROM usage_turns").run();
+      this.db.prepare("DELETE FROM held_turns").run();
       this.db.prepare("DELETE FROM sessions").run();
       this.db.prepare("DELETE FROM repos").run();
       this.db.prepare("DELETE FROM secrets").run();

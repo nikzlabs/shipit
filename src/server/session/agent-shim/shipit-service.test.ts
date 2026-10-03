@@ -237,13 +237,14 @@ describe("shipit service list", () => {
     });
   });
 
-  it("points at compose.md when the project has no stack", async () => {
+  it("names the shipit.yaml compose key when the project has no stack", async () => {
     const { run } = makeRunner();
     const res = await run(["service", "list"], {
       "GET /services/list": { status: 500, body: { error: "No compose stack configured for this session" } },
     });
     expect(res.exitCode).not.toBe(0);
-    expect(res.stderr).toContain("no docker-compose.yml");
+    expect(res.stderr).toContain("`compose: docker-compose.yml`");
+    expect(res.stderr).toContain("/shipit-docs/compose.md");
   });
 });
 
@@ -325,6 +326,21 @@ describe("shipit service start", () => {
       "POST /services/start": { status: 500, body: { error: "Unknown service: nope" } },
     });
     expect(res.stderr).toContain("shipit service list");
+  });
+
+  // The worker answers a failed action with Fastify's own error body.
+  it("shows the reason a start was refused, not the HTTP status text", async () => {
+    const { run } = makeRunner();
+    const reason = "Service `web`: `cap_add: SYS_ADMIN` is not allowed.";
+    const res = await run(["service", "restart", "web"], {
+      "POST /services/restart": {
+        status: 500,
+        body: { statusCode: 500, error: "Internal Server Error", message: reason },
+      },
+    });
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stderr).toContain(reason);
+    expect(res.stderr).not.toContain("Internal Server Error");
   });
 
   it("restart uses the restart endpoint and the unbounded transport", async () => {

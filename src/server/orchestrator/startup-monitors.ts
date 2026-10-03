@@ -8,12 +8,15 @@ import {
   registerShutdownHook,
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
+import { sweepRetainedSessionData } from "./data-retention-sweep.js";
+import { isRestoreInFlight } from "./services/session.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
 import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-liveness-sources.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
 import { downComposeStackByProject, reapSurvivingComposeStacks } from "./compose-stack-reaper.js";
+import { reapParentlessEgressSidecars } from "./egress-orphan-reaper.js";
 import { liveWorkAfterRestart, unprobedAfterRestart } from "./restart-turn-reattach.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
@@ -21,6 +24,9 @@ import { sweepWorkspaceBlocksAtStartup } from "./services/workspace-block.js";
 import { stopWarmPreview } from "./warm-preview.js";
 import { runUpdateCheckIfDue, versionAnchor, UPDATE_CHECK_TICK_MS } from "./services/update-notice.js";
 import type { UpdateNotice } from "../shared/types.js";
+import { startEventLoopLagMonitor } from "./event-loop-lag.js";
+import { MODEL_LIST_REFRESH_MS, refreshPublishedModelList } from "./services/published-model-list.js";
+import { seedAndBuildAgentListPayload } from "./services/settings.js";
 
 export interface StartupMonitors {
   kickDiskEscalation: (excludeSessionId?: string) => void;
@@ -40,7 +46,7 @@ export async function startStartupMonitors(
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
     mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
-    cleanupContainer, version,
+    cleanupContainer, version, agentRegistry, providerAccountManager,
   } = rt;
 
   // Held for the process: the first dictation after a quiet period must not pay
@@ -199,6 +205,8 @@ export async function startStartupMonitors(
     escalationInFlight = true;
     void (async () => {
       try {
+        // Backstop for sidecars whose parent was removed while no destroy event reached us.
+        await reapParentlessEgressSidecars(containerManager.dockerClient, { paceMs: escalationPaceMs });
         await escalateDiskTiers(
           {
             sessionManager,
@@ -233,9 +241,32 @@ export async function startStartupMonitors(
           // Resolve live mounts at sweep time, not from a boot snapshot.
           liveOverlayScopeHashes: overlayLiveScopeSource(sessionManager),
           livePluginStoreArtifacts: pluginLiveArtifactSource(sessionManager),
+          sessionsRoot: rt.sessionsRoot,
+          sessionIds: () => new Set(sessionManager.allIds()),
+          isSessionEvicted: (id) => sessionManager.get(id)?.diskTier === "evicted",
         });
       } catch (err) {
         console.error("[disk-janitor] steady-state reclaim pass failed:", err);
+      }
+      try {
+        await sweepRetainedSessionData({
+          sessionManager,
+          chatHistory: chatHistoryManager,
+          sessionsRoot: rt.sessionsRoot,
+          isSessionLive: (sid) =>
+            runnerRegistry.get(sid) !== undefined
+            || serviceManagers.has(sid)
+            || containerManager.get(sid) !== undefined
+            || isRestoreInFlight(sid),
+          stopComposeStack: (sid) => serializeStackOp(
+            sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
+          ),
+          onSessionsChanged: () =>
+            sseBroadcast("session_list", { sessions: sessionManager.list() }),
+          paceMs: escalationPaceMs,
+        });
+      } catch (err) {
+        console.error("[data-retention] sweep failed:", err);
       } finally {
         escalationInFlight = false;
       }
@@ -281,6 +312,22 @@ export async function startStartupMonitors(
   if (updateCheckInterval?.unref) updateCheckInterval.unref();
   if (!isTestMode) void runUpdateCheckIfDue(updateNoticeDeps);
 
+  // docs/318 — the published model list: at startup and hourly.
+  const modelListDeps = {
+    stateDir,
+    onChange: () => {
+      for (const agent of agentRegistry.list()) agentRegistry.refreshAuth(agent.id);
+      sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+    },
+  };
+  const modelListInterval = isTestMode
+    ? null
+    : setInterval(() => { void refreshPublishedModelList(modelListDeps); }, MODEL_LIST_REFRESH_MS);
+  if (modelListInterval?.unref) modelListInterval.unref();
+  if (!isTestMode) void refreshPublishedModelList(modelListDeps);
+
+  const stopEventLoopLagMonitor = isTestMode ? null : startEventLoopLagMonitor();
+
   if (containerManager) {
     const keepPreviewSupervisor = createKeepPreviewRestartSupervisor({
       sessionManager,
@@ -315,6 +362,8 @@ export async function startStartupMonitors(
         if (reaped > 0) {
           console.log(`[compose-reap] Took down ${reaped} compose stack(s) left by a previous orchestrator`);
         }
+        // The boot janitor's sidecar sweep runs before this reap has removed their parents.
+        await reapParentlessEgressSidecars(containerManager.dockerClient, { paceMs: 500 });
       })();
     }
     setupContainerHealthMonitoring(
@@ -325,6 +374,7 @@ export async function startStartupMonitors(
       oomBreaker,
       chatHistoryManager,
       keepPreviewSupervisor.handleUnexpectedExit,
+      sseBroadcast,
     );
     app.addHook("onClose", async () => keepPreviewSupervisor.dispose());
   }
@@ -337,6 +387,8 @@ export async function startStartupMonitors(
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);
     if (warmSweepInterval) clearInterval(warmSweepInterval);
     if (updateCheckInterval) clearInterval(updateCheckInterval);
+    if (modelListInterval) clearInterval(modelListInterval);
+    stopEventLoopLagMonitor?.();
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();

@@ -205,6 +205,45 @@ requested the latest Claude Code CLI and explicitly approved an age exception:
 2.1.280 is pinned with a regenerated lockfile and an exception expiring
 2026-09-30. No live model response has been verified.
 
+**Catalogue maintenance (2026-09-29): GPT-6.1 Sol.** The user asked for
+GPT-6.1 Sol. The official [model page](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+read on this date, gives `gpt-6.1-sol`, image input, a 1,050,000-token context
+window, and prices of $2 input, $0.10 cached input, $10 output and $2.50 cache
+writes per million tokens. Its reasoning efforts are `low` to `max`; `none` and
+`minimal` are not supported, unlike GPT-6 Sol. Chat Completions has no tool
+calling for it, so the row uses Responses only. It is added under both OpenAI
+billing modes, after GPT-6 Astra. GPT-5.6 Sol stays the default because
+[Codex's model page](https://learn.chatgpt.com/docs/models) excludes Free and Go
+and keeps it off by default for Enterprise and Edu. The pinned Codex 0.155.1
+starts a thread with the new ID without a CLI update; its bundled list does not
+include it. OpenCode's ChatGPT-route filter accepts it. No authenticated
+inference has been verified.
+
+**Catalogue maintenance (2026-09-29): Sonnet 5.5.** The user asked for Sonnet
+5.5. Anthropic's [model page](https://platform.claude.com/docs/en/models/sonnet-5-5/overview)
+and [pricing](https://platform.claude.com/docs/en/about-claude/pricing), read on
+this date, give `claude-sonnet-5-5`, image input, a 1M context window, efforts
+`low` to `max`, and prices of $2 input, $10 output, $0.20 cache reads and $2.50
+five-minute cache writes per million tokens. The row uses Anthropic Messages
+under both Anthropic billing modes, directly after Sonnet 5. Opus 5 stays the
+default. Gateway availability is not inferred from Anthropic's release.
+
+Claude Code 2.1.280 runs the new ID, but its model catalog does not describe
+it. Through ShipIt's spawn (`claudeModelArg` adds `[1m]`) it keeps the 1M
+window, sends adaptive thinking and the chosen effort, and completes a tool
+call. But it logs `unrecognized_model` and prices the model with
+`costBasis: "unknown"`: a measured turn reported $0.068 where list rates give
+$0.036. On an Anthropic API key the Claude harness's reported cost is the
+metered spend (`resolveTurnCost`), so the CLI moves to 2.1.284 (published
+2026-09-28), the first release that describes Sonnet 5.5 (2.1.283 does not).
+On the same turn shape it reports `costBasis: "list"` and exactly the list-rate
+cost. The user approved its exact-version dependency-age exception on
+2026-09-29; it expires on 2026-10-05.
+
+The same pricing page says the planned rise of Sonnet 5 to $3/$15 on
+2026-09-01 was cancelled and $2/$10 is its standard price, so Sonnet 5's
+rates are corrected to match Sonnet 5.5's, with the user's approval.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither

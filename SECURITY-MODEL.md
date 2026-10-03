@@ -310,12 +310,19 @@ tiers compose:
   `SESSION_EGRESS_ALLOWLIST` + live MCP-server hosts + the durable user allowlist and feeds
   *both* the Tier B resolver's pinned set and the Tier C proxy's SNI allowlist at container
   start, so the two enforcement points always agree.
+- **Open mode keeps sessions off this machine and your networks.** In both egress modes the
+  sidecar firewall keeps every session container away from this machine, private networks and
+  the tailnet; open mode drops only the allowlist, so internet access stays. A granted SSH
+  destination is the one exception, on its own port only. This keeps a session from reaching
+  the orchestrator through a host address (docs/319-api-reach-through-host). A Compose service
+  you give the Docker socket controls this machine, so this does not hold for it.
 
 All three tiers and the Phase-2 identity proxy have been verified non-vacuously on a live
 host. With containment on by default, the residual is narrow — **hosts that can't run the
 sidecar must consciously opt out** (the installer surfaces this); an operator who does opt
-out is back to open egress and should treat anything reachable inside the container as
-reachable by a compromised agent.
+out has no sidecar firewall at all, not even the block on this machine and private networks,
+and should treat anything reachable inside the container as reachable by a compromised agent.
+ShipIt then stays reachable on loopback only (see *Network exposure and access control*).
 
 ## Untrusted input — content is data, not instructions
 
@@ -397,6 +404,20 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   (required SSO / email allow-list by default) and/or **Tailscale**, with **no open inbound
   ports** in either case. See [`deployment/README.md`](deployment/README.md) for the access
   policies.
+- **A session's own containers are not a way in.** They cannot reach this machine, private
+  networks or the tailnet in either egress mode (see *Network egress containment*), so a
+  session cannot reach the orchestrator through a tailnet, LAN or host address. That needs the
+  egress sidecar. On a host that cannot run it, ShipIt is reachable on **loopback only**: the
+  local setup and `update.sh` leave out a tailnet binding and a non-loopback
+  `SHIPIT_BIND_ADDR`, the VPS Tailscale forwarder is not installed and does not forward, and
+  the orchestrator refuses to start with any binding other than loopback. The same machine,
+  Cloudflare Tunnel with Access and an SSH tunnel keep working
+  (docs/319-api-reach-through-host).
+- **Public with no sign-in sets that aside.** The Cloudflare opt-out
+  (`SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1`) or a `SHIPIT_BIND_ADDR` the internet can reach
+  makes ShipIt public with no sign-in. Anyone on the internet then has the user's access, and
+  a session is no different from any internet client, so ShipIt cannot keep a session away
+  from its own API.
 - All session/preview/API routes validate the session ID against the session manager, but
   that is authorization *within* a trusted instance — it is not a substitute for the access
   layer above.
@@ -484,9 +505,11 @@ for accepting them today, and where they're headed.
   the destination. The accepted residual: a host that **can't run the NET_ADMIN sidecar**
   (rootless Docker, a locked-down kernel) can't enforce containment. There, containment is
   fail-closed (sessions refuse to start), and the installer detects the incapable host and asks
-  whether to opt out (`SESSION_EGRESS_ENFORCE=0`) — an operator who opts out is back to open
-  egress and should treat anything reachable inside the container as reachable by a compromised
-  agent. The Settings UI surfaces this honestly: it distinguishes the containment *policy* from
+  whether to opt out (`SESSION_EGRESS_ENFORCE=0`) — an operator who opts out there has no
+  sidecar firewall at all and should treat anything reachable inside the container as reachable
+  by a compromised agent, and ShipIt stays reachable on loopback only (see *Network exposure and
+  access control*). On a host that can run the sidecar, `SESSION_EGRESS_ENFORCE=0` turns off
+  egress limits only. The Settings UI surfaces this honestly: it distinguishes the containment *policy* from
   actual *enforcement*, so an opted-out / incapable deployment shows a "NOT enforced" warning
   rather than a false green. An **identity-validating proxy** for multi-tenant allowlisted hosts
   is a Phase-2 follow-up (planning#92, `docs/172-agent-containment/egress-control.md`).

@@ -33,7 +33,9 @@ export interface RowHandlers {
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
+  onDeclineRepoSession?: (cardId: string) => Promise<void>;
   onDeliverSessionMessage?: (cardId: string) => Promise<void>;
+  onDeclineSessionMessage?: (cardId: string) => Promise<void>;
   onOpenIssue?: (ref: {
     tracker: TrackerId;
     id?: string;
@@ -53,24 +55,31 @@ export interface RowHandlers {
 
 type CallbackKey = Exclude<keyof RowHandlers, "messages" | "findPlanContent">;
 
-const CALLBACK_KEYS = [
-  "onAnswerQuestion",
-  "onSendFollowUp",
-  "onSubmitBugReport",
-  "onResolvePermission",
-  "onEgressDecision",
-  "onSettingsProposalDecision",
-  "onUndoIssueWrite",
-  "onStartRepoSession",
-  "onDeliverSessionMessage",
-  "onOpenIssue",
-  "onResumeSession",
-  "onReleaseConfirm",
-  "onReleaseCancel",
-  "onAgentInterfaceMessage",
-  "onRequestRewindPreview",
-  "onRewindAtGap",
-] as const satisfies readonly CallbackKey[];
+// A Record, so TypeScript refuses a missing key: one left out reads as
+// `undefined` in every row and its card silently drops the click — which is how
+// the bug-report Cancel never reached the server.
+const CALLBACK_KEY_SET: Record<CallbackKey, true> = {
+  onAnswerQuestion: true,
+  onSendFollowUp: true,
+  onSubmitBugReport: true,
+  onDismissBugReport: true,
+  onResolvePermission: true,
+  onEgressDecision: true,
+  onSettingsProposalDecision: true,
+  onUndoIssueWrite: true,
+  onStartRepoSession: true,
+  onDeclineRepoSession: true,
+  onDeliverSessionMessage: true,
+  onDeclineSessionMessage: true,
+  onOpenIssue: true,
+  onResumeSession: true,
+  onReleaseConfirm: true,
+  onReleaseCancel: true,
+  onAgentInterfaceMessage: true,
+  onRequestRewindPreview: true,
+  onRewindAtGap: true,
+};
+const CALLBACK_KEYS = Object.keys(CALLBACK_KEY_SET) as CallbackKey[];
 
 const RowHandlersContext = createContext<RowHandlers | null>(null);
 

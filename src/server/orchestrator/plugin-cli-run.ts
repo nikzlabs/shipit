@@ -15,7 +15,7 @@ import {
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { planPluginCommands } from "../shared/plugin-cli.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
-import { destinationKey } from "../shared/plugin-repos.js";
+import { destinationKey, formatMemorySize } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import {
   activeLinkPath,
@@ -58,7 +58,8 @@ export const PLUGIN_CLI_NETWORK = "shipit-plugin-cli";
 export const PLUGIN_CLI_LABEL = "shipit-plugin-cli";
 export const DEFAULT_PLUGIN_CLI_TIMEOUT_MS = 15 * 60_000;
 
-const CLI_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
+// Replaced per command by the manifest's `cli.<cmd>.memory`, then the project's `overrides.commands.<cmd>.memory`.
+export const DEFAULT_PLUGIN_CLI_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 const CLI_PIDS_LIMIT = 512;
 const MAX_STREAM_BYTES = 8 * 1024 * 1024;
 
@@ -313,6 +314,7 @@ async function runHeldPluginCommand(
   }
 
   const entry = path.posix.join(CONTAINER_PLUGIN_DIR, surfaced.entry);
+  const memoryBytes = surfaced.memoryBytes ?? DEFAULT_PLUGIN_CLI_MEMORY_BYTES;
   try {
     return await execute(deps, {
       mounts,
@@ -323,6 +325,11 @@ async function runHeldPluginCommand(
       stdin: req.stdin ?? "",
       networkMode: netns.networkMode,
       overlaySpec,
+      memoryBytes,
+      outOfMemoryError: `\`${surfaced.name}\` ran out of memory: the kernel killed a process in its `
+        + `container at its ${formatMemorySize(memoryBytes)} limit. This project can raise the limit in `
+        + `shipit.yaml, under the \`use\` entry whose alias is \`${use.alias}\` — `
+        + `\`overrides.commands.${surfaced.declared}.memory\` (for example \`memory: 4g\`).`,
     });
   } catch (err) {
     return refuse(`\`${surfaced.name}\` could not be started (${entry}): ${message(err)}`);
@@ -432,6 +439,8 @@ interface ExecuteSpec {
   stdin: string;
   networkMode: string;
   overlaySpec?: PluginOverlaySpec;
+  memoryBytes: number;
+  outOfMemoryError: string;
 }
 
 async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCliResult> {
@@ -458,7 +467,7 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
       AutoRemove: false,
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
-      Memory: CLI_MEMORY_BYTES,
+      Memory: spec.memoryBytes,
       PidsLimit: CLI_PIDS_LIMIT,
       Tmpfs: { "/tmp": "rw,exec,nosuid,size=512m" },
     },
@@ -496,7 +505,11 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
     if (code === "cancelled") {
       return { error: "the session went away while the command was running", exitCode: 125, stdout: out.text(), stderr: err.text() };
     }
-    return { exitCode: typeof code === "number" ? code : 1, stdout: out.text(), stderr: err.text() };
+    const exitCode = typeof code === "number" ? code : 1;
+    const result: PluginCliResult = { exitCode, stdout: out.text(), stderr: err.text() };
+    // Any non-zero exit, not only 137: Docker can flag an OOM kill of a child the CLI outlived.
+    if (exitCode !== 0 && await wasOomKilled(container)) result.error = spec.outOfMemoryError;
+    return result;
   } finally {
     await container.remove({ force: true }).catch((err: unknown) => {
       console.warn(
@@ -505,6 +518,15 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
         message(err),
       );
     });
+  }
+}
+
+async function wasOomKilled(container: Docker.Container): Promise<boolean> {
+  try {
+    const info = await container.inspect();
+    return info.State.OOMKilled;
+  } catch {
+    return false;
   }
 }
 

@@ -5,6 +5,7 @@ import { holdsActiveReservation } from "./sessions.js";
 import { getMessage, sleep } from "./disk-utils.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { stackLabelFilters } from "./stack-label.js";
+import { reapParentlessEgressSidecars } from "./egress-orphan-reaper.js";
 
 export const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
 export const PARENT_SESSION_LABEL = "shipit-parent-session";
@@ -63,6 +64,8 @@ export async function downComposeStackByProject(
         + `(${left.map((c) => c.Id.slice(0, 12)).join(", ")})`,
       );
     }
+    // Egress sidecars join a service's netns but are not in its Compose project.
+    await reapParentlessEgressSidecars(docker, { parentIds: containers.map((c) => c.Id) });
   }
 
   try {

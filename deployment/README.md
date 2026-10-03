@@ -48,7 +48,8 @@ your answer. Two of them matter more than the rest:
 - **The agent CLIs** are built into the images, so this is an install-time choice. Changing it
   later means editing the answer and running the deploy or update again.
 - **Agent network containment** is only asked on a host that cannot run the containment sidecar.
-  Answering `off` there means a prompt-injected agent could send your credentials out. With **no**
+  Answering `off` there means a prompt-injected agent could send your credentials out, and ShipIt
+  stays reachable on loopback only (see *Sessions cannot reach this machine* below). With **no**
   answer the install keeps containment **on** — an agent cannot disable it by leaving the question
   out.
 
@@ -127,6 +128,9 @@ http://100-83-12-47.sslip.io:4123
   Docker port binding can't be added to an already-running container.) `tailscale.sh` itself is the
   exception, and deliberately so: it is the opt-in command, so it reports the problem and stops rather
   than claiming to have configured something it couldn't.
+- **A host that cannot run the egress sidecar gets no tailnet binding.** Each start leaves it out and
+  says why, and `tailscale.sh` stops with the same reason (see *Sessions cannot reach this machine*
+  below).
 - **Use the sslip.io URL, not the raw IP.** Previews are served at `{sessionId}--{port}.<host>`; a raw
   IP can't carry a wildcard subdomain, so `http://100.83.12.47:4123` gives a working app and blank
   previews. Same trade-offs as the VPS sslip.io path below: HTTP only (no wildcard cert for these
@@ -155,7 +159,18 @@ absolute bundle path (which is what ShipIt does).
 To publish on your LAN instead, set `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env`. That exposes
 an unauthenticated agent with a shell and your repositories to that network — only do it on a network
 you control, and don't count on a host firewall to contain it (Docker's published-port rules bypass
-`ufw` on Linux; the macOS application firewall is off by default).
+`ufw` on Linux; the macOS application firewall is off by default). A bind address the internet can
+reach makes ShipIt public with no sign-in: anyone on the internet has your access, and a session is
+no different from any internet client, so ShipIt cannot keep a session away from its own API.
+
+**Sessions cannot reach this machine.** In both egress modes, a session's containers cannot reach
+this machine, private networks or the tailnet; open mode keeps internet access. A granted SSH
+destination is the one exception, on its own port only. This needs the egress sidecar. On a host that
+cannot run it (rootless Docker and locked-down kernels are the usual reason), ShipIt is reachable on
+loopback only: each start leaves out a tailnet binding and a non-loopback `SHIPIT_BIND_ADDR` and says
+so, and the orchestrator refuses to start with any other binding. Access from the same machine and
+through an SSH tunnel keeps working. See
+[`docs/319-api-reach-through-host`](../docs/319-api-reach-through-host/requirements.md).
 
 See [`docs/254-local-bind-and-tailnet-access`](../docs/254-local-bind-and-tailnet-access/plan.md).
 
@@ -357,7 +372,7 @@ If Zero Trust setup fails or you leave the API token blank, the script exits bef
 SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1 bash /opt/shipit/deployment/vps/cloudflare.sh
 ```
 
-That override publishes ShipIt publicly at `shipit.example.com` and `*.shipit.example.com`; do not use it for normal installs.
+That override publishes ShipIt publicly at `shipit.example.com` and `*.shipit.example.com`; do not use it for normal installs. Anyone on the internet then has your access, and a session is no different from any internet client, so ShipIt cannot keep a session away from its own API.
 
 Users authenticate through Cloudflare before reaching ShipIt. You can use any identity provider Cloudflare supports (Google, GitHub, one-time PIN, etc.).
 
@@ -423,6 +438,8 @@ bash /opt/shipit/deployment/vps/tailscale.sh
 ```
 
 The script installs Tailscale if needed, authenticates the VPS, and forwards the node's tailnet IP to ShipIt's localhost listener. It then prints an **sslip.io** access URL (see below) you can use immediately. It leaves the node's Tailscale hostname entirely to Tailscale, so rerunning it never renames your node. Any Cloudflare tunnel you configured separately continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
+
+On a host that cannot run the egress sidecar, sessions cannot be kept away from this machine and the tailnet, so the script says why and installs nothing, and the forwarder does not forward while that is so (it checks when it starts). ShipIt stays on `127.0.0.1:4123`, where Cloudflare Tunnel with Access and an SSH tunnel still reach it. See *Sessions cannot reach this machine* under the local install.
 
 ### Subdomain previews over Tailscale
 

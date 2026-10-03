@@ -6,17 +6,43 @@ import { parse as parseYaml } from "yaml";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import {
   extractContainerPort,
-  parseComposeFile,
-  parseUserNamedVolumes,
+  parseComposeContent,
+  validateResolvedModel,
+  rewriteResolvedModel,
+  serializeComposeModel,
+  composeBuildModel,
+  pluginStubModel,
   generateComposeOverride,
-  writeComposeOverride,
+  writeRootOnlyFile,
   ComposeValidationError,
   validateDevices,
   isDevKvmAllowed,
   ALLOWED_DEVICE,
   parseStopGracePeriodMs,
   UNKNOWN_STOP_GRACE_PERIOD_MS,
+  TRUSTED_OPS_PROXY_IMAGE,
+  CLASSIFIED_SERVICE_FIELDS,
+  type ComposeParseOptions,
+  type ComposeService,
 } from "./compose-generator.js";
+import { fakeResolvedModel } from "./compose-test-helpers.js";
+import { OPS_TEMPLATE } from "./templates-ops.js";
+
+const PROJECT = "shipit-test";
+
+/** What a start runs on the file: the raw gate, then validation of the model Compose resolves. */
+function parseComposeFile(
+  file: string,
+  opts: ComposeParseOptions,
+  env?: Record<string, string>,
+): ComposeService[] {
+  const raw = fs.readFileSync(file, "utf-8");
+  const services = parseComposeContent(raw, opts);
+  const workspaceDir = path.dirname(file);
+  const model = fakeResolvedModel(raw, { workspaceDir, project: PROJECT, ...(env ? { env } : {}) });
+  validateResolvedModel(model, { ...opts, project: PROJECT, workspaceDir });
+  return services;
+}
 
 describe("parseStopGracePeriodMs (docs/283)", () => {
   it("reads a bare number as seconds, per Compose", () => {
@@ -239,14 +265,26 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("use_api_socket");
     expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true })).toThrow("use_api_socket");
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("compose.docker-socket");
-    expect(() => parseComposeFile(p, { dockerSocket: true })).not.toThrow();
+    expect(() => parseComposeFile(p, { dockerSocket: true })).toThrow("project.allowDockerSocket");
+    expect(() => parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "granted" })).not.toThrow();
   });
 
   it("rejects lifecycle hooks in contained services", () => {
     const dir = setup();
-    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    post_start:\n      - command: /bin/true\n        privileged: true\n`);
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    post_start:\n      - command: /bin/true\n`);
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("lifecycle hooks");
     expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
+  it("rejects a privileged lifecycle hook in every mode", () => {
+    const dir = setup();
+    for (const field of ["post_start", "pre_stop"]) {
+      for (const value of ["true", '"yes"']) {
+        const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    ${field}:\n      - command: /bin/true\n        privileged: ${value}\n`);
+        expect(() => parseComposeFile(p, { dockerSocket: false }), `${field} ${value}`)
+          .toThrow(`${field}[0].privileged`);
+      }
+    }
   });
 
   it("rejects network_mode: host", () => {
@@ -472,7 +510,7 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("include:");
   });
 
-  it("rejects build.network: host in contained services", () => {
+  it("rejects build.network: host in every mode", () => {
     const dir = setup();
     const p = writeCompose(dir, `
 services:
@@ -482,9 +520,10 @@ services:
       context: .
       network: host
 `);
-    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
-      .toThrow("`build.network: host` is not allowed for contained services");
-    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+    for (const containEgress of [true, false]) {
+      expect(() => parseComposeFile(p, { dockerSocket: false, containEgress }))
+        .toThrow(/`build.network: host` is not allowed\. A build may use only/);
+    }
   });
 
   it("rejects a build network ShipIt cannot describe, and allows the two it can", () => {
@@ -508,7 +547,7 @@ services:
       context: .
       network: \${BUILD_NET}
 `);
-    expect(() => parseComposeFile(interpolated, { dockerSocket: false, containEgress: true }))
+    expect(() => parseComposeFile(interpolated, { dockerSocket: false, containEgress: true }, { BUILD_NET: "host" }))
       .toThrow("build.network");
 
     for (const value of ["none", "default"]) {
@@ -532,7 +571,7 @@ services:
     expect(() => parseComposeFile(plain, { dockerSocket: false, containEgress: true })).not.toThrow();
   });
 
-  it("rejects build.privileged and build.entitlements in contained services", () => {
+  it("rejects build.privileged and build.entitlements in every mode", () => {
     const dir = setup();
     const privileged = writeCompose(dir, `
 services:
@@ -544,7 +583,8 @@ services:
 `);
     expect(() => parseComposeFile(privileged, { dockerSocket: false, containEgress: true }))
       .toThrow("build.privileged");
-    expect(() => parseComposeFile(privileged, { dockerSocket: false })).not.toThrow();
+    expect(() => parseComposeFile(privileged, { dockerSocket: false })).toThrow("build.privileged");
+    expect(() => parseComposeFile(privileged, { dockerSocket: false })).not.toThrow("contained");
 
     const quoted = writeCompose(dir, `
 services:
@@ -568,6 +608,7 @@ services:
 `);
     expect(() => parseComposeFile(entitlements, { dockerSocket: false, containEgress: true }))
       .toThrow("build.entitlements");
+    expect(() => parseComposeFile(entitlements, { dockerSocket: false })).toThrow("build.entitlements");
 
     const harmless = writeCompose(dir, `
 services:
@@ -613,7 +654,7 @@ services:
     const p = writeCompose(dir, `
 services:
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: ${TRUSTED_OPS_PROXY_IMAGE}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 `);
@@ -621,7 +662,7 @@ services:
       .toThrow("server-created ops sessions");
   });
 
-  it("allows Docker socket mount when docker-socket is true", () => {
+  it("allows a Docker socket mount only with the key and the user's grant", () => {
     const dir = setup();
     const p = writeCompose(dir, `
 services:
@@ -630,8 +671,32 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 `);
-    const services = parseComposeFile(p, { dockerSocket: true });
-    expect(services).toHaveLength(1);
+    expect(parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "granted" })).toHaveLength(1);
+    expect(() => parseComposeFile(p, { dockerSocket: true }))
+      .toThrow(/needs the user's permission.*`project\.allowDockerSocket`.*Project Settings → Deployments/);
+    expect(() => parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "not_granted" }))
+      .toThrow("project.allowDockerSocket");
+    expect(() => parseComposeFile(p, { dockerSocket: false, dockerSocketGrant: "granted" }))
+      .toThrow(/compose\.docker-socket: true.*project\.allowDockerSocket/);
+    expect(() => parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "no_repository" }))
+      .toThrow(/without a repository.*"Docker access" in Session settings/);
+  });
+
+  it("gives a sandbox no socket through use_api_socket either", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    use_api_socket: "true"\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "no_repository" }))
+      .toThrow("Docker access");
+    expect(() => parseComposeFile(p, { dockerSocket: true })).toThrow("project.allowDockerSocket");
+  });
+
+  it("matches the socket source exactly", () => {
+    const dir = setup();
+    for (const source of ["/var/run/docker.sock.bak", "/var/run/docker.sock-x", "/run/docker.sock"]) {
+      const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    volumes:\n      - ${source}:/s\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "granted" }), source)
+        .toThrow("Absolute bind mount path");
+    }
   });
 
   it("rejects direct Docker socket access for contained non-proxy services", () => {
@@ -644,6 +709,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 `);
     expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true }))
+      .toThrow("direct Docker socket access");
+    expect(() => parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "granted", containEgress: true }))
       .toThrow("direct Docker socket access");
   });
 
@@ -665,63 +732,71 @@ services:
     })).toThrow("direct Docker socket access");
   });
 
-  it("allows the trusted ops proxy on the internal network in a contained ops session", () => {
+  it("allows the trusted ops proxy without the grant, in both modes", () => {
     const dir = setup();
     const environment = trustedProxyEnvironment();
-    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
-    expect(() => parseComposeFile(p, {
-      dockerSocket: true,
-      containEgress: true,
-      trustedOpsProxy: true,
-    })).not.toThrow();
-    expect(() => parseComposeFile(p, {
-      dockerSocket: true,
-      trustedOpsProxy: true,
-    })).not.toThrow();
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    for (const containEgress of [true, false]) {
+      for (const dockerSocket of [true, false]) {
+        const [svc] = parseComposeFile(p, { dockerSocket, containEgress, trustedOpsProxy: true });
+        expect(svc.trustedOpsProxy).toBe(true);
+      }
+    }
   });
 
-  it("does not trust an ops proxy that supplies a build definition", () => {
+  it("accepts the ops template's own proxy in an ops session without the grant", () => {
     const dir = setup();
+    const p = writeCompose(dir, OPS_TEMPLATE.files["docker-compose.yml"]!);
+    for (const containEgress of [true, false]) {
+      const [svc] = parseComposeFile(p, { dockerSocket: true, containEgress, trustedOpsProxy: true });
+      expect(svc.trustedOpsProxy).toBe(true);
+    }
+  });
+
+  it("trusts an older ops file's tag-only proxy and runs the pinned image", () => {
+    const dir = setup();
+    const legacy = OPS_TEMPLATE.files["docker-compose.yml"]!
+      .replace(TRUSTED_OPS_PROXY_IMAGE, "tecnativa/docker-socket-proxy:0.3.0");
+    expect(legacy).not.toContain(TRUSTED_OPS_PROXY_IMAGE);
+    const services = parseComposeFile(writeCompose(dir, legacy), { dockerSocket: true, trustedOpsProxy: true });
+    const proxy = services.find((svc) => svc.name === "docker-socket-proxy");
+    expect(proxy?.trustedOpsProxy).toBe(true);
+    const override = parseYaml(generateComposeOverride(services, { sessionId: "s1", composeConfig: { file: "docker-compose.yml", dockerSocket: false } })) as {
+      services: Record<string, { image?: string }>;
+    };
+    expect(override.services["docker-socket-proxy"].image).toBe(TRUSTED_OPS_PROXY_IMAGE);
+  });
+
+  describe("does not trust an ops proxy that differs from the template", () => {
     const environment = trustedProxyEnvironment();
-    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    build: .\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
-    expect(() => parseComposeFile(p, {
-      dockerSocket: true,
-      containEgress: true,
-      trustedOpsProxy: true,
-    })).toThrow("direct Docker socket access");
-  });
-
-  it("does not trust an ops proxy with an extra bind mount", () => {
-    const dir = setup();
-    const environment = trustedProxyEnvironment();
-    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n      - ./proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro\n`);
-    expect(() => parseComposeFile(p, {
-      dockerSocket: true,
-      containEgress: true,
-      trustedOpsProxy: true,
-    })).toThrow("direct Docker socket access");
-  });
-
-  it("does not trust an ops proxy with a repository-controlled healthcheck", () => {
-    const dir = setup();
-    const environment = trustedProxyEnvironment();
-    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
-    expect(() => parseComposeFile(p, {
-      dockerSocket: true,
-      containEgress: true,
-      trustedOpsProxy: true,
-    })).toThrow("direct Docker socket access");
-  });
-
-  it("does not trust an ops proxy with an unapproved environment key", () => {
-    const dir = setup();
-    const environment = trustedProxyEnvironment("      ALLOW_START: 1");
-    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
-    expect(() => parseComposeFile(p, {
-      dockerSocket: true,
-      containEgress: true,
-      trustedOpsProxy: true,
-    })).toThrow("direct Docker socket access");
+    const socket = "    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n";
+    const cases: Record<string, string> = {
+      "another tag": `    image: tecnativa/docker-socket-proxy:latest\n    environment:\n${environment}\n${socket}`,
+      "a build definition": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    build: .\n    environment:\n${environment}\n${socket}`,
+      "an extra bind mount": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    environment:\n${environment}\n${socket}      - ./proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro\n`,
+      "a healthcheck": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    environment:\n${environment}\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n${socket}`,
+      "a lifecycle hook": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    environment:\n${environment}\n    post_start:\n      - command: /bin/true\n${socket}`,
+      "extends": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    extends: { file: base.yml, service: proxy }\n    environment:\n${environment}\n${socket}`,
+      "volumes_from": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    volumes_from: [web]\n    environment:\n${environment}\n${socket}`,
+      "a secrets declaration": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    x-shipit-secrets: [POST]\n    environment:\n${environment}\n${socket}`,
+      "an unapproved environment key": `    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    environment:\n${trustedProxyEnvironment("      ALLOW_START: 1")}\n${socket}`,
+    };
+    const extraFiles: Record<string, Record<string, string>> = {
+      extends: { "base.yml": "services:\n  proxy:\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n" },
+    };
+    for (const [label, body] of Object.entries(cases)) {
+      it(label, () => {
+        const dir = setup();
+        for (const [name, content] of Object.entries(extraFiles[label] ?? {})) {
+          fs.writeFileSync(path.join(dir, name), content);
+        }
+        const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n  docker-socket-proxy:\n${body}`);
+        expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true, trustedOpsProxy: true }))
+          .toThrow(ComposeValidationError);
+        expect(() => parseComposeFile(p, { dockerSocket: true, trustedOpsProxy: true }))
+          .toThrow(`only as the ops template defines it, with image \`${TRUSTED_OPS_PROXY_IMAGE}\``);
+      });
+    }
   });
 
   it("does not trust list-form proxy environment inherited from a project env file", () => {
@@ -731,7 +806,7 @@ services:
       "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
     const environment = [...allowed.map((key) => `      - ${key}=1`),
       ...denied.map((key) => `      - ${key}=0`), "      - ALLOW_START"].join("\n");
-    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: ${TRUSTED_OPS_PROXY_IMAGE}\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
     expect(() => parseComposeFile(p, {
       dockerSocket: true,
       containEgress: true,
@@ -752,6 +827,35 @@ services:
       containEgress: true,
       trustedOpsProxy: true,
     })).toThrow("reserved UID");
+  });
+
+  it("gives an Open ops session without the grant only the proxy's socket", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `${OPS_TEMPLATE.files["docker-compose.yml"]!}
+  tool:
+    image: node:20
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, trustedOpsProxy: true }))
+      .toThrow(/Service `tool`: a Docker socket mount needs the user's permission/);
+    expect(() => parseComposeFile(p, { dockerSocket: true, dockerSocketGrant: "granted", trustedOpsProxy: true }))
+      .not.toThrow();
+  });
+
+  it("refuses any other service that builds or names the proxy image in an ops session", () => {
+    const dir = setup();
+    for (const extra of [
+      "    image: tecnativa/docker-socket-proxy:0.3.0\n    build: .\n",
+      `    image: docker.io/${TRUSTED_OPS_PROXY_IMAGE}\n`,
+      "    build:\n      context: .\n      tags: [\"tecnativa/docker-socket-proxy:latest\"]\n",
+    ]) {
+      const p = writeCompose(dir, `${OPS_TEMPLATE.files["docker-compose.yml"]!}\n  other:\n${extra}`);
+      expect(() => parseComposeFile(p, { dockerSocket: true, trustedOpsProxy: true }), extra)
+        .toThrow("Service `other`: image");
+    }
+    const unrelated = writeCompose(dir, `${OPS_TEMPLATE.files["docker-compose.yml"]!}\n  other:\n    image: tecnativa/other:1\n`);
+    expect(() => parseComposeFile(unrelated, { dockerSocket: true, trustedOpsProxy: true })).not.toThrow();
   });
 
   it("rejects a user: inside ShipIt's per-session UID range", () => {
@@ -812,6 +916,38 @@ services:
       - ../secret:/data
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
+  });
+
+  it("rejects a home-relative bind source: Compose expands `~` on the host that runs it", () => {
+    const dir = setup();
+    for (const volume of ["~/.ssh:/keys", "~:/home", "{ type: bind, source: ~/.docker, target: /d }"]) {
+      const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    volumes:\n      - ${volume}\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), volume).toThrow("home-relative");
+    }
+  });
+
+  it("rejects a service that names ShipIt's workspace volumes, in every form", () => {
+    const dir = setup();
+    const forms = [
+      "shipit-workspace:/everything",
+      "shipit-session-workspace:/app",
+      "{ type: volume, source: shipit-workspace, target: /b, volume: { subpath: sessions/other/workspace } }",
+      "{ type: volume, source: shipit-session-workspace, target: /c }",
+    ];
+    for (const volume of forms) {
+      const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    volumes:\n      - ${volume}\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), volume).toThrow("reserved for ShipIt");
+      expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }), volume)
+        .toThrow("reserved for ShipIt");
+    }
+  });
+
+  it("rejects a top-level declaration of ShipIt's workspace volume names", () => {
+    const dir = setup();
+    for (const name of ["shipit-workspace", "shipit-session-workspace"]) {
+      const p = writeCompose(dir, `services:\n  web:\n    image: node:20\nvolumes:\n  ${name}: {}\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), name).toThrow("reserved for ShipIt");
+    }
   });
 
   it("rejects a host bind encoded in a top-level volume's driver_opts (planning#386)", () => {
@@ -889,8 +1025,7 @@ services:
 volumes:
   - pgdata
 `);
-    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
-    expect(parseUserNamedVolumes(p)).toEqual([]);
+    expect(() => parseComposeContent(fs.readFileSync(p), { dockerSocket: false })).not.toThrow();
   });
 
   it("rejects a driver_opts host bind in a contained session too", () => {
@@ -1030,7 +1165,6 @@ volumes:
       com.example.keep: "true"
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
-    expect(parseUserNamedVolumes(p).map((v) => v.name)).toEqual(["pgdata", "cache"]);
   });
 
   it("rejects an absolute env_file path (the CLI reads it, in the orchestrator's own fs)", () => {
@@ -1200,14 +1334,11 @@ services:
       - type: volume
         source: mydata
         target: /data
+volumes:
+  mydata:
 `);
     const services = parseComposeFile(p, { dockerSocket: false });
     expect(services).toHaveLength(1);
-  });
-
-  it("throws for missing compose file", () => {
-    expect(() => parseComposeFile("/nonexistent/file.yml", { dockerSocket: false }))
-      .toThrow("Cannot read compose file");
   });
 
   it("throws for compose file without services", () => {
@@ -1282,6 +1413,218 @@ services:
   });
 });
 
+describe("settings that reach outside the service (docs/318 req 7)", () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  let written = 0;
+  function file(content: string): string {
+    tmpDir ??= fs.mkdtempSync(path.join(os.tmpdir(), "compose-req7-"));
+    const p = path.join(tmpDir, `compose-${written++}.yml`);
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  function service(lines: string, extra = ""): string {
+    return file(`services:\n  web:\n    image: node:20\n    user: "1001"\n${lines}${extra}`);
+  }
+
+  const bothModes = [false, true];
+
+  it("refuses provider in every mode", () => {
+    const p = service("    provider:\n      type: model\n");
+    for (const containEgress of bothModes) {
+      expect(() => parseComposeFile(p, { dockerSocket: false, containEgress })).toThrow("`provider` is not allowed");
+    }
+  });
+
+  it("refuses host and container: namespaces in every mode, and keeps service: and private ones", () => {
+    for (const field of ["pid", "ipc", "network_mode", "uts", "cgroup", "userns_mode"]) {
+      for (const value of ["host", "HOST", "container:abc123"]) {
+        const p = service(`    ${field}: "${value}"\n`);
+        for (const containEgress of bothModes) {
+          expect(() => parseComposeFile(p, { dockerSocket: false, containEgress }), `${field}: ${value}`)
+            .toThrow(`\`${field}: ${value}\` is not allowed`);
+        }
+      }
+    }
+    for (const [field, value] of [["pid", "service:db"], ["ipc", "private"], ["ipc", "service:db"],
+      ["network_mode", "none"], ["network_mode", "service:db"], ["cgroup", "private"]]) {
+      const p = file(`services:\n  db:\n    image: postgres:16\n  web:\n    image: node:20\n    ${field}: "${value}"\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), `${field}: ${value}`).not.toThrow();
+    }
+  });
+
+  it("allows volumes_from only for a service of this project", () => {
+    const own = file("services:\n  db:\n    image: postgres:16\n  web:\n    image: node:20\n    volumes_from: [\"db:ro\"]\n");
+    expect(() => parseComposeFile(own, { dockerSocket: false })).not.toThrow();
+    const other = service("    volumes_from: [\"container:other-session-db\"]\n");
+    expect(() => parseComposeFile(other, { dockerSocket: false }))
+      .toThrow("`volumes_from: container:other-session-db` is not allowed. Name a service of this project");
+  });
+
+  it("refuses external and renamed top-level secrets and configs", () => {
+    for (const kind of ["secrets", "configs"]) {
+      const external = service("", `${kind}:\n  token:\n    external: true\n`);
+      expect(() => parseComposeFile(external, { dockerSocket: false }), kind).toThrow("`external: true` is not allowed");
+      const named = service("", `${kind}:\n  token:\n    file: ./token\n    name: shared-token\n`);
+      expect(() => parseComposeFile(named, { dockerSocket: false }), kind).toThrow("`name: shared-token` is not allowed");
+      const plain = service("", `${kind}:\n  token:\n    file: ./token\n    external: "false"\n`);
+      expect(() => parseComposeFile(plain, { dockerSocket: false }), kind).not.toThrow();
+    }
+  });
+
+  it("allows only safe added capabilities in Open sessions", () => {
+    const ok = service("    cap_add: [NET_ADMIN, cap_sys_ptrace, CAP_CHOWN, ipc_lock, SYS_NICE]\n");
+    expect(() => parseComposeFile(ok, { dockerSocket: false })).not.toThrow();
+    expect(() => parseComposeFile(ok, { dockerSocket: false, containEgress: true })).toThrow("cap_add");
+    for (const cap of ["ALL", "SYS_ADMIN", "CAP_SYS_MODULE", "NET_RAW", "DAC_READ_SEARCH"]) {
+      const p = service(`    cap_add: [${cap}]\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false }), cap)
+        .toThrow(`\`cap_add: ${cap}\` is not allowed. A service may add only NET_ADMIN`);
+    }
+  });
+
+  describe("an Open session with the local block (docs/319-api-reach-through-host)", () => {
+    const isolated = { dockerSocket: false, isolateNetwork: true };
+
+    it("refuses an added NET_ADMIN however it is spelled, and keeps the other safe capabilities", () => {
+      for (const cap of ["NET_ADMIN", "cap_net_admin", "Net_Admin"]) {
+        const p = service(`    cap_add: [SYS_PTRACE, ${cap}]\n`);
+        expect(() => parseComposeFile(p, isolated), cap)
+          .toThrow(`\`cap_add: ${cap}\` is not allowed. ShipIt keeps sessions away from this machine and private networks`);
+        expect(() => parseComposeFile(p, { dockerSocket: false }), cap).not.toThrow();
+      }
+      expect(() => parseComposeFile(service("    cap_add: [SYS_PTRACE, CHOWN]\n"), isolated)).not.toThrow();
+    });
+
+    it("refuses a restart policy and ShipIt's reserved egress labels", () => {
+      const restart = service("    deploy:\n      restart_policy:\n        condition: on-failure\n");
+      expect(() => parseComposeFile(restart, isolated))
+        .toThrow("A restarted service runs without the firewall that keeps sessions away from this machine");
+      expect(() => parseComposeFile(restart, { dockerSocket: false })).not.toThrow();
+      const label = service("    labels:\n      shipit-egress-parent: forged\n");
+      expect(() => parseComposeFile(label, isolated)).toThrow("reserved egress namespace");
+      expect(() => parseComposeFile(label, { dockerSocket: false })).not.toThrow();
+    });
+
+    it("keeps the checks that protect the allowlist's resolver and proxy contained-only", () => {
+      const root = file("services:\n  web:\n    image: node:20\n    user: \"0\"\n");
+      expect(() => parseComposeFile(root, isolated)).not.toThrow();
+      expect(() => parseComposeFile(root, { dockerSocket: false, containEgress: true })).toThrow("numeric, non-root");
+      const hook = service("    post_start:\n      - command: /bin/true\n");
+      expect(() => parseComposeFile(hook, isolated)).not.toThrow();
+      const merge = file("x-base: &base\n  image: node:20\nservices:\n  web:\n    <<: *base\n    user: \"1001\"\n");
+      expect(() => parseComposeFile(merge, isolated)).not.toThrow();
+      expect(() => parseComposeFile(merge, { dockerSocket: false, containEgress: true })).toThrow("merge keys");
+      const socket = service("    volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]\n");
+      expect(() => parseComposeFile(socket, { ...isolated, dockerSocket: true, dockerSocketGrant: "granted" }))
+        .not.toThrow();
+    });
+  });
+
+  it("allows only no-new-privileges in security_opt, in every mode", () => {
+    for (const value of ["no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"]) {
+      const p = service(`    security_opt: ["${value}"]\n`);
+      for (const containEgress of bothModes) {
+        expect(() => parseComposeFile(p, { dockerSocket: false, containEgress }), value).not.toThrow();
+      }
+    }
+    for (const value of ["seccomp:unconfined", "apparmor=unconfined", "label:disable", "no-new-privileges:false"]) {
+      const p = service(`    security_opt: ["${value}"]\n`);
+      for (const containEgress of bothModes) {
+        expect(() => parseComposeFile(p, { dockerSocket: false, containEgress }), value)
+          .toThrow(`\`security_opt: ${value}\` is not allowed`);
+      }
+    }
+  });
+
+  it("refuses device_cgroup_rules and device reservations in every mode", () => {
+    const rules = service("    device_cgroup_rules: [\"c 1:3 mr\"]\n");
+    const reserved = service("    deploy:\n      resources:\n        reservations:\n          devices:\n            - capabilities: [gpu]\n");
+    for (const containEgress of bothModes) {
+      expect(() => parseComposeFile(rules, { dockerSocket: false, containEgress })).toThrow("device_cgroup_rules");
+      expect(() => parseComposeFile(reserved, { dockerSocket: false, containEgress }))
+        .toThrow("deploy.resources.reservations.devices");
+    }
+    const limits = service("    deploy:\n      resources:\n        limits: { cpus: \"1\", memory: 512M }\n");
+    expect(() => parseComposeFile(limits, { dockerSocket: false })).not.toThrow();
+  });
+
+  it("allows only log drivers that keep logs local", () => {
+    const local = service("    logging:\n      driver: json-file\n      options: { max-size: 10m }\n");
+    expect(() => parseComposeFile(local, { dockerSocket: false })).not.toThrow();
+    const remote = service("    logging:\n      driver: syslog\n");
+    expect(() => parseComposeFile(remote, { dockerSocket: false })).toThrow("`logging.driver: syslog` is not allowed");
+  });
+
+  it("refuses a string privileged flag", () => {
+    const p = service("    privileged: \"true\"\n");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("`privileged: true` is not allowed");
+  });
+
+  it("checks label_file paths in every mode", () => {
+    const ok = service("    label_file: ./labels.env\n");
+    for (const containEgress of bothModes) {
+      expect(() => parseComposeFile(ok, { dockerSocket: false, containEgress })).not.toThrow();
+    }
+    const outside = service("    label_file: [/etc/labels]\n");
+    expect(() => parseComposeFile(outside, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("refuses a service field ShipIt has not classified, naming it", () => {
+    for (const key of ["gpus", "runtime", "cgroup_parent", "pre_start", "oom_score_adj", "not_a_field"]) {
+      const p = service(`    ${key}: x\n`);
+      for (const containEgress of bothModes) {
+        expect(() => parseComposeFile(p, { dockerSocket: false, containEgress }), key)
+          .toThrow(`the Compose field \`${key}\` is not supported`);
+      }
+    }
+    const extension = service("    x-anything: { free: form }\n");
+    expect(() => parseComposeFile(extension, { dockerSocket: false })).not.toThrow();
+    expect([...CLASSIFIED_SERVICE_FIELDS].filter((key) => key.startsWith("x-"))).toEqual([]);
+  });
+
+  describe("a service holding the socket cannot be joined", () => {
+    const granted = { dockerSocket: true, dockerSocketGrant: "granted" as const };
+    const holder = "  sock:\n    image: docker:cli\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n";
+
+    it("through volumes_from", () => {
+      const p = file(`services:\n${holder}  web:\n    image: node:20\n    volumes_from: [sock]\n`);
+      expect(() => parseComposeFile(p, granted))
+        .toThrow("`volumes_from: sock` is not allowed, because `sock` has the Docker socket");
+    });
+
+    it("through a service: namespace", () => {
+      for (const field of ["pid", "ipc", "network_mode"]) {
+        const p = file(`services:\n${holder}  web:\n    image: node:20\n    ${field}: "service:sock"\n`);
+        expect(() => parseComposeFile(p, granted), field)
+          .toThrow(`\`${field}: service:sock\` is not allowed, because \`sock\` has the Docker socket`);
+      }
+    });
+
+    it("when the socket comes from use_api_socket or another service's volumes", () => {
+      const api = file("services:\n  sock:\n    image: docker:cli\n    use_api_socket: true\n  web:\n    image: node:20\n    pid: service:sock\n");
+      expect(() => parseComposeFile(api, granted)).toThrow("because `sock` has the Docker socket");
+      const chain = file(`services:\n${holder}  mid:\n    image: node:20\n    volumes_from: [sock]\n  web:\n    image: node:20\n    ipc: service:mid\n`);
+      expect(() => parseComposeFile(chain, granted)).toThrow("has the Docker socket");
+    });
+
+    it("including the ops proxy in an ops session", () => {
+      // An explicit user keeps the contained-user rule from answering first where no fill-in UID exists.
+      const p = file(`${OPS_TEMPLATE.files["docker-compose.yml"]!}\n  web:\n    image: node:20\n    user: "1000"\n    pid: service:docker-socket-proxy\n`);
+      for (const containEgress of bothModes) {
+        expect(() => parseComposeFile(p, { dockerSocket: true, containEgress, trustedOpsProxy: true }))
+          .toThrow("`pid: service:docker-socket-proxy` is not allowed");
+      }
+    });
+  });
+});
+
 describe("generateComposeOverride", () => {
   const baseOpts = {
     sessionId: "test-session-123",
@@ -1301,25 +1644,28 @@ describe("generateComposeOverride", () => {
   });
 
   // planning#584: the boot sweeps select by the stack label, and Compose adds none of its own.
-  it("labels the session network and user-named volumes with the stack, like the services", () => {
-    const override = generateComposeOverride(
-      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
-      { ...baseOpts, stackName: "shipit-a", userNamedVolumes: [{ name: "pgdata" }] },
-    );
+  it("labels the session network with the stack, like the services", () => {
+    const override = generateComposeOverride([{ name: "db" }], { ...baseOpts, stackName: "shipit-a" });
     const doc = parseYaml(override) as {
       services: Record<string, { labels: Record<string, string> }>;
       networks: Record<string, { labels?: Record<string, string> }>;
-      volumes: Record<string, { labels?: Record<string, string> }>;
     };
     expect(doc.services.db.labels["shipit-stack"]).toBe("shipit-a");
     expect(doc.networks["shipit-session"].labels).toEqual({ "shipit-stack": "shipit-a" });
-    expect(doc.volumes.pgdata.labels).toMatchObject({ "shipit-stack": "shipit-a" });
 
-    const unscoped = parseYaml(generateComposeOverride(
-      [{ name: "db" }], { ...baseOpts, userNamedVolumes: [{ name: "pgdata" }] },
-    )) as { networks: Record<string, { labels?: unknown }>; volumes: Record<string, { labels: Record<string, string> }> };
+    const unscoped = parseYaml(generateComposeOverride([{ name: "db" }], baseOpts)) as {
+      networks: Record<string, { labels?: unknown }>;
+    };
     expect(unscoped.networks["shipit-session"].labels).toBeUndefined();
-    expect(unscoped.volumes.pgdata.labels).not.toHaveProperty("shipit-stack");
+  });
+
+  it("sets pull_policy: never only on the services this start builds", () => {
+    const doc = parseYaml(generateComposeOverride(
+      [{ name: "web" }, { name: "db" }],
+      { ...baseOpts, builtServices: ["web"] },
+    )) as { services: Record<string, { pull_policy?: string }> };
+    expect(doc.services.web.pull_policy).toBe("never");
+    expect(doc.services.db.pull_policy).toBeUndefined();
   });
 
   it("makes the service network internal while egress containment is active", () => {
@@ -1343,6 +1689,27 @@ describe("generateComposeOverride", () => {
     expect(openOverride).not.toContain("internal: true");
     expect(openOverride).not.toContain("192.0.2.1");
     expect(openOverride).not.toContain("SETUID");
+    expect(openOverride).not.toContain("restart:");
+  });
+
+  it("isolates an Open session's services with no contained-only setting (docs/319)", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }, { name: "docker-socket-proxy", trustedOpsProxy: true }],
+      { ...baseOpts, isolateNetwork: true },
+    );
+    expect(override).toContain("internal: true");
+    // No host address on the bridge, so nothing on it reaches the host before its firewall.
+    expect(override).toContain("com.docker.network.bridge.inhibit_ipv4: \"true\"");
+    expect(override).toContain("networks: !override\n      - shipit-session");
+    const doc = parseYaml(override) as {
+      services: Record<string, { restart?: string; cap_drop: string[]; security_opt?: string[]; dns?: unknown }>;
+    };
+    expect(doc.services.web.restart).toBe("no");
+    expect(doc.services["docker-socket-proxy"].restart).toBeUndefined();
+    expect(doc.services.web.cap_drop).toEqual(["NET_RAW"]);
+    expect(doc.services.web.security_opt).toBeUndefined();
+    expect(doc.services.web.dns).toBeUndefined();
+    expect(override).not.toContain("route_localnet");
   });
 
   it("overrides repository DNS in contained mode", () => {
@@ -1446,51 +1813,181 @@ describe("generateComposeOverride", () => {
     );
     expect(override).toContain("!reset []");
   });
+});
 
-  it("rewrites workspace volumes when workspaceVolume is set", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", ports: ["5173:5173"], volumes: [".:/app"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
-    );
-    expect(override).toContain("source: shipit-workspace");
-    expect(override).toContain("target: /app");
-    expect(override).toContain("subpath: sessions/abc/workspace");
-    expect(override).toContain("shipit-workspace");
-    expect(override).toContain("external: true");
+describe("rewriteResolvedModel", () => {
+  const WS = "/workspace/sessions/abc/workspace";
+  const rewriteOpts = {
+    sessionId: "test-session-123",
+    workspaceDir: WS,
+    workspaceVolume: "shipit-ws-vol",
+    workspaceSubpath: "sessions/abc/workspace",
+  };
+  interface Doc {
+    services: Record<string, Record<string, unknown> & { volumes?: Record<string, unknown>[] }>;
+    volumes?: Record<string, Record<string, unknown> & { labels?: Record<string, string> }>;
+  }
+  const bind = (source: string, target: string, extra: Record<string, unknown> = {}) =>
+    ({ type: "bind", source, target, ...extra, bind: { create_host_path: true } });
+  const stack = (volumes: unknown[], top: Record<string, unknown> = {}, name = "web") =>
+    ({ name: PROJECT, services: { [name]: { image: "node:20", volumes } }, ...top });
+  const rewrite = (model: Record<string, unknown>, opts: Parameters<typeof rewriteResolvedModel>[1] = rewriteOpts): Doc =>
+    rewriteResolvedModel(model, opts).model as unknown as Doc;
+
+  // Compose 5.5.1 writes `networks: {default: null}` for a service that names no network.
+  it("drops Compose's implicit default network, and keeps networks a service names", () => {
+    const model = {
+      name: PROJECT,
+      services: {
+        web: { image: "node:20", networks: { default: null } },
+        api: { image: "node:20", networks: { backend: null, default: null } },
+      },
+      networks: { default: { name: `${PROJECT}_default` }, backend: { name: `${PROJECT}_backend` } },
+    };
+    const doc = rewriteResolvedModel(model, rewriteOpts).model as Record<string, Record<string, Record<string, unknown>>>;
+    expect(doc.services.web).not.toHaveProperty("networks");
+    expect(doc.services.api.networks).toEqual({ backend: null, default: null });
+    expect(Object.keys(doc.networks)).toEqual(["default", "backend"]);
+
+    const only = rewriteResolvedModel({ ...model, services: { web: model.services.web } }, rewriteOpts).model;
+    expect(only).not.toHaveProperty("networks.default");
   });
 
-  it("rewrites subdirectory volumes with combined subpath", () => {
-    const override = generateComposeOverride(
-      [{ name: "api", volumes: ["./backend:/app"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "sessions/abc/workspace" },
+  // planning#584: the boot sweeps select by the stack label, and Compose adds none of its own.
+  it("labels the project's named volumes with the stack", () => {
+    const model = stack(
+      [{ type: "volume", source: "pgdata", target: "/var/lib/postgresql/data", volume: {} }],
+      { volumes: { pgdata: { name: `${PROJECT}_pgdata`, labels: { "com.example.keep": "true" } } } },
     );
-    expect(override).toContain("subpath: sessions/abc/workspace/backend");
-    expect(override).toContain("target: /app");
+    const doc = rewrite(model, { ...rewriteOpts, stackName: "shipit-a" });
+    expect(doc.volumes?.pgdata.labels).toMatchObject({
+      "com.example.keep": "true",
+      "shipit-managed": "true",
+      "shipit-session": "test-session-123",
+      "shipit-stack": "shipit-a",
+    });
+    expect(rewrite(model).volumes?.pgdata.labels).not.toHaveProperty("shipit-stack");
+  });
+
+  it("rewrites workspace volumes when workspaceVolume is set", () => {
+    const { model, workspaceMounts } = rewriteResolvedModel(stack([bind(WS, "/app")]), rewriteOpts);
+    const doc = model as unknown as Doc;
+    expect(doc.services.web.volumes).toEqual([
+      { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "sessions/abc/workspace" } },
+    ]);
+    expect(doc.volumes).toEqual({ "shipit-workspace": { name: "shipit-ws-vol", external: true } });
+    expect(workspaceMounts.get("web")).toEqual([{ relPath: "", target: "/app" }]);
+  });
+
+  it("keeps binds, and records them, without a workspace volume", () => {
+    const mount = bind(`${WS}/backend`, "/app");
+    const { model, workspaceMounts } = rewriteResolvedModel(
+      stack([mount]),
+      { sessionId: "test-session-123", workspaceDir: WS },
+    );
+    expect((model as unknown as Doc).services.web.volumes).toEqual([mount]);
+    expect(workspaceMounts.get("web")).toEqual([{ relPath: "backend", target: "/app" }]);
+  });
+
+  describe("workspace subdirectory mounts", () => {
+    const DEVICE = "/var/lib/docker/volumes/shipit-ws-vol/_data/sessions/abc/workspace";
+    const volumeOpts = { ...rewriteOpts, workspaceDevice: DEVICE };
+    const render = (volumes: unknown[], opts: Parameters<typeof rewriteResolvedModel>[1] = volumeOpts) =>
+      rewrite(stack(volumes, {}, "api"), opts);
+
+    it("mounts a subdirectory from a volume rooted at this session's workspace, not the shared one", () => {
+      const doc = render([
+        bind(`${WS}/backend`, "/app", { read_only: true }),
+        { type: "bind", source: `${WS}/frontend`, target: "/web" },
+      ]);
+      expect(doc.services.api.volumes).toEqual([
+        { type: "volume", source: "shipit-session-workspace", volume: { subpath: "backend" }, target: "/app", read_only: true },
+        { type: "volume", source: "shipit-session-workspace", volume: { subpath: "frontend" }, target: "/web" },
+      ]);
+      expect(doc.volumes?.["shipit-session-workspace"]).toEqual({
+        driver: "local",
+        driver_opts: { type: "none", o: "bind", device: DEVICE },
+        labels: { "shipit-managed": "true", "shipit-session": "test-session-123" },
+      });
+    });
+
+    // Docker confines a subpath only to its volume's root, and the shared root holds every session.
+    it("never emits a shared-volume subpath below the workspace directory itself", () => {
+      const doc = render([
+        bind(WS, "/a"), bind(`${WS}/`, "/b"), bind(`${WS}/.`, "/c"),
+        bind(`${WS}/x`, "/d"), bind(`${WS}/x/./y/`, "/e"), bind(`${WS}/x//y`, "/f"),
+      ]);
+      const volumes = doc.services.api.volumes ?? [];
+      const shared = volumes.filter((v) => v.source === "shipit-workspace");
+      expect(shared.map((v) => v.target)).toEqual(["/a", "/b", "/c"]);
+      for (const mount of shared) expect(mount.volume).toEqual({ subpath: "sessions/abc/workspace" });
+      expect(volumes.filter((v) => v.source === "shipit-session-workspace").map((v) => v.volume))
+        .toEqual([{ subpath: "x" }, { subpath: "x/y" }, { subpath: "x/y" }]);
+    });
+
+    it("declares no session volume for a stack that only mounts the whole workspace", () => {
+      const doc = render([bind(WS, "/app")], { ...volumeOpts, workspaceDevice: undefined });
+      expect(doc.volumes?.["shipit-session-workspace"]).toBeUndefined();
+      expect(doc.volumes?.["shipit-workspace"]).toEqual({ name: "shipit-ws-vol", external: true });
+    });
+
+    it("refuses a subdirectory mount when the workspace's daemon path is unknown", () => {
+      expect(() => render([bind(`${WS}/backend`, "/app")], { ...volumeOpts, workspaceDevice: undefined }))
+        .toThrow("could not locate this session's workspace on the Docker host");
+    });
+
+    it("refuses to mount the workspace when its place in the shared volume is unknown", () => {
+      expect(() => render([bind(WS, "/app")], { ...volumeOpts, workspaceSubpath: undefined }))
+        .toThrow("could not locate this session inside the workspace volume");
+    });
   });
 
   it("preserves read-only mode on rewritten volumes", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app:ro"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol" },
-    );
-    expect(override).toContain("read_only: true");
+    const doc = rewrite(stack([bind(WS, "/app", { read_only: true })]));
+    expect(doc.services.web.volumes?.[0]).toMatchObject({ source: "shipit-workspace", read_only: true });
   });
 
   it("leaves non-workspace volumes untouched", () => {
-    const override = generateComposeOverride(
-      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol" },
-    );
-    expect(override).toContain("pgdata:/var/lib/postgresql/data");
+    const pgdata = { type: "volume", source: "pgdata", target: "/var/lib/postgresql/data", volume: {} };
+    const doc = rewrite(stack([pgdata], { volumes: { pgdata: { name: `${PROJECT}_pgdata` } } }));
+    expect(doc.services.web.volumes).toEqual([pgdata]);
   });
 
   it("rewrites object-form workspace volumes", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", volumes: [{ type: "bind", source: ".", target: "/app" }] }],
-      { ...baseOpts, workspaceVolume: "shipit-ws-vol", workspaceSubpath: "ws/dir" },
+    const doc = rewrite(
+      stack([{ type: "bind", source: WS, target: "/app" }]),
+      { ...rewriteOpts, workspaceSubpath: "ws/dir" },
     );
-    expect(override).toContain("source: shipit-workspace");
-    expect(override).toContain("subpath: ws/dir");
+    expect(doc.services.web.volumes).toEqual([
+      { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "ws/dir" } },
+    ]);
+  });
+
+  it("drops empty env_file, label_file and ports, and lists built services and project files", () => {
+    const model = {
+      name: PROJECT,
+      services: {
+        web: {
+          image: "app:dev",
+          build: { context: WS, dockerfile: "Dockerfile" },
+          env_file: [],
+          label_file: [],
+          ports: [{ mode: "ingress", target: 80, published: "8080", protocol: "tcp" }],
+        },
+        db: { image: "postgres:16" },
+      },
+      secrets: { token: { name: `${PROJECT}_token`, file: `${WS}/token` } },
+      configs: { app: { name: `${PROJECT}_app`, file: `${WS}/conf/app.ini` } },
+    };
+    const before = structuredClone(model);
+    const { model: out, builtServices, projectFiles } = rewriteResolvedModel(model, rewriteOpts);
+    expect((out as unknown as Doc).services.web).toEqual({ image: "app:dev", build: { context: WS, dockerfile: "Dockerfile" } });
+    expect(builtServices).toEqual(["web"]);
+    expect(projectFiles).toEqual([
+      { kind: "secrets", name: "token", file: `${WS}/token` },
+      { kind: "configs", name: "app", file: `${WS}/conf/app.ini` },
+    ]);
+    expect(model).toEqual(before);
   });
 });
 
@@ -1650,7 +2147,7 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
   });
 });
 
-describe("writeComposeOverride", () => {
+describe("writeRootOnlyFile", () => {
   let tmpDir: string;
 
   function setup() {
@@ -1662,46 +2159,36 @@ describe("writeComposeOverride", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes the override into the given directory", () => {
-    const dir = setup();
-    const content = "services: {}\n";
-    const result = writeComposeOverride(dir, content);
-    expect(result).toBe(path.join(dir, "compose.override.yml"));
-    expect(fs.readFileSync(result, "utf-8")).toBe(content);
+  it("writes the content to the given file", () => {
+    const file = path.join(setup(), "override.yml");
+    expect(writeRootOnlyFile(file, "services: {}\n")).toBe(file);
+    expect(fs.readFileSync(file, "utf-8")).toBe("services: {}\n");
   });
 
-  it("writes the override 0600, including over a pre-existing looser file", () => {
-    const dir = setup();
-    const target = path.join(dir, "compose.override.yml");
-    fs.writeFileSync(target, "stale", { mode: 0o644 });
-    writeComposeOverride(dir, "services: {}\n");
-    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+  it("writes the file 0600, including over a pre-existing looser file", () => {
+    const file = path.join(setup(), "override.yml");
+    fs.writeFileSync(file, "stale", { mode: 0o644 });
+    writeRootOnlyFile(file, "services: {}\n");
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it("creates the target directory if it doesn't exist", () => {
-    const dir = setup();
-    const target = path.join(dir, "state");
-    writeComposeOverride(target, "test");
-    expect(fs.existsSync(path.join(target, "compose.override.yml"))).toBe(true);
+    const file = path.join(setup(), "state", "compose", "override.yml");
+    writeRootOnlyFile(file, "test");
+    expect(fs.existsSync(file)).toBe(true);
   });
 
-  it("never creates a .shipit directory in the caller's tree", () => {
-    const dir = setup();
-    writeComposeOverride(path.join(dir, "state"), "services: {}\n");
-    expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
-  });
-
-  it("does not chown the override, even with the worker-uid flag set", () => {
+  it("does not chown the file, even with the worker-uid flag set", () => {
     const myUid = process.getuid?.();
     if (myUid === undefined) return;
     const orig = process.env.SHIPIT_SESSION_WORKER_UID;
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
     try {
-      const dir = setup();
-      const result = writeComposeOverride(dir, "services: {}\n");
-      const before = fs.lstatSync(result).uid;
-      writeComposeOverride(dir, "services: {}\n");
-      expect(fs.lstatSync(result).uid).toBe(before);
+      const file = path.join(setup(), "override.yml");
+      writeRootOnlyFile(file, "services: {}\n");
+      const before = fs.lstatSync(file).uid;
+      writeRootOnlyFile(file, "services: {}\n");
+      expect(fs.lstatSync(file).uid).toBe(before);
     } finally {
       if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
       else process.env.SHIPIT_SESSION_WORKER_UID = orig;
@@ -2169,7 +2656,7 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
 
   it("bind-mounts the wrapper from its absolute staged path, even with a workspace volume", () => {
     const override = generateComposeOverride(
-      [{ name: "api", secrets: ["DATABASE_URL"], volumes: [".:/app"] }],
+      [{ name: "api", secrets: ["DATABASE_URL"], workspaceMounts: [{ relPath: "", target: "/app" }] }],
       {
         ...baseOpts,
         workspaceVolume: "shipit-dev_workspace",
@@ -2211,6 +2698,8 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     sessionId: "sess123abcdef",
     composeConfig: { file: "docker-compose.yml", dockerSocket: false },
     workspaceVolume: "shipit-ws",
+    workspaceSubpath: "sessions/abc/workspace",
+    workspaceDevice: "/var/lib/docker/volumes/shipit-ws/_data/sessions/abc/workspace",
   };
 
   type Vol =
@@ -2225,17 +2714,15 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   const NM = { depDir: "node_modules", volumeName: "shipit-sess123abcde_overlay-aaaa1111" };
 
-  it("appends a nested overlay mount for a root workspace mount, keeping the workspace mount", () => {
+  const ROOT = [{ relPath: "", target: "/app" }];
+
+  it("appends a nested overlay mount for a root workspace mount", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts, workspaceSubpath: "sessions/abc/workspace", overlayDepDirs: [NM] },
     );
     const doc = overrideDoc(override);
-    const vols = doc.services.web.volumes ?? [];
-    expect(vols).toContainEqual(
-      expect.objectContaining({ source: "shipit-workspace", target: "/app" }),
-    );
-    expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/app/node_modules" });
+    expect(doc.services.web.volumes).toContainEqual({ type: "volume", source: NM.volumeName, target: "/app/node_modules" });
     expect(doc.volumes?.[NM.volumeName]).toEqual({ name: NM.volumeName, external: true });
   });
 
@@ -2245,7 +2732,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
       { depDir: "packages/api/node_modules", volumeName: "vol-api" },
     ];
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts, overlayDepDirs: dirs },
     );
     const vols = overrideDoc(override).services.web.volumes ?? [];
@@ -2259,7 +2746,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("maps dep dirs through a subdir mount and skips dep dirs outside it", () => {
     const override = generateComposeOverride(
-      [{ name: "api", volumes: ["./backend:/srv"] }],
+      [{ name: "api", workspaceMounts: [{ relPath: "backend", target: "/srv" }] }],
       {
         ...baseOpts,
         overlayDepDirs: [
@@ -2278,7 +2765,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("targets the overlay volume root (no subpath) and never an overlay-base/ or storage subpath", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts, workspaceSubpath: "sessions/abc/workspace", overlayDepDirs: [NM] },
     );
     const mount = (overrideDoc(override).services.web.volumes ?? []).find(
@@ -2291,7 +2778,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("adds no overlay mounts to a service without a workspace mount", () => {
     const override = generateComposeOverride(
-      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
+      [{ name: "db" }],
       { ...baseOpts, overlayDepDirs: [NM] },
     );
     const doc = overrideDoc(override);
@@ -2302,15 +2789,15 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
 
   it("emits nothing overlay-related when overlayDepDirs is absent (non-overlay session unchanged)", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app"] }],
+      [{ name: "web", workspaceMounts: ROOT }],
       { ...baseOpts },
     );
     expect(override).not.toContain("overlay");
   });
 
-  it("replaces a direct dep-dir mount with the overlay volume (no duplicate target)", () => {
+  it("mounts one overlay at a dep dir that is also mounted directly (no duplicate target)", () => {
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app", "./node_modules:/app/node_modules"] }],
+      [{ name: "web", workspaceMounts: [...ROOT, { relPath: "node_modules", target: "/app/node_modules" }] }],
       { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
     );
     const vols = overrideDoc(override).services.web.volumes ?? [];
@@ -2320,29 +2807,38 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     ]);
   });
 
-  it("drops an anonymous volume at a dep dir rather than declaring two mounts there", () => {
+  it("leaves anonymous volumes in the snapshot and mounts only the overlay at a dep dir", () => {
+    const WS = "/workspace/sessions/abc/workspace";
+    const anonymous = [
+      { type: "volume", target: "/app/node_modules", volume: {} },
+      { type: "volume", target: "/app/.cache", volume: {} },
+    ];
+    const { model, workspaceMounts } = rewriteResolvedModel(
+      { services: { web: { image: "node:20", volumes: [{ type: "bind", source: WS, target: "/app" }, ...anonymous] } } },
+      { sessionId: baseOpts.sessionId, workspaceDir: WS, workspaceVolume: "shipit-ws", workspaceSubpath: "s/w" },
+    );
+    const snapshot = (model as { services: { web: { volumes: unknown[] } } }).services.web.volumes;
+    for (const mount of anonymous) expect(snapshot).toContainEqual(mount);
     const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app", "/app/node_modules"] }],
+      [{ name: "web", workspaceMounts: workspaceMounts.get("web") }],
       { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
     );
-    const vols = overrideDoc(override).services.web.volumes ?? [];
-    expect(vols.filter((v) => (isObj(v) ? v.target : v) === "/app/node_modules")).toEqual([
+    expect(overrideDoc(override).services.web.volumes).toEqual([
       { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
     ]);
-    expect(vols).toContainEqual(expect.objectContaining({ source: "shipit-workspace", target: "/app" }));
-  });
-
-  it("keeps an anonymous volume that is not at a dep dir", () => {
-    const override = generateComposeOverride(
-      [{ name: "web", volumes: [".:/app", "/app/.cache"] }],
-      { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
-    );
-    expect(overrideDoc(override).services.web.volumes ?? []).toContain("/app/.cache");
   });
 
   it("nests dep-dir overlays through a subdir mount written with a trailing slash", () => {
+    const WS = "/workspace/sessions/abc/workspace";
+    const { model, workspaceMounts } = rewriteResolvedModel(
+      { services: { game: { image: "node:20", volumes: [{ type: "bind", source: `${WS}/game/`, target: "/app" }] } } },
+      { sessionId: baseOpts.sessionId, workspaceDir: WS, workspaceVolume: "shipit-ws", workspaceSubpath: "s/w", workspaceDevice: baseOpts.workspaceDevice },
+    );
+    expect((model as { services: { game: { volumes: unknown[] } } }).services.game.volumes).toContainEqual(
+      expect.objectContaining({ source: "shipit-session-workspace", target: "/app", volume: { subpath: "game" } }),
+    );
     const override = generateComposeOverride(
-      [{ name: "game", volumes: ["./game/:/app"] }],
+      [{ name: "game", workspaceMounts: workspaceMounts.get("game") }],
       {
         ...baseOpts,
         workspaceSubpath: "s/w",
@@ -2351,9 +2847,6 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     );
     const vols = overrideDoc(override).services.game.volumes ?? [];
     expect(vols).toContainEqual({ type: "volume", source: "vol-game", target: "/app/node_modules" });
-    expect(vols).toContainEqual(
-      expect.objectContaining({ target: "/app", volume: { subpath: "s/w/game" } }),
-    );
   });
 
   describe("plugin services (docs/262)", () => {
@@ -2414,20 +2907,23 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     it("maps a fragment's own subdirectory mount and skips dep dirs outside it", () => {
       const fragmentMount = {
         type: "volume",
-        source: "shipit-workspace",
+        source: "shipit-session-workspace",
         target: "/app",
-        volume: { subpath: `${WS}/packages/api` },
+        volume: { subpath: "packages/api" },
       };
-      const vols = overrideDoc(generateComposeOverride(
+      const doc = overrideDoc(generateComposeOverride(
         [pluginService([fragmentMount])],
         {
           ...baseOpts,
           workspaceSubpath: WS,
           overlayDepDirs: [NM, { depDir: "packages/api/node_modules", volumeName: "vol-api" }],
         },
-      )).services.probe.volumes ?? [];
+      ));
+      const vols = doc.services.probe.volumes ?? [];
       expect(vols).toContainEqual({ type: "volume", source: "vol-api", target: "/app/node_modules" });
       expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
+      // A plugin's reference alone must declare the session volume.
+      expect(doc.volumes?.["shipit-session-workspace"]).toBeDefined();
     });
   });
 });
@@ -2502,5 +2998,464 @@ describe("container ports (#2325)", () => {
     expect(extractContainerPort("127.0.0.1:8080:80")).toBe(80);
     expect(extractContainerPort("")).toBeUndefined();
     expect(extractContainerPort("nonsense")).toBeUndefined();
+  });
+});
+
+describe("the `persist` volume (docs/317)", () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  function parse(content: string, opts: { containEgress?: boolean } = {}) {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-persist-"));
+    const file = path.join(tmpDir, "docker-compose.yml");
+    fs.writeFileSync(file, content);
+    return parseComposeFile(file, { dockerSocket: false, ...opts });
+  }
+
+  const WS = "/workspace/sessions/s1/workspace";
+  const rewriteOpts = {
+    sessionId: "0123456789abcdef-session",
+    workspaceDir: WS,
+    persist: { device: "/var/lib/docker/volumes/ws/_data/sessions/s1/scratch" },
+  };
+
+  interface PersistDoc {
+    services: Record<string, { volumes?: unknown[] }>;
+    volumes?: Record<string, {
+      name?: string;
+      driver?: string;
+      driver_opts?: Record<string, string>;
+      labels?: Record<string, string>;
+    }>;
+  }
+
+  function snapshot(content: string, extra: Partial<Parameters<typeof rewriteResolvedModel>[1]> = {}): PersistDoc {
+    parseComposeContent(content, { dockerSocket: false });
+    const model = fakeResolvedModel(content, { workspaceDir: WS, project: PROJECT });
+    validateResolvedModel(model, { dockerSocket: false, project: PROJECT, workspaceDir: WS });
+    return rewriteResolvedModel(model, { ...rewriteOpts, ...extra }).model as unknown as PersistDoc;
+  }
+
+  it("records which part of /persist each service mounts, in every declaration form", () => {
+    const [api, other] = parse(`
+services:
+  api:
+    image: node:24-slim
+    volumes:
+      - persist:/data
+      - persist/verseshot:/renders:ro
+      - persist/./media//clips/:/clips
+      - type: volume
+        source: persist
+        target: /cache
+        volume:
+          subpath: cache/fal
+  other:
+    image: node:24-slim
+    volumes: [".:/app"]
+`);
+    expect(api.persistSubpaths).toEqual(["", "verseshot", "media/clips", "cache/fal"]);
+    expect(other).not.toHaveProperty("persistSubpaths");
+  });
+
+  it.each([
+    ["persist/../other-session:/data"],
+    ["persist/a/../../b:/data"],
+  ])("refuses a short-form subpath that leaves /persist: %s", (entry) => {
+    expect(() => parse(`services:\n  api:\n    image: x\n    volumes: ["${entry}"]\n`))
+      .toThrow(/leaves \/persist|Path traversal/);
+  });
+
+  it("refuses a long-form subpath that leaves /persist", () => {
+    expect(() => parse(`
+services:
+  api:
+    image: x
+    volumes:
+      - type: volume
+        source: persist
+        target: /data
+        volume: { subpath: ../../other }
+`)).toThrow(ComposeValidationError);
+  });
+
+  it("refuses interpolation in a persist subpath, which Compose would expand after validation", () => {
+    expect(() => parse(`services:\n  api:\n    image: x\n    volumes: ["persist/\${DIR}:/data"]\n`))
+      .toThrow(/interpolation is not allowed in a `persist` subpath/);
+  });
+
+  it("does not treat a bind of a workspace folder named persist as the session's /persist", () => {
+    const [api] = parse(`
+services:
+  api:
+    image: x
+    volumes:
+      - ./persist:/app/persist
+      - type: bind
+        source: ./persist
+        target: /other
+`);
+    expect(api).not.toHaveProperty("persistSubpaths");
+  });
+
+  it("mounts /persist through a bind-backed volume of the session's own scratch directory", () => {
+    const doc = snapshot(`
+services:
+  api:
+    image: x
+    volumes: ["persist/verseshot:/data"]
+`, { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace", stackName: "shipit-a" });
+
+    expect(doc.volumes?.persist).toEqual({
+      name: "shipit-0123456789ab_shipit-persist",
+      driver: "local",
+      driver_opts: { type: "none", o: "bind", device: rewriteOpts.persist.device },
+      labels: { "shipit-managed": "true", "shipit-session": rewriteOpts.sessionId, "shipit-stack": "shipit-a" },
+    });
+    // A subpath of the shared workspace volume is confined only to that volume, which holds
+    // every session; the subpath must be resolved against the scratch directory instead.
+    expect(doc.services.api.volumes).toEqual([
+      { type: "volume", source: "persist", target: "/data", volume: { nocopy: true, subpath: "verseshot" } },
+    ]);
+  });
+
+  it("rewrites every form, keeping read-only and long-form options", () => {
+    const doc = snapshot(`
+services:
+  api:
+    image: x
+    volumes:
+      - persist:/data:ro
+      - .:/app
+      - type: volume
+        source: persist
+        target: /cache
+        read_only: false
+        volume:
+          subpath: cache
+          nocopy: false
+`, { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace" });
+
+    expect(doc.services.api.volumes).toEqual([
+      { type: "volume", source: "persist", target: "/data", read_only: true, volume: { nocopy: true } },
+      { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "sessions/s1/workspace" } },
+      {
+        type: "volume", source: "persist", target: "/cache", read_only: false,
+        volume: { nocopy: true, subpath: "cache" },
+      },
+    ]);
+  });
+
+  it("rewrites persist mounts when the workspace is a bind mount too", () => {
+    const doc = snapshot(`
+services:
+  api:
+    image: x
+    volumes: [".:/app", "persist/verseshot:/data"]
+`);
+    expect(doc.services.api.volumes).toEqual([
+      expect.objectContaining({ type: "bind", source: WS, target: "/app" }),
+      { type: "volume", source: "persist", target: "/data", volume: { nocopy: true, subpath: "verseshot" } },
+    ]);
+    expect(doc.volumes?.persist?.driver_opts?.device).toBe(rewriteOpts.persist.device);
+  });
+
+  it("replaces a declared top-level `persist` volume even when no service mounts it", () => {
+    const doc = snapshot(`
+services:
+  api:
+    image: x
+volumes:
+  persist:
+  pgdata:
+`);
+    expect(doc.volumes?.persist?.driver_opts?.o).toBe("bind");
+    expect(doc.volumes?.pgdata).toEqual({
+      name: `${PROJECT}_pgdata`,
+      labels: { "shipit-managed": "true", "shipit-session": rewriteOpts.sessionId },
+    });
+  });
+
+  it("declares nothing when no service uses /persist", () => {
+    const doc = snapshot(`services:\n  api:\n    image: x\n    volumes: [".:/app"]\n`);
+    expect(doc.volumes?.persist).toBeUndefined();
+  });
+
+  it("fails rather than emit a mount it has no directory for", () => {
+    expect(() => snapshot(`services:\n  api:\n    image: x\n    volumes: ["persist:/data"]\n`, { persist: undefined }))
+      .toThrow(/could not be located/);
+    expect(() => snapshot(`services:\n  api:\n    image: x\nvolumes:\n  persist:\n`, { persist: undefined }))
+      .toThrow(/could not be located/);
+  });
+});
+
+describe("validateResolvedModel on Compose's resolved output (docs/318)", () => {
+  const WS = "/workspace/sessions/s1/workspace";
+  const SOCKET = "/var/run/docker.sock";
+  const ctx = { dockerSocket: false, project: PROJECT, workspaceDir: WS };
+
+  function resolved(web: Record<string, unknown>, top: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      name: PROJECT,
+      services: { web: { image: "node:20", networks: { default: null }, ...web } },
+      networks: { default: { name: `${PROJECT}_default` } },
+      ...top,
+    };
+  }
+  const mounts = (...volumes: unknown[]) => resolved({ volumes });
+  const bindAt = (source: string) => ({ type: "bind", source, target: "/app", bind: { create_host_path: true } });
+
+  const OPS_CONFIG = `name: ${PROJECT}
+services:
+  docker-socket-proxy:
+    environment:
+      AUTH: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      CONTAINERS: "1"
+      DISTRIBUTION: "0"
+      EVENTS: "1"
+      EXEC: "0"
+      GRPC: "0"
+      IMAGES: "1"
+      INFO: "1"
+      NETWORKS: "1"
+      NODES: "0"
+      PING: "1"
+      PLUGINS: "0"
+      POST: "0"
+      SECRETS: "0"
+      SERVICES: "0"
+      SESSION: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      TASKS: "0"
+      VERSION: "1"
+      VOLUMES: "1"
+    image: ${TRUSTED_OPS_PROXY_IMAGE}
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: true
+    x-shipit-depends-on-install: false
+    x-shipit-preview: auto
+networks:
+  default:
+    name: ${PROJECT}_default
+`;
+
+  it("passes a ./sub stack, and the rewrite declares the session volume", () => {
+    const model = mounts(bindAt(`${WS}/sub`));
+    expect(() => validateResolvedModel(model, ctx)).not.toThrow();
+    const device = "/var/lib/docker/volumes/ws/_data/sessions/s1/workspace";
+    const { model: out } = rewriteResolvedModel(model, {
+      sessionId: "s1",
+      workspaceDir: WS,
+      workspaceVolume: "ws",
+      workspaceSubpath: "sessions/s1/workspace",
+      workspaceDevice: device,
+    });
+    expect(out.volumes).toEqual({
+      "shipit-session-workspace": {
+        driver: "local",
+        driver_opts: { type: "none", o: "bind", device },
+        labels: { "shipit-managed": "true", "shipit-session": "s1" },
+      },
+    });
+  });
+
+  it("passes the ops template's proxy in an ops session", () => {
+    for (const containEgress of [false, true]) {
+      const check = validateResolvedModel(parseYaml(OPS_CONFIG), {
+        ...ctx, dockerSocket: true, containEgress, trustedOpsProxy: true,
+      });
+      expect([...check.trustedOpsProxies]).toEqual(["docker-socket-proxy"]);
+    }
+  });
+
+  it("refuses a bind source that resolved outside the workspace", () => {
+    for (const source of ["/", "/workspace/sessions/other/workspace", "/workspace/sessions/s1", `${WS}-b`]) {
+      expect(() => validateResolvedModel(mounts(bindAt(source)), ctx), source)
+        .toThrow("outside this session's workspace");
+    }
+  });
+
+  it("refuses a reserved named volume", () => {
+    const mount = { type: "volume", source: "shipit-workspace", target: "/b", volume: { subpath: "sessions/other/workspace" } };
+    expect(() => validateResolvedModel(mounts(mount), ctx)).toThrow("reserved for ShipIt");
+  });
+
+  it("refuses an undeclared named volume", () => {
+    const mount = { type: "volume", source: "data", target: "/data", volume: {} };
+    expect(() => validateResolvedModel(mounts(mount), ctx)).toThrow("`data` is not declared");
+    const declared = resolved({ volumes: [mount] }, { volumes: { data: { name: `${PROJECT}_data` } } });
+    expect(() => validateResolvedModel(declared, ctx)).not.toThrow();
+  });
+
+  it("refuses volumes_from a container", () => {
+    expect(() => validateResolvedModel(resolved({ volumes_from: ["container:x"] }), ctx))
+      .toThrow("`volumes_from: container:x` is not allowed");
+  });
+
+  it("refuses provider", () => {
+    const model = resolved({ provider: { type: "model", options: { model: "ai/smollm2" } } });
+    expect(() => validateResolvedModel(model, ctx)).toThrow("`provider` is not allowed");
+  });
+
+  it("refuses a name: other than Compose's own on a volume, network or secret", () => {
+    const cases: [string, Record<string, unknown>][] = [
+      ["Volume `data`", { volumes: { data: { name: "data" } } }],
+      ["Network `backend`", { networks: { default: { name: `${PROJECT}_default` }, backend: { name: "shipit-session-x" } } }],
+      ["Secret `token`", { secrets: { token: { name: "token", file: `${WS}/token` } } }],
+    ];
+    for (const [what, top] of cases) {
+      expect(() => validateResolvedModel(resolved({}, top), ctx), what).toThrow(new RegExp(`^${what}: .*name`));
+    }
+  });
+
+  it("refuses a secret file outside the workspace", () => {
+    for (const file of ["/etc/shadow", "/workspace/sessions/other/workspace/token"]) {
+      const model = resolved({}, { secrets: { token: { name: `${PROJECT}_token`, file } } });
+      expect(() => validateResolvedModel(model, ctx), file).toThrow("outside this session's workspace");
+    }
+  });
+
+  it("refuses an env_file Compose did not inline", () => {
+    expect(() => validateResolvedModel(resolved({ env_file: [{ path: `${WS}/.env`, required: true }] }), ctx))
+      .toThrow("did not resolve `env_file`");
+  });
+
+  // Compose 5.5.1 inlines the labels and keeps the key; the rewrite drops it.
+  it("accepts the label_file key Compose keeps beside the inlined labels", () => {
+    expect(() => validateResolvedModel(resolved({ labels: { a: "1" }, label_file: [`${WS}/labels`] }), ctx))
+      .not.toThrow();
+  });
+
+  it("refuses a leftover extends", () => {
+    expect(() => validateResolvedModel(resolved({ extends: { service: "base" } }), ctx))
+      .toThrow("left `extends` unresolved");
+  });
+
+  it("refuses an unknown mount field", () => {
+    expect(() => validateResolvedModel(mounts({ ...bindAt(WS), image: { subpath: "x" } }), ctx))
+      .toThrow("the mount field `image` is not supported");
+  });
+
+  it("refuses a mount type other than bind, volume and tmpfs", () => {
+    for (const type of ["image", "npipe", "cluster"]) {
+      expect(() => validateResolvedModel(mounts({ type, source: "x", target: "/x" }), ctx), type)
+        .toThrow(`mount type \`${type}\` is not supported`);
+    }
+  });
+
+  it("refuses a short-form mount", () => {
+    expect(() => validateResolvedModel(mounts("./data:/data"), ctx)).toThrow("left the mount `./data:/data` unresolved");
+  });
+
+  it("refuses a $ in a bind source", () => {
+    expect(() => validateResolvedModel(mounts(bindAt(`${WS}/$HOME`)), ctx)).toThrow("left the bind mount source");
+  });
+
+  it("accepts persist and persist/<sub> without a declaration", () => {
+    const model = mounts(
+      { type: "volume", source: "persist", target: "/data", volume: {} },
+      { type: "volume", source: "persist/renders", target: "/renders", volume: {} },
+    );
+    expect(() => validateResolvedModel(model, ctx)).not.toThrow();
+  });
+
+  it("accepts the exact socket path with the grant", () => {
+    const model = mounts({ type: "bind", source: SOCKET, target: SOCKET, bind: { create_host_path: true } });
+    expect(() => validateResolvedModel(model, { ...ctx, dockerSocket: true, dockerSocketGrant: "granted" })).not.toThrow();
+    expect(() => validateResolvedModel(model, ctx)).toThrow("compose.docker-socket");
+  });
+
+  it("accepts anonymous volumes and tmpfs", () => {
+    const model = mounts(
+      { type: "volume", target: "/cache", volume: {} },
+      { type: "tmpfs", target: "/scratch", tmpfs: { size: 1048576 } },
+    );
+    expect(() => validateResolvedModel(model, ctx)).not.toThrow();
+  });
+});
+
+describe("serializeComposeModel", () => {
+  it("doubles $ in values, not keys, and round-trips through a YAML parse", () => {
+    const model = {
+      services: {
+        web: {
+          image: "node:20",
+          command: ["sh", "-c", `echo $HOME \${USER:-me}`],
+          environment: { "A$B": "p$ss", PORT: "3000" },
+          labels: { "x.note": "a ".repeat(100) },
+        },
+      },
+    };
+    expect(parseYaml(serializeComposeModel(model))).toEqual({
+      services: {
+        web: {
+          image: "node:20",
+          command: ["sh", "-c", `echo $$HOME $\${USER:-me}`],
+          environment: { "A$B": "p$$ss", PORT: "3000" },
+          labels: { "x.note": "a ".repeat(100) },
+        },
+      },
+    });
+  });
+});
+
+describe("pluginStubModel", () => {
+  it("carries each plugin service's name and image only", () => {
+    const stubs = pluginStubModel([
+      {
+        name: "probe",
+        definition: {
+          image: "node:22-alpine",
+          entrypoint: ["/plugin/bin/serve"],
+          environment: { FAL_KEY: "sk-live" },
+          volumes: [{ type: "volume", source: "shipit-workspace", target: "/project" }],
+          labels: { "shipit-plugin": "probe" },
+        },
+      },
+      { name: "built", definition: { build: { context: "/plugin" } } },
+    ]);
+    expect(stubs).toEqual({ services: { probe: { image: "node:22-alpine" }, built: { image: "shipit-plugin-stub" } } });
+  });
+});
+
+describe("composeBuildModel", () => {
+  it("names project files by their workspace paths and adds the plugin stubs", () => {
+    const WS = "/workspace/sessions/s1/workspace";
+    const snapshot = {
+      name: PROJECT,
+      services: {
+        web: {
+          image: "app:dev",
+          build: { context: WS, dockerfile: "Dockerfile", secrets: [{ source: "token" }] },
+          depends_on: { probe: { condition: "service_started", required: true } },
+        },
+      },
+      secrets: { token: { name: `${PROJECT}_token`, file: "/srv/shipit/sessions/s1/state/compose/secrets/token" } },
+    };
+    const before = structuredClone(snapshot);
+    const model = composeBuildModel(
+      snapshot,
+      [{ kind: "secrets", name: "token", file: `${WS}/token` }],
+      pluginStubModel([{ name: "probe", definition: { image: "node:22-alpine" } }]),
+    );
+    expect(model.secrets).toEqual({ token: { name: `${PROJECT}_token`, file: `${WS}/token` } });
+    expect(model.services).toEqual({ probe: { image: "node:22-alpine" }, web: snapshot.services.web });
+    expect(snapshot).toEqual(before);
   });
 });

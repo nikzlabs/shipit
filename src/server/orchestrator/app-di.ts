@@ -8,7 +8,7 @@ import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
 import { listConfiguredCredentials } from "./service-routing.js";
 import { collectServiceCredentialEnv } from "./secret-resolver.js";
 import { RepoGit, type GitRemoteCredential } from "./repo-git.js";
-import type { GitRemoteCredentialResolver } from "../shared/git-remote-credential.js";
+import { configureLfsHostCredentialResolver, type GitRemoteCredentialResolver } from "../shared/git-remote-credential.js";
 import { gitRemoteCredentialResolver } from "./services/github.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
@@ -29,8 +29,11 @@ import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { initGlobalGitConfig, pinGitMessageLocale } from "./git-config.js";
 import { configureLfsRemoteCredentialResolver } from "./git-lfs.js";
+import { createLfsHostCredentialResolver } from "./lfs-host-credential.js";
+import { createBareCacheDirHelper } from "./session-dir-factory.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
+import type { ProjectComposeAccess } from "./services/plugin-services.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
@@ -38,6 +41,7 @@ import type { LocalAgentFactory } from "./local-agent-home.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { recordNonTurnUsage, type NonTurnTelemetry } from "./services/non-turn-work.js";
 import { seedNonTurnModel } from "./services/settings.js";
+import { loadCachedModelList } from "./services/published-model-list.js";
 
 export type { RuntimeMode } from "../shared/types.js";
 
@@ -102,6 +106,8 @@ export interface AppDeps {
   runtimeMode?: RuntimeMode;
   mcpOAuthFetchImpl?: typeof fetch;
   trackerFetchImpl?: typeof fetch;
+  /** Test seam: plugin readers' project-file access; production reads through the confined helper. */
+  projectComposeAccess?: (sessionId: string, workspaceDir: string) => ProjectComposeAccess;
 }
 
 export interface ManagerSet {
@@ -310,6 +316,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
       || (deps.authManager?.authenticated ?? false),
     checkCodexAuth: () => providerAccountManager.list("openai").some((a) => a.status === "ready"),
   });
+  // docs/318 req 6 — detection derives eligible models from the list in effect.
+  if (!isTestMode) loadCachedModelList(stateDir);
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();
   const declaredHarnesses = readInstalledHarnesses();
@@ -347,6 +355,13 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   }
 
   const secretStore = new SecretStore(databaseManager, secretCipher ?? undefined);
+  const bareCacheDirFor = createBareCacheDirHelper(stateDir);
+  configureLfsHostCredentialResolver(createLfsHostCredentialResolver({
+    loadSecrets: (repoUrl) => secretStore.loadSecrets(repoUrl),
+    repoUrlForDir: (dir) => sessionManager.remoteUrlForWorkspaceDir(dir)
+      ?? repoStore.list().find((repo) => bareCacheDirFor(repo.url) === path.resolve(dir))?.url
+      ?? null,
+  }));
 
   const reviewStore = new FileReviewStore(databaseManager);
 

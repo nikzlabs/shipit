@@ -2,19 +2,21 @@ import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import { costFromRates, resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
+import { noteTurnSubmitted } from "../turn-stop-request.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
 import { quotaRefusalCanFailOver } from "../credential-failure-policy.js";
-import type { SessionManager } from "../sessions.js";
+import { toListRow, type SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import {
   getContextWindowForModel,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
 } from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
-import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress, updateRecordedCard } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
+import { denyAbandonedPermissionCards, settlePermissionCard } from "../permission-cards.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
 import {
@@ -32,6 +34,7 @@ import {
   attachSubagentToolResults,
   attachToolResultsToGroup,
   requeueUndeliveredSteers,
+  steerToQueuedMessage,
 } from "./agent-message-builder.js";
 import { observeVoiceNotes } from "./agent-voice-handler.js";
 import { retireFinishedBackgroundSubagent } from "./subagent-retire.js";
@@ -146,7 +149,11 @@ export function wireAgentListeners(
       wiredTurnEpoch = runner.turnEpoch;
     }
     runner.running = true;
+    // The CLI is already generating, so a Stop must reach its process.
+    noteTurnSubmitted(runner);
     const turnSessionId = opts.capturedSessionId;
+    // A turn the CLI starts on its own is new use (docs/316 req 5).
+    if (turnSessionId && startsTurn) deps.sessionManager.track(turnSessionId);
     if (turnSessionId) {
       emitToViewers({
         type: "session_status",
@@ -159,6 +166,15 @@ export function wireAgentListeners(
       }
     }
     console.log(`[cli-turn] runner=${runner.sessionId} adopted a turn the orchestrator did not start (${reason})`);
+    // docs/322-question-holds-automatic-turns req 7 — the agent is waiting for the user, so a
+    // turn its CLI starts on its own is stopped at once. What woke it stays in its context for
+    // the user's reply, and the turn ends as the question did: still waiting.
+    if (startsTurn && runner.answerHold) {
+      runner.awaitingUserAnswer = true;
+      runner.wasInterrupted = true;
+      agent.interrupt();
+      deps.broadcastLog("server", "Agent interrupted: its own turn started while it waits for the user's answer");
+    }
   };
 
   const persistAgentSessionIdIfReady = (): void => {
@@ -234,25 +250,25 @@ export function wireAgentListeners(
       const turnSessionId = opts.capturedSessionId;
       if (runner) {
         const pending = runner.steeredMessages;
-        const dropped = pending[0];
-        if (dropped) {
-          runner.steeredMessages = pending.slice(1);
+        const rejectedText = event.text.trim();
+        const droppedIdx = pending.findIndex((s) => !s.delivered && s.assembledPrompt?.trim() === rejectedText);
+        // No match: an errored turn already re-queued it, so enqueueing again would run it twice.
+        if (droppedIdx >= 0) {
+          const dropped = pending[droppedIdx];
+          runner.steeredMessages = pending.filter((_, i) => i !== droppedIdx);
           if (turnSessionId) {
             persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
           }
+          const position = runner.enqueue(steerToQueuedMessage(dropped));
+          emitToViewers({ type: "message_queued", text: dropped.text, position });
+          deps.broadcastLog(
+            "server",
+            `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
+          );
         }
-        const requeueText = dropped?.text ?? event.text;
-        const queued: QueuedMessage = { text: requeueText, execution: "interactive" };
-        if (dropped?.images && dropped.images.length > 0) queued.images = dropped.images;
-        if (dropped?.files && dropped.files.length > 0) {
-          queued.files = dropped.files.map((f) => ({ path: f.path }));
-        }
-        const position = runner.enqueue(queued);
-        emitToViewers({ type: "message_queued", text: requeueText, position });
-        deps.broadcastLog(
-          "server",
-          `Live steer rejected by ${agent.agentId} (turn not steerable) — re-queued for the next turn.`,
-        );
+        // A worker with no agent at all would otherwise hold the turn, and the re-queued
+        // message, until a viewer's reconciler noticed.
+        void runner.verifyRunningState();
       }
       return;
     }
@@ -384,45 +400,14 @@ export function wireAgentListeners(
     if (event.type === "agent_permission_resolved") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
-        const phase = event.behavior === "allow" ? "approved" : "denied";
-        // Patch recorded cards before rebuilding history, or the pending phase returns.
-        const requestId = event.requestId;
-        const remembered = event.remembered;
-        const patchedRecorded = updateRecordedCard(
+        settlePermissionCard(
           runner,
-          (m) => m.permissionPrompt?.requestId === requestId,
-          (m) => ({
-            ...m,
-            permissionPrompt: {
-              ...m.permissionPrompt!,
-              phase,
-              ...(remembered ? { remembered: true } : {}),
-            },
-          }),
+          turnSessionId,
+          deps,
+          event.requestId,
+          event.behavior === "allow" ? "approved" : "denied",
+          event.remembered,
         );
-        if (patchedRecorded) {
-          persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
-        } else {
-          deps.chatHistoryManager.updatePermissionCard(turnSessionId, event.requestId, {
-            phase,
-            ...(event.remembered ? { remembered: true } : {}),
-          });
-        }
-        runner.emitMessage({
-          type: "permission_resolved",
-          sessionId: turnSessionId,
-          requestId: event.requestId,
-          phase,
-          ...(event.remembered ? { remembered: true } : {}),
-        });
-
-        runner.awaitingPermissionIds.delete(event.requestId);
-        if (runner.awaitingPermissionIds.size === 0) {
-          deps.sseBroadcast("session_attention", {
-            sessionId: turnSessionId,
-            awaitingPermission: false,
-          });
-        }
       }
       return;
     }
@@ -518,8 +503,9 @@ export function wireAgentListeners(
       pendingAgentSessionId ??= event.sessionId;
       const session = deps.sessionManager.get(turnSessionId);
       if (session) {
-        emitToViewers({ type: "session_started", session });
-        deps.sseBroadcast("session_started", { session });
+        const row = toListRow(session);
+        emitToViewers({ type: "session_started", session: row });
+        deps.sseBroadcast("session_started", { session: row });
       }
       if (opts.isNewSession) {
         console.log(`[persist-user] agent_init session=${turnSessionId} (isNewSession branch)`);
@@ -680,7 +666,8 @@ export function wireAgentListeners(
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
         }
-        deps.sessionManager.track(turnSessionId);
+        // A PR that merged during this turn resolves the session (docs/316 req 5).
+        deps.sessionManager.touchUnlessResolved(turnSessionId);
         deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
 
@@ -924,10 +911,21 @@ export function wireAgentListeners(
     deps.broadcastLog("server", display);
     emitToViewers({ type: "error", message: display });
     const turnSessionId = opts.capturedSessionId;
+    // A steer the CLI never acked was reported to its sender as delivered; the drain runs it.
+    if (runner) requeueUndeliveredSteers(runner, emitToViewers);
+    // Only while this process holds the slot, so a replacement's requests are left alone.
+    // A throw must not skip onError below, which commits (post-turn invariant 3).
+    if (runner && turnSessionId && runner.getAgent() === agent) {
+      try {
+        denyAbandonedPermissionCards(runner, turnSessionId, deps);
+      } catch (err) {
+        console.error(`[agent] denying abandoned permission cards for ${turnSessionId} failed:`, err);
+      }
+    }
     if (turnSessionId) {
       const partialMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],
-        [],
+        runner?.steeredMessages ?? [],
         runner?.recordedCards ?? [],
         { inProgress: false },
       );

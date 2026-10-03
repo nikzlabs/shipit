@@ -437,7 +437,8 @@ built; the measurements are worth keeping because both look right on paper.
 So the shipped shape splits the **secret**, not the file. `.gitconfig` stays
 one file, still shared with the worker uid, and now carries no secret: the PAT
 moves to a root-only `/credentials/.git-credential-github` that the global
-`credential.helper` `cat`s. Root reads it; the dropped git gets EACCES, the
+helper `cat`s (scoped to `https://github.com` since docs/231-git-lfs-support §9).
+Root reads it; the dropped git gets EACCES, the
 helper prints nothing (stderr discarded, so E5-detect's classifiers see no new
 noise), and git moves to the next helper — the repo-scoped one the operation
 supplies for itself. That supply rides `-c` for its *shape*

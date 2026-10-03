@@ -522,6 +522,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
   "POST /api/sessions/:sessionId/notify-on-merge-self",
   "POST /api/sessions/:sessionId/continue-after-rebase",
+  // docs/321 — agent container only; Restart all stays a user action.
+  "POST /api/sessions/:sessionId/restart-after-turn",
   "POST /api/sessions/:id/branch/reset-to-base",
   // docs/305 — the agent may ask for its own session's identities and
   // signatures. Every check is on the orchestrator side of these two, because
@@ -534,10 +536,12 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/bug-report",
   "POST /api/sessions/:sessionId/propose-actions",
   "POST /api/sessions/:sessionId/session-status",
+  // docs/303 req 48 — the agent reads its own card in full; a pure read, no write path.
+  "GET /api/sessions/:sessionId/session-status",
   "POST /api/sessions/:sessionId/propose-repo-session",
   // docs/314 req 7 — the agent may PROPOSE a message; the matching
-  // `…/session-message-proposals/:cardId/deliver` is absent on purpose, so only
-  // the user's click delivers one.
+  // `…/session-message-proposals/:cardId/deliver` and `…/decline` are absent on
+  // purpose, so only the user's click delivers or declines one.
   "POST /api/sessions/:sessionId/propose-session-message",
   "GET /api/egress/decision",
 ].sort();

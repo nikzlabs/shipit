@@ -104,6 +104,34 @@ export function extractNetworkSubnets(networkInfo: unknown): string[] {
   return out;
 }
 
+/**
+ * An internal network with this option gives the host no address on its
+ * bridge, so a container on it cannot reach the host before its firewall is in
+ * (docs/319-api-reach-through-host).
+ */
+export const NO_HOST_ADDRESS_OPTION = { "com.docker.network.bridge.inhibit_ipv4": "true" } as const;
+
+/**
+ * The network's gateways: each is the Docker host's address on that bridge, so
+ * the local block refuses it (docs/319-api-reach-through-host). A network with
+ * no named gateway has none: its first address may belong to a container.
+ */
+export function extractNetworkGateways(networkInfo: unknown): string[] {
+  if (!networkInfo || typeof networkInfo !== "object") return [];
+  const ipam = (networkInfo as Record<string, unknown>).IPAM;
+  if (!ipam || typeof ipam !== "object") return [];
+  const config = (ipam as Record<string, unknown>).Config;
+  if (!Array.isArray(config)) return [];
+  const out = new Set<string>();
+  for (const entry of config) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const gateway = typeof record.Gateway === "string" ? record.Gateway.trim().split("/")[0] ?? "" : "";
+    if (gateway && isValidIp(gateway)) out.add(gateway);
+  }
+  return [...out];
+}
+
 export function buildIpsetMembers(opts: { ips?: readonly string[]; cidrs?: readonly string[] }): string[] {
   const members = new Set<string>();
   for (const ip of opts.ips ?? []) {

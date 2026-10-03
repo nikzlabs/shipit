@@ -4,6 +4,7 @@ import { MessageList } from "./MessageList.js";
 import type { ChatMessage } from "./types.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { usePrStore } from "../../stores/pr-store.js";
 import type { SessionInfo, SessionStatus } from "../../../server/shared/types.js";
 
 /**
@@ -131,7 +132,6 @@ function session(id: string): SessionInfo {
     title: id,
     createdAt: "2026-01-01T00:00:00Z",
     lastUsedAt: "2026-01-01T00:00:00Z",
-    sessionStatus: status,
   } as SessionInfo;
 }
 
@@ -140,6 +140,10 @@ function show(id: string): void {
     useSessionStore.setState({
       sessionId: id,
       sessions: [session("s1"), session("s2")],
+      sessionDetails: {
+        s1: { sessionStatus: status, agentGoal: null },
+        s2: { sessionStatus: status, agentGoal: null },
+      },
       activeRunnerSessions: new Set<string>(),
     });
   });
@@ -159,8 +163,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useSessionStore.setState({ sessionId: undefined, sessions: [], activeRunnerSessions: new Set<string>() });
+  useSessionStore.setState({ sessionId: undefined, sessions: [], sessionDetails: {}, activeRunnerSessions: new Set<string>() });
   useSettingsStore.setState({ sessionStatusCard: false });
+  usePrStore.setState({ cardBySession: {} });
 });
 
 /**
@@ -277,5 +282,32 @@ describe("opening a session with a status card", () => {
     settleFrame(scroller);
 
     expect(scroller.scrollTop).toBe(400);
+  });
+});
+
+describe("the displayed session's PR merges (docs/303-session-status-card req 47)", () => {
+  function setPhase(phase: "open" | "merged"): void {
+    act(() => {
+      usePrStore.setState({ cardBySession: { s1: { cardId: "pr-card-s1", phase } } });
+    });
+  }
+
+  it("brings a reader who scrolled up to the end, where the card's follow-ups are", () => {
+    show("s1");
+    setPhase("open");
+    const { container } = render(<MessageList messages={transcript("s1", 40)} isLoading={false} />);
+    const scroller = container.querySelector<HTMLElement>("[data-chat-transcript]")!;
+    installLayout(scroller);
+    settleFrame(scroller);
+
+    act(() => {
+      scroller.scrollTop = 400;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    setPhase("merged");
+    settleFrame(scroller);
+
+    expect(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight).toBe(0);
   });
 });

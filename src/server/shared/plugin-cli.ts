@@ -1,4 +1,4 @@
-import type { PluginExport, PluginUse } from "./plugin-repos.js";
+import type { PluginCommandOverride, PluginExport, PluginUse } from "./plugin-repos.js";
 
 export interface SurfacedPluginCommand {
   name: string;
@@ -8,6 +8,8 @@ export interface SurfacedPluginCommand {
   declared: string;
   /** Relative to the plugin repository root. */
   entry: string;
+  /** The consuming project's `overrides.commands.<declared>.memory`, else the manifest's default. */
+  memoryBytes?: number;
 }
 
 export interface PluginCommandPlan {
@@ -80,7 +82,7 @@ export function planPluginCommands(
       addIssue(
         issueKey,
         `\`${use.alias}\`: \`${name}\` is not a command \`${exported.name}\` exports, `
-        + "so the rename this project sets would have no effect.",
+        + "so what this project sets for it under `overrides.commands` has no effect.",
       );
     }
 
@@ -89,11 +91,12 @@ export function planPluginCommands(
       if (override.ambiguous) {
         addIssue(
           issueKey,
-          `\`${use.alias}\`: \`overrides.commands\` renames \`${declared}\` more than once `
+          `\`${use.alias}\`: \`overrides.commands\` names \`${declared}\` more than once `
           + "(the keys differ only in case), so it is not on PATH. Keep one.",
         );
         continue;
       }
+      const memoryBytes = override.memoryBytes ?? exported.cliMemoryBytes?.[declared];
       claims.push({
         name: override.as ?? declared,
         alias: use.alias,
@@ -101,6 +104,7 @@ export function planPluginCommands(
         plugin: exported.name,
         declared,
         entry,
+        ...(memoryBytes !== undefined ? { memoryBytes } : {}),
         issueKey,
       });
     }
@@ -157,6 +161,7 @@ export function planPluginCommands(
       plugin: first.plugin,
       declared: first.declared,
       entry: first.entry,
+      ...(first.memoryBytes !== undefined ? { memoryBytes: first.memoryBytes } : {}),
     });
   }
 
@@ -167,9 +172,9 @@ export function planPluginCommands(
 function findOverride(
   use: PluginUse,
   declared: string,
-): { as?: string; ambiguous?: true } {
+): PluginCommandOverride & { ambiguous?: true } {
   const matches = Object.entries(use.overrides.commands)
     .filter(([name]) => name.toLowerCase() === declared.toLowerCase());
   if (matches.length > 1) return { ambiguous: true };
-  return matches.length === 1 ? { ...(matches[0][1].as ? { as: matches[0][1].as } : {}) } : {};
+  return matches.length === 1 ? matches[0][1] : {};
 }

@@ -135,6 +135,34 @@ describe("preparePluginNetns — an uncontained session", () => {
   });
 });
 
+/** docs/319 req 2, req 4 — an open session's plugin still gets the local block. */
+describe("preparePluginNetns — an open session with the local block", () => {
+  it("contains the holder with the open policy and runs no resolver or proxy", async () => {
+    const fake = fakeDocker();
+    const netns = await prepare(fake.docker, {
+      ...UNCONTAINED_PLUGIN_EGRESS,
+      sidecarImage: "egress-sidecar:test",
+      dnsEnabled: true,
+      proxyEnabled: true,
+      blockLocal: true,
+      hostAddresses: async () => ["203.0.113.7"],
+    });
+
+    expect(netns.networkMode).toBe(`container:${fake.created[0]!.id}`);
+    expect(installFirewall).toHaveBeenCalledTimes(1);
+    expect(installFirewall.mock.calls[0]![1]).toMatchObject({
+      policy: "open",
+      inputs: { hosts: [], cidrs: [] },
+      hostAddresses: ["203.0.113.7"],
+    });
+    // The plugin network is shared between sessions: nothing on it is accepted.
+    expect(installFirewall.mock.calls[0]![1].localTcp).toBeUndefined();
+    expect(launchResolver).not.toHaveBeenCalled();
+    expect(launchProxy).not.toHaveBeenCalled();
+    expect((fake.created[0]!.opts.HostConfig as Record<string, unknown>).Sysctls).toBeUndefined();
+  });
+});
+
 describe("preparePluginNetns — a contained session", () => {
   it("installs every tier into a holder and runs the workload in ITS namespace", async () => {
     const events: string[] = [];

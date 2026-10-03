@@ -34,8 +34,10 @@ conditions attached, every time. The push does **nothing** when GitHub is not
 connected, and a push that **fails** leaves the commit in local history; in both
 cases the work is intact but on one host only, and the session says so. A
 project's own Compose volumes — a development database, an upload directory —
-are outside all of this and were never durable: archiving the session deletes
-them. Detail, and how to take a copy:
+are outside all of this and were never durable: ShipIt can delete them when the
+session is archived or sits idle for a day. The durable place for a service's
+data is the session's `/persist`, which a service mounts as the `persist` volume
+(`/shipit-docs/compose.md`). Detail, and how to take a copy:
 [installing-and-updating.md](installing-and-updating.md).
 
 **The app runs inside the session.** Services declared in the project's

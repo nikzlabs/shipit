@@ -1,0 +1,83 @@
+---
+name: add-endpoint
+description: "Step-by-step guide for adding new server functionality to ShipIt: HTTP endpoints (service -> route -> client hook -> test), WebSocket messages (type -> handler -> dispatcher -> client), deploy targets, tool activity labels, and the WebSocket vs HTTP decision framework. Load when adding a new API endpoint, WS message type, deploy target, or activity label."
+user-invocable: true
+---
+
+# Adding New Endpoints & Features
+
+## When to use WebSocket vs HTTP
+
+ShipIt uses HTTP for most operations and reserves WebSocket for a narrow set of cases. When adding a new feature, use this decision framework:
+
+**Use HTTP** (default) when:
+- The operation is a simple read (GET) or mutation (POST/PATCH/DELETE) with a single request-response cycle
+- The client needs the result directly (e.g., to update UI state from the response)
+- The operation is stateless — any client tab could make the same request
+- Examples: fetching file content, renaming a session, creating a PR, saving settings
+
+**Use WebSocket** only when one of these applies:
+1. **Streaming output** — the server produces incremental data over time (Claude CLI events, deploy progress, terminal output). HTTP would require polling or SSE; WS gives us a natural push channel already connected.
+2. **Per-connection state** — the operation modifies state tied to *this specific browser tab*, not the user globally. Session activation (`activate_session`) attaches a runner and file watcher to the connection. Agent selection (`set_agent`) sets the agent for this tab only. These don't make sense as HTTP because they bind to the socket's lifecycle.
+3. **Bidirectional real-time interaction** — the client and server exchange messages in rapid succession as part of one logical flow: sending a prompt and receiving streamed tokens, answering permission questions mid-turn, interactive terminal I/O.
+4. **Server-initiated push** — the server needs to notify the client without a preceding request: file change events, preview status updates, session status broadcasts, queue notifications.
+
+**Gray area — lean HTTP:**
+- If an operation triggers server-side effects that push WS events (e.g., `fork_session` triggers a `session_list` broadcast), that's fine — the trigger is HTTP, the notification is WS. Don't put the trigger on WS just because it has side effects.
+- If you're unsure, start with HTTP. It's simpler to test (`app.inject()`), easier to debug (curl), and doesn't couple the operation to connection lifecycle. You can always add a WS broadcast for notifications on top.
+
+**Current WS message types**: read the `WsClientMessage` union in `src/server/shared/types/ws-client-messages.ts` (~23 client → server at time of writing). Don't trust a copied list — it rots. The dispatch switch that narrows them lives in `route-registry.ts`, not `index.ts`.
+
+See `docs/001-websocket-protocol/plan.md` for the full endpoint and message reference.
+
+## Adding an HTTP endpoint (most cases)
+
+**Prefer HTTP** for new endpoints unless the operation requires per-connection state or real-time streaming (see decision framework above).
+
+1. Add the service function in the appropriate `src/server/orchestrator/services/*.ts` file — pure function that accepts explicit parameters (session ID, managers) and returns data or throws `ServiceError`
+2. Add the Fastify route in the matching `src/server/orchestrator/api-routes-*.ts` file — call the service function, handle errors, return JSON
+3. On the client, call the endpoint via `useApi` hook (`apiGet()` / `apiPost()` / etc.) from `src/client/hooks/useApi.ts`
+4. Add integration tests using `app.inject()` in `src/server/orchestrator/integration_tests/`
+
+## Adding a WebSocket message (streaming, per-connection state only)
+
+1. Add the interface to `src/server/shared/types/ws-client-messages.ts` (and/or `ws-server-messages.ts` for server-to-client)
+2. Add the handler in the appropriate `src/server/orchestrator/ws-handlers/*-handlers.ts` file
+3. Add a `case` to the `switch (msg.type)` dispatcher in `src/server/orchestrator/route-registry.ts`
+4. Add the client-side handler as a file in `src/client/hooks/message-handlers/` and register it in that directory's `index.ts`
+5. Add integration tests in `src/server/orchestrator/integration_tests/`
+
+**Key conventions:**
+- Use `Extract<WsClientMessage, { type: "..." }>` to get the narrowed message type — don't import individual message interfaces.
+- Handler functions are `async` only if they `await` something; otherwise use `void` return.
+- Read per-connection state via `ctx` getters (`ctx.getActiveAppSessionId()`, etc.), not closure variables. **There are no `ctx.setX` runner setters** — they were deleted for becoming silent no-ops after disconnect. To mutate runner state, resolve a runner via `resolveRunner(ctx)` and assign directly (`runner.running = false`). See `CLAUDE.md` → *WebSocket lifecycle MUST NOT affect server behavior*.
+- Access app-level managers directly from `ctx` (`ctx.sessionManager`, `ctx.chatHistoryManager`, etc.). There is no `ctx.deploymentStore` — `DeploymentStore` no longer exists.
+- Import `getErrorMessage` from `./validation.js` for consistent error formatting (within orchestrator).
+
+### Server → client messages that render in the chat MUST be persisted
+
+If your new server-to-client message renders **inline in the chat transcript** (a bubble or a card in `MessageList.tsx`), emitting it is **not enough**. `runner.emitMessage()` is transport only: it broadcasts to viewers and buffers into the per-turn turn-event log (replayed on a WS **reconnect**), but it does **not** write to persisted chat history. A session **switch** and a full **page reload** rebuild the transcript from `ChatHistoryManager` (`GET /history`), so an emit-only card renders live, survives a reconnect, then **vanishes** on switch/reload. This has bitten us repeatedly (voice notes `docs/163`, bug-report cards `docs/164`) — see the "Chat transcript content MUST be persisted, not just emitted" pattern in `CLAUDE.md` for the full checklist.
+
+For a card that arrives off the agent-event stream (HTTP relay or post-turn WS):
+1. Emit it with `emitChatCard` (`chat-card-persistence.ts`) — never bare `emitMessage` — so it's emitted AND recorded in-band (anchored by `afterGroupIndex`) in one call and `buildTurnMessages` lands it at its true transcript position.
+2. Add a typed field on `PersistedMessage` + column + `toRow`/`fromRow` + a `database.ts` migration; patch lifecycle transitions in place (e.g. `updateBugReportCard`).
+3. Rehydrate on the client in `loadSessionHistory`; make the live append + store upsert idempotent by id so reconnect-buffer and reload-history replays don't double-render or clobber a terminal state.
+4. Add a history round-trip test and a no-duplicate-on-replay test.
+
+Transient signals (spinners, `preview_status`, queue counts) are correctly emit-only — only persist what belongs in the scrollback.
+
+**On step 3's "idempotent by id", if the message is both broadcast live AND rehydrated from history.** The live copy *appends*; the history load *replaces* the whole transcript. They race on every attach, reload and switch, and whichever lands second decides whether the user sees the message zero times or twice. The two failures look nothing alike, so one is typically still open after you fix the other. Three things make any arrival order converge:
+
+- **A real id, not the text.** Two "continue" sends are genuinely distinct messages, so a text comparison either collapses them or duplicates them.
+- **Persist the id on the row**, so the rehydrated copy still matches (`messages.client_request_id` is the worked example — the sender's per-send `requestId`, echoed back on `system_user_message`). An id that exists only in browser memory is gone the moment history replaces the transcript.
+- **Queue the live message behind `historyLoaded`** in `useMessageHandler`, alongside `agent_event` / `turn_snapshot` / `sub_agent_spawn`. Otherwise a history response sampled a moment before the row was written wipes what the live message just added.
+
+Guards: `useMessageHandler.test.ts` covers both hydration orders; `multi-tab.test.ts` covers the cross-viewer broadcast.
+
+## Deploy targets — there is no longer anything to add
+
+ShipIt does not own a deploy pipeline. There is no `deploy-targets/` directory, no `DeployTarget` interface, and no `deploymentManager`. Deploys are triggered by the hosting platform's own Git integration on push, and ShipIt reads their status from the GitHub Deployments API to render it in the PR lifecycle card. See the `deployment-architecture` skill.
+
+## Adding a new tool activity label
+
+Add a case to `activityFromTool()` in `src/client/components/StreamingIndicator.tsx`. The function receives the tool name and its input object, and returns a `StreamingActivity` with a human-readable label.

@@ -1,8 +1,12 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
-import { composeProjectName } from "./compose-stack-reaper.js";
+import { COMPOSE_PROJECT_LABEL, composeProjectName } from "./compose-stack-reaper.js";
+import { composeStateDirForWorkspace } from "./session-state-dir.js";
+import type { ConfinedComposeApi } from "./compose-helper.js";
 
 export interface ComposeOutputSink {
   (chunk: string): void;
@@ -21,11 +25,8 @@ export type ComposeQuery = (args: string[], cwd: string) => Promise<string>;
 export interface ComposeCliOptions {
   sessionId: string;
   workspaceDir: string;
-  composeFile: string;
-  /** Absolute path outside the clone so auto-commit cannot stage the generated file. */
-  overrideFile: string;
-  /** Set from the project declaration, not from whether a conventional file exists. */
-  noProjectFile?: boolean;
+  /** Runs `build` and `up` (docs/318-compose-remaining-escapes, Mechanism 1). */
+  confined: Pick<ConfinedComposeApi, "build" | "up">;
   composeRunner?: ComposeRunner;
   composeQuery?: ComposeQuery;
   /** Invalidate the API guard's container index before services can reach it. */
@@ -35,65 +36,104 @@ export interface ComposeCliOptions {
    * Owned here rather than by each caller: `refreshSecrets` reaches `up` without ever joining.
    */
   rejoinSessionNetwork?: () => Promise<void>;
+  /** `<sessionDir>/state/compose`; defaults from `workspaceDir`. */
+  composeStateDir?: string;
+}
+
+/** The files one start ran `up` from; `stop` loads them so a `pre_stop` hook still runs. */
+export interface ComposeStartModel {
+  /** Absent for a start of plugin services only, which the override defines in full. */
+  snapshotFile?: string;
+  overrideFile: string;
+}
+
+export interface ComposeBuild {
+  /** The build model, given to `build` on stdin. */
+  model: string;
+  services: readonly string[];
 }
 
 type UpRecovery = "none" | "container" | "network";
 
+// Compose's default project file names. Without `-f` it loads the first it finds in its working
+// directory or any directory above it.
+const COMPOSE_DEFAULT_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+
+/**
+ * The empty directory the orchestrator runs `ps`, `logs`, `stop`, and `down` in with `-p` and no
+ * `-f`, so Compose finds the stack by its project label and opens no project file
+ * (docs/318-compose-remaining-escapes, Mechanism 1).
+ */
+export function prepareModelFreeComposeDir(composeStateDir: string): string {
+  const dir = path.join(composeStateDir, "no-model");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (let d = dir; ; d = path.dirname(d)) {
+    for (const name of COMPOSE_DEFAULT_FILES) {
+      const found = path.join(d, name);
+      if (fs.existsSync(found)) {
+        throw new Error(
+          `ShipIt runs Compose without a project file in ${dir}, but Compose would load ${found} `
+          + "from a directory above it. Remove that file.",
+        );
+      }
+    }
+    if (path.dirname(d) === d) return dir;
+  }
+}
+
 export class ComposeCli {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
-  private composeFile: string;
-  private readonly overrideFile: string;
-  private noProjectFile: boolean;
+  private readonly confined: Pick<ConfinedComposeApi, "build" | "up">;
   private readonly runner: ComposeRunner;
   readonly query: ComposeQuery;
   private readonly onTopologyChange?: () => () => void;
   private readonly rejoinFn?: () => Promise<void>;
+  private readonly composeStateDirOption?: string;
+  private modelFreeDirPath: string | null = null;
 
   constructor(opts: ComposeCliOptions) {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
-    this.composeFile = opts.composeFile;
-    this.overrideFile = opts.overrideFile;
-    this.noProjectFile = opts.noProjectFile ?? false;
+    this.confined = opts.confined;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
     this.onTopologyChange = opts.onTopologyChange;
     this.rejoinFn = opts.rejoinSessionNetwork;
+    this.composeStateDirOption = opts.composeStateDir;
   }
 
-  setComposeFile(file: string, noProjectFile = false): void {
-    this.composeFile = file;
-    this.noProjectFile = noProjectFile;
+  /** Runs every time, for the services `up` starts, so an edited Dockerfile or context is picked up. */
+  async build(build: ComposeBuild | undefined, onOutput?: ComposeOutputSink): Promise<void> {
+    if (!build || build.services.length === 0) return;
+    const start = Date.now();
+    try {
+      await this.confined.build({ buildModel: build.model, services: build.services, ...(onOutput ? { onOutput } : {}) });
+    } finally {
+      console.log(
+        `[timing] compose.build for ${this.sessionId} services=${build.services.join(",")} total=${Date.now() - start}ms`,
+      );
+    }
   }
 
-  args(...extra: string[]): string[] {
-    return [
-      "compose",
-      ...(this.noProjectFile ? [] : ["-f", this.composeFile]),
-      "-f", this.overrideFile,
-      "-p", composeProjectName(this.sessionId),
-      ...extra,
-    ];
-  }
-
-  // --build reevaluates changed build contexts even when an image is already cached.
-  up(serviceNames?: string[], onOutput?: ComposeOutputSink): Promise<void> {
-    return this.timedUp(
-      serviceNames ?? [],
-      onOutput,
-      "up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []),
-    );
-  }
-
-  upService(name: string, onOutput?: ComposeOutputSink): Promise<void> {
-    return this.timedUp([name], onOutput, "up", "-d", "--build", name);
+  up(
+    serviceNames: string[],
+    start: { model: ComposeStartModel; serviceEnvDir?: string },
+    onOutput?: ComposeOutputSink,
+  ): Promise<void> {
+    return this.timedUp(serviceNames, onOutput, (sink) => this.confined.up({
+      ...(start.model.snapshotFile ? { snapshotFile: start.model.snapshotFile } : {}),
+      overrideFile: start.model.overrideFile,
+      services: serviceNames,
+      ...(start.serviceEnvDir ? { serviceEnvDir: start.serviceEnvDir } : {}),
+      onOutput: sink,
+    }));
   }
 
   private async timedUp(
     serviceNames: string[],
     onOutput: ComposeOutputSink | undefined,
-    ...subArgs: string[]
+    attempt: (sink: ComposeOutputSink) => Promise<void>,
   ): Promise<void> {
     const start = Date.now();
     let buildAt: number | undefined;
@@ -123,7 +163,7 @@ export class ComposeCli {
       },
     );
     try {
-      await this.upWithConflictRecovery(observe, ...subArgs);
+      await this.upWithConflictRecovery(observe, attempt);
     } finally {
       const end = Date.now();
       const parts = [`total=${end - start}ms`];
@@ -136,14 +176,112 @@ export class ComposeCli {
     }
   }
 
-  stop(name: string): Promise<void> {
-    return this.run(undefined, "stop", name);
+  /** For `ps` and `logs`: run with `modelFreeDir()` as the working directory. */
+  modelFreeArgs(...extra: string[]): string[] {
+    return ["compose", "-p", composeProjectName(this.sessionId), ...extra];
   }
 
-  down(opts: { removeVolumes: boolean }): Promise<void> {
-    const args = ["down", "--remove-orphans"];
+  modelFreeDir(): string {
+    this.modelFreeDirPath ??= prepareModelFreeComposeDir(this.composeStateDir());
+    return this.modelFreeDirPath;
+  }
+
+  /** `model` is null when the start's files are gone; Compose then cannot run a `pre_stop` hook. */
+  stopFrom(name: string, model: ComposeStartModel | null): Promise<void> {
+    if (!model) {
+      console.log(
+        `[compose:${this.sessionId}] stopping ${name} without the model it was started from — `
+        + "a pre_stop hook, if it has one, did not run",
+      );
+      return this.runner(this.modelFreeArgs("stop", name), this.modelFreeDir());
+    }
+    return this.runner(
+      [
+        "compose",
+        ...(model.snapshotFile ? ["-f", model.snapshotFile] : []),
+        "-f", model.overrideFile,
+        "-p", composeProjectName(this.sessionId), "stop", name,
+      ],
+      this.composeStateDir(),
+    );
+  }
+
+  /** Whether the service has a container, in any state. */
+  async hasContainer(service: string): Promise<boolean> {
+    const out = await this.query(
+      ["ps", "-aq", ...this.projectFilter(), "--filter", `label=${COMPOSE_SERVICE_LABEL}=${service}`],
+      this.workspaceDir,
+    );
+    return out.trim().length > 0;
+  }
+
+  async runningServices(): Promise<string[]> {
+    const out = await this.query(
+      ["ps", ...this.projectFilter(), "--filter", "status=running", "--format", `{{.Label "${COMPOSE_SERVICE_LABEL}"}}`],
+      this.workspaceDir,
+    );
+    return [...new Set(out.split("\n").map((s) => s.trim()).filter((s) => SERVICE_NAME.test(s)))];
+  }
+
+  /**
+   * Removes, by name, this project's containers of services `keep` does not hold; `up` runs without
+   * `--remove-orphans`, because its model holds only this start's services.
+   */
+  async removeOrphanContainers(keep: ReadonlySet<string>): Promise<string[]> {
+    const out = await this.query(
+      [
+        "ps", "-a", ...this.projectFilter(), "--format",
+        `{{.Names}}\t{{.Label "${COMPOSE_SERVICE_LABEL}"}}\t{{.Label "com.docker.compose.oneoff"}}`,
+      ],
+      this.workspaceDir,
+    );
+    const orphans: string[] = [];
+    for (const line of out.split("\n")) {
+      const [container, service, oneoff] = line.trim().split("\t");
+      if (!container || !service || !SERVICE_NAME.test(service) || oneoff === "True") continue;
+      if (!keep.has(service)) orphans.push(container);
+    }
+    if (orphans.length === 0) return [];
+    console.log(`[compose:${this.sessionId}] Removing orphan container(s) ${orphans.join(", ")}`);
+    await this.query(["rm", "-f", ...orphans], this.workspaceDir);
+    return orphans;
+  }
+
+  private projectFilter(): string[] {
+    return ["--filter", `label=${COMPOSE_PROJECT_LABEL}=${composeProjectName(this.sessionId)}`];
+  }
+
+  /**
+   * `--volumes` still takes each container's anonymous volumes; the declared named ones are
+   * unknown without a model, so they go by their project label.
+   */
+  async downModelFree(opts: { removeVolumes: boolean }): Promise<void> {
+    const args = this.modelFreeArgs("down", "--remove-orphans");
     if (opts.removeVolumes) args.push("--volumes");
-    return this.run(undefined, ...args);
+    await this.runner(args, this.modelFreeDir());
+    if (opts.removeVolumes) await this.removeProjectVolumes();
+  }
+
+  async removeProjectVolumes(): Promise<string[]> {
+    const project = composeProjectName(this.sessionId);
+    const out = await this.query(
+      ["volume", "ls", "-q", "--filter", `label=${COMPOSE_PROJECT_LABEL}=${project}`],
+      this.workspaceDir,
+    );
+    const removed: string[] = [];
+    for (const name of out.split("\n").map(s => s.trim()).filter(Boolean)) {
+      try {
+        await this.query(["volume", "rm", name], this.workspaceDir);
+        removed.push(name);
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] could not remove volume ${name}:`, (err as Error).message);
+      }
+    }
+    return removed;
+  }
+
+  private composeStateDir(): string {
+    return this.composeStateDirOption ?? composeStateDirForWorkspace(this.workspaceDir);
   }
 
   async killStaleContainers(): Promise<void> {
@@ -210,29 +348,29 @@ export class ComposeCli {
   }
 
   private async upWithConflictRecovery(
-    onOutput: ComposeOutputSink | undefined,
-    ...subArgs: string[]
+    onOutput: ComposeOutputSink,
+    attempt: (sink: ComposeOutputSink) => Promise<void>,
   ): Promise<void> {
     // Keep the guard active through retries: a failed attempt can start some services.
     const endTopologyChange = this.onTopologyChange?.();
     try {
-      await this.upAttempts(onOutput, ...subArgs);
+      await this.upAttempts(onOutput, attempt);
     } finally {
       endTopologyChange?.();
     }
   }
 
   private async upAttempts(
-    onOutput: ComposeOutputSink | undefined,
-    ...subArgs: string[]
+    onOutput: ComposeOutputSink,
+    attempt: (sink: ComposeOutputSink) => Promise<void>,
   ): Promise<void> {
     try {
-      await this.run(onOutput, ...subArgs);
+      await this.runUp(onOutput, attempt);
     } catch (err) {
       const recovery = await this.clearUpBlocker(err as Error);
       if (recovery === "none") throw err;
       try {
-        await this.run(onOutput, ...subArgs);
+        await this.runUp(onOutput, attempt);
       } finally {
         // The retry recreates the network, so re-attach even when it failed: `up` creates the
         // network before the step that failed as often as not.
@@ -321,18 +459,22 @@ export class ComposeCli {
     }
   }
 
-  private async run(
-    onOutput: ComposeOutputSink | undefined,
-    ...subArgs: string[]
+  private async runUp(
+    onOutput: ComposeOutputSink,
+    attempt: (sink: ComposeOutputSink) => Promise<void>,
   ): Promise<void> {
-    const args = this.args(...subArgs);
     try {
-      await this.runner(args, this.workspaceDir, onOutput);
+      await attempt(onOutput);
     } finally {
-      onOutput?.flush?.();
+      onOutput.flush?.();
     }
   }
 }
+
+const COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
+
+// Compose's own rule for service names; anything else in `ps` output is not one.
+const SERVICE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
 // Compose can expose these through interpolation and secrets.environment; never add credentials.
 // Workspace file-reference validation must also prevent reads of /proc and other host paths.
@@ -365,7 +507,7 @@ export function composeSpawnEnv(
 
 const MAX_ERROR_STDERR = 8_000;
 
-function defaultComposeRunner(
+export function defaultComposeRunner(
   args: string[],
   cwd: string,
   onOutput?: ComposeOutputSink,

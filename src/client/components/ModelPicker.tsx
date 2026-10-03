@@ -142,9 +142,7 @@ function groupRows(rows: ModelRow[]): ModelGroup[] {
  * answer when there is no row to ask about.
  */
 export function useBoundModelSelection(seedFromHistory: boolean): ModelSelection | undefined {
-  const sessionId = useSessionStore((s) => s.sessionId);
-  const sessions = useSessionStore((s) => s.sessions);
-  const session = boundSession(sessions, sessionId, seedFromHistory);
+  const session = useSessionStore((s) => boundSession(s.sessions, s.sessionId, seedFromHistory));
   if (session?.serviceId && session.billingMode && session.model) {
     return { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model };
   }
@@ -200,9 +198,7 @@ export function useHarnessPickerState({
   hasActiveSession?: boolean;
   seedFromHistory?: boolean;
 }) {
-  const sessionId = useSessionStore((s) => s.sessionId);
-  const sessions = useSessionStore((s) => s.sessions);
-  const currentSession = boundSession(sessions, sessionId, seedFromHistory);
+  const currentSession = useSessionStore((s) => boundSession(s.sessions, s.sessionId, seedFromHistory));
   const pinnedAgentId =
     hasActiveSession && currentSession?.agentPinned ? currentSession.agentId : undefined;
 
@@ -327,8 +323,7 @@ export function useModelPickerState({
   const pendingSessionRef = useRef<string | undefined>(sessionId);
   const pendingEchoRef = useRef<number>(0);
   const selectionEcho = useSessionStore((s) => (sessionId ? (s.modelSelectionEcho[sessionId] ?? 0) : 0));
-  const sessions = useSessionStore((s) => s.sessions);
-  const currentSession = boundSession(sessions, sessionId, seedFromHistory);
+  const currentSession = useSessionStore((s) => boundSession(s.sessions, sessionId, seedFromHistory));
   const sessionModel = currentSession?.model;
 
   const displayAgent = agents.find(

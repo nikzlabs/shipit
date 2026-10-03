@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import type { ServiceManager } from "./service-manager.js";
+import { composeProjectName } from "./compose-stack-reaper.js";
 
 const spawnCalls: string[][] = [];
 let snapshotStdout = "";
@@ -19,7 +21,6 @@ vi.mock("node:child_process", () => ({
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
     proc.kill = () => {};
-    // Earlier -f flags select Compose files, not log follow mode.
     const logsIdx = args.indexOf("logs");
     const isFollow = logsIdx >= 0 && args[logsIdx + 1] === "-f";
     if (logsIdx >= 0 && !isFollow) {
@@ -36,8 +37,8 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
-const { ServiceManager } = await import("./service-manager.js");
 const { LogStore } = await import("./log-store.js");
+const { testServiceManager } = await import("./compose-test-helpers.js");
 
 describe("ServiceManager.snapshotLogs", () => {
   let tmpDir: string;
@@ -49,7 +50,7 @@ describe("ServiceManager.snapshotLogs", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeManager(logStore?: InstanceType<typeof LogStore>): InstanceType<typeof ServiceManager> {
+  function makeManager(logStore?: InstanceType<typeof LogStore>): ServiceManager {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-"));
     const workspaceDir = path.join(tmpDir, "workspace");
     fs.mkdirSync(workspaceDir, { recursive: true });
@@ -57,7 +58,7 @@ describe("ServiceManager.snapshotLogs", () => {
       path.join(workspaceDir, "docker-compose.yml"),
       "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n",
     );
-    const mgr = new ServiceManager({
+    const mgr = testServiceManager({
       sessionId: "test-session",
       workspaceDir,
       serviceEnvDir: path.join(tmpDir, "service-env"),
@@ -84,6 +85,7 @@ describe("ServiceManager.snapshotLogs", () => {
     expect(snapArgs).toContain("500");
     const logsIdx = snapArgs!.indexOf("logs");
     expect(snapArgs![logsIdx + 1]).not.toBe("-f");
+    expect(snapArgs!.slice(0, logsIdx)).toEqual(["compose", "-p", composeProjectName("test-session")]);
   });
 
   it("prefers the durable LogStore as the source of truth (docs/192), without spawning docker", async () => {

@@ -42,7 +42,7 @@ taken inside one session, without building an agent that talks to many.
    Below them it carries the agent's offered follow-up actions (req 16).
 5. The agent writes the card at the end of its turn, or confirms it when
    nothing changed (req 14), except a turn that ends with a question card
-   (req 13).
+   (req 13) and a turn that only answers the user's question (req 46).
 6. The card sits at the bottom of the conversation, just above the input
    field: the place where the user already reads the agent's last sentences.
    While the agent is idle it is the last element of the conversation, unless
@@ -115,8 +115,8 @@ taken inside one session, without building an agent that talks to many.
     from today: no card, no nudge, and the follow-up action card as it is
     now.
 22. Before the first status write — a new session, or one whose first turn
-    ended with a question — there is no card. The first ordinary turn
-    produces it.
+    ended with a question or only answered one (req 46) — there is no card.
+    The first ordinary turn produces it.
 23. When the setting is turned off and later on again, the card shows the
     earlier status and its offered actions, marked stale. The next turn
     refreshes it.
@@ -163,7 +163,9 @@ taken inside one session, without building an agent that talks to many.
     reading.
 
 31. The card carries one or two sentences saying what the agent did in the
-    last turn, or the direct answer when the user asked something. It is a
+    last turn, or the direct answer when the user asked something. A turn that
+    only answers a question writes no card (req 46), so this line is for a turn
+    that also did the session's work. It is a
     field of its own, written by the agent, and a section of its own — since
     req 33 the second of the three cards, between the status and the next
     steps — never a convention inside the status
@@ -308,12 +310,78 @@ taken inside one session, without building an agent that talks to many.
     record. A record never makes the collapsed card (req 42) report outstanding
     work, and never adds a row to what Submit sends.
 
+45. A manual step and a follow-up's description are markdown, so each has room
+    for a long link: up to 1000 characters each.
+
+46. A turn that only answers the user's question — it looks something up,
+    computes something, or explains something, and does not change the
+    session's work — is complete without a card update. The answer is written
+    in the conversation, where the user reads it. The card then shows that it
+    may be behind (req 14), and the next turn's prompt asks for the update, as
+    after any other missed update (req 38).
+
+47. When the session's pull request merges, the conversation scrolls to its
+    end, so the card's follow-up actions are in view.
+
+48. The agent can fetch the card in full. What rides the turn is bounded (req 35),
+    so a large card rides it incomplete — part of what each offer says is withheld
+    first, and on a very large one some offers go unlisted as well. The agent can
+    then see an offer it has finished and cannot take it off the card, because
+    replacing the list means repeating every offer it keeps exactly and the part it
+    was not shown is the part it would have to repeat. Fetching gets the whole
+    stored card — every offer complete, every manual step, the status and the
+    last-turn line, and how long each entry has been there — and gives it in a form
+    the agent can repeat exactly, so the bound costs reading room each turn and
+    never the power to tidy the card. Fetching is reading: it changes nothing on the
+    card, and it is not the update a turn owes. Where what rides the turn is
+    incomplete, it says how to fetch the rest rather than telling the agent to add
+    to the list, which is the one thing that removes nothing.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
 
+- 2026-10-01 — Nik, quoting an agent's own report from a session where this bit:
+  "the agent should be able to fetch the card in full. Example: *'Three done
+  follow-ups still show on the card (thin-joints, close-border-pockets,
+  move-bridges). I could not remove them, because the card did not print the other
+  offers in full.'*" → req 48. The dead end is two shipped decisions meeting: the
+  per-turn block keeps every offer listed and withholds the payloads past its cap
+  (req 35, deliberately — an offer the agent cannot see is one a replacement would
+  silently drop), while `replaceActions` requires every kept offer to be repeated
+  byte-exactly (req 17's identity rule). So past the cap the agent could see a
+  finished offer and had no call that would remove it, and the notice sent it to
+  `actions` without `replaceActions` — the one path that can only add. The card then
+  accumulated finished offers, which is what Nik reported.
+
+  Decided here and not by him, because he named the capability and not the
+  mechanism. **The fetch is a read of its own**, not the write's reply: a bare
+  `session_status` call is the "nothing moved" confirmation (req 14) and must stay
+  that, so making it a read would have made reading cost a write and marked the card
+  current before the agent had reconciled it. **It is not a bigger cap**: a card can
+  grow past any cap, so only an unbounded copy makes the dead end unreachable.
+  **And it is not an id-based removal** (`removeActions: ["id"]`), which would have
+  solved the symptom by routing around req 17's identity rule rather than giving the
+  agent what req 48 asks for; whether it is worth having as well is a separate
+  question, put to Nik in the PR rather than shipped beside this.
+
+- 2026-09-30 — Nik, with a screenshot of a merged session whose view stopped
+  at the "Last turn" section: "after a session is merged, the conversation
+  should scroll to the bottom, so the follow-up actions are visible." → req 47.
+- 2026-09-24 — Nik: "240/280 should be increased since they are markdown. Often
+  the agent gives a long links, and they fail." Asked whether to count only the
+  visible text of a link or to raise the raw limit, he chose "Raise to 1000
+  each". Asked about "the total", he said the 8000-character limit on the card
+  text sent to the agent each turn is fine as it is. → req 45.
+- 2026-09-25 — A benchmark (planning#617) showed opus-5-5 sending a question turn
+  straight to the `session_status` call and never writing the answer, so the user
+  saw it nowhere. Nik chose the fix "the prompt would say that answering a question
+  doesn't require status card update". Asked how ShipIt should then treat such a
+  turn, he chose to accept the Stale mark (like req 13) rather than exempt the turn
+  or keep the call. → req 46; reqs 5, 22 and 31 point to it. Reqs 14 and 38 are unchanged: the
+  turn is marked stale and asked about.
 - 2026-09-21 — Nik: "when a manual step or a follow-up is 'sent' and was checked
   (manual steps could be sent with comments only), it should be marked as checked
   in the checkbox". → req 44. Submitting cleared the selection, so a row came

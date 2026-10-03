@@ -918,6 +918,41 @@ describe("ChatHistoryManager", () => {
       expect(mgr.updatePermissionCard("sess-1", "missing", { phase: "approved" })).toBe(false);
     });
 
+    it("finalizes only in-progress rows that an earlier process wrote", () => {
+      const earlierProcess = new ChatHistoryManager(dbManager);
+      earlierProcess.replaceInProgress("inherited", [{ role: "assistant", text: "old turn", inProgress: true }]);
+      earlierProcess.replaceInProgress("rewritten", [{ role: "assistant", text: "old turn", inProgress: true }]);
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("rewritten", [{ role: "assistant", text: "this process's turn", inProgress: true }]);
+
+      mgr.finalizeInheritedInProgress("inherited");
+      mgr.finalizeInheritedInProgress("rewritten");
+
+      expect(mgr.load("inherited")[0]?.inProgress).toBeUndefined();
+      expect(mgr.load("rewritten")[0]?.inProgress).toBe(true);
+    });
+
+    it("lists each session that has in-progress rows once", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", [{ role: "assistant", text: "a", inProgress: true }, { role: "assistant", text: "b", inProgress: true }]);
+      mgr.replaceInProgress("sess-2", [{ role: "assistant", text: "c", inProgress: true }]);
+      mgr.finalizeInProgress("sess-2");
+      mgr.append("sess-3", { role: "user", text: "done" });
+
+      expect(mgr.sessionsWithInProgressRows()).toEqual(["sess-1"]);
+    });
+
+    it("lists the session's cards still waiting for an answer, in-progress rows included", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingCard("perm-1"));
+      mgr.append("sess-1", pendingCard("perm-2"));
+      mgr.updatePermissionCard("sess-1", "perm-2", { phase: "denied" });
+      mgr.replaceInProgress("sess-1", [{ ...pendingCard("perm-3"), inProgress: true }]);
+      mgr.append("sess-2", pendingCard("perm-other"));
+
+      expect(mgr.pendingPermissionRequestIds("sess-1")).toEqual(["perm-1", "perm-3"]);
+    });
+
     it("a later in-progress rebuild clobbers a DB-only patch, but a rebuild from the patched card survives", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", { role: "user", text: "add a line to .npmrc" });

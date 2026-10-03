@@ -154,7 +154,7 @@ export function createLfsBlobResolver(
     remainingFetches--;
     const text = typeof pointerText === "string" ? pointerText : pointerText.toString("utf-8");
     const credential = await resolveTreeRemoteCredential(
-      workspaceDir, "origin", opts?.resolveRemoteCredential,
+      workspaceDir, "origin", opts?.resolveRemoteCredential, undefined, { lfsHost: true },
     );
     const fetched = await withPreemptiveAuthFallback(
       credential,
@@ -163,7 +163,8 @@ export function createLfsBlobResolver(
       (result) => result === null,
     );
     if (!fetched) {
-      console.warn(`[git-lfs-blob] Could not fetch LFS content for ${filePath} (oid ${pointer.oid.slice(0, 12)})`);
+      const refusal = credential?.lfsHostRefusal ? ` ${credential.lfsHostRefusal}` : "";
+      console.warn(`[git-lfs-blob] Could not fetch LFS content for ${filePath} (oid ${pointer.oid.slice(0, 12)})${refusal}`);
       return null;
     }
     return fetched;

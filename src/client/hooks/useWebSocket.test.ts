@@ -394,7 +394,7 @@ describe("useWebSocket", () => {
 
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     act(() => { window.dispatchEvent(new Event("focus")); });
-    act(() => { window.dispatchEvent(new Event("pageshow")); });
+    act(() => { window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })); });
 
     expect(pings(ws).length).toBe(1);
     expect(FakeWebSocket.instances.length).toBe(1);

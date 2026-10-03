@@ -104,7 +104,7 @@ Sessions*). It has three tabs.
 
 **Secrets** — the values this repository's services need. Its own section below.
 
-**Deployments** — two unrelated things sharing a tab:
+**Deployments** — the agent permissions, and links to hosting platforms:
 
 - **Agent permissions → "Allow agents to merge their own pull requests."** It
   ships off and is granted per repository; read this one's state with `shipit
@@ -114,6 +114,16 @@ Sessions*). It has three tabs.
   protection and required reviews still apply on top. This toggle is the user's
   alone — the route that writes it refuses a session container, so you cannot
   grant yourself the permission, and asking is the only path you have.
+- **Agent permissions → "Give this project's services the Docker socket."**
+  Also off until the user turns it on, per repository; read it with `shipit
+  settings get project.allowDockerSocket`. A service holding the socket controls
+  the Docker host — every container on it, other sessions' included — so
+  `compose.docker-socket: true` in `shipit.yaml` only *asks* for the socket; a
+  service gets it only when this toggle is on as well (`/shipit-docs/compose.md`).
+  It also means ShipIt cannot keep that service away from this machine or
+  private networks, as it does every other container in a session; say so when
+  you propose it. The same route refuses a session container, so if the work
+  needs it, propose it and let the user accept.
 - **Connect your repo** — links to Vercel, Cloudflare Pages and Netlify. These
   are account pages on other people's products, so they open in a new tab; that
   is the narrow exception, not a habit. What ShipIt does on its side is push
@@ -231,6 +241,10 @@ What follows from the design, and answers most of what users ask:
   them, which is the whole point of storing them.
 - **A value only reaches the services that declared it.** A `web` frontend does
   not receive the `db` password.
+- **A value arrives exactly as saved** — `$`, quotes, backslashes, spaces and
+  line breaks (a PEM key, for example) included. The only values the store
+  refuses are ones no environment variable can hold (a NUL character, invalid
+  text); saving one fails, and the message says which secret and why.
 - **You see a value only if it is marked `agent: true`**, which puts it in the
   agent container's environment for CLI tools that need it (`prisma migrate`,
   codegen). Treat anything so marked as exposed and keep real credentials out of
@@ -248,6 +262,12 @@ What follows from the design, and answers most of what users ask:
   store. So a "custom" variable may already be wired up by a plugin without
   appearing in any compose file — the Secrets tab marks which plugin asked for
   it. Check there before telling a user their value is going nowhere.
+- **One secret is used by ShipIt itself, never injected:** the one
+  `shipit.yaml`'s `lfs.credential` names, for a Git LFS server that is not GitHub.
+  The user saves it as a custom variable holding one line,
+  `https://<username>:<password>@<lfs host>`, and ShipIt presents it to that
+  host only. It shows as an ordinary custom variable, so check `shipit.yaml`
+  before calling it unused. Setup: `/shipit-docs/shipit-yaml.md` § `lfs`.
 - **Deleting a service is a secrets change.** The declaration lives on the
   service, so removing the last service that names a secret silently un-wires
   it — including from the agent container if it was `agent: true`. Re-declare it
@@ -293,7 +313,7 @@ useful and safe. Each names exactly what it widens:
 |---|---|---|
 | **GitHub access** | The credential broker is wired for `git` and `gh`: clone and push **private** repositories, open pull requests, anywhere that account can reach. The token is brokered, never resident in the container | No GitHub token. Public HTTPS clones may still work; pushing to the user's repositories does not. This is **not** a network seal |
 | **Allow merging PRs** | The agent may run `gh pr merge` — gated on green checks, never a force-merge | The agent cannot merge. This is a *sub-grant* of GitHub access: it is unavailable, and is cleared, whenever GitHub access is off |
-| **Docker access** | `DOCKER_HOST` points at a **session-scoped** Docker proxy — only this session's containers, networks and volumes are visible. No host socket, no `--privileged`. A bind mount has to resolve inside the workspace, and a container that binds a host path can carry no restart policy and cannot be `docker restart`ed (stop it and start it instead): each mount has to follow a fresh check of the path | No Docker at all |
+| **Docker access** | `DOCKER_HOST` points at a **session-scoped** Docker proxy — only this session's containers, networks and volumes are visible. No host socket, no `--privileged`. A bind mount has to resolve inside the workspace, and a container that binds a host path cannot be `docker restart`ed (stop it and start it instead): each mount has to follow a fresh check of the path. The containers it starts are the session's own, so in either Network mode they cannot reach the machine that runs ShipIt, private networks or the tailnet. A container that asks for a restart policy is refused, because a restart Docker does on its own would skip its network rules, and a network the agent creates is internal, on the `bridge` driver, with an address range Docker picks. The agent reaches its containers by name on the session's Docker network, never through a port published on the host | No Docker at all |
 | **Network access** | Whatever every other session gets. Normally the standard allowlist (LLM API, GitHub, package registries, hosts the user added) with an inline prompt for a new host — but this switch does not decide that. A per-session override decides it if one is set, otherwise the workspace's Network setting, and either can be Open | Egress is tightened to the agent's lifeline (the LLM API and ShipIt), plus GitHub if that is granted — **where the install enforces containment at all**. It only ever tightens; it is never an air-gap, and on an install with no enforcement it is inert |
 
 They are **server-authoritative**. An agent cannot read them out of a workspace
@@ -378,5 +398,6 @@ access to it; it destroys nothing you already made.
 | **Trusts a repository once**, from the notice above the composer or the Preview tab | Say plainly that this is why messages are blocked, and name the control |
 | Types secret **values** in Project Settings → Secrets | Declare the names in `x-shipit-secrets`, and name the exact missing one when it blocks you |
 | Turns on "Allow agents to merge their own pull requests" | Ask for it when merging is the ask; never route around it |
+| Turns on "Give this project's services the Docker socket" | Propose it when a service needs the socket; never route around it |
 | Chooses a sandbox's capability switches | Find out what is granted, use it, and name the switch when one is missing |
 | Picks the repository's sidebar colour | — |

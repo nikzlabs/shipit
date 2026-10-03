@@ -1,4 +1,4 @@
-import { MODEL_CONTEXT_WINDOWS } from "./model-windows.js";
+import { modelContextWindows } from "./model-windows.js";
 import type { AgentId, ServiceRouting } from "./types.js";
 import type { ApiStyle } from "./catalogue/types.js";
 
@@ -61,7 +61,7 @@ export function claudeModelArg(modelId: string): string {
   if (VARIANT_SUFFIX.test(modelId)) return modelId;
   // Exact lookup avoids granting a larger window to an unknown model.
   // Revisit if catalogue windows gain service or harness overrides.
-  if ((MODEL_CONTEXT_WINDOWS[modelId] ?? 0) < LONG_CONTEXT_TOKENS) return modelId;
+  if ((modelContextWindows()[modelId] ?? 0) < LONG_CONTEXT_TOKENS) return modelId;
   return `${modelId}[1m]`;
 }
 

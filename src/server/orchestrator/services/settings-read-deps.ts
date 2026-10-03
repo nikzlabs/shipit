@@ -22,7 +22,9 @@ export interface SettingsReadDeps {
   providerAccountManager?: ProviderAccountManager | undefined;
   egressAllowlistStore?: EgressAllowlistStore | undefined;
   /** Per-repository settings; the repository is the session's own binding. */
-  repoStore?: { get(url: string): { allowAgentMerge?: boolean; colorIndex?: number } | undefined } | undefined;
+  repoStore?: {
+    get(url: string): { allowAgentMerge?: boolean; allowDockerSocket?: boolean; colorIndex?: number } | undefined;
+  } | undefined;
   secretStore?: {
     loadSecretNames(repoUrl: string): string[];
     loadSecrets(repoUrl: string): Record<string, string>;

@@ -32,8 +32,16 @@
 
 - [x] Remove sibling/cohort recipients from the report service
 - [x] Reject `--cohort` and non-parent targets in the shim and server
-- [x] Keep sibling visibility as read-only topology
+- [x] ~~Keep sibling visibility as read-only topology~~ — superseded by sibling blindness below
 - [x] Update all agent prompts and agent-facing command documentation
 - [x] Add service, integration, and shim regression coverage for no lateral delivery
 - [x] Address Grok review findings; final Grok pass reports no remaining findings
+- [x] `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck` clean
+
+## Sibling blindness (req 12)
+
+- [x] Drop `siblings` from the cohort view, route response, and `whoami` output
+- [x] Build the parent row without transcript or PR projections
+- [x] Update service, integration, and shim tests
+- [x] Update agent-facing docs, shim help, and the wiki
 - [x] `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck` clean
