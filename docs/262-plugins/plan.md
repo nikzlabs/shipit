@@ -1582,8 +1582,11 @@ instead of a repeat.
     branch, which is what a successful abort leaves and what a cherry-pick
     conflict leaves too.
 
-  Pull (`git pull`) and the session merge (`git merge`) are refused the same
-  way and do not use the mechanism. The `reset --hard` paths (reset to base,
+  The Pull route (`POST /git/pull`) and the session-merge route
+  (`POST /git/merge`) are refused the same way and do not use the mechanism.
+  Nothing in the product calls either route: the client does not, no agent
+  command does, and the container guard blocks them. So that gap is open only
+  to a direct call of the HTTP API. The `reset --hard` paths (reset to base,
   rollback) are never refused; the copies they delete come back, not awaited,
   when the activation round that `onWorkspaceRewritten` starts settles. A
   known limit, not introduced here: that prepare pass's
