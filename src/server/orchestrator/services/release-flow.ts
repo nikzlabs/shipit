@@ -1,6 +1,7 @@
 import type { SessionManager } from "../sessions.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
-import { parseReleaseMarkers } from "../release-markers.js";
+import type { SystemTurnDeps } from "../session-runner.js";
+import { countReleaseMarkerComments, parseReleaseMarkers } from "../release-markers.js";
 import { detectVersionSource } from "../release-version.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { NOTES_DRAFT_FILE, readDraftNotes, repoPublishesAuthoredNotes } from "../release-notes-draft.js";
@@ -36,8 +37,22 @@ async function resolveNotesDraft(sessionDir: string, prerelease: boolean): Promi
 }
 
 export interface ReleaseFlowDeps {
-  releaseStatusPoller: ReleaseStatusPoller;
+  releaseStatusPoller: ReleaseStatusPoller | undefined;
   sessionManager: SessionManager;
+}
+
+/** Every set of turn deps (composer and dispatch) takes its release step from here, so no turn path drops markers. */
+export function buildPostTurnReleaseFlow(deps: {
+  getReleaseStatusPoller: () => ReleaseStatusPoller | undefined;
+  sessionManager: SessionManager;
+}): NonNullable<SystemTurnDeps["postTurnReleaseFlow"]> {
+  return (sessionId, sessionDir, turnText) =>
+    reactToReleaseMarkers({
+      deps: { releaseStatusPoller: deps.getReleaseStatusPoller(), sessionManager: deps.sessionManager },
+      sessionId,
+      sessionDir,
+      turnText,
+    });
 }
 
 export async function reactToReleaseMarkers(args: {
@@ -48,11 +63,24 @@ export async function reactToReleaseMarkers(args: {
 }): Promise<void> {
   const { deps, sessionId, sessionDir, turnText } = args;
   const markers = parseReleaseMarkers(turnText);
+  const malformed = countReleaseMarkerComments(turnText) - markers.length;
+  if (malformed > 0) {
+    console.warn(`[release-flow] ignoring ${malformed} malformed release marker(s) for ${sessionId}.`);
+  }
   if (markers.length === 0) return;
+  console.log(`[release-flow] ${sessionId}: ${markers.map((m) => m.action).join(", ")}`);
 
+  const poller = deps.releaseStatusPoller;
+  if (!poller) {
+    console.warn(`[release-flow] no release card for ${sessionId}: the release status poller is not available.`);
+    return;
+  }
   const session = deps.sessionManager.get(sessionId);
   const repoUrl = session?.remoteUrl;
-  if (!repoUrl) return;
+  if (!repoUrl) {
+    console.warn(`[release-flow] no release card for ${sessionId}: the session has no remote URL.`);
+    return;
+  }
 
   // Preserve document order: a later marker can supersede an earlier proposal.
   for (const marker of markers) {
@@ -68,7 +96,7 @@ export async function reactToReleaseMarkers(args: {
         }
         const versionSource = marker.versionSource ?? detectVersionSource(sessionDir)?.source;
         const mechanism = marker.mechanism ?? resolveMechanism(sessionDir);
-        deps.releaseStatusPoller.propose(sessionId, repoUrl, {
+        poller.propose(sessionId, repoUrl, {
           version: marker.version,
           tag: marker.tag,
           prerelease: marker.prerelease,
@@ -81,7 +109,7 @@ export async function reactToReleaseMarkers(args: {
       }
       case "pr-opened": {
         const versionSource = marker.versionSource ?? detectVersionSource(sessionDir)?.source;
-        deps.releaseStatusPoller.markPrOpened(sessionId, repoUrl, {
+        poller.markPrOpened(sessionId, repoUrl, {
           version: marker.version,
           tag: marker.tag,
           prerelease: marker.prerelease ?? marker.tag.includes("-"),
@@ -94,7 +122,7 @@ export async function reactToReleaseMarkers(args: {
         break;
       }
       case "tagged": {
-        deps.releaseStatusPoller.markTagged(sessionId, repoUrl, {
+        poller.markTagged(sessionId, repoUrl, {
           tag: marker.tag,
           version: marker.version ?? marker.tag.replace(/^v/, ""),
           prerelease: marker.prerelease ?? marker.tag.includes("-"),
@@ -103,14 +131,14 @@ export async function reactToReleaseMarkers(args: {
         break;
       }
       case "already-released": {
-        deps.releaseStatusPoller.markAlreadyReleased(sessionId, repoUrl, {
+        poller.markAlreadyReleased(sessionId, repoUrl, {
           tag: marker.tag,
           ...(marker.version ? { version: marker.version } : {}),
         });
         break;
       }
       case "cancelled": {
-        deps.releaseStatusPoller.cancel(sessionId);
+        poller.cancel(sessionId);
         break;
       }
     }

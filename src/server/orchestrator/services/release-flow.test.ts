@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { reactToReleaseMarkers } from "./release-flow.js";
+import { buildPostTurnReleaseFlow, reactToReleaseMarkers } from "./release-flow.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { SessionManager } from "../sessions.js";
 
@@ -16,6 +16,7 @@ function makeSessionDir(files: Record<string, string>): string {
   return dir;
 }
 afterEach(() => {
+  vi.restoreAllMocks();
   while (tmpDirs.length) fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
 });
 
@@ -158,7 +159,8 @@ describe("reactToReleaseMarkers", () => {
     });
   });
 
-  it("no-ops without a GitHub remote", async () => {
+  it("no-ops without a GitHub remote, and says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { poller } = makeDeps();
     const sessionManager = { get: () => ({ remoteUrl: undefined }) } as unknown as SessionManager;
     await reactToReleaseMarkers({
@@ -168,5 +170,46 @@ describe("reactToReleaseMarkers", () => {
       turnText: `<!--shipit:release {"action":"pr-opened","version":"0.3.0","tag":"v0.3.0","prNumber":7,"prUrl":"https://github.com/owner/repo/pull/7","releaseBranch":"stable"}-->`,
     });
     expect(poller.markPrOpened).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("has no remote URL"));
+  });
+
+  it("says so when there is no poller to raise the card", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { deps } = makeDeps();
+    await reactToReleaseMarkers({
+      deps: { ...deps, releaseStatusPoller: undefined },
+      sessionId: "s1",
+      sessionDir: "/tmp/none",
+      turnText: PROPOSE,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("poller is not available"));
+  });
+
+  it("says so when a marker does not parse", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { deps, poller } = makeDeps();
+    const turnText = `<!--shipit:release {"action":"propose","version":"0.3.0"}-->\n${PROPOSE}`;
+    await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir: "/tmp/none", turnText });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("1 malformed release marker"));
+    expect(poller.propose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("buildPostTurnReleaseFlow", () => {
+  // The poller is built after the runner registry, so the dispatch path's deps exist first.
+  it("reads the poller when the turn ends, not when the flow is built", async () => {
+    const { deps, poller } = makeDeps();
+    const pollerRef: { ref?: ReleaseStatusPoller } = {};
+    const flow = buildPostTurnReleaseFlow({
+      getReleaseStatusPoller: () => pollerRef.ref,
+      sessionManager: deps.sessionManager,
+    });
+    pollerRef.ref = poller;
+    await flow("s1", makeSessionDir({}), PROPOSE, () => {});
+    expect(poller.propose).toHaveBeenCalledWith(
+      "s1",
+      "https://github.com/owner/repo",
+      expect.objectContaining({ version: "0.3.0", tag: "v0.3.0" }),
+    );
   });
 });

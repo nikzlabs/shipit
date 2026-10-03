@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseReleaseMarkers } from "./release-markers.js";
+import { countReleaseMarkerComments, parseReleaseMarkers } from "./release-markers.js";
 
 describe("parseReleaseMarkers", () => {
   it("returns nothing when there is no marker", () => {
@@ -112,5 +112,18 @@ later...
     expect(parseReleaseMarkers(text)).toEqual([
       { action: "propose", version: "0.3.0", tag: "v0.3.0", prerelease: false },
     ]);
+  });
+});
+
+describe("countReleaseMarkerComments", () => {
+  it("counts the comments the parse dropped as well as the ones it kept", () => {
+    const text = [
+      `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0"}-->`,
+      `<!--shipit:release {"action":"propose","version":"0.3.0"}-->`,
+      `<!--shipit:release {not json}-->`,
+      `prose that names shipit:release without a marker`,
+    ].join("\n");
+    expect(countReleaseMarkerComments(text)).toBe(3);
+    expect(parseReleaseMarkers(text)).toHaveLength(1);
   });
 });

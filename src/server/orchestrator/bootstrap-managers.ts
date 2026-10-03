@@ -300,6 +300,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   ));
 
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
+  const releaseStatusPollerRef: { ref: ReleaseStatusPoller | null } = { ref: null };
 
   // Pushes must survive runner disposal, so the scheduler belongs to the process.
   const autoPushScheduler = createAutoPushScheduler({
@@ -671,6 +672,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     readSystemPrompt: readSystemPromptApp,
     generateText: effectiveGenerateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
+    getReleaseStatusPoller: () => releaseStatusPollerRef.ref ?? undefined,
     rebindDelivery: (deliveryId: string) => mergeWatchManagerRef.ref?.rebindDelivery(deliveryId),
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
     isAgentMergeInFlight: (sessionId: string) => agentMergeClaims.isMergeInFlight(sessionId),
@@ -757,6 +759,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     },
     runnerRegistry,
   });
+  releaseStatusPollerRef.ref = releaseStatusPoller;
 
   let limitsRegistry: LimitsRegistry | null = null;
 

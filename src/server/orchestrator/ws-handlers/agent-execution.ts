@@ -33,7 +33,7 @@ import {
 import { buildAgentRunParams } from "../session-agent-run-params.js";
 import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
-import { reactToReleaseMarkers } from "../services/release-flow.js";
+import { buildPostTurnReleaseFlow } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { createPromptRepark, createPromptTakeLedger, type PromptTakeLedger } from "../turn-settlement.js";
 import {
@@ -732,17 +732,10 @@ async function composeAndRunAgentTurn(
       }
     },
     ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
-    postTurnReleaseFlow: async (sessionId, sessionDir, turnText) => {
-      await reactToReleaseMarkers({
-        deps: {
-          releaseStatusPoller: ctx.releaseStatusPoller,
-          sessionManager: ctx.sessionManager,
-        },
-        sessionId,
-        sessionDir,
-        turnText,
-      });
-    },
+    postTurnReleaseFlow: buildPostTurnReleaseFlow({
+      getReleaseStatusPoller: () => ctx.releaseStatusPoller,
+      sessionManager: ctx.sessionManager,
+    }),
   };
 
   const onInterruptedTurn = (): void => {
