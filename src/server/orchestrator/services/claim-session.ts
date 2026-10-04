@@ -170,6 +170,10 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       if (!repo) throw new ServiceError(404, "Repository not found");
       if (repo.status !== "ready") throw new ServiceError(400, "Repository is still cloning");
 
+      // Opening a workspace counts as use. Stamp it first: the claim may re-clone a cache the disk
+      // janitor reclaimed, and a stale row lets the janitor delete that clone mid-write.
+      deps.repoStore.touch(url);
+
       const claimStart = Date.now();
       let claimPath: ClaimSessionResult["claimPath"] = "slow-clone";
       const forceFetch = opts?.forceFetch === true;
@@ -313,9 +317,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
       // Exclude clone-time file writes from the docs viewer's session-modified group.
       deps.sessionManager.markStarted(result.sessionId);
-
-      // Opening a workspace counts as use even if it never receives a first turn.
-      deps.repoStore.touch(url);
 
       // Inspect Docker: a warm-pool pointer can survive a missed container die event.
       const standbyRunning = await deps.containerManager?.isTrackedContainerRunning(result.sessionId);

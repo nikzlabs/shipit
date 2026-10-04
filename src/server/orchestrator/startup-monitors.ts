@@ -244,6 +244,7 @@ export async function startStartupMonitors(
           sessionsRoot: rt.sessionsRoot,
           sessionIds: () => new Set(sessionManager.allIds()),
           isSessionEvicted: (id) => sessionManager.get(id)?.diskTier === "evicted",
+          sessionRepoUse: () => sessionManager.listAllIncludingWarm(),
         });
       } catch (err) {
         console.error("[disk-janitor] steady-state reclaim pass failed:", err);

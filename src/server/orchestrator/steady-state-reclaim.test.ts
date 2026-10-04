@@ -136,6 +136,76 @@ describe("runSteadyStateReclaim", () => {
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", staleHash))).toBe(false);
   });
 
+  function addRepoLastUsed(repoStore: RepoStore, url: string, lastUsedAt: string): void {
+    repoStore.add(url);
+    repoStore.setReady(url);
+    underlyingDb!.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(lastUsedAt, url);
+  }
+
+  it("keeps a stale repo's caches and memory while one of its sessions is still opened", async () => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+    const longAgo = new Date(Date.now() - 46 * 86_400_000).toISOString();
+    const viewed = "https://github.com/example/viewed.git";
+    const idle = "https://github.com/example/idle.git";
+    addRepoLastUsed(repoStore, viewed, longAgo);
+    addRepoLastUsed(repoStore, idle, longAgo);
+    const credentialsDir = path.join(tmpDir, "credentials");
+    for (const hash of [repoUrlToHash(viewed), repoUrlToHash(idle)]) {
+      for (const dir of ["repo-cache", "dep-cache"].map((sub) => path.join(tmpDir, sub, hash))) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.mkdirSync(path.join(credentialsDir, "repo-memory", hash), { recursive: true });
+    }
+
+    const result = await runSteadyStateReclaim({
+      repoStore,
+      stateDir: tmpDir,
+      credentialsDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+      sessionRepoUse: () => [
+        { remoteUrl: viewed, lastUsedAt: longAgo, lastViewedAt: new Date().toISOString() },
+        { remoteUrl: idle, lastUsedAt: longAgo, lastViewedAt: longAgo },
+      ],
+    });
+
+    expect(result.cachesRemoved).toBe(2);
+    expect(result.repoMemoryDirsRemoved).toBe(1);
+    for (const sub of ["repo-cache", "dep-cache", path.join("credentials", "repo-memory")]) {
+      expect(fs.existsSync(path.join(tmpDir, sub, repoUrlToHash(viewed)))).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, sub, repoUrlToHash(idle)))).toBe(false);
+    }
+  });
+
+  it("spares a cache whose repo a claim stamped after the pass first read the repo store", async () => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+    const url = "https://github.com/example/reclaimed.git";
+    const hash = repoUrlToHash(url);
+    addRepoLastUsed(repoStore, url, new Date(Date.now() - 46 * 86_400_000).toISOString());
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", hash), { recursive: true });
+
+    const readRepos = repoStore.list.bind(repoStore);
+    let reads = 0;
+    vi.spyOn(repoStore, "list").mockImplementation(() => {
+      const snapshot = readRepos();
+      // A claim begins re-cloning right after the pass took its first reading.
+      if (++reads === 1) repoStore.touch(url);
+      return snapshot;
+    });
+
+    const result = await runSteadyStateReclaim({
+      repoStore,
+      stateDir: tmpDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.cachesRemoved).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, "repo-cache", hash))).toBe(true);
+  });
+
   it("sweeps unreferenced repo-memory dirs but keeps live ones (docs/155)", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);
