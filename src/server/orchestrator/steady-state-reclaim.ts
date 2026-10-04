@@ -98,9 +98,12 @@ export async function runSteadyStateReclaim(
   } else {
     try {
       const pluginCacheHashes = pluginLive?.cacheHashes ?? new Set<string>();
-      result.cachesRemoved = await sweepOrphanedCaches(
-        deps.stateDir, () => new Set([...liveRepos(), ...pluginCacheHashes]), paceMs,
-      );
+      const liveCaches = (): Set<string> => new Set([...liveRepos(), ...pluginCacheHashes]);
+      for (const subdir of ["repo-cache", "dep-cache"]) {
+        result.cachesRemoved += await sweepUnusedRepoDirs(
+          path.join(deps.stateDir, subdir), liveCaches, paceMs, "cache",
+        );
+      }
     } catch (err) {
       console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
     }
@@ -127,8 +130,8 @@ export async function runSteadyStateReclaim(
 
   if (deps.credentialsDir) {
     try {
-      result.repoMemoryDirsRemoved = await sweepOrphanedRepoMemory(
-        deps.credentialsDir, liveRepos(), paceMs,
+      result.repoMemoryDirsRemoved = await sweepUnusedRepoDirs(
+        path.join(deps.credentialsDir, REPO_MEMORY_SUBDIR), liveRepos, paceMs, "repo-memory",
       );
     } catch (err) {
       console.warn("[disk-janitor] repo-memory sweep failed:", getMessage(err));
@@ -351,12 +354,12 @@ function liveRepoHashes(
   return live;
 }
 
-async function sweepOrphanedRepoMemory(
-  credentialsDir: string,
-  liveHashes: ReadonlySet<string>,
+async function sweepUnusedRepoDirs(
+  dir: string,
+  readLiveHashes: () => Set<string>,
   paceMs: number,
+  label: string,
 ): Promise<number> {
-  const dir = path.join(credentialsDir, REPO_MEMORY_SUBDIR);
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
@@ -364,51 +367,21 @@ async function sweepOrphanedRepoMemory(
     return 0;
   }
 
+  let liveHashes = readLiveHashes();
   let removed = 0;
   for (const entry of entries) {
     if (liveHashes.has(entry)) continue;
     const full = path.join(dir, entry);
     try {
       await sleep(paceMs);
+      // A claim or restore marks its repo or session before using the cache, possibly after the first read.
+      liveHashes = readLiveHashes();
+      if (liveHashes.has(entry)) continue;
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
-      console.log(`[disk-janitor] removed orphan repo-memory ${full}`);
+      console.log(`[disk-janitor] removed orphan ${label} ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-    }
-  }
-  return removed;
-}
-
-async function sweepOrphanedCaches(
-  stateDir: string,
-  readLiveHashes: () => Set<string>,
-  paceMs: number,
-): Promise<number> {
-  let liveHashes = readLiveHashes();
-  let removed = 0;
-  for (const subdir of ["repo-cache", "dep-cache"]) {
-    const dir = path.join(stateDir, subdir);
-    let entries: string[];
-    try {
-      entries = await fs.readdir(dir);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (liveHashes.has(entry)) continue;
-      const full = path.join(dir, entry);
-      try {
-        await sleep(paceMs);
-        // A claim stamps its repo before re-cloning a reclaimed cache; that clone may have begun since the pass's first read.
-        liveHashes = readLiveHashes();
-        if (liveHashes.has(entry)) continue;
-        await fs.rm(full, { recursive: true, force: true });
-        removed += 1;
-        console.log(`[disk-janitor] removed orphan cache ${full}`);
-      } catch (err) {
-        console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-      }
     }
   }
   return removed;
