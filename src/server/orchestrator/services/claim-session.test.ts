@@ -31,6 +31,7 @@ describe("createClaimSessionService", () => {
     dbManager.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(longAgo, url);
 
     let lastUsedAtDuringClone: string | undefined;
+    let lastSessionList: { id: string }[] | undefined;
     const workspaceDir = path.join(tmpDir, "sessions", "claimed", "workspace");
     const service = createClaimSessionService({
       sessionManager,
@@ -48,7 +49,9 @@ describe("createClaimSessionService", () => {
         sessionManager.track("claimed", title, workspaceDir);
         return Promise.resolve({ appSessionId: "claimed", sessionDir: path.dirname(workspaceDir), workspaceDir });
       },
-      sseBroadcast: () => {},
+      sseBroadcast: (event, data) => {
+        if (event === "session_list") lastSessionList = (data as { sessions: { id: string }[] }).sessions;
+      },
     });
 
     await expect(service.claim(url)).rejects.toThrow("invalid index-pack output");
@@ -56,5 +59,8 @@ describe("createClaimSessionService", () => {
     expect(lastUsedAtDuringClone).toBeDefined();
     expect(Date.parse(lastUsedAtDuringClone!)).toBeGreaterThan(Date.parse(longAgo));
     expect(sessionManager.get("claimed")).toBeUndefined();
+    // A sidebar that saw the row while the clone ran must be told it is gone.
+    expect(lastSessionList).toBeDefined();
+    expect(lastSessionList!.map((s) => s.id)).not.toContain("claimed");
   });
 });

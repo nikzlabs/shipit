@@ -306,6 +306,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         } catch (err) {
           // The row is visible from creation; left behind, it opens as a session with no workspace.
           deps.sessionManager.delete(appSessionId);
+          deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
           throw err;
         }
       };
