@@ -1,4 +1,19 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import type * as DiskUtilsModule from "./disk-utils.js";
+
+// Runs during the janitor's pacing sleep: after it judged an entry unused, before it deletes it.
+const duringPacing = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined }));
+vi.mock("./disk-utils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof DiskUtilsModule>();
+  return {
+    ...actual,
+    sleep: (ms: number) => {
+      duringPacing.hook?.();
+      return actual.sleep(ms);
+    },
+  };
+});
+
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -55,6 +70,7 @@ describe("runSteadyStateReclaim", () => {
     dbManager = null;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     clearOverlayBaseClaims();
+    duringPacing.hook = undefined;
     vi.restoreAllMocks();
   });
 
@@ -134,6 +150,75 @@ describe("runSteadyStateReclaim", () => {
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", liveHash))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "repo-cache", staleHash))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", staleHash))).toBe(false);
+  });
+
+  function addRepoLastUsed(repoStore: RepoStore, url: string, lastUsedAt: string): void {
+    repoStore.add(url);
+    repoStore.setReady(url);
+    underlyingDb!.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(lastUsedAt, url);
+  }
+
+  it("keeps a stale repo's caches and memory while one of its sessions is still opened", async () => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+    const longAgo = new Date(Date.now() - 46 * 86_400_000).toISOString();
+    const now = new Date().toISOString();
+    const viewed = "https://github.com/example/viewed.git";
+    const worked = "https://github.com/example/worked.git";
+    const idle = "https://github.com/example/idle.git";
+    for (const url of [viewed, worked, idle]) addRepoLastUsed(repoStore, url, longAgo);
+    const credentialsDir = path.join(tmpDir, "credentials");
+    for (const hash of [viewed, worked, idle].map(repoUrlToHash)) {
+      for (const dir of ["repo-cache", "dep-cache"].map((sub) => path.join(tmpDir, sub, hash))) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.mkdirSync(path.join(credentialsDir, "repo-memory", hash), { recursive: true });
+    }
+
+    const result = await runSteadyStateReclaim({
+      repoStore,
+      stateDir: tmpDir,
+      credentialsDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+      sessionRepoUse: () => [
+        { remoteUrl: viewed, lastUsedAt: longAgo, lastViewedAt: now },
+        { remoteUrl: worked, lastUsedAt: now, lastViewedAt: longAgo },
+        { remoteUrl: idle, lastUsedAt: longAgo, lastViewedAt: longAgo },
+      ],
+    });
+
+    expect(result.cachesRemoved).toBe(2);
+    expect(result.repoMemoryDirsRemoved).toBe(1);
+    for (const sub of ["repo-cache", "dep-cache", path.join("credentials", "repo-memory")]) {
+      expect(fs.existsSync(path.join(tmpDir, sub, repoUrlToHash(viewed)))).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, sub, repoUrlToHash(worked)))).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, sub, repoUrlToHash(idle)))).toBe(false);
+    }
+  });
+
+  it.each([
+    ["repo-cache", "repo-cache"],
+    ["repo-memory", path.join("credentials", "repo-memory")],
+  ])("spares %s whose repo a claim stamped after the pass judged it unused", async (_name, sub) => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+    const url = "https://github.com/example/reclaimed.git";
+    const dir = path.join(tmpDir, sub, repoUrlToHash(url));
+    addRepoLastUsed(repoStore, url, new Date(Date.now() - 46 * 86_400_000).toISOString());
+    fs.mkdirSync(dir, { recursive: true });
+    duringPacing.hook = () => repoStore.touch(url);
+
+    const result = await runSteadyStateReclaim({
+      repoStore,
+      stateDir: tmpDir,
+      credentialsDir: path.join(tmpDir, "credentials"),
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.cachesRemoved + result.repoMemoryDirsRemoved).toBe(0);
+    expect(fs.existsSync(dir)).toBe(true);
   });
 
   it("sweeps unreferenced repo-memory dirs but keeps live ones (docs/155)", async () => {
