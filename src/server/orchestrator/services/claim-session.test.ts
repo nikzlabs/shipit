@@ -19,9 +19,10 @@ describe("createClaimSessionService", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("stamps the repo as used before re-cloning a reclaimed cache, even when the clone fails", async () => {
+  it("stamps the repo as used before re-cloning a reclaimed cache, and leaves no session when the clone fails", async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claim-session-"));
     dbManager = new DatabaseManager(path.join(tmpDir, "test.db"));
+    const sessionManager = new SessionManager(dbManager);
     const repoStore = new RepoStore(dbManager);
     const url = "https://github.com/example/dormant.git";
     const longAgo = new Date(Date.now() - 46 * 86_400_000).toISOString();
@@ -30,8 +31,9 @@ describe("createClaimSessionService", () => {
     dbManager.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(longAgo, url);
 
     let lastUsedAtDuringClone: string | undefined;
+    const workspaceDir = path.join(tmpDir, "sessions", "claimed", "workspace");
     const service = createClaimSessionService({
-      sessionManager: new SessionManager(dbManager),
+      sessionManager,
       repoStore,
       createGitManager: () => { throw new Error("not reached"); },
       createRepoGit: () => ({
@@ -42,11 +44,10 @@ describe("createClaimSessionService", () => {
       }) as unknown as RepoGit,
       githubAuthManager: { authenticated: false } as unknown as GitHubAuthManager,
       getSharedRepoDir: () => path.join(tmpDir, "repo-cache", "dormant"),
-      createSessionDirFull: () => Promise.resolve({
-        appSessionId: "claimed",
-        sessionDir: path.join(tmpDir, "sessions", "claimed"),
-        workspaceDir: path.join(tmpDir, "sessions", "claimed", "workspace"),
-      }),
+      createSessionDirFull: (title) => {
+        sessionManager.track("claimed", title, workspaceDir);
+        return Promise.resolve({ appSessionId: "claimed", sessionDir: path.dirname(workspaceDir), workspaceDir });
+      },
       sseBroadcast: () => {},
     });
 
@@ -54,5 +55,6 @@ describe("createClaimSessionService", () => {
 
     expect(lastUsedAtDuringClone).toBeDefined();
     expect(Date.parse(lastUsedAtDuringClone!)).toBeGreaterThan(Date.parse(longAgo));
+    expect(sessionManager.get("claimed")).toBeUndefined();
   });
 });
