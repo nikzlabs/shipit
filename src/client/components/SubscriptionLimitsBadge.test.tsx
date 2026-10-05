@@ -323,7 +323,7 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    expect(screen.getByText(/5h 20%/)).not.toHaveTextContent(/resets in/);
+    expect(screen.getByText(/5h 20%/).closest("[data-meter-pct]")).not.toHaveTextContent(/resets in/);
     expect(screen.getByText(/7d 94%/).closest("[data-meter-pct]")).toHaveTextContent(/resets in/);
   });
 
@@ -356,8 +356,83 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    expect(screen.getByText(/5h 90%/)).not.toHaveTextContent(/resets in/);
-    expect(screen.getByText(/7d 90%/)).not.toHaveTextContent(/resets in/);
+    expect(screen.getByText(/5h 90%/).closest("[data-meter-pct]")).not.toHaveTextContent(/resets in/);
+    expect(screen.getByText(/7d 90%/).closest("[data-meter-pct]")).not.toHaveTextContent(/resets in/);
+  });
+
+  // jsdom has no layout: these pin WHICH meters take part. The widths are measured in docs/150.
+  describe("a countdown that gives way to the account label", () => {
+    const hot = makeSnap({
+      session: { usedPct: 96, resetAt: FUTURE_SESSION_RESET },
+      weekly: { usedPct: 22, resetAt: FUTURE_WEEKLY_RESET },
+    });
+    const meterOf = (value: RegExp) => screen.getByText(value).closest<HTMLElement>("[data-meter-pct]")!;
+
+    it("gives way beside a label, and only in the meter that has a countdown", () => {
+      render(<SubscriptionLimitPill label="Claude" snapshot={hot} />);
+
+      // Each of these carries the order: without the grid or the basis the label shrinks first.
+      expect(meterOf(/5h 96%/)).toHaveClass(
+        "inline-grid",
+        "grid-cols-[max-content_minmax(0,auto)]",
+        "basis-[min-content]",
+        "grow",
+        "max-w-max",
+      );
+      expect(meterOf(/5h 96%/)).not.toHaveClass("inline-flex");
+      expect(meterOf(/7d 22%/)).toHaveClass("inline-flex");
+      expect(meterOf(/7d 22%/)).not.toHaveClass("inline-grid");
+    });
+
+    it("starts a labelled pill without its countdowns, so they never cost another pill its label", () => {
+      render(<SubscriptionLimitPill label="Claude" snapshot={hot} />);
+
+      expect(meterOf(/5h 96%/).parentElement).toHaveClass("basis-[min-content]", "grow", "max-w-max");
+    });
+
+    it("keeps its width in a pill with no label, where there is nothing to give way to", () => {
+      render(<SubscriptionLimitPill snapshot={hot} />);
+
+      const meter = meterOf(/5h 96%/);
+      expect(meter.parentElement).not.toHaveClass("basis-[min-content]");
+      expect(meter.parentElement).not.toHaveClass("grow");
+      expect(meter).toHaveClass("inline-flex");
+      expect(meter).not.toHaveClass("inline-grid");
+      expect(meter.lastElementChild).not.toHaveAttribute("style");
+      expect(meter.lastElementChild).not.toHaveClass("overflow-hidden");
+    });
+
+    it("shortens the words and never the time, and reads the same as before", () => {
+      render(<SubscriptionLimitPill label="Claude" snapshot={hot} />);
+
+      const countdown = meterOf(/5h 96%/).lastElementChild as HTMLElement;
+      expect(countdown).toHaveTextContent(/^resets in 1h$/);
+      expect(countdown).toHaveClass("inline-flex", "overflow-hidden");
+      const [words, time] = [...countdown.children];
+      expect(words).toHaveTextContent("resets in");
+      expect(words).toHaveClass("truncate");
+      expect(time).toHaveTextContent("1h");
+      expect(time).toHaveClass("shrink-0");
+      expect(time).not.toHaveClass("truncate");
+    });
+
+    it("drops out whole at a width that follows the length of the time", () => {
+      render(
+        <SubscriptionLimitPill
+          label="Claude"
+          snapshot={makeSnap({
+            session: { usedPct: 96, resetAt: FUTURE_SESSION_RESET },
+            weekly: { usedPct: 94, resetAt: new Date(Date.now() + (3 * 24 + 12) * 60 * 60_000).toISOString() },
+          })}
+        />,
+      );
+
+      const countdownOf = (value: RegExp) => meterOf(value).lastElementChild as HTMLElement;
+      // "1h" and "3d 12h", each plus room for the ellipsis.
+      expect(countdownOf(/5h 96%/).style.getPropertyValue("--countdown-min")).toBe("5ch");
+      expect(countdownOf(/7d 94%/).style.getPropertyValue("--countdown-min")).toBe("9ch");
+      expect(countdownOf(/5h 96%/)).toHaveClass("max-w-[calc(round(down,100%_-_var(--countdown-min),1px)*9999)]");
+    });
   });
 
   it("drops a window the reader says the plan does not have", () => {
