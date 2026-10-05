@@ -3318,21 +3318,30 @@ What it costs:
 - Room below a countdown's threshold is held but shows nothing, so a pill can
   carry a blank of up to the width of `… <time>` for each countdown. It only
   happens while every name in the header is in full. Two countdowns in one pill
-  split the pill's spare room equally.
+  split the pill's spare room equally until one of them is in full.
 - A touch screen has no tooltip. In the status popover on a phone-width screen a
   hidden countdown is therefore not readable there; Settings → Model providers
   still shows it.
 
+Not solved, and not new: names of very different lengths. The header shrinks
+pills in proportion to their whole width, so a short name beside a long one is
+used up first and its pill is then pushed under its own meters, while the long
+name still has room. `Work` beside a 42-character name at 1024px: the short pill
+is 119px wide with contents 24px over, calm or above 90% alike. Before this
+change a pill above 90% overflowed with names of any length. A floor for the
+pill needs a third size — the meters alone — next to the two that CSS can name
+(with and without countdowns), so it is not a small change.
+
 Measured in the running app at every window width from 1024 to 1800px, with two
 and three accounts, each calm, with one countdown or with two, alike and mixed —
-about 6,000 layouts. In each, every label is exactly as wide as in the calm
-header at that width, no time is cut, nothing overflows and the header is 57px.
-Before, two accounts above 90% at 1024px had labels of 0px. In the popover at
-390px: no overflow, pills 22px tall. Measured in Chromium only. An engine
-without `flex-basis: min-content` falls back to label and countdown shrinking
-together, which still cannot overflow; one without `round()` (before Chrome 125,
-Firefox 118, Safari 15.4) drops the cutoff and clips the time instead of hiding
-the countdown.
+about 6,000 layouts, with names of 20 to 24 characters. In each, every label is
+exactly as wide as in the calm header at that width, no time is cut, nothing
+overflows and the header is 57px. Before, two accounts above 90% at 1024px had
+labels of 0px. In the popover at 390px: no overflow, pills 22px tall. Measured
+in Chromium only. An engine without `flex-basis: min-content` falls back to
+label and countdown shrinking together; one without `round()` on a percentage
+(Chrome before 125, and older Firefox and Safari) drops the cutoff and clips the
+time instead of hiding the countdown.
 
 The same change made the uptime, CPU and memory pills `whitespace-nowrap`.
 Item 2 above says the account name is the only part that yields; that was not

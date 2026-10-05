@@ -407,6 +407,7 @@ describe("SubscriptionLimitPill", () => {
 
       const countdown = meterOf(/5h 96%/).lastElementChild as HTMLElement;
       expect(countdown).toHaveTextContent(/^resets in 1h$/);
+      expect(countdown).toHaveClass("inline-flex", "overflow-hidden");
       const [words, time] = [...countdown.children];
       expect(words).toHaveTextContent("resets in");
       expect(words).toHaveClass("truncate");
