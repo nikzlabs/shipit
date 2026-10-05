@@ -4,7 +4,7 @@ import type { AgentOption } from "../agent-types.js";
 import type { SessionUsage, UsageStats } from "../../server/shared/types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import type { ToastData } from "../components/Toast.js";
-import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode, UpdateNotice, VersionInfo } from "../../server/shared/types.js";
+import type { AgentId, DockerMemoryStats, HostCpuStats, SubscriptionLimitsMap, RuntimeMode, UpdateNotice, VersionInfo } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   getSavedSidebarCollapsed,
@@ -88,6 +88,7 @@ interface UiState {
   toast: ToastData | null;
   bootstrapLoaded: boolean;
   dockerMemory: DockerMemoryStats | null;
+  hostCpu: HostCpuStats | null;
 
   processStartedAt: number | null;
 
@@ -129,6 +130,7 @@ interface UiState {
   setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
+  setHostCpu: (stats: HostCpuStats | null) => void;
   setProcessStartedAt: (epochMs: number | null) => void;
   setVersion: (version: VersionInfo | null) => void;
   setUpdateMode: (updateMode: "managed" | "manual") => void;
@@ -170,6 +172,7 @@ const initialState = {
   toast: null as ToastData | null,
   bootstrapLoaded: false,
   dockerMemory: null as DockerMemoryStats | null,
+  hostCpu: null as HostCpuStats | null,
   processStartedAt: null as number | null,
   version: null as VersionInfo | null,
   updateMode: "manual" as "managed" | "manual",
@@ -248,6 +251,7 @@ export const useUiStore = create<UiState>((set) => ({
   setToast: (toast) => set({ toast }),
 
   setDockerMemory: (dockerMemory) => set({ dockerMemory }),
+  setHostCpu: (hostCpu) => set({ hostCpu }),
 
   setProcessStartedAt: (processStartedAt) => set({ processStartedAt }),
   setVersion: (version) => set({ version }),

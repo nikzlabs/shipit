@@ -10,7 +10,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { AgentId, SessionListRow, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
+import type { AgentId, SessionListRow, RepoInfo, PrStatusSummary, DockerMemoryStats, HostCpuStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption, GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
@@ -719,6 +719,11 @@ export function useServerEvents(): void {
     es.addEventListener("docker_memory", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as DockerMemoryStats;
       useUiStore.getState().setDockerMemory(data);
+    });
+
+    es.addEventListener("host_cpu", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as HostCpuStats;
+      useUiStore.getState().setHostCpu(data);
     });
 
     es.addEventListener("subscription_limits", (e: MessageEvent) => {

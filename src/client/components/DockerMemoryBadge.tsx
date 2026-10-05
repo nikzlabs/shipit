@@ -31,7 +31,7 @@ export function DockerMemoryBadge({ stats }: DockerMemoryBadgeProps) {
     : `Docker memory: ${formatBytes(usedBytes)} used`;
 
   return (
-    <Badge numeric className={`bg-(--color-bg-hover) ${colorClass}`} title={title}>
+    <Badge numeric className={`bg-(--color-bg-hover) whitespace-nowrap ${colorClass}`} title={title}>
       {label}
     </Badge>
   );

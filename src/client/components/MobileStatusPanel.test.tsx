@@ -55,12 +55,28 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={Date.parse("2026-05-19T12:00:00Z")}
       />,
     );
     expect(screen.getByText("Uptime")).toBeInTheDocument();
     expect(screen.queryByText("Subscription")).toBeNull();
     expect(screen.queryByText("Docker memory")).toBeNull();
+    expect(screen.queryByText("Machine CPU")).toBeNull();
+  });
+
+  it("shows the machine CPU load above Docker memory", () => {
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{}}
+        dockerMemory={{ usedBytes: 2 * 1024 ** 3, totalBytes: 8 * 1024 ** 3 }}
+        hostCpu={{ usedPercent: 15, cores: 16 }}
+        processStartedAt={null}
+      />,
+    );
+    const labels = screen.getAllByText(/^(Machine CPU|Docker memory)$/).map((el) => el.textContent);
+    expect(labels).toEqual(["Machine CPU", "Docker memory"]);
+    expect(screen.getByText("CPU 15% / 16 cores")).toBeInTheDocument();
   });
 
   it("refreshes subscription usage as soon as the dropdown opens", async () => {
@@ -69,6 +85,7 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{ "anthropic:sub": routed(makeSnap()) }}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={null}
       />,
     );
@@ -85,6 +102,7 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={Date.now()}
       />,
     );
@@ -102,6 +120,7 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={null}
       />,
     );
@@ -123,6 +142,7 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={Date.parse("2026-05-19T12:00:00Z")}
       />,
     );
@@ -140,6 +160,7 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
       <MobileStatusPanel
         subscriptionLimits={{ "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) }}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={null}
       />,
     );

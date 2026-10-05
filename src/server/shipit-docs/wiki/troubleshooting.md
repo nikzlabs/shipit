@@ -306,6 +306,20 @@ is in **Settings → Advanced**. What reclaim takes, in what order, and which
 exemptions hold is [sessions.md](sessions.md) — answer from there, because users
 conflate the memory ladder with the disk one constantly.
 
+**The CPU pill** in the app header, directly before the Docker memory figure,
+reads `CPU 15% / 16 cores`: how busy the whole machine was over the last few
+seconds, all cores together, so 100% means every core is in use. It counts
+everything on the host — every session's agent, dev server and test run, and
+whatever else the machine does — never one session alone. Amber from 60%, red
+from 90%. On a narrow window it is behind the gauge button with the other
+status pills.
+
+It answers a different question from the memory banner. A busy CPU with calm
+memory is work in progress — builds, several test suites at once — and it ends
+when the work does: ShipIt never stops or reclaims anything because of CPU
+load. So a red CPU pill explains slowness and does not explain a session that
+stopped.
+
 ## "It can't download anything" / "it can't reach the internet"
 
 In **Contained** mode a session reaches only an allowlist — the model API, the

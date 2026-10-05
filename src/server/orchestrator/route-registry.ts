@@ -71,7 +71,7 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     sseClients, sessionManager, runnerRegistry, prStatusPoller,
     githubAuthManager, repoStore, agentRegistry, providerAccountManager, authManagers,
     credentialStore,
-    dockerForStats, limitsRegistry,
+    dockerForStats, latestHostCpu, limitsRegistry,
     processStartedAt, buildId, version, updateMode,
   } = rt;
   const originPolicy = readOriginPolicyFromEnv();
@@ -162,6 +162,10 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
           client.write(`event: docker_memory\ndata: ${JSON.stringify(stats)}\n\n`);
         }
       })();
+    }
+
+    if (latestHostCpu.value) {
+      client.write(`event: host_cpu\ndata: ${JSON.stringify(latestHostCpu.value)}\n\n`);
     }
 
     if (limitsRegistry) {
