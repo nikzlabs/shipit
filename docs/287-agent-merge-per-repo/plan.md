@@ -254,6 +254,35 @@ grace. It is reached through one new poller method,
 because the tracker is private to the poller and its decision depends on state
 the poll loop preloads with `ensureWorkflowsLoaded()`.
 
+**A repository with nothing that can report a check skips the grace**
+(nikzlabs/shipit#3073). "Unknown history" and "known to have no workflow files"
+were one state — the loader returned `null` for both — so a repository with no
+CI at all refused every first merge and needed a scripted retry. The loader now
+answers `[]` for a commit read with no workflow files, and
+`CiGraceTracker.nothingReportsChecks()` returns true only when every source was
+read and is empty:
+
+- no workflow files on the default branch (the bare cache, re-read on every
+  decision rather than cached, since a repository can add CI at any time);
+- none at the pull request's head commit, read from the session checkout by its
+  pinned SHA — `pull_request` runs the workflows the pull request itself adds;
+- no check the poller has seen on the repository; and
+- a live read (`readRepoReportsChecks()`) finding no check on the default
+  branch tip or on the last ten pull requests — an app such as an external CI
+  service or a deploy integration reports checks without any workflow file, and
+  the poller's own memory is empty after every restart.
+
+Any source that cannot be read keeps the grace. A `--repo` merge (sandbox only)
+passes no checkout, because the tracker's evidence describes the session's
+repository and not the target.
+
+**Refusals that clear by themselves exit `8`** in the `gh` shim (the real `gh`'s
+"checks pending" code): no checks yet, checks running, a rollup for an earlier
+commit, and the post-push hold. The route marks them `retryable`; every other
+refusal exits `1`. A retry loop that matched the words "Not merged" once re-ran a
+merge eight times against a permanent refusal, so the distinction is the exit
+code and not the text.
+
 **The local-HEAD row** is the half `guardMergeSync()` cannot cover: that guard
 compares local HEAD with the remote-*tracking* ref and, by design, proceeds
 whenever it cannot tell. Comparing the live `headRefOid` with the local HEAD this
@@ -463,9 +492,11 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge; typed three-way merge and create outcomes |
 | `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion, with the caller's `guard` asked between the read and the first write; `readPrByNumber()` for the promote-nothing case |
 | `src/server/orchestrator/services/agent-merge-settlement.ts` | settlement, the three reconciliation triggers, and `captureTurn()` — the in-memory turn token (runner identity + epoch) a witnessed settlement is checked against |
-| `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
+| `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits); `nothingReportsChecks()` skips it when no source of checks exists |
+| `src/server/orchestrator/workflow-loader.ts` | `listWorkflowFiles()` at a pinned commit; `[]` (no workflow files) is distinct from `null` (unreadable) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
-| `src/server/orchestrator/services/merge-gate.ts` | the merge-only read, the observation, and the decision table |
+| `src/server/orchestrator/services/merge-gate.ts` | the merge-only read, the observation, the decision table, `RETRYABLE_REFUSALS`, and `readRepoReportsChecks()` |
+| `src/server/session/agent-shim/gh.ts` | `gh pr merge` exits `8` on a `retryable` refusal |
 | `src/server/orchestrator/services/pr-provenance.ts` | the one provenance path: witnessed creates only, repository matched by identity |
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `services/git.ts`, `sessions.ts` | provenance writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |

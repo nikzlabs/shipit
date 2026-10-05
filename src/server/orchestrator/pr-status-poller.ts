@@ -9,6 +9,7 @@ import { getErrorMessage } from "./validation.js";
 import { readBranchSync, resolveMergeSync } from "./services/branch-sync.js";
 import { BranchAheadHealer, type AheadHealOutcome } from "./services/branch-ahead-heal.js";
 import { logMergeObserved } from "./services/merge-attribution.js";
+import { readRepoReportsChecks } from "./services/merge-gate.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -263,7 +264,11 @@ export class PrStatusPoller {
     });
   }
 
-  /** Awaits workflow loading, not the grace window. */
+  /**
+   * Awaits workflow loading, not the grace window. `headTreeDir` is a checkout
+   * holding the head commit; without it the head's workflows are unknown and the
+   * grace applies.
+   */
   async awaitCiGraceDecision(args: {
     repoUrl: string | undefined;
     repoKey: string;
@@ -271,8 +276,19 @@ export class PrStatusPoller {
     headSha: string;
     headBranch?: string;
     baseBranch?: string;
+    headTreeDir?: string;
   }): Promise<boolean> {
     await this.graceTracker.ensureWorkflowsLoaded(args.repoKey, args.repoUrl).catch(() => {});
+    const slash = args.repoKey.indexOf("/");
+    const nothingReports = slash > 0 && await this.graceTracker.nothingReportsChecks({
+      repoKey: args.repoKey,
+      headSha: args.headSha,
+      ...(args.headTreeDir ? { headTreeDir: args.headTreeDir } : {}),
+      readRepoReportsChecks: () => readRepoReportsChecks(
+        this.githubAuth, args.repoKey.slice(0, slash), args.repoKey.slice(slash + 1),
+      ),
+    });
+    if (nothingReports) return false;
     return this.graceTracker.shouldWaitForMergeChecks({
       repoKey: args.repoKey,
       prNumber: args.prNumber,

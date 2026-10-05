@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { decideMerge, readMergeObservation, mergeFlushRefusal, type MergeObservation } from "./merge-gate.js";
+import {
+  decideMerge, readMergeObservation, readRepoReportsChecks, mergeFlushRefusal, type MergeObservation,
+} from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
 function manager(result: unknown): Pick<GitHubAuthManager, "graphqlQuery"> {
@@ -96,6 +98,53 @@ describe("readMergeObservation", () => {
   it("reads an absent rollup and an explicit null rollup the same way", async () => {
     const explicit = await readMergeObservation(manager(prNode({}, null)), "o", "r", 7);
     expect(explicit).toMatchObject({ rollupState: null });
+  });
+});
+
+describe("readRepoReportsChecks", () => {
+  function repo(defaultTip: string | null, prRollups: (string | null)[]) {
+    const rollup = (state: string | null) => (state === null ? null : { state });
+    return {
+      data: {
+        repository: {
+          defaultBranchRef: { target: { statusCheckRollup: rollup(defaultTip) } },
+          pullRequests: {
+            nodes: prRollups.map((s) => ({ commits: { nodes: [{ commit: { statusCheckRollup: rollup(s) } }] } })),
+          },
+        },
+      },
+    };
+  }
+
+  it("is false only when the default branch tip and every recent pull request report nothing", async () => {
+    await expect(readRepoReportsChecks(manager(repo(null, [null, null])), "o", "r")).resolves.toBe(false);
+    await expect(readRepoReportsChecks(manager(repo(null, [])), "o", "r")).resolves.toBe(false);
+  });
+
+  it("is true when the default branch tip reports a check", async () => {
+    await expect(readRepoReportsChecks(manager(repo("SUCCESS", [null])), "o", "r")).resolves.toBe(true);
+  });
+
+  it("is true when any recent pull request reports a check, whatever its result", async () => {
+    await expect(readRepoReportsChecks(manager(repo(null, [null, "FAILURE"])), "o", "r")).resolves.toBe(true);
+  });
+
+  it("is true for a repository with no default branch whose pull requests report checks", async () => {
+    const body = repo(null, ["PENDING"]);
+    (body.data.repository as Record<string, unknown>).defaultBranchRef = null;
+    await expect(readRepoReportsChecks(manager(body), "o", "r")).resolves.toBe(true);
+  });
+
+  it("is unknown, never false, when the read fails or is partial", async () => {
+    const throwing = { graphqlQuery: vi.fn(async () => { throw new Error("network"); }) } as unknown as
+      Pick<GitHubAuthManager, "graphqlQuery">;
+    await expect(readRepoReportsChecks(throwing, "o", "r")).resolves.toBeNull();
+    await expect(readRepoReportsChecks(manager(null), "o", "r")).resolves.toBeNull();
+    await expect(readRepoReportsChecks(manager({ ...repo(null, []), errors: [{ message: "x" }] }), "o", "r"))
+      .resolves.toBeNull();
+    await expect(readRepoReportsChecks(manager({ data: { repository: null } }), "o", "r")).resolves.toBeNull();
+    await expect(readRepoReportsChecks(manager({ data: { repository: { defaultBranchRef: null } } }), "o", "r"))
+      .resolves.toBeNull();
   });
 });
 

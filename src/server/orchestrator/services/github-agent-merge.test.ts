@@ -85,7 +85,21 @@ describe("agentMergePullRequest", () => {
     });
     expect(res.success).toBe(false);
     expect(res.message).toContain("no checks yet");
+    expect(res.retryable).toBe(true);
     expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
+  });
+
+  it("marks only the refusals that clear by themselves as retryable", async () => {
+    const answer = async (g: ReturnType<typeof gate>) =>
+      (await agentMergePullRequest(makeGit(), makeGitHub({}, g), {
+        number: 5, sessionId: "s1", remoteUrl: REMOTE,
+      })).retryable;
+    expect(await answer(gate({ rollupState: "PENDING" }))).toBe(true);
+    expect(await answer(gate({ rollupCommitOid: "sha-older" }))).toBe(true);
+    expect(await answer(gate({ rollupState: "FAILURE" }))).toBeUndefined();
+    expect(await answer(gate({ isDraft: true }))).toBeUndefined();
+    expect(await answer(gate({ reviewDecision: "CHANGES_REQUESTED" }))).toBeUndefined();
+    expect(await answer(gate({ state: "CLOSED" }))).toBeUndefined();
   });
 
   it("refuses when the read itself fails, instead of reading it as no checks", async () => {

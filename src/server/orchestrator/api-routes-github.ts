@@ -1219,11 +1219,12 @@ export async function registerGitHubRoutes(
           if (verdict.pushed) deps.cancelAutoPush?.(request.params.id);
           const armPastPush = request.body?.auto === true && verdict.pushed;
           if (!armPastPush) {
-            reply.code(409).send({
-              error: verdict.pushed
-                ? `${verdict.message} (Merge again once the checks on the new head report.)`
-                : verdict.message,
-            });
+            reply.code(409).send(verdict.pushed
+              ? {
+                error: `${verdict.message} (Merge again once the checks on the new head report.)`,
+                retryable: true,
+              }
+              : { error: verdict.message });
             return;
           }
         }
@@ -1258,6 +1259,8 @@ export async function registerGitHubRoutes(
                   prNumber: num,
                   headSha,
                   ...(session.branch ? { headBranch: session.branch } : {}),
+                  // The grace reads the session's repository; a --repo target's evidence is not there.
+                  ...(remoteUrl === session.remoteUrl ? { headTreeDir: gitDir } : {}),
                 }),
             }
             : {}),
