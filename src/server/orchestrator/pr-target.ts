@@ -83,7 +83,7 @@ export type AgentMergeOwnershipRefusal = { status: number; error: string } | nul
 
 // currentBranch must preserve detached HEAD as null; a fallback branch would bypass the check.
 export function agentMergeOwnership(args: {
-  session: Pick<SessionInfo, "remoteUrl" | "branch" | "prNumber" | "prRepoId">;
+  session: Pick<SessionInfo, "remoteUrl" | "branch" | "prNumber" | "prRepoId" | "previousMergedPr">;
   requestedNumber: number;
   currentBranch: string | null;
   repoOverride: string | undefined;
@@ -120,12 +120,23 @@ export function agentMergeOwnership(args: {
   }
 
   if (session.prNumber === undefined || session.prRepoId === undefined) {
+    // The reset after a merge clears the record, so the merged number lands here.
+    if (session.previousMergedPr?.number === requestedNumber) {
+      return {
+        status: 409,
+        error:
+          `Not merged — PR #${requestedNumber} is already merged: it is this session's previous `
+          + "pull request. There is nothing left to merge, and running the command again gives "
+          + "the same answer.",
+      };
+    }
     return {
       status: 403,
       error:
         "Not merged — ShipIt has no record of opening a pull request for this session, so it "
         + "cannot merge one on the agent's behalf. Open the pull request with `gh pr create` "
-        + "(ShipIt records the ones it opens), or merge from the PR card in the ShipIt UI.",
+        + "(ShipIt records the ones it opens), or merge from the PR card in the ShipIt UI. "
+        + "Running the command again gives the same answer.",
     };
   }
 

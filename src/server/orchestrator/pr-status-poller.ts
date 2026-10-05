@@ -263,7 +263,11 @@ export class PrStatusPoller {
     });
   }
 
-  /** Awaits workflow loading, not the grace window. */
+  /**
+   * Awaits workflow loading, not the grace window. `headTreeDir` is a checkout
+   * holding the head commit; without it the head's workflows are unknown and the
+   * grace applies.
+   */
   async awaitCiGraceDecision(args: {
     repoUrl: string | undefined;
     repoKey: string;
@@ -271,8 +275,10 @@ export class PrStatusPoller {
     headSha: string;
     headBranch?: string;
     baseBranch?: string;
+    headTreeDir?: string;
   }): Promise<boolean> {
     await this.graceTracker.ensureWorkflowsLoaded(args.repoKey, args.repoUrl).catch(() => {});
+    if (await this.graceTracker.noWorkflowFiles(args)) return false;
     return this.graceTracker.shouldWaitForMergeChecks({
       repoKey: args.repoKey,
       prNumber: args.prNumber,
