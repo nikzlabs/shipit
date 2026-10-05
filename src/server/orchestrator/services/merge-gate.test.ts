@@ -120,6 +120,13 @@ describe("githubRefusalClearsByItself", () => {
       .toBe(false);
     expect(githubRefusalClearsByItself("Pull Request is not mergeable")).toBe(false);
   });
+
+  it("reads the status, not the words inside a check's name", () => {
+    expect(githubRefusalClearsByItself('Required status check "error-handling" is expected.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "failed-login tests" is in progress.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "cancelled orders" is expected.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "pending-review" is failing.')).toBe(false);
+  });
 });
 
 describe("decideMerge — the observation table", () => {

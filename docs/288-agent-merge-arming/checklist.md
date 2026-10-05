@@ -129,6 +129,16 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
 - [x] Added tests that run against a **real `SessionRunner`**, with a control
       that it still refuses when the session is genuinely busy
 
+## GitHub's "not yet" refusal
+
+- [x] A merge GitHub refuses because a required check is expected or in progress
+      returns the request to `pending` instead of ending it (req 1)
+- [x] An attempt whose permission was withdrawn while it was in flight does not
+      return to `pending` (req 4)
+- [x] A request that GitHub keeps refusing this way says so once, and keeps
+      waiting
+- [x] Each guard proved red on its own by deleting it singly
+
 ## Quality
 
 - [x] Tests as listed in plan.md

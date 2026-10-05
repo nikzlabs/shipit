@@ -132,8 +132,10 @@ export const RETRYABLE_REFUSALS: ReadonlySet<MergeRefusalReason> = new Set<Merge
  * GitHub gives no code for this, only text; a wording change degrades to exit 1.
  */
 export function githubRefusalClearsByItself(message: string): boolean {
-  return /required status checks?\b.*\b(?:expected|in progress|pending)\b/i.test(message)
-    && !/\b(?:fail(?:ing|ed)?|error(?:ed)?|cancel(?:led|ed))\b/i.test(message);
+  // Check names are quoted, and a name such as "error-handling" is not a status.
+  const text = message.replace(/"[^"]*"/g, '""');
+  return /required status checks?\b.*\b(?:expected|in progress|pending)\b/i.test(text)
+    && !/\b(?:fail(?:ing|ed)?|error(?:ed)?|cancel(?:led|ed))\b/i.test(text);
 }
 
 export type MergeDecision =
