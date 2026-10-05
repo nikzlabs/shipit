@@ -1,7 +1,7 @@
 import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { Spinner } from "./Spinner.js";
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot /api/oauth/usage fetch when the mobile status dropdown mounts it (external system sync)
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useApi } from "../hooks/useApi.js";
 import { Badge } from "./ui/badge.js";
@@ -298,6 +298,9 @@ export function windowsShown(
   return { session: declared.includes("session"), weekly: declared.includes("weekly") };
 }
 
+/** Starts without its countdown and grows into spare room, so no label shrinks while a countdown shows (docs/150 plan, amended 2026-10-05). */
+const GROWS_INTO_SPARE_ROOM = "basis-[min-content] grow max-w-max";
+
 export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const resolvedServiceId = snapshot?.serviceId ?? serviceId;
@@ -321,7 +324,9 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
 
     <Badge
       numeric
-      className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0`}
+      className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0${
+        label !== undefined ? ` ${GROWS_INTO_SPARE_ROOM}` : ""
+      }`}
     >
       {label !== undefined && (
         <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
@@ -336,6 +341,7 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
           windowMs={SESSION_WINDOW_MS}
           fetchedAt={snapshot?.fetchedAt}
           now={now}
+          countdownYields={label !== undefined}
         />
       )}
       {shows.weekly && (
@@ -346,6 +352,7 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
           windowMs={WEEKLY_WINDOW_MS}
           fetchedAt={snapshot?.fetchedAt}
           now={now}
+          countdownYields={label !== undefined}
         />
       )}
       {showRefresh && resolvedServiceId && (
@@ -399,6 +406,8 @@ interface MeterProps {
   windowMs: number;
   fetchedAt?: number;
   now: number;
+  /** Beside an account label the countdown gives way first; alone it keeps its width. */
+  countdownYields: boolean;
 }
 
 export function timeElapsedPct(
@@ -438,7 +447,15 @@ export function meterDisplay(
   return { kind: "known", pct: window.usedPct, stale: now - fetchedAt > STALE_AFTER_MS };
 }
 
-function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: MeterProps) {
+const METER_WITH_YIELDING_COUNTDOWN = `inline-grid grid-cols-[max-content_minmax(0,auto)] ${GROWS_INTO_SPARE_ROOM}`;
+
+/** Half of `3d 12h` reads as a different time, so with less than a whole pixel past `--countdown-min` the countdown goes whole. */
+const COUNTDOWN_YIELDS =
+  "inline-flex overflow-hidden max-w-[calc(round(down,100%_-_var(--countdown-min),1px)*9999)]";
+/** The width of `… 3d 12h`. */
+const countdownMin = (time: string) => ({ "--countdown-min": `${time.length + 3}ch` }) as CSSProperties;
+
+function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now, countdownYields }: MeterProps) {
   const title = window
     ? `${formatWindowLine(longLabel, window, now)}${fetchedAt === undefined ? "" : `\nUpdated ${formatAge(fetchedAt, now)}`}`
     : `${longLabel}: usage not reported yet${fetchedAt === undefined ? "" : `\nUpdated ${formatAge(fetchedAt, now)}`}`;
@@ -487,9 +504,13 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
   const countdown = pct > 90 ? formatResetCountdown(window.resetAt, now) : null;
   const elapsedPct = timeElapsedPct(window.resetAt, windowMs, now, window.startedAt);
 
+  const yields = countdownYields && countdown !== null;
+
   return (
     <span
-      className={`inline-flex items-center whitespace-nowrap${display.stale ? " opacity-50" : ""}`}
+      className={`${yields ? METER_WITH_YIELDING_COUNTDOWN : "inline-flex"} items-center whitespace-nowrap${
+        display.stale ? " opacity-50" : ""
+      }`}
       data-meter-pct={Math.round(pct)}
       style={{ color }}
       title={title}
@@ -517,7 +538,15 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
           )}
         </span>
       </span>
-      {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
+      {countdown && (
+        <span
+          className={`ml-1 text-(--color-text-secondary)${yields ? ` ${COUNTDOWN_YIELDS}` : ""}`}
+          style={yields ? countdownMin(countdown) : undefined}
+        >
+          <span className={yields ? "truncate" : undefined}>resets in</span>{" "}
+          <span className={yields ? "ml-1 shrink-0" : undefined}>{countdown}</span>
+        </span>
+      )}
     </span>
   );
 }

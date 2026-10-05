@@ -367,6 +367,14 @@ What the meters say when they have no figure, and the three are different:
 | `5h · reset` | The window rolled over; the cached number is meaningless |
 | `5h · —` | The provider has not reported one — asking again may fill it |
 
+Above 90% a meter adds when the window resets: `5h 96% resets in 4h`. That text
+is the first thing to give way when the header is short of room — it shortens to
+`r… 4h`, then goes — so no account name is cut to make room for it. A meter with
+no `resets in` beside it has not lost the information: hovering the meter gives
+the reset time whenever the provider reported one. On a touch screen, where
+nothing hovers, the same meter under Settings → Model providers always shows its
+countdown.
+
 **A missing pill is not a broken one.** Three credentials correctly have none: a
 plan whose provider publishes no usage figure at all, a pasted subscription
 token that has not yet produced a reading (a signed-in account gets its pill
