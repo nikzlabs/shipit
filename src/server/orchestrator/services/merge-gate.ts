@@ -84,47 +84,6 @@ export async function readMergeObservation(
   };
 }
 
-// Apps such as external CI report checks without any workflow file in the repository.
-export const REPO_CHECKS_QUERY = `
-query RepoChecks($owner: String!, $repo: String!) {
-  repository(owner: $owner, name: $repo) {
-    defaultBranchRef { target { ... on Commit { statusCheckRollup { state } } } }
-    pullRequests(last: 10) { nodes { commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }
-  }
-}`;
-
-type Rollup = { statusCheckRollup?: { state?: string } | null } | null | undefined;
-
-interface RepoChecksResponse {
-  data?: {
-    repository?: {
-      defaultBranchRef?: { target?: Rollup } | null;
-      pullRequests?: { nodes?: ({ commits?: { nodes?: ({ commit?: Rollup } | null)[] } } | null)[] };
-    } | null;
-  };
-  errors?: unknown[];
-}
-
-/** Whether a check reported on the default branch tip or a recent pull request; null when unreadable. */
-export async function readRepoReportsChecks(
-  githubAuthManager: Pick<GitHubAuthManager, "graphqlQuery">,
-  owner: string,
-  repo: string,
-): Promise<boolean | null> {
-  let body: RepoChecksResponse | null;
-  try {
-    body = await githubAuthManager.graphqlQuery<RepoChecksResponse>(REPO_CHECKS_QUERY, { owner, repo });
-  } catch {
-    return null;
-  }
-  if (!body || (Array.isArray(body.errors) && body.errors.length > 0)) return null;
-  const repository = body.data?.repository;
-  const prs = repository?.pullRequests?.nodes;
-  if (!repository || !Array.isArray(prs)) return null;
-  if (repository.defaultBranchRef?.target?.statusCheckRollup) return true;
-  return prs.some((pr) => pr?.commits?.nodes?.some((c) => c?.commit?.statusCheckRollup));
-}
-
 export function mergeFlushRefusal(
   flush: { kind: "blocked-secret" | "blocked-unreadable" | "blocked-conflict" | "partial-unreadable" },
 ): string {
@@ -167,6 +126,15 @@ export const RETRYABLE_REFUSALS: ReadonlySet<MergeRefusalReason> = new Set<Merge
   "checks-pending",
   "head-moved-since-checks",
 ]);
+
+/**
+ * Whether GitHub refused because a required check has not reported or finished.
+ * GitHub gives no code for this, only text; a wording change degrades to exit 1.
+ */
+export function githubRefusalClearsByItself(message: string): boolean {
+  return /required status checks?\b.*\b(?:expected|in progress|pending)\b/i.test(message)
+    && !/\b(?:fail(?:ing|ed)?|error(?:ed)?|cancel(?:led|ed))\b/i.test(message);
+}
 
 export type MergeDecision =
   | { action: "merge"; sha: string }

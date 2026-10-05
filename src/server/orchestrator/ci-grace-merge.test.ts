@@ -103,7 +103,7 @@ describe("shouldWaitForMergeChecks", () => {
   });
 });
 
-describe("a repository where nothing can report a check", () => {
+describe("a pull request with no workflow file to fire", () => {
   const REPO_URL = "https://github.com/acme/shipit";
   let tmpDir: string;
   let bare: string;
@@ -144,32 +144,24 @@ describe("a repository where nothing can report a check", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function nothingReports(
-    t: CiGraceTracker,
-    headSha: string,
-    reports: boolean | null = false,
-    headTreeDir: string | null = work,
-  ) {
-    const readRepoReportsChecks = vi.fn(async () => reports);
+  async function noWorkflowFiles(t: CiGraceTracker, headSha: string, headTreeDir: string | null = work) {
     await t.ensureWorkflowsLoaded(REPO, REPO_URL);
-    const answer = await t.nothingReportsChecks({
-      repoKey: REPO, headSha, readRepoReportsChecks,
-      ...(headTreeDir ? { headTreeDir } : {}),
-    });
-    return { answer, readRepoReportsChecks };
+    return t.noWorkflowFiles({ repoKey: REPO, headSha, ...(headTreeDir ? { headTreeDir } : {}) });
   }
 
-  it("is true when no workflow file exists anywhere and no check has reported", async () => {
+  it("is true when neither the default branch nor the head has a workflow file", async () => {
     const head = commit("src/a.ts", "x");
-    const { answer } = await nothingReports(new CiGraceTracker(() => bare), head);
-    expect(answer).toBe(true);
+    expect(await noWorkflowFiles(new CiGraceTracker(() => bare), head)).toBe(true);
   });
 
   it("is false when the pull request's own commit adds the first workflow", async () => {
     const head = commit(".github/workflows/ci.yml", "on: pull_request\n");
-    const { answer, readRepoReportsChecks } = await nothingReports(new CiGraceTracker(() => bare), head);
-    expect(answer).toBe(false);
-    expect(readRepoReportsChecks).not.toHaveBeenCalled();
+    expect(await noWorkflowFiles(new CiGraceTracker(() => bare), head)).toBe(false);
+  });
+
+  it("sees a workflow file whose name git would quote", async () => {
+    const head = commit(".github/workflows/prüfung.yml", "on: pull_request\n");
+    expect(await noWorkflowFiles(new CiGraceTracker(() => bare), head)).toBe(false);
   });
 
   it("is false when only the default branch has a workflow file", async () => {
@@ -177,115 +169,64 @@ describe("a repository where nothing can report a check", () => {
     git(["-C", work, "checkout", "--quiet", "-b", "base-ci"]);
     commit(".github/workflows/ci.yml", "on: pull_request\n");
     publishBase();
-    const { answer, readRepoReportsChecks } = await nothingReports(new CiGraceTracker(() => bare), head);
-    expect(answer).toBe(false);
-    expect(readRepoReportsChecks).not.toHaveBeenCalled();
+    expect(await noWorkflowFiles(new CiGraceTracker(() => bare), head)).toBe(false);
   });
 
   it("notices a workflow added to the default branch after an empty read", async () => {
     const t = new CiGraceTracker(() => bare);
     const first = commit("src/a.ts", "x");
-    expect((await nothingReports(t, first)).answer).toBe(true);
+    expect(await noWorkflowFiles(t, first)).toBe(true);
 
     git(["-C", work, "checkout", "--quiet", "-b", "base-ci"]);
     commit(".github/workflows/ci.yml", "on: push\n");
     publishBase();
-    expect((await nothingReports(t, first)).answer).toBe(false);
+    expect(await noWorkflowFiles(t, first)).toBe(false);
   });
 
   it("is false when the default branch cannot be read", async () => {
     const head = commit("src/a.ts", "x");
-    const { answer } = await nothingReports(new CiGraceTracker(() => path.join(tmpDir, "missing.git")), head);
-    expect(answer).toBe(false);
+    expect(await noWorkflowFiles(new CiGraceTracker(() => path.join(tmpDir, "missing.git")), head)).toBe(false);
   });
 
   it("is false when the head commit is not in the checkout", async () => {
-    const { answer } = await nothingReports(new CiGraceTracker(() => bare), "a".repeat(40));
-    expect(answer).toBe(false);
+    expect(await noWorkflowFiles(new CiGraceTracker(() => bare), "a".repeat(40))).toBe(false);
   });
 
   it("is false without a checkout to read the head from", async () => {
     const head = commit("src/a.ts", "x");
-    const { answer } = await nothingReports(new CiGraceTracker(() => bare), head, false, null);
-    expect(answer).toBe(false);
+    expect(await noWorkflowFiles(new CiGraceTracker(() => bare), head, null)).toBe(false);
   });
 
   it("reads only a pinned commit id, never a ref that can move", async () => {
     commit("src/a.ts", "x");
-    const { answer } = await nothingReports(new CiGraceTracker(() => bare), "HEAD");
-    expect(answer).toBe(false);
-  });
-
-  it("is false, and remembered, when a check reported somewhere in the repository", async () => {
-    const t = new CiGraceTracker(() => bare);
-    const head = commit("src/a.ts", "x");
-    expect((await nothingReports(t, head, true)).answer).toBe(false);
-
-    const again = await nothingReports(t, head, false);
-    expect(again.answer).toBe(false);
-    expect(again.readRepoReportsChecks).not.toHaveBeenCalled();
-  });
-
-  it("is false when the repository's checks cannot be read", async () => {
-    const head = commit("src/a.ts", "x");
-    const { answer } = await nothingReports(new CiGraceTracker(() => bare), head, null);
-    expect(answer).toBe(false);
-  });
-
-  it("is false when the poller has seen a check on this repository", async () => {
-    const t = new CiGraceTracker(() => bare);
-    t.markRepoHasChecks(REPO);
-    const head = commit("src/a.ts", "x");
-    expect((await nothingReports(t, head)).answer).toBe(false);
+    expect(await noWorkflowFiles(new CiGraceTracker(() => bare), "HEAD")).toBe(false);
   });
 
   describe("PrStatusPoller.awaitCiGraceDecision", () => {
-    function poller(rollup: { state: string } | null) {
-      const githubAuth = makeGitHubAuth({
-        data: {
-          repository: {
-            defaultBranchRef: { target: { statusCheckRollup: rollup } },
-            pullRequests: { nodes: [] },
-          },
-        },
-      });
-      const p = new PrStatusPoller({
-        githubAuth,
+    function poller() {
+      return new PrStatusPoller({
+        githubAuth: makeGitHubAuth(),
         sessionManager: makeSessionManager([]),
         sseBroadcast: vi.fn(),
         getSharedRepoDir: () => bare,
       });
-      return { p, githubAuth };
     }
 
-    it("does not wait, on the first call, when nothing can report a check", async () => {
+    it("does not wait, on the first call, when no workflow file can fire", async () => {
       const head = commit("src/a.ts", "x");
-      const { p, githubAuth } = poller(null);
+      const p = poller();
       await expect(p.awaitCiGraceDecision({
         repoUrl: REPO_URL, repoKey: REPO, prNumber: 7, headSha: head, headTreeDir: work,
       })).resolves.toBe(false);
-      expect(githubAuth.graphqlQuery).toHaveBeenCalledWith(
-        expect.stringContaining("defaultBranchRef"), { owner: "acme", repo: "shipit" },
-      );
-      p.destroy();
-    });
-
-    it("waits when the default branch reports checks from outside any workflow file", async () => {
-      const head = commit("src/a.ts", "x");
-      const { p } = poller({ state: "SUCCESS" });
-      await expect(p.awaitCiGraceDecision({
-        repoUrl: REPO_URL, repoKey: REPO, prNumber: 7, headSha: head, headTreeDir: work,
-      })).resolves.toBe(true);
       p.destroy();
     });
 
     it("waits when the caller supplies no checkout of the head", async () => {
       const head = commit("src/a.ts", "x");
-      const { p, githubAuth } = poller(null);
+      const p = poller();
       await expect(p.awaitCiGraceDecision({
         repoUrl: REPO_URL, repoKey: REPO, prNumber: 7, headSha: head,
       })).resolves.toBe(true);
-      expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
       p.destroy();
     });
   });

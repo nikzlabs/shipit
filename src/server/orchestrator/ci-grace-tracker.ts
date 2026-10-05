@@ -99,25 +99,20 @@ export class CiGraceTracker {
   private firstMergeNoChecks = new Map<string, number>();
 
   /**
-   * True only when every source of checks was read and is empty: no workflow
-   * files on the default branch or at the pull request's head (which can add
-   * them), and no check reported anywhere in the repository. Any unread source
-   * keeps the merge grace.
+   * True only when both trees a pull request's workflows come from were read and
+   * hold no workflow file: the default branch, and the head commit, which can add
+   * one. Checks from outside the repository are GitHub's branch protection to
+   * enforce, as they already are when a partial set has reported.
    */
-  async nothingReportsChecks(args: {
+  async noWorkflowFiles(args: {
     repoKey: string;
     headSha: string;
     headTreeDir?: string;
-    readRepoReportsChecks: () => Promise<boolean | null>;
   }): Promise<boolean> {
     if (!this.reposWithoutWorkflows.has(args.repoKey)) return false;
-    if (this.repoHasObservedChecks.get(args.repoKey)) return false;
     if (!args.headTreeDir || !/^[0-9a-f]{40,64}$/i.test(args.headSha)) return false;
     const headFiles = await listWorkflowFiles(args.headTreeDir, args.headSha);
-    if (headFiles === null || headFiles.length > 0) return false;
-    const reports = await args.readRepoReportsChecks();
-    if (reports === true) this.markRepoHasChecks(args.repoKey);
-    return reports === false;
+    return headFiles?.length === 0;
   }
 
   /** Merges wait even with unknown CI history; polling can revise its answer later. */

@@ -30,9 +30,11 @@ export interface PrTriggerContext {
 export async function listWorkflowFiles(repoDir: string, ref = "HEAD"): Promise<string[] | null> {
   let lsTreeOutput: string;
   try {
+    // -z: without it git quotes a non-ASCII name, and the quoted name fails the extension test.
     lsTreeOutput = await safeSimpleGit(repoDir).raw([
       "ls-tree",
       "-r",
+      "-z",
       "--name-only",
       ref,
       ".github/workflows/",
@@ -41,8 +43,7 @@ export async function listWorkflowFiles(repoDir: string, ref = "HEAD"): Promise<
     return null;
   }
   return lsTreeOutput
-    .split("\n")
-    .map((s) => s.trim())
+    .split("\0")
     .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
 }
 

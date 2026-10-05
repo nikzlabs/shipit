@@ -18,7 +18,9 @@ import { validateNonEmptyString } from "./validation.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { logMergePerformed } from "./merge-attribution.js";
-import { decideMerge, readMergeObservation, RETRYABLE_REFUSALS } from "./merge-gate.js";
+import {
+  decideMerge, githubRefusalClearsByItself, readMergeObservation, RETRYABLE_REFUSALS,
+} from "./merge-gate.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { freshenBaseRef } from "./freshen-base-ref.js";
@@ -447,7 +449,11 @@ export async function agentMergePullRequest(
   }
   if (attempt.outcome === "refused") {
     await opts.onRefused?.(decision.sha);
-    return { success: false, message: attempt.message };
+    return {
+      success: false,
+      message: attempt.message,
+      ...(githubRefusalClearsByItself(attempt.message) ? { retryable: true } : {}),
+    };
   }
 
   logMergePerformed({

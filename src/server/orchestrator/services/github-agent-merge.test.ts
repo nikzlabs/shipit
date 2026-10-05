@@ -159,6 +159,19 @@ describe("agentMergePullRequest", () => {
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
     expect(res.message).toBe("At least 1 approving review is required.");
+    expect(res.retryable).toBeUndefined();
+  });
+
+  it("marks GitHub's refusal for a required check that has not reported yet as retryable", async () => {
+    const github = makeGitHub({
+      mergePullRequestAttempt: vi.fn(async () => ({
+        outcome: "refused" as const, message: 'Required status check "ci" is expected.',
+      })),
+    });
+    const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
+    expect(res.success).toBe(false);
+    expect(res.message).toBe('Required status check "ci" is expected.');
+    expect(res.retryable).toBe(true);
   });
 
   describe("the durable claim", () => {

@@ -345,12 +345,12 @@ Three consequences, all normal:
   (about twenty seconds) before it will accept an empty check set, because an
   empty set moments after a push means "not registered yet", not "nothing gates
   this". Call again in a few seconds. The wait is skipped, and the first call
-  merges, when ShipIt can show nothing will report a check:
-  - the repository's workflows demonstrably cannot fire for this pull request, or
-  - there are no workflow files at all — not on the default branch, and not in
-    the pull request's own commit — and no check has reported on the default
-    branch or on a recent pull request (an app such as an external CI service
-    reports checks without any workflow file).
+  merges, when the repository's workflows demonstrably cannot fire for this pull
+  request — including a repository with **no workflow files at all**, neither on
+  the default branch nor in the pull request's own commit. Checks that come from
+  outside the repository (an external CI app) are enforced by GitHub's branch
+  protection where the owner made them required: GitHub then refuses the merge
+  until they pass, and ShipIt passes that refusal on as "not yet" (exit `8`).
 - **If the commit is blocked, the merge is refused outright.** A likely secret in
   the diff, a path ShipIt could not read, or an unresolved conflict means your
   work is *not* on the branch — merging would ship the previous state while
@@ -367,7 +367,7 @@ clear starts with the same "Not merged" as one that clears in seconds.
 | Exit | Meaning |
 |---|---|
 | `0` | Merged, already merged, or (`--auto`) the request is recorded. |
-| `8` | **Not yet.** The checks have not registered, are still running, or describe an earlier commit (including the commit the command just pushed). The same command can succeed later with no change from you. |
+| `8` | **Not yet.** The checks have not registered, are still running, or describe an earlier commit (including the commit the command just pushed), or GitHub reports a required check as expected or in progress. The same command can succeed later with no change from you. |
 | `1` | Refused. Read the message: it says what has to change, and calling again unchanged is not expected to help. This includes a pull request ShipIt has no record of opening, and the session's previous pull request after it merged. |
 | `2` | Bad invocation (unknown flag, two merge methods). |
 

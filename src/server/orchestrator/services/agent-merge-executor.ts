@@ -206,7 +206,6 @@ export async function runOneRequest(
       prNumber: claim.prNumber,
       headSha: claim.expectedSha,
       ...(session.branch ? { headBranch: session.branch } : {}),
-      ...(session.workspaceDir ? { headTreeDir: session.workspaceDir } : {}),
     });
     if (wait) return { result: "waiting", reason: "no checks have registered yet" };
   } else if (observation.rollupState !== "SUCCESS") {

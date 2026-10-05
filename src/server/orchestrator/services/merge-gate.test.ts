@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  decideMerge, readMergeObservation, readRepoReportsChecks, mergeFlushRefusal, type MergeObservation,
+  decideMerge, readMergeObservation, githubRefusalClearsByItself, mergeFlushRefusal, type MergeObservation,
 } from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
@@ -101,50 +101,24 @@ describe("readMergeObservation", () => {
   });
 });
 
-describe("readRepoReportsChecks", () => {
-  function repo(defaultTip: string | null, prRollups: (string | null)[]) {
-    const rollup = (state: string | null) => (state === null ? null : { state });
-    return {
-      data: {
-        repository: {
-          defaultBranchRef: { target: { statusCheckRollup: rollup(defaultTip) } },
-          pullRequests: {
-            nodes: prRollups.map((s) => ({ commits: { nodes: [{ commit: { statusCheckRollup: rollup(s) } }] } })),
-          },
-        },
-      },
-    };
-  }
-
-  it("is false only when the default branch tip and every recent pull request report nothing", async () => {
-    await expect(readRepoReportsChecks(manager(repo(null, [null, null])), "o", "r")).resolves.toBe(false);
-    await expect(readRepoReportsChecks(manager(repo(null, [])), "o", "r")).resolves.toBe(false);
+describe("githubRefusalClearsByItself", () => {
+  it("recognises a required check that has not reported or finished", () => {
+    expect(githubRefusalClearsByItself('Required status check "ci" is expected.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "ci" is in progress.')).toBe(true);
+    expect(githubRefusalClearsByItself("2 of 3 required status checks are expected.")).toBe(true);
+    expect(githubRefusalClearsByItself(
+      'Repository rule violations found\n\nRequired status check "build" is expected.',
+    )).toBe(true);
   });
 
-  it("is true when the default branch tip reports a check", async () => {
-    await expect(readRepoReportsChecks(manager(repo("SUCCESS", [null])), "o", "r")).resolves.toBe(true);
-  });
-
-  it("is true when any recent pull request reports a check, whatever its result", async () => {
-    await expect(readRepoReportsChecks(manager(repo(null, [null, "FAILURE"])), "o", "r")).resolves.toBe(true);
-  });
-
-  it("is true for a repository with no default branch whose pull requests report checks", async () => {
-    const body = repo(null, ["PENDING"]);
-    (body.data.repository as Record<string, unknown>).defaultBranchRef = null;
-    await expect(readRepoReportsChecks(manager(body), "o", "r")).resolves.toBe(true);
-  });
-
-  it("is unknown, never false, when the read fails or is partial", async () => {
-    const throwing = { graphqlQuery: vi.fn(async () => { throw new Error("network"); }) } as unknown as
-      Pick<GitHubAuthManager, "graphqlQuery">;
-    await expect(readRepoReportsChecks(throwing, "o", "r")).resolves.toBeNull();
-    await expect(readRepoReportsChecks(manager(null), "o", "r")).resolves.toBeNull();
-    await expect(readRepoReportsChecks(manager({ ...repo(null, []), errors: [{ message: "x" }] }), "o", "r"))
-      .resolves.toBeNull();
-    await expect(readRepoReportsChecks(manager({ data: { repository: null } }), "o", "r")).resolves.toBeNull();
-    await expect(readRepoReportsChecks(manager({ data: { repository: { defaultBranchRef: null } } }), "o", "r"))
-      .resolves.toBeNull();
+  it("does not treat a failed check, a review, or a conflict as clearing by itself", () => {
+    expect(githubRefusalClearsByItself('Required status check "ci" is failing.')).toBe(false);
+    expect(githubRefusalClearsByItself(
+      "2 of 3 required status checks have not succeeded: 1 expected and 1 failing.",
+    )).toBe(false);
+    expect(githubRefusalClearsByItself("At least 1 approving review is required by reviewers with write access."))
+      .toBe(false);
+    expect(githubRefusalClearsByItself("Pull Request is not mergeable")).toBe(false);
   });
 });
 
