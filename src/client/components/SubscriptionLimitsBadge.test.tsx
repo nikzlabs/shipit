@@ -33,6 +33,11 @@ afterEach(() => {
 const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
+/** The row's flex items: for each pill its name, then its meters. */
+function halves(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>(":scope > div > span")];
+}
+
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
   const serviceId = overrides.serviceId ?? "anthropic";
   return {
@@ -213,28 +218,142 @@ describe("SubscriptionLimitsBadge group", () => {
     };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
 
-    const rows = container.querySelectorAll(":scope > span");
-    expect(rows.length).toBe(2);
-    expect(rows[0].textContent).toMatch(/^Work/);
-    expect(rows[0].textContent).toMatch(/5h 88%/);
-    expect(rows[1].textContent).toMatch(/^Personal/);
-    expect(rows[1].textContent).toMatch(/5h 12%/);
+    const [workName, workMeters, personalName, personalMeters, ...rest] = halves(container);
+    expect(rest).toHaveLength(0);
+    expect(workName).toHaveTextContent(/^Work$/);
+    expect(workMeters).toHaveTextContent(/5h 88%/);
+    expect(personalName).toHaveTextContent(/^Personal$/);
+    expect(personalMeters).toHaveTextContent(/5h 12%/);
   });
 
-  it("lets a pill shrink by truncating its label, not by overflowing the row", () => {
+  // jsdom has no layout: these pin the structure and classes the order rests on. The widths are measured in docs/150.
+  describe("the row a labelled pill is laid out in", () => {
+    function renderRow(...labels: string[]) {
+      const now = Date.now();
+      useSettingsStore.getState().setProviderAccounts(
+        labels.map((label, i) => ({ id: `acct-${i}`, serviceId: "anthropic", billingMode: "sub", via: "account", label, isPrimary: i === 0, status: "ready", createdAt: now, updatedAt: now })),
+      );
+      const limits: SubscriptionLimitsMap = {
+        "anthropic:sub": routed(...labels.map((_, i) => makeSnap({ routeId: `acct-${i}` }))),
+      };
+      return render(<SubscriptionLimitsBadge limits={limits} />);
+    }
+
+    it("is one flex row whose items are every name and every set of meters", () => {
+      const { container } = renderRow("nicolas.zherebtsov@gmail.com", "Work");
+
+      expect(container.children).toHaveLength(1);
+      expect(container.firstElementChild).toHaveClass("flex", "min-w-0");
+      // Equal heights for the two halves come from the default stretch.
+      expect(container.firstElementChild!.className).not.toMatch(/\bitems-/);
+      expect(halves(container)).toHaveLength(4);
+    });
+
+    it("marks the name as the item that takes room from nothing, and the meters as the item that never shrinks", () => {
+      const { container } = renderRow("nicolas.zherebtsov@gmail.com", "Work");
+      const [name, meters] = halves(container);
+
+      expect(name).toHaveClass("min-w-0", "basis-0", "grow-[999999]", "max-w-max");
+      expect(meters).toHaveClass("shrink-0");
+      expect(meters).not.toHaveClass("min-w-0");
+
+      const label = screen.getByText("nicolas.zherebtsov@gmail.com");
+      expect(label).toHaveClass("truncate");
+      expect(label).toHaveAttribute("title", expect.stringContaining("nicolas.zherebtsov@gmail.com"));
+    });
+
+    it("gives the two halves one background, and round ends only on the outside", () => {
+      const { container } = renderRow("Work", "Personal");
+      const [name, meters, nextName, lastMeters] = halves(container);
+
+      expect(name).toHaveClass("rounded-full", "rounded-r-none", "bg-(--color-bg-hover)");
+      expect(meters).toHaveClass("rounded-full", "rounded-l-none", "pl-0", "bg-(--color-bg-hover)");
+      // The gap belongs to the pill, not to its halves.
+      expect(name).not.toHaveClass("mr-3");
+      expect(meters).toHaveClass("mr-3", "last:mr-0");
+      expect(nextName.previousElementSibling).toBe(meters);
+      expect(lastMeters.nextElementSibling).toBeNull();
+    });
+  });
+
+  describe("stacked, for a column", () => {
     const now = Date.now();
-    useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-    ]);
-    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
-    const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
+    const hot = { session: { usedPct: 96, resetAt: FUTURE_SESSION_RESET }, weekly: { usedPct: 94, resetAt: FUTURE_WEEKLY_RESET } };
 
-    const pill = container.querySelector(":scope > span");
-    expect(pill?.className).toContain("min-w-0");
-    const label = screen.getByText("nicolas.zherebtsov@gmail.com");
-    expect(label.className).toContain("truncate");
+    function renderStacked(overrides: Partial<CredentialRoute> = {}) {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now, ...overrides },
+      ]);
+      const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work", ...hot })) };
+      return render(<SubscriptionLimitsBadge limits={limits} stacked />);
+    }
 
-    expect(label).toHaveAttribute("title", expect.stringContaining("nicolas.zherebtsov@gmail.com"));
+    it("puts the name on a line above its pill, with no row around them", () => {
+      const { container } = renderStacked();
+
+      expect(container.querySelector(":scope > div")).toBeNull();
+      const account = container.firstElementChild!;
+      expect(account).toHaveClass("flex", "flex-col", "max-w-full");
+      const [name, pill, ...rest] = [...account.children];
+      expect(rest).toHaveLength(0);
+      expect(name).toHaveTextContent(/^nicolas\.zherebtsov@gmail\.com$/);
+      // A touch screen has no tooltip: a name too long for the column wraps, it is not cut.
+      expect(name).toHaveClass("wrap-anywhere", "max-w-full");
+      expect(name).not.toHaveClass("truncate");
+      expect(name).toHaveAttribute("title", "nicolas.zherebtsov@gmail.com — Pro");
+      expect(pill).toHaveTextContent(/5h 96%\s*resets in .*7d 94%\s*resets in /);
+      expect(pill).not.toHaveTextContent(/nicolas/);
+    });
+
+    it("keeps the pill whole: both ends round, and no sizing meant for a row", () => {
+      const { container } = renderStacked();
+      const pill = container.firstElementChild!.lastElementChild!;
+
+      expect(pill).toHaveClass("rounded-full", "pl-2", "max-w-full");
+      expect(pill).not.toHaveClass("rounded-l-none");
+      // In a column these would size the pill's height.
+      expect(pill).not.toHaveClass("basis-[min-content]");
+      expect(pill).not.toHaveClass("grow");
+      expect(pill).not.toHaveClass("shrink-0");
+    });
+
+    it("keeps the markup of a countdown that can give way", () => {
+      renderStacked();
+
+      expect(screen.getByText(/5h 96%/).closest("[data-meter-pct]")).toHaveClass("inline-grid", "grow");
+    });
+
+    it("has the same structure for a calm account as for one above 90%", () => {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct-hot", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Hot", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+        { id: "acct-calm", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Calm", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+      ]);
+      const limits: SubscriptionLimitsMap = {
+        "anthropic:sub": routed(makeSnap({ routeId: "acct-hot", ...hot }), makeSnap({ routeId: "acct-calm" })),
+      };
+      const { container } = render(<SubscriptionLimitsBadge limits={limits} stacked />);
+
+      const accounts = [...container.children];
+      expect(accounts).toHaveLength(2);
+      const shape = (account: Element) => ({
+        wrapper: account.className,
+        name: account.firstElementChild!.className,
+        parts: account.children.length,
+      });
+      expect(shape(accounts[0])).toEqual(shape(accounts[1]));
+      expect(accounts.map((account) => account.firstElementChild!.textContent)).toEqual(["Hot", "Calm"]);
+      expect(accounts[0].lastElementChild).toHaveTextContent(/resets in/);
+      expect(accounts[1].lastElementChild).not.toHaveTextContent(/resets in/);
+    });
+
+    it("puts the name above the attention word too", () => {
+      const { container } = renderStacked({ status: "auth_failed" });
+      const [name, pill] = [...container.firstElementChild!.children];
+
+      expect(name).toHaveTextContent(/^nicolas\.zherebtsov@gmail\.com$/);
+      expect(name).toHaveAttribute("title", "nicolas.zherebtsov@gmail.com");
+      expect(pill).toHaveTextContent(/^reconnect needed$/);
+    });
   });
 
   it("labels a single account's pill with the account name", () => {
@@ -276,10 +395,8 @@ describe("SubscriptionLimitsBadge group", () => {
       "anthropic:sub": routed(makeSnap({ serviceId: "anthropic", billingMode: "sub" })),
     };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
-    const rows = container.querySelectorAll(":scope > span");
-    expect(rows.length).toBe(2);
-    expect(rows[0].textContent).toMatch(/^Anthropic/);
-    expect(rows[1].textContent).toMatch(/^OpenAI/);
+    const names = halves(container).filter((_, i) => i % 2 === 0);
+    expect(names.map((name) => name.textContent)).toEqual(["Anthropic", "OpenAI"]);
   });
 });
 
@@ -310,7 +427,7 @@ describe("SubscriptionLimitPill", () => {
       />,
     );
     expect(screen.getByText(/5h 96%/).closest("[data-meter-pct]")).toHaveTextContent(/resets in/);
-    expect(screen.getByText(/7d 22%/)).not.toHaveTextContent(/resets in/);
+    expect(screen.getByText(/7d 22%/).closest("[data-meter-pct]")).not.toHaveTextContent(/resets in/);
   });
 
   it("shows reset countdown text inline for weekly limits above 90%", () => {
@@ -806,7 +923,7 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     supply({ status: "auth_failed" });
     const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "claude-env-oauth" })) };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
-    expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
+    expect(halves(container).map((half) => half.textContent)).toEqual(["Anthropic", "credential rejected"]);
   });
 
   // for a non-ready credential, so a pill rendered there must not repeat it.
@@ -1032,7 +1149,7 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
     ]);
     const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
 
-    expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
+    expect(halves(container)).toHaveLength(2);
     expect(screen.getByText("Work")).toBeInTheDocument();
 
     expect(screen.queryByText("nik@go")).toBeNull();

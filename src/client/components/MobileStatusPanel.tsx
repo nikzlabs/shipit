@@ -21,8 +21,8 @@ export function MobileStatusPanel({ subscriptionLimits, dockerMemory, hostCpu, p
     <div className="flex flex-col items-stretch gap-3 min-w-[200px]">
       {hasSubscription && (
         <Section label="Subscription">
-          <div className="flex flex-col items-start gap-1">
-            <SubscriptionLimitsBadge limits={subscriptionLimits} autoRefresh />
+          <div className="flex flex-col items-start gap-2 max-w-full">
+            <SubscriptionLimitsBadge limits={subscriptionLimits} autoRefresh stacked />
           </div>
         </Section>
       )}

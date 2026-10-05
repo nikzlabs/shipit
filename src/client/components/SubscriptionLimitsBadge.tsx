@@ -86,31 +86,33 @@ interface SubscriptionLimitsBadgeProps {
   limits: SubscriptionLimitsMap;
 
   autoRefresh?: boolean;
+  /** Each name in full above its pill: for a column, which has room below and little beside. */
+  stacked?: boolean;
 }
 
-export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
+export function SubscriptionLimitsBadge({ limits, autoRefresh, stacked }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const pills = buildPills(limits, accounts, routes);
   if (pills.length === 0) return null;
 
-  return (
-    <>
-      {pills.map(({ key, serviceId, routeId, label, snapshot, attention }) => (
-        <SubscriptionLimitPill
-          key={key}
-          serviceId={serviceId}
-          routeId={routeId}
-          label={label}
-          snapshot={snapshot}
-          {...(attention ? { attention } : {})}
+  const rendered = pills.map(({ key, serviceId, routeId, label, snapshot, attention }) => (
+    <SubscriptionLimitPill
+      key={key}
+      serviceId={serviceId}
+      routeId={routeId}
+      label={label}
+      snapshot={snapshot}
+      {...(attention ? { attention } : {})}
 
-          showRefresh={subQuotaRefreshable(serviceId)}
-          autoRefresh={autoRefresh}
-        />
-      ))}
-    </>
-  );
+      showRefresh={subQuotaRefreshable(serviceId)}
+      autoRefresh={autoRefresh}
+      stacked={stacked}
+    />
+  ));
+  if (stacked) return <>{rendered}</>;
+  // One row for every name and every set of meters, so the names share a shortage among themselves.
+  return <div className="flex min-w-0">{rendered}</div>;
 }
 
 interface SubscriptionPill {
@@ -252,6 +254,9 @@ interface SubscriptionLimitPillProps {
    * compaction was for. The pill is otherwise identical, deliberately: the
    * meters, the elapsed-time marker, the staleness dimming and the refresh
    * button are one implementation, not a second read-out that can disagree.
+   *
+   * A labelled pill is laid out by its container: two flex items for the row
+   * `SubscriptionLimitsBadge` makes, or `stacked` for a column.
    */
   label?: string;
   snapshot?: SubscriptionLimits;
@@ -260,6 +265,8 @@ interface SubscriptionLimitPillProps {
   autoRefresh?: boolean;
 
   attention?: CredentialStatusWord;
+  /** With a `label`: the name goes on a line above the pill, not into the row beside it. */
+  stacked?: boolean;
 }
 
 /**
@@ -301,38 +308,27 @@ export function windowsShown(
 /** Starts without its countdown and grows into spare room, so no label shrinks while a countdown shows (docs/150 plan, amended 2026-10-05). */
 const GROWS_INTO_SPARE_ROOM = "basis-[min-content] grow max-w-max";
 
-export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {
+/** In a row a labelled pill is two flex items drawn as one, because one box cannot be cut down to its meters and no further (docs/150 plan, amended 2026-10-05). */
+const NAME_HALF = "rounded-r-none bg-(--color-bg-hover) pt-0 pb-0.5 min-w-0 basis-0 grow-[999999] max-w-max";
+const METERS_HALF = `rounded-l-none pl-0 shrink-0 mr-3 last:mr-0 ${GROWS_INTO_SPARE_ROOM}`;
+
+export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention, stacked }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const resolvedServiceId = snapshot?.serviceId ?? serviceId;
   const resolvedRouteId = routeId ?? snapshot?.routeId;
   const shows = windowsShown(snapshot);
+  const placement =
+    label === undefined ? "pl-2 min-w-0" : stacked ? "pl-2 min-w-0 max-w-full" : METERS_HALF;
 
-  if (attention) {
-    return (
-      <Badge numeric className="gap-2 pl-2 pr-2 pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0">
-        {label !== undefined && (
-          <span className="truncate" title={label}>
-            {label}
-          </span>
-        )}
-        <CredentialAttention attention={attention} />
-      </Badge>
-    );
-  }
-
-  return (
-
+  const meters = attention ? (
+    <Badge numeric className={`gap-2 pr-2 pt-0 pb-0.5 bg-(--color-bg-hover) ${placement}`}>
+      <CredentialAttention attention={attention} />
+    </Badge>
+  ) : (
     <Badge
       numeric
-      className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0${
-        label !== undefined ? ` ${GROWS_INTO_SPARE_ROOM}` : ""
-      }`}
+      className={`gap-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) ${placement}`}
     >
-      {label !== undefined && (
-        <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
-          {label}
-        </span>
-      )}
       {shows.session && (
         <Meter
           shortLabel="5h"
@@ -364,6 +360,29 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
         />
       )}
     </Badge>
+  );
+  if (label === undefined) return meters;
+
+  const title = !attention && snapshot?.plan ? `${label} — ${snapshot.plan}` : label;
+  if (stacked) {
+    return (
+      <span className="flex flex-col items-start gap-0.5 min-w-0 max-w-full">
+        <span className="wrap-anywhere max-w-full px-2 text-xs font-medium text-(--color-text-secondary)" title={title}>
+          {label}
+        </span>
+        {meters}
+      </span>
+    );
+  }
+  return (
+    <>
+      <Badge className={NAME_HALF}>
+        <span className="truncate" title={title}>
+          {label}
+        </span>
+      </Badge>
+      {meters}
+    </>
   );
 }
 
