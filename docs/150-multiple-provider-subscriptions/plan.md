@@ -3277,7 +3277,8 @@ order in which a pill's parts yield was label first, countdown never. It is now:
 2. Below the width of `… <time>` the countdown is gone whole. The reset time
    stays in the meter's tooltip, where it always was.
 3. Only then does a label start to truncate — any pill's label, not only the
-   one beside the countdown.
+   one beside the countdown. Which label, and what never gives way, is the next
+   amendment.
 
 So the names in the header lay out the same whether the accounts are above 90%
 or not: a countdown only takes room that no name wants. Only a pill with an
@@ -3285,13 +3286,13 @@ account label takes part; the label-less pill in Settings → Model providers ha
 nothing to give way to and keeps its countdown.
 
 It is CSS only, one rule at two levels (`GROWS_INTO_SPARE_ROOM` in
-`SubscriptionLimitsBadge.tsx`). A labelled pill's base size is its width without
-countdowns, and it grows into the row's spare room; inside it, a meter's base
-size is its value alone, and it grows into the pill's spare room. A flex row
-shrinks its items only when their base sizes do not fit, so no label shrinks
-while a countdown has room. A grid gives the meter that base size, since its
-countdown column may be zero. `COUNTDOWN_YIELDS` then hides a countdown whose
-cell is narrower than `… <time>`.
+`SubscriptionLimitsBadge.tsx`). A labelled pill's meters start at their width
+without countdowns and grow into the row's spare room; inside them, a meter's
+base size is its value alone, and it grows into that spare room. Room is spare
+only when every name has its full width (the next amendment says how the names
+come first), so no label is cut while a countdown shows. A grid gives the meter
+that base size, since its countdown column may be zero. `COUNTDOWN_YIELDS` then
+hides a countdown whose cell is narrower than `… <time>`.
 
 Four approaches were measured and dropped on the way:
 
@@ -3319,27 +3320,23 @@ What it costs:
   carry a blank of up to the width of `… <time>` for each countdown. It only
   happens while every name in the header is in full. Two countdowns in one pill
   split the pill's spare room equally until one of them is in full.
-- A touch screen has no tooltip. In the status popover on a phone-width screen a
-  hidden countdown is therefore not readable there; Settings → Model providers
-  still shows it.
+- A touch screen has no tooltip, so a countdown that is not shown is not
+  readable there. The status popover therefore gives it a pill's whole width
+  (the next amendment).
 
-Not solved, and not new: names of very different lengths. The header shrinks
-pills in proportion to their whole width, so a short name beside a long one is
-used up first and its pill is then pushed under its own meters, while the long
-name still has room. `Work` beside a 42-character name at 1024px: the short pill
-is 119px wide with contents 24px over, calm or above 90% alike. Before this
-change a pill above 90% overflowed with names of any length. A floor for the
-pill needs a third size — the meters alone — next to the two that CSS can name
-(with and without countdowns), so it is not a small change.
+This change left one thing unsolved, which the next amendment solves: with names
+of very different lengths the header shrank pills in proportion to their whole
+width, so a short name beside a long one was used up first and its pill was then
+pushed under its own meters.
 
 Measured in the running app at every window width from 1024 to 1800px, with two
 and three accounts, each calm, with one countdown or with two, alike and mixed —
 about 6,000 layouts, with names of 20 to 24 characters. In each, every label is
 exactly as wide as in the calm header at that width, no time is cut, nothing
 overflows and the header is 57px. Before, two accounts above 90% at 1024px had
-labels of 0px. In the popover at 390px: no overflow, pills 22px tall. Measured
-in Chromium only. An engine without `flex-basis: min-content` falls back to
-label and countdown shrinking together; one without `round()` on a percentage
+labels of 0px. Measured in Chromium only. An engine without
+`flex-basis: min-content` keeps every countdown in full and cuts names first, as
+before this change; one without `round()` on a percentage
 (Chrome before 125, and older Firefox and Safari) drops the cutoff and clips the
 time instead of hiding the countdown.
 
@@ -3352,6 +3349,111 @@ the header 61px tall instead of 57px.
 Verified in the running dogfood app at 640 / 768 / 960 / 1024 / 1280 px with
 zero to three accounts, calm and with countdowns: the header stays 57px and
 nothing wraps.
+
+**Amended 2026-10-05 — a name gives way, the meters never do** (req 10). Two
+things the countdown change left open, both about what a pill may lose.
+
+*In the header row.* The order in which a row gives up room is now complete:
+
+1. Countdowns, as above.
+2. Names, the longest first. Every name gets the same share of the room there
+   is, and a name that needs less than its share hands the rest on. So `Work`
+   beside a 42-character address stays whole while the address is cut.
+3. Nothing else. A pill's meters and its refresh button never give way.
+
+Before, step 3 did not hold. The row shrank each pill in proportion to its whole
+width, so the short name was used up first and its pill was then pushed under
+its own meters while the long name still had room.
+
+A pill that can do this needs three sizes: its meters alone (the floor), name
+plus meters (where it starts), and name plus meters plus countdowns (how far it
+grows). A box has two that CSS can name, `min-content` and `max-content`, and
+they were already taken by the second and third. So a labelled pill in the row
+is now **two flex items drawn as one**: the name (`NAME_HALF`) and the meters
+(`METERS_HALF`), each of which needs only two sizes. `SubscriptionLimitsBadge`
+wraps them all in one flex row of its own, so the names and meters of every
+account share room with each other and with nothing else.
+
+- A name starts at nothing and grows up to its own width. Flexbox gives equal
+  shares to items with equal factors and hands on what a full item cannot use,
+  which is step 2.
+- Meters never shrink, which is step 3, and grow from their width without
+  countdowns, as before.
+- Names come before countdowns because their grow factor is 10^6 times the
+  meters'. A ratio is not a strict order: a millionth of the room still reaches
+  a countdown while a name is cut. In Chromium that is under its layout unit
+  (1/64px), and measured, no name differs between calm accounts and accounts
+  above 90%. Another engine can differ by a fraction of a pixel that does not
+  show.
+- The two halves have the same background and meet edge to edge. They must not
+  overlap: `--color-bg-hover` is translucent in every theme, and an overlap
+  would draw a darker line. A flex row stretches its items to one height unless
+  told otherwise, so the row sets no alignment.
+
+Approaches that keep the pill one box. None was built; each was ruled out on
+paper:
+
+- **A floor estimated in `ch`** from the meter text. The meters are not in a
+  fixed-width font, so it is a few pixels wrong in one direction or the other.
+- **A floor measured in script.** Exact, but it needs an observer for a width
+  that changes with every reading, for a state CSS can lay out by itself.
+- **Shrink or grow factors from the length of the name.** Characters differ in
+  width, so a countdown could show while another name was still cut.
+- **A grid row with the pill as a subgrid.** The pill stays one painted box and
+  its parts take part in the row, but track sizing gives room to all tracks
+  alike. It cannot put names before countdowns.
+
+*In the status popover.* The popover is a column: there is room below a pill and
+little beside it (at most 366px at a 390px window). After the countdown change a
+pill there kept its name and hid its countdowns, and a touch screen has no
+tooltip to read them from. Before that change it kept the countdowns and cut the
+name to 47px. Neither is right when a second line is free.
+
+So in a column each account's name is above its pill, not inside it (`stacked`,
+set by `MobileStatusPanel`). The name wraps and is never cut, because the
+tooltip that carries a cut name in the header does not exist on a touch screen.
+The pill has no name inside it, like the one on a Settings row. Unlike that
+one, its countdown can still give way, as the fallback for a column narrower
+than the pill. This reads req 10's "labelled with the account's name" as a
+Settings row does: the name is next to the pill. The layout is the same for a
+calm account, so nothing moves when one crosses 90%.
+
+Costs and limits:
+
+- The popover shows the two longest countdowns in full at a 360px window. At 352
+  and 340px `resets in` shortens. At 320px, with both windows above 90%, one of
+  the two countdowns is hidden (the equal split named above).
+- When even the meters of every account do not fit, the row overflows onto the
+  pill after it. `statusGroupBreakpoint` does not go past `xl`, so that is five
+  accounts beside the CPU pill at 1280px (35px over; four fit, with names of
+  27px). Before, the same state overflowed inside each pill.
+- The subscription pills in the header are now one height. A pill with no
+  refresh button (20px) takes the height of one that has it (22px) when both
+  are there.
+
+Measured in the running app (Chromium) at every fourth window width from 1024 to
+1800px, for four sets of names — two and three accounts, alike and with a
+4-character name beside a 42-character one — in every combination of calm, one
+countdown and two: 14,040 layouts, 10,584 of them inline. In each of those,
+every name is exactly as wide as with calm accounts at that width (difference
+0), no countdown shows while a name is cut (a countdown shows in 4,980 of them),
+no time is cut, nothing is outside its pill, the page does not overflow, the
+header is 57px, the halves meet at 0px and the next pill is 12px away. The same probe on the former one-box pill,
+rebuilt in the same page at 1024px: `Work` 0px and its contents 7px over. Now:
+`Work` 30px (whole), the long name 133px of 281px, nothing over. Three accounts
+with no CPU pill at 1024px: 62px, 30px (whole) and 62px. The join was looked at
+in screenshots with the join at a fractional position — device pixel ratio 1.5
+in the dark theme, 2.625 in the light theme and 1.25 in the high-contrast
+theme: no line.
+
+In the popover at 390, 360 and 800px, with one to three accounts, one or two
+countdowns each, and an account that needs reconnecting: every name whole
+(281px for the longest), `resets in 4h` and `resets in 6d 23h` whole, the widest
+pill 312px in a 338px popover, nothing over. A name of about 100 characters at
+390px wraps onto three lines in a 366px popover, with the pill unchanged.
+
+**Key files:** `client/components/SubscriptionLimitsBadge.tsx` (`NAME_HALF`,
+`METERS_HALF`, `stacked`), `client/components/MobileStatusPanel.tsx`.
 
 ### Fixed: a cutoff-driven move said "out of quota" (2026-08-04)
 

@@ -369,11 +369,11 @@ What the meters say when they have no figure, and the three are different:
 
 Above 90% a meter adds when the window resets: `5h 96% resets in 4h`. That text
 is the first thing to give way when the header is short of room — it shortens to
-`r… 4h`, then goes — so no account name is cut to make room for it. A meter with
-no `resets in` beside it has not lost the information: hovering the meter gives
-the reset time whenever the provider reported one. On a touch screen, where
-nothing hovers, the same meter under Settings → Model providers always shows its
-countdown.
+`r… 4h`, then goes — so no account name is cut to make room for it. Names give
+way next, the longest first: `Work` beside a long e-mail address stays whole
+while the address is cut. The meters and the refresh button never give way. A
+meter with no `resets in` beside it has not lost the information: hovering the
+meter gives the reset time whenever the provider reported one.
 
 **A missing pill is not a broken one.** Three credentials correctly have none: a
 plan whose provider publishes no usage figure at all, a pasted subscription
@@ -392,7 +392,10 @@ warning word — pressing it opens Settings → Model providers, where *Reconnec
 or *Replace secret* is.
 
 On a narrow window the whole status group collapses into a gauge button that
-opens the same pills in a popover, and opening it refreshes them.
+opens the same pills in a popover, and opening it refreshes them. There each
+account's name is on a line of its own above its pill, so the pill has room for
+its `resets in` text — which matters on a touch screen, where nothing hovers.
+The same meter under Settings → Model providers shows its countdown too.
 
 **Usage Summary** is the other half, opened from the cost line in the composer's
 **context dial**: this session and all sessions, spend split per provider,
