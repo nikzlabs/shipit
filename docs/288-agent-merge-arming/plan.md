@@ -91,7 +91,8 @@ this feature adds is that a `pending` row is *not* an attempt and may be replace
 — an agent that pushes again and re-arms at the new commit is the ordinary case,
 and a direct `gh pr merge` supersedes a request it makes redundant. Only
 settlement, or destroying the session through the cascade, removes a `merging` or
-`settling` row.
+`settling` row. The one way back is the performer's own: `returnToPending()`, for
+an attempt whose outcome *is* known — see *GitHub says "not yet"*.
 
 ### Reconciliation must stand down for a merge in flight
 
@@ -110,22 +111,59 @@ case answering correctly.
 
 ### One request, one attempt
 
-**A request that leaves `pending` never returns to it.** Once the executor has
-written `merging`, the row is resolved exactly as docs/287 resolves a direct
-claim: merged ⇒ settle, definitively refused ⇒ delete and say so,
-indeterminate ⇒ leave it for reconciliation, which reads the tuple and either
-settles or deletes.
+**A request that leaves `pending` does not return to it**, except on GitHub's
+"not yet" below. Once the executor has written `merging`, the row is resolved
+exactly as docs/287 resolves a direct claim: merged ⇒ settle, definitively
+refused ⇒ delete and say so, indeterminate ⇒ leave it for reconciliation, which
+reads the tuple and either settles or deletes.
 
-This is the decision that removes the `revoked` column. A row that can never merge
-again after one attempt is already, by construction, cancelled by revocation:
-deleting the `pending` rows is the whole of requirement 4. Retrying an attempt
-whose outcome was never learned is also the one retry that could merge twice, and
-an arming that quietly retries every tick is the surprising behaviour the refusal
-rule below rejects for the same reason.
+This is the decision that removes the `revoked` column. Revocation deletes the
+`pending` rows; a row past `pending` either has an unknown outcome, which is never
+retried, or returns to `pending` on a "not yet" only if revocation did not mark
+its attempt cancelled while it was in flight — so no row revocation reached can
+merge again, and the in-memory mark is load-bearing for requirement 4. Retrying
+an attempt whose outcome was never learned is the one retry that could merge
+twice, and an arming that quietly retries every tick after a real refusal is the
+surprising behaviour the refusal rule below rejects for the same reason.
 
 The cost is that a transient failure ends the request instead of retrying it. The
 agent is told, in the transcript, and can ask again. Nothing in the requirements
 promises a retry.
+
+### GitHub says "not yet"
+
+One refusal is not an end. GitHub refuses a merge with *"Required status check
+"ci" is expected."* (or *"is in progress"*) while a check that branch protection
+requires has not reported. The executor cannot see this before it sends the
+merge: checks register gradually, so the rollup can read `SUCCESS` for the checks
+that have reported (or nothing at all, after the zero-check grace) while a
+required one has not started. Ending the request there broke req 1 — the checks
+had **not** passed — and it is the ordinary case in a repository whose checks
+register over several seconds, which is what branch protection is for
+(`docs/287-agent-merge-per-repo`, resolved 2026-10-05).
+
+So that refusal, recognised by docs/287's `githubRefusalClearsByItself()` —
+which reads the status words outside the quoted check names, so a check named
+`"error-handling"` that is expected is still "not yet" — returns the row from
+`merging` to `pending`, and the next tick reads it again as it would any request. This is not the retry *One request, one attempt* rejects:
+
+- **The outcome is known.** A 405 is GitHub saying it did not merge; nothing can
+  merge twice. An indeterminate attempt still never returns.
+- **Revocation still wins.** `returnToPending()` refuses a session whose in-flight
+  attempt revocation marked cancelled, so a withdrawal during the PUT ends the
+  request as before instead of reviving it. A withdrawal that is still in force
+  is also caught by the next tick's grant check.
+- **Only the performer, and only an `auto` row.** The update matches the whole
+  tuple and `origin = 'auto'`, so a direct claim can never become a request.
+
+A required check that **never** reports — branch protection naming a workflow
+that was renamed — would leave the request waiting with nothing said. After 15
+such refusals for one request the transcript gets one notice, with GitHub's own
+text, and the request keeps waiting: the requirement is "once the checks pass",
+and ending it there would be a cut-off the requirement does not have. Counted in
+memory, like the unreadable run, so a restart re-earns the benefit of the doubt.
+While it waits this way, each tick costs the merge call's own read and PUT as well
+as the observation; an accepted cost for a misconfiguration the notice names.
 
 ### What the executor waits for, and what ends the request
 
@@ -148,6 +186,7 @@ same single query, so the two paths cannot diverge — and applies one rule:
 | the rollup describes an earlier commit | stays `pending`, **before any state is read**: that rollup is wrong in both directions, and reading its `FAILURE` cancels the very request the push was made to arm |
 | no checks at all | docs/287's zero-check grace decides: wait, or merge |
 | checks `SUCCESS` | merge |
+| GitHub refuses the merge: a required check is expected or in progress | back to `pending` — see *GitHub says "not yet"* |
 
 Ending on a red or unapproved pull request rather than waiting is deliberate.
 Waiting is defensible — a re-run can turn a flake green, a reviewer can approve —
@@ -332,9 +371,10 @@ in-flight case is not waived, but it needs no second mechanism:
   **cancellable** read inside the window. With `beforeSend`, **the residual
   window is the merge PUT alone**, which no design can recall and which GitHub's
   own arming shares.
-- **A row past `pending` can no longer merge anything** (*One request, one
-  attempt*): it is being settled, or it is being resolved from its tuple. There is
-  nothing left to cancel.
+- **A row past `pending` that revocation reached can no longer merge anything**
+  (*One request, one attempt*): it is being settled, it is being resolved from its
+  tuple, or GitHub refused it "not yet" — and `returnToPending()` will not put a
+  cancelled attempt back. There is nothing left to cancel.
 
 So revocation reports the permission withdrawn once no row can merge again, not
 once every network call has returned. A merge the user armed from the pull-request
@@ -364,7 +404,7 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
 | File | Change |
 |---|---|
 | `src/server/shared/database.ts` | `agent_merge_claims` gains `origin` and `method`; `state` gains `pending` |
-| `src/server/orchestrator/agent-merge-claims.ts` | the request half: `arm`, `listPending`, `beginMerging`, `cancelPendingForRepo` |
+| `src/server/orchestrator/agent-merge-claims.ts` | the request half: `arm`, `listPending`, `beginMerging`, `returnToPending`, `cancelPendingForRepo` |
 | `src/server/orchestrator/services/agent-merge-executor.ts` | new — the tick, the wait/merge/end rule, the hold |
 | `src/server/orchestrator/services/github.ts` | repo-bound `--auto` records a request instead of refusing |
 | `src/server/orchestrator/api-routes-github.ts` | the `onArm` hook: grant + provenance re-check, then the row |
@@ -387,3 +427,6 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
   interactive, dispatched, and through the drain.
 - Revocation: pending rows for that repository deleted, another repository's left
   alone, and the grant re-check refusing at `pending → merging`.
+- "Not yet": the refusal returns the row to `pending` and a later pass merges; a
+  failing required check still ends it; a withdrawal during the PUT is not
+  revived; a long run of such refusals says so once and keeps the row.

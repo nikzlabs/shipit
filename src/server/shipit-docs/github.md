@@ -402,6 +402,13 @@ what restarted CI.
 - **The user turning the repository's permission off cancels it too**, with a
   notice. So does the pull request being closed, becoming a draft, needing a
   review, or its checks failing — each says which.
+- **GitHub saying a required check is "expected" or "in progress" does not end
+  it.** Checks register gradually, so ShipIt can try the merge before a check
+  that branch protection requires has started. The request goes back to waiting
+  and ShipIt tries again. If GitHub keeps refusing this way, the transcript says
+  so, with GitHub's text, and the request keeps waiting — a required check
+  that never starts usually means branch protection names a check that no
+  workflow reports. Tell the user; do not re-arm.
 - **The result always appears in this session's transcript**, whether it merged
   or the request ended. Do not poll for it and do not call `--auto` repeatedly to
   check; a second call only re-arms the same request.
