@@ -44,7 +44,7 @@ export function UptimeBadge({ processStartedAt }: UptimeBadgeProps) {
   return (
     <Badge
       numeric
-      className="bg-(--color-bg-hover)"
+      className="bg-(--color-bg-hover) whitespace-nowrap"
       title={`Orchestrator uptime: ${label} (started ${new Date(processStartedAt).toLocaleString()})`}
     >
       {label}

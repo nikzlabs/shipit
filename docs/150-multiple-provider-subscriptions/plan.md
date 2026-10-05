@@ -3249,6 +3249,36 @@ one, two and three connected accounts: no overlap, no horizontal overflow
 `client/components/SubscriptionLimitsBadge.tsx` (`useSubscriptionPillCount`,
 pill shrink/truncate).
 
+**Amended 2026-10-05 — the machine CPU pill counts as a pill.** The header
+gained `HostCpuBadge` (`CPU 15% / 16 cores`, ~134px). `AppLayout` passes
+`statusGroupBreakpoint` the account count **plus one** while a CPU reading
+exists, and the scale changed: one pill from `sm`, two or three from `lg`, four
+or more from `xl`. With a CPU reading that is zero accounts from `sm`, one or
+two from `lg`, three or more from `xl`.
+
+The `md` step is gone because of a width the first sizing did not measure: a
+meter above 90% appends `resets in …`, which adds 74px that cannot shrink (a
+pill's fixed part is 144px calm, 218px with one countdown, 293px with two). One
+account beside the CPU pill then needs ~800px with one countdown and ~875px with
+two, so at `md` its contents ran over the uptime pill. The count stays a count —
+the group must not jump between inline and collapsed when an account crosses 90%
+— so the step has to be sized for the countdown.
+
+Still residual, as before: every account above 90% at once. Two accounts with a
+countdown each need ~1030px and three need ~1280px, so the labels are gone at
+the threshold itself; two countdowns on every account overflow. The same states
+overflowed the earlier thresholds by more (two accounts needed ~880px at `md`).
+
+The same change made the uptime, CPU and memory pills `whitespace-nowrap`.
+Item 2 above says the account name is the only part that yields; that was not
+true of the memory pill, whose label has spaces and therefore wrapped. Measured
+before the change at 640px with one account: the memory pill on two lines and
+the header 61px tall instead of 57px.
+
+Verified in the running dogfood app at 640 / 768 / 960 / 1024 / 1280 px with
+zero to three accounts, calm and with countdowns: the header stays 57px and
+nothing wraps; no overflow except in the residual states above.
+
 ### Fixed: a cutoff-driven move said "out of quota" (2026-08-04)
 
 Not on the checklist; found while reading the failover path for the two items

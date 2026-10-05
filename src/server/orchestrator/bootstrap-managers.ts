@@ -9,7 +9,7 @@ import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
 import path from "node:path";
 import { createDockerClient } from "./docker-client.js";
-import type { AgentId, DockerMemoryStats } from "../shared/types.js";
+import type { AgentId, DockerMemoryStats, HostCpuStats } from "../shared/types.js";
 import type { SessionInfo } from "../shared/types.js";
 import { globalSystemPromptForTurn, type SystemPromptScope } from "./global-system-prompt.js";
 import { LogStore } from "./log-store.js";
@@ -230,6 +230,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   if (containerManager) announceEgressOnContainerStart(containerManager, sseBroadcast);
 
   const latestMemoryStats: { value: DockerMemoryStats | null } = { value: null };
+  const latestHostCpu: { value: HostCpuStats | null } = { value: null };
 
   const registryHolder: { ref: SessionRunnerRegistry | null } = { ref: null };
   // Reuse the enforcer: its state prevents repeated reclaim against a stale memory reading.
@@ -1068,7 +1069,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     cleanupContainer, backgroundHarnessRunner,
     effectiveRunnerFactory,
     serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured,
-    latestMemoryStats,
+    latestMemoryStats, latestHostCpu,
     registryHolder, enforceIdleContainerLimit,
     autoPushScheduler,
     dockerSecretsConfig, serviceEnvDir,

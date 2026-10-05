@@ -972,6 +972,30 @@ describe("useServerEvents — update_notice (docs/304)", () => {
   });
 });
 
+describe("useServerEvents — host_cpu", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    useUiStore.setState({ hostCpu: null });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the newest reading", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("host_cpu", { usedPercent: 15, cores: 16 });
+      FakeEventSource.last!.emit("host_cpu", { usedPercent: 72.5, cores: 16 });
+    });
+
+    expect(useUiStore.getState().hostCpu).toEqual({ usedPercent: 72.5, cores: 16 });
+  });
+});
+
 describe("useServerEvents — agent_list carries the model list (docs/318)", () => {
   const opus6 = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-6" } as const;
 

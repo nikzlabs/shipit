@@ -12,6 +12,7 @@ import type { WsStatus } from "./hooks/useWebSocket.js";
 import { type Theme } from "./hooks/useTheme.js";
 import type { SessionInfo, RepoInfo, DockerMemoryStats, SubscriptionLimitsMap } from "../server/shared/types.js";
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
+import { HostCpuBadge } from "./components/HostCpuBadge.js";
 import { UptimeBadge } from "./components/UptimeBadge.js";
 import { SubscriptionLimitsBadge, useSubscriptionPillCount } from "./components/SubscriptionLimitsBadge.js";
 import { MobileStatusPanel } from "./components/MobileStatusPanel.js";
@@ -23,14 +24,16 @@ import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
 import { ContentPanels } from "./components/ContentPanels.js";
 import { MobileSessionsPanel } from "./components/MobileSessionsPanel.js";
 import { useSessionStore } from "./stores/session-store.js";
+import { useUiStore } from "./stores/ui-store.js";
 
 // Keep complete class names for Tailwind's source scanner.
 export function statusGroupBreakpoint(pillCount: number): {
   statusInline: string;
   statusCollapsed: string;
 } {
-  if (pillCount >= 3) return { statusInline: "hidden lg:contents", statusCollapsed: "lg:hidden" };
-  if (pillCount === 2) return { statusInline: "hidden md:contents", statusCollapsed: "md:hidden" };
+  if (pillCount >= 4) return { statusInline: "hidden xl:contents", statusCollapsed: "xl:hidden" };
+  // No md step: a pill above 90% adds a reset countdown, which two pills cannot carry below lg.
+  if (pillCount >= 2) return { statusInline: "hidden lg:contents", statusCollapsed: "lg:hidden" };
   return { statusInline: "hidden sm:contents", statusCollapsed: "sm:hidden" };
 }
 
@@ -136,8 +139,10 @@ export function AppLayout({
 }: AppLayoutProps) {
   // Read here, not in App: the panels arrive as finished elements, so a list change does not re-render them.
   const sessions = useSessionStore((s) => s.sessions);
+  // Also read here: a new reading every few seconds must not re-render App.
+  const hostCpu = useUiStore((s) => s.hostCpu);
   const subscriptionPills = useSubscriptionPillCount(subscriptionLimits);
-  const { statusInline, statusCollapsed } = statusGroupBreakpoint(subscriptionPills);
+  const { statusInline, statusCollapsed } = statusGroupBreakpoint(subscriptionPills + (hostCpu ? 1 : 0));
 
   return (
     <>
@@ -173,9 +178,10 @@ export function AppLayout({
           <div className={statusInline}>
             <SubscriptionLimitsBadge limits={subscriptionLimits} />
             {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
+            {hostCpu && <HostCpuBadge stats={hostCpu} />}
             {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           </div>
-          {(processStartedAt !== null || dockerMemory !== null || subscriptionPills > 0) && (
+          {(processStartedAt !== null || dockerMemory !== null || hostCpu !== null || subscriptionPills > 0) && (
             <div className={statusCollapsed}>
               <Popover>
                 <PopoverTrigger asChild>
@@ -190,6 +196,7 @@ export function AppLayout({
                   <MobileStatusPanel
                     subscriptionLimits={subscriptionLimits}
                     dockerMemory={dockerMemory}
+                    hostCpu={hostCpu}
                     processStartedAt={processStartedAt}
                   />
                 </PopoverContent>
