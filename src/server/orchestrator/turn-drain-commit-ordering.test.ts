@@ -480,4 +480,82 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
 
     runner.dispose({ force: true });
   });
+
+  // planning#636 — a rewind waits on this hold. It must not last as long as the lease,
+  // which a deferred push can keep past the rewind snapshot's five minutes.
+  describe("the rewind hold", () => {
+    const committed = { commitHash: "abc1234", parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+
+    function setup(extra: Partial<SystemTurnDeps> = {}) {
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+      const agents: FakeAgent[] = [];
+      const gates = { landCommit: (): void => {}, finishPrFlow: (): void => {} };
+      const autoCommit = vi.fn(async () => {
+        await new Promise<void>((resolve) => { gates.landCommit = resolve; });
+        return committed;
+      });
+      const postTurnPrFlow = vi.fn(() => new Promise<void>((resolve) => { gates.finishPrFlow = resolve; }));
+      runner.setSystemTurnDeps({
+        agentFactory: () => {
+          const a = makeFakeAgent();
+          agents.push(a);
+          return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
+        },
+        autoCommit: autoCommit as never,
+        scheduleAutoPush: vi.fn(),
+        postTurnPrFlow,
+        listenerDeps: makeListenerDeps(),
+        buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+        ...extra,
+      });
+      return { runner, agents, gates, autoCommit, postTurnPrFlow };
+    }
+
+    // Result only: a resident streaming process sends no `done`, so the result must take the hold.
+    it("lasts from a streaming result until the local commit settles, and no longer", async () => {
+      const { runner, agents, gates, autoCommit, postTurnPrFlow } = setup({
+        steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
+      });
+      runner.dispatch(testDispatch({ text: "only turn" }));
+      await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn started");
+      expect(runner.isStreamingActive).toBe(true);
+      expect(runner.turnCommitPending).toBe(false);
+
+      agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitFor(() => autoCommit.mock.calls.length === 1, "commit started");
+      expect([runner.running, runner.turnCommitPending, runner.postTurnWorkInFlight]).toEqual([false, true, true]);
+
+      gates.landCommit();
+      await waitFor(() => postTurnPrFlow.mock.calls.length === 1, "PR flow started");
+      expect([runner.turnCommitPending, runner.postTurnWorkInFlight]).toEqual([false, true]);
+
+      gates.finishPrFlow();
+      await waitFor(() => !runner.postTurnWorkInFlight, "lease released");
+      agents[0]!.emit("done", 0);
+      await flush();
+      runner.dispose({ force: true });
+    });
+
+    // The one-shot turn committed before it drained the queue; its `done` comes later.
+    it("is not taken again by a late done, after the commit", async () => {
+      const { runner, agents, gates, autoCommit, postTurnPrFlow } = setup();
+      runner.dispatch(testDispatch({ text: "first" }));
+      await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn 1 started");
+      runner.dispatch(testDispatch({ text: "second" }));
+      expect(runner.queueLength).toBe(1);
+
+      agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitFor(() => autoCommit.mock.calls.length === 1, "commit started");
+      gates.landCommit();
+      await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "turn 2 started");
+
+      agents[0]!.emit("done", 0);
+      await waitFor(() => postTurnPrFlow.mock.calls.length === 1, "turn 1's PR flow started");
+      expect([runner.turnCommitPending, runner.postTurnWorkInFlight]).toEqual([false, true]);
+
+      gates.finishPrFlow();
+      await flush();
+      runner.dispose({ force: true });
+    });
+  });
 });

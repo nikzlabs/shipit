@@ -631,6 +631,10 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Pair with endPostTurnWork in finally; also held for an armed auto-push. */
   beginPostTurnWork(): void;
   endPostTurnWork(): void;
+  /** From a turn's end until its local commit settles. Narrower than the lease, which a push can hold for minutes. */
+  readonly turnCommitPending: boolean;
+  beginTurnCommit(): void;
+  endTurnCommit(): void;
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
   clearBackgroundTasks(): void;
   /** Actual resident process mode, distinct from the adapter's static steering capability. */
@@ -781,6 +785,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _subAgentHandles = new Map<SubAgentRunHandle, AgentId>();
   private _lastAnnouncedWork = "[]";
   private _postTurnHold = new PostTurnHold();
+  private _turnCommitHold = new PostTurnHold();
 
   createAgent?: (agentId: AgentId) => AgentProcess;
 
@@ -842,6 +847,9 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
   endPostTurnWork(): void { this._postTurnHold.end(); }
+  get turnCommitPending(): boolean { return this._turnCommitHold.active; }
+  beginTurnCommit(): void { this._turnCommitHold.begin(); }
+  endTurnCommit(): void { this._turnCommitHold.end(); }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
@@ -1070,6 +1078,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     }
     this._disposed = true;
     this._postTurnHold.reset();
+    this._turnCommitHold.reset();
     for (const handle of this._subAgentHandles.keys()) {
       try { handle.cancel(); } catch { /* best-effort */ }
     }

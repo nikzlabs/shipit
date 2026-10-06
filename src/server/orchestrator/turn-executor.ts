@@ -979,12 +979,25 @@ export async function executeAgentTurn(
 
   // running becomes false before teardown ends; hold the runner against idle reclamation.
   let postTurnHeld = false;
+  // Released as soon as the local commit settles: a rewind waits on this, not on the push.
+  let turnCommitHeld = false;
+  let localCommitSettled = false;
   const holdPostTurn = (): void => {
     if (postTurnHeld || !runner) return;
     postTurnHeld = true;
     runner.beginPostTurnWork();
+    // A late `done` re-enters after the commit, with only network work left.
+    if (localCommitSettled) return;
+    turnCommitHeld = true;
+    runner.beginTurnCommit();
+  };
+  const releaseTurnCommit = (): void => {
+    if (!turnCommitHeld || !runner) return;
+    turnCommitHeld = false;
+    runner.endTurnCommit();
   };
   const releasePostTurn = (): void => {
+    releaseTurnCommit();
     if (!postTurnHeld || !runner) return;
     postTurnHeld = false;
     runner.endPostTurnWork();
@@ -1145,7 +1158,11 @@ export async function executeAgentTurn(
 
   // Memoize promises, not results, so concurrent terminal paths join the same work.
   let commitPromise: Promise<string | null> | null = null;
-  const commitOnce = (): Promise<string | null> => (commitPromise ??= runCommit());
+  const commitOnce = (): Promise<string | null> =>
+    (commitPromise ??= runCommit().finally(() => {
+      localCommitSettled = true;
+      releaseTurnCommit();
+    }));
 
   const runCommitAndPrInner = async (): Promise<void> => {
     if (postTurn === "none") return;
@@ -1232,6 +1249,7 @@ export async function executeAgentTurn(
     streamingPostTurn = null;
     turnStartHeadHash = headAtAdoption.value;
     commitPromise = null;
+    localCommitSettled = false;
     commitAndPrPromise = null;
     resultTurnSummary = null;
     resultTurnText = null;

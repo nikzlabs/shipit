@@ -177,6 +177,12 @@ rewinds are refused outright ("Cannot rewind while a turn is running"), so a
 user who wants to go back interrupts first. Forking is not blocked, which is the
 useful half: they can branch off the current state without stopping the work.
 
+**Right after a turn ends, the rewinds and the recovery are refused too**
+("This session's work is still being saved"). ShipIt is committing that turn's
+work, and a rewind before the commit would throw away edits that nothing could
+bring back. The refusal ends when that commit attempt has finished, so a user
+who reports this error only has to choose the rewind again.
+
 A fork is a real, separate session with its own branch and its own pull request,
 and ShipIt moves the browser to it as soon as it exists — the user does not go
 looking for it in the sidebar.
