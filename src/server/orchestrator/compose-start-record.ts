@@ -23,6 +23,10 @@ export type RecordedStart =
   /** `model` is null when the start's files are gone. */
   | { recorded: true; model: ComposeStartModel | null };
 
+// Process-wide and keyed by state directory, not held by a caller: two ServiceManagers can serve
+// one session at once (docs/318-compose-remaining-escapes, "Who owns a start's files").
+const startsInFlight = new Map<string, Set<string>>();
+
 /**
  * Which start's snapshot and override last started each service, in a root-only file under
  * `compose/`, so `stop` loads the model the service runs from and Compose runs its `pre_stop` hook
@@ -30,14 +34,24 @@ export type RecordedStart =
  * configuration hash on every start and recreate unchanged services.
  */
 export class ComposeStartRecord {
-  constructor(private readonly composeStateDir: string) {}
+  private readonly composeStateDir: string;
 
-  /** A new, empty directory for one start's files, never reused. */
+  constructor(composeStateDir: string) {
+    this.composeStateDir = path.resolve(composeStateDir);
+  }
+
+  /**
+   * A new, empty directory for one start's files, never reused. The start is in flight, and its
+   * files are kept, until `release` or `discard`.
+   */
   allocate(): ComposeStartFiles {
     const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
     const dir = this.startDir(id);
     fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
     fs.mkdirSync(dir, { mode: 0o700 });
+    const inFlight = startsInFlight.get(this.composeStateDir) ?? new Set<string>();
+    inFlight.add(id);
+    startsInFlight.set(this.composeStateDir, inFlight);
     return { id, snapshotFile: path.join(dir, "snapshot.yml"), overrideFile: path.join(dir, "override.yml") };
   }
 
@@ -59,9 +73,16 @@ export class ComposeStartRecord {
     return { recorded: true, model: files.every((f) => fs.existsSync(f)) ? model : null };
   }
 
-  /** Removes the files of every start the record no longer names, except those still running. */
-  prune(inFlight: ReadonlySet<string>): void {
-    const keep = new Set([...Object.values(this.read()).map((e) => e.start), ...inFlight]);
+  /** The start has ended; from now on only the record keeps its files. */
+  release(id: string): void {
+    const inFlight = startsInFlight.get(this.composeStateDir);
+    if (!inFlight?.delete(id)) return;
+    if (inFlight.size === 0) startsInFlight.delete(this.composeStateDir);
+  }
+
+  /** Removes the files of every start that the record no longer names and that is not in flight. */
+  prune(): void {
+    const keep = new Set([...Object.values(this.read()).map((e) => e.start), ...this.inFlight()]);
     let ids: string[];
     try {
       ids = fs.readdirSync(path.join(this.composeStateDir, STARTS_SUBDIR));
@@ -75,13 +96,24 @@ export class ComposeStartRecord {
 
   discard(id: string): void {
     if (!START_ID.test(id)) return;
+    this.release(id);
     fs.rmSync(this.startDir(id), { recursive: true, force: true });
   }
 
-  /** After a full stop: no container remains that a start's files describe. */
-  clear(inFlight: ReadonlySet<string>): void {
-    fs.rmSync(path.join(this.composeStateDir, RECORD_FILE), { force: true });
-    this.prune(inFlight);
+  /**
+   * After a full stop: no container remains that an ended start's files describe. A start still in
+   * flight keeps its entries, because its `up` may create containers after the stop's `down`.
+   */
+  clear(): void {
+    const inFlight = this.inFlight();
+    const kept = Object.entries(this.read()).filter(([, entry]) => inFlight.has(entry.start));
+    if (kept.length > 0) this.write(Object.fromEntries(kept));
+    else fs.rmSync(path.join(this.composeStateDir, RECORD_FILE), { force: true });
+    this.prune();
+  }
+
+  private inFlight(): ReadonlySet<string> {
+    return startsInFlight.get(this.composeStateDir) ?? new Set<string>();
   }
 
   private startDir(id: string): string {

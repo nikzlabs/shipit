@@ -52,6 +52,8 @@ interface Call { args: string[]; cwd: string }
 
 function harness(dir: string, opts: {
   query?: (args: string[]) => string;
+  /** Holds a Compose run open, to overlap it with another manager's work. */
+  gate?: (args: string[]) => Promise<void> | undefined;
   makeFake?: (opts: FakeConfinedOptions) => FakeConfinedCompose;
   extra?: Partial<ServiceManagerOptions>;
 } = {}) {
@@ -61,7 +63,7 @@ function harness(dir: string, opts: {
   const runner: ComposeRunner = (args, cwd) => {
     runs.push({ args, cwd });
     if (args.includes("up")) order.push("up");
-    return Promise.resolve();
+    return opts.gate?.(args) ?? Promise.resolve();
   };
   const composeQuery: ComposeQuery = (args, cwd) => {
     queries.push({ args, cwd });
@@ -346,6 +348,38 @@ describe("stop", () => {
     expect(queried).toContainEqual(["volume", "rm", `${PROJECT}_data`]);
     expect(startFiles(dir)).toEqual([]);
     expect(fs.existsSync(path.join(composeStateDirForWorkspace(dir), "started-by.json"))).toBe(false);
+  });
+
+  it("leaves a second manager's in-flight start its files and record when a slow stop finishes", async () => {
+    const dir = setup(AUTO_WEB);
+    let releaseDown!: () => void;
+    const downHeld = new Promise<void>((resolve) => { releaseDown = resolve; });
+    const outgoing = harness(dir, {
+      query: (args) => (args.includes("status=running") ? "web\n" : ""),
+      gate: (args) => (args.includes("down") ? downHeld : undefined),
+    });
+    await outgoing.mgr.start();
+    const stopped = outgoing.mgr.stop();
+
+    let releaseUp!: () => void;
+    const upHeld = new Promise<void>((resolve) => { releaseUp = resolve; });
+    const incoming = harness(dir, { gate: (args) => (args.includes("up") ? upHeld : undefined) });
+    const started = incoming.mgr.start();
+    await vi.waitFor(() => expect(incoming.fake.ups).toHaveLength(1));
+    const up = incoming.fake.ups[0];
+
+    releaseDown();
+    await stopped;
+
+    expect(fs.existsSync(up.snapshotFile!)).toBe(true);
+    expect(fs.existsSync(up.overrideFile)).toBe(true);
+
+    releaseUp();
+    await started;
+
+    expect(recordedStartFiles(dir, "web")).toEqual({ snapshot: up.snapshotFile, override: up.overrideFile });
+    expect(startFiles(dir)).toEqual([{ snapshot: up.snapshotFile, override: up.overrideFile }]);
+    await incoming.mgr.stop();
   });
 
   it("keeps volumes on a plain stop", async () => {

@@ -265,6 +265,37 @@ supports this for each of these commands is a deployment check. If it does not, 
 in the confined container like the snapshot but with every profile enabled and
 env-file resolution off, stripped of file keys, and validated the same way.
 
+### Who owns a start's files
+
+The start record and the `starts/` directory belong to the **session**, not to
+a `ServiceManager`. Two managers serve one session at the same time as a matter
+of course: `awaitComposeStop` (`service-manager-setup.ts`) waits 15 seconds for
+the outgoing manager's `stop()` and then lets the incoming one start. So no
+rule about a start's files may depend on what one manager knows.
+
+- **A start is in flight from `allocate()` until `release()` or `discard()`**,
+  and `ComposeStartRecord` holds that set itself, for the whole process, keyed
+  by the state directory. `prune()` and `clear()` take no set from the caller.
+  Until 2026-10-06 each manager passed its own set, so an outgoing manager's
+  `stop()` or `prune()` deleted the incoming manager's snapshot under its
+  running `up` (`open …/snapshot.yml: no such file or directory`).
+- **`clear()` keeps the entries of starts in flight.** It runs after a `down`,
+  which removes the containers of every start that has ended; a start in flight
+  may create its containers after that `down`, and they need their model for
+  `pre_stop`. An entry it keeps for a container the `down` did remove is
+  harmless: the next start of that service replaces it.
+- **A start is recorded after `build` and before `up`, not at `allocate()`.**
+  The record says which model a *running container* came from. Recorded
+  earlier, a Stop during a long build, or after a failed one, would load the
+  new start's model for a container the previous start made. The in-flight set
+  covers the time before the record.
+
+This makes the files and the record safe when two managers overlap. It does not
+make the containers safe: the outgoing manager's final `down` is model-free and
+project-wide, so it can remove a container the incoming manager has just
+started. That is the 15-second "proceed anyway" itself, which this does not
+change.
+
 ### How each container runs
 
 - **Image:** a dedicated minimal helper image that holds only a base system and

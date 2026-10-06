@@ -294,8 +294,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly confined: ConfinedComposeApi;
   private readonly composeFileDaemonPath: (orchestratorPath: string) => Promise<string>;
   private readonly startRecord: ComposeStartRecord;
-  // Starts between their resolve and their end; their files are not pruned.
-  private readonly startsInFlight = new Set<string>();
   private legacyOverrideRemoved = false;
 
   private readonly secrets: ServiceSecretsResolver;
@@ -1215,7 +1213,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     await this.stopRunningServices();
     try {
       await this.compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
-      this.startRecord.clear(this.startsInFlight);
+      this.startRecord.clear();
     } catch {
       // Best-effort cleanup
     }
@@ -1381,7 +1379,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const pluginNames = new Set(admitted.map((svc) => svc.name));
     const projectNames = names.filter((name) => !pluginNames.has(name));
     const files = this.startRecord.allocate();
-    this.startsInFlight.add(files.id);
     try {
       this.removeLegacyOverride();
       if (this.noProjectCompose || projectNames.length === 0) {
@@ -1481,7 +1478,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         ...this.serviceEnvMount(),
       };
     } catch (err) {
-      this.startsInFlight.delete(files.id);
       this.startRecord.discard(files.id);
       throw err;
     }
@@ -1597,8 +1593,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
       settle();
       if (start) {
-        this.startsInFlight.delete(start.id);
-        this.startRecord.prune(this.startsInFlight);
+        this.startRecord.release(start.id);
+        this.startRecord.prune();
       }
       // Give the network join and first poll a full window after up settles.
       for (const name of counted) {
