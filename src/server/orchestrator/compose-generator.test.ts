@@ -11,6 +11,7 @@ import {
   rewriteResolvedModel,
   serializeComposeModel,
   composeBuildModel,
+  mountProjectFileCopies,
   pluginStubModel,
   generateComposeOverride,
   writeRootOnlyFile,
@@ -3431,6 +3432,65 @@ describe("pluginStubModel", () => {
       { name: "built", definition: { build: { context: "/plugin" } } },
     ]);
     expect(stubs).toEqual({ services: { probe: { image: "node:22-alpine" }, built: { image: "shipit-plugin-stub" } } });
+  });
+});
+
+describe("mountProjectFileCopies", () => {
+  const COPIES = [
+    { kind: "secrets" as const, name: "tok", subpath: "sessions/s1/state/compose/secrets/secrets-tok" },
+    { kind: "configs" as const, name: "cfg", subpath: "sessions/s1/state/compose/secrets/configs-cfg" },
+  ];
+  const mount = (target: string, subpath: string) => ({
+    type: "volume", source: "shipit-workspace", target, read_only: true, volume: { subpath },
+  });
+
+  it("replaces each grant of a copied file with a mount of that file from the workspace volume", () => {
+    const model: Record<string, unknown> = {
+      services: {
+        web: {
+          volumes: [{ type: "volume", source: "data", target: "/data" }],
+          secrets: [{ source: "tok", target: "/run/secrets/tok" }, { source: "shipit-other" }],
+          configs: [{ source: "cfg", target: "/etc/app.conf" }],
+        },
+        worker: { secrets: ["tok", { source: "tok", target: "token" }], configs: [{ source: "cfg" }] },
+        idle: { image: "x" },
+      },
+      volumes: { data: {} },
+      secrets: { tok: { file: "/copy" } },
+    };
+    mountProjectFileCopies(model, COPIES, "shipit-prod_workspace");
+
+    const services = model.services as Record<string, Record<string, unknown>>;
+    expect(services.web).toEqual({
+      volumes: [
+        { type: "volume", source: "data", target: "/data" },
+        mount("/run/secrets/tok", COPIES[0].subpath),
+        mount("/etc/app.conf", COPIES[1].subpath),
+      ],
+      secrets: [{ source: "shipit-other" }],
+      configs: [],
+    });
+    expect(services.worker).toEqual({
+      secrets: [],
+      configs: [],
+      volumes: [
+        mount("/run/secrets/tok", COPIES[0].subpath),
+        mount("/run/secrets/token", COPIES[0].subpath),
+        mount("/cfg", COPIES[1].subpath),
+      ],
+    });
+    expect(services.idle).toEqual({ image: "x" });
+    expect(model.volumes).toEqual({
+      data: {},
+      "shipit-workspace": { name: "shipit-prod_workspace", external: true },
+    });
+    expect(model.secrets).toEqual({ tok: { file: "/copy" } });
+  });
+
+  it("declares no volume when no service is granted a copied file", () => {
+    const model: Record<string, unknown> = { services: { web: { build: { secrets: ["tok"] } } } };
+    mountProjectFileCopies(model, COPIES, "ws");
+    expect(model).toEqual({ services: { web: { build: { secrets: ["tok"] } } } });
   });
 });
 
