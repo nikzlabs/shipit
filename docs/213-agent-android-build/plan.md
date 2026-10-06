@@ -291,7 +291,7 @@ So the stack is two services (see the repo's `docker-compose.yml`):
 **"Hot reload" — honest scope.** Native Android has no headless hot-SWAP (Android Studio's Apply Changes /
 Compose Live Edit are IDE-bound). The Compose loop is therefore a full **rebuild + reinstall + relaunch** on
 change — seconds to a minute, coarser than web HMR, but agent-free and automatic. The watch is **polling**
-(bind-mounts drop inotify events — same reason the web `dev` service forces `CHOKIDAR_USEPOLLING`).
+(a `find` loop that needs no inotify tool in the image; native inotify does reach a service container — planning#634).
 **Not yet host-verified** (needs a KVM host + the built `android` image; also confirm Compose service
 containers have egress for Gradle dep resolution).
 

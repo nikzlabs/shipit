@@ -44,13 +44,13 @@ load.
 Whether a source edit **hot-reloads** is the app's business, not ShipIt's.
 ShipIt rewrites the dev server's hot-reload WebSocket URL so it survives the
 proxy, but it supplies no watcher of its own: reloading needs a service that
-mounts the source and runs a dev server that watches it. One ShipIt-specific
-trap is worth knowing, because it looks like a broken app — the dev server
-watches the workspace from **another container**, and inotify events do not
-cross that boundary, so a native watcher never hears your edits. The fix is
-polling in the dev server's own config (`server.watch.usePolling` for Vite,
-`WATCHPACK_POLLING` for Next.js); `/shipit-docs/compose.md` has the per-framework
-form.
+mounts the source and runs a dev server that watches it. The dev server
+watches the workspace from **another container**, and the framework's default
+watcher handles that: the two containers share one volume, so the watcher hears
+the agent's edits. A project needs no polling setting (`server.watch.usePolling` for
+Vite, `WATCHPACK_POLLING` for Next.js) — one that has it burns CPU for nothing
+and can drop it. `/shipit-docs/compose.md` has the detail and the two cases
+where polling is still the answer.
 
 ## Which sessions have a preview at all
 

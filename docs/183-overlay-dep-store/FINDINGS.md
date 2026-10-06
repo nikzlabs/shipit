@@ -564,6 +564,14 @@ gate is the write/mtime coherence in (4), which passed. ShipIt's own file-tree w
 (chokidar/inotify) is unaffected — it runs in the agent container, same namespace as the
 mount.
 
+> **Correction, 2026-10-06 (planning#634).** The "did not fire" data point, here and in the run
+> records below, was not a measurement of the kernel. The probe ran `inotifyd` with stderr
+> discarded; `inotifyd` is a BusyBox applet, which the `ubuntu:24.04` image of this spike does
+> not ship (not re-run to confirm), so the probe could report nothing on any host. Measured with
+> `fs.watch` in a `node:24-slim` service container, a write from the agent container fires
+> within about 1 ms, on the ext4 workspace and inside the shared overlay volume. The
+> mount-namespace boundary does not block inotify, and the templates no longer poll.
+
 **Significance.** This is green on the very host where the rejected sidecar/propagation
 approach died, so the shared-volume compose/preview mechanism is proven on the hardest
 target. Remaining: re-run on the **prod VPS (ext4)** and **Docker Desktop/Mac** to
