@@ -108,6 +108,14 @@ export function initGlobalGitConfig(credentialsDir: string): void {
   }
 
   pinGitMessageLocale();
+  disableGitOptionalLocks();
+}
+
+// `git status` holds .git/index.lock for its whole scan, and a `git reset` or `git add`
+// that starts meanwhile fails at once instead of waiting (planning#635). The cost: a status
+// no longer saves refreshed stat data, so it re-reads touched-but-unchanged files each time.
+export function disableGitOptionalLocks(): void {
+  process.env.GIT_OPTIONAL_LOCKS = "0";
 }
 
 // Stderr classifiers require English. Called separately when GIT_CONFIG_GLOBAL bypasses init.

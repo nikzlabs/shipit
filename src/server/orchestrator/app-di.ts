@@ -27,7 +27,7 @@ import { CredentialStore } from "./credential-store.js";
 import { adoptEnvCredentials } from "./adopt-env-credentials.js";
 import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
-import { initGlobalGitConfig, pinGitMessageLocale } from "./git-config.js";
+import { disableGitOptionalLocks, initGlobalGitConfig, pinGitMessageLocale } from "./git-config.js";
 import { configureLfsRemoteCredentialResolver } from "./git-lfs.js";
 import { createLfsHostCredentialResolver } from "./lfs-host-credential.js";
 import { createBareCacheDirHelper } from "./session-dir-factory.js";
@@ -300,6 +300,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   }
   // Stderr classification needs a fixed locale even with an existing git config.
   pinGitMessageLocale();
+  disableGitOptionalLocks();
 
   const storedEnv = { ...credentialStore.getAllAgentEnv(), ...collectServiceCredentialEnv(credentialStore) };
   for (const [key, value] of Object.entries(storedEnv)) {
