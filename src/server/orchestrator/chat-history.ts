@@ -278,6 +278,7 @@ export class ChatHistoryManager {
   private stmtFinalizeRowById;
   private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
+  private stmtDeleteInPlaceSnapshots;
   private stmtTranscriptRevision;
   // Sessions whose in-progress rows this process has written (docs/240-turn-survives-orchestrator-restart).
   private readonly inProgressWrittenHere = new Set<string>();
@@ -335,6 +336,9 @@ export class ChatHistoryManager {
     this.stmtFinalizeRowById = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE id = ?");
     this.stmtDeleteRowById = this.db.prepare("DELETE FROM messages WHERE id = ?");
     this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
+    this.stmtDeleteInPlaceSnapshots = this.db.prepare(
+      "DELETE FROM rewind_snapshots WHERE session_id = ? AND action != 'fork'",
+    );
     this.stmtTranscriptRevision = this.db.prepare(
       "SELECT revision FROM transcript_revisions WHERE session_id = ?",
     );
@@ -1032,6 +1036,14 @@ export class ChatHistoryManager {
     return JSON.parse(row.payload_json) as RewindSnapshotPayload;
   }
 
+  /**
+   * planning#637 — a turn that starts is in no earlier snapshot, so undoing that rewind would
+   * remove the turn. A fork's undo leaves the parent's transcript and tree alone, so it stays.
+   */
+  retireInPlaceRewindSnapshots(sessionId: string): void {
+    this.stmtDeleteInPlaceSnapshots.run(sessionId);
+  }
+
   /** Preserve consults absent from the rebuild; deduplicate finalized notices and consults. */
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void {
     this.inProgressWrittenHere.add(sessionId);
@@ -1140,5 +1152,17 @@ export class ChatHistoryManager {
       "SELECT DISTINCT session_id FROM messages",
     ).all() as { session_id: string }[];
     return rows.map((r) => r.session_id);
+  }
+}
+
+/** Called where a turn starts. It never stops the turn, and a hand-made test fake may lack the method. */
+export function retireRewindUndo(
+  chatHistoryManager: { retireInPlaceRewindSnapshots?(sessionId: string): void },
+  sessionId: string,
+): void {
+  try {
+    chatHistoryManager.retireInPlaceRewindSnapshots?.(sessionId);
+  } catch (err) {
+    console.error(`[rewind] retiring the undo for ${sessionId} failed:`, err);
   }
 }

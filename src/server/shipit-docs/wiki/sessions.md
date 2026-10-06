@@ -172,6 +172,12 @@ many files it will change. A rewind can be undone: a toast offers it
 immediately, and **Recover recent rewind** on the session menu offers it after
 that — that recovery is also refused mid-turn.
 
+**The undo ends when the session moves on.** Once a new turn starts, the rewind
+can no longer be undone, because undoing it would remove that turn: the toast
+and **Recover recent rewind** go away, and a late click is refused. Undoing a
+fork is the exception: it stays for its five minutes, since it leaves the
+parent's later work alone.
+
 **While a turn is running, the gaps offer fork and nothing else.** The three
 rewinds are refused outright ("Cannot rewind while a turn is running"), so a
 user who wants to go back interrupts first. Forking is not blocked, which is the

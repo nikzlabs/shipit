@@ -6,6 +6,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
 import { noteTurnSubmitted } from "../turn-stop-request.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
+import { retireRewindUndo } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
 import { quotaRefusalCanFailOver } from "../credential-failure-policy.js";
 import { toListRow, type SessionManager } from "../sessions.js";
@@ -154,6 +155,7 @@ export function wireAgentListeners(
     const turnSessionId = opts.capturedSessionId;
     // A turn the CLI starts on its own is new use (docs/316 req 5).
     if (turnSessionId && startsTurn) deps.sessionManager.track(turnSessionId);
+    if (turnSessionId && startsTurn) retireRewindUndo(deps.chatHistoryManager, turnSessionId);
     if (turnSessionId) {
       emitToViewers({
         type: "session_status",
