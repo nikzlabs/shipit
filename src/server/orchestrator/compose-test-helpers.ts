@@ -23,9 +23,8 @@ function isMapping(value: unknown): value is Mapping {
 
 /** A real Compose, for a test that checks ShipIt's output against Compose's own reader; `config` needs no daemon. */
 export function realComposeCommand(): string[] | undefined {
-  for (const cmd of [["docker", "compose"], ["docker-compose"]]) {
-    if (spawnSync(cmd[0], [...cmd.slice(1), "version"], { stdio: "ignore" }).status === 0) return cmd;
-  }
+  if (spawnSync("docker", ["compose", "version"], { stdio: "ignore" }).status === 0) return ["docker", "compose"];
+  if (spawnSync("docker-compose", ["version"], { stdio: "ignore" }).status === 0) return ["docker-compose"];
   return undefined;
 }
 
