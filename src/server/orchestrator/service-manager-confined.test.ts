@@ -32,6 +32,7 @@ interface Model {
 let sessionDir: string | undefined;
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (sessionDir) fs.rmSync(sessionDir, { recursive: true, force: true });
   sessionDir = undefined;
 });
@@ -212,6 +213,27 @@ services:
     const snapshot = recordedSnapshot(dir, "web");
     expect(snapshot).toContain("a$$b");
     expect(snapshot).not.toContain("a$$$$b");
+  });
+
+  // Only the resolved model shows a value that comes from an `env_file`.
+  it("gives a session UID's service a HOME unless the project sets one", async () => {
+    const dir = setup(
+      "services:\n"
+      + "  plain:\n    image: node:22\n    x-shipit-preview: auto\n"
+      + "  mapped:\n    image: node:22\n    x-shipit-preview: auto\n    environment:\n      HOME: /data\n"
+      + "  filed:\n    image: node:22\n    x-shipit-preview: auto\n    env_file: ./filed.env\n",
+    );
+    fs.writeFileSync(path.join(dir, "filed.env"), "HOME=/from-file\n");
+    vi.stubEnv("SHIPIT_SESSION_WORKER_UID", "2000006");
+    const { mgr } = harness(dir);
+    await mgr.start();
+
+    const override = parseYaml(recordedOverride(dir, "plain"), { logLevel: "error" }) as Model;
+    expect(override.services.plain).toMatchObject({ user: "2000006:2000006", environment: { HOME: "/tmp" } });
+    expect(override.services.mapped.environment).toBeUndefined();
+    expect(override.services.filed.environment).toBeUndefined();
+    const snapshot = parseYaml(recordedSnapshot(dir, "plain")) as Model;
+    expect(snapshot.services.filed.environment).toEqual({ HOME: "/from-file" });
   });
 
   it("copies a project secret file into ShipIt's state and names the copy", async () => {

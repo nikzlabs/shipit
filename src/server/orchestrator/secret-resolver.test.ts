@@ -17,6 +17,7 @@ import {
   stageSecretsEntrypoint,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
+import { realComposeCommand } from "./compose-test-helpers.js";
 
 describe("collectMcpAgentEnv (docs/088)", () => {
   function stub(opts: {
@@ -305,13 +306,7 @@ describe("service env file quoting (planning#624)", () => {
   });
 });
 
-function composeCommand(): string[] | undefined {
-  for (const cmd of [["docker", "compose"], ["docker-compose"]]) {
-    if (spawnSync(cmd[0], [...cmd.slice(1), "version"], { stdio: "ignore" }).status === 0) return cmd;
-  }
-  return undefined;
-}
-const compose = composeCommand();
+const compose = realComposeCommand();
 
 // The unit tests above pin the encoding; this checks it against Compose's own reader.
 describe.skipIf(!compose)("Compose reads a service env file back verbatim (planning#624)", () => {

@@ -15,6 +15,7 @@ import {
   classifyComposeFailure,
   composeBuildModel,
   ComposeValidationError,
+  declaresHome,
   extractContainerPort,
   generateComposeOverride,
   mountProjectFileCopies,
@@ -1456,6 +1457,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         return {
           ...rest,
           user: normalizedUser(services[name]?.user),
+          declaresHome: declaresHome(services[name]?.environment),
           trustedOpsProxy: check.trustedOpsProxies.has(name),
           ...(mounts ? { workspaceMounts: mounts } : {}),
         };

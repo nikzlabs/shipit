@@ -141,6 +141,31 @@ That reservation is why declaring nothing is the right answer rather than merely
 the convenient one: the UID your service wants is the session's own, and naming
 it is exactly what the range refuses. Leave `user:` out and ShipIt supplies it.
 
+**The home directory of such a service is `/tmp`.** No image has an account for
+a UID in that reserved range, and Docker's home for a UID with no account is `/`,
+which it cannot write — so every tool that keeps a cache or a config file below
+`$HOME` (npm and `npx`, pip, Astro's telemetry store, a tool's first-run setup)
+would fail with `EACCES` or run without its cache. ShipIt therefore sets
+`HOME=/tmp` on a service it runs as a per-session UID. That is the image's own
+`/tmp` unless the service mounts something there: on the container's filesystem,
+and gone when the container is recreated. Use it for caches, not for data — data
+a service must keep goes in the
+[`persist` volume](#data-a-service-must-keep-the-persist-volume). A service with
+`read_only: true` can write its home only if it gives `/tmp` a `tmpfs:`.
+
+ShipIt never sets it over a value the service declares, and there is one value
+it cannot see:
+
+- A service that sets `HOME` itself — in `environment:` or through `env_file:` —
+  keeps its value.
+- A service that declares its own `user:` gets no `HOME` from ShipIt. Its home is
+  whatever its image gives that user.
+- **An image that sets `HOME` with `ENV` in its Dockerfile loses that value**:
+  ShipIt cannot read an image's environment when it writes the service's, so
+  `HOME=/tmp` replaces it, and the service no longer reads or writes the home
+  its image prepared. If the image needs its own, repeat the value in the
+  service's `environment:`.
+
 **If your compose file declares a `user:` only because a contained session used to
 refuse it, delete that line.** That rule is gone. A `user:` kept out of habit is
 now actively harmful, in two ways that look nothing alike:

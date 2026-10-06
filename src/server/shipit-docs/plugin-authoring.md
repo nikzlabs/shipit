@@ -323,6 +323,9 @@ read-write but owned by the **consuming session's own uid** — a per-session nu
 in 2000000–2999999, not a fixed 1000 — so a service that declares some other
 `user:` can still be refused by the filesystem. Declare no `user:` and ShipIt
 supplies that identity; a fragment cannot name it, since no fragment can know it.
+With that identity comes `HOME=/tmp`, unless the fragment's `environment` sets
+`HOME` itself: no image has an account for that uid, and Docker's home for a uid
+with no account is `/`, which it cannot write.
 
 **`/plugin-state` is per import, per session.** Every session that uses your
 plugin gets its own directory, and a project that imports the plugin under two
