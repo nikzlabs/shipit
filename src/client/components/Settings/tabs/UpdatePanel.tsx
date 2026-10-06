@@ -112,7 +112,7 @@ export function UpdatePanel() {
       <p className="text-sm text-(--color-text-secondary)">
         {effectiveUpdateMode === "managed"
           ? "Check for new versions and update ShipIt in place."
-          : "Check for new versions and choose the release channel. Re-run the local production script to apply updates."}
+          : "Check for new versions and choose the release channel. This install applies updates from a terminal on its host."}
       </p>
 
       {/* Current version — channel-aware label, e.g. "Stable · v1.4.0".
@@ -197,8 +197,11 @@ export function UpdatePanel() {
       </div>
       {effectiveUpdateMode === "manual" && (
         <p className="text-sm text-(--color-text-secondary)" data-testid="settings-manual-update-note">
-          To apply updates or restart local production, stop ShipIt and re-run{" "}
-          <span className="font-mono text-(--color-text-primary)">docker/local/prod.sh</span>.
+          To apply an update, run{" "}
+          <span className="font-mono break-all text-(--color-text-primary)">~/.shipit/deployment/local/update.sh</span>{" "}
+          on the machine that runs ShipIt. It syncs to your release channel, rebuilds, and restarts
+          ShipIt. If you installed ShipIt in a different directory, use that directory in place of{" "}
+          <span className="font-mono text-(--color-text-primary)">~/.shipit</span>.
         </p>
       )}
       {updateApplying && (
