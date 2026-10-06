@@ -103,6 +103,10 @@ exists, so the bootstrap part cannot source `lib.sh`). Mirrors `deployment/vps/s
   The install/update/stop responsibilities move entirely to `deployment/local/`.
 - **`src/server/orchestrator/services/updates.ts`** (`requireManagedUpdates`) — the 503 message
   repointed from "Re-run docker/local/prod.sh" to `~/.shipit/deployment/local/update.sh`.
+- **`src/client/components/Settings/tabs/UpdatePanel.tsx`** — the manual-mode note in
+  Settings → Advanced → Software Updates names the same script. It kept naming
+  `docker/local/prod.sh` long after this change, and that script does not fetch, so re-running it
+  never applied an update.
 - **`README.md`** — "Try it locally" switches to the one-liner; "Software updates" bullet mentions
   `deployment/local/update.sh`.
 - **`deployment/README.md`** — a "Local install" section (one-liner, update, stop) plus the
