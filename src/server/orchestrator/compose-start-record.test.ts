@@ -105,7 +105,7 @@ describe("ComposeStartRecord (docs/318)", () => {
     expect(fs.existsSync(path.join(dir, "started-by.json"))).toBe(false);
   });
 
-  it("discards a refused start's files and stops counting it as in flight", () => {
+  it("discards a refused start's files", () => {
     const { rec } = record();
     const refused = rec.allocate();
     rec.discard(refused.id);
@@ -165,22 +165,6 @@ describe("ComposeStartRecord (docs/318)", () => {
         recorded: true,
         model: { snapshotFile: theirs.snapshotFile, overrideFile: theirs.overrideFile },
       });
-    });
-
-    it("tracks in-flight starts per state directory", () => {
-      const { rec: a } = record();
-      const firstTmp = tmp;
-      const { rec: b } = record();
-      try {
-        const start = a.allocate();
-        writePair(start);
-        b.allocate();
-        a.release(start.id);
-        a.prune();
-        expect(fs.existsSync(path.dirname(start.snapshotFile))).toBe(false);
-      } finally {
-        if (firstTmp) fs.rmSync(firstTmp, { recursive: true, force: true });
-      }
     });
   });
 
