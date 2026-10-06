@@ -1860,4 +1860,42 @@ describe("ChatHistoryManager", () => {
       expect(mgr.transcriptRevision("s1")).toBeGreaterThan(before);
     });
   });
+
+  describe("rewind snapshots", () => {
+    const chatSnapshot = { action: "chat" as const, messages: [{ role: "user" as const, text: "before the rewind" }] };
+    let mgr: ChatHistoryManager;
+
+    beforeEach(() => {
+      mgr = new ChatHistoryManager(dbManager);
+    });
+
+    it("retires a session's in-place snapshots", () => {
+      mgr.createRewindSnapshot("s1", chatSnapshot);
+      mgr.createRewindSnapshot("s1", { action: "code", headHash: "abc1234", flippedMessageIds: [] });
+
+      mgr.retireInPlaceRewindSnapshots("s1");
+
+      expect(mgr.latestRewindSnapshot("s1")).toBeNull();
+      expect(mgr.consumeRewindSnapshot("s1")).toBeNull();
+    });
+
+    // A late callback of the turn that was rewound can still write rows; that is not a new turn.
+    it("keeps a snapshot through another session's turn and through transcript writes", () => {
+      mgr.createRewindSnapshot("s1", chatSnapshot);
+
+      mgr.retireInPlaceRewindSnapshots("s2");
+      mgr.append("s1", { role: "assistant", text: "a notice", notice: true });
+      mgr.replaceInProgress("s1", [{ role: "assistant", text: "a late write", inProgress: true }]);
+
+      expect(mgr.consumeRewindSnapshot("s1")).toEqual(chatSnapshot);
+    });
+
+    it("keeps a fork snapshot", () => {
+      const snapshot = mgr.createRewindSnapshot("s1", { action: "fork", childSessionId: "child", breadcrumbMessageId: 1 });
+
+      mgr.retireInPlaceRewindSnapshots("s1");
+
+      expect(mgr.latestRewindSnapshot("s1")?.id).toBe(snapshot.id);
+    });
+  });
 });

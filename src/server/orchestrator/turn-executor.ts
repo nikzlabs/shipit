@@ -53,6 +53,7 @@ import {
 } from "./services/session-status.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
 import { writeAnswerHold } from "./turn-admission.js";
+import { retireRewindUndo } from "./chat-history.js";
 import { forgetHeldTurn, restoreHeldTurns } from "./held-turns.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
@@ -448,6 +449,7 @@ export async function executeAgentTurn(
       runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
     }
   }
+  retireRewindUndo(deps.listenerDeps.chatHistoryManager, sessionId);
   if (runner) {
     runner.running = true;
     runner.systemTurnInProgress = input.systemTurn === true;

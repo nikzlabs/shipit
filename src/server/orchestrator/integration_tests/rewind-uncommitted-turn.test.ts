@@ -161,12 +161,13 @@ describe("Integration: rewind while the finished turn is not committed yet", () 
     const { sessionId, workspaceDir, git } = await sessionWithOneCommittedTurn();
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
+    await finishTurnThatEditsTrackedFile(client, sessionId, workspaceDir);
+    // Seeded after the turn started: the start retires an earlier snapshot (planning#637).
     chatHistoryManager.createRewindSnapshot(sessionId, {
       action: "code",
       headHash: (await git.getHeadHash()) ?? "",
       flippedMessageIds: [],
     });
-    await finishTurnThatEditsTrackedFile(client, sessionId, workspaceDir);
 
     client.send({ type: "rewind_restore_request", sessionId });
     expect(await receiveOneOf(client, ["rewind_restored", "error"])).toMatchObject(STILL_SAVING);

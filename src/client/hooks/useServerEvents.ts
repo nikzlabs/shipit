@@ -29,6 +29,7 @@ import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-a
 import { useForegroundSignal } from "./useForegroundSignal.js";
 import { notifySessionNetworkModeChanged } from "./useSessionNetworkMode.js";
 import { notifyPreviewsStopped } from "./usePreviewsStopped.js";
+import { retireRewindUndo } from "./message-handlers/rewind-complete.js";
 import { adoptModelList } from "../../server/shared/catalogue/model-list.js";
 
 let reloadingForClientUpdate = false;
@@ -182,6 +183,7 @@ export function useServerEvents(): void {
     es.addEventListener("session_agent_started", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { sessionId: string; activity?: string };
       const store = useSessionStore.getState();
+      retireRewindUndo(data.sessionId);
       store.setActiveRunnerSessions((prev) => {
         const next = new Set(prev);
         next.add(data.sessionId);
