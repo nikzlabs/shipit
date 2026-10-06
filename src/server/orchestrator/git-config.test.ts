@@ -23,12 +23,14 @@ describe("git-config: initGlobalGitConfig", () => {
   let origGitConfigGlobal: string | undefined;
   let origGitEditor: string | undefined;
   let origLcAll: string | undefined;
+  let origOptionalLocks: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-config-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGitEditor = process.env.GIT_EDITOR;
     origLcAll = process.env.LC_ALL;
+    origOptionalLocks = process.env.GIT_OPTIONAL_LOCKS;
     delete process.env.GIT_EDITOR;
   });
 
@@ -39,7 +41,15 @@ describe("git-config: initGlobalGitConfig", () => {
     else delete process.env.GIT_EDITOR;
     if (origLcAll !== undefined) process.env.LC_ALL = origLcAll;
     else delete process.env.LC_ALL;
+    if (origOptionalLocks !== undefined) process.env.GIT_OPTIONAL_LOCKS = origOptionalLocks;
+    else delete process.env.GIT_OPTIONAL_LOCKS;
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("turns git's optional locks off, over an operator's own setting", () => {
+    process.env.GIT_OPTIONAL_LOCKS = "1";
+    initGlobalGitConfig(tmpDir);
+    expect(process.env.GIT_OPTIONAL_LOCKS).toBe("0");
   });
 
   it("pins LC_ALL=C so git's messages stay matchable", () => {

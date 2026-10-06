@@ -111,11 +111,18 @@ export class TestClient {
 
   async receiveType(type: string, timeoutMs = 3000): Promise<WsServerMessage> {
     const deadline = Date.now() + timeoutMs;
+    // A skipped `error` is usually the answer the caller was waiting for (planning#635).
+    const skipped: string[] = [];
     while (true) {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new Error(`receiveType("${type}") timed out`);
-      const msg = await this.receive(remaining);
+      const msg = remaining > 0 ? await this.receive(remaining).catch(() => null) : null;
+      if (!msg) {
+        throw new Error(
+          `receiveType("${type}") timed out after ${timeoutMs}ms; skipped: ${skipped.join(", ") || "nothing"}`,
+        );
+      }
       if (msg.type === type) return msg;
+      skipped.push(msg.type === "error" ? `error(${JSON.stringify(msg.message)})` : msg.type);
     }
   }
 
