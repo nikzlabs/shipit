@@ -149,6 +149,17 @@ describe("getTemplate", () => {
       expect(Object.keys(full!.files).length).toBeGreaterThan(0);
     }
   });
+
+  // Native watching works across the session and service containers (planning#634).
+  it("ships no polling file watcher in any template", () => {
+    const polling = listTemplates().flatMap((meta) =>
+      Object.entries(getTemplate(meta.id)!.files)
+        .filter(([, content]) => /usePolling|WATCHPACK_POLLING|CHOKIDAR_USEPOLLING/.test(content))
+        .map(([file]) => `${meta.id}/${file}`),
+    );
+
+    expect(polling).toEqual([]);
+  });
 });
 
 describe("applyTemplate", () => {
