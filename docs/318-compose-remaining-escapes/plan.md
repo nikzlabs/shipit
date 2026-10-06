@@ -200,23 +200,46 @@ orchestrator path. It is this session's own, which requirement 1 permits.
   planning#619) — and the scratch directory the same way. Each appears at the
   path the orchestrator uses, so the absolute paths in the models mean the same
   thing inside and outside.
-- **Mount sources are Docker-host paths.** The daemon resolves a bind source on
-  its own host, where the orchestrator's `/workspace/...` path is not the file
-  (the shipped deployments mount `/workspace` as a named volume). So every
-  ShipIt file mounted into `up` — `compose/`, the service-env files, the
-  registry-login directory — is bind-mounted from its Docker-host path, and so
-  is each project secret copy the daemon binds into a service. Paths in the
-  workspace volume are translated as `workspaceVolumeDaemonPath`
-  (`compose-persist.ts`) already does. That covers the service-env directory
-  by default, which is `<stateDir>/service-env` inside that volume
-  (`bootstrap-managers.ts`); no translation exists for it today. The project
-  secret copies live in the session's state directory, inside that volume too
-  (`dockerSecretsConfig`, with its own host path, exists only when
-  `SHIPIT_SECRETS_INTERNAL_DIR` is set). A `SHIPIT_SERVICE_ENV_DIR` set outside
-  the workspace volume needs its Docker-host path supplied; without it, a
-  start that needs service-env files is refused with a message that names the
-  setting (req 6). The agent can write none of these paths, so the daemon's
-  resolution of them on the host cannot be steered.
+- **A path inside the workspace volume is mounted as the volume, never by a
+  host path.** The orchestrator's `/workspace/...` path is not the file on the
+  Docker host (the shipped deployments mount `/workspace` as a named volume),
+  and ShipIt cannot name the host path either: the volume's `Mountpoint` from
+  `docker volume inspect` is the *daemon's* path, and a bind source is not
+  resolved there on every daemon. Under Docker Desktop the Mountpoint is a path
+  inside the Desktop VM, a bind source is looked up on the host, and Docker
+  **creates and mounts an empty directory** for one that is missing — no
+  error. Until 2026-10-06 `up` bound its files from the Mountpoint, so on such
+  a daemon it saw an empty `compose/` and every `up` failed with
+  `open …/snapshot.yml: no such file or directory`. So every ShipIt directory
+  mounted into `up` — `compose/`, the session's service-env directory, the
+  registry-login directory — is `type=volume` with `volume-subpath`, the form
+  the workspace mount of `config` and `build` already uses
+  (`ConfinedCompose.shipitMount`, `compose-helper.ts`). A subpath must exist
+  when it is mounted; all three do by then.
+- **The same rule for a project secret or config copy.** Compose hands a
+  top-level `file:` to the daemon as the bind source of a mount in the
+  service's container. The copies are in `compose/secrets/`, inside the
+  workspace volume, so each service's grant of one is replaced in the snapshot
+  by a read-only mount of that one file from the volume, at the target Compose
+  would have used (`mountProjectFileCopies`, `compose-generator.ts`). The
+  top-level entry stays, naming the copy: Compose refuses a model whose
+  `build.secrets` names a secret that is not declared, even with `--no-build`.
+  If ShipIt cannot place a copy in the volume, the start is refused (req 6).
+  The `uid`, `gid`, and `mode` of a grant were already ignored for a
+  file-backed secret.
+- **A host-path bind remains only for a directory outside the volume**: a
+  `SHIPIT_SERVICE_ENV_DIR` set outside it, whose Docker-host path
+  `SHIPIT_SERVICE_ENV_HOST_DIR` supplies. Without that setting, a start that
+  needs service-env files is refused with a message that names it (req 6).
+  ShipIt's docker-secret files (`SHIPIT_SECRETS_INTERNAL_DIR`) likewise use the
+  host path the operator supplies. The agent can write none of these paths.
+- **The Mountpoint is still right where the daemon itself does the mount.**
+  The per-session workspace volume and the `persist` volume are `local`
+  volumes with `driver_opts: {type: none, o: bind, device: <Mountpoint>/…}`
+  (`workspaceVolumeDaemonPath`, `compose-persist.ts`). The daemon performs that
+  mount in its own mount namespace, where the Mountpoint is a real path, as it
+  does for the dependency overlays (`container-overlay-provisioner.ts`). These
+  are unchanged.
 - Nothing else is mounted: not another session, not the shared volume root
   (which holds `.shipit.db`), and no orchestrator file. The image is a minimal
   helper image, not the orchestrator's (see *How each container runs*).
@@ -378,9 +401,9 @@ boundary against a rogue agent, which can already expose any value its
 services receive — render it in a page and snapshot it, log it.)
 `assertServiceEnvRootOutsideWorkspace` stays.
 
-ShipIt's docker-secret files are not mounted: the override names them by their
-Docker-host path (`composeSecretFilePath`), and the daemon mounts them, as
-today.
+ShipIt's docker-secret files are not mounted into the helper: the override
+names them by the Docker-host path the operator supplied
+(`composeSecretFilePath`), and the daemon mounts them, as today.
 
 ### What this gives
 
@@ -570,10 +593,11 @@ snapshot.
      for its *own* mounts).
    - Each project `secrets`/`configs` `file:` is read through a confined
      container (workspace read-only, no socket), written into
-     `<sessionDir>/state/compose/secrets/`, and named by its Docker-host path
-     (`workspaceVolumeDaemonPath`). The daemon then binds ShipIt's
-     copy, never a workspace path it would resolve on the host. This runs only
-     when the project declares such a file.
+     `<sessionDir>/state/compose/secrets/`, and mounted into each service that
+     is granted it as that one file of the workspace volume (Mechanism 1,
+     `mountProjectFileCopies`). The daemon then mounts ShipIt's copy, never a
+     workspace path it would resolve on the host. This runs only when the
+     project declares such a file.
    - The `env_file` and `label_file` keys are removed, because on the pinned
      Compose version their values are already inlined. ShipIt never drops a
      key whose values Compose did not inline: if the resolved model still
@@ -932,8 +956,12 @@ These need a check on a deployment, listed in the PR test plan:
   `CLASSIFIED_SERVICE_FIELDS`, and drops `env_file`/`label_file` once inlined.
 - `stop` from a start's snapshot and override works on the orchestrator,
   where the override's Docker-host paths do not exist.
-- `up` loads a project secret copy by its Docker-host path, and a non-root
-  service can read it.
+- A service gets a project secret copy as a `volume.subpath` mount of one
+  *file* of the workspace volume, and a non-root service can read it. The
+  plugin settings file is already mounted in this form (`plugin-compose.ts`);
+  this use of it is not checked on a daemon as of 2026-10-06.
+- `up` starts a service on a Docker Desktop daemon, where the volume's
+  Mountpoint is not a host path.
 - Orphan removal removes only containers of services no longer in the file or
   the plugin list, and keeps one-off `run` containers.
 - A model-free `down --volumes` also removes the `persist` and

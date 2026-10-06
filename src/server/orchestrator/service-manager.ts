@@ -17,6 +17,7 @@ import {
   ComposeValidationError,
   extractContainerPort,
   generateComposeOverride,
+  mountProjectFileCopies,
   normalizedUser,
   parseComposeContent,
   pluginStubModel,
@@ -35,6 +36,7 @@ import {
   type DockerSocketGrant,
   type OverlayDepDirVolume,
   type PersistVolume,
+  type ProjectFileCopy,
   type SnapshotRewrite,
 } from "./compose-generator.js";
 import { preparePersistDir } from "./compose-persist.js";
@@ -232,8 +234,6 @@ export interface ServiceManagerOptions {
    * (docs/318-compose-remaining-escapes, Mechanism 1).
    */
   confinedCompose?: ConfinedComposeApi;
-  /** Docker-host path of a file in the session's state directory; identity when absent. */
-  composeFileDaemonPath?: (orchestratorPath: string) => Promise<string>;
 }
 
 export interface ServiceManagerEvents {
@@ -292,7 +292,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly secretsInternalDir?: string;
   private readonly persistDevicePath: (hostPath: string) => Promise<string>;
   private readonly confined: ConfinedComposeApi;
-  private readonly composeFileDaemonPath: (orchestratorPath: string) => Promise<string>;
   private readonly startRecord: ComposeStartRecord;
   private legacyOverrideRemoved = false;
 
@@ -359,7 +358,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       daemonPath: (p) => Promise.resolve(p),
       ...(opts.stackName ? { stackName: opts.stackName } : {}),
     });
-    this.composeFileDaemonPath = opts.composeFileDaemonPath ?? ((p) => Promise.resolve(p));
     this.startRecord = new ComposeStartRecord(this.composeStateDir);
     this.compose = new ComposeCli({
       sessionId: opts.sessionId,
@@ -1504,9 +1502,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   }
 
   // The daemon would bind a project secret or config from the workspace on the Docker host, where
-  // it follows symlinks; it binds ShipIt's copy instead, read through the confined helper.
+  // it follows symlinks; it mounts ShipIt's copy instead, read through the confined helper. The
+  // copy is in the workspace volume, so a service gets it from the volume and not by a host path.
   private async copyProjectFiles(rewrite: SnapshotRewrite): Promise<void> {
     if (rewrite.projectFiles.length === 0) return;
+    const copies: ProjectFileCopy[] = [];
     const dir = this.projectFileCopiesDir();
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
@@ -1524,8 +1524,23 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       fs.writeFileSync(tmp, bytes, { mode: 0o644 });
       fs.renameSync(tmp, copy);
       const block = rewrite.model[ref.kind] as Record<string, Record<string, unknown>>;
-      block[ref.name].file = await this.composeFileDaemonPath(copy);
+      block[ref.name].file = copy;
+      if (this.workspaceVolume) copies.push({ kind: ref.kind, name: ref.name, subpath: this.volumeSubpathOf(copy) });
     }
+    if (this.workspaceVolume) mountProjectFileCopies(rewrite.model, copies, this.workspaceVolume);
+  }
+
+  // Never fall back to a host path: Docker mounts an empty directory for one it cannot find.
+  private volumeSubpathOf(file: string): string {
+    const subpath = this.workspaceSubpath
+      ? path.posix.join(this.workspaceSubpath, path.posix.relative(this.workspaceDir, file))
+      : "..";
+    if (subpath.startsWith("..")) {
+      throw this.recordComposeFailure(new ComposeValidationError(
+        `ShipIt could not locate ${file} inside the workspace volume, so it cannot mount it into a service.`,
+      ));
+    }
+    return subpath;
   }
 
   // The override lived in the state directory before each start wrote its own; it holds credentials.
