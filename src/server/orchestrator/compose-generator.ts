@@ -1760,7 +1760,7 @@ export interface ProjectFileCopy {
   subpath: string;
 }
 
-const PROJECT_FILE_TARGET_ROOT = { secrets: "/run/secrets/", configs: "/" } as const;
+const PROJECT_FILE_TARGET_ROOT = { secrets: "/run/secrets", configs: "/" } as const;
 
 /**
  * Compose hands a `file:` secret or config to the daemon as a bind source, and a path inside the
@@ -1795,9 +1795,9 @@ export function mountProjectFileCopies(
         mounts.push({
           type: "volume",
           source: WORKSPACE_VOLUME_ALIAS,
-          target: path.posix.isAbsolute(named) ? named : PROJECT_FILE_TARGET_ROOT[kind] + named,
+          target: path.posix.isAbsolute(named) ? named : path.posix.join(PROJECT_FILE_TARGET_ROOT[kind], named),
           read_only: true,
-          volume: { nocopy: true, subpath: copy.subpath },
+          volume: { subpath: copy.subpath },
         });
       }
       if (mounts.length === 0) continue;

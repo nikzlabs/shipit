@@ -222,7 +222,9 @@ orchestrator path. It is this session's own, which requirement 1 permits.
   workspace volume, so each service's grant of one is replaced in the snapshot
   by a read-only mount of that one file from the volume, at the target Compose
   would have used (`mountProjectFileCopies`, `compose-generator.ts`). The
-  top-level entry stays, naming the copy, because `build.secrets` refers to it.
+  top-level entry stays, naming the copy: Compose refuses a model whose
+  `build.secrets` names a secret that is not declared, even with `--no-build`.
+  If ShipIt cannot place a copy in the volume, the start is refused (req 6).
   The `uid`, `gid`, and `mode` of a grant were already ignored for a
   file-backed secret.
 - **A host-path bind remains only for a directory outside the volume**: a
@@ -955,9 +957,9 @@ These need a check on a deployment, listed in the PR test plan:
 - `stop` from a start's snapshot and override works on the orchestrator,
   where the override's Docker-host paths do not exist.
 - A service gets a project secret copy as a `volume.subpath` mount of one
-  *file* of the workspace volume, and a non-root service can read it. Not
-  checked on any daemon as of 2026-10-06 (the 2026-09-29 check was of the
-  host-path bind this replaced).
+  *file* of the workspace volume, and a non-root service can read it. The
+  plugin settings file is already mounted in this form (`plugin-compose.ts`);
+  this use of it is not checked on a daemon as of 2026-10-06.
 - `up` starts a service on a Docker Desktop daemon, where the volume's
   Mountpoint is not a host path.
 - Orphan removal removes only containers of services no longer in the file or

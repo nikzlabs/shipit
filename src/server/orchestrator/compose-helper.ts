@@ -215,7 +215,7 @@ function removeContainerByName(name: string): Promise<void> {
 }
 
 /** `p` relative to the workspace volume's root, or null when it is not inside that volume. */
-export function workspaceVolumeSubpath(p: string): string | null {
+function workspaceVolumeSubpath(p: string): string | null {
   const rel = path.posix.relative(WORKSPACE_VOLUME_ROOT, p);
   return rel === "" || rel.startsWith("..") || path.posix.isAbsolute(rel) ? null : rel;
 }

@@ -48,12 +48,7 @@ import {
   sessionScratchDirForWorkspace,
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
-import {
-  ComposeHelperError,
-  ConfinedCompose,
-  workspaceVolumeSubpath,
-  type ConfinedComposeApi,
-} from "./compose-helper.js";
+import { ComposeHelperError, ConfinedCompose, type ConfinedComposeApi } from "./compose-helper.js";
 import { ComposeStartRecord } from "./compose-start-record.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import {
@@ -1530,10 +1525,22 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       fs.renameSync(tmp, copy);
       const block = rewrite.model[ref.kind] as Record<string, Record<string, unknown>>;
       block[ref.name].file = copy;
-      const subpath = this.workspaceVolume ? workspaceVolumeSubpath(copy) : null;
-      if (subpath !== null) copies.push({ kind: ref.kind, name: ref.name, subpath });
+      if (this.workspaceVolume) copies.push({ kind: ref.kind, name: ref.name, subpath: this.volumeSubpathOf(copy) });
     }
     if (this.workspaceVolume) mountProjectFileCopies(rewrite.model, copies, this.workspaceVolume);
+  }
+
+  // Never fall back to a host path: Docker mounts an empty directory for one it cannot find.
+  private volumeSubpathOf(file: string): string {
+    const subpath = this.workspaceSubpath
+      ? path.posix.join(this.workspaceSubpath, path.posix.relative(this.workspaceDir, file))
+      : "..";
+    if (subpath.startsWith("..")) {
+      throw this.recordComposeFailure(new ComposeValidationError(
+        `ShipIt could not locate ${file} inside the workspace volume, so it cannot mount it into a service.`,
+      ));
+    }
+    return subpath;
   }
 
   // The override lived in the state directory before each start wrote its own; it holds credentials.

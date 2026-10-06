@@ -233,6 +233,40 @@ services:
   });
 });
 
+describe("a project secret copy with a workspace volume", () => {
+  const SECRET_STACK = "services:\n  web:\n    build: .\n    x-shipit-preview: auto\n    secrets: [tok]\n"
+    + "secrets:\n  tok:\n    file: ./tok.txt\n";
+
+  // Compose would hand `file:` to the daemon as a bind source, and the copy has no host path.
+  it("mounts the copy into the service as one file of the volume", async () => {
+    const dir = setup(SECRET_STACK);
+    fs.writeFileSync(path.join(dir, "tok.txt"), "s3cret");
+    const { mgr } = harness(dir, {
+      extra: { workspaceVolume: "shipit-ws", workspaceSubpath: `sessions/${SESSION}/workspace` },
+    });
+    await mgr.start();
+
+    const snapshot = parseYaml(recordedSnapshot(dir, "web")) as Model;
+    expect(snapshot.services.web.secrets).toEqual([]);
+    expect(snapshot.services.web.volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-workspace",
+      target: "/run/secrets/tok",
+      read_only: true,
+      volume: { subpath: `sessions/${SESSION}/state/compose/secrets/secrets-tok` },
+    });
+    expect(snapshot.volumes?.["shipit-workspace"]).toEqual({ name: "shipit-ws", external: true });
+  });
+
+  it("refuses the start when it cannot place the copy in the volume", async () => {
+    const dir = setup(SECRET_STACK);
+    fs.writeFileSync(path.join(dir, "tok.txt"), "s3cret");
+    const { mgr, fake } = harness(dir, { extra: { workspaceVolume: "shipit-ws" } });
+    await mgr.start().catch(() => {});
+    expect(fake.ups).toEqual([]);
+  });
+});
+
 describe("the plugin-only path", () => {
   it("starts a stack with no project file from the override alone", async () => {
     const dir = setup();

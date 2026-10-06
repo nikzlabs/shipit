@@ -3441,7 +3441,7 @@ describe("mountProjectFileCopies", () => {
     { kind: "configs" as const, name: "cfg", subpath: "sessions/s1/state/compose/secrets/configs-cfg" },
   ];
   const mount = (target: string, subpath: string) => ({
-    type: "volume", source: "shipit-workspace", target, read_only: true, volume: { nocopy: true, subpath },
+    type: "volume", source: "shipit-workspace", target, read_only: true, volume: { subpath },
   });
 
   it("replaces each grant of a copied file with a mount of that file from the workspace volume", () => {
