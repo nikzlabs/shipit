@@ -2,7 +2,7 @@
   {
     "advisory": "GHSA-68fv-2mgg-jv7q",
     "package": "source-map-js",
-    "reason": "The fix, source-map-js 1.2.2, was published 2026-09-30 and clears the 7-day dependency-age window on 2026-10-07. Pin it in package.json overrides then and delete this entry. Build-time only: reached through vite, @tailwindcss/vite and jsdom, all devDependencies.",
+    "reason": "The fix, source-map-js 1.2.2, was published 2026-09-30. The repo's .npmrc min-release-age=7 refuses to resolve it before 2026-10-07. Pin it in package.json overrides then and delete this entry. Build-time only: reached through vite, @tailwindcss/vite and jsdom, all devDependencies.",
     "expires": "2026-10-13"
   }
 ]
