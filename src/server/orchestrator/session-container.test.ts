@@ -883,7 +883,7 @@ describe("SessionContainerManager", () => {
       tmpDirs.push(sessionDir);
       const dir = path.join(sessionDir, "workspace");
       fs.mkdirSync(dir, { recursive: true });
-      const git = (await import("simple-git")).default;
+      const git = (await import("simple-git")).simpleGit;
       await git(dir).init();
       if (opts.gitignore !== undefined) fs.writeFileSync(path.join(dir, ".gitignore"), opts.gitignore);
       if (opts.shipitYaml !== undefined) fs.writeFileSync(path.join(dir, "shipit.yaml"), opts.shipitYaml);
