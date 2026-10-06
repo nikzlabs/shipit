@@ -1753,6 +1753,66 @@ export function composeBuildModel(
   return out;
 }
 
+export interface ProjectFileCopy {
+  kind: "secrets" | "configs";
+  name: string;
+  /** ShipIt's copy, relative to the workspace volume's root. */
+  subpath: string;
+}
+
+const PROJECT_FILE_TARGET_ROOT = { secrets: "/run/secrets", configs: "/" } as const;
+
+/**
+ * Compose hands a `file:` secret or config to the daemon as a bind source, and a path inside the
+ * workspace volume is not a host path on every daemon (docs/318-compose-remaining-escapes,
+ * Mechanism 1). So each service's grant of a copied file becomes a read-only mount of that one
+ * file from the volume, at the target Compose would have used.
+ */
+export function mountProjectFileCopies(
+  model: Record<string, unknown>,
+  copies: readonly ProjectFileCopy[],
+  workspaceVolume: string,
+): void {
+  if (!isMapping(model.services)) return;
+  let mounted = false;
+  for (const svc of Object.values(model.services)) {
+    if (!isMapping(svc)) continue;
+    for (const kind of ["secrets", "configs"] as const) {
+      const grants = svc[kind];
+      if (!Array.isArray(grants)) continue;
+      const kept: unknown[] = [];
+      const mounts: Record<string, unknown>[] = [];
+      for (const grant of grants as unknown[]) {
+        const source = isMapping(grant) ? grant.source : grant;
+        const copy = copies.find((c) => c.kind === kind && c.name === source);
+        if (!copy) {
+          kept.push(grant);
+          continue;
+        }
+        const named = isMapping(grant) && typeof grant.target === "string" && grant.target !== ""
+          ? grant.target
+          : copy.name;
+        mounts.push({
+          type: "volume",
+          source: WORKSPACE_VOLUME_ALIAS,
+          target: path.posix.isAbsolute(named) ? named : path.posix.join(PROJECT_FILE_TARGET_ROOT[kind], named),
+          read_only: true,
+          volume: { subpath: copy.subpath },
+        });
+      }
+      if (mounts.length === 0) continue;
+      mounted = true;
+      svc[kind] = kept;
+      svc.volumes = [...(Array.isArray(svc.volumes) ? svc.volumes as unknown[] : []), ...mounts];
+    }
+  }
+  if (!mounted) return;
+  model.volumes = {
+    ...(isMapping(model.volumes) ? model.volumes : {}),
+    [WORKSPACE_VOLUME_ALIAS]: { name: workspaceVolume, external: true },
+  };
+}
+
 function mountsSessionWorkspace(volumes: unknown): boolean {
   return Array.isArray(volumes) && volumes.some((vol) =>
     Boolean(vol && typeof vol === "object"

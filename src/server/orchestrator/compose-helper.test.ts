@@ -43,7 +43,7 @@ function confined(run: ConfinedComposeOptions["run"], extra: Partial<ConfinedCom
     sessionId: SID,
     workspaceDir: WS,
     workspaceVolume: "shipit_workspace",
-    daemonPath: async (p) => `/var/lib/docker/volumes/shipit_workspace/_data${p.slice("/workspace".length)}`,
+    daemonPath: composeHelperDaemonPath({ workspaceVolume: "shipit_workspace" }),
     stackName: "shipit",
     image: () => READY,
     identity: () => ({ uid: 1234, gid: 1000 }),
@@ -280,10 +280,12 @@ describe("ConfinedCompose.up", () => {
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("runs as root from ShipIt's files at their Docker-host paths, without the workspace", async () => {
+  // A volume's Mountpoint is not a host path on Docker Desktop: Docker mounts an empty directory for it.
+  it("runs as root from ShipIt's files, mounted as the workspace volume and never by a host path", async () => {
     const { calls, run } = recorder();
     const serviceEnv = `/workspace/service-env/${SID}`;
-    await confined(run).up({
+    const daemonPath = vi.fn(async (p: string) => `/var/lib/docker/volumes/shipit_workspace/_data${p.slice("/workspace".length)}`);
+    await confined(run, { daemonPath }).up({
       snapshotFile: `${COMPOSE_DIR}/snapshot-1.yml`,
       overrideFile: `${COMPOSE_DIR}/override-1.yml`,
       services: ["web"],
@@ -293,15 +295,48 @@ describe("ConfinedCompose.up", () => {
     expect(flag(args, "--user")).toEqual(["0:0"]);
     expect(flag(args, "--workdir")).toEqual([COMPOSE_DIR]);
     expect(flag(args, "--mount")).toEqual([
-      `type=bind,src=/var/lib/docker/volumes/shipit_workspace/_data/sessions/${SID}/state/compose,dst=${COMPOSE_DIR},readonly`,
-      `type=bind,src=/var/lib/docker/volumes/shipit_workspace/_data/service-env/${SID},dst=${serviceEnv},readonly`,
+      `type=volume,src=shipit_workspace,dst=${COMPOSE_DIR},volume-subpath=sessions/${SID}/state/compose,readonly`,
+      `type=volume,src=shipit_workspace,dst=${serviceEnv},volume-subpath=service-env/${SID},readonly`,
       "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
     ]);
+    expect(daemonPath).not.toHaveBeenCalled();
     expect(args.join(" ")).not.toContain(`dst=${WS}`);
     expect(inner(args)).toEqual([
       "docker", "compose", "-p", PROJECT,
       "-f", `${COMPOSE_DIR}/snapshot-1.yml`, "-f", `${COMPOSE_DIR}/override-1.yml`,
       "up", "-d", "--no-build", "--", "web",
+    ]);
+  });
+
+  it("binds ShipIt's files at their own paths in the bind deployment", async () => {
+    const { calls, run } = recorder();
+    const serviceEnv = `/workspace/service-env/${SID}`;
+    await confined(run, { workspaceVolume: undefined, daemonPath: composeHelperDaemonPath({}) }).up({
+      overrideFile: `${COMPOSE_DIR}/override-1.yml`,
+      services: [],
+      serviceEnvDir: serviceEnv,
+    });
+    expect(flag(calls[0]!.args, "--mount")).toEqual([
+      `type=bind,src=${COMPOSE_DIR},dst=${COMPOSE_DIR},readonly`,
+      `type=bind,src=${serviceEnv},dst=${serviceEnv},readonly`,
+      "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
+    ]);
+  });
+
+  it("binds a service-env directory outside the workspace volume from its supplied Docker-host path", async () => {
+    const { calls, run } = recorder();
+    const daemonPath = composeHelperDaemonPath({
+      workspaceVolume: "shipit_workspace", serviceEnvDir: "/srv/service-env", serviceEnvHostDir: "/opt/env",
+    });
+    await confined(run, { daemonPath }).up({
+      overrideFile: `${COMPOSE_DIR}/override-1.yml`,
+      services: [],
+      serviceEnvDir: `/srv/service-env/${SID}`,
+    });
+    expect(flag(calls[0]!.args, "--mount")).toEqual([
+      `type=volume,src=shipit_workspace,dst=${COMPOSE_DIR},volume-subpath=sessions/${SID}/state/compose,readonly`,
+      `type=bind,src=/opt/env/${SID},dst=/srv/service-env/${SID},readonly`,
+      "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
     ]);
   });
 
@@ -334,7 +369,6 @@ describe("ConfinedCompose.up", () => {
   it("refuses, naming the setting, when the service-env directory has no Docker-host path", async () => {
     const { run } = recorder();
     const daemonPath = composeHelperDaemonPath({
-      docker: { getVolume: () => ({ inspect: async () => ({ Mountpoint: "/data" }) }) } as unknown as Docker,
       workspaceVolume: "shipit_workspace",
       serviceEnvDir: "/srv/service-env",
     });
@@ -354,18 +388,22 @@ describe("ConfinedCompose.up", () => {
 });
 
 describe("composeHelperDaemonPath", () => {
-  const docker = { getVolume: () => ({ inspect: async () => ({ Mountpoint: "/data" }) }) } as unknown as Docker;
-
-  it("translates workspace-volume paths and a supplied service-env host directory", async () => {
+  it("translates a supplied service-env host directory", async () => {
     const resolve = composeHelperDaemonPath({
-      docker, workspaceVolume: "ws", serviceEnvDir: "/srv/env", serviceEnvHostDir: "/opt/env",
+      workspaceVolume: "ws", serviceEnvDir: "/srv/env", serviceEnvHostDir: "/opt/env",
     });
-    await expect(resolve("/workspace/sessions/s/state/compose")).resolves.toBe("/data/sessions/s/state/compose");
     await expect(resolve("/srv/env/s")).resolves.toBe("/opt/env/s");
+  });
+
+  it("names no host path for anything inside the workspace volume", async () => {
+    const resolve = composeHelperDaemonPath({ workspaceVolume: "ws" });
+    await expect(resolve("/workspace/sessions/s/state/compose")).rejects.toThrow(/has no Docker-host path/);
+    await expect(resolve("/srv/x")).rejects.toThrow(/does not know the Docker-host path/);
   });
 
   it("keeps paths as they are in the bind deployment", async () => {
     await expect(composeHelperDaemonPath({})("/srv/x")).resolves.toBe("/srv/x");
+    await expect(composeHelperDaemonPath({})("/workspace/x")).resolves.toBe("/workspace/x");
   });
 });
 

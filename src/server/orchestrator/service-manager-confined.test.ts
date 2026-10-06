@@ -52,6 +52,8 @@ interface Call { args: string[]; cwd: string }
 
 function harness(dir: string, opts: {
   query?: (args: string[]) => string;
+  /** Holds a Compose run open, to overlap it with another manager's work. */
+  gate?: (args: string[]) => Promise<void> | undefined;
   makeFake?: (opts: FakeConfinedOptions) => FakeConfinedCompose;
   extra?: Partial<ServiceManagerOptions>;
 } = {}) {
@@ -61,7 +63,7 @@ function harness(dir: string, opts: {
   const runner: ComposeRunner = (args, cwd) => {
     runs.push({ args, cwd });
     if (args.includes("up")) order.push("up");
-    return Promise.resolve();
+    return opts.gate?.(args) ?? Promise.resolve();
   };
   const composeQuery: ComposeQuery = (args, cwd) => {
     queries.push({ args, cwd });
@@ -218,9 +220,7 @@ services:
       + "secrets:\n  tok:\n    file: ./tok.txt\n",
     );
     fs.writeFileSync(path.join(dir, "tok.txt"), "s3cret");
-    const { mgr, fake } = harness(dir, {
-      extra: { composeFileDaemonPath: (p) => Promise.resolve(`/daemon${p}`) },
-    });
+    const { mgr, fake } = harness(dir);
     await mgr.start();
 
     const copies = path.join(composeStateDirForWorkspace(dir), "secrets");
@@ -228,8 +228,42 @@ services:
     expect(fake.reads).toContain(path.join(dir, "tok.txt"));
     expect(fs.readFileSync(copy, "utf-8")).toBe("s3cret");
     expect(fs.statSync(copies).mode & 0o777).toBe(0o700);
-    expect((parseYaml(recordedSnapshot(dir, "web")) as Model).secrets?.tok.file).toBe(`/daemon${copy}`);
+    expect((parseYaml(recordedSnapshot(dir, "web")) as Model).secrets?.tok.file).toBe(copy);
     expect((parseYaml(fake.builds[0].buildModel) as Model).secrets?.tok.file).toBe(path.join(dir, "tok.txt"));
+  });
+});
+
+describe("a project secret copy with a workspace volume", () => {
+  const SECRET_STACK = "services:\n  web:\n    build: .\n    x-shipit-preview: auto\n    secrets: [tok]\n"
+    + "secrets:\n  tok:\n    file: ./tok.txt\n";
+
+  // Compose would hand `file:` to the daemon as a bind source, and the copy has no host path.
+  it("mounts the copy into the service as one file of the volume", async () => {
+    const dir = setup(SECRET_STACK);
+    fs.writeFileSync(path.join(dir, "tok.txt"), "s3cret");
+    const { mgr } = harness(dir, {
+      extra: { workspaceVolume: "shipit-ws", workspaceSubpath: `sessions/${SESSION}/workspace` },
+    });
+    await mgr.start();
+
+    const snapshot = parseYaml(recordedSnapshot(dir, "web")) as Model;
+    expect(snapshot.services.web.secrets).toEqual([]);
+    expect(snapshot.services.web.volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-workspace",
+      target: "/run/secrets/tok",
+      read_only: true,
+      volume: { subpath: `sessions/${SESSION}/state/compose/secrets/secrets-tok` },
+    });
+    expect(snapshot.volumes?.["shipit-workspace"]).toEqual({ name: "shipit-ws", external: true });
+  });
+
+  it("refuses the start when it cannot place the copy in the volume", async () => {
+    const dir = setup(SECRET_STACK);
+    fs.writeFileSync(path.join(dir, "tok.txt"), "s3cret");
+    const { mgr, fake } = harness(dir, { extra: { workspaceVolume: "shipit-ws" } });
+    await mgr.start().catch(() => {});
+    expect(fake.ups).toEqual([]);
   });
 });
 
@@ -346,6 +380,38 @@ describe("stop", () => {
     expect(queried).toContainEqual(["volume", "rm", `${PROJECT}_data`]);
     expect(startFiles(dir)).toEqual([]);
     expect(fs.existsSync(path.join(composeStateDirForWorkspace(dir), "started-by.json"))).toBe(false);
+  });
+
+  it("leaves a second manager's in-flight start its files and record when a slow stop finishes", async () => {
+    const dir = setup(AUTO_WEB);
+    let releaseDown!: () => void;
+    const downHeld = new Promise<void>((resolve) => { releaseDown = resolve; });
+    const outgoing = harness(dir, {
+      query: (args) => (args.includes("status=running") ? "web\n" : ""),
+      gate: (args) => (args.includes("down") ? downHeld : undefined),
+    });
+    await outgoing.mgr.start();
+    const stopped = outgoing.mgr.stop();
+
+    let releaseUp!: () => void;
+    const upHeld = new Promise<void>((resolve) => { releaseUp = resolve; });
+    const incoming = harness(dir, { gate: (args) => (args.includes("up") ? upHeld : undefined) });
+    const started = incoming.mgr.start();
+    await vi.waitFor(() => expect(incoming.fake.ups).toHaveLength(1));
+    const up = incoming.fake.ups[0];
+
+    releaseDown();
+    await stopped;
+
+    expect(fs.existsSync(up.snapshotFile!)).toBe(true);
+    expect(fs.existsSync(up.overrideFile)).toBe(true);
+
+    releaseUp();
+    await started;
+
+    expect(recordedStartFiles(dir, "web")).toEqual({ snapshot: up.snapshotFile, override: up.overrideFile });
+    expect(startFiles(dir)).toEqual([{ snapshot: up.snapshotFile, override: up.overrideFile }]);
+    await incoming.mgr.stop();
   });
 
   it("keeps volumes on a plain stop", async () => {

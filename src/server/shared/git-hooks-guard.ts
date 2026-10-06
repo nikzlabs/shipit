@@ -13,14 +13,15 @@ export {
 } from "./git-hooks-args.js";
 
 // simple-git 4 strips every other guarded variable from git's environment and
-// throws when .env() supplies one. GIT_CONFIG_GLOBAL and GIT_EDITOR=true are set
-// process-wide (git-config.ts).
+// throws when .env() supplies one. GIT_CONFIG_GLOBAL, GIT_EDITOR=true and
+// GIT_OPTIONAL_LOCKS=0 are set process-wide (git-config.ts).
 const SHIPIT_GIT_ENVIRONMENT = new Set([
   "GIT_CONFIG_GLOBAL",
   "GIT_EDITOR",
   "GIT_TERMINAL_PROMPT",
   "GIT_ALLOW_PROTOCOL",
   "GIT_TRACE_REDACT",
+  "GIT_OPTIONAL_LOCKS",
 ]);
 
 // Mirrors simple-git's guard: any GIT_* name plus the non-GIT_ names @simple-git/argv-parser lists.
