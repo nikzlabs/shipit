@@ -752,4 +752,20 @@ esac
       expect(r.docker).not.toMatch(/^compose .*\bbuild\b/m);
     });
   }
+
+  it("shows Docker's own message when `docker compose version` fails, and installs nothing", () => {
+    stub(
+      "docker",
+      `case "$*" in
+  "compose version") echo "The command 'docker' could not be found in this WSL 2 distro."; exit 1 ;;
+esac
+`,
+    );
+
+    const r = install(SETUP_SH);
+
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("    The command 'docker' could not be found in this WSL 2 distro.");
+    expect(fs.existsSync(home)).toBe(false);
+  });
 });
