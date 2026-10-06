@@ -134,7 +134,7 @@ http://100-83-12-47.sslip.io:4123
 - **Use the sslip.io URL, not the raw IP.** Previews are served at `{sessionId}--{port}.<host>`; a raw
   IP can't carry a wildcard subdomain, so `http://100.83.12.47:4123` gives a working app and blank
   previews. Same trade-offs as the VPS sslip.io path below: HTTP only (no wildcard cert for these
-  names, so clipboard and PWA install are unavailable), and a device whose resolver blocks public
+  names, so PWA install is unavailable; copy buttons use a fallback), and a device whose resolver blocks public
   names pointing into CGNAT `100.64/10` won't resolve it.
 
 **Real HTTPS means terminating TLS yourself** — a wildcard DNS record you own pointed at the tailnet

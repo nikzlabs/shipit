@@ -20,6 +20,7 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionDefaultBranch } from "../utils/default-branch.js";
+import { copyText } from "../utils/copy-text.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import { AutoFixPauseToggle, AutoMergeToggle, ClosePrDropdownItem, useClosePr } from "./PrStatusControls.js";
@@ -48,10 +49,9 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const isOpen = card?.phase === "open";
   const isMerged = card?.phase === "merged";
 
-  const handleCopyBranch = () => {
+  const handleCopyBranch = async () => {
     if (!headBranch) return;
-    void navigator.clipboard.writeText(headBranch);
-    setToast({ message: "Branch name copied" });
+    if (await copyText(headBranch)) setToast({ message: "Branch name copied" });
   };
 
   const handleSyncWithBase = () => {
@@ -114,7 +114,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
         </DropdownMenuItem>
       )}
       {headBranch && (
-        <DropdownMenuItem onSelect={handleCopyBranch} title={`Copy ${headBranch}`}>
+        <DropdownMenuItem onSelect={() => void handleCopyBranch()} title={`Copy ${headBranch}`}>
           <CopyIcon size={ICON_SIZE.SM} />
           Copy branch name
         </DropdownMenuItem>

@@ -1250,5 +1250,6 @@ export async function autoStart(buildApp: (deps: AppDeps) => Promise<FastifyInst
 
   const port = Number(process.env.PORT) || 3000;
   await app.listen({ port, host: "0.0.0.0" });
-  console.log(`[server] listening on http://0.0.0.0:${port}`);
+  // No URL: 0.0.0.0 is a bind address, and a browser opened on it has no secure context and no previews.
+  console.log(`[server] listening on port ${port}`);
 }
