@@ -13,7 +13,6 @@ import type Docker from "dockerode";
 import type { SessionIdentity } from "../shared/session-identity.js";
 import { killChild } from "../shared/kill-child.js";
 import { composeSpawnEnv, type ComposeOutputSink } from "./compose-cli.js";
-import { workspaceVolumeDaemonPath } from "./compose-persist.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import { composeStateDirForWorkspace, sessionScratchDirForWorkspace } from "./session-state-dir.js";
 import { identityForSession } from "./session-worker-uid.js";
@@ -215,32 +214,42 @@ function removeContainerByName(name: string): Promise<void> {
   });
 }
 
+/** `p` relative to the workspace volume's root, or null when it is not inside that volume. */
+export function workspaceVolumeSubpath(p: string): string | null {
+  const rel = path.posix.relative(WORKSPACE_VOLUME_ROOT, p);
+  return rel === "" || rel.startsWith("..") || path.posix.isAbsolute(rel) ? null : rel;
+}
+
 /**
- * Docker-host path of an orchestrator path, for bind sources. Without a workspace volume (the bind
- * deployment) the two are the same path.
+ * Docker-host path of a ShipIt directory outside the workspace volume, for a bind source. A path
+ * inside the volume has none ShipIt can name — the volume's `Mountpoint` is the daemon's own path,
+ * which on Docker Desktop is not a host path, and Docker creates and mounts an empty directory for
+ * a bind source that is missing — so it is mounted as the volume (`ConfinedCompose.shipitMount`).
+ * Without a workspace volume (the bind deployment) the orchestrator's path is the host's.
  */
 export function composeHelperDaemonPath(opts: {
-  docker?: Docker;
   workspaceVolume?: string;
   serviceEnvDir?: string;
   serviceEnvHostDir?: string;
 }): (orchestratorPath: string) => Promise<string> {
-  const inVolume = opts.workspaceVolume && opts.docker
-    ? workspaceVolumeDaemonPath(opts.docker, opts.workspaceVolume)
-    : null;
-  const { serviceEnvDir, serviceEnvHostDir } = opts;
+  const { workspaceVolume, serviceEnvDir, serviceEnvHostDir } = opts;
   return async (p) => {
-    if (serviceEnvDir && isWithin(p, serviceEnvDir)) {
-      if (serviceEnvHostDir) return path.posix.join(serviceEnvHostDir, path.posix.relative(serviceEnvDir, p));
-      if (inVolume && !isWithin(p, WORKSPACE_VOLUME_ROOT)) {
-        throw new Error(
-          `ShipIt keeps service environment files in ${serviceEnvDir} (SHIPIT_SERVICE_ENV_DIR), `
-          + "outside the workspace volume, so it cannot tell Docker where they are. Set "
-          + `${SERVICE_ENV_HOST_DIR_ENV} to that directory's path on the Docker host.`,
-        );
-      }
+    if (workspaceVolume && workspaceVolumeSubpath(p) !== null) {
+      throw new Error(`${p} is inside the workspace volume ${workspaceVolume}, which has no Docker-host path.`);
     }
-    return inVolume ? inVolume(p) : p;
+    const inServiceEnv = serviceEnvDir !== undefined && isWithin(p, serviceEnvDir);
+    if (inServiceEnv && serviceEnvHostDir) {
+      return path.posix.join(serviceEnvHostDir, path.posix.relative(serviceEnvDir, p));
+    }
+    if (!workspaceVolume) return p;
+    if (inServiceEnv) {
+      throw new Error(
+        `ShipIt keeps service environment files in ${serviceEnvDir} (SHIPIT_SERVICE_ENV_DIR), `
+        + "outside the workspace volume, so it cannot tell Docker where they are. Set "
+        + `${SERVICE_ENV_HOST_DIR_ENV} to that directory's path on the Docker host.`,
+      );
+    }
+    throw new Error(`ShipIt does not know the Docker-host path of ${p}, which is outside the workspace volume.`);
   };
 }
 
@@ -471,7 +480,8 @@ export class ConfinedCompose {
 
   /**
    * `docker compose up -d --no-build` from ShipIt's own files; it sees no workspace, so it runs as
-   * root to read the root-only override, service-env files, and registry login.
+   * root to read the root-only override, service-env files, and registry login. Each mounted
+   * directory must exist: a volume subpath that is missing fails the container start.
    */
   async up(opts: RunOptions & {
     snapshotFile?: string;
@@ -498,9 +508,9 @@ export class ConfinedCompose {
     let mounts: string[];
     try {
       mounts = [
-        await this.bindMount(this.composeStateDir),
-        ...(opts.serviceEnvDir ? [await this.bindMount(opts.serviceEnvDir)] : []),
-        ...(loginDir ? [await this.bindMount(loginDir)] : []),
+        await this.shipitMount(this.composeStateDir),
+        ...(opts.serviceEnvDir ? [await this.shipitMount(opts.serviceEnvDir)] : []),
+        ...(loginDir ? [await this.shipitMount(loginDir)] : []),
         this.socketMount(),
       ];
     } catch (err) {
@@ -627,14 +637,17 @@ export class ConfinedCompose {
     assertMountable(dir);
     const ro = readOnly ? ",readonly" : "";
     if (!this.workspaceVolume) return `type=bind,src=${dir},dst=${dir}${ro}`;
-    const rel = path.posix.relative(WORKSPACE_VOLUME_ROOT, dir);
-    if (rel === "" || rel.startsWith("..") || path.posix.isAbsolute(rel)) {
+    const rel = workspaceVolumeSubpath(dir);
+    if (rel === null) {
       throw new ComposeHelperError(`${dir} is not inside the workspace volume ${this.workspaceVolume}.`, "unavailable");
     }
     return `type=volume,src=${this.workspaceVolume},dst=${dir},volume-subpath=${rel}${ro}`;
   }
 
-  private async bindMount(dir: string): Promise<string> {
+  // One of ShipIt's own directories, read-only. Inside the workspace volume it is mounted as the
+  // volume, never by a host path (see `composeHelperDaemonPath`).
+  private async shipitMount(dir: string): Promise<string> {
+    if (this.workspaceVolume && workspaceVolumeSubpath(dir) !== null) return this.workspaceMount(dir, true);
     assertMountable(dir);
     const src = await this.daemonPath(dir);
     assertMountable(src);

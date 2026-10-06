@@ -220,9 +220,7 @@ services:
       + "secrets:\n  tok:\n    file: ./tok.txt\n",
     );
     fs.writeFileSync(path.join(dir, "tok.txt"), "s3cret");
-    const { mgr, fake } = harness(dir, {
-      extra: { composeFileDaemonPath: (p) => Promise.resolve(`/daemon${p}`) },
-    });
+    const { mgr, fake } = harness(dir);
     await mgr.start();
 
     const copies = path.join(composeStateDirForWorkspace(dir), "secrets");
@@ -230,7 +228,7 @@ services:
     expect(fake.reads).toContain(path.join(dir, "tok.txt"));
     expect(fs.readFileSync(copy, "utf-8")).toBe("s3cret");
     expect(fs.statSync(copies).mode & 0o777).toBe(0o700);
-    expect((parseYaml(recordedSnapshot(dir, "web")) as Model).secrets?.tok.file).toBe(`/daemon${copy}`);
+    expect((parseYaml(recordedSnapshot(dir, "web")) as Model).secrets?.tok.file).toBe(copy);
     expect((parseYaml(fake.builds[0].buildModel) as Model).secrets?.tok.file).toBe(path.join(dir, "tok.txt"));
   });
 });
