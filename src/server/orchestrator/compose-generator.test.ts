@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import {
@@ -23,13 +24,16 @@ import {
   UNKNOWN_STOP_GRACE_PERIOD_MS,
   TRUSTED_OPS_PROXY_IMAGE,
   CLASSIFIED_SERVICE_FIELDS,
+  SERVICE_HOME,
+  declaresHome,
   type ComposeParseOptions,
   type ComposeService,
 } from "./compose-generator.js";
-import { fakeResolvedModel } from "./compose-test-helpers.js";
+import { fakeResolvedModel, realComposeCommand } from "./compose-test-helpers.js";
 import { OPS_TEMPLATE } from "./templates-ops.js";
 
 const PROJECT = "shipit-test";
+const compose = realComposeCommand();
 
 /** What a start runs on the file: the raw gate, then validation of the model Compose resolves. */
 function parseComposeFile(
@@ -2145,6 +2149,165 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     );
     const doc = parseYaml(override) as { services: Record<string, { group_add?: string[] }> };
     expect(doc.services.emulator.group_add).toBeUndefined();
+  });
+});
+
+describe("generateComposeOverride — a writable HOME for a session UID (planning#638)", () => {
+  const baseOpts = {
+    sessionId: "test-session-123",
+    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+  };
+  const SESSION_UID = "2000006";
+  const origUid = process.env.SHIPIT_SESSION_WORKER_UID;
+  afterEach(() => {
+    if (origUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = origUid;
+  });
+
+  interface Doc { services: Record<string, { user?: string; environment?: Record<string, string> }> }
+  function overrideFor(services: ComposeService[], opts: Partial<Parameters<typeof generateComposeOverride>[1]> = {}): Doc {
+    return parseYaml(generateComposeOverride(services, { ...baseOpts, ...opts })) as Doc;
+  }
+
+  it("sets HOME on a service it runs as a session UID", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+    const { web } = overrideFor([{ name: "web", ports: ["5173:5173"] }]).services;
+    expect(web.user).toBe(`${SESSION_UID}:${SESSION_UID}`);
+    expect(web.environment).toEqual({ HOME: SERVICE_HOME });
+  });
+
+  it("sets it in a contained session too", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+    const { web } = overrideFor([{ name: "web" }], { containEgress: true, containDns: true }).services;
+    expect(web.environment).toEqual({ HOME: SERVICE_HOME });
+  });
+
+  it("leaves a HOME the project declared, because an override value would replace it", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+    const { web } = overrideFor([{ name: "web", declaresHome: true }]).services;
+    expect(web.user).toBe(`${SESSION_UID}:${SESSION_UID}`);
+    expect(web.environment).toBeUndefined();
+  });
+
+  it("leaves a HOME that arrives as a service secret", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+    const { web } = overrideFor(
+      [{ name: "web", secrets: ["HOME"] }],
+      { serviceEnvFiles: { web: "/env/web.env" } },
+    ).services;
+    expect(web.environment).toBeUndefined();
+  });
+
+  it("sets no HOME where it supplies no user", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+    const doc = overrideFor(
+      [
+        { name: "own", user: "1300:1301" },
+        { name: "docker-socket-proxy", trustedOpsProxy: true },
+      ],
+      { composeConfig: { file: "docker-compose.yml", dockerSocket: true } },
+    );
+    expect(doc.services.own.environment).toBeUndefined();
+    expect(doc.services["docker-socket-proxy"].environment).toBeUndefined();
+
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    expect(overrideFor([{ name: "web" }]).services.web.environment).toBeUndefined();
+  });
+
+  // An image can have an account for a shared UID, and that account's home is the one to keep.
+  it.each(["0", "1000"])("sets no HOME for the shared worker UID %s", (uid) => {
+    process.env.SHIPIT_SESSION_WORKER_UID = uid;
+    const { web } = overrideFor([{ name: "web" }]).services;
+    expect(web.user).toBe(`${uid}:${uid}`);
+    expect(web.environment).toBeUndefined();
+  });
+
+  describe("a plugin service, whose whole definition is in the override", () => {
+    const probe = (environment: Record<string, string>): ComposeService => ({
+      name: "probe",
+      origin: { kind: "plugin", repo: "art-kit", alias: "artk", plugin: "palette", sourceName: "probe", self: false },
+      pluginDefinition: { image: "node:22-alpine", environment },
+      externalVolumes: [],
+    });
+
+    it("adds HOME beside the plugin's own environment", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+      const doc = overrideFor([probe({ PROBE_PORT: "4820" })]);
+      expect(doc.services.probe.environment).toEqual({ PROBE_PORT: "4820", HOME: SERVICE_HOME });
+    });
+
+    it("keeps the HOME the plugin declared", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+      const doc = overrideFor([probe({ HOME: "/plugin-state/home" })]);
+      expect(doc.services.probe.environment).toEqual({ HOME: "/plugin-state/home" });
+    });
+
+    it("adds no HOME to a plugin service that declares its own user", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = SESSION_UID;
+      const declared = { ...probe({ PROBE_PORT: "4820" }), user: "1001" };
+      expect(overrideFor([declared]).services.probe.environment).toEqual({ PROBE_PORT: "4820" });
+    });
+  });
+});
+
+// The tests above pin what ShipIt writes; this checks what Compose makes of it beside the project's file.
+describe.skipIf(!compose)("Compose merges the supplied HOME into the project's environment (planning#638)", () => {
+  const origUid = process.env.SHIPIT_SESSION_WORKER_UID;
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    if (origUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = origUid;
+    for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function resolve(base: string, services: ComposeService[]): Record<string, { environment?: Record<string, string> }> {
+    process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-home-merge-"));
+    tmpDirs.push(tmpDir);
+    const baseFile = path.join(tmpDir, "snapshot.yml");
+    const overrideFile = path.join(tmpDir, "override.yml");
+    fs.writeFileSync(baseFile, base);
+    fs.writeFileSync(overrideFile, generateComposeOverride(services, {
+      sessionId: "test-session-123",
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+    }));
+    const [bin, ...pre] = compose!;
+    const result = spawnSync(
+      bin,
+      [...pre, "-p", "home-merge", "-f", baseFile, "-f", overrideFile, "config", "--format", "json"],
+      { encoding: "utf-8" },
+    );
+    expect({ status: result.status, stderr: result.status === 0 ? "" : result.stderr }).toEqual({ status: 0, stderr: "" });
+    return (JSON.parse(result.stdout) as { services: Record<string, { environment?: Record<string, string> }> }).services;
+  }
+
+  it("keeps the project's other variables beside it", () => {
+    const services = resolve(
+      "services:\n  web:\n    image: alpine\n    environment:\n      KEEP: \"1\"\n  bare:\n    image: alpine\n",
+      [{ name: "web" }, { name: "bare" }],
+    );
+    expect(services.web.environment).toEqual({ KEEP: "1", HOME: SERVICE_HOME });
+    expect(services.bare.environment).toEqual({ HOME: SERVICE_HOME });
+  });
+
+  it("would replace a declared HOME, which is why the override leaves that service alone", () => {
+    const base = "services:\n  web:\n    image: alpine\n    environment:\n      HOME: /data\n";
+    expect(resolve(base, [{ name: "web" }]).web.environment).toEqual({ HOME: SERVICE_HOME });
+    expect(resolve(base, [{ name: "web", declaresHome: true }]).web.environment).toEqual({ HOME: "/data" });
+  });
+});
+
+describe("declaresHome", () => {
+  it.each([
+    [{ HOME: "/data" }, true],
+    // Compose resolves a bare `HOME` entry to a key with no value.
+    [{ HOME: null }, true],
+    [{ HOMEPAGE: "x", ANDROID_HOME: "/sdk" }, false],
+    [{}, false],
+    [undefined, false],
+    [null, false],
+  ])("reads %j as %s", (environment, expected) => {
+    expect(declaresHome(environment)).toBe(expected);
   });
 });
 

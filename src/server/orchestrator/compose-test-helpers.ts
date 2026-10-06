@@ -3,6 +3,7 @@
  * a test, so `fakeComposeConfig` stands in for `docker compose config`: it resolves the parts of a
  * project file ShipIt's validation reads, in the long form Compose prints.
  */
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -18,6 +19,14 @@ type Mapping = Record<string, unknown>;
 
 function isMapping(value: unknown): value is Mapping {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** A real Compose, for a test that checks ShipIt's output against Compose's own reader; `config` needs no daemon. */
+export function realComposeCommand(): string[] | undefined {
+  for (const cmd of [["docker", "compose"], ["docker-compose"]]) {
+    if (spawnSync(cmd[0], [...cmd.slice(1), "version"], { stdio: "ignore" }).status === 0) return cmd;
+  }
+  return undefined;
 }
 
 export interface FakeResolveOptions {

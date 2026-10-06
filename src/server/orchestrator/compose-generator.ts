@@ -42,6 +42,8 @@ export interface ComposeService {
   /** Label digest forces recreation when only the settings file changes. */
   settingsFingerprint?: string;
   user?: string;
+  /** The resolved `environment` sets `HOME`; Compose has put the `env_file` values there. */
+  declaresHome?: boolean;
   /** Subdirectories of /persist the service mounts; "" is /persist itself. */
   persistSubpaths?: string[];
   /** The workspace paths of this start's binds, which the snapshot mounts as volume subpaths. */
@@ -383,6 +385,14 @@ export function parseComposeContent(content: string | Buffer, opts: ComposeParse
 export function normalizedUser(raw: unknown): string | undefined {
   const user = typeof raw === "string" || typeof raw === "number" ? String(raw) : undefined;
   return user?.trim() ? user : undefined;
+}
+
+/** No image has an account for a session UID, and Docker's home for a UID with no account is `/`, which it cannot write. */
+export const SERVICE_HOME = "/tmp";
+
+/** Reads the mapping form only: Compose's resolved model and a normalized plugin definition both use it. */
+export function declaresHome(environment: unknown): boolean {
+  return isMapping(environment) && Object.hasOwn(environment, "HOME");
 }
 
 export interface ResolvedModelContext extends ComposeParseOptions {
@@ -1988,6 +1998,11 @@ export function generateComposeOverride(
       || (!opts.containEgress && svc.name === "docker-socket-proxy");
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerGid}`;
+      // Override values replace the project's, so a declared HOME must stop this.
+      if (isSessionUid(workerUid) && !svc.declaresHome && !declaresHome(entry.environment)
+        && !svc.secrets?.includes("HOME")) {
+        entry.environment = { ...(isMapping(entry.environment) ? entry.environment : {}), HOME: SERVICE_HOME };
+      }
     } else if (workerGid !== null && svc.user !== undefined && !preservesImageStartupUser) {
       // Grant workspace writes; mounting shared caches would also expose them through this gid.
       entry.group_add = [String(workerGid)];

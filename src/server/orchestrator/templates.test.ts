@@ -160,6 +160,17 @@ describe("getTemplate", () => {
 
     expect(polling).toEqual([]);
   });
+
+  it("gives the Next.js template what `next dev` would otherwise install or rewrite on its first start (planning#638)", () => {
+    const files = getTemplate("nextjs")!.files;
+    const pkg = JSON.parse(files["package.json"]!) as { devDependencies: Record<string, string> };
+    const tsconfig = JSON.parse(files["tsconfig.json"]!) as { include: string[] };
+
+    expect(Object.keys(pkg.devDependencies)).toEqual(
+      expect.arrayContaining(["typescript", "@types/react", "@types/node"]),
+    );
+    expect(tsconfig.include).toContain(".next/types/**/*.ts");
+  });
 });
 
 describe("applyTemplate", () => {

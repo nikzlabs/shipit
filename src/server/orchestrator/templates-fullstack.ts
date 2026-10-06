@@ -26,6 +26,8 @@ export const FULLSTACK_TEMPLATES: ProjectTemplate[] = [
             "react-dom": "^19.0.0",
           },
           devDependencies: {
+            // Without it `next dev` runs `npm install` in the service, a second writer of node_modules.
+            "@types/node": "^24.0.0",
             "@types/react": "^19.0.0",
             "@types/react-dom": "^19.0.0",
             typescript: "^5.6.0",
@@ -53,7 +55,7 @@ export const FULLSTACK_TEMPLATES: ProjectTemplate[] = [
             plugins: [{ name: "next" }],
             paths: { "@/*": ["./src/*"] },
           },
-          include: ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+          include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
           exclude: ["node_modules"],
         },
         null,
