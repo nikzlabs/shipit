@@ -1410,13 +1410,13 @@ multi-container spike going PASS=8/8 on all three host targets — see below).
    ~50× from a cold `volume rm`+create each iteration, launching agent + ≥2 services with no
    inter-start delay, asserting **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`;
    **(c)** assert the **HMR polling substrate**: a file the agent writes is visible — fresh
-   content + an updated mtime — to a *service* container's `stat()`/`read()`. Note previews do
-   **not** use cross-container inotify today and won't under overlay: dev servers run in a separate
-   container and inotify doesn't cross the mount-namespace boundary, so the templates already drive
-   HMR by **polling** (`usePolling`/`WATCHPACK_POLLING`, see
-   [`shipit-docs/compose.md`](../../src/server/shipit-docs/compose.md)); polling only needs the
-   write/mtime coherence this check proves, so native cross-container inotify is recorded as a
-   **non-gating** data point, not a pass/fail. **(d)** exercise the teardown↔startup overlap (stop
+   content + an updated mtime — to a *service* container's `stat()`/`read()`. When this spike ran
+   the templates drove HMR by **polling**, which only needs the write/mtime coherence this check
+   proves, so native cross-container inotify was recorded as a **non-gating** data point.
+   **Corrected 2026-10-06 (planning#634):** the premise behind that — inotify does not cross the
+   container boundary — is false. Native events reach a service container on the ext4 workspace
+   and inside this shared overlay volume, and the templates no longer poll, so hot reload now
+   depends on them ([`shipit-docs/compose.md`](../../src/server/shipit-docs/compose.md)). **(d)** exercise the teardown↔startup overlap (stop
    the last container while starting a new one) and confirm the merged view survives.
 
    > **The two watchers don't both depend on this.** ShipIt's own file-tree watcher

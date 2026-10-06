@@ -165,27 +165,30 @@ can edit and `rm -rf` (docs/271 §3). Accept the two costs above in exchange, an
 keep such a service away from git and from the workspace's dependency
 directories, which are deliberately outside that guarantee.
 
-## Hot reload (HMR) needs polling
+## Hot reload (HMR) needs no polling
 
-Dev servers in a preview service run in their **own container**, watching the
-workspace through the shared named volume. The agent edits files from a
-**different** container (`/workspace`). inotify events do not cross the
-mount-namespace boundary between the two containers, so a native file watcher
-never hears the agent's edits and hot reload silently no-ops.
+Dev servers in a preview service run in their **own container**, and the agent
+edits files from a **different** one (`/workspace`). Both mount the same
+directory of the same volume, and Linux delivers a file's inotify events to
+every watcher of that file, whichever container made the change. So the dev
+server's native file watcher hears the agent's edits within milliseconds, and
+the framework's default watcher is enough. What is measured: event delivery
+between the two containers on Linux, WSL2 and macOS hosts, and a rebuild after
+an edit by the Vite and Next.js (webpack) dev servers on a Linux host.
 
-The fix is **polling-based watching**, which is namespace-independent. Enable it
-in the dev server's config, not the compose file:
+Do **not** add polling — `server.watch.usePolling` for Vite or Astro,
+`WATCHPACK_POLLING` or `watchOptions.poll` for Next.js / webpack. A polling
+watcher stats every source file several times a second for as long as the
+service runs, in every session. A project that still carries one of those
+settings can drop it.
 
-- **Vite** — `server.watch: { usePolling: true, interval: 200 }`
-- **Astro** (Vite under the hood) — `vite.server.watch: { usePolling: true, interval: 200 }`
-- **Next.js / webpack** — set `WATCHPACK_POLLING=true` in the service's
-  `environment:`, or `config.watchOptions = { poll: 800, aggregateTimeout: 300 }`.
+Polling stays the fallback for two cases: a dev server that fails with
+`ENOSPC: System limit for number of file watchers reached` (the tree it watches
+exceeds the host's inotify limit — narrow what it watches first), and a host
+where a correctly configured dev server still misses edits.
 
 Do **not** pin `hmr.clientPort` — ShipIt's preview proxy rewrites the HMR
 WebSocket URL to the page origin, and a hardcoded port fights that rewrite.
-
-ShipIt's built-in project templates already include the polling config. Add it
-yourself only when scaffolding a dev server by hand.
 
 ## `x-shipit-preview`
 
