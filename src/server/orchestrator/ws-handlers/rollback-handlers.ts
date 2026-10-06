@@ -42,6 +42,10 @@ function replayOptsFor(sessionRootDir: string | null, containerized: boolean): R
 const runsInContainer = (runner: { supportsRemoteTerminal?: boolean } | null | undefined): boolean =>
   runner?.supportsRemoteTerminal === true;
 
+// A finished turn commits after `running` clears. A rewind before that commit resets away
+// edits git never held, so not even the rewind snapshot can restore them (planning#636).
+const SAVING_MESSAGE = "This session's work is still being saved. Try again in a moment.";
+
 // Orchestrator git disables LFS smudging, so rollback alone leaves pointer files.
 async function rollbackAndRestoreLfs(
   git: { rollback: (commitHash: string) => Promise<void> },
@@ -208,6 +212,10 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
   const containerized = runsInContainer(runner);
   if (runner?.running && action !== "fork") {
     ctx.send({ type: "error", message: "Cannot rewind while a turn is running." });
+    return;
+  }
+  if (runner?.turnCommitPending && action !== "fork") {
+    ctx.send({ type: "error", message: SAVING_MESSAGE });
     return;
   }
 
@@ -428,6 +436,10 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
   const containerized = runsInContainer(runner);
   if (runner?.running) {
     ctx.send({ type: "error", message: "Cannot recover rewind while a turn is running." });
+    return;
+  }
+  if (runner?.turnCommitPending) {
+    ctx.send({ type: "error", message: SAVING_MESSAGE });
     return;
   }
 

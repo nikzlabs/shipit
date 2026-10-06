@@ -156,6 +156,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private readonly _subAgentAborts = new Map<string, { controller: AbortController; agentId: AgentId }>();
   private _lastAnnouncedWork = "[]";
   private readonly _postTurnHold = new PostTurnHold();
+  private readonly _turnCommitHold = new PostTurnHold();
   private _workerResourcesStarted = false;
   // All callers await adoption before opening SSE.
   private _workerStartInFlight: Promise<void> | null = null;
@@ -285,6 +286,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
   endPostTurnWork(): void { this._postTurnHold.end(); }
+  get turnCommitPending(): boolean { return this._turnCommitHold.active; }
+  beginTurnCommit(): void { this._turnCommitHold.begin(); }
+  endTurnCommit(): void { this._turnCommitHold.end(); }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
@@ -1976,6 +1980,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
     this._disposed = true;
     this._postTurnHold.reset();
+    this._turnCommitHold.reset();
 
     // Orchestrator shutdown must leave the CLI alive so the next process can adopt its turn.
     if (!opts?.preserveAgent) {
