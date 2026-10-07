@@ -633,7 +633,7 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("docs/324: pending compaction request", () => {
+  describe("docs/324-agent-requested-compaction: pending compaction request", () => {
     it("round-trips, a later request replaces it, and null clears it", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");

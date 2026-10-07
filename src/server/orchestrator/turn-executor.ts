@@ -1180,7 +1180,8 @@ export async function executeAgentTurn(
       await postTurnStep("requested-restart", () =>
         runRequestedRestart({ sessionId, runner, turnIsCurrent, ownsSystemHold, settle: finishTurn }));
     }
-    // docs/324 — before idle too: the compaction turn it starts keeps idle's remediation behind it.
+    // docs/324-agent-requested-compaction — before idle too: the compaction turn it starts
+    // keeps idle's remediation behind it.
     const runRequestedCompaction = deps.runRequestedCompaction;
     if (runner && runRequestedCompaction) {
       await postTurnStep("requested-compaction", () =>

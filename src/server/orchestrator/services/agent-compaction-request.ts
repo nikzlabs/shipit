@@ -40,7 +40,7 @@ export const AGENT_COMPACTION_OFF =
 export interface CompactionRequestDeps {
   sessionManager: Pick<SessionManager, "get" | "setPendingCompaction">;
   defaultAgentId: AgentId;
-  /** docs/324 req 11 — `advanced.agentCompaction`, off by default. */
+  /** docs/324-agent-requested-compaction req 11 — `advanced.agentCompaction`, off by default. */
   isEnabled: () => boolean;
 }
 

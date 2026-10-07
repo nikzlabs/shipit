@@ -442,7 +442,7 @@ export interface SystemTurnDeps {
   ) => Promise<void>;
   /** docs/321 — a restart the agent asked for, run after the push is armed and before idle. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
-  /** docs/324 — a compaction the agent asked for, run right after the restart step. */
+  /** docs/324-agent-requested-compaction — a compaction the agent asked for, run right after the restart step. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   /** Runs even without a commit: resetting the branch can leave a clean tree. */
   postTurnReArmReset?: (

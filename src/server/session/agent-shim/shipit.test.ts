@@ -1693,7 +1693,7 @@ describe("shipit session restart (docs/321)", () => {
   });
 });
 
-describe("shipit compact (docs/324)", () => {
+describe("shipit compact (docs/324-agent-requested-compaction)", () => {
   const REQUESTED = { status: 200, body: { requested: true, continues: true } };
 
   it("posts the instructions and the note, and says the compaction waits for the turn's end", async () => {

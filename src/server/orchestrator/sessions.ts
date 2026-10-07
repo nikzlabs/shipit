@@ -631,7 +631,7 @@ export class SessionManager {
   }
 
   /**
-   * docs/324 req 9 — kept apart from the agent notice, which a branch move overwrites
+   * docs/324-agent-requested-compaction req 9 — kept apart from the agent notice, which a branch move overwrites
    * whole; delivered with it by `consumePendingAgentNotice`.
    */
   appendPendingCompactionNotice(id: string, notice: string): void {

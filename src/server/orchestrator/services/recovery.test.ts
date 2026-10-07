@@ -720,7 +720,7 @@ describe("restartAgent carryQueue — queued messages survive an agent-requested
   });
 });
 
-describe("killAgent — Stop, and a turn that started while it waited (docs/324)", () => {
+describe("killAgent — Stop, and a turn that started while it waited (docs/324-agent-requested-compaction)", () => {
   function setupKill(onKill?: (runner: StubRunner) => void) {
     const runner = Object.assign(makeStubRunner("rescue-1", false), {
       running: true,

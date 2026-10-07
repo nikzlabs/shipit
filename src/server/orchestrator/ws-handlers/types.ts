@@ -116,7 +116,7 @@ export interface AppCtx {
   releaseStatusPoller: ReleaseStatusPoller;
   /** docs/321 — the same post-turn step dispatched turns get. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
-  /** docs/324 — likewise. */
+  /** docs/324-agent-requested-compaction — likewise. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
 
   recordAgentRateLimits?: (

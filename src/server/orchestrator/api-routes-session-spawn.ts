@@ -574,7 +574,7 @@ export async function registerSessionSpawnRoutes(
     },
   );
 
-  // docs/324 — records the request only; the compaction runs after the agent's turn ends.
+  // docs/324-agent-requested-compaction — records the request only; it runs after the turn.
   app.post<{ Params: { sessionId: string }; Body: { instructions?: string; note?: string } }>(
     "/api/sessions/:sessionId/compact-after-turn",
     { config: { containerAccessible: true } },

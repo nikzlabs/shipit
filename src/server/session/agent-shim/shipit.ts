@@ -131,7 +131,7 @@ Supported subcommands:
                           [--to parent] [--json]
   shipit session help
 
-Context (docs/324):
+Context (docs/324-agent-requested-compaction):
   shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
                           Compact YOUR context after this turn ends — at a point
                           you choose, such as between two features. INSTRUCTIONS

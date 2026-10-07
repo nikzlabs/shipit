@@ -526,7 +526,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/continue-after-rebase",
   // docs/321 — agent container only; Restart all stays a user action.
   "POST /api/sessions/:sessionId/restart-after-turn",
-  // docs/324 — records a compaction of the agent's own context, run after its turn.
+  // docs/324-agent-requested-compaction — records a compaction of the agent's own context.
   "POST /api/sessions/:sessionId/compact-after-turn",
   "POST /api/sessions/:id/branch/reset-to-base",
   // docs/305 — the agent may ask for its own session's identities and

@@ -24,7 +24,7 @@ import {
 
 const SESSION_ID = "compacting-session";
 
-describe("Integration: a compaction the agent asked for (docs/324)", () => {
+describe("Integration: a compaction the agent asked for (docs/324-agent-requested-compaction)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;

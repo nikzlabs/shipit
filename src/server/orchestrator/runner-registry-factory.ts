@@ -126,7 +126,7 @@ export interface RunnerRegistryDeps {
   getQuotaContinuation?: () => QuotaContinuationManager | undefined;
   /** docs/321 — resolves the registry lazily for the same reason. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
-  /** docs/324 — likewise. */
+  /** docs/324-agent-requested-compaction — likewise. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;

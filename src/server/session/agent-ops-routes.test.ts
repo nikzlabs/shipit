@@ -101,7 +101,7 @@ describe("agent-ops routes", () => {
     });
   });
 
-  it("POST /agent-ops/compact forwards the request to /compact-after-turn (docs/324)", async () => {
+  it("POST /agent-ops/compact forwards the request to /compact-after-turn (docs/324-agent-requested-compaction)", async () => {
     client.setResponse("POST", "/compact-after-turn", {
       ok: true, status: 200, body: { requested: true, continues: true },
     });
