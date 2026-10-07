@@ -567,3 +567,249 @@ describe("ScheduleRunner — recovery after a restart", () => {
     expect(store.getRun(run.id)).toMatchObject({ outcome: "failed", reason: "lost" });
   });
 });
+
+describe("ScheduleRunner — finished runs (reqs 22, 31)", () => {
+  async function startedRun(): Promise<{ scheduleId: string; runId: string; sessionId: string }> {
+    const s = schedule();
+    await runner.runPass(at("2026-10-07T09:00:30Z"));
+    sessions.setLastTurnOutcome("session-1", "ok");
+    return { scheduleId: s.id, runId: runs(s.id)[0]!.id, sessionId: "session-1" };
+  }
+
+  it("saves a run as finished once nothing is left for the user, and keeps its result in the run row", async () => {
+    const { runId, sessionId } = await startedRun();
+    chat.set(sessionId, ANSWERED);
+    events = [];
+    expect(runner.decideRunFinished(sessionId)).toBe(true);
+    expect(finishedAtOf(sessionId)).toEqual(expect.any(String));
+    expect(store.getRun(runId)?.result).toBe("Looking at the open security PRs.");
+    expect(events.map((e) => e.event)).toEqual(["schedule_run", "session_list"]);
+    expect(runner.decideRunFinished(sessionId)).toBe(false);
+  });
+
+  it("decides nothing while the runner is busy", async () => {
+    const { sessionId } = await startedRun();
+    busy(sessionId);
+    expect(runner.decideRunFinished(sessionId)).toBe(false);
+    expect(finishedAtOf(sessionId)).toBeUndefined();
+    registry.get(sessionId)!.endPostTurnWork();
+    expect(runner.decideRunFinished(sessionId)).toBe(true);
+  });
+
+  it("is not finished after an error, while a question waits, a PR is open or a manual step shows; decided again each time", async () => {
+    runner = makeRunner({ statusCardEnabled: () => true });
+    const { sessionId } = await startedRun();
+    sessions.setLastTurnOutcome(sessionId, "errored");
+    runner.decideRunFinished(sessionId);
+    expect(finishedAtOf(sessionId)).toBeUndefined();
+
+    sessions.setLastTurnOutcome(sessionId, "ok");
+    runner.decideRunFinished(sessionId);
+    expect(finishedAtOf(sessionId)).toBeDefined();
+
+    sessions.setPrStatus(sessionId, { prState: "open" } as never);
+    expect(runner.decideRunFinished(sessionId)).toBe(true);
+    expect(finishedAtOf(sessionId)).toBeUndefined();
+    sessions.setPrStatus(sessionId, { prState: "merged" } as never);
+
+    sessions.setAwaitingAnswer(sessionId, true);
+    runner.decideRunFinished(sessionId);
+    expect(finishedAtOf(sessionId)).toBeUndefined();
+    sessions.setAwaitingAnswer(sessionId, false);
+
+    sessions.setSessionStatus(sessionId, { status: "s", needsYou: ["Paste the token"], actions: [], fresh: true, writeSeq: 1, turnSeq: 1 } as never);
+    runner.decideRunFinished(sessionId);
+    expect(finishedAtOf(sessionId)).toBeUndefined();
+    sessions.setSessionStatus(sessionId, null);
+    runner.decideRunFinished(sessionId);
+    expect(finishedAtOf(sessionId)).toBeDefined();
+  });
+
+  it("decides the session of a start that was called off, which no turn end would decide", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    runner = makeRunner({ startSession: (opts) => fakeStart(opts, () => held) });
+    const s = schedule();
+    const pass = runner.runPass(at("2026-10-07T09:00:30Z"));
+    await flush();
+    // Still starting: the session exists, but is not finished.
+    expect(runner.decideRunFinished("session-1")).toBe(false);
+    await runner.enqueue(s.id, () => store.update(s.id, { enabled: false }));
+    release();
+    await pass;
+    expect(finishedAtOf("session-1")).toBeDefined();
+  });
+});
+
+describe("ScheduleRunner — Stop (req 33)", () => {
+  it("stops a running run: its turn is interrupted, automatic turns are held, and it is finished once it winds down", async () => {
+    const interrupted: string[] = [];
+    runner = makeRunner({ interruptTurn: (sessionId) => interrupted.push(sessionId) });
+    const s = schedule();
+    await runner.runPass(at("2026-10-07T09:00:30Z"));
+    const [run] = runs(s.id);
+    sessions.setPrStatus("session-1", { prState: "open" } as never);
+    busy("session-1");
+
+    await runner.stopRun(s.id, run!.id);
+    expect(interrupted).toEqual(["session-1"]);
+    expect(sessions.get("session-1")?.runStoppedAt).toEqual(expect.any(String));
+    expect(sessions.automaticTurnsHeld("session-1")).toBe(true);
+    expect(finishedAtOf("session-1")).toBeUndefined();
+    expect(await runner.unfinishedRuns(s.id)).toEqual([
+      { runId: run!.id, sessionId: "session-1", title: "Security PRs · Oct 7, 09:00", stopping: true },
+    ]);
+
+    registry.get("session-1")!.endPostTurnWork();
+    runner.decideRunFinished("session-1");
+    expect(finishedAtOf("session-1")).toBeDefined();
+    expect(await runner.unfinishedRuns(s.id)).toEqual([]);
+
+    // The user's next turn makes it active again (req 7).
+    expect(sessions.reopenRun("session-1")).toBe(true);
+    expect(sessions.automaticTurnsHeld("session-1")).toBe(false);
+    expect(sessions.get("session-1")).not.toHaveProperty("runFinishedAt");
+  });
+
+  it("cancels a run still starting before its dispatch, without needing the user", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    runner = makeRunner({ startSession: (opts) => fakeStart(opts, () => held) });
+    const s = schedule();
+    const pass = runner.runPass(at("2026-10-07T09:00:30Z"));
+    await flush();
+    const [run] = runs(s.id);
+    expect(await runner.unfinishedRuns(s.id)).toEqual([
+      { runId: run!.id, sessionId: "session-1", title: "Security PRs · Oct 7, 09:00" },
+    ]);
+
+    expect(await runner.stopRun(s.id, run!.id)).toMatchObject({
+      outcome: "failed",
+      reason: "The run was stopped before it started.",
+    });
+    release();
+    await pass;
+    expect(dispatched).toHaveLength(0);
+    expect(runs(s.id)[0]).toMatchObject({ outcome: "failed", reason: "The run was stopped before it started.", sessionId: "session-1" });
+    expect(store.get(s.id)?.needsUserReason).toBeUndefined();
+    expect(finishedAtOf("session-1")).toBeDefined();
+    expect(await runner.unfinishedRuns(s.id)).toEqual([]);
+  });
+
+  it("finds a run whose schedule was deleted through its session, and refuses another schedule's run", async () => {
+    sessions.track("orphan", "Gone · Oct 6, 09:00");
+    sessions.setScheduleRun("orphan", "gone", "run-x");
+    expect(await runner.stopRun("gone", "run-x")).toBeNull();
+    expect(sessions.get("orphan")?.runStoppedAt).toBeDefined();
+    await expect(runner.stopRun("other", "run-x")).rejects.toThrow("Run not found");
+    await expect(runner.stopRun("gone", "run-y")).rejects.toThrow("Run not found");
+  });
+
+  it("does not send again, after a restart, the prompt of a run the user stopped", async () => {
+    const s = schedule({}, "2026-10-07T09:00:00.000Z");
+    const run = store.insertRun({ scheduleId: s.id, slotAt: at("2026-10-07T09:00:00Z"), spec: SANDBOX_SPEC, outcome: "started" })!;
+    sessions.track("s-stopped", "Security PRs · Oct 7, 09:00");
+    sessions.setScheduleRun("s-stopped", s.id, run.id);
+    sessions.setRunStoppedAt("s-stopped", "2026-10-07T09:00:40.000Z");
+    await runner.runPass(at("2026-10-07T09:01:00Z"));
+    expect(redispatches.map((r) => r.sessionId)).toEqual(["s-stopped"]);
+    expect(dispatched).toHaveLength(0);
+    expect(store.getRun(run.id)?.outcome).toBe("started");
+  });
+});
+
+describe("ScheduleRunner — Stop before the run's session exists (req 33)", () => {
+  it("carries the stop to the session made afterwards, also when the schedule is deleted meanwhile", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    runner = makeRunner({
+      startSession: async (opts) => {
+        await held;
+        return fakeStart(opts);
+      },
+    });
+    const s = schedule();
+    const pass = runner.runPass(at("2026-10-07T09:00:30Z"));
+    await flush();
+    const [run] = runs(s.id);
+    await runner.stopRun(s.id, run!.id);
+    // Delete no longer waits for it: the run is no longer starting, and has no session.
+    expect(await runner.unfinishedRuns(s.id)).toEqual([]);
+    store.delete(s.id);
+    release();
+    await pass;
+
+    expect(dispatched).toHaveLength(0);
+    expect(sessions.get("session-1")?.runStoppedAt).toEqual(expect.any(String));
+    expect(sessions.automaticTurnsHeld("session-1")).toBe(true);
+    expect(finishedAtOf("session-1")).toBeDefined();
+  });
+});
+
+describe("ScheduleRunner — runs that are not finished (reqs 26, 32)", () => {
+  it("lists runs still starting and runs not finished, archived ones too, and decides the others first", async () => {
+    const s = schedule();
+    const starting = store.insertRun({ scheduleId: s.id, slotAt: null, spec: SANDBOX_SPEC }, "2026-10-07T10:15:00.000Z")!;
+    const link = (sessionId: string, title: string): void => {
+      const run = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+      sessions.track(sessionId, title);
+      sessions.setScheduleRun(sessionId, s.id, run.id);
+      sessions.setLastTurnOutcome(sessionId, "ok");
+    };
+    link("errored", "Security PRs · Oct 5, 09:00");
+    sessions.setLastTurnOutcome("errored", "quota-refused");
+    sessions.archive("errored");
+    link("undecided", "Security PRs · Oct 6, 09:00");
+
+    expect(await runner.unfinishedRuns(s.id)).toEqual([
+      { runId: sessions.get("errored")!.scheduleRunId!, sessionId: "errored", title: "Security PRs · Oct 5, 09:00", archived: true },
+      { runId: starting.id, title: "Security PRs · Oct 7, 10:15" },
+    ]);
+    expect(sessions.get("undecided")?.runFinishedAt).toBeDefined();
+  });
+});
+
+function finishedAtOf(sessionId: string): string | undefined {
+  return sessions.get(sessionId)?.runFinishedAt;
+}
+
+describe("ScheduleRunner — runs that are not finished, from a stale or hidden state", () => {
+  function linkedRun(sessionId: string): string {
+    const s = schedule();
+    const run = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+    sessions.track(sessionId, "Security PRs · Oct 7, 09:00");
+    sessions.setScheduleRun(sessionId, s.id, run.id);
+    sessions.setLastTurnOutcome(sessionId, "ok");
+    return s.id;
+  }
+
+  it("asks the worker of a run left without a runner by a restart", async () => {
+    let live = true;
+    runner = makeRunner({ liveWorkSessions: new Set(["leftover"]), probeLiveWork: async () => live });
+    const scheduleId = linkedRun("leftover");
+    sessions.setRunFinishedAt("leftover", "2026-10-07T10:00:00.000Z");
+    expect((await runner.unfinishedRuns(scheduleId)).map((r) => r.sessionId)).toEqual(["leftover"]);
+    live = false;
+    expect(await runner.unfinishedRuns(scheduleId)).toEqual([]);
+  });
+
+  it("decides a stored decision again, so a manual step shown since keeps the run", async () => {
+    let cardOn = false;
+    runner = makeRunner({ statusCardEnabled: () => cardOn });
+    const scheduleId = linkedRun("with-step");
+    sessions.setSessionStatus("with-step", { status: "s", needsYou: ["Paste the token"], actions: [], fresh: true, writeSeq: 1, turnSeq: 1 } as never);
+    expect(await runner.unfinishedRuns(scheduleId)).toEqual([]);
+    expect(finishedAtOf("with-step")).toBeDefined();
+
+    cardOn = true;
+    expect((await runner.unfinishedRuns(scheduleId)).map((r) => r.sessionId)).toEqual(["with-step"]);
+    expect(finishedAtOf("with-step")).toBeUndefined();
+  });
+
+  it("counts a repository run's claimed session, which stays warm until its first dispatch", async () => {
+    const scheduleId = linkedRun("claimed");
+    db.db.prepare("UPDATE sessions SET warm = 1 WHERE id = ?").run("claimed");
+    busy("claimed");
+    expect((await runner.unfinishedRuns(scheduleId)).map((r) => r.sessionId)).toEqual(["claimed"]);
+  });
+});

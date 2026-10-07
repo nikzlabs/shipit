@@ -115,6 +115,8 @@ export interface RunnerRegistryDeps {
   /** Rebind a worker's adopted turn to its original delivery after restart. */
   rebindDelivery?: (deliveryId: string) => ((outcome: TurnOutcome) => void) | undefined;
   onTurnEnd?: (end: TurnEnd) => void;
+  /** docs/324-scheduled-sessions — a hold on a runner came off, or its background work changed. */
+  onRunnerSettled?: (sessionId: string) => void;
   usageManager: UsageManager;
   recordAgentRateLimits?: (
     agentId: AgentId,
@@ -174,6 +176,7 @@ export function createRunnerRegistry(
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, composeHelperConfig, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, getReleaseStatusPoller, rebindDelivery,
     onTurnEnd,
+    onRunnerSettled,
     reconcileAgentMergeClaimsFor,
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
@@ -244,7 +247,9 @@ export function createRunnerRegistry(
         // The release re-enters dispatch, preserving the entry's settlement callback, and
         // leaves it queued in order if another gate (a system hold) still holds.
         if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
+        onRunnerSettled?.(runner.sessionId);
       });
+      if (onRunnerSettled) runner.on("work_released", () => onRunnerSettled(runner.sessionId));
       // The worker reports no agent, so nothing can answer a request the lost one raised.
       // A throw here would stop verifyRunningState before it releases the queue.
       runner.on("turn_abandoned", () => {

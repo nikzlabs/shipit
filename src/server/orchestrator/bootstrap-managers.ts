@@ -72,6 +72,7 @@ import {
   headlessSessionDeps,
   redispatchHeadlessPrompt,
 } from "./services/headless-sessions.js";
+import { interruptAgentTurn } from "./services/agent-interrupt.js";
 import { reportAbandonedRebases } from "./abandoned-rebase-sweep.js";
 import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
@@ -705,6 +706,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     rebindDelivery: (deliveryId: string) =>
       mergeWatchManagerRef.ref?.rebindDelivery(deliveryId) ?? scheduleRunnerRef.ref?.rebindDelivery(deliveryId),
     onTurnEnd: (end: TurnEnd) => scheduleRunnerRef.ref?.noteTurnEnd(end),
+    onRunnerSettled: (sessionId: string) => scheduleRunnerRef.ref?.decideRunFinished(sessionId),
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
     isAgentMergeInFlight: (sessionId: string) => agentMergeClaims.isMergeInFlight(sessionId),
     reconcileAgentMergeClaimsFor: (sessionId: string) => {
@@ -1088,8 +1090,27 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     unprobedSessions: unprobedAfterRestart,
     liveWorkSessions: liveWorkAfterRestart,
     probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
+    interruptTurn: (sessionId) => {
+      interruptAgentTurn({
+        sessionManager,
+        broadcastLog: (source, text) => broadcastLog(sessionId, source, text),
+        postInterruptCommitDeps: {
+          sessionManager,
+          chatHistoryManager,
+          prStatusPoller,
+          githubAuthManager,
+          credentialStore,
+          generateText: effectiveGenerateText,
+          createGitManager,
+          scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
+          sseBroadcast,
+        },
+      }, runnerRegistry.get(sessionId) ?? null);
+    },
+    statusCardEnabled: () => credentialStore.getSessionStatusCard(),
   });
   scheduleRunnerRef.ref = scheduleRunner;
+  prStatusPoller.setPrStateListener((sessionId) => scheduleRunner.decideRunFinished(sessionId));
 
   // Finish consult cards before adopted turns replace their in-progress history rows.
   reconcileOrphanedConsultCards(chatHistoryManager);

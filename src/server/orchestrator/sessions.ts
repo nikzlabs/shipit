@@ -1051,8 +1051,36 @@ export class SessionManager {
     return row?.id;
   }
 
+  /**
+   * Req 32 — archived runs too: Delete waits for every run. Warm ones too: a repository
+   * run's claimed session stays warm until its first dispatch.
+   */
+  runSessionsOfSchedule(scheduleId: string): SessionInfo[] {
+    const rows = this.db.prepare("SELECT * FROM sessions WHERE schedule_id = ? ORDER BY created_at, rowid")
+      .all(scheduleId) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
   setRunFinishedAt(id: string, at: string | null): void {
     this.db.prepare("UPDATE sessions SET run_finished_at = ? WHERE id = ?").run(at, id);
+  }
+
+  /**
+   * docs/324-scheduled-sessions — a user turn makes a finished or stopped run active again
+   * (req 33). Returns whether anything changed.
+   */
+  reopenRun(id: string): boolean {
+    return this.db.prepare(
+      `UPDATE sessions SET run_finished_at = NULL, run_stopped_at = NULL
+       WHERE id = ? AND (run_finished_at IS NOT NULL OR run_stopped_at IS NOT NULL)`,
+    ).run(id).changes > 0;
+  }
+
+  /** docs/322 and docs/324 req 33 — a question that waits for the user, or a stopped run, holds every automatic turn. */
+  automaticTurnsHeld(id: string): boolean {
+    const row = this.db.prepare("SELECT awaiting_answer, run_stopped_at FROM sessions WHERE id = ?").get(id) as
+      { awaiting_answer: number; run_stopped_at: string | null } | undefined;
+    return row?.awaiting_answer === 1 || !!row?.run_stopped_at;
   }
 
   setRunStoppedAt(id: string, at: string | null): void {

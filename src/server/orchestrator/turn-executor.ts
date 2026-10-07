@@ -38,7 +38,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
-import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup, turnInSetup } from "./turn-stop-request.js";
+import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup, stoppedByUser, turnInSetup } from "./turn-stop-request.js";
 import path from "node:path";
 import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import type { ReplaySpillTarget } from "./services/replay.js";
@@ -255,6 +255,18 @@ export async function executeAgentTurn(
       if (sessions.get(sessionId)?.scheduleId) deps.listenerDeps.sseBroadcast("session_list", { sessions: sessions.list() });
     } catch (err) {
       console.error(`[turn] listing the answer hold for ${sessionId} failed:`, err);
+    }
+  };
+  // docs/324-scheduled-sessions req 33 — a user turn makes a stopped or finished run active
+  // again, and its end decides again. Before the restore below, since the drain reads the hold.
+  const reopenStoppedOrFinishedRun = (): void => {
+    try {
+      const sessions = deps.listenerDeps.sessionManager;
+      const run = sessions.get(sessionId);
+      if (!run?.runFinishedAt && !run?.runStoppedAt) return;
+      if (sessions.reopenRun(sessionId)) deps.listenerDeps.sseBroadcast("session_list", { sessions: sessions.list() });
+    } catch (err) {
+      console.error(`[turn] reopening the run ${sessionId} failed:`, err);
     }
   };
   const useStreaming = input.useStreaming ?? false;
@@ -487,6 +499,8 @@ export async function executeAgentTurn(
   forgetHeldTurn(deps.answerHold, input);
   if (input.automatic !== true && !input.adopt) {
     writeAnswerHoldAndList(false);
+    // A Stop pressed while this turn set up is the user's last word; a retry of it counts too.
+    if (!(runner && stoppedByUser(runner))) reopenStoppedOrFinishedRun();
     // req 4 — what the hold kept runs after this turn, from the queue it waits in now.
     if (runner && restoreHeldTurns(runner) > 0) {
       runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });

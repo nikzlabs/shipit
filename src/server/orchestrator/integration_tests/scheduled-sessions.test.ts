@@ -19,7 +19,9 @@ import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { CredentialStore } from "../credential-store.js";
 import { DatabaseManager } from "../../shared/database.js";
-import type { ScheduleRun, ScheduleView } from "../../shared/types.js";
+import type { ScheduleRun, ScheduleView, UnfinishedScheduleRun } from "../../shared/types.js";
+import type { SessionRunnerRegistry } from "../session-runner.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 import {
   FakeClaudeProcess,
   StubAuthManager,
@@ -336,5 +338,117 @@ describe("Integration: schedule routes", () => {
     expect((await app.inject({ method: "GET", url: "/api/schedules/missing" })).statusCode).toBe(404);
     const bad = await app.inject({ method: "POST", url: "/api/schedules", payload: { name: "x" } });
     expect(bad.statusCode).toBe(400);
+  });
+});
+
+describe("Integration: finished runs, Stop and Delete (reqs 22, 31, 32, 33)", () => {
+  const registry = () => (app as unknown as { runnerRegistry: SessionRunnerRegistry }).runnerRegistry;
+  const idle = (sessionId: string) => !(registry().get(sessionId)?.agentBusy ?? false);
+  const finishedAt = (sessionId: string) => sessionManager.get(sessionId)?.runFinishedAt;
+
+  async function stop(scheduleId: string, runId: string): Promise<void> {
+    const res = await app.inject({ method: "POST", url: `/api/schedules/${scheduleId}/runs/${runId}/stop` });
+    expect(res.statusCode, res.body).toBe(200);
+  }
+
+  it("files a run whose turn left nothing for the user as finished, and keeps its result (req 22)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    agents[0]!.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Merged two security PRs.\nBoth had green checks." }] },
+    });
+    agents[0]!.finish();
+    await waitFor(() => !!finishedAt(sessionId), "the run filed as finished");
+    expect((await runsOf(id))[0]).toMatchObject({ outcome: "started", result: "Merged two security PRs." });
+  });
+
+  it("does not file a run whose turn ended on an error (req 31)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    agents[0]!.emit("event", { type: "agent_result", error: "The model returned an error.", sessionId: "agent-sid" });
+    agents[0]!.emit("done", 1);
+    await waitFor(() => sessionManager.get(sessionId)?.lastTurnOutcome === "errored" && idle(sessionId), "the turn's end");
+    expect(finishedAt(sessionId)).toBeUndefined();
+  });
+
+  it("keeps a run with an open PR unfinished, and decides again when the poller sees the PR change (req 22)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    sessionManager.setPrStatus(sessionId, { sessionId, prNumber: 7, prState: "open" } as never);
+    agents[0]!.finish();
+    await waitFor(() => sessionManager.get(sessionId)?.lastTurnOutcome === "ok" && idle(sessionId), "the turn's end");
+    expect(finishedAt(sessionId)).toBeUndefined();
+
+    app.prStatusPoller!.clearPersisted(sessionId);
+    expect(finishedAt(sessionId)).toBeDefined();
+  });
+
+  it("a stopped run takes no automatic turn until the user's next turn in it (req 33)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    const [run] = await runsOf(id);
+    await stop(id, run!.id);
+    expect(agents[0]!.interrupted || agents[0]!.killed).toBe(true);
+    await waitFor(() => !!finishedAt(sessionId) && idle(sessionId), "the stopped run filed as finished");
+
+    const runner = registry().get(sessionId)!;
+    const fix = runner.dispatch(testDispatch({ text: "CI failed on main: fix it.", automatic: true }));
+    expect(fix.admitted).toBe("queued");
+    expect(sessionManager.heldTurns(sessionId).map((m) => m.text)).toEqual(["CI failed on main: fix it."]);
+    expect(agents).toHaveLength(1);
+
+    // The user's own turn makes the run active again; what was held runs after it.
+    runner.dispatch(testDispatch({ text: "Only list the PRs this time." }));
+    await waitFor(() => agents.length === 2 && agents[1]!.runCalled, "the user's turn");
+    expect(sessionManager.get(sessionId)).not.toHaveProperty("runStoppedAt");
+    expect(sessionManager.get(sessionId)).not.toHaveProperty("runFinishedAt");
+    agents[1]!.finish();
+    await waitFor(() => agents.length === 3 && agents[2]!.runCalled, "the held automatic turn");
+    expect(agents[2]!.lastPrompt).toContain("CI failed on main: fix it.");
+    agents[2]!.finish();
+    await waitFor(() => !!finishedAt(sessionId), "the run filed as finished again");
+  });
+
+  it("Stop on a run still starting cancels its dispatch (req 33)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    // Stops the run the moment its session is linked, which is before its dispatch.
+    let stopping: Promise<unknown> | undefined;
+    const link = sessionManager.setScheduleRun.bind(sessionManager);
+    vi.spyOn(sessionManager, "setScheduleRun").mockImplementation((sessionId, scheduleId, runId) => {
+      link(sessionId, scheduleId, runId);
+      stopping = app.scheduleRunner.stopRun(scheduleId, runId);
+    });
+    await app.scheduleRunner.runPass(at("2026-10-07T09:00:30Z"));
+    await stopping;
+
+    const [run] = await runsOf(id);
+    expect(run).toMatchObject({ outcome: "failed", reason: "The run was stopped before it started.", sessionId: expect.any(String) });
+    expect(agents).toHaveLength(0);
+    expect(finishedAt(run!.sessionId!)).toBeDefined();
+    expect(schedules.get(id)?.needsUserReason).toBeUndefined();
+  });
+
+  it("refuses Delete while a run is going and names it, and deletes once the run is stopped (req 32)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    const [run] = await runsOf(id);
+    const going: UnfinishedScheduleRun[] = [{ runId: run!.id, sessionId, title: "Nightly · Oct 7, 09:00" }];
+
+    const refused = await app.inject({ method: "DELETE", url: `/api/schedules/${id}` });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toEqual({ error: expect.stringContaining("still has runs in progress"), runs: going });
+    // Run now's warning reads the same runs (req 26).
+    const warning = await app.inject({ method: "GET", url: `/api/schedules/${id}/unfinished-runs` });
+    expect(warning.json()).toEqual({ runs: going });
+
+    await stop(id, run!.id);
+    await waitFor(() => !!finishedAt(sessionId) && idle(sessionId), "the stopped run filed as finished");
+    const deleted = await app.inject({ method: "DELETE", url: `/api/schedules/${id}` });
+    expect(deleted.statusCode, deleted.body).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/schedules/${id}` })).statusCode).toBe(404);
+    expect(schedules.listRuns(id)).toEqual([]);
+    // The run's session stays, still naming its schedule, so it can say it was deleted.
+    expect(sessionManager.get(sessionId)).toMatchObject({ scheduleId: id, scheduleRunId: run!.id });
   });
 });

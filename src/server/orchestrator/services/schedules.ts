@@ -7,6 +7,7 @@ import type {
   ScheduleTiming,
   ScheduleView,
   SessionStartSpec,
+  UnfinishedScheduleRun,
 } from "../../shared/types.js";
 import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import { KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
@@ -30,11 +31,26 @@ export interface ScheduleSpecDeps {
   credentialStore: CredentialStore;
 }
 
-/** The scheduler's side of a change: its queue, Run now, and telling the browser. */
+/** The scheduler's side of a change: its queue, Run now, Stop, its runs, and telling the browser. */
 export interface ScheduleQueue {
   enqueue<T>(scheduleId: string, fn: () => T | Promise<T>): Promise<T>;
   runNow(scheduleId: string): Promise<ScheduleRun>;
+  stopRun(scheduleId: string, runId: string): Promise<ScheduleRun | null>;
+  unfinishedRuns(scheduleId: string): Promise<UnfinishedScheduleRun[]>;
   announceSchedules(): void;
+}
+
+/** Req 32 — the refusal names the runs, so the user can stop each one. */
+export class ScheduleDeleteRefused extends ServiceError {
+  constructor(public readonly runs: UnfinishedScheduleRun[]) {
+    const stopping = runs.filter((run) => run.stopping).length;
+    const toStop = runs.length - stopping;
+    const parts = [
+      ...(toStop > 0 ? [`stop ${toStop === 1 ? "the run that is" : `the ${toStop} runs that are`} not finished`] : []),
+      ...(stopping > 0 ? [`wait for ${stopping === 1 ? "the stopped run" : `the ${stopping} stopped runs`} to wind down`] : []),
+    ];
+    super(409, `This schedule still has runs in progress. To delete it, ${parts.join(", and ")}.`);
+  }
 }
 
 export interface ScheduleServiceDeps extends ScheduleSpecDeps {
@@ -248,4 +264,29 @@ export function listScheduleRuns(deps: ScheduleServiceDeps, id: string, limit?: 
     ? MAX_RUN_HISTORY
     : Math.min(limit, MAX_RUN_HISTORY);
   return deps.store.listRuns(id, capped);
+}
+
+/** Req 26 — what Run now warns about; archived runs count too. */
+export async function listUnfinishedRuns(deps: ScheduleServiceDeps, id: string): Promise<UnfinishedScheduleRun[]> {
+  existing(deps, id);
+  return deps.scheduler.unfinishedRuns(id);
+}
+
+/** Req 33 — also for a run whose schedule was deleted, which its session still names. */
+export async function stopScheduleRun(deps: ScheduleServiceDeps, id: string, runId: string): Promise<ScheduleRun | null> {
+  return deps.scheduler.stopRun(id, runId);
+}
+
+/**
+ * Req 32 — removes the schedule and its run history; the run sessions stay and keep the
+ * schedule's id, so each can say its schedule was deleted. Refused while a run is not finished.
+ */
+export async function deleteSchedule(deps: ScheduleServiceDeps, id: string): Promise<void> {
+  await deps.scheduler.enqueue(id, async () => {
+    existing(deps, id);
+    const runs = await deps.scheduler.unfinishedRuns(id);
+    if (runs.length > 0) throw new ScheduleDeleteRefused(runs);
+    deps.store.delete(id);
+    deps.scheduler.announceSchedules();
+  });
 }

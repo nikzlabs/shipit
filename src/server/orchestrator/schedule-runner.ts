@@ -6,8 +6,9 @@ import type { RuntimeMode } from "./app-di.js";
 import type { CreateHeadlessSessionOptions, RedispatchOptions } from "./services/headless-sessions.js";
 import type { TurnEnd, TurnHandle, TurnOutcome } from "./turn-settlement.js";
 import type { DueSlots } from "../shared/schedule-timing.js";
-import type { Schedule, ScheduleRun } from "../shared/types.js";
+import type { Schedule, ScheduleRun, SessionInfo, UnfinishedScheduleRun } from "../shared/types.js";
 import { DISPATCH_SETUP_FAILURE } from "./session-runner.js";
+import { isRunFinished, runResult } from "./run-finished.js";
 import { dueSlots, formatInZone } from "../shared/schedule-timing.js";
 import { parseSessionStartSpec } from "../shared/session-start-spec.js";
 import { scheduleSpecProblem, toScheduleView, type ScheduleQueue, type ScheduleSpecDeps } from "./services/schedules.js";
@@ -24,6 +25,7 @@ export const SCHEDULE_PASS_INTERVAL_MS = 30_000;
 
 const RESTARTED_DURING_RUN = "ShipIt restarted during the run.";
 const RESTARTED_WHILE_PREPARING = "ShipIt restarted while this run's session was being prepared.";
+const STOPPED_BEFORE_START = "The run was stopped before it started.";
 
 export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   store: ScheduleStore;
@@ -42,6 +44,10 @@ export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   liveWorkSessions?: ReadonlySet<string>;
   /** Whether a session with no runner still works in its worker; without it, such a session counts as working. */
   probeLiveWork?: (sessionId: string) => Promise<boolean>;
+  /** Ends the session's turn, as the chat's stop control does (req 33). */
+  interruptTurn?: (sessionId: string) => void;
+  /** `advanced.sessionStatusCard`: a run's manual steps count only while the card is on. */
+  statusCardEnabled?: () => boolean;
 }
 
 /** The start was called off by a change the user made: no reason to show as needing them. */
@@ -53,9 +59,9 @@ function missedReason(missed: NonNullable<DueSlots["missed"]>, timeZone: string)
   return `${missed.count} runs missed between ${first} and ${formatInZone(missed.last, timeZone)} (${timeZone}).`;
 }
 
-/** "*schedule name* · *date*"; a Run now run is named by when it starts. */
+/** "*schedule name* · *date*"; a Run now run is named by when it was asked for. */
 function runTitle(schedule: Schedule, run: ScheduleRun): string {
-  const at = new Date(run.slotAt ?? Date.now());
+  const at = new Date(run.slotAt ?? run.createdAt);
   const when = at.toLocaleString("en-US", {
     timeZone: schedule.timeZone,
     month: "short",
@@ -193,20 +199,28 @@ export class ScheduleRunner implements ScheduleQueue {
    * waits for the user's answer never does, background work or not (req 23).
    */
   private async goingRun(scheduleId: string, exceptRunId: string): Promise<string | null> {
-    const { store, sessionManager, runnerRegistry, unprobedSessions, liveWorkSessions, probeLiveWork } = this.deps;
+    const { store, sessionManager, runnerRegistry, unprobedSessions, liveWorkSessions } = this.deps;
     if (store.hasStartingRun(scheduleId, exceptRunId)) return "The previous run was still starting.";
     const candidates = new Set([...runnerRegistry.ids(), ...(unprobedSessions ?? []), ...(liveWorkSessions ?? [])]);
     for (const sessionId of candidates) {
       const session = sessionManager.get(sessionId);
       if (session?.scheduleId !== scheduleId || session.scheduleRunId === exceptRunId) continue;
       if (sessionManager.isAwaitingAnswer(sessionId)) continue;
-      const runner = runnerRegistry.get(sessionId);
-      // After a restart a session can work with no runner, and the restart's sets never
-      // empty, so its worker is asked each time rather than the set trusted for good.
-      const busy = runner ? runner.agentBusy : await (probeLiveWork?.(sessionId) ?? Promise.resolve(true));
-      if (busy) return `The previous run, "${session.title}", was still going.`;
+      if (await this.sessionBusy(sessionId)) return `The previous run, "${session.title}", was still going.`;
     }
     return null;
+  }
+
+  /**
+   * After a restart a session can work with no runner, and the restart's sets never empty,
+   * so its worker is asked each time rather than the set trusted for good.
+   */
+  private async sessionBusy(sessionId: string): Promise<boolean> {
+    const { runnerRegistry, unprobedSessions, liveWorkSessions, probeLiveWork } = this.deps;
+    const runner = runnerRegistry.get(sessionId);
+    if (runner) return runner.agentBusy;
+    if (!unprobedSessions?.has(sessionId) && !liveWorkSessions?.has(sessionId)) return false;
+    return probeLiveWork ? probeLiveWork(sessionId) : true;
   }
 
   /** Req 26 — no checks: the run is claimed at once and starts behind the queue. */
@@ -275,9 +289,11 @@ export class ScheduleRunner implements ScheduleQueue {
       this.enqueue(run.scheduleId, () => {
         const current = this.deps.store.getRun(run.id);
         const schedule = this.deps.store.get(run.scheduleId);
-        if (!current || !schedule) throw new StartCancelled("The schedule was deleted before the run started.");
-        if (current.outcome !== (opts.resend ? "started" : "starting")) {
-          throw new StartCancelled("The run was stopped before it started.");
+        if (!current || !schedule) throw this.calledOff(sessionId, "The schedule was deleted before the run started.");
+        if (current.outcome !== (opts.resend ? "started" : "starting")) throw this.calledOff(sessionId, STOPPED_BEFORE_START);
+        // A stopped run takes no turn the user did not start (req 33); a re-sent prompt is one.
+        if (opts.resend && this.deps.sessionManager.get(sessionId)?.runStoppedAt) {
+          throw this.calledOff(sessionId, "The run was stopped.");
         }
         if (opts.cancelOnPause && !schedule.enabled) {
           throw new StartCancelled("The schedule was paused before the run started.");
@@ -286,6 +302,15 @@ export class ScheduleRunner implements ScheduleQueue {
         this.markStarted(run.id, sessionId, turn);
         return turn;
       });
+  }
+
+  /**
+   * A start called off here follows a Stop or a Delete (which waits for runs still starting),
+   * so the session carries the stop — also one made before the session existed (req 33).
+   */
+  private calledOff(sessionId: string, reason: string): StartCancelled {
+    this.markRunStopped(sessionId);
+    return new StartCancelled(reason);
   }
 
   private markStarted(runId: string, sessionId: string, turn: TurnHandle): void {
@@ -342,11 +367,128 @@ export class ScheduleRunner implements ScheduleQueue {
     const { store, sessionManager } = this.deps;
     const sessionId = sessionManager.sessionIdForScheduleRun(runId);
     const run = store.updateRun(runId, { outcome: "failed", reason, ...(sessionId ? { sessionId } : {}) });
-    if (!run) return;
-    console.warn(`[schedules] run ${runId} of schedule ${run.scheduleId} did not start: ${reason}`);
-    this.announceRun(run);
-    const schedule = store.get(run.scheduleId);
-    if (needsUser && schedule) this.setNeedsUser(schedule, reason);
+    if (run) {
+      console.warn(`[schedules] run ${runId} of schedule ${run.scheduleId} did not start: ${reason}`);
+      this.announceRun(run);
+      const schedule = store.get(run.scheduleId);
+      if (needsUser && schedule) this.setNeedsUser(schedule, reason);
+    }
+    // A session that never got its prompt has no turn whose end would decide it.
+    if (sessionId) this.decideRunFinished(sessionId);
+  }
+
+  /**
+   * Decides again whether the run is finished, and saves it (`run_finished_at`); never while
+   * its runner is busy. A run that becomes finished copies its one-line result into its row,
+   * which outlives the session (req 24). Returns whether the decision changed. Never throws:
+   * it runs at a turn's end and inside the PR poller.
+   */
+  decideRunFinished(sessionId: string): boolean {
+    try {
+      const { sessionManager, runnerRegistry } = this.deps;
+      const session = sessionManager.get(sessionId);
+      if (!session?.scheduleId || runnerRegistry.get(sessionId)?.agentBusy) return false;
+      const statusCardOn = this.deps.statusCardEnabled?.() ?? false;
+      const row = session.scheduleRunId ? this.deps.store.getRun(session.scheduleRunId) : null;
+      const finished = isRunFinished({
+        run: session,
+        starting: row?.outcome === "starting",
+        prOpen: sessionManager.getPrStatus(sessionId)?.prState === "open",
+        statusCardOn,
+      });
+      if (finished === !!session.runFinishedAt) return false;
+      sessionManager.setRunFinishedAt(sessionId, finished ? new Date().toISOString() : null);
+      if (finished) this.keepResult(session, statusCardOn);
+      this.deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+      return true;
+    } catch (err) {
+      console.error(`[schedules] deciding whether run session ${sessionId} is finished failed:`, err);
+      return false;
+    }
+  }
+
+  private keepResult(session: SessionInfo, statusCardOn: boolean): void {
+    if (!session.scheduleRunId) return;
+    const result = runResult(session, statusCardOn, this.deps.chatHistoryManager.load(session.id));
+    if (!result) return;
+    // A deleted schedule took its run rows with it; the update then finds none.
+    const run = this.deps.store.updateRun(session.scheduleRunId, { result });
+    if (run) this.announceRun(run);
+  }
+
+  /**
+   * Req 33 — the run counts as finished, and holds every automatic turn, until the user's
+   * next turn in it. The caller interrupts a turn that is going.
+   */
+  markRunStopped(sessionId: string): void {
+    const { sessionManager } = this.deps;
+    if (!sessionManager.get(sessionId)?.scheduleId) return;
+    sessionManager.setRunStoppedAt(sessionId, new Date().toISOString());
+    // While the turn winds down nothing is decided, but the list shows the stop at once.
+    if (!this.decideRunFinished(sessionId)) {
+      this.deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+    }
+  }
+
+  /**
+   * Req 33 — Stop on a run's row, in the Delete refusal and in its banner. A run still
+   * starting is cancelled: the gate re-reads its row before the dispatch. A run whose
+   * schedule was deleted is found through its session. Null when no row is left.
+   */
+  stopRun(scheduleId: string, runId: string): Promise<ScheduleRun | null> {
+    return this.enqueue(scheduleId, () => {
+      const { store, sessionManager } = this.deps;
+      const run = store.getRun(runId);
+      const sessionId = sessionManager.sessionIdForScheduleRun(runId);
+      const owner = run?.scheduleId ?? (sessionId ? sessionManager.get(sessionId)?.scheduleId : undefined);
+      if (owner !== scheduleId) throw new ServiceError(404, "Run not found");
+      if (run?.outcome === "starting") {
+        const cancelled = store.updateRun(runId, {
+          outcome: "failed",
+          reason: STOPPED_BEFORE_START,
+          ...(sessionId ? { sessionId } : {}),
+        });
+        if (cancelled) this.announceRun(cancelled);
+      }
+      if (sessionId) {
+        this.markRunStopped(sessionId);
+        this.deps.interruptTurn?.(sessionId);
+      }
+      return store.getRun(runId);
+    });
+  }
+
+  /**
+   * Reqs 26 and 32 — the runs that are not finished, archived ones included: those still
+   * starting, those whose decision is not "finished", and any whose agent still works, such
+   * as a stopped one winding down. Each idle run is decided again first, so a decision a
+   * missed moment left stale neither blocks Delete nor lets it through.
+   */
+  async unfinishedRuns(scheduleId: string): Promise<UnfinishedScheduleRun[]> {
+    const { store, sessionManager } = this.deps;
+    const unfinished: UnfinishedScheduleRun[] = [];
+    const listed = new Set<string>();
+    for (const candidate of sessionManager.runSessionsOfSchedule(scheduleId)) {
+      if (!candidate.scheduleRunId) continue;
+      const busy = await this.sessionBusy(candidate.id);
+      if (!busy) this.decideRunFinished(candidate.id);
+      const session = sessionManager.get(candidate.id) ?? candidate;
+      if (session.runFinishedAt && !busy) continue;
+      listed.add(candidate.scheduleRunId);
+      unfinished.push({
+        runId: candidate.scheduleRunId,
+        sessionId: session.id,
+        title: session.title,
+        ...(session.archived || session.userArchived ? { archived: true } : {}),
+        ...(session.runStoppedAt ? { stopping: true } : {}),
+      });
+    }
+    const schedule = store.get(scheduleId);
+    for (const run of store.startingRuns()) {
+      if (run.scheduleId !== scheduleId || listed.has(run.id) || !schedule) continue;
+      unfinished.push({ runId: run.id, title: runTitle(schedule, run) });
+    }
+    return unfinished;
   }
 
   private setNeedsUser(schedule: Schedule, reason: string | null): void {

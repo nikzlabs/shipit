@@ -595,7 +595,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     };
     wireSystemTurnDeps(deps, {
       answerHold: {
-        isAwaitingAnswer: () => awaiting,
+        automaticTurnsHeld: () => awaiting,
         setAwaitingAnswer: (_id, v) => {
           const changed = awaiting !== v;
           awaiting = v;

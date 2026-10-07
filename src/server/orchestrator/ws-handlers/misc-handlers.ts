@@ -1,10 +1,8 @@
 import type { WsClientMessage } from "../../shared/types.js";
 import type { AppCtx, ConnectionCtx, RunnerCtx } from "./types.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { scheduleInterruptCommit } from "../services/post-interrupt-commit.js";
-import { noteUserStop, requestStopDuringSetup } from "../turn-stop-request.js";
 import { forgetHeldEntries } from "../held-turns.js";
-import { stopCompactionContinuation } from "../services/agent-compaction-stop.js";
+import { interruptAgentTurn } from "../services/agent-interrupt.js";
 import type { QueuedMessage } from "../session-runner.js";
 
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
@@ -37,47 +35,13 @@ export function handlePrTabActive(ctx: AppCtx, msg: WsPrTabActive): void {
 
 export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): void {
   const runner = resolveRunner(ctx);
-  if (runner) stopCompactionContinuation(ctx.sessionManager, runner);
-  // The turn has not submitted its prompt, and may not have an agent yet: it ends itself.
-  if (runner?.running && requestStopDuringSetup(runner)) {
-    runner.wasInterrupted = true;
-    noteUserStop(runner);
-    ctx.broadcastLog("server", "Agent turn stopped by user before it started");
-    runner.emitMessage({ type: "agent_interrupted" });
-    return;
-  }
-  const agent = runner?.getAgent() ?? null;
-  if (!agent || !runner) {
-    ctx.send({ type: "error", message: "No active agent process to interrupt" });
-    return;
-  }
-
-  runner.wasInterrupted = true;
-  noteUserStop(runner);
-  // A resident streaming CLI outlives an interrupt, and a background task it still runs
-  // wakes it into a turn the user just stopped. A one-shot CLI's interrupt ends it already.
-  const kill = runner.isStreamingActive;
-  const signal = (): void => {
-    if (kill) agent.kill();
-    else agent.interrupt();
-  };
-  // A proxied submission returns before the worker holds the process; signal after it does,
-  // and only if this agent is still the runner's, since an interrupt is not targeted.
-  const submission = agent.submissionSettled?.();
-  if (!submission) {
-    signal();
-  } else {
-    void (async () => {
-      try { await submission; } catch { /* a refused start still gets the signal */ }
-      if (runner.getAgent() === agent) signal();
-    })();
-  }
-  ctx.broadcastLog("server", "Agent process stopped by user");
-  runner.emitMessage({ type: "agent_interrupted" });
-
-  // Interrupted streaming turns may emit neither done nor agent_result.
-  scheduleInterruptCommit({
-    deps: {
+  // docs/324-scheduled-sessions req 33 — in a scheduled run, this control stops the run too.
+  const sessionId = runner?.sessionId ?? ctx.getActiveAppSessionId();
+  if (sessionId) ctx.scheduledRuns?.markRunStopped(sessionId);
+  const stopped = interruptAgentTurn({
+    sessionManager: ctx.sessionManager,
+    broadcastLog: ctx.broadcastLog,
+    postInterruptCommitDeps: {
       sessionManager: ctx.sessionManager,
       chatHistoryManager: ctx.chatHistoryManager,
       prStatusPoller: ctx.prStatusPoller,
@@ -87,6 +51,6 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
       createGitManager: ctx.createGitManager,
       scheduleAutoPush: ctx.scheduleAutoPush,
     },
-    runner,
-  });
+  }, runner);
+  if (!stopped) ctx.send({ type: "error", message: "No active agent process to interrupt" });
 }

@@ -76,6 +76,7 @@ export class PrStatusPoller {
   private createGitManager?: (dir: string) => GitManager;
   private scheduleAutoPush?: (git: GitManager, sessionId: string) => void;
   private readonly branchHealer: BranchAheadHealer;
+  private prStateListener?: (sessionId: string) => void;
 
   /**
    * A session's checkout as a GitManager, or `undefined` when it is not on
@@ -155,7 +156,7 @@ export class PrStatusPoller {
     });
 
     const onSessionChange = (sessionId: string) => this.broadcastSessionStatus(sessionId);
-    const isAwaitingAnswer = (sessionId: string) => this.sessionManager.isAwaitingAnswer(sessionId);
+    const automaticTurnsHeld = (sessionId: string) => this.sessionManager.automaticTurnsHeld(sessionId);
     this.autoFix = new AutoFixManager(
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
@@ -165,7 +166,7 @@ export class PrStatusPoller {
       this.remediationArbiter,
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
       opts.ensureRunner,
-      isAwaitingAnswer,
+      automaticTurnsHeld,
     );
     this.autoMerge = new AutoMergeManager(
       this.githubAuth,
@@ -190,7 +191,7 @@ export class PrStatusPoller {
         undefined,
         this.remediationArbiter,
         opts.ensureRunner,
-        isAwaitingAnswer,
+        automaticTurnsHeld,
       );
     }
 
@@ -426,10 +427,21 @@ export class PrStatusPoller {
     }
   }
 
+  /** docs/324-scheduled-sessions — told when a session's PR opens, merges, closes or is cleared. */
+  setPrStateListener(listener: (sessionId: string) => void): void {
+    this.prStateListener = listener;
+  }
+
+  private writePrStatus(sessionId: string, summary: PrStatusSummary | null): void {
+    const before = this.sessionManager.getPrStatus(sessionId)?.prState;
+    this.sessionManager.setPrStatus(sessionId, summary);
+    if (before !== summary?.prState) this.prStateListener?.(sessionId);
+  }
+
   clearPersisted(sessionId: string): void {
     this.tracker.lastKnown.delete(sessionId);
     this.tracker.mergedSessions.delete(sessionId);
-    this.sessionManager.setPrStatus(sessionId, null);
+    this.writePrStatus(sessionId, null);
     this.sseBroadcast("pr_status", { updates: [], removals: [sessionId] });
   }
 
@@ -443,7 +455,7 @@ export class PrStatusPoller {
     this.tracker.lastPrNodes.delete(sessionId);
     this.tracker.mergedSessions.delete(sessionId);
     this.tracker.verifiedAbsent.delete(sessionId);
-    this.sessionManager.setPrStatus(sessionId, null);
+    this.writePrStatus(sessionId, null);
     if (typeof supersededPrNumber === "number") {
       this.tracker.supersededPrNumbers.set(sessionId, supersededPrNumber);
     }
@@ -809,7 +821,7 @@ export class PrStatusPoller {
 
         if (!prev || !prStatusEqual(prev, summary)) {
           this.tracker.lastKnown.set(session.id, summary);
-          this.sessionManager.setPrStatus(session.id, summary);
+          this.writePrStatus(session.id, summary);
           updates.push(withAutomation);
         }
       } else {
@@ -902,7 +914,7 @@ export class PrStatusPoller {
         autoMergeEnabled: false,
       };
       this.tracker.lastKnown.set(sessionId, summary);
-      this.sessionManager.setPrStatus(sessionId, summary);
+      this.writePrStatus(sessionId, summary);
       this.sseBroadcast("pr_status", { updates: [this.attachAutomationState(summary)] });
       return "open";
     }
@@ -960,7 +972,7 @@ export class PrStatusPoller {
     };
 
     this.tracker.lastKnown.set(sessionId, summary);
-    this.sessionManager.setPrStatus(sessionId, summary);
+    this.writePrStatus(sessionId, summary);
     // pr_status updates the card; session_list updates the sidebar's closed state.
     if (prState === "closed" && this.sessionManager.markClosed(sessionId)) {
       this.sseBroadcast("session_list", { sessions: this.sessionManager.list() });
