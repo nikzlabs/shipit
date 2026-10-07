@@ -27,7 +27,7 @@ import type { UsageManager } from "./usage.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import type { TurnEnd, TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import type { QuotaContinuationManager } from "./services/quota-continuation.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
@@ -114,6 +114,7 @@ export interface RunnerRegistryDeps {
   getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
   /** Rebind a worker's adopted turn to its original delivery after restart. */
   rebindDelivery?: (deliveryId: string) => ((outcome: TurnOutcome) => void) | undefined;
+  onTurnEnd?: (end: TurnEnd) => void;
   usageManager: UsageManager;
   recordAgentRateLimits?: (
     agentId: AgentId,
@@ -172,6 +173,7 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, composeHelperConfig, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, getReleaseStatusPoller, rebindDelivery,
+    onTurnEnd,
     reconcileAgentMergeClaimsFor,
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
@@ -317,6 +319,7 @@ export function createRunnerRegistry(
         },
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
         ...(rebindDelivery ? { rebindDelivery } : {}),
+        ...(onTurnEnd ? { onTurnEnd } : {}),
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();

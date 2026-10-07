@@ -1,4 +1,16 @@
 import type { QueuedMessage } from "./session-runner.js";
+import type { LastTurnOutcome } from "../shared/types.js";
+
+/** How a turn ended, as `sessions.last_turn_outcome` keeps it (docs/324-scheduled-sessions req 31). */
+export interface TurnEnd {
+  sessionId: string;
+  outcome: LastTurnOutcome;
+  /** False when the prompt never reached an agent: the turn failed while it was being set up. */
+  submitted: boolean;
+  /** No earlier turn of the session ended: for a scheduled run, this is its own prompt's turn. */
+  first: boolean;
+  detail?: string;
+}
 
 export type TurnOutcomeStatus =
   | "completed"

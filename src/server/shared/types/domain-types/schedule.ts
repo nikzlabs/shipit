@@ -1,3 +1,5 @@
+import type { SessionStartSpec } from "./session-start.js";
+
 /**
  * docs/324-scheduled-sessions — when a schedule's runs come due (req 16). A
  * preset compiles to a cron expression (`schedule-timing.ts`); hours and
@@ -26,6 +28,14 @@ export interface Schedule {
   needsUserReason?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** A schedule as the browser reads it. */
+export interface ScheduleView extends Omit<Schedule, "spec"> {
+  /** Null when the stored description no longer reads. */
+  spec: SessionStartSpec | null;
+  /** The next run times as ISO strings; none while the schedule is paused. */
+  nextRuns: string[];
 }
 
 export type ScheduleRunOutcome = "starting" | "started" | "skipped" | "failed";

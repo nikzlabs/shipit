@@ -1,4 +1,4 @@
-import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
+import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin, LastTurnOutcome } from "../shared/types.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
@@ -407,6 +407,38 @@ export async function executeAgentTurn(
     }
     input.onTurnComplete?.(outcome);
   };
+
+  // docs/324-scheduled-sessions req 31 — how this turn ended, persisted. The first terminal
+  // reading wins; a retry that takes the turn over is a new executor and records its own.
+  // Unlike the settlement, this also runs for a resident streaming turn, which never settles.
+  let turnEndRecorded = false;
+  const recordTurnEnd = (outcome: LastTurnOutcome, detail?: string): void => {
+    if (turnEndRecorded) return;
+    turnEndRecorded = true;
+    try {
+      const { sessionManager } = deps.listenerDeps;
+      const first = sessionManager.get(sessionId)?.lastTurnOutcome === undefined;
+      sessionManager.setLastTurnOutcome(sessionId, outcome);
+      deps.onTurnEnd?.({
+        sessionId,
+        outcome,
+        // An adopted turn was running before the restart; it records no submission of its own.
+        submitted: input.adopt === true || ownTurn !== "unsubmitted",
+        first,
+        ...(detail ? { detail } : {}),
+      });
+    } catch (err) {
+      console.error(`[turn] recording how the turn for ${sessionId} ended failed:`, err);
+    }
+  };
+  let lastAgentError: Error | undefined;
+  const isQuotaRefusal = (err: Error | undefined): boolean =>
+    err !== undefined && (
+      detectHardExhaustion(err.message) !== null
+      || (err instanceof ProviderRouteUnavailableError
+        && (input.attemptLedger ?? []).some((entry) => entry.failureKind === "quota"))
+    );
+
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
     // Hold identity, not the turn epoch (docs/304): the release below must only run when
@@ -583,6 +615,7 @@ export async function executeAgentTurn(
         );
         return true;
       }
+      recordTurnEnd("errored", "The agent's account could not authenticate.");
       await settleTurnWithoutRedispatch();
       return false;
     }
@@ -839,6 +872,7 @@ export async function executeAgentTurn(
     quotaRetryInProgress = true;
     void retryOnNextAccount(refusedEntry).catch(async (retryErr: unknown) => {
       console.error("[turn] quota retry from the error path failed:", retryErr);
+      recordTurnEnd("errored", retryErr instanceof Error ? retryErr.message : String(retryErr));
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -931,6 +965,9 @@ export async function executeAgentTurn(
 
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
 
+  // Before the listeners below, so `onError` can read the error that ended the turn.
+  agent.on("error", (err: Error) => { lastAgentError = err; });
+
   wireAgentListeners(agent, runner, deps.listenerDeps, {
     isNewSession: input.isNewSession,
     persistUserMessage: persistUserMessageOnce,
@@ -949,6 +986,12 @@ export async function executeAgentTurn(
     onError: async () => {
       agentErrored = true;
       await settleHandovers();
+      // After the handover, so the record belongs to the turn the error ended. A pending
+      // docs/306 continuation is a new turn, which records how it ends.
+      const quota = isQuotaRefusal(lastAgentError);
+      if (!(quota && quotaContinuationPending)) {
+        recordTurnEnd(quota ? "quota-refused" : "errored", lastAgentError?.message);
+      }
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -1265,6 +1308,7 @@ export async function executeAgentTurn(
     resultTurnText = null;
     // The adopted turn is a turn of its own: it settles its own facts and is decided afresh.
     turnFacts = null;
+    turnEndRecorded = false;
     sawOwnResult = false;
     harnessCommandTurn = false;
     thisTurnEpoch = runner?.turnEpoch;
@@ -1375,9 +1419,14 @@ export async function executeAgentTurn(
         );
         return;
       }
+      // Read before the stand-down, which clears a summary that is only the refusal.
+      const refusal = (event.error ?? runner?.turnSummary ?? "").slice(0, 400);
       await postTurnStep("quota-stand-down", () => {
         retireOnSpentAccount({ summaryIsTheNotice: !event.error });
       });
+      if (!quotaContinuationPending) recordTurnEnd("quota-refused", refusal);
+    } else {
+      recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error);
     }
     // Anything riding this prompt is delivered here, and must not be delivered
     // in `settleTurn`: a resident streaming turn settles no turn at all, and its
@@ -1512,6 +1561,15 @@ export async function executeAgentTurn(
           handled = await input.onNoResultExit!(code, stderrTail.describe());
         });
         if (handled) return;
+      }
+
+      // `sawOwnResult`, not `receivedResult`: an adopted CLI turn keeps its predecessor's result.
+      if (!sawOwnResult && !agentErrored && !wasSuperseded) {
+        // A stopped turn ended as the user asked; any other exit without a result is an error.
+        recordTurnEnd(
+          (runner?.wasInterrupted ?? false) ? "ok" : "errored",
+          code !== 0 ? `The agent process exited with code ${code}.` : "The agent process ended without a response.",
+        );
       }
 
       // Before the drain below, not at settlement with it (planning#609): a drained

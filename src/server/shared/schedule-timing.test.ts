@@ -249,12 +249,12 @@ describe("timingProblem", () => {
       expect(timingProblem(cron("0 9,10 * * *"), BERLIN, NOW)).toBeNull();
     });
 
-    it("refuses runs less than an hour apart, naming two of them in the schedule's zone", () => {
+    it("refuses runs less than an hour apart, naming two of them as the schedule gives them", () => {
       expect(timingProblem(cron("*/30 * * * *"), BERLIN, NOW)).toBe(
-        "Runs must be at least an hour apart, but two come 30 minutes apart: "
-          + "2026-10-07 08:30 and 2026-10-07 09:00 (Europe/Berlin).",
+        "Runs must be at least an hour apart, but two come 30 minutes apart, at 06:30 and 07:00.",
       );
-      expect(timingProblem(cron("0,30 9 * * *"), BERLIN, NOW)).toMatch(/30 minutes apart/);
+      expect(timingProblem(cron("0,30 9 * * *"), BERLIN, NOW))
+        .toMatch(/30 minutes apart, at 09:00 and 09:30\.$/);
       expect(timingProblem(cron("59 8 * * *"), BERLIN, NOW)).toBeNull();
       expect(timingProblem(cron("0,59 8 * * *"), BERLIN, NOW)).toMatch(/59 minutes apart/);
     });
@@ -264,9 +264,25 @@ describe("timingProblem", () => {
       expect(timingProblem({ kind: "hourly", minute: 30 }, BERLIN, at("2026-10-24T22:00:00Z"))).toBeNull();
     });
 
-    it("refuses two hours that Lord Howe Island's change brings 30 minutes together", () => {
-      expect(timingProblem(cron("0 2,3 * * *"), LORD_HOWE, at("2026-10-02T00:00:00Z")))
-        .toMatch(/30 minutes apart: 2026-10-04 02:30 and 2026-10-04 03:00/);
+    // 2026-10-07 decision: the hour ignores clock changes, so Lord Howe Island's moved 02:30
+    // may come 30 minutes before 03:00; the overlap rule (req 14) still guards that day.
+    it("ignores Lord Howe Island's 30-minute change, accepting a timing the same on every date", () => {
+      for (const timing of [cron("0 2,3 * * *"), { kind: "hourly", minute: 15 }] satisfies ScheduleTiming[]) {
+        for (const now of [at("2026-10-02T00:00:00Z"), at("2026-04-03T00:00:00Z"), NOW]) {
+          expect(timingProblem(timing, LORD_HOWE, now)).toBeNull();
+        }
+      }
+      // The missing 02:00 runs at 02:30, thirty minutes before 03:00.
+      expect(iso(nextRuns(cron("0 2,3 * * *"), LORD_HOWE, 2, at("2026-10-03T14:00:00Z"))))
+        .toEqual(["2026-10-03T15:30:00.000Z", "2026-10-03T16:00:00.000Z"]);
+    });
+
+    it("refuses a too-close timing the same on every date and in every zone", () => {
+      for (const zone of [BERLIN, LORD_HOWE, "UTC", "America/New_York"]) {
+        for (const now of [NOW, at("2026-03-29T00:30:00Z"), at("2026-10-04T00:00:00Z")]) {
+          expect(timingProblem(cron("0,30 9 * * *"), zone, now)).toMatch(/30 minutes apart/);
+        }
+      }
     });
   });
 });

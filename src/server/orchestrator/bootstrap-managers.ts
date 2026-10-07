@@ -57,7 +57,21 @@ import {
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
 import { repoMemoryDir } from "./repo-memory-manager.js";
 import { restoreSessionWorkspace } from "./services/session.js";
-import { reattachInFlightTurns } from "./restart-turn-reattach.js";
+import {
+  liveWorkAfterRestart,
+  reattachInFlightTurns,
+  unprobedAfterRestart,
+  workerHasLiveWork,
+} from "./restart-turn-reattach.js";
+import { ScheduleStore } from "./schedule-store.js";
+import { ScheduleRunner } from "./schedule-runner.js";
+import type { TurnEnd } from "./turn-settlement.js";
+import { createClaimSessionService } from "./services/claim-session.js";
+import {
+  createHeadlessSession,
+  headlessSessionDeps,
+  redispatchHeadlessPrompt,
+} from "./services/headless-sessions.js";
 import { reportAbandonedRebases } from "./abandoned-rebase-sweep.js";
 import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
@@ -316,6 +330,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
 
   const mergeWatchManagerRef: { ref: MergeWatchManager | null } = { ref: null };
+  // Set before the restart reattach below, which rebinds a scheduled run's first turn.
+  const scheduleRunnerRef: { ref: ScheduleRunner | null } = { ref: null };
 
   const claudeOAuthRefresherRef: { ref: ClaudeOAuthRefresher | null } = { ref: null };
   const codexOAuthRefresherRef: { ref: CodexOAuthRefresher | null } = { ref: null };
@@ -686,7 +702,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     generateText: effectiveGenerateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
     getReleaseStatusPoller: () => releaseStatusPollerRef.ref ?? undefined,
-    rebindDelivery: (deliveryId: string) => mergeWatchManagerRef.ref?.rebindDelivery(deliveryId),
+    rebindDelivery: (deliveryId: string) =>
+      mergeWatchManagerRef.ref?.rebindDelivery(deliveryId) ?? scheduleRunnerRef.ref?.rebindDelivery(deliveryId),
+    onTurnEnd: (end: TurnEnd) => scheduleRunnerRef.ref?.noteTurnEnd(end),
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
     isAgentMergeInFlight: (sessionId: string) => agentMergeClaims.isMergeInFlight(sessionId),
     reconcileAgentMergeClaimsFor: (sessionId: string) => {
@@ -1006,6 +1024,73 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
 
+  // Shared with the routes: its per-repo lock lives in the instance's closure.
+  const claimSessionService = createClaimSessionService({
+    sessionManager,
+    repoStore,
+    createGitManager,
+    createRepoGit,
+    githubAuthManager,
+    getSharedRepoDir: getBareCacheDir,
+    createSessionDirFull: createSessionDir,
+    sseBroadcast,
+    warmSessionForRepo,
+    waitForWarmSession,
+    ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
+    ...(containerManager ? { containerManager } : {}),
+    egressAllowlistStore,
+  });
+
+  // docs/324-scheduled-sessions — runs start through the same headless start as Quick Capture.
+  const scheduleStore = new ScheduleStore(databaseManager);
+  const scheduledRunStart = headlessSessionDeps({
+    sessionManager,
+    runnerRegistry,
+    claimService: claimSessionService,
+    createSessionDir,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    graduationDeps: {
+      sessionManager,
+      runnerRegistry,
+      repoStore,
+      createGitManager,
+      prStatusPoller,
+      sseBroadcast,
+      ensureAgentTokenFresh,
+      providerAccountManager,
+      credentialsDir,
+      credentialStore,
+      chatHistoryManager,
+      usageManager,
+    },
+    githubAuthManager,
+    prStatusPoller,
+    egressAllowlistStore,
+    containerManager,
+    oomBreaker,
+    loopDetector,
+    sseBroadcast,
+  });
+  const scheduleRunner = new ScheduleRunner({
+    store: scheduleStore,
+    sessionManager,
+    runnerRegistry,
+    chatHistoryManager,
+    repoStore,
+    credentialStore,
+    runtimeMode,
+    sseBroadcast,
+    startSession: (opts) => createHeadlessSession(scheduledRunStart, opts),
+    redispatch: (sessionId, opts) => redispatchHeadlessPrompt(scheduledRunStart, sessionId, opts),
+    unprobedSessions: unprobedAfterRestart,
+    liveWorkSessions: liveWorkAfterRestart,
+    probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
+  });
+  scheduleRunnerRef.ref = scheduleRunner;
+
   // Finish consult cards before adopted turns replace their in-progress history rows.
   reconcileOrphanedConsultCards(chatHistoryManager);
 
@@ -1115,6 +1200,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     startupTimer,
     agentMergeClaims,
     agentMergeExecutor,
+    claimSessionService,
+    scheduleStore,
+    scheduleRunner,
   };
 }
 

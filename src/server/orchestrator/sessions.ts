@@ -1029,6 +1029,13 @@ export class SessionManager {
       .run(scheduleId, scheduleRunId, id);
   }
 
+  /** The session a schedule run started, if it got that far. */
+  sessionIdForScheduleRun(scheduleRunId: string): string | undefined {
+    const row = this.db.prepare("SELECT id FROM sessions WHERE schedule_run_id = ? LIMIT 1")
+      .get(scheduleRunId) as { id: string } | undefined;
+    return row?.id;
+  }
+
   setRunFinishedAt(id: string, at: string | null): void {
     this.db.prepare("UPDATE sessions SET run_finished_at = ? WHERE id = ?").run(at, id);
   }

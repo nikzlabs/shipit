@@ -21,6 +21,7 @@ import {
   forkReportSinks,
   gitRemoteCredentialResolver,
   createHeadlessSession,
+  headlessSessionDeps,
   ServiceError,
   createClaimSessionService,
 } from "./services/index.js";
@@ -30,7 +31,6 @@ import { getErrorMessage } from "./validation.js";
 import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
 import { toListRow } from "./sessions.js";
 import { dismissNonTurnFailure } from "./services/non-turn-work.js";
-import { reconcileSessionEgress } from "./services/reconcile-session-egress.js";
 
 /** `POST /api/sessions/headless`, as a JSON body or as multipart field names. */
 export interface HeadlessSessionBody {
@@ -557,49 +557,7 @@ export async function registerSessionCrudRoutes(
 
       try {
         const result = await createHeadlessSession(
-          {
-            sessionManager,
-            runnerRegistry: deps.runnerRegistry,
-            claimService: claimSessionService,
-            createSessionDir: deps.createSessionDir,
-            defaultAgentId: deps.defaultAgentId,
-            credentialsDir: deps.credentialsDir,
-            credentialStore: deps.credentialStore,
-            providerAccountManager: deps.providerAccountManager,
-            graduationDeps,
-            autoMergeDeps: {
-              githubAuthManager: deps.githubAuthManager,
-              prStatusPoller: deps.prStatusPoller,
-            },
-            ...(deps.egressAllowlistStore
-              ? {
-                  egressDeps: {
-                    store: deps.egressAllowlistStore,
-                    reconcile: (sid: string, reconcileOpts?: { agentSeed?: AgentId }) => reconcileSessionEgress(
-                      {
-                        containerManager: deps.containerManager ?? null,
-                        egressAllowlistStore: deps.egressAllowlistStore,
-                        ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
-                        recovery: {
-                          sessionManager,
-                          containerManager: deps.containerManager ?? null,
-                          runnerRegistry: deps.runnerRegistry,
-                          defaultAgentId: deps.defaultAgentId,
-                          ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
-                          ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
-                          sseBroadcast: deps.sseBroadcast,
-                        },
-                      },
-                      sid,
-                      reconcileOpts ?? {},
-                    ),
-                  },
-                }
-              : {}),
-            ...(deps.containerManager
-              ? { reloadEgress: deps.containerManager.reloadEgress.bind(deps.containerManager) }
-              : {}),
-          },
+          headlessSessionDeps({ ...deps, claimService: claimSessionService, graduationDeps }),
           {
             target: { kind: "repo", repoUrl },
             params: {
