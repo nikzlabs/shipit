@@ -31,6 +31,24 @@ describe("spliceTranscript", () => {
     expect(spliceTranscript({ value: "foo\t", transcript: "bar" }).value).toBe("foo\tbar");
   });
 
+  it("starts a transcript that opens with a list on its own line", () => {
+    const bullets = "- Fix the footer.\n- Rename the file.";
+    expect(spliceTranscript({ value: "Two changes:", transcript: bullets }).value)
+      .toBe(`Two changes:\n${bullets}`);
+    expect(spliceTranscript({ value: "Two changes: ", transcript: "1. Fix the footer." }).value)
+      .toBe("Two changes: \n1. Fix the footer.");
+    expect(spliceTranscript({ value: "Two changes:\n", transcript: bullets }).value)
+      .toBe(`Two changes:\n${bullets}`);
+    expect(spliceTranscript({ value: "", transcript: bullets }).value).toBe(bullets);
+  });
+
+  it("keeps a transcript that only starts like a list on the same line", () => {
+    expect(spliceTranscript({ value: "bump to", transcript: "1.5 of the SDK" }).value)
+      .toBe("bump to 1.5 of the SDK");
+    expect(spliceTranscript({ value: "pass", transcript: "--force to the command" }).value)
+      .toBe("pass --force to the command");
+  });
+
   it("does not add a leading space at the start of empty text", () => {
     const r = spliceTranscript({ value: "", transcript: "hi" });
     expect(r.value).toBe("hi");

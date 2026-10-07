@@ -18,6 +18,8 @@ export interface SpliceResult {
   cursor: number;
 }
 
+const LIST_START = /^(?:-|\d+\.) /;
+
 export function spliceTranscript(input: SpliceInput): SpliceResult {
   const { value, transcript } = input;
   const len = value.length;
@@ -32,7 +34,9 @@ export function spliceTranscript(input: SpliceInput): SpliceResult {
 
   const prevChar = before.slice(-1);
   const needsLeadingSpace = prevChar !== "" && prevChar !== " " && prevChar !== "\n" && prevChar !== "\t";
-  const insert = (needsLeadingSpace ? " " : "") + transcript;
+  // A list item glued to the end of a line is not a list item.
+  const needsOwnLine = LIST_START.test(transcript) && prevChar !== "" && prevChar !== "\n";
+  const insert = (needsOwnLine ? "\n" : needsLeadingSpace ? " " : "") + transcript;
 
   return {
     value: before + insert + after,
