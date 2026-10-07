@@ -452,3 +452,84 @@ describe("Integration: finished runs, Stop and Delete (reqs 22, 31, 32, 33)", ()
     expect(sessionManager.get(sessionId)).toMatchObject({ scheduleId: id, scheduleRunId: run!.id });
   });
 });
+
+describe("Integration: a run's notes (reqs 13, 27, 32)", () => {
+  const registry = () => (app as unknown as { runnerRegistry: SessionRunnerRegistry }).runnerRegistry;
+  const idle = (sessionId: string) => !(registry().get(sessionId)?.agentBusy ?? false);
+  const finishedAt = (sessionId: string) => sessionManager.get(sessionId)?.runFinishedAt;
+
+  async function stop(scheduleId: string, runId: string): Promise<void> {
+    const res = await app.inject({ method: "POST", url: `/api/schedules/${scheduleId}/runs/${runId}/stop` });
+    expect(res.statusCode, res.body).toBe(200);
+  }
+
+  it("gives a run its own notes folder, and tells only its first turn about it (req 13)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    const [run] = await runsOf(id);
+    const folder = path.join(tmpDir, "schedules", id, "runs", run!.id);
+    expect(fs.statSync(folder).isDirectory()).toBe(true);
+
+    expect(agents[0]!.lastPrompt).toContain("<scheduled_run>");
+    expect(agents[0]!.lastPrompt).toContain(`shipit schedule notes ${id}`);
+    expect(agents[0]!.lastPrompt).toContain(PROMPT);
+    agents[0]!.finish();
+    await waitFor(() => idle(sessionId), "the first turn's end");
+
+    registry().get(sessionId)!.dispatch(testDispatch({ text: "Also list the open PRs." }));
+    await waitFor(() => agents.length === 2 && agents[1]!.runCalled, "the user's turn");
+    expect(agents[1]!.lastPrompt).not.toContain("<scheduled_run>");
+  });
+
+  it("lets the user and the schedule's own runs read the notes, and Delete removes them (reqs 13, 27, 32)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    const [run] = await runsOf(id);
+    fs.writeFileSync(path.join(tmpDir, "schedules", id, "runs", run!.id, "notes.md"), "Merged #12.\n");
+
+    const viewer = await app.inject({ method: "GET", url: `/api/schedules/${id}/runs/${run!.id}/notes` });
+    expect(viewer.statusCode, viewer.body).toBe(200);
+    expect(viewer.json()).toMatchObject({ notes: { scheduleName: "Nightly", files: [{ path: "notes.md", size: 12 }] } });
+    const file = await app.inject({ method: "GET", url: `/api/schedules/${id}/runs/${run!.id}/notes/file?path=notes.md` });
+    expect(file.json()).toEqual({ file: { path: "notes.md", size: 12, text: "Merged #12.\n" } });
+
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/schedule-notes?schedule=${id}&run=${run!.id}&file=notes.md`,
+    });
+    expect(own.statusCode, own.body).toBe(200);
+    expect(own.json()).toMatchObject({ file: { text: "Merged #12.\n" } });
+
+    await stop(id, run!.id);
+    await waitFor(() => !!finishedAt(sessionId) && idle(sessionId), "the stopped run filed as finished");
+    const deleted = await app.inject({ method: "DELETE", url: `/api/schedules/${id}` });
+    expect(deleted.statusCode, deleted.body).toBe(204);
+    expect(fs.existsSync(path.join(tmpDir, "schedules", id))).toBe(false);
+    expect((await app.inject({ method: "GET", url: `/api/schedules/${id}/runs/${run!.id}/notes` })).statusCode).toBe(404);
+  });
+
+  it("asks before a session reads another schedule's notes, and Allow and Deny act on that schedule only (reqs 28, 30)", { timeout: 15_000 }, async () => {
+    const id = await createSchedule();
+    const other = await createSchedule();
+    const third = await createSchedule();
+    const sessionId = await startRunningRun(id, "2026-10-07T09:00:30Z");
+    const read = (scheduleId: string) =>
+      app.inject({ method: "GET", url: `/api/sessions/${sessionId}/schedule-notes?schedule=${scheduleId}` });
+    const decide = (cardId: string, action: string) =>
+      app.inject({ method: "POST", url: `/api/sessions/${sessionId}/schedule-notes-access/${cardId}/${action}` });
+
+    const asked = await read(other);
+    expect(asked.statusCode).toBe(403);
+    const { cardId, approval } = asked.json() as { cardId: string; approval: string };
+    expect(approval).toBe("requested");
+    const allowed = await decide(cardId, "allow");
+    expect(allowed.statusCode, allowed.body).toBe(200);
+    expect(allowed.json()).toMatchObject({ acted: true, card: { cardId, scheduleId: other, phase: "allowed" } });
+    expect((await read(other)).statusCode).toBe(200);
+
+    const third403 = (await read(third)).json() as { cardId: string };
+    expect((await decide(third403.cardId, "deny")).json()).toMatchObject({ card: { phase: "denied" } });
+    expect(sessionManager.get(sessionId)?.scheduleNotesGrants).toEqual([other]);
+  });
+});
+

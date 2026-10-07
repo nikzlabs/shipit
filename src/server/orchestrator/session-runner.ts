@@ -486,6 +486,8 @@ export interface SystemTurnDeps {
    * The returned `repark` hands the take back when the turn never reaches an agent.
    */
   takeRoleInstructions?: (sessionId: string) => RoleStandingInstructions;
+  /** docs/324-scheduled-sessions — the `<scheduled_run>` block, for a run's first dispatch only. */
+  scheduledRunContext?: (sessionId: string, deliveryId: string | undefined) => string;
   finalizeAgentEnv?: (
     sessionId: string,
     agentId: AgentId,

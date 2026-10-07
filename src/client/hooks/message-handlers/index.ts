@@ -22,6 +22,7 @@ import { handleSessionSettingsChangeCard } from "./session-settings-change-card.
 import { handleSshHostKeyCard } from "./ssh-host-key-card.js";
 import { handleSettingsProposalCard, handleSettingsProposalUpdate } from "./settings-proposal-card.js";
 import { handleScheduleProposalCard, handleScheduleProposalUpdate } from "./schedule-proposal-card.js";
+import { handleScheduleNotesAccessCard, handleScheduleNotesAccessUpdate } from "./schedule-notes-access-card.js";
 import { handleBranchSyncedCard } from "./branch-synced-card.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleAutoResolveResult } from "./auto-resolve-result.js";
@@ -147,6 +148,8 @@ export const messageHandlers: MessageHandlerMap = {
   settings_proposal_update: handleSettingsProposalUpdate,
   schedule_proposal_card: handleScheduleProposalCard,
   schedule_proposal_update: handleScheduleProposalUpdate,
+  schedule_notes_access_card: handleScheduleNotesAccessCard,
+  schedule_notes_access_update: handleScheduleNotesAccessUpdate,
   branch_synced_card: handleBranchSyncedCard,
   agent_event: handleAgentEvent,
   turn_snapshot: handleTurnSnapshot,
@@ -295,6 +298,8 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "settings_proposal_update",
   "schedule_proposal_card",
   "schedule_proposal_update",
+  "schedule_notes_access_card",
+  "schedule_notes_access_update",
   "session_report_card",
   "non_turn_failure_card",
   "non_turn_failure_dismissed",

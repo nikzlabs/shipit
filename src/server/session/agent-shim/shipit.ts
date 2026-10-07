@@ -56,7 +56,7 @@ import {
   handleSettingsList,
   handleSettingsPropose,
 } from "./shipit-settings.js";
-import { handleScheduleList, handleSchedulePropose } from "./shipit-schedule.js";
+import { handleScheduleList, handleScheduleNotes, handleSchedulePropose } from "./shipit-schedule.js";
 import { settingsDeps, type SettingsDeps } from "./settings-out.js";
 import { renderLine } from "../../shared/settings-catalogue/rendered.js";
 import {
@@ -373,6 +373,7 @@ ShipIt's own settings (docs/299 — read what the user configured, propose a cha
 Scheduled sessions (docs/324 — sessions ShipIt starts by itself on a schedule):
   shipit schedule list    [--json]
   shipit schedule propose [--id ID] --file FILE [--json]   (YAML; --file - reads stdin)
+  shipit schedule notes   SCHEDULE-ID [RUN-ID [FILE]] [--json]
 
   When the user asks for something to happen regularly ("every weekday at 9,
   check the security PRs"), propose a schedule. 'list' shows the schedules with
@@ -381,6 +382,11 @@ Scheduled sessions (docs/324 — sessions ShipIt starts by itself on a schedule)
   the user clicks Confirm on the card; there is no way to save a schedule
   yourself. It returns immediately: never wait for the card, and never post the
   same one twice. /shipit-docs/schedules.md has the YAML.
+
+  'notes' reads the notes folders of a schedule's runs: the runs that have
+  notes, one run's files, or one file. A run of the schedule may always read
+  them. In any other session the first call posts a card asking the user, and
+  returns at once; the next turn tells you what they decided.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -708,6 +714,7 @@ const SCHEDULE_HANDLERS: Record<
 > = {
   list: handleScheduleList,
   propose: handleSchedulePropose,
+  notes: handleScheduleNotes,
 };
 
 const SOURCE_HANDLERS: Record<

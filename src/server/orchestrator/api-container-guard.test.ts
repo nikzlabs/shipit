@@ -522,6 +522,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   // user's click saves a schedule.
   "GET /api/sessions/:id/schedules",
   "POST /api/sessions/:id/schedules/propose",
+  // docs/324-scheduled-sessions reqs 13, 28 — the read checks the asking session, and posts the
+  // notes access card when it may not read; `…/schedule-notes-access/:cardId/allow` and `…/deny`
+  // are absent on purpose, so only the user's click grants access.
+  "GET /api/sessions/:id/schedule-notes",
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",
   "GET /api/sessions/:parentId/children/:childId",

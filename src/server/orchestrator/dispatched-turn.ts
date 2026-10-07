@@ -286,7 +286,9 @@ async function runDispatchedTurnInner(
   // heads the prompt, so its offset is the prompt's.
   const insertedStatusContext = locateStatusContext(agentPrefix, statusContext);
   const role = deps.takeRoleInstructions?.(runner.sessionId) ?? { instructions: "" };
-  const roleContext = role.instructions;
+  // Keyed by the dispatch's delivery id rather than taken, so a re-sent first prompt carries it again.
+  const scheduledRun = deps.scheduledRunContext?.(runner.sessionId, opts.deliveryId) ?? "";
+  const roleContext = [role.instructions, scheduledRun].filter(Boolean).join("\n\n");
   takes.add(role.repark);
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +

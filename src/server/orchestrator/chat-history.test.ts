@@ -159,6 +159,14 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     resolvedAt: "2026-10-07T00:01:00.000Z",
     outcome: "There is no role named \"reviewer\".",
   },
+  scheduleNotesAccess: {
+    cardId: "snr-1",
+    scheduleId: "schedule-1",
+    scheduleName: "Security PRs",
+    phase: "allowed",
+    createdAt: "2026-10-07T00:00:00.000Z",
+    resolvedAt: "2026-10-07T00:01:00.000Z",
+  },
   issueWrite: {
     cardId: "iw1",
     tracker: "linear",

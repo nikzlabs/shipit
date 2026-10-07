@@ -58,6 +58,11 @@ export interface ClaimSessionOptions {
   excludeSessionIds?: string[];
   /** Required for background claims: warm drafts may still have an attached user. */
   skipReuse?: boolean;
+  /**
+   * Never take the warm session: its standby container started without a mount this session
+   * needs (a scheduled run's notes folder, docs/324-scheduled-sessions).
+   */
+  skipWarm?: boolean;
   /** The claiming browser tab; only the draft this tab was last given is ever reused. */
   tabId?: string;
 }
@@ -178,6 +183,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       let claimPath: ClaimSessionResult["claimPath"] = "slow-clone";
       const forceFetch = opts?.forceFetch === true;
       const skipReuse = opts?.skipReuse === true;
+      const skipWarm = opts?.skipWarm === true;
       const excluded = new Set(opts?.excludeSessionIds ?? []);
       const tabKey = opts?.tabId && !skipReuse ? `${opts.tabId}\n${url}` : undefined;
 
@@ -211,7 +217,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         }
 
         const currentRepo = deps.repoStore.get(url);
-        if (currentRepo?.warmSessionId && !excluded.has(currentRepo.warmSessionId)) {
+        if (!skipWarm && currentRepo?.warmSessionId && !excluded.has(currentRepo.warmSessionId)) {
           const warmSession = deps.sessionManager.get(currentRepo.warmSessionId);
           if (warmSession?.workspaceDir) {
             claimPath = "warm";
@@ -223,7 +229,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           }
         }
 
-        const warmingPromise = deps.waitForWarmSession?.(url);
+        const warmingPromise = skipWarm ? undefined : deps.waitForWarmSession?.(url);
         if (warmingPromise) {
           await warmingPromise;
           const freshRepo = deps.repoStore.get(url);

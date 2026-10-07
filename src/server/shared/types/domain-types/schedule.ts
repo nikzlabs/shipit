@@ -127,3 +127,55 @@ export interface ScheduleProposalCard {
   /** ShipIt's own account of an ending that is not `confirmed` or `cancelled`. */
   outcome?: string;
 }
+
+/** docs/324-scheduled-sessions reqs 28, 30 — the user's decision on a notes access card. */
+export type ScheduleNotesAccessPhase = "pending" | "allowed" | "denied";
+
+/**
+ * The notes access card: an agent in a session that is not a run of the schedule asks to read
+ * its notes. Allow covers this one schedule for this one session (req 30).
+ */
+export interface ScheduleNotesAccessCard {
+  cardId: string;
+  scheduleId: string;
+  /** The schedule's name when the agent asked. */
+  scheduleName: string;
+  phase: ScheduleNotesAccessPhase;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+/** One file of a run's notes folder; `path` is relative to the folder, with `/` separators. */
+export interface ScheduleNoteFile {
+  path: string;
+  size: number;
+  modifiedAt: string;
+}
+
+/** A run's notes folder as the viewer (req 27) and `shipit schedule notes` read it. */
+export interface ScheduleRunNotes {
+  scheduleId: string;
+  scheduleName: string;
+  runId: string;
+  /** The run's slot, or when Run now asked for it. */
+  runAt: string;
+  files: ScheduleNoteFile[];
+  /** The folder holds more files than are listed. */
+  truncated?: true;
+}
+
+/** One notes file. `text` is absent for a file that is not text, which is shown by name and size. */
+export interface ScheduleNoteContent {
+  path: string;
+  size: number;
+  text?: string;
+  /** Only the start of the file is in `text`. */
+  truncated?: true;
+}
+
+/** A run of the schedule that has a notes folder, for `shipit schedule notes <schedule>`. */
+export interface ScheduleNotesRun {
+  runId: string;
+  runAt: string;
+  outcome: ScheduleRunOutcome;
+}

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, SessionMessageProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, ScheduleProposalCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, SessionMessageProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, ScheduleProposalCard, ScheduleNotesAccessCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { retireBackgroundSubagentResult } from "./subagent-completion.js";
@@ -138,6 +138,7 @@ export interface PersistedMessage {
   sshHostKey?: SshHostKeyCard;
   settingsProposal?: SettingsProposalCard;
   scheduleProposal?: ScheduleProposalCard;
+  scheduleNotesAccess?: ScheduleNotesAccessCard;
   childMerged?: ChildMergedCard;
   selfMergeWatch?: SelfMergeWatchCard;
   sessionReport?: SessionReportCard;
@@ -216,6 +217,7 @@ interface MessageRow {
   ssh_host_key: string | null;
   settings_proposal: string | null;
   schedule_proposal: string | null;
+  schedule_notes_access: string | null;
   child_merged: string | null;
   self_merge_watch: string | null;
   session_report: string | null;
@@ -235,8 +237,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, session_message_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, schedule_proposal, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @session_message_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @schedule_proposal, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, session_message_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, schedule_proposal, schedule_notes_access, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @session_message_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @schedule_proposal, @schedule_notes_access, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
@@ -246,7 +248,7 @@ const UPDATE_SQL = `
     client_request_id=@client_request_id,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, repo_session_proposal=@repo_session_proposal, session_message_proposal=@session_message_proposal, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, ssh_host_key=@ssh_host_key, settings_proposal=@settings_proposal, schedule_proposal=@schedule_proposal, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, repo_session_proposal=@repo_session_proposal, session_message_proposal=@session_message_proposal, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, ssh_host_key=@ssh_host_key, settings_proposal=@settings_proposal, schedule_proposal=@schedule_proposal, schedule_notes_access=@schedule_notes_access, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin
   WHERE id = @id
 `;
@@ -261,6 +263,7 @@ const UPDATE_SQL = `
 const DECISION_CARD_COLUMNS = {
   settingsProposal: "settings_proposal",
   scheduleProposal: "schedule_proposal",
+  scheduleNotesAccess: "schedule_notes_access",
 } as const satisfies { [F in keyof PersistedMessage]?: keyof MessageRow };
 
 export type DecisionCardField = keyof typeof DECISION_CARD_COLUMNS;
@@ -413,6 +416,7 @@ export class ChatHistoryManager {
       ssh_host_key: msg.sshHostKey ? JSON.stringify(msg.sshHostKey) : null,
       settings_proposal: msg.settingsProposal ? JSON.stringify(msg.settingsProposal) : null,
       schedule_proposal: msg.scheduleProposal ? JSON.stringify(msg.scheduleProposal) : null,
+      schedule_notes_access: msg.scheduleNotesAccess ? JSON.stringify(msg.scheduleNotesAccess) : null,
       branch_synced: msg.branchSynced ? JSON.stringify(msg.branchSynced) : null,
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
       self_merge_watch: msg.selfMergeWatch ? JSON.stringify(msg.selfMergeWatch) : null,
@@ -469,6 +473,9 @@ export class ChatHistoryManager {
     if (row.ssh_host_key) msg.sshHostKey = JSON.parse(row.ssh_host_key) as SshHostKeyCard;
     if (row.settings_proposal) msg.settingsProposal = JSON.parse(row.settings_proposal) as SettingsProposalCard;
     if (row.schedule_proposal) msg.scheduleProposal = JSON.parse(row.schedule_proposal) as ScheduleProposalCard;
+    if (row.schedule_notes_access) {
+      msg.scheduleNotesAccess = JSON.parse(row.schedule_notes_access) as ScheduleNotesAccessCard;
+    }
     if (row.branch_synced) msg.branchSynced = JSON.parse(row.branch_synced) as BranchSyncedCard;
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
     if (row.self_merge_watch) msg.selfMergeWatch = JSON.parse(row.self_merge_watch) as SelfMergeWatchCard;

@@ -134,6 +134,8 @@ import type {
   WsSettingsProposalUpdate,
   WsScheduleProposalCard,
   WsScheduleProposalUpdate,
+  WsScheduleNotesAccessCard,
+  WsScheduleNotesAccessUpdate,
   WsNonTurnFailureCard,
   WsNonTurnFailureDismissed,
 } from "./cards.js";
@@ -184,6 +186,8 @@ export type WsServerMessage =
   | WsSettingsProposalUpdate
   | WsScheduleProposalCard
   | WsScheduleProposalUpdate
+  | WsScheduleNotesAccessCard
+  | WsScheduleNotesAccessUpdate
   | WsNonTurnFailureCard
   | WsNonTurnFailureDismissed
   | WsBugReportCard

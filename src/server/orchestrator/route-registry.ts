@@ -230,7 +230,10 @@ export async function registerRoutes(
     clientDir, logStore, buildId, version,
   } = rt;
   const { kickDiskEscalation } = monitors;
-  const { agentMergeClaims, agentMergeExecutor, claimSessionService, scheduleStore, scheduleRunner, scheduleProposals } = rt;
+  const {
+    agentMergeClaims, agentMergeExecutor, claimSessionService, scheduleStore, scheduleRunner, scheduleProposals,
+    scheduleNotes, scheduleNotesRequests,
+  } = rt;
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
   const settingsProposals = new SettingsProposalStore(databaseManager);
@@ -294,6 +297,8 @@ export async function registerRoutes(
     scheduleStore,
     scheduleRunner,
     scheduleProposals,
+    scheduleNotes,
+    scheduleNotesRequests,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
     releaseStatusPoller,
@@ -1044,7 +1049,7 @@ export async function registerRoutes(
         ...(deps.trackerFetchImpl !== undefined ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
         repoStore, warmSessionForRepo, generateText,
         egressAllowlistStore,
-        settingsProposals, scheduleProposals, secretStore, serviceManagers, agentMergeClaims,
+        settingsProposals, scheduleProposals, scheduleNotesRequests, secretStore, serviceManagers, agentMergeClaims,
         ...(scheduleRunner ? { scheduledRuns: scheduleRunner } : {}),
         ...(containerManager ? { containerManager } : {}),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,

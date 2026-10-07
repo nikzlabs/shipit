@@ -68,7 +68,11 @@ import { GitHistory } from "./components/GitHistory.js";
 import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
 import { ProjectSettings } from "./components/ProjectSettings.js";
-import type { ScheduleProposalCard as ScheduleProposalCardData, TrackerId } from "../server/shared/types.js";
+import type {
+  ScheduleNotesAccessCard as ScheduleNotesAccessCardData,
+  ScheduleProposalCard as ScheduleProposalCardData,
+  TrackerId,
+} from "../server/shared/types.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { IssuesPanel } from "./components/IssuesPanel.js";
@@ -100,6 +104,7 @@ import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { SandboxDialog } from "./components/SandboxDialog.js";
 import { SessionSettingsDialog } from "./components/SessionSidebar/SessionSettingsDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
+import { ScheduleNotesViewer } from "./components/ScheduleNotesViewer.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
 import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
@@ -140,6 +145,7 @@ import type {
 import { useSessionStore } from "./stores/session-store.js";
 import { applySessionMessageProposalUpdate } from "./hooks/message-handlers/session-message-proposal.js";
 import { applyScheduleProposalUpdate } from "./hooks/message-handlers/schedule-proposal-card.js";
+import { applyScheduleNotesAccessUpdate } from "./hooks/message-handlers/schedule-notes-access-card.js";
 import { applyRepoSessionProposalUpdate } from "./hooks/message-handlers/repo-session-proposal.js";
 import { useGitStore } from "./stores/git-store.js";
 import { useFileStore, markUploadDeleted, noteUploadDismissed } from "./stores/file-store.js";
@@ -1653,6 +1659,15 @@ export default function App() {
               if (useSessionStore.getState().sessionId !== sessionId) return;
               applyScheduleProposalUpdate(cardId, res.card);
             }}
+            onScheduleNotesAccessDecision={async (cardId, action) => {
+              if (!sessionId) return;
+              const res = await apiPost<{ card: ScheduleNotesAccessCardData }>(
+                `/api/sessions/${sessionId}/schedule-notes-access/${cardId}/${action}`,
+              );
+              // As for the proposal above: no runner, no WS update.
+              if (useSessionStore.getState().sessionId !== sessionId) return;
+              applyScheduleNotesAccessUpdate(cardId, res.card);
+            }}
             onUndoIssueWrite={(cardId) =>
               send({ type: "undo_issue_write", cardId })
             }
@@ -1894,6 +1909,7 @@ export default function App() {
             }}
           />
         )}
+        <ScheduleNotesViewer />
         {showUsageModal && (
           <UsageModal
             currentSessionUsage={currentSessionUsage}

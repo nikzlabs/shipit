@@ -488,6 +488,7 @@ async function composeAndRunAgentTurn(
             chatHistoryManager: ctx.chatHistoryManager,
             settingsProposals: ctx.settingsProposals,
             scheduleProposals: ctx.scheduleProposals,
+            scheduleNotesRequests: ctx.scheduleNotesRequests,
           },
           capturedSessionId,
         )

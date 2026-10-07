@@ -37,6 +37,7 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { SessionContainerManager } from "./session-container.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
+import { ScheduleNotes } from "./schedule-notes.js";
 
 interface FakeContainer { sessionId: string }
 
@@ -1705,5 +1706,61 @@ describe("buildRunnerFactory — teardown during the create preflight", () => {
       log.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("buildRunnerFactory — a scheduled run's notes folder (docs/324-scheduled-sessions req 13)", () => {
+  async function createdConfig(opts: { folder: boolean }): Promise<Record<string, unknown>> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-run-notes-"));
+    fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
+    const notes = new ScheduleNotes(path.join(dir, "schedules"));
+    if (opts.folder) notes.prepareRun("sched-1", "run-1", null);
+    let seen: Record<string, unknown> | undefined;
+    const containerManager = {
+      get: () => undefined,
+      teardownEpoch: () => 0,
+      destroy: async () => {},
+      preparePnpmStore: () => undefined,
+      prepareOverlaySpecs: async () => [],
+      buildConfigForWorkspace: (c: Record<string, unknown>) => c,
+      recordCreateError: () => {},
+      clearCreateError: () => {},
+      create: async (config: Record<string, unknown>) => {
+        seen = config;
+        return { id: "cid-1", workerUrl: "http://172.20.0.9:9100", containerIp: "172.20.0.9", status: "running" };
+      },
+    } as unknown as SessionContainerManager;
+    const setWorkerUrl = vi.spyOn(ContainerSessionRunner.prototype, "setWorkerUrl").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const factory = buildRunnerFactory({
+        deps: {},
+        containerManager,
+        credentialsDir: TEST_CREDENTIALS_DIR,
+        sessionManager: {
+          listAll: () => [],
+          get: () => ({ id: "run-session", kind: "sandbox", scheduleId: "sched-1", scheduleRunId: "run-1" }),
+        } as unknown as SessionManager,
+        runtimeMode: "containerized",
+        runNotesDir: ({ scheduleId, runId }) => notes.existingRunDir(scheduleId, runId) ?? undefined,
+      });
+      const runner = factory!({ sessionId: "run-session", sessionDir: path.join(dir, "workspace"), defaultAgentId: "claude" as AgentId });
+      await vi.waitFor(() => { expect(seen).toBeDefined(); });
+      runner.dispose({ force: true });
+      return { ...seen!, notesRoot: notes.root };
+    } finally {
+      setWorkerUrl.mockRestore();
+      log.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("mounts the run's own folder into its container", async () => {
+    const config = await createdConfig({ folder: true });
+    expect(config.scheduleNotesDir).toBe(path.join(config.notesRoot as string, "sched-1", "runs", "run-1"));
+  });
+
+  it("mounts nothing once the folder is gone, as after the schedule's Delete (req 32)", async () => {
+    expect((await createdConfig({ folder: false })).scheduleNotesDir).toBeUndefined();
   });
 });

@@ -58,6 +58,10 @@ import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
+import { scheduledRunContext } from "./scheduled-run-context.js";
+import type { ScheduleStore } from "./schedule-store.js";
+import type { ScheduleNotes } from "./schedule-notes.js";
+import type { ScheduleNotesRequestStore } from "./schedule-notes-request-store.js";
 import { prepareCardOutcomeNotices } from "./services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
@@ -153,6 +157,9 @@ export interface RunnerRegistryDeps {
   /** Absent in minimal setups; without it a turn simply carries no settings notice. */
   settingsProposals?: SettingsProposalStore;
   scheduleProposals?: ScheduleProposalStore;
+  scheduleNotesRequests?: ScheduleNotesRequestStore;
+  /** Absent in minimal setups; a run's first turn then carries no `<scheduled_run>` block. */
+  scheduledRuns?: { store: ScheduleStore; notes: ScheduleNotes };
 }
 
 export function assertSessionCanDispatch(
@@ -194,6 +201,8 @@ export function createRunnerRegistry(
     resolvePluginServices,
     settingsProposals,
     scheduleProposals,
+    scheduleNotesRequests,
+    scheduledRuns,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -504,7 +513,16 @@ export function createRunnerRegistry(
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
         cardOutcomeNotices: (sessionId) =>
-          prepareCardOutcomeNotices({ chatHistoryManager, settingsProposals, scheduleProposals }, sessionId),
+          prepareCardOutcomeNotices(
+            { chatHistoryManager, settingsProposals, scheduleProposals, scheduleNotesRequests },
+            sessionId,
+          ),
+        ...(scheduledRuns
+          ? {
+              scheduledRunContext: (sessionId: string, deliveryId: string | undefined) =>
+                scheduledRunContext({ sessionManager, ...scheduledRuns, runtimeMode }, sessionId, deliveryId),
+            }
+          : {}),
         repoSessionOutcomeNotice: (sessionId) =>
           prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId),
         sessionMessageOutcomeNotice: (sessionId) =>
