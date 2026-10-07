@@ -157,6 +157,13 @@ export async function registerSessionStatusRoutes(
         reply.code(404).send({ error: "Session not found." });
         return;
       }
+      // docs/324-scheduled-sessions req 21 — a run's list row carries its manual-step count.
+      if (
+        (card.needsYou?.length ?? 0) !== (stored?.needsYou?.length ?? 0)
+        && deps.sessionManager.get(sessionId)?.scheduleId
+      ) {
+        deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+      }
 
       // req 12 — the turn asked for the card, so the settlement step must not
       // nudge for it, whether or not the call changed anything. A turn reset

@@ -66,6 +66,35 @@ export const BAND_CLEARANCE_CLASS = "pt-1 pb-1";
 
 export const ROW_GAP_CLASS = "gap-1";
 
+/**
+ * docs/161 — the collapsible "Recently resolved" sub-section header. The caret
+ * hugs the label (variant E) rather than sitting in the right gutter, so it
+ * reads as part of the section title instead of echoing the group header's own
+ * left caret one indent up. The whole row is the hit target.
+ */
+function RecentlyResolvedToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-label={collapsed ? "Expand recently resolved" : "Collapse recently resolved"}
+      className="group/resolved flex items-center gap-1.5 px-3 pt-2 pb-0.5 mx-1 text-left"
+    >
+      <GitMergeIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
+        Recently resolved
+      </span>
+      <span className="shrink-0 flex items-center text-(--color-text-tertiary) group-hover/resolved:text-(--color-text-secondary) transition-colors">
+        {collapsed
+          ? <CaretRightIcon size={ICON_SIZE.XS} />
+          : <CaretDownIcon size={ICON_SIZE.XS} />
+        }
+      </span>
+    </button>
+  );
+}
+
 export function OpsSessionGroup({
   sessions,
   currentSessionId,
@@ -136,9 +165,12 @@ export function OpsSessionGroup({
 
 export function SandboxSessionGroup({
   sessions,
+  isDone,
   currentSessionId,
   isCollapsed,
   onToggleCollapse,
+  isResolvedCollapsed,
+  onToggleResolvedCollapsed,
   onResume,
   onSelectCurrent,
   onArchive,
@@ -146,9 +178,13 @@ export function SandboxSessionGroup({
   separated,
 }: {
   sessions: SessionInfo[];
+  // From the whole session list, never from this group's sessions only.
+  isDone: (s: SessionInfo) => boolean;
   currentSessionId?: string;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  isResolvedCollapsed: boolean;
+  onToggleResolvedCollapsed: () => void;
   onResume: (sessionId: string) => void;
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
@@ -160,6 +196,18 @@ export function SandboxSessionGroup({
 
   const color = separated ? "var(--color-sandbox)" : undefined;
   const edge = groupEdgeStyle(color);
+  const renderItem = (session: SessionInfo) => (
+    <SessionItem
+      key={session.id}
+      session={session}
+      isCurrent={session.id === currentSessionId}
+      onResume={onResume}
+      onSelectCurrent={onSelectCurrent}
+      onArchive={onArchive}
+      isTouch={isTouch}
+    />
+  );
+  const resolved = sessions.filter(isDone);
   return (
     <div className={`flex flex-col ${separated ? GROUP_GAP_CLASS : ""}`} style={edge} data-testid="sandbox-group">
       <div
@@ -185,17 +233,11 @@ export function SandboxSessionGroup({
       </div>
       {!isCollapsed && (
         <div className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
-          {sessions.map((session) => (
-            <SessionItem
-              key={session.id}
-              session={session}
-              isCurrent={session.id === currentSessionId}
-              onResume={onResume}
-              onSelectCurrent={onSelectCurrent}
-              onArchive={onArchive}
-              isTouch={isTouch}
-            />
-          ))}
+          {sessions.filter((s) => !isDone(s)).map(renderItem)}
+          {resolved.length > 0 && (
+            <RecentlyResolvedToggle collapsed={isResolvedCollapsed} onToggle={onToggleResolvedCollapsed} />
+          )}
+          {!isResolvedCollapsed && resolved.map(renderItem)}
         </div>
       )}
     </div>
@@ -300,7 +342,8 @@ export function RepoGroup({
   onResume: (id: string) => void;
   onSelectCurrent?: () => void;
   onArchive: (id: string) => void;
-  onNewSession: () => void;
+  /** Absent in the Scheduled view, which lists runs only. */
+  onNewSession?: () => void;
   onViewAll: () => void;
   onProjectSettings: () => void;
   onHideRepo: () => void;
@@ -485,7 +528,7 @@ export function RepoGroup({
         <div ref={listRef} data-testid="group-session-list" className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
           {(() => {
 
-            const newSessionButton = (
+            const newSessionButton = onNewSession && (
               <button
                 type="button"
                 onClick={onNewSession}
@@ -654,32 +697,10 @@ export function RepoGroup({
                   )}
                   {newSessionButton}
                   {active}
-                  {/* docs/161 — collapsible "Recently resolved" sub-section.
-                      Expanded by default; the per-repo collapsed state is
-                      remembered (repo-store → localStorage). The caret hugs the
-                      label (variant E) rather than sitting in the right gutter,
-                      so it reads as part of the section title instead of echoing
-                      the repo header's own left caret one indent up. The whole
-                      row is the hit target for a forgiving click area. */}
+                  {/* Expanded by default; the per-repo collapsed state is
+                      remembered (repo-store → localStorage). */}
                   {resolved.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={onToggleResolvedCollapsed}
-                      aria-expanded={!isResolvedCollapsed}
-                      aria-label={isResolvedCollapsed ? "Expand recently resolved" : "Collapse recently resolved"}
-                      className="group/resolved flex items-center gap-1.5 px-3 pt-2 pb-0.5 mx-1 text-left"
-                    >
-                      <GitMergeIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
-                        Recently resolved
-                      </span>
-                      <span className="shrink-0 flex items-center text-(--color-text-tertiary) group-hover/resolved:text-(--color-text-secondary) transition-colors">
-                        {isResolvedCollapsed
-                          ? <CaretRightIcon size={ICON_SIZE.XS} />
-                          : <CaretDownIcon size={ICON_SIZE.XS} />
-                        }
-                      </span>
-                    </button>
+                    <RecentlyResolvedToggle collapsed={isResolvedCollapsed} onToggle={onToggleResolvedCollapsed} />
                   )}
                   {!isResolvedCollapsed && resolved}
                 </>

@@ -72,4 +72,17 @@ describe("useAttentionSessions", () => {
 
     expect([...result.current]).toEqual(["stuck"]);
   });
+
+  it("docs/324: includes a run that waits on the user even after its PR merged, and drops a finished one", () => {
+    const merged = { scheduleId: "sched-1", mergedAt: "2024-01-02T00:00:00.000Z" };
+    const sessions = [
+      session({ id: "asking", ...merged, awaitingAnswer: true }),
+      session({ id: "out-of-quota", ...merged, lastTurnOutcome: "quota-refused" }),
+      session({ id: "finished", ...merged, runFinishedAt: "2024-01-02T00:00:01.000Z" }),
+    ];
+
+    const { result } = renderHook(() => useAttentionSessions(sessions));
+
+    expect([...result.current]).toEqual(["asking", "out-of-quota"]);
+  });
 });

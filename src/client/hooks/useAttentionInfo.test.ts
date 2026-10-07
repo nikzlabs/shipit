@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { computeAttentionReason, type AttentionInputs } from "./useAttentionInfo.js";
+import { computeAttentionReason, runAttentionReason, type AttentionInputs } from "./useAttentionInfo.js";
+import type { SessionListRow } from "../../server/shared/types.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
@@ -15,6 +16,7 @@ function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
     resolved: false,
     muted: false,
     workspaceBlockKind: undefined,
+    runReason: null,
     ...overrides,
   };
 }
@@ -352,5 +354,50 @@ describe("computeAttentionReason", () => {
         })),
       ).toBe("Workspace has a file ShipIt can't read");
     });
+  });
+
+  describe("scheduled run (docs/324-scheduled-sessions reqs 21, 31)", () => {
+    const PENDING = { state: "pending" as const, total: 1, passed: 0, failed: 0, pending: 1 };
+    const question = "Waiting for your answer";
+
+    it("reports a run's question before the PR's silences", () => {
+      expect(computeAttentionReason(inputs({ runReason: question, status: status({ prState: "merged" }) }))).toBe(question);
+      expect(computeAttentionReason(inputs({ runReason: question, card: card({ phase: "closed" }) }))).toBe(question);
+      expect(computeAttentionReason(inputs({ runReason: question, card: card({ checks: PENDING }) }))).toBe(question);
+      expect(computeAttentionReason(inputs({
+        runReason: question,
+        card: card({ autoMerge: { enabled: true, mergeMethod: "squash" } }),
+      }))).toBe(question);
+    });
+
+    it("stays silent while the run works, and once it is finished", () => {
+      expect(computeAttentionReason(inputs({ runReason: question, isAgentRunning: true }))).toBeNull();
+      expect(computeAttentionReason(inputs({ runReason: question, resolved: true }))).toBeNull();
+      expect(computeAttentionReason(inputs({ runReason: question, muted: true }))).toBeNull();
+    });
+  });
+});
+
+describe("runAttentionReason", () => {
+  const row = (overrides: Partial<SessionListRow> = {}): SessionListRow => ({
+    id: "run", title: "Sweep · Oct 7", createdAt: "", lastUsedAt: "", remoteUrl: "", scheduleId: "sched-1", ...overrides,
+  });
+
+  it("is null for a session that is not a run", () => {
+    expect(runAttentionReason(row({ scheduleId: undefined, awaitingAnswer: true, lastTurnOutcome: "errored" }), true))
+      .toBeNull();
+  });
+
+  it("names a question, an error, an exhausted quota and a manual step", () => {
+    expect(runAttentionReason(row({ awaitingAnswer: true }), true)).toBe("Waiting for your answer");
+    expect(runAttentionReason(row({ lastTurnOutcome: "errored" }), true)).toBe("Run stopped on an error");
+    expect(runAttentionReason(row({ lastTurnOutcome: "quota-refused" }), true)).toBe("Run stopped: out of quota");
+    expect(runAttentionReason(row({ manualStepCount: 1 }), true)).toBe("A manual step needs you");
+    expect(runAttentionReason(row({ manualStepCount: 3 }), true)).toBe("3 manual steps need you");
+    expect(runAttentionReason(row({ lastTurnOutcome: "ok" }), true)).toBeNull();
+  });
+
+  it("ignores manual steps while the status card is off, as the card itself does", () => {
+    expect(runAttentionReason(row({ manualStepCount: 2 }), false)).toBeNull();
   });
 });

@@ -3,7 +3,8 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
-import type { WorkspaceBlockKind } from "../../server/shared/types.js";
+import type { SessionListRow, WorkspaceBlockKind } from "../../server/shared/types.js";
+import { isWorkResolved } from "../../server/shared/session-resolution.js";
 
 /**
  * docs/298-broken-workspace-visibility req 3 — what to say about a workspace
@@ -34,7 +35,7 @@ export interface AttentionInputs {
    * The session's PR has reached a terminal state — merged or
    * closed-without-merge — and hasn't been reopened (worked in) since. This is
    * the SAME signal that demotes the row into the sidebar's "Recently resolved"
-   * group (keyed on `SessionInfo.mergedAt`/`closedAt`). It
+   * group (`isWorkResolved`, which for a scheduled run is its finish). It
    * is passed in — rather than re-derived from the pr-store `status.prState` —
    * so the grouping and the attention marker can never disagree: a just-merged
    * row whose pr-store status still reads `open` (or carries a stale CI
@@ -50,6 +51,36 @@ export interface AttentionInputs {
    * resolves this one on its own.
    */
   workspaceBlockKind: WorkspaceBlockKind | undefined;
+  /** docs/324-scheduled-sessions — from {@link runAttentionReason}; null for any other session. */
+  runReason: string | null;
+}
+
+/**
+ * docs/324-scheduled-sessions reqs 21, 31 — what a scheduled run left for the
+ * user. The PR silences below assume the PR is all a session has open; for a
+ * run, these are open as well, so they come first.
+ */
+export function runAttentionReason(session: SessionListRow, statusCardOn: boolean): string | null {
+  if (!session.scheduleId) return null;
+  if (session.awaitingAnswer) return "Waiting for your answer";
+  if (session.lastTurnOutcome === "quota-refused") return "Run stopped: out of quota";
+  if (session.lastTurnOutcome === "errored") return "Run stopped on an error";
+  const steps = statusCardOn ? session.manualStepCount ?? 0 : 0;
+  if (steps > 0) return steps === 1 ? "A manual step needs you" : `${steps} manual steps need you`;
+  return null;
+}
+
+/** The inputs a session row decides by itself, the same for every caller. */
+export function rowAttentionInputs(
+  session: SessionListRow,
+  statusCardOn: boolean,
+): Pick<AttentionInputs, "resolved" | "muted" | "workspaceBlockKind" | "runReason"> {
+  return {
+    resolved: isWorkResolved(session),
+    muted: !!session.mutedAt,
+    workspaceBlockKind: session.workspaceBlock,
+    runReason: runAttentionReason(session, statusCardOn),
+  };
 }
 
 /**
@@ -77,6 +108,7 @@ export function computeAttentionReason({
   resolved,
   muted,
   workspaceBlockKind,
+  runReason,
 }: AttentionInputs): string | null {
 
   // count, and the notification watcher all go quiet together precisely because
@@ -105,6 +137,8 @@ export function computeAttentionReason({
 
   // resolve signal, so a row in "Recently resolved" never wears the bar.
   if (resolved) return null;
+
+  if (runReason) return runReason;
 
   // merged PR whose row hasn't been regrouped yet must still be silent. This
 
@@ -137,17 +171,13 @@ export function computeAttentionReason({
 }
 
 /**
- * `muted`, `workspaceBlockKind` and `resolved` are passed in rather than looked
- * up: the caller is a session ROW, whose `SessionInfo` may come from a list the
- * store has not caught up with — or from All sessions, which the sidebar list
- * does not hold — and a lookup would contradict the row itself.
+ * The row's own fields are read from the row passed in rather than looked up:
+ * its `SessionInfo` may come from a list the store has not caught up with — or
+ * from All sessions, which the sidebar list does not hold — and a lookup would
+ * contradict the row itself.
  */
-export function useAttentionInfo(
-  sessionId: string,
-  muted = false,
-  workspaceBlockKind?: WorkspaceBlockKind,
-  resolved = false,
-): string | null {
+export function useAttentionInfo(session: SessionListRow): string | null {
+  const sessionId = session.id;
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
@@ -155,5 +185,9 @@ export function useAttentionInfo(
   const hasBackgroundTasks = useSessionStore((s) => s.backgroundTaskSessions.has(sessionId));
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
-  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved, muted, workspaceBlockKind });
+  const statusCardOn = useSettingsStore((s) => s.sessionStatusCard);
+  return computeAttentionReason({
+    card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled,
+    ...rowAttentionInputs(session, statusCardOn),
+  });
 }
