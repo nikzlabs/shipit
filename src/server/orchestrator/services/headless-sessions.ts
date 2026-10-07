@@ -16,6 +16,15 @@ import type {
   SessionStartTarget,
 } from "../../shared/types.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
+import type { SessionManager } from "../sessions.js";
+import type { CredentialStore } from "../credential-store.js";
+import type { GitHubAuthManager } from "../github-auth.js";
+import type { PrStatusPoller } from "../pr-status-poller.js";
+import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
+import type { SessionContainerManager } from "../session-container.js";
+import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
+import type { SessionLoopDetector } from "../loop-detector.js";
+import { reconcileSessionEgress } from "./reconcile-session-egress.js";
 import {
   agentIdForModel,
   getAgentCapabilities,
@@ -40,7 +49,7 @@ import {
   type StartSelection,
 } from "./session-start-params.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
-import { prepareDispatch } from "../prepared-dispatch.js";
+import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import { resolveUserRole } from "./session-role.js";
 import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 
@@ -95,6 +104,72 @@ export interface HeadlessSessionDeps extends StartParamDeps {
   graduationDeps: GraduateSessionDeps;
 }
 
+/** What the headless start needs from the app; the route and the scheduler build it the same way. */
+export interface HeadlessDepsSource {
+  sessionManager: SessionManager;
+  runnerRegistry: SessionRunnerRegistry;
+  claimService: ClaimSessionService;
+  createSessionDir: NonNullable<HeadlessSessionDeps["createSessionDir"]>;
+  defaultAgentId: AgentId;
+  credentialsDir?: string | undefined;
+  credentialStore: CredentialStore;
+  providerAccountManager?: ProviderAccountManager | undefined;
+  graduationDeps: GraduateSessionDeps;
+  githubAuthManager: GitHubAuthManager;
+  prStatusPoller?: PrStatusPoller | undefined;
+  egressAllowlistStore?: EgressAllowlistStore | undefined;
+  containerManager?: SessionContainerManager | null | undefined;
+  oomBreaker?: SessionOomCircuitBreaker | undefined;
+  loopDetector?: SessionLoopDetector | undefined;
+  sseBroadcast: (event: string, data: unknown) => void;
+}
+
+export function headlessSessionDeps(src: HeadlessDepsSource): HeadlessSessionDeps {
+  const containerManager = src.containerManager ?? null;
+  const { egressAllowlistStore, oomBreaker, loopDetector } = src;
+  return {
+    sessionManager: src.sessionManager,
+    runnerRegistry: src.runnerRegistry,
+    claimService: src.claimService,
+    createSessionDir: src.createSessionDir,
+    defaultAgentId: src.defaultAgentId,
+    credentialsDir: src.credentialsDir,
+    credentialStore: src.credentialStore,
+    providerAccountManager: src.providerAccountManager,
+    graduationDeps: src.graduationDeps,
+    autoMergeDeps: {
+      githubAuthManager: src.githubAuthManager,
+      prStatusPoller: src.prStatusPoller,
+    },
+    ...(egressAllowlistStore
+      ? {
+          egressDeps: {
+            store: egressAllowlistStore,
+            reconcile: (sid: string, reconcileOpts?: { agentSeed?: AgentId }) => reconcileSessionEgress(
+              {
+                containerManager,
+                egressAllowlistStore,
+                ...(oomBreaker ? { oomBreaker } : {}),
+                recovery: {
+                  sessionManager: src.sessionManager,
+                  containerManager,
+                  runnerRegistry: src.runnerRegistry,
+                  defaultAgentId: src.defaultAgentId,
+                  ...(oomBreaker ? { oomBreaker } : {}),
+                  ...(loopDetector ? { loopDetector } : {}),
+                  sseBroadcast: src.sseBroadcast,
+                },
+              },
+              sid,
+              reconcileOpts ?? {},
+            ),
+          },
+        }
+      : {}),
+    ...(containerManager ? { reloadEgress: containerManager.reloadEgress.bind(containerManager) } : {}),
+  };
+}
+
 export interface CreateHeadlessSessionOptions {
   target: SessionStartTarget;
   params: SessionStartParams;
@@ -108,6 +183,13 @@ export interface CreateHeadlessSessionOptions {
   deliveryId?: string;
   /** Fetch the base before the clone, as a child session does. Best effort: a failed fetch is logged. */
   fetchBase?: boolean;
+  /**
+   * docs/324-scheduled-sessions — the schedule run this session is. Stamped as soon as the
+   * session exists, so a start that fails later still leaves a session linked to its run.
+   */
+  scheduleRun?: { scheduleId: string; runId: string };
+  /** Runs the first dispatch; a throw cancels it, and the session stays without a turn. */
+  dispatchGate?: (sessionId: string, dispatch: () => TurnHandle) => Promise<TurnHandle>;
 }
 
 export interface CreateHeadlessSessionResult {
@@ -258,6 +340,12 @@ export async function createHeadlessSession(
   checkSshHosts(opts.params.sshHosts, deps);
   const { agentId } = selection;
 
+  const linkScheduleRun = (sessionId: string): void => {
+    if (!opts.scheduleRun) return;
+    sessionManager.setScheduleRun(sessionId, opts.scheduleRun.scheduleId, opts.scheduleRun.runId);
+    if (explicitTitle) sessionManager.rename(sessionId, explicitTitle);
+  };
+
   let newSessionId: string;
   let newWorkspaceDir: string;
   let branchName: string | undefined;
@@ -271,6 +359,7 @@ export async function createHeadlessSession(
     });
     newSessionId = claimed.sessionId;
     newWorkspaceDir = claimed.workspaceDir;
+    linkScheduleRun(newSessionId);
 
     try {
       const currentBranch = (await safeSimpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
@@ -295,6 +384,7 @@ export async function createHeadlessSession(
     );
     newSessionId = created.session.id;
     newWorkspaceDir = created.sessionDir;
+    linkScheduleRun(newSessionId);
     applySessionSelection(sessionManager, newSessionId, agentId, selection);
   }
 
@@ -337,26 +427,14 @@ export async function createHeadlessSession(
     }
   }
 
-  const turn = runner.dispatch(prepareDispatch({
+  const dispatch = (): TurnHandle => runner.dispatch(firstDispatch({
     text: trimmedPrompt,
-    agentInterface: undefined,
-    uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
-    execution: undefined,
-    activity: undefined,
-    images: undefined,
-    files: undefined,
-    permissionMode: firstDispatchParams(opts.params).permissionMode,
-    postTurn: undefined,
-    systemTurn: undefined,
-    automatic: undefined,
-    heldId: undefined,
-    onTurnComplete: undefined,
+    params: opts.params,
+    uploads: uploadRefs,
     deliveryId: opts.deliveryId,
     dictated: opts.dictated,
-    resetMergedBranch: undefined,
-    compactContext: undefined,
-    silent: undefined,
   }));
+  const turn = opts.dispatchGate ? await opts.dispatchGate(newSessionId, dispatch) : dispatch();
 
   if (target.kind === "repo") {
     const { model, serviceId, billingMode, reasoning } = selection;
@@ -389,4 +467,78 @@ export async function createHeadlessSession(
     sessions: sessionManager.list(),
     turn,
   };
+}
+
+/** The session's own task, so it is not `automatic`: no docs/322 hold applies to it. */
+function firstDispatch(opts: {
+  text: string;
+  params: SessionStartParams;
+  uploads?: UploadRef[];
+  deliveryId: string | undefined;
+  dictated?: boolean | undefined;
+}): PreparedDispatch {
+  return prepareDispatch({
+    text: opts.text,
+    agentInterface: undefined,
+    uploads: opts.uploads && opts.uploads.length > 0 ? opts.uploads : undefined,
+    execution: undefined,
+    activity: undefined,
+    images: undefined,
+    files: undefined,
+    permissionMode: firstDispatchParams(opts.params).permissionMode,
+    postTurn: undefined,
+    systemTurn: undefined,
+    automatic: undefined,
+    heldId: undefined,
+    onTurnComplete: undefined,
+    deliveryId: opts.deliveryId,
+    dictated: opts.dictated,
+    resetMergedBranch: undefined,
+    compactContext: undefined,
+    silent: undefined,
+  });
+}
+
+export interface RedispatchOptions {
+  params: SessionStartParams;
+  prompt: string;
+  deliveryId?: string;
+  dispatchGate?: CreateHeadlessSessionOptions["dispatchGate"];
+}
+
+/**
+ * Sends a started session's first prompt again, when a restart came between its dispatch
+ * and its delivery (docs/324-scheduled-sessions → recovery). Every parameter applied
+ * before the dispatch is already stored on the session; only the `started` ones remain.
+ */
+export async function redispatchHeadlessPrompt(
+  deps: HeadlessSessionDeps,
+  sessionId: string,
+  opts: RedispatchOptions,
+): Promise<TurnHandle> {
+  const { sessionManager, runnerRegistry, credentialsDir, credentialStore, providerAccountManager } = deps;
+  const session = sessionManager.get(sessionId);
+  if (!session?.workspaceDir) throw new ServiceError(404, "The run's session no longer exists.");
+  const agentId = session.agentId ?? deps.defaultAgentId;
+  const runner = runnerRegistry.getOrCreate(sessionId, session.workspaceDir, agentId);
+  if (credentialsDir && credentialStore) {
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId,
+      agentId,
+      deps: {
+        credentialsDir,
+        credentialStore,
+        sessionManager,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      },
+    });
+  }
+  const dispatch = (): TurnHandle => runner.dispatch(firstDispatch({
+    text: opts.prompt.trim(),
+    params: opts.params,
+    deliveryId: opts.deliveryId,
+  }));
+  const turn = opts.dispatchGate ? await opts.dispatchGate(sessionId, dispatch) : dispatch();
+  await applyStartParams("started", opts.params, { sessionId, agentId, deps });
+  return turn;
 }

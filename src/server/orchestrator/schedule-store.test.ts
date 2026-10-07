@@ -203,4 +203,61 @@ describe("ScheduleStore — runs", () => {
     store.insertRun({ scheduleId: s.id, slotAt: null });
     expect(store.latestSlotAt(s.id)).toBe(T1);
   });
+
+  it("claims a slot and records the missed ones in one step, newest first (req 15)", () => {
+    const s = store.create(newSchedule(), T0);
+    const claimed = store.claimSlot({
+      scheduleId: s.id,
+      slotAt: new Date(T1),
+      spec: SPEC,
+      missed: { slotAt: new Date(T0), reason: "2 runs missed" },
+    }, T1)!;
+    expect(claimed).toMatchObject({ slotAt: T1, outcome: "starting", spec: SPEC });
+    expect(store.listRuns(s.id).map((r) => [r.outcome, r.reason])).toEqual([
+      ["starting", undefined],
+      ["skipped", "2 runs missed"],
+    ]);
+  });
+
+  it("leaves nothing behind when the slot was already claimed", () => {
+    const s = store.create(newSchedule(), T0);
+    store.insertRun({ scheduleId: s.id, slotAt: new Date(T1) }, T0);
+    const again = store.claimSlot({
+      scheduleId: s.id,
+      slotAt: new Date(T1),
+      spec: SPEC,
+      missed: { slotAt: new Date(T0), reason: "missed" },
+    });
+    expect(again).toBeNull();
+    expect(store.listRuns(s.id)).toHaveLength(1);
+  });
+
+  it("finds a starting run other than the given one", () => {
+    const s = store.create(newSchedule(), T0);
+    const run = store.insertRun({ scheduleId: s.id, slotAt: null })!;
+    expect(store.hasStartingRun(s.id, run.id)).toBe(false);
+    const other = store.insertRun({ scheduleId: s.id, slotAt: null })!;
+    expect(store.hasStartingRun(s.id, run.id)).toBe(true);
+    store.updateRun(other.id, { outcome: "started" });
+    expect(store.hasStartingRun(s.id, run.id)).toBe(false);
+  });
+
+  it("lists what a restart left: starting runs, and started runs whose first turn has not ended", () => {
+    const sessions = new SessionManager(dbManager);
+    const s = store.create(newSchedule(), T0);
+    const starting = store.insertRun({ scheduleId: s.id, slotAt: null })!;
+    const pending = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+    const ended = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+    store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "failed" });
+    sessions.track("pending-session");
+    sessions.setScheduleRun("pending-session", s.id, pending.id);
+    sessions.track("ended-session");
+    sessions.setScheduleRun("ended-session", s.id, ended.id);
+    sessions.setLastTurnOutcome("ended-session", "ok");
+
+    expect(store.startingRuns().map((r) => r.id)).toEqual([starting.id]);
+    expect(store.startedRunsBeforeFirstTurnEnd().map((r) => r.id)).toEqual([pending.id]);
+    expect(sessions.sessionIdForScheduleRun(pending.id)).toBe("pending-session");
+    expect(sessions.sessionIdForScheduleRun(starting.id)).toBeUndefined();
+  });
 });

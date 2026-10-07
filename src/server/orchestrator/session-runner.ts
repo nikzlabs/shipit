@@ -61,6 +61,7 @@ import {
   turnInterrupted,
   turnRefused,
   TURN_STEERED,
+  type TurnEnd,
   type TurnHandle,
   type TurnOutcome,
 } from "./turn-settlement.js";
@@ -516,6 +517,8 @@ export interface SystemTurnDeps {
   }) => { continues: boolean };
   /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
   continueAfterQuotaStandDown?: (sessionId: string) => Promise<void>;
+  /** Told after `last_turn_outcome` is written; a scheduled run's first turn is watched here. */
+  onTurnEnd?: (end: TurnEnd) => void;
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
   routeLabel?: (routeId: string) => string | undefined;
   routeProfile?: (

@@ -110,7 +110,8 @@ function stepRuns(cron: Cron, n: number, from: Date): Date[] {
   return runs;
 }
 
-function formatInZone(date: Date, timeZone: string): string {
+/** A date and time as the schedule's zone shows it, e.g. "2026-10-07 09:00". */
+export function formatInZone(date: Date, timeZone: string): string {
   return date.toLocaleString("sv-SE", { timeZone, dateStyle: "short", timeStyle: "short" });
 }
 
@@ -123,7 +124,10 @@ export function timingProblem(timing: ScheduleTiming, timeZone: string, now = ne
   if (preset) return preset;
   let cron: Cron;
   try {
-    cron = compile(timing, timeZone);
+    compile(timing, timeZone);
+    // Req 17 counts the times as the schedule gives them, so clock changes are left out:
+    // UTC has none, and a timing is then accepted or refused the same on every date.
+    cron = compile(timing, "UTC");
   } catch (err) {
     return `"${timingToCron(timing)}" is not a cron expression: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -133,8 +137,9 @@ export function timingProblem(timing: ScheduleTiming, timeZone: string, now = ne
   for (let i = 1; i < runs.length; i++) {
     const gapMs = runs[i].getTime() - runs[i - 1].getTime();
     if (gapMs < MIN_RUN_SPACING_MS) {
-      return `Runs must be at least an hour apart, but two come ${Math.round(gapMs / 60_000)} minutes apart: `
-        + `${formatInZone(runs[i - 1], timeZone)} and ${formatInZone(runs[i], timeZone)} (${timeZone}).`;
+      const time = (d: Date) => d.toLocaleTimeString("sv-SE", { timeZone: "UTC", timeStyle: "short" });
+      return `Runs must be at least an hour apart, but two come ${Math.round(gapMs / 60_000)} minutes apart, `
+        + `at ${time(runs[i - 1])} and ${time(runs[i])}.`;
     }
   }
   return null;

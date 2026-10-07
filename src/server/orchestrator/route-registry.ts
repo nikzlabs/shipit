@@ -229,7 +229,7 @@ export async function registerRoutes(
     clientDir, logStore, buildId, version,
   } = rt;
   const { kickDiskEscalation } = monitors;
-  const { agentMergeClaims, agentMergeExecutor } = rt;
+  const { agentMergeClaims, agentMergeExecutor, claimSessionService, scheduleStore, scheduleRunner } = rt;
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
   const settingsProposals = new SettingsProposalStore(databaseManager);
@@ -289,6 +289,9 @@ export async function registerRoutes(
     waitForWarmSession: (repoUrl: string) => waitForWarmSession(repoUrl),
     ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
     createSessionDirFull: createSessionDir,
+    claimSessionService,
+    scheduleStore,
+    scheduleRunner,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
     releaseStatusPoller,

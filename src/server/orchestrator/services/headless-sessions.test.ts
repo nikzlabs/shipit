@@ -12,6 +12,7 @@ import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
 import {
   createHeadlessSession,
+  redispatchHeadlessPrompt,
   seedFromIssueRef,
   isIssueSeededBranch,
   type CreateHeadlessSessionOptions,
@@ -774,6 +775,70 @@ describe("createHeadlessSession", () => {
 
       expect(claim.claim).toHaveBeenNthCalledWith(1, REPO_URL, { skipReuse: true, forceFetch: true });
       expect(claim.claim).toHaveBeenNthCalledWith(2, REPO_URL, { skipReuse: true });
+    });
+
+    it("links a run's session as soon as it exists, so a start refused later leaves it linked", async () => {
+      const { runner, markReady, order } = startingContainerRunner({ disposed: true });
+      markReady();
+      const credentialStore = { listSshHosts: () => [{ id: "prod" }] } as unknown as CredentialStore;
+
+      await expect(createHeadlessSession(
+        deps({ claimService: claimService({ reusedRunner: runner }), credentialStore, reloadEgress: vi.fn() }),
+        {
+          ...repo({ sshHosts: ["prod"] }),
+          prompt: "deploy",
+          title: "Nightly · Oct 7, 09:00",
+          scheduleRun: { scheduleId: "schedule-1", runId: "run-1" },
+        },
+      )).rejects.toMatchObject({ statusCode: 503 });
+      expect(order).toEqual([]);
+      expect(sessionManager.get("quick-1")).toMatchObject({
+        scheduleId: "schedule-1",
+        scheduleRunId: "run-1",
+        title: "Nightly · Oct 7, 09:00",
+      });
+    });
+
+    it("dispatches through the gate, which can cancel the dispatch", async () => {
+      const runner = { running: true, dispatch: vi.fn(() => handle) };
+      const gate = vi.fn(async (_sessionId: string, dispatch: () => TurnHandle) => dispatch());
+      const result = await createHeadlessSession(deps({ claimService: claimService({ reusedRunner: runner }) }), {
+        ...repo(),
+        prompt: "go",
+        dispatchGate: gate,
+      });
+      expect(gate).toHaveBeenCalledWith("quick-1", expect.any(Function));
+      expect(result.turn).toBe(handle);
+
+      const cancelled = { running: true, dispatch: vi.fn(() => handle) };
+      await expect(createHeadlessSession(deps({ claimService: claimService({ reusedRunner: cancelled }) }), {
+        target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
+        params: {},
+        prompt: "go",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-2" },
+        dispatchGate: async () => { throw new Error("The schedule was paused before the run started."); },
+      })).rejects.toThrow("paused");
+      expect(sessionManager.sessionIdForScheduleRun("run-2")).toBeDefined();
+      expect(cancelled.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("sends a session's first prompt again, with its delivery id and permission mode", async () => {
+      const { appSessionId } = await createSandboxDir("Nightly · Oct 7, 09:00");
+      const gate = vi.fn(async (_sessionId: string, dispatch: () => TurnHandle) => dispatch());
+      await redispatchHeadlessPrompt(deps(), appSessionId, {
+        params: { permissionMode: "plan" },
+        prompt: "  Check the PRs  ",
+        deliveryId: "run-1",
+        dispatchGate: gate,
+      });
+      expect(gate).toHaveBeenCalledWith(appSessionId, expect.any(Function));
+      expect(registry.get(appSessionId)?.dispatch).toHaveBeenCalledWith({
+        text: "Check the PRs",
+        permissionMode: "plan",
+        deliveryId: "run-1",
+      });
+      await expect(redispatchHeadlessPrompt(deps(), "missing", { params: {}, prompt: "x" }))
+        .rejects.toMatchObject({ statusCode: 404 });
     });
   });
 });
