@@ -138,10 +138,11 @@ a parameter that ShipIt adds to session start appears in schedules with no extra
         <div class="tog" style="margin-left:18px"><span class="sw on"></span>Allow merging PRs</div>
         <div class="tog"><span class="sw"></span>Docker access</div>
         <div class="tog"><span class="sw on"></span>Network access</div>
+        <div class="tog" style="justify-content:space-between">SSH destinations <span class="field" style="border:1px solid var(--bd2);border-radius:6px;padding:0 6px;color:var(--tp)">none ▾</span></div>
       </div>
     </div>
-    <p class="note" style="max-width:280px">Today a sandbox's grants are chosen in a dialog <i>before</i> the composer.
-      A schedule needs them stored with it, so the same toggles live in the target picker (req 3).</p>
+    <p class="note" style="max-width:280px">Today a sandbox's grants are chosen in a dialog <i>before</i> the composer, and SSH
+      destinations afterwards in Session settings. A run has no "afterwards", so the schedule stores all of them (req 2, req 3).</p>
   </div>
 </div>
 

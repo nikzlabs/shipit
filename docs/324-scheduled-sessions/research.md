@@ -102,12 +102,36 @@ Each item names the product that taught it, then what it means for ShipIt.
 
 ## ShipIt facts that shape the design
 
-- **The headless start already exists.** `POST /api/sessions/headless` and
-  `createHeadlessSession` start a session with a prompt and no viewer
-  attached (docs/145-quick-capture-overlay). A run needs this path.
+- **The composer is already one component.** `MessageInput` renders the
+  new-session composer, the in-session chat input and the Quick Capture overlay.
+  A schedule mode in it inherits every control those have.
+- **But the composer's choices are not one object.** The new-session view claims
+  a warm draft session and applies each pick to it as it happens (`set_agent`,
+  `set_model`, `set_reasoning`, `set_role` over the WebSocket; network mode by
+  HTTP). The permission mode lives only in the browser and rides each message.
+  A schedule must store every pick as data and apply it later, with no browser.
+  Req 5 therefore needs one serializable "session start" description that the
+  composer, Quick Capture and schedules all produce; today the composer and
+  `POST /api/sessions/headless` already accept different sets.
+- **The headless start exists, but only for repositories.**
+  `createHeadlessSession` (docs/145-quick-capture-overlay) starts a session with
+  a prompt and no viewer attached. It requires a repository, takes no
+  permission mode, and its route drops `title`. Sandboxes are created by a
+  separate path (`createSandboxSession`) that takes no prompt, model or role.
 - **The composer has no sandbox target today.** A sandbox's grants are chosen in
-  `SandboxDialog` before the composer opens. A schedule must store them, so the
-  target choice for a schedule includes the sandbox grants.
+  `SandboxDialog` before the composer opens; SSH destinations and the network
+  override are set afterwards in Session settings. A run has no "afterwards", so
+  a schedule stores all of them.
+- **Nothing records where a session came from.** There is no "created by"
+  field, so grouping runs under their schedule needs one.
+- **Things that stop an unattended run and wait for a person:** the `guarded`
+  permission mode, a question card, an egress prompt for a new host, an agent
+  re-login, and a repository the user has not marked as trusted (dispatch is
+  refused). The first four show as "needs you"; the last must show on the
+  schedule.
+- **Timers are plain intervals; there is no cron parser.** The pattern to copy
+  for "is a run due" is `runUpdateCheckIfDue`, which keeps the last time on disk
+  so a restart does not cause an extra run.
 - **The example task ("merge the security PRs") fits a sandbox, not a
   repository session.** In a repository session `gh pr merge` merges only the
   PR that ShipIt opened for that session (`agentMergeOwnership`,
