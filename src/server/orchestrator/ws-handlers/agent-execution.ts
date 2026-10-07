@@ -732,6 +732,7 @@ async function composeAndRunAgentTurn(
       }
     },
     ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
+    ...(ctx.runRequestedCompaction ? { runRequestedCompaction: ctx.runRequestedCompaction } : {}),
     postTurnReleaseFlow: buildPostTurnReleaseFlow({
       getReleaseStatusPoller: () => ctx.releaseStatusPoller,
       sessionManager: ctx.sessionManager,

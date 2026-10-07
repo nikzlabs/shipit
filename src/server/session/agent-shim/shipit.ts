@@ -71,6 +71,7 @@ import {
 export { parseFlags, type ShimIO };
 
 import { handleBranchResetToBase, RESET_USAGE } from "./shipit-branch.js";
+import { handleCompact } from "./shipit-compact.js";
 import { runPlugin } from "./shipit-plugin.js";
 
 const SHIM_NAME = "shipit (ShipIt)";
@@ -129,6 +130,16 @@ Supported subcommands:
                           [--severity fyi|warn|blocker] [--subject T]
                           [--to parent] [--json]
   shipit session help
+
+Context (docs/324):
+  shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
+                          Compact YOUR context after this turn ends — at a point
+                          you choose, such as between two features. INSTRUCTIONS
+                          say what the compaction must keep; your next turn
+                          starts with them, word for word. With --note, ShipIt
+                          gives you a new turn after the compaction with the note,
+                          so you continue on your own; without one, the session
+                          waits for the user. 'shipit compact --help' has more.
 
 Branch (docs/239):
   shipit branch reset-to-base [--json]
@@ -751,6 +762,11 @@ export async function runShim(
 
   if (command === "plugin" || command === "plugins") {
     await runPlugin(args.slice(1), { ...deps, io });
+    return;
+  }
+
+  if (command === "compact") {
+    await handleCompact(args.slice(1), deps);
     return;
   }
 

@@ -6,6 +6,7 @@ import { emitChatCard } from "./chat-card-persistence.js";
 import { prepareShipitFixSpawn } from "./api-routes-shipit-fix.js";
 import { SpawnClaims } from "./services/spawn-idempotency.js";
 import { recordRestartRequest } from "./services/agent-restart-request.js";
+import { recordCompactionRequest } from "./services/agent-compaction-request.js";
 
 import {
   getGitLog,
@@ -569,6 +570,27 @@ export async function registerSessionSpawnRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to record the restart request: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // docs/324 — records the request only; the compaction runs after the agent's turn ends.
+  app.post<{ Params: { sessionId: string }; Body: { instructions?: string; note?: string } }>(
+    "/api/sessions/:sessionId/compact-after-turn",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        return recordCompactionRequest(
+          { sessionManager, defaultAgentId: deps.defaultAgentId },
+          request.params.sessionId,
+          request.body ?? {},
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to record the compaction request: ${getErrorMessage(err)}` });
       }
     },
   );

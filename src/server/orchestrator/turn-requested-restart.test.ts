@@ -1,5 +1,6 @@
-// docs/321-agent-requested-restart — where the requested-restart step sits in a turn's
-// terminal sequence, on each way a turn can end.
+// docs/321-agent-requested-restart — where the requested-restart step (and the docs/324
+// requested-compaction step after it) sits in a turn's terminal sequence, on each way a turn
+// can end.
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -100,6 +101,7 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const events: string[] = [];
     const seen: { turn: RequestedRestartTurn; commits: number; ownsHold: boolean; current: boolean }[] = [];
+    const compactionTurns: RequestedRestartTurn[] = [];
     runner.on("idle", () => events.push("idle"));
     const onTurnComplete = vi.fn();
     const agent = makeFakeAgent(() => fs.writeFileSync(path.join(repoDir, "file.txt"), "the turn's work\n"));
@@ -127,6 +129,10 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
           current: turn.turnIsCurrent(),
         });
       },
+      runRequestedCompaction: async (turn) => {
+        events.push("requested-compaction");
+        compactionTurns.push(turn);
+      },
     };
 
     const start = (useStreaming: boolean) =>
@@ -149,22 +155,25 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
         onTurnComplete,
       });
 
-    return { runner, agent, events, seen, start, onTurnComplete };
+    return { runner, agent, events, seen, compactionTurns, start, onTurnComplete };
   }
 
+  // docs/324 — the requested compaction runs right after it, through the same turn handle.
   it("runs after the commit, the PR flow and the push, and before idle", async () => {
-    const { runner, agent, events, seen, start } = setup();
+    const { runner, agent, events, seen, compactionTurns, start } = setup();
     await start(true);
     await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
 
     agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => events.includes("idle"), "idle");
 
-    expect(events).toEqual(["pr-flow", "push-armed", "requested-restart", "idle"]);
+    expect(events).toEqual(["pr-flow", "push-armed", "requested-restart", "requested-compaction", "idle"]);
     expect(seen).toHaveLength(1);
     expect(seen[0]!.commits).toBe(2);
     expect(seen[0]!.current).toBe(true);
     expect(seen[0]!.turn.runner).toBe(runner);
+    expect(compactionTurns).toHaveLength(1);
+    expect(compactionTurns[0]!.runner).toBe(runner);
     runner.dispose({ force: true });
   });
 

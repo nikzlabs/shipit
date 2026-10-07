@@ -126,6 +126,8 @@ export interface RunnerRegistryDeps {
   getQuotaContinuation?: () => QuotaContinuationManager | undefined;
   /** docs/321 — resolves the registry lazily for the same reason. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/324 — likewise. */
+  runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
@@ -176,6 +178,7 @@ export function createRunnerRegistry(
     markSessionAccountExhausted,
     getQuotaContinuation,
     runRequestedRestart,
+    runRequestedCompaction,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -419,6 +422,7 @@ export function createRunnerRegistry(
           },
         } : {}),
         ...(runRequestedRestart ? { runRequestedRestart } : {}),
+        ...(runRequestedCompaction ? { runRequestedCompaction } : {}),
         commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {

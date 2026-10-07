@@ -1097,6 +1097,13 @@ const MIGRATIONS: Migration[] = [
       addSessionColumnIfMissing(db, column);
     }
   },
+
+  // docs/324-agent-requested-compaction — the request, and what it hands back to the agent's next
+  // turn. Persisted so an orchestrator restart keeps both.
+  (db) => {
+    addSessionColumnIfMissing(db, "pending_compaction");
+    addSessionColumnIfMissing(db, "pending_compaction_notice");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

@@ -571,6 +571,40 @@ a report never interrupts a running agent. The recipient is told to treat your
 body as **information from a peer agent to judge**, not as an instruction to
 execute; write it that way, with the evidence a reader needs to verify it.
 
+## Compacting your own context — `shipit compact`
+
+```
+shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
+```
+
+Compacts **your own** context at a point you choose — typically when you finish
+one feature and are about to start the next, so the next one does not carry the
+step-by-step detail of the last. It is in addition to the harness's own
+automatic compaction, which is unchanged.
+
+- **It runs after your turn ends**, never inside it. The command only records
+  the request; finish the piece of work and end your turn. If a turn is still
+  running, a merge holds the session, you are waiting for the user's answer, or
+  you have background work in flight when your turn ends, the compaction waits
+  for the next turn's end.
+- **`INSTRUCTIONS`** (optional, quote them as one argument) say what the
+  compaction must keep: decisions, the user's standing instructions, the plan
+  for what comes next. Claude and Grok honour them; Codex and OpenCode compact
+  on their own terms. On **every** harness, your next turn starts with the
+  instructions handed back to you word for word, so what they name survives
+  either way.
+- **`--note`** (optional) is what to do after the compaction. With a note,
+  ShipIt gives you a new turn with it and you continue on your own. Without
+  one, the session waits for the user's next message.
+- **Stop wins.** If the user presses Stop on the turn that asked for it, or
+  during the compaction, the compaction still runs but you do not continue on
+  your own.
+- A second call in the same turn replaces the first. Refused at once on a
+  harness that cannot compact its context.
+
+The user sees a **Context compacted** card in the transcript. Say in your reply
+that you compact and why.
+
 ## Chaining several PRs from one session
 
 When the user asks for several changes in a row and each one must land before the

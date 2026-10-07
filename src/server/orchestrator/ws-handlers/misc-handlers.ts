@@ -4,6 +4,7 @@ import { resolveRunner } from "./resolve-runner.js";
 import { scheduleInterruptCommit } from "../services/post-interrupt-commit.js";
 import { noteUserStop, requestStopDuringSetup } from "../turn-stop-request.js";
 import { forgetHeldEntries } from "../held-turns.js";
+import { stopCompactionContinuation } from "../services/agent-compaction-stop.js";
 import type { QueuedMessage } from "../session-runner.js";
 
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
@@ -36,6 +37,7 @@ export function handlePrTabActive(ctx: AppCtx, msg: WsPrTabActive): void {
 
 export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): void {
   const runner = resolveRunner(ctx);
+  if (runner) stopCompactionContinuation(ctx.sessionManager, runner);
   // The turn has not submitted its prompt, and may not have an agent yet: it ends itself.
   if (runner?.running && requestStopDuringSetup(runner)) {
     runner.wasInterrupted = true;

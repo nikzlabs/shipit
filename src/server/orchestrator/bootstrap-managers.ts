@@ -64,6 +64,7 @@ import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
+import { runRequestedCompaction } from "./services/agent-compaction-request.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -644,6 +645,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       restoreWorkspace,
     }, turn);
   };
+  const runRequestedCompactionForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
+    const registry = registryHolder.ref;
+    if (!registry) return;
+    await runRequestedCompaction({ sessionManager, runnerRegistry: registry, chatHistoryManager }, turn);
+  };
 
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
@@ -655,6 +661,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     markSessionAccountExhausted,
     getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
     runRequestedRestart: runRequestedRestartForTurn,
+    runRequestedCompaction: runRequestedCompactionForTurn,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -1091,6 +1098,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     mergeWatchManager,
     quotaContinuationManager,
     runRequestedRestartForTurn,
+    runRequestedCompactionForTurn,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,

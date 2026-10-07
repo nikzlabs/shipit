@@ -633,6 +633,44 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/324: pending compaction request", () => {
+    it("round-trips, a later request replaces it, and null clears it", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.getPendingCompaction("sess-1")).toBeUndefined();
+
+      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API", note: "start B" });
+      mgr.setPendingCompaction("sess-1", {});
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({});
+      mgr.setPendingCompaction("sess-1", null);
+      expect(mgr.getPendingCompaction("sess-1")).toBeUndefined();
+    });
+
+    it("a compaction notice survives a branch notice's overwrite and is delivered with it once (req 9)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.appendPendingCompactionNotice("sess-1", "[System] keep the API");
+      mgr.setPendingAgentNotice("sess-1", "[System] your branch moved");
+      const delivered = mgr.consumePendingAgentNotice("sess-1");
+      expect(delivered).toBe("[System] your branch moved\n\n[System] keep the API");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBeUndefined();
+
+      mgr.appendPendingCompactionNotice("sess-1", "only");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBe("only");
+    });
+
+    it("Stop drops only the note (req 10)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
+      mgr.dropPendingCompactionNote("sess-1");
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API" });
+      mgr.dropPendingCompactionNote("sess-2");
+      expect(mgr.getPendingCompaction("sess-2")).toBeUndefined();
+    });
+  });
+
   describe("docs/221: pending agent notice (out-of-band branch move)", () => {
     it("round-trips through persistence and is consumed exactly once", () => {
       const mgr = new SessionManager(dbManager);

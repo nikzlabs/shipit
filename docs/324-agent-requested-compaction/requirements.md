@@ -44,9 +44,22 @@ instructions (in addition to the harness-native compaction)."
 7. Where the session's harness cannot compact its context, the command tells the
    agent so at once, and nothing is scheduled.
 
+8. The agent can add a note to the command. With a note, the agent gets a new
+   turn after the compaction, with that note, and continues on its own. Without
+   a note, the session waits for the user's next message.
+
+9. On every harness, the first turn after the compaction gives the agent its
+   instructions back, word for word. This is in addition to what the harness's
+   own summary keeps.
+
+10. When the user presses **Stop** on the turn that asked for the compaction,
+    the compaction still runs, but the agent does not continue on its own: the
+    session waits for the user's next message.
+
 ## Requirement provenance
 
-Requirements 1 to 4 come from what the user asked for. Requirements 5 to 7 were
+Requirements 1 to 4 and 8 to 10 come from what the user asked for and decided.
+Requirements 5 to 7 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, docs/295 req 9 for a failed compaction,
 and docs/295 req 10 plus every other `shipit` command for refusing at once what
@@ -65,14 +78,19 @@ the same shape as
 
 ## Open questions
 
-- After the compaction, does the agent continue on its own in a new turn, or does
-  the session wait for the user's next message?
-- Codex and OpenCode ignore compaction instructions (docs/295, "Custom compaction
-  instructions"); only Claude and Grok honour them. How does requirement 3 hold
-  on Codex and OpenCode?
-- When the user presses **Stop** on the turn that asked for the compaction, does
-  the compaction still happen?
+None.
 
 ## Resolved questions
 
-None yet.
+- 2026-10-07 — After the compaction, does the agent continue on its own in a new
+  turn, or does the session wait for the user's next message? Chosen: the agent
+  chooses. With a note it gets a new turn with that note; without one the
+  session waits. This covers an autonomous switch between features and a
+  compaction at the end of a reply to the user. Requirement 8 added.
+- 2026-10-07 — Codex and OpenCode ignore compaction instructions; only Claude
+  and Grok honour them. How does requirement 3 hold there? Chosen: hand the
+  instructions back word for word on every harness, not only where they are
+  ignored — one behaviour everywhere. Requirement 9 added.
+- 2026-10-07 — Does **Stop** on the requesting turn cancel the compaction?
+  Chosen: the compaction still runs, but the agent does not continue on its own.
+  Requirement 10 added.
