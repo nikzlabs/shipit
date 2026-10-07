@@ -208,16 +208,19 @@ never overlap. Cron evaluation uses `croner` 10.0.1 (published 2026-02-01, no
 dependencies, so it passes `check-deps`); presets compile to cron (daily 09:00
 is `0 9 * * *`, weekdays `0 9 * * 1-5`).
 
-**Due slots come from stepping forward, never from `previousRuns`.** Checked on
-2026-10-07: at 03:00 Berlin time on the spring change day, `previousRuns(1,
-now)` returns 03:30 that day — a time that has not come yet. Stepping forward
-with `nextRun` from the last handled point gives the right answer. So a pass
-walks `nextRun` from the later of `active_since` and the schedule's latest
-non-null `slot_at`, and collects every slot at or before now. Walking forward,
-`croner` moves a missing time by the size of the clock change and runs a
-repeated time once (req 29; checked for Berlin and for Lord Howe Island's
-30-minute change). `nextRuns(n)` gives the next run times for the cards and
-the editor.
+**Run times come from one forward walk, never from `croner`'s `previousRuns`
+or `nextRuns`.** Both are wrong on clock-change days (checked 2026-10-07): at
+03:00 Berlin time on the spring day, `previousRuns(1, now)` returns 03:30 that
+day, a time that has not come yet; `nextRuns(n)` lists a moved spring time
+twice; and `nextRun` from inside the repeated autumn hour returns an earlier
+instant. So `runsAfter` (`shared/schedule-timing.ts`) steps `nextRun` from 3
+hours before its start point and keeps only the instants after it. A pass walks
+from the later of `active_since` and the schedule's latest non-null `slot_at`
+(`dueSlots`: the latest due slot, plus a count and range of the missed ones).
+The walk moves a missing time by the size of the clock change and runs a
+repeated time once (req 29); tests pin Berlin and Lord Howe Island's 30-minute
+change, where the repeated time runs at its second occurrence. The same
+module's `nextRuns(n)` gives the next run times for the cards and the editor.
 
 **One queue per schedule.** Every start — due or Run now — and every change to
 the schedule — edit, pause, resume, delete, Stop on a `starting` row — goes
@@ -248,9 +251,13 @@ Each pass, for each enabled schedule:
 slots that passed while a schedule was paused, or before its time changed, do
 not run.
 
-**One hour apart (req 17).** Saving or proposing a timing whose next 100 run
-times include two less than an hour apart is refused. Run now is not counted
-(req 26).
+**One hour apart (req 17).** Saving or proposing a timing whose run times, as
+the schedule gives them, include two less than an hour apart is refused — for
+example, the cron's next 100 times evaluated in UTC. Clock changes are not
+counted, so a timing is accepted or refused the same on every date. On a day
+with a 30-minute clock change, a moved run (req 29) can come 30 minutes before
+the next one; the overlap rule (req 14) still skips the next while the moved
+run is going. Run now is not counted (req 26).
 
 **Run now (req 26)** goes through the queue without steps 1–4. Before it
 starts, the control checks every run of the schedule — archived ones included
@@ -498,7 +505,7 @@ this is the limit it already has.
 | 14, 23 | Scheduler step 4; `awaiting_answer` never counts as still going |
 | 15 | Step 2 |
 | 16, 29 | IANA zone; due slots by stepping `nextRun` forward |
-| 17 | The spacing check at save and propose; catch-ups and Run now not counted |
+| 17 | The spacing check at save and propose, clock changes not counted; catch-ups and Run now not counted |
 | 18 | Pre-flight, the re-check, the first-turn watch, `needs_user_reason` |
 | 19 | Run now / Pause / Edit; the spec is copied into the run row |
 | 20 | `SidebarView` `"scheduled"`, membership by spawn root, separate caps, Sandbox group split |
@@ -524,6 +531,10 @@ this is the limit it already has.
   req 15 does not allow. The run row is the claim instead.
 - **`previousRuns` for the due slot** — it returns a future time on a spring
   change day.
+- **A spacing check over the real run times** — in a zone with a 30-minute
+  clock change, it refused an hourly timing only when the change day was among
+  the next 100 runs, so the same timing was refused on some dates and not
+  others. The user chose to ignore the shift (requirements, req 17).
 - **A `dispatched_at` timestamp** — a crash between the dispatch and the write
   makes a delivered prompt look undelivered; the runner's own delivery tracking
   is the record.

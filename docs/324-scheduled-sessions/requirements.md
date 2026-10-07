@@ -55,7 +55,10 @@ answers on the same day (see "Resolved questions").
     runs at 09:00 local time all year, also across daylight-saving changes.
 17. The times at which a schedule's runs come due are at least one hour apart.
     A catch-up run (req 15) or Run now (req 26) does not move or cancel the next
-    scheduled run; only the overlap rule (req 14) can skip it.
+    scheduled run; only the overlap rule (req 14) can skip it. The hour applies
+    to the times as the schedule gives them, without clock changes: on a
+    daylight-saving day, a run that req 29 moves can come less than one hour
+    before the next run.
 18. When a run cannot start — for example for want of a credential or quota, or
     because its repository is untrusted or removed — the schedule shows the
     reason and is marked as needing the user.
@@ -191,3 +194,12 @@ answers on the same day (see "Resolved questions").
     only if the catch-up is still going. Carried by reqs 15 and 17.
   - *Should scheduled runs stay out of the regular session list?* "Yes, keep
     them out." Confirms req 20's last sentence.
+- 2026-10-07 — During implementation, the storage and timing slice found that
+  reqs 17 and 29 conflict in a zone with a 30-minute clock change (Lord Howe
+  Island): on the spring day, an hourly schedule's moved run comes 30 minutes
+  before the next run, and a check over the next 100 run times refused or
+  accepted the same schedule depending on the date it was saved. Offered:
+  ignore the shift, refuse such schedules all year, or skip the early run. The
+  user chose "Ignore the shift": the check uses the run times as the schedule
+  gives them, without clock changes, and the overlap rule (req 14) still skips
+  the next run while the moved run is going. Carried by req 17.

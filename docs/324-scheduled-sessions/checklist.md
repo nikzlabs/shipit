@@ -7,12 +7,12 @@
 - [x] The two open questions in `requirements.md` answered
 - [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs; editor test that edits every key
 - [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, run id as `deliveryId`, dispatch handle returned, base fetch
-- [ ] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
-- [ ] `croner` 10.0.1 added (exact pin); presets compile to cron; due slots by stepping `nextRun` forward; tests for the spring and autumn change days and a 30-minute zone
+- [x] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
+- [x] `croner` 10.0.1 added (exact pin); presets compile to cron; due slots by stepping `nextRun` forward; tests for the spring and autumn change days and a 30-minute zone
 - [ ] `ScheduleRunner`: in-flight flag; one queue per schedule for starts and every schedule change; missed slots recorded as one skipped row; slot claim; skip rules (`awaiting_answer` never still going); `active_since` on create/resume/timing edit; one start at a time
 - [ ] Re-check of schedule and row inside the queue before dispatch
 - [ ] Recovery of `starting` rows through the runner's delivery tracking; local-mode cut-off runs marked failed
-- [ ] Spacing check at save and propose
+- [ ] Spacing check at save and propose, clock changes not counted (`timingProblem` checks the real run times today)
 - [ ] Run now through the queue; `isRunFinished` warning (archived runs included) with Run anyway / Cancel
 - [ ] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
 - [ ] Delete (refused while a run is not finished or still busy; lists those runs with Stop); Stop on a run row, in the refusal, in the banner, on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
