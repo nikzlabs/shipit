@@ -29,14 +29,17 @@
 - [x] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
 - [ ] Scheduled view: the toggle also shows when a schedule exists; a schedule's `needs_user_reason` at the top of the view; the toggle's warning mark
 - [x] Claim and outcome notice generalized by card kind (settings first; `services/card-kinds.ts`)
-- [ ] Proposal card and notes access card registered as card kinds
-- [ ] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
+- [x] Proposal card registered as a card kind
+- [ ] Notes access card registered as a card kind
+- [x] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
 - [ ] The proposal card's **Open in Settings** button
 - [ ] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
 - [ ] The run's notes folder: host layout, mount at `/schedule/notes/` with the session identity passed in, local-mode path
 - [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes` (own schedule's runs allowed); `schedule_notes_grants`
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
-- [ ] `ScheduledRunBanner` with Open schedule, Notes and Stop run; deleted-schedule state
-- [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
+- [ ] `ScheduledRunBanner` with Open schedule and Stop run; deleted-schedule state
+- [ ] **Notes** links in the run history and the banner
+- [x] `shipit-docs/schedules.md`: `list`, `propose`, the proposal YAML
+- [ ] `shipit-docs/schedules.md` notes part; the wiki `sessions.md` section and its notes sentence
 - [x] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start
 - [x] Integration tests: stopped run takes no automatic turn, Delete refused while a run is busy
