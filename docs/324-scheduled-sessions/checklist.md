@@ -8,15 +8,16 @@
 - [x] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs
 - [ ] Editor test that edits every `SessionStartParams` key
 - [x] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, `deliveryId`, dispatch handle returned, base fetch (opt-in `fetchBase`)
-- [ ] Schedule ids on the run's session row; runs pass `fetchBase: true`; a start refused after the session exists is linked to the failed run or cleaned up
+- [x] Schedule ids on the run's session row; runs pass `fetchBase: true`; a start refused after the session exists is linked to the failed run
 - [x] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
 - [x] `croner` 10.0.1 added (exact pin); presets compile to cron; due slots by stepping `nextRun` forward; tests for the spring and autumn change days and a 30-minute zone
-- [ ] `ScheduleRunner`: in-flight flag; one queue per schedule for starts and every schedule change; missed slots recorded as one skipped row; slot claim; skip rules (`awaiting_answer` never still going); `active_since` on create/resume/timing edit; one start at a time
-- [ ] Re-check of schedule and row inside the queue before dispatch
-- [ ] Recovery of `starting` rows through the runner's delivery tracking; local-mode cut-off runs marked failed
-- [ ] Spacing check at save and propose, clock changes not counted (`timingProblem` checks the real run times today)
-- [ ] Run now through the queue; `isRunFinished` warning (archived runs included) with Run anyway / Cancel
-- [ ] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
+- [x] `ScheduleRunner`: in-flight flag; one queue per schedule for starts and every schedule change; missed slots recorded as one skipped row; slot claim; skip rules (`awaiting_answer` never still going); `active_since` on create/resume/timing edit; one start at a time
+- [x] Re-check of schedule and row inside the queue before dispatch
+- [x] Recovery of `starting` rows through the runner's delivery tracking (an undelivered half-prepared start fails; a `started` row's lost prompt is re-sent); local-mode cut-off runs marked failed
+- [x] Spacing check at save, clock changes not counted (the cron evaluated in UTC); propose calls the same check (slice 6b)
+- [x] Run now through the queue, also on a paused schedule
+- [ ] Run now's `isRunFinished` warning (archived runs included) with Run anyway / Cancel
+- [x] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
 - [ ] Delete (refused while a run is not finished or still busy; lists those runs with Stop); Stop on a run row, in the refusal, in the banner, on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
 - [ ] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
 - [ ] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; `isWorkResolved` / `workResolvedAt` in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
@@ -32,4 +33,5 @@
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
 - [ ] `ScheduledRunBanner` with Open schedule, Notes and Stop run; deleted-schedule state
 - [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
-- [ ] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start, stopped run takes no automatic turn, Delete refused while a run is busy
+- [x] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start
+- [ ] Integration tests: stopped run takes no automatic turn, Delete refused while a run is busy

@@ -266,7 +266,9 @@ starts, the control checks every run of the schedule — archived ones included
 — with `isRunFinished` (below); if any is not finished, it shows a warning that
 lists them, with **Run anyway** and **Cancel**. A Run now run is an ordinary
 run of the schedule, so a slot that comes due while it is still going is
-skipped by step 4.
+skipped by step 4. Run now also starts on a paused schedule, and a pause during
+its start does not cancel it: a pause stops only due runs (req 26 has no
+restrictions).
 
 ### Starting a run — `startScheduledRun(row)`
 
@@ -300,25 +302,37 @@ skipped by step 4.
    start re-reads the schedule and the row: a schedule paused or deleted, or a
    row stopped, since the claim cancels the start, and the row becomes `failed`
    with that reason.
-4. **Watch the first turn** through its handle. A dispatch that fails during
-   setup does not throw to the caller; `dispatchOnRunner` reports it through
-   the settlement (`turnErrored`, `session-runner.ts`). A quota refusal can
-   settle as `completed` with the refusal only in the text; the executor's
-   refusal detection (`turn-executor.ts`, docs/306-quota-continuation) writes
-   `last_turn_outcome = quota-refused` once its retries are spent. Either way
-   the row becomes `failed` with the reason, and the session is linked.
+4. **Watch the first turn.** A dispatch that fails during setup does not throw
+   to the caller; `dispatchOnRunner` reports it through the handle's
+   settlement (`turnErrored`, `session-runner.ts`). The handle is not enough
+   for the rest: a resident streaming turn never settles it, and a quota
+   refusal settles `completed`, sometimes before the executor has read the
+   refusal. So the executor records every turn end — `last_turn_outcome` (`ok`,
+   `errored`, or `quota-refused` once the docs/306-quota-continuation retries
+   are spent) and an `onTurnEnd` call that says whether it was the session's
+   first. The scheduler fails a run only on its first turn end: `quota-refused`,
+   or `errored` before the prompt reached an agent. The row becomes `failed`
+   with the reason, and the session is linked. A later error is req 31's.
 
 The first dispatch is not `automatic`: it is a new session's own task, so the
 docs/322 hold does not apply to it.
 
-**Recovery after a restart.** The startup pass finishes `starting` rows:
+**Recovery after a restart.** The startup pass finishes unfinished starts:
 
-- no session with that `schedule_run_id` → start the run from the row's spec;
-- a session → the runner's delivery tracking for the run's `deliveryId`
-  (`hasDelivery`, `rebindDelivery`, `session-runner.ts`) and the session's
-  chat history tell whether the prompt reached it. Delivered → the row becomes
-  `started`, and the turn is the business of `restart-turn-reattach.ts`, as for
-  any session. Not delivered → the row's prompt is sent into that session.
+- a `starting` row with no session with that `schedule_run_id` → start the run
+  from the row's spec;
+- a `starting` row with a session → the runner's delivery tracking for the
+  run's `deliveryId` (`hasDelivery`, `rebindDelivery`, `session-runner.ts`)
+  and the session's chat history tell whether the prompt reached it. Delivered
+  → the row becomes `started`, and the turn is the business of
+  `restart-turn-reattach.ts`, as for any session. Not delivered → the run
+  fails with the reason (req 18) and the session stays linked. The prompt is
+  not sent again: the crash can fall before the network containment, the SSH
+  grant or the role was applied, so that session may not be what the spec
+  asks for. The next slot runs as usual, and Run now can repeat it;
+- a `started` row whose prompt did not reach the agent (the crash fell between
+  the dispatch and the agent) → the prompt is sent again, because every
+  parameter was applied before that dispatch.
 
 In `RUNTIME_MODE=local` there is no worker to re-attach; a run whose turn was
 cut off by a restart there is marked `failed` ("ShipIt restarted during the
