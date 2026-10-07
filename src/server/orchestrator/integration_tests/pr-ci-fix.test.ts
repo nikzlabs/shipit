@@ -138,11 +138,12 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
     expect(sessionManager.heldTurns(sessionId).map((m) => m.activity ?? m.text)).toEqual(["Fixing CI…", "Child PR #42 merged"]);
   });
 
-  it("removes the saved automatic fix turns of every session when the workspace setting goes off", async () => {
+  it("removes the saved automatic fix turns of every session, archived ones too, when the workspace setting goes off", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     credentialStore.setAutoFixCi(true);
     const otherId = crypto.randomUUID();
     sessionManager.track(otherId, "Other session", path.join(tmpDir, "sessions", otherId));
+    sessionManager.archive(otherId);
     sessionManager.holdTurn(sessionId, toQueuedMessage(autoFixDispatch("CI failed: lint")));
     sessionManager.holdTurn(otherId, toQueuedMessage(autoFixDispatch("CI failed: test")));
     sessionManager.holdTurn(otherId, { text: "CI failed: test", execution: "dispatched", activity: "Fixing CI…" });

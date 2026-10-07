@@ -485,9 +485,9 @@ export class PrStatusPoller {
     if (count > 0) console.log(`[auto-fix] ${sessionId} — ${reason}; removed ${count} waiting fix turn(s)`);
   }
 
-  /** The workspace setting went off: the same, for every session. */
+  /** The workspace setting went off: the same, for every session — archived ones keep held turns too. */
   withdrawAllAutoFix(): void {
-    for (const session of this.sessionManager.list()) this.withdrawAutoFix(session.id, "auto-fix turned off");
+    for (const id of this.sessionManager.allIds()) this.withdrawAutoFix(id, "auto-fix turned off");
   }
 
   notifyRunnerIdle(sessionId: string): void {

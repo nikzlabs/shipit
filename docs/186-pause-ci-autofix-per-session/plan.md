@@ -79,7 +79,9 @@ workspace setting is off.
 `advanced.autoFixCi` save hook (`SAVE_HOOKS` in `services/settings.ts`) fires
 `onAutoFixCiDisabled` on an on → off write, wired from both save paths (the
 settings route and agent setting proposals) to `PrStatusPoller.withdrawAllAutoFix`,
-which runs the per-session sweep over every session. `fetchAndFixCb` reads the
+which runs the per-session sweep over `sessionManager.allIds()` — not `list()`,
+which leaves out archived sessions, whose held turns survive and come back if the
+session is restored. `fetchAndFixCb` reads the
 setting before it dispatches, as it reads the pause. The client's
 `useAutoFixHalt` returns `"off"` or `"paused"`, which picks the label ("Auto-fix
 off — …" for the workspace setting) and shows **Fix CI**. Like the enable hook,
