@@ -46,6 +46,7 @@ icons leave too little room beside it.
 | **Send review (n)** | The user has n unsent line comments — see below |
 | **Auto-fixing (attempt n/3)** | ShipIt is running a turn against the failing checks |
 | **Auto-fix paused — the current fix turn will finish** | Auto-fix was paused for this session while a fix turn was already running; that turn finishes, and no new one starts |
+| **Auto-fix off — the current fix turn will finish** | The same, after the workspace auto-fix setting was switched off |
 
 Clicking anywhere on the card that is not a control opens the **PR** tab.
 
@@ -176,7 +177,10 @@ and annotations into the session and start a turn asking you to fix them. It
 tries **at most three times per commit**, then stops and says "Auto-fix
 exhausted" rather than looping. A session waiting on your question or plan card
 does not count as idle here: the fix waits for the user's reply (see
-[chat.md](chat.md)), and so does auto-resolve below.
+[chat.md](chat.md)), and so does auto-resolve below. Switching the setting off
+removes, in every session, a fix turn still waiting to start; one already under
+way finishes, and its card says "Auto-fix off — the current fix turn will
+finish".
 
 Two controls sit either side of that:
 

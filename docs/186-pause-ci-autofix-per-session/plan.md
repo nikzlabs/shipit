@@ -75,6 +75,17 @@ paused — the current fix turn will finish" instead of the attempt counter, and
 paused session with failing checks shows the **Fix CI** button, as when the
 workspace setting is off.
 
+**The workspace setting going off does the same, for every session.** The
+`advanced.autoFixCi` save hook (`SAVE_HOOKS` in `services/settings.ts`) fires
+`onAutoFixCiDisabled` on an on → off write, wired from both save paths (the
+settings route and agent setting proposals) to `PrStatusPoller.withdrawAllAutoFix`,
+which runs the per-session sweep over every session. `fetchAndFixCb` reads the
+setting before it dispatches, as it reads the pause. The client's
+`useAutoFixHalt` returns `"off"` or `"paused"`, which picks the label ("Auto-fix
+off — …" for the workspace setting) and shows **Fix CI**. Like the enable hook,
+it runs on an `uncertain` write as well: a fix turn removed by a write that did
+not land is fired again by the next poll.
+
 **Route.** `POST /api/sessions/:id/pr/auto-fix-pause { paused }` sets the flag and
 re-broadcasts `session_list` over SSE so every tab's PR menu reconciles and a
 reload reflects the change (the flag is on the session record, delivered via the
@@ -97,7 +108,8 @@ optimistically flips the session record, POSTs, and reverts on failure.
 - `src/server/orchestrator/pr-status-poller.ts` — wires the gate to the session flag.
 - `src/server/orchestrator/api-routes-github.ts` — `POST /pr/auto-fix-pause`; a pause withdraws the waiting fix turn (`PrStatusPoller.withdrawAutoFix`).
 - `src/server/orchestrator/services/github-ci-fix.ts` — `autoFixDispatch`, the tagged automatic fix turn.
-- `src/server/orchestrator/app-lifecycle.ts` — `fetchAndFixCb` reads the pause before it dispatches.
+- `src/server/orchestrator/app-lifecycle.ts` — `fetchAndFixCb` reads the pause and the workspace setting before it dispatches.
+- `src/server/orchestrator/services/settings.ts` — the `advanced.autoFixCi` save hook fires `onAutoFixCiDisabled`; wired in `api-routes-bootstrap.ts` and `services/settings-operations.ts`.
 - `src/server/orchestrator/queue-drain.ts` — `withdrawWaitingTurns`.
 - `src/client/stores/session-store.ts` — `setAutoFixCiPaused` optimistic action.
 - `src/client/components/PrStatusControls.tsx` — `AutoFixPauseToggle`.
@@ -109,7 +121,8 @@ optimistically flips the session record, POSTs, and reverts on failure.
 - `queue-drain.test.ts` — `withdrawWaitingTurns` removes queued and held matches, settles each once, works with no runner; `ciAutoFix` survives the queue round-trip.
 - `PrLifecycleCard.test.tsx` — paused label while a fix turn finishes; Fix CI offered while paused.
 - `sessions.test.ts` — `autoFixCiPaused` round-trips and persists across instances.
-- `integration_tests/pr-ci-fix.test.ts` — route persists/clears the flag, 404/400 validation; a pause removes a saved automatic fix turn and keeps a manual one.
+- `integration_tests/pr-ci-fix.test.ts` — route persists/clears the flag, 404/400 validation; a pause removes a saved automatic fix turn and keeps a manual one; the workspace setting going off removes them in every session.
+- `integration_tests/settings-derivation.test.ts` — the off hook fires only on on → off.
 
 ## Why not a per-session on/off (vs. pause)
 

@@ -16,6 +16,7 @@ import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 function ToggleSwitch({
@@ -162,14 +163,24 @@ export function useAutoFixPaused(sessionId: string): boolean {
   );
 }
 
-/** A pause lets a fix turn that already runs finish, so "running" can outlast it. */
+/** Why auto-fix will not start a fix turn for this session: paused here, or off for the workspace. */
+export type AutoFixHalt = "paused" | "off";
+
+export function useAutoFixHalt(sessionId: string): AutoFixHalt | undefined {
+  const enabled = useSettingsStore((s) => s.autoFixCi);
+  const paused = useAutoFixPaused(sessionId);
+  if (!enabled) return "off";
+  return paused ? "paused" : undefined;
+}
+
+/** Stopping auto-fix lets a fix turn that already runs finish, so "running" can outlast it. */
 export function autoFixRunningLabel(
   autoFix: { attemptCount: number; maxAttempts: number },
-  paused: boolean,
+  halt: AutoFixHalt | undefined,
 ): string {
-  return paused
-    ? "Auto-fix paused — the current fix turn will finish"
-    : `Auto-fixing (attempt ${autoFix.attemptCount}/${autoFix.maxAttempts})...`;
+  if (halt === "paused") return "Auto-fix paused — the current fix turn will finish";
+  if (halt === "off") return "Auto-fix off — the current fix turn will finish";
+  return `Auto-fixing (attempt ${autoFix.attemptCount}/${autoFix.maxAttempts})...`;
 }
 
 export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {

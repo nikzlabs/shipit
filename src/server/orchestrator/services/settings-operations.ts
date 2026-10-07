@@ -133,7 +133,7 @@ export interface SettingsOperationDeps {
   serviceManagers?: Map<string, ServiceManager> | undefined;
   containerManager?: { reloadEgress(sessionId: string): Promise<boolean> } | undefined;
   /** The two enable hooks the settings route supplies; a proposal does the same. */
-  prStatusPoller?: { broadcastAllSnapshots(): void } | undefined;
+  prStatusPoller?: { broadcastAllSnapshots(): void; withdrawAllAutoFix(): void } | undefined;
   /** docs/303 — a proposal that turns the status card on marks the stored cards stale, as the dialog does. */
   sessionManager?: SessionManager | undefined;
 }
@@ -329,6 +329,7 @@ function saveOptions(
       ? {
           onAutoResolveConflictsEnabled: () => deps.prStatusPoller?.broadcastAllSnapshots(),
           onAutoFixCiEnabled: () => deps.prStatusPoller?.broadcastAllSnapshots(),
+          onAutoFixCiDisabled: () => deps.prStatusPoller?.withdrawAllAutoFix(),
         }
       : {}),
     ...(sessionManager

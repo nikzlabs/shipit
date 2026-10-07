@@ -48,6 +48,7 @@ beforeEach(() => {
   useGitStore.getState().reset();
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), isLoading: false, activity: undefined, sessions: [] });
   useCommentStore.setState({ commentsBySession: {} });
+  useSettingsStore.setState({ autoFixCi: false });
 });
 
 afterEach(() => {
@@ -608,6 +609,7 @@ describe("PrLifecycleCard", () => {
   });
 
   it("shows auto-fix running state with the attempt counter as sent", () => {
+    useSettingsStore.setState({ autoFixCi: true });
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
@@ -620,6 +622,7 @@ describe("PrLifecycleCard", () => {
   });
 
   it("renders the FIRST in-flight attempt as 1/3, never 0/3", () => {
+    useSettingsStore.setState({ autoFixCi: true });
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
@@ -660,14 +663,9 @@ describe("PrLifecycleCard", () => {
   });
 
   describe("auto-fix paused for this session", () => {
-    let autoFixCiBefore: boolean;
     beforeEach(() => {
-      autoFixCiBefore = useSettingsStore.getState().autoFixCi;
       useSettingsStore.setState({ autoFixCi: true });
       useSessionStore.setState({ sessions: [makeSession({ id: "s1", autoFixCiPaused: true })] });
-    });
-    afterEach(() => {
-      useSettingsStore.setState({ autoFixCi: autoFixCiBefore });
     });
 
     it("says the running fix turn will finish, not that it is auto-fixing", () => {
@@ -680,6 +678,21 @@ describe("PrLifecycleCard", () => {
       render(<PrLifecycleCard sessionId="s1" />);
 
       expect(screen.getByText("Auto-fix paused — the current fix turn will finish")).toBeInTheDocument();
+      expect(screen.queryByText(/Auto-fixing/)).toBeNull();
+    });
+
+    it("says auto-fix is off when the workspace setting went off during the fix turn", () => {
+      useSettingsStore.setState({ autoFixCi: false });
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+        autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
+      });
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.getByText("Auto-fix off — the current fix turn will finish")).toBeInTheDocument();
       expect(screen.queryByText(/Auto-fixing/)).toBeNull();
     });
 

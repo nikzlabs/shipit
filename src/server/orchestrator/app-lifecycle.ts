@@ -901,8 +901,9 @@ export function createPrStatusPoller(
 
       const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks, runner.sessionDir);
       if (logs.length === 0) return noop("no_logs");
-      // Paused during the log fetch; once dispatched, the pause route withdraws it instead.
+      // Turned off during the log fetch; once dispatched, turning it off withdraws it instead.
       if (sessionManager.get(sessionId)?.autoFixCiPaused) return noop("paused");
+      if (!credentialStore?.getAutoFixCi()) return noop("turned_off");
       const prompt = buildCIFixPrompt(logs);
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — dispatching a fix turn for ${checkLabel}`);
 
