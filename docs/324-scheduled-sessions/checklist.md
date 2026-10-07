@@ -3,20 +3,20 @@
 - [x] Requirements written and every open question answered
 - [x] Prior-art research
 - [x] Design (`plan.md`) and UI sketch (`mockup.html`)
-- [ ] Independent review of the design against the requirements
-- [ ] `SessionStartParams` / `SessionStartSpec` types; headless options and composer seeds derive from them
-- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, title, schedule ids, fresh fetch
-- [ ] `schedules`, `schedule_runs` tables; `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`
+- [x] Independent review of the design against the requirements, findings applied
+- [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over composer, seed and headless inputs
+- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, fresh fetch
+- [ ] `schedules`, `schedule_runs` (unique slot) tables; `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`
 - [ ] Cron dependency added (passes `check-deps`); presets compile to cron; DST tests
-- [ ] `ScheduleRunner`: due check, `last_slot_at` written first, overlap skip, catch-up, pause/resume
-- [ ] Minimum-interval validation shared by save and propose
-- [ ] Failed starts recorded; `needs_user_reason` set and cleared
-- [ ] Notes folders: host layout, read-only + read-write binds, ownership, local mode, deleted with the schedule
+- [ ] `ScheduleRunner`: due check, slot claim, overlap and one-hour skips, catch-up, `starting` recovery, pause/resume
+- [ ] One-hour spacing check shared by save and propose; Run now refusal within an hour
+- [ ] Pre-flight checks; first-dispatch failure watch; `needs_user_reason` set and cleared
+- [ ] Notes folders: host layout, mount (bind / volume subpath), ownership, local mode, deleted with the schedule
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file)
 - [ ] `shipit schedule list` / `propose`; proposal card persisted; outcome notice to the agent
-- [ ] Settings → Schedules: list, editor with the shared controls, run history, Run now / Pause / Delete
-- [ ] `run_finished_at` at settlement; done-test clause; every `resolvedAt` consumer checked
-- [ ] Scheduled sidebar view and toggle; regular view filter; attention view still lists runs
+- [ ] Settings → Schedules: list, editor with the shared controls, run history with result fallback, Run now / Pause / Delete
+- [ ] `run_finished_at` at settlement; `isWorkResolved` / `workResolvedAt` in the done test, attention call sites, cap ranking and sort
+- [ ] Scheduled sidebar view and toggle; regular-view filter; Sandbox group resolved split; attention view still lists runs
 - [ ] `ScheduledRunBanner`
 - [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
-- [ ] Integration tests: restart does not double-fire, overlap skip, waiting run does not block, catch-up runs once
+- [ ] Integration tests: restart mid-start recovers, no double start, overlap skip, waiting run does not block, catch-up runs once, one-hour skip after Run now
