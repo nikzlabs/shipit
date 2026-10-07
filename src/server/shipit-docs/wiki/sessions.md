@@ -413,16 +413,16 @@ schedule:
   that pass while it is paused do not run when it resumes.
 - **Edit** — applies from the next run. A run in progress keeps what it started
   with.
-- **Delete** — removes the schedule and its run history; the run sessions stay.
-  It is refused while a run is not finished, and the refusal lists those runs,
-  each with **Stop**.
+- **Delete** — removes the schedule, its run history and its runs' notes; the
+  run sessions stay. It is refused while a run is not finished, and the refusal
+  lists those runs, each with **Stop**.
 
 Opening a schedule there shows its runs, newest first: the time (in the
 schedule's time zone, as in each run's title, and named when it is not the
 user's own), a state —
 *Starting*, *Running*, *Needs you*, *Finished*, *Stopping*, *Stopped*,
 *Skipped*, *Failed* or *Session deleted* — a one-line result, **Stop** on a run
-that is not finished, and **Open**.
+that is not finished, **Open**, and **Notes** on a run that has notes.
 
 **Where the runs are.** Runs are not in the regular session list. The clock
 button beside the "Needs you" button in the sidebar header, there while the
@@ -435,11 +435,21 @@ anything the user must decide has to be asked as a question; a request written
 only in a message is filed away with the finished runs.
 
 **Inside a run**, the top of the chat says *Started by schedule …*, with
-**Open schedule**, which opens Settings → Schedules at that schedule, and
-**Stop run** while the run is not finished. Stopping a run — there, on its row
+**Open schedule**, which opens Settings → Schedules at that schedule, **Notes**,
+and **Stop run** while the run is not finished. Stopping a run — there, on its row
 in Settings, or with the chat's own stop control — makes it finished and holds
 every automatic turn until the user writes in it again. After the schedule is
 deleted, that line says so and has no controls.
+
+**Notes.** Each run has its own notes folder, where its agent can leave what a
+later run should know. In the run it is `/schedule/notes/`, and the run's first
+message says so. A run reads the earlier runs' notes with `shipit schedule
+notes` (`/shipit-docs/schedules.md`). The user reads any run's notes, read-only,
+from **Notes** on its row in Settings → Schedules or in the run's top line; the
+notes stay when the run's session is archived or deleted. An agent in any other
+session can read a schedule's notes only after the user allows it on a card in
+that session's chat — `shipit schedule notes` posts the card — and one approval
+covers that one schedule.
 
 **When a run does not start.** A run that comes due while the previous run of
 the schedule is still going is skipped, and the skip is in the history; a run

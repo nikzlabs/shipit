@@ -67,6 +67,8 @@ export interface ScheduleRunView extends ScheduleRun {
   session?: SessionListRow;
   /** The run's session no longer exists. */
   sessionDeleted?: true;
+  /** The run has a notes folder, which the notes viewer opens (req 27). */
+  hasNotes?: true;
 }
 
 /**

@@ -5,14 +5,15 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { openScheduleSettings, stopScheduleRun, useScheduleStore } from "../stores/schedule-store.js";
+import { openScheduleNotes } from "../stores/schedule-notes-store.js";
 import { formatRunTime, formatScheduleRunTime } from "./Settings/schedules/schedule-format.js";
 import type { SessionListRow } from "../../server/shared/types.js";
 
 /**
  * docs/324-scheduled-sessions req 25 — which schedule started this run, with a way back to
- * it and Stop while the run is not finished (req 33). Derived chrome like `SandboxBanner`:
- * it renders from the session row, so nothing of it is in the transcript. After the
- * schedule is deleted it says so and has no controls (req 32).
+ * it, its notes (req 27), and Stop while the run is not finished (req 33). Derived chrome like
+ * `SandboxBanner`: it renders from the session row, so nothing of it is in the transcript.
+ * After the schedule is deleted it says so and has no controls (req 32).
  */
 export function ScheduledRunLine({ session }: { session: SessionListRow }) {
   const loaded = useScheduleStore((s) => s.loaded);
@@ -58,6 +59,16 @@ export function ScheduledRunLine({ session }: { session: SessionListRow }) {
       >
         Open schedule
       </button>
+      {runId && (
+        <button
+          type="button"
+          onClick={() => openScheduleNotes(schedule.id, runId)}
+          className="shrink-0 text-[11.5px] font-medium text-(--color-text-link) hover:underline"
+          data-testid="scheduled-run-notes"
+        >
+          Notes
+        </button>
+      )}
       {runId && !session.runFinishedAt && !session.runStoppedAt && (
         <button
           type="button"

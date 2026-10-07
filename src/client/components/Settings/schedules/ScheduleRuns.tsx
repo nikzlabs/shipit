@@ -4,6 +4,7 @@ import { Badge } from "../../ui/badge.js";
 import { useSessionStore } from "../../../stores/session-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { RUNS_PAGE, stopScheduleRun, useScheduleStore } from "../../../stores/schedule-store.js";
+import { openScheduleNotes } from "../../../stores/schedule-notes-store.js";
 import { useAttentionInfo } from "../../../hooks/useAttentionInfo.js";
 import { formatRunTime, otherZone } from "./schedule-format.js";
 import { runState, type RunState, type RunStateKind } from "./run-state.js";
@@ -23,7 +24,8 @@ const STATE_VARIANT: Record<RunStateKind, "default" | "success" | "error" | "war
 
 /**
  * docs/324-scheduled-sessions req 24 — one schedule's runs, newest first: time, state,
- * one-line result, and Stop (req 33) and Open while there is something to stop or open.
+ * one-line result, and Stop (req 33), Open and Notes (req 27) while there is something to
+ * stop, open or read.
  */
 export function ScheduleRuns({
   scheduleId,
@@ -196,6 +198,16 @@ function RunRowBody({
             data-testid={`schedule-run-open-${run.id}`}
           >
             Open
+          </button>
+        )}
+        {run.hasNotes && (
+          <button
+            type="button"
+            onClick={() => openScheduleNotes(run.scheduleId, run.id)}
+            className="text-(--color-text-link) hover:underline"
+            data-testid={`schedule-run-notes-${run.id}`}
+          >
+            Notes
           </button>
         )}
       </span>

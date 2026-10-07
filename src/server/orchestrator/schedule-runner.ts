@@ -54,7 +54,7 @@ export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   /** `advanced.sessionStatusCard`: a run's manual steps count only while the card is on. */
   statusCardEnabled?: () => boolean;
   /** The runs' notes folders (req 13); without them a run starts with none. */
-  notes?: Pick<ScheduleNotes, "prepareRun">;
+  notes?: Pick<ScheduleNotes, "prepareRun" | "existingRunDir">;
   /** The identity a run session's folder is handed to; the session's own by default. */
   sessionIdentity?: (sessionId: string) => SessionIdentity | null;
 }
@@ -530,12 +530,14 @@ export class ScheduleRunner implements ScheduleQueue {
     return runs.map((run) => {
       const sessionId = run.sessionId ?? sessionManager.sessionIdForScheduleRun(run.id);
       if (!sessionId) return run;
+      // A run gets its folder only once its session exists.
+      const notes = this.deps.notes?.existingRunDir(run.scheduleId, run.id) ? { hasNotes: true as const } : {};
       const session = sessionManager.get(sessionId);
-      if (!session) return { ...run, sessionId, sessionDeleted: true };
+      if (!session) return { ...run, sessionId, sessionDeleted: true, ...notes };
       const result = session.runFinishedAt
         ? run.result
         : runResult(session, statusCardOn, chatHistoryManager.load(sessionId)) ?? run.result;
-      return { ...run, sessionId, session: toListRow(session), ...(result ? { result } : {}) };
+      return { ...run, sessionId, session: toListRow(session), ...(result ? { result } : {}), ...notes };
     });
   }
 

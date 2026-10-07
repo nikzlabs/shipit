@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { SchedulesSettings } from "./SchedulesSettings.js";
 import { useScheduleStore } from "../../../stores/schedule-store.js";
 import { useSessionStore } from "../../../stores/session-store.js";
+import { useScheduleNotesStore } from "../../../stores/schedule-notes-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { browserTimeZone, formatRunTime } from "./schedule-format.js";
 import type {
@@ -224,7 +225,7 @@ describe("SchedulesSettings — runs (reqs 24, 33)", () => {
       run("asking", { sessionId: "s-asking", slotAt: day(6), result: "Merged #3051; asked about #3060." }),
       run("done", { sessionId: "s-done", slotAt: day(5), result: "Merged 2 security PRs.", session: session("s-done", { runFinishedAt: "2026-10-05T09:40:00.000Z" }) }),
       run("skipped", { outcome: "skipped", slotAt: day(4), reason: "The previous run was still going." }),
-      run("gone", { sessionId: "s-gone", slotAt: day(3), sessionDeleted: true, result: "Nothing to merge." }),
+      run("gone", { sessionId: "s-gone", slotAt: day(3), sessionDeleted: true, result: "Nothing to merge.", hasNotes: true }),
     ];
     useSessionStore.setState({
       sessions: [session("s-going"), session("s-asking", { awaitingAnswer: true })],
@@ -255,6 +256,13 @@ describe("SchedulesSettings — runs (reqs 24, 33)", () => {
 
     await userEvent.click(screen.getByTestId("schedule-run-open-done"));
     expect(onOpenSession).toHaveBeenCalledWith("s-done");
+
+    // Notes outlive the session, and a run with no folder offers none (req 27).
+    const open = vi.fn();
+    useScheduleNotesStore.setState({ open });
+    expect(screen.queryByTestId("schedule-run-notes-skipped")).toBeNull();
+    await userEvent.click(screen.getByTestId("schedule-run-notes-gone"));
+    expect(open).toHaveBeenCalledWith({ scheduleId: "a", runId: "gone" });
   });
 
   it("gives run times in the schedule's zone, as the run titles do, and names a zone that is not the browser's", async () => {
