@@ -176,11 +176,16 @@ with **Stop**. Archived runs do not block it, as they count for nothing else
 either. A run whose schedule was deleted keeps its banner, which then says the
 schedule was deleted and has no links.
 
-**Stop (req 33)** — on a run's row, in the Delete refusal, and in the run's
-banner — interrupts the run's turn the way the chat's stop control does, and
-writes `run_stopped_at`. A stopped run is finished (below). It stays an
+**Stop (req 33)** writes `run_stopped_at` and interrupts the run's turn if one
+is going. It is reached four ways: the chat's own stop control inside the run
+session — `handleInterruptAgent`, which the `interrupt_agent` message reaches,
+writes `run_stopped_at` when the session is a run — and **Stop** on the run's
+row, in the Delete refusal, and in the run's banner. The last three also work
+while no turn is going, for a run that waits for an answer, where the chat's
+stop control is not shown. A stopped run is finished (below). It stays an
 ordinary session: a user turn in it after the stop makes it active again
-(req 7).
+(req 7), so "stop, then tell the agent to do something else" works as in any
+session.
 
 ## The scheduler (reqs 1, 2, 14–18, 23, 26)
 
@@ -453,7 +458,7 @@ route. Local mode is a development instance; this is the limit it already has.
 | 29 | `croner`'s handling of the change days |
 | 31 | Schedule rows in "needs you"; an errored run is not finished |
 | 32 | Delete, refused while a run is not finished |
-| 33 | Stop on a run row, in the Delete refusal and in the banner; `run_stopped_at` |
+| 33 | The chat's stop control in a run, and Stop on a run row, in the Delete refusal and in the banner; `run_stopped_at` |
 
 ## Rejected
 

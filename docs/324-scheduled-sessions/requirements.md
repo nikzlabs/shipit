@@ -95,7 +95,8 @@ answers on the same day (see "Resolved questions").
     and keeps its run sessions. It is refused while a run of the schedule is not
     finished.
 33. The user can stop a run that is not finished. A stopped run is finished, so
-    it does not block Delete (req 32).
+    it does not block Delete (req 32). The stop control inside the run's session
+    stops the run too.
 
 ## Open questions
 
@@ -168,4 +169,5 @@ answers on the same day (see "Resolved questions").
 - 2026-10-07 — Right after choosing req 32, the user: "but I should be able to
   stop a run". Carried by req 33. That a stopped run counts as finished is the
   reading of the remark in the context of req 32, where an unfinished run blocks
-  Delete.
+  Delete. The user then asked: "also if I open that run session and press stop,
+  right?" — the last sentence of req 33.
