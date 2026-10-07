@@ -1051,6 +1051,52 @@ const MIGRATIONS: Migration[] = [
       UPDATE sessions SET archived_at = retention_floor_at WHERE user_archived = 1;
     `);
   },
+
+  // docs/324-scheduled-sessions — a run row is the claim of its slot, so the unique
+  // (schedule_id, slot_at) stops a second start of one slot; Run now rows have a NULL
+  // slot, which SQLite never counts as a duplicate. A run's session_id and a session's
+  // schedule ids carry no foreign key: the history outlives a deleted session, and a run
+  // session outlives its deleted schedule (req 32).
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedules (
+        id                TEXT PRIMARY KEY,
+        name              TEXT NOT NULL,
+        enabled           INTEGER NOT NULL DEFAULT 1,
+        timing            TEXT NOT NULL,
+        time_zone         TEXT NOT NULL,
+        spec              TEXT NOT NULL,
+        active_since      TEXT NOT NULL,
+        needs_user_reason TEXT,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS schedule_runs (
+        id          TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+        slot_at     TEXT,
+        spec        TEXT,
+        outcome     TEXT NOT NULL,
+        reason      TEXT,
+        session_id  TEXT,
+        result      TEXT,
+        started_at  TEXT,
+        created_at  TEXT NOT NULL,
+        UNIQUE (schedule_id, slot_at)
+      );
+      CREATE INDEX IF NOT EXISTS idx_schedule_runs_history ON schedule_runs(schedule_id, created_at);
+    `);
+    for (const column of [
+      "schedule_id",
+      "schedule_run_id",
+      "run_finished_at",
+      "run_stopped_at",
+      "last_turn_outcome",
+      "schedule_notes_grants",
+    ]) {
+      addSessionColumnIfMissing(db, column);
+    }
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1074,6 +1120,8 @@ export const INSTALL_LEVEL_USAGE_MIGRATION = 91;
 export const STALE_PERMISSION_CARD_MIGRATION = 101;
 
 export const DATA_RETENTION_MIGRATION = 105;
+
+export const SCHEDULES_MIGRATION = 106;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
@@ -1121,6 +1169,8 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM egress_settings").run();
       this.db.prepare("DELETE FROM presentations").run();
       this.db.prepare("DELETE FROM agent_merge_claims").run();
+      this.db.prepare("DELETE FROM schedule_runs").run();
+      this.db.prepare("DELETE FROM schedules").run();
     })();
   }
 

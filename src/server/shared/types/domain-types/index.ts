@@ -8,4 +8,5 @@ export * from "./chat.js";
 export * from "./marketplace.js";
 export * from "./git.js";
 export * from "./review.js";
+export * from "./schedule.js";
 export * from "./misc.js";

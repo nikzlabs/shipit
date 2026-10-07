@@ -1647,3 +1647,65 @@ describe("onDetailsChanged", () => {
     logged.mockRestore();
   });
 });
+
+describe("docs/324-scheduled-sessions — a run's session fields", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  it("round-trip through get, list and listAll", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("run");
+    mgr.setScheduleRun("run", "sched-1", "run-1");
+    mgr.setRunFinishedAt("run", "2026-10-07T10:00:00.000Z");
+    mgr.setRunStoppedAt("run", "2026-10-07T09:30:00.000Z");
+    mgr.setLastTurnOutcome("run", "quota-refused");
+    mgr.grantScheduleNotes("run", "sched-2");
+
+    const expected = {
+      scheduleId: "sched-1",
+      scheduleRunId: "run-1",
+      runFinishedAt: "2026-10-07T10:00:00.000Z",
+      runStoppedAt: "2026-10-07T09:30:00.000Z",
+      lastTurnOutcome: "quota-refused",
+      scheduleNotesGrants: ["sched-2"],
+    };
+    expect(mgr.get("run")).toMatchObject(expected);
+    expect(mgr.list()[0]).toMatchObject(expected);
+    expect(mgr.listAll()[0]).toMatchObject(expected);
+  });
+
+  it("are absent on a session that is not a run, and cleared by null", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("plain");
+    const fields = ["scheduleId", "scheduleRunId", "runFinishedAt", "runStoppedAt", "lastTurnOutcome", "scheduleNotesGrants"];
+    for (const field of fields) expect(mgr.get("plain")).not.toHaveProperty(field);
+
+    mgr.setRunFinishedAt("plain", "2026-10-07T10:00:00.000Z");
+    mgr.setRunStoppedAt("plain", "2026-10-07T10:00:00.000Z");
+    mgr.setLastTurnOutcome("plain", "errored");
+    mgr.setRunFinishedAt("plain", null);
+    mgr.setRunStoppedAt("plain", null);
+    mgr.setLastTurnOutcome("plain", null);
+    for (const field of fields) expect(mgr.get("plain")).not.toHaveProperty(field);
+  });
+
+  it("keep one notes grant per schedule (req 30)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    mgr.grantScheduleNotes("s1", "sched-a");
+    mgr.grantScheduleNotes("s1", "sched-b");
+    mgr.grantScheduleNotes("s1", "sched-a");
+    expect(mgr.get("s1")!.scheduleNotesGrants).toEqual(["sched-a", "sched-b"]);
+
+    mgr.grantScheduleNotes("missing", "sched-a");
+    expect(mgr.get("missing")).toBeUndefined();
+  });
+
+  it("drop a last-turn outcome it does not know", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    dbManager.db.prepare("UPDATE sessions SET last_turn_outcome = 'exploded' WHERE id = 's1'").run();
+    expect(mgr.get("s1")).not.toHaveProperty("lastTurnOutcome");
+  });
+});
