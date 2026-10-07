@@ -177,9 +177,13 @@ sessions (ordinary sessions, req 7) and deletes its notes folders.
 
 `ScheduleRunner`, started from `startup-monitors.ts`: one pass at startup, then
 every 30 seconds, like the idle enforcer. Cron evaluation needs one dependency
-that evaluates cron in an IANA time zone and handles daylight saving (req 16) —
-`croner` is the candidate; it must pass `check-deps` (exact pin, 7 days old).
-Presets compile to cron: daily 09:00 is `0 9 * * *`, weekdays `0 9 * * 1-5`.
+that evaluates cron in an IANA time zone and handles daylight saving (req 16):
+`croner` 10.0.1 (published 2026-02-01, no dependencies, so it passes
+`check-deps`). `previousRuns(1, now)` gives step 1's slot and `nextRuns(n)` gives
+the next run times for the card, the editor and the spacing check. Checked on
+2026-10-07: `0 9 * * 1-5` in `Europe/Berlin` gives 08:00 UTC after the
+25 October 2026 change, so 09:00 stays 09:00 local. Presets compile to cron:
+daily 09:00 is `0 9 * * *`, weekdays `0 9 * * 1-5`.
 
 Each pass, for each enabled schedule:
 

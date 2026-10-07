@@ -7,7 +7,7 @@
 - [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over composer, seed and headless inputs
 - [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, fresh fetch
 - [ ] `schedules`, `schedule_runs` (unique slot) tables; `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`
-- [ ] Cron dependency added (passes `check-deps`); presets compile to cron; DST tests
+- [ ] `croner` 10.0.1 added (exact pin); presets compile to cron; DST tests
 - [ ] `ScheduleRunner`: due check, slot claim, overlap and one-hour skips, catch-up, `starting` recovery, pause/resume
 - [ ] One-hour spacing check shared by save and propose; due-slot skip within an hour
 - [ ] Run now: no hour or overlap check; warning with Run anyway / Cancel when any run is not done
