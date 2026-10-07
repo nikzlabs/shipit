@@ -120,6 +120,7 @@
     "@radix-ui/react-focus-guards": "1.1.4",
     "@radix-ui/react-dismissable-layer": "1.1.15",
     "proxy-addr": "2.0.8",
-    "ip-address": "10.7.2"
+    "ip-address": "10.7.2",
+    "source-map-js": "1.2.2"
   }
 }
