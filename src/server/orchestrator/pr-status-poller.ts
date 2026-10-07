@@ -23,6 +23,7 @@ import {
   prStatusEqual,
 } from "./pr-status-parser.js";
 import { AutoFixManager, MAX_AUTO_FIX_ATTEMPTS, type FetchAndFixCb } from "./auto-fix-manager.js";
+import { withdrawWaitingTurns } from "./queue-drain.js";
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import { CiGraceTracker } from "./ci-grace-tracker.js";
 import { AutoConflictResolveManager, MAX_AUTO_RESOLVE_ATTEMPTS, type RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
@@ -470,6 +471,23 @@ export class PrStatusPoller {
 
   getAutoFixState(sessionId: string): AutoFixState | undefined {
     return this.autoFix.get(sessionId);
+  }
+
+  /** docs/186 — a pause removes the fix turn that still waits; one that already runs finishes. */
+  withdrawAutoFix(sessionId: string, reason = "auto-fix paused"): void {
+    const count = withdrawWaitingTurns(
+      sessionId,
+      this.runnerRegistry?.get(sessionId),
+      this.sessionManager,
+      (entry) => entry.ciAutoFix === true,
+      reason,
+    );
+    if (count > 0) console.log(`[auto-fix] ${sessionId} — ${reason}; removed ${count} waiting fix turn(s)`);
+  }
+
+  /** The workspace setting went off: the same, for every session — archived ones keep held turns too. */
+  withdrawAllAutoFix(): void {
+    for (const id of this.sessionManager.allIds()) this.withdrawAutoFix(id, "auto-fix turned off");
   }
 
   notifyRunnerIdle(sessionId: string): void {

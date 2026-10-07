@@ -1,10 +1,12 @@
 import type {
+  AnswerHoldStore,
   QueuedMessage,
   SessionRunnerInterface,
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import { automaticTurnHeldForAnswer, systemTurnBlockedByResidentWork } from "./turn-admission.js";
-import { holdTurn } from "./held-turns.js";
+import { forgetHeldEntries, holdTurn } from "./held-turns.js";
+import { settleDroppedQueueEntries } from "./turn-settlement.js";
 
 export { queuedMessageToDispatchOptions };
 
@@ -81,6 +83,37 @@ export async function startQueuedMessage(
     return runInteractive(next);
   }
   await runner.runDispatchedTurn(queuedMessageToDispatchOptions(next));
+}
+
+/**
+ * Remove the turns that match and have not started — queued on the session's current runner,
+ * or saved behind a question, which outlives runners and restarts — and settle each as
+ * dropped. A turn that already started is in neither place, so it is not touched.
+ */
+export function withdrawWaitingTurns(
+  sessionId: string,
+  runner: Pick<SessionRunnerInterface, "messageQueue" | "emitMessage" | "getQueueSnapshot"> | undefined,
+  holdStore: AnswerHoldStore | undefined,
+  matches: (entry: QueuedMessage) => boolean,
+  reason: string,
+): number {
+  const queued = runner?.messageQueue.filter(matches) ?? [];
+  if (runner && queued.length > 0) {
+    const queue = runner.messageQueue;
+    queue.splice(0, queue.length, ...queue.filter((m) => !queued.includes(m)));
+    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  }
+  let held: QueuedMessage[] = [];
+  try {
+    const inQueue = new Set(queued.map((m) => m.heldId));
+    held = (holdStore?.heldTurns(sessionId) ?? []).filter((m) => matches(m) && !inQueue.has(m.heldId));
+  } catch (err) {
+    console.error(`[queue] reading the held turns of ${sessionId} failed:`, err);
+  }
+  const withdrawn = [...queued, ...held];
+  forgetHeldEntries(holdStore, withdrawn);
+  settleDroppedQueueEntries(withdrawn, reason);
+  return withdrawn.length;
 }
 
 /**

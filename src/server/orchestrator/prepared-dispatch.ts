@@ -30,6 +30,7 @@ export interface AgentDispatchInit {
   postTurn: "commit-push" | "none" | undefined;
   systemTurn: boolean | undefined;
   automatic: boolean | undefined;
+  ciAutoFix?: boolean;
   heldId: number | undefined;
   onTurnComplete: ((outcome: TurnOutcome) => void) | undefined;
   deliveryId: string | undefined;
@@ -61,6 +62,7 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   postTurn: true,
   systemTurn: true,
   automatic: true,
+  ciAutoFix: true,
   heldId: true,
   onTurnComplete: true,
   deliveryId: true,
@@ -97,6 +99,7 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     postTurn: next.postTurn,
     systemTurn: next.systemTurn,
     automatic: next.automatic,
+    ciAutoFix: next.ciAutoFix,
     heldId: next.heldId,
     onTurnComplete: next.onTurnComplete,
     deliveryId: next.deliveryId,

@@ -14,3 +14,6 @@
 - [x] Persistence test: flag round-trips across manager instances
 - [x] Route test: persist/clear + 404/400 validation
 - [x] Typecheck + lint clean
+- [x] A pause removes a fix turn that waits in the queue or the held list; a started one finishes
+- [x] Card and PR panel say auto-fix is paused while a started fix turn finishes; Fix CI shows while paused
+- [x] The workspace setting going off removes waiting fix turns in every session; the card says auto-fix is off

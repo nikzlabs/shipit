@@ -142,6 +142,7 @@ export interface QueuedMessage {
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
   automatic?: boolean;
+  ciAutoFix?: boolean;
   heldId?: number;
   onTurnComplete?: (outcome: TurnOutcome) => void;
   deliveryId?: string;
@@ -170,6 +171,8 @@ export interface AgentDispatchOptions {
    * session. Held while the agent waits for the user's answer; any other turn clears that.
    */
   automatic?: boolean;
+  /** docs/186 — ShipIt's automatic CI fix, which a pause removes while it still waits. */
+  ciAutoFix?: boolean;
   /**
    * docs/322-question-holds-automatic-turns req 8 — the saved row of a held turn; deleted when
    * the turn starts, not before.
@@ -379,6 +382,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
   if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   if (opts.automatic !== undefined) queued.automatic = opts.automatic;
+  if (opts.ciAutoFix !== undefined) queued.ciAutoFix = opts.ciAutoFix;
   if (opts.heldId !== undefined) queued.heldId = opts.heldId;
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;

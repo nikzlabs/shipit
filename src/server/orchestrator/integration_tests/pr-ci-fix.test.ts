@@ -6,6 +6,8 @@ import { execSync } from "node:child_process";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { PrStatusPoller } from "../pr-status-poller.js";
+import { toQueuedMessage } from "../session-runner.js";
+import { autoFixDispatch } from "../services/github-ci-fix.js";
 import {
   StubAuthManager,
   StubGitHubAuthManager,
@@ -27,6 +29,7 @@ let sessionDir: string;
 let sessionManager: SessionManager;
 let prStatusPoller: PrStatusPoller;
 let dbManager: DatabaseManager;
+let credentialStore: ReturnType<typeof createTestCredentialStore>;
 const sseBroadcast = vi.fn();
 
 beforeEach(async () => {
@@ -39,7 +42,7 @@ beforeEach(async () => {
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
 
-  const credentialStore = createTestCredentialStore(tmpDir);
+  credentialStore = createTestCredentialStore(tmpDir);
   const git = new GitManager(sessionDir);
   await git.init();
 
@@ -120,6 +123,36 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
     expect(res.json()).toEqual({ paused: true });
     expect(sessionManager.get(sessionId)!.autoFixCiPaused).toBe(true);
     expect(sessionManager.list().find((s) => s.id === sessionId)?.autoFixCiPaused).toBe(true);
+  });
+
+  it("removes a saved automatic fix turn on pause, and keeps a manual Fix CI and other held work", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    sessionManager.holdTurn(sessionId, toQueuedMessage(autoFixDispatch("CI failed: lint")));
+    sessionManager.holdTurn(sessionId, { text: "CI failed: lint", execution: "dispatched", activity: "Fixing CI…" });
+    sessionManager.holdTurn(sessionId, { text: "Child PR #42 merged", execution: "dispatched", automatic: true });
+
+    await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/auto-fix-pause`, payload: { paused: false } });
+    expect(sessionManager.heldTurns(sessionId)).toHaveLength(3);
+
+    await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/auto-fix-pause`, payload: { paused: true } });
+    expect(sessionManager.heldTurns(sessionId).map((m) => m.activity ?? m.text)).toEqual(["Fixing CI…", "Child PR #42 merged"]);
+  });
+
+  it("removes the saved automatic fix turns of every session, archived ones too, when the workspace setting goes off", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    credentialStore.setAutoFixCi(true);
+    const otherId = crypto.randomUUID();
+    sessionManager.track(otherId, "Other session", path.join(tmpDir, "sessions", otherId));
+    sessionManager.archive(otherId);
+    sessionManager.holdTurn(sessionId, toQueuedMessage(autoFixDispatch("CI failed: lint")));
+    sessionManager.holdTurn(otherId, toQueuedMessage(autoFixDispatch("CI failed: test")));
+    sessionManager.holdTurn(otherId, { text: "CI failed: test", execution: "dispatched", activity: "Fixing CI…" });
+
+    const res = await app.inject({ method: "PUT", url: "/api/settings", payload: { autoFixCi: false } });
+
+    expect(res.statusCode).toBe(200);
+    expect(sessionManager.heldTurns(sessionId)).toEqual([]);
+    expect(sessionManager.heldTurns(otherId).map((m) => m.activity)).toEqual(["Fixing CI…"]);
   });
 
   it("resumes by clearing the flag", async () => {

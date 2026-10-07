@@ -36,7 +36,7 @@ import type { MergeWatchManager } from "./merge-watch.js";
 import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js";
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
-import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
+import { fetchCIFailureLogs, buildCIFixPrompt, autoFixDispatch } from "./services/github.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
@@ -71,7 +71,6 @@ import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
-import { prepareDispatch } from "./prepared-dispatch.js";
 import { seedAndBuildAgentListPayload } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 import { setEgressDecisionTokenRecovery } from "./egress-decision-auth.js";
@@ -902,30 +901,14 @@ export function createPrStatusPoller(
 
       const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks, runner.sessionDir);
       if (logs.length === 0) return noop("no_logs");
+      // Turned off during the log fetch; once dispatched, turning it off withdraws it instead.
+      if (sessionManager.get(sessionId)?.autoFixCiPaused) return noop("paused");
+      if (!credentialStore?.getAutoFixCi()) return noop("turned_off");
       const prompt = buildCIFixPrompt(logs);
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — dispatching a fix turn for ${checkLabel}`);
 
       // Settlement also resolves on disposal; onTurnComplete alone can wait forever.
-      const outcome = await runner.dispatch(prepareDispatch({
-        text: prompt,
-        agentInterface: undefined,
-        activity: "Auto-fixing CI...",
-        systemTurn: true,
-        automatic: true,
-        heldId: undefined,
-        onTurnComplete: undefined,
-        execution: undefined,
-        images: undefined,
-        files: undefined,
-        uploads: undefined,
-        permissionMode: undefined,
-        postTurn: undefined,
-        deliveryId: undefined,
-        dictated: undefined,
-        resetMergedBranch: undefined,
-        compactContext: undefined,
-        silent: undefined,
-      })).settled;
+      const outcome = await runner.dispatch(autoFixDispatch(prompt)).settled;
       const detail = outcome.detail ? ` (${outcome.detail})` : "";
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
       return autoFixResultForOutcome(outcome);

@@ -270,6 +270,20 @@ describe("Integration: settings derive from the catalogue (docs/299 req 7)", () 
     expect(enabled).toBe(1);
   });
 
+  // docs/186 — turning auto-fix off removes a fix turn that still waits.
+  it("fires the auto-fix off hook only when the setting goes on → off", async () => {
+    let disabled = 0;
+    const save = (autoFixCi: boolean) => saveWith({ autoFixCi, onAutoFixCiDisabled: () => { disabled += 1; } });
+
+    await save(false);
+    await save(true);
+    expect(disabled).toBe(0);
+
+    await save(false);
+    await save(false);
+    expect(disabled).toBe(1);
+  });
+
   // docs/303 req 23 — turning the card back on has to mark the stored cards
   // stale, or the user reads an old card as if the last turn had written it.
   it("fires the status-card hook only when the setting goes off → on", async () => {
