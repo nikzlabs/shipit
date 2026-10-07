@@ -38,6 +38,8 @@ Reflect.deleteProperty(process.env, "SHIPIT_WORKER_TOKEN");
 Reflect.deleteProperty(process.env, "SHIPIT_AGENT_DEPTH");
 // An in-process worker opens this socket, and removes it on stop: inside a session that is the live one.
 Reflect.deleteProperty(process.env, "SSH_AUTH_SOCK");
+// An in-process worker reports its turns to this orchestrator: inside a session that is the live one.
+Reflect.deleteProperty(process.env, "SHIPIT_HOST");
 
 if (process.env.GIT_ALLOW_PROTOCOL === undefined) {
   process.env.GIT_ALLOW_PROTOCOL = "file";

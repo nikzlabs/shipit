@@ -464,22 +464,24 @@ alive is still possible. Treat the count as a bounded-lifetime *hint*: record
 of extra container lifetime and never a permanent leak. The decay deliberately
 errs toward *reclaimable*, which is the safe direction for a resource guard.
 
-An orchestrator restart loses the count entirely (it is in-memory runner state).
-On the **deploy path this cannot desync**: `deployment/vps/deploy.sh:26` force-
-removes every container labeled `shipit-stack=shipit` — which session containers
-carry (`session-container.ts:498`) — before the orchestrator comes back, so the
-CLI processes and their background tasks die with the containers. A zero count
-after the restart is then simply correct.
+An orchestrator restart loses the count entirely (it is in-memory runner state),
+and the containers outlive it: a deploy no longer removes them
+(`deployment/vps/deploy.sh` leaves session containers to startup
+reconciliation), so this holds for every update and not only for a crash.
+`rediscover` re-adopts surviving containers whose CLI process still holds tasks,
+while a rebuilt runner reports a zero count. The count itself is accepted, not
+fixed. The worker receives the full list on every `agent_background_tasks`
+event but keeps and publishes only how many there are, so restoring the marker
+would take publishing the list on `/agent/status` and seeding the runner from it
+(not built). The cost is a missing background-work marker, and a session that
+is reclaimable under memory pressure while its task runs — which a container
+with no runner already was.
 
-The only residual case is a **crash restart**, where `rediscover`
-(`app-lifecycle.ts:201`) re-adopts surviving containers whose CLI process still
-holds tasks, while the rebuilt runner reports a zero count. Accepted, not fixed:
-reconstructing it would mean reading the CLI's undocumented per-session `tasks/`
-directory inside the container (observed at
-`/tmp/claude-<uid>/<cwd-slug>/<session-id>/tasks/<task-id>.output`), an internal
-path with no compatibility guarantee — not worth the coupling for a window this
-narrow, which additionally only bites if that session is among the excess idle
-set or the host is under memory pressure.
+What a restart must not lose is the **turn** the task ends in. That was lost
+until planning#639 — the wake's events reached a runner with no agent and were
+dropped — and is covered in docs/240-turn-survives-orchestrator-restart §6: the
+worker counts the wake as a turn and reports it when no orchestrator is
+listening, and the runner it gets adopts it.
 
 ### 6. Give the self-woken turn its own turn state
 

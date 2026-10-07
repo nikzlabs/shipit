@@ -452,7 +452,8 @@ export async function executeAgentTurn(
   retireRewindUndo(deps.listenerDeps.chatHistoryManager, sessionId);
   if (runner) {
     runner.running = true;
-    runner.systemTurnInProgress = input.systemTurn === true;
+    // An adopted turn is not this caller's to hold or release: a driver may hold the queue now.
+    if (!input.adopt) runner.systemTurnInProgress = input.systemTurn === true;
     runner.activeDeliveryId = input.deliveryId;
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);

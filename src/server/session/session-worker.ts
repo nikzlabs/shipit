@@ -132,6 +132,8 @@ export class SessionWorker extends EventEmitter {
         terminalActive: this.terminalController.hasActiveTerminal(),
         installRunning: this.installController.installRunning,
       }),
+      sseClientCount: () => this.sse.clientCount,
+      onUnheardTurn: () => { void this.reportUnheardTurn(); },
     });
     this.terminalController = new TerminalController({
       createTerminal: deps.createTerminal ?? (() => new TerminalProcess()),
@@ -483,6 +485,7 @@ export class SessionWorker extends EventEmitter {
       reply.raw.write(": connected\n\n");
 
       const client: SseClient = this.sse.attach({ raw: reply.raw });
+      this.agentController.noteOrchestratorStream();
 
       // Child agents can finish before SSE connects; replay their buffered events.
       const sinceParam = (request.query as { since?: string } | undefined)?.since;
@@ -539,14 +542,26 @@ export class SessionWorker extends EventEmitter {
    * turns. `ssh` then fails with "no such identity", which is the same failure
    * as an ungranted destination and says so in the agent's own output.
    */
+  private orchestratorClient(): OrchestratorClient | null {
+    try {
+      return this._createOrchestratorClient ? this._createOrchestratorClient() : new OrchestratorClientImpl();
+    } catch {
+      return null;
+    }
+  }
+
+  // Best-effort: a turn this does not hand over is adopted at the next connect or boot sweep.
+  private async reportUnheardTurn(): Promise<void> {
+    const res = await this.orchestratorClient()?.request("POST", "/agent/own-turn", {}, { timeoutMs: 10_000 });
+    if (res && !res.ok) {
+      console.warn(`[agent] the orchestrator did not take over a self-started turn (status ${res.status})`);
+    }
+  }
+
   private async startSshAgentSocket(): Promise<void> {
     const socketPath = process.env.SSH_AUTH_SOCK;
     if (!socketPath) return;
-    const client = this._createOrchestratorClient
-      ? this._createOrchestratorClient()
-      : (() => {
-          try { return new OrchestratorClientImpl(); } catch { return null; }
-        })();
+    const client = this.orchestratorClient();
     if (!client) return;
     const socket = new SshAgentSocket({
       socketPath,
