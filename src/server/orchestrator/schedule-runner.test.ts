@@ -18,6 +18,11 @@ const SANDBOX_SPEC = {
   prompt: "Check current security PRs and merge them.",
 };
 const at = (iso: string) => new Date(iso);
+/** The run's prompt row and the agent's answer: what proves the prompt arrived. */
+const ANSWERED: PersistedMessage[] = [
+  { role: "user", text: SANDBOX_SPEC.prompt },
+  { role: "assistant", text: "Looking at the open security PRs." },
+];
 const OCT_7_0800 = "2026-10-07T08:00:00.000Z";
 
 let db: DatabaseManager;
@@ -227,6 +232,27 @@ describe("ScheduleRunner — due runs", () => {
     expect(runs(t.id)[0]).toMatchObject({ outcome: "skipped", reason: expect.stringContaining("was still going") });
   });
 
+  it("asks the worker of a run left without a runner by a restart, each time, instead of trusting the set", async () => {
+    const working = new Set(["leftover"]);
+    const probed: string[] = [];
+    const live = new Set<string>();
+    runner = makeRunner({
+      liveWorkSessions: live,
+      probeLiveWork: async (sessionId) => { probed.push(sessionId); return working.has(sessionId); },
+    });
+    const s = schedule();
+    sessions.track("leftover", "Security PRs · Oct 6, 09:00");
+    sessions.setScheduleRun("leftover", s.id, "earlier-run");
+    live.add("leftover");
+
+    await runner.runPass(at("2026-10-07T09:00:30Z"));
+    expect(runs(s.id)[0]).toMatchObject({ outcome: "skipped" });
+    working.delete("leftover");
+    await runner.runPass(at("2026-10-08T09:00:30Z"));
+    expect(runs(s.id)[0]).toMatchObject({ outcome: "started" });
+    expect(probed).toEqual(["leftover", "leftover"]);
+  });
+
   it("starts due runs one at a time", async () => {
     schedule({ name: "A" });
     schedule({ name: "B" });
@@ -279,6 +305,20 @@ describe("ScheduleRunner — Run now (req 26)", () => {
     expect(starts).toHaveLength(3);
     expect(store.getRun(run.id)).toMatchObject({ outcome: "started", sessionId: "session-2" });
     expect(store.getRun(second.id)).toMatchObject({ outcome: "started", sessionId: "session-3" });
+  });
+
+  it("is not cancelled by a pause while its session is prepared", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    runner = makeRunner({ startSession: (opts) => fakeStart(opts, () => held) });
+    const s = schedule();
+    const run = await runner.runNow(s.id);
+    await flush();
+    await runner.enqueue(s.id, () => store.update(s.id, { enabled: false }));
+    release();
+    await flush();
+    expect(dispatched).toEqual(["session-1"]);
+    expect(store.getRun(run.id)).toMatchObject({ outcome: "started" });
   });
 
   it("refuses a schedule that does not exist", async () => {
@@ -442,9 +482,9 @@ describe("ScheduleRunner — recovery after a restart", () => {
     expect(store.getRun(run.id)).toMatchObject({ outcome: "started", sessionId: "s-live" });
   });
 
-  it("marks a starting run whose prompt is in its chat history as started", async () => {
+  it("marks a starting run whose prompt the agent answered as started", async () => {
     const { run } = leftover("starting", "s-told");
-    chat.set("s-told", [{ role: "user", text: SANDBOX_SPEC.prompt }]);
+    chat.set("s-told", ANSWERED);
     await runner.runPass(NOW);
     expect(starts).toHaveLength(0);
     expect(store.getRun(run.id)).toMatchObject({ outcome: "started", sessionId: "s-told" });
@@ -474,11 +514,29 @@ describe("ScheduleRunner — recovery after a restart", () => {
     expect(store.getRun(run.id)).toMatchObject({ outcome: "failed" });
   });
 
+  it("sends the prompt again when only its row was saved: the row is written before the agent gets it", async () => {
+    leftover("started", "s-saved");
+    chat.set("s-saved", [
+      { role: "user", text: SANDBOX_SPEC.prompt },
+      { role: "assistant", text: "The agent didn't start on the first attempt — retrying…", notice: true },
+    ]);
+    await runner.runPass(NOW);
+    expect(redispatches.map((r) => r.sessionId)).toEqual(["s-saved"]);
+  });
+
+  it("leaves a started run alone while its worker has not been probed", async () => {
+    const { run } = leftover("started", "s-unknown");
+    unprobed.add("s-unknown");
+    await runner.runPass(NOW);
+    expect(redispatches).toHaveLength(0);
+    expect(store.getRun(run.id)?.outcome).toBe("started");
+  });
+
   it("leaves a started run alone once its first turn has ended, or its prompt was delivered", async () => {
     const ended = leftover("started", "s-ended");
     sessions.setLastTurnOutcome("s-ended", "ok");
     const delivered = leftover("started", "s-delivered");
-    chat.set("s-delivered", [{ role: "user", text: SANDBOX_SPEC.prompt }]);
+    chat.set("s-delivered", ANSWERED);
     await runner.runPass(NOW);
     expect(redispatches).toHaveLength(0);
     expect(store.getRun(ended.run.id)?.outcome).toBe("started");
@@ -488,9 +546,9 @@ describe("ScheduleRunner — recovery after a restart", () => {
   it("in local mode, fails a run the restart cut off, and still re-sends one never delivered", async () => {
     runner = makeRunner({ runtimeMode: "local" });
     const cutStarting = leftover("starting", "s-cut-1");
-    chat.set("s-cut-1", [{ role: "user", text: SANDBOX_SPEC.prompt }]);
+    chat.set("s-cut-1", ANSWERED);
     const cutStarted = leftover("started", "s-cut-2");
-    chat.set("s-cut-2", [{ role: "user", text: SANDBOX_SPEC.prompt }]);
+    chat.set("s-cut-2", ANSWERED);
     const lost = leftover("started", "s-lost");
     await runner.runPass(NOW);
     expect(store.getRun(cutStarting.run.id)).toMatchObject({ outcome: "failed", reason: "ShipIt restarted during the run." });

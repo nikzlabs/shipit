@@ -985,12 +985,13 @@ export async function executeAgentTurn(
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
       agentErrored = true;
+      await settleHandovers();
+      // After the handover, so the record belongs to the turn the error ended. A pending
+      // docs/306 continuation is a new turn, which records how it ends.
       const quota = isQuotaRefusal(lastAgentError);
-      // A pending docs/306 continuation is a new turn, which records how it ends.
       if (!(quota && quotaContinuationPending)) {
         recordTurnEnd(quota ? "quota-refused" : "errored", lastAgentError?.message);
       }
-      await settleHandovers();
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -1555,7 +1556,8 @@ export async function executeAgentTurn(
         if (handled) return;
       }
 
-      if (!receivedResult && !agentErrored && !wasSuperseded) {
+      // `sawOwnResult`, not `receivedResult`: an adopted CLI turn keeps its predecessor's result.
+      if (!sawOwnResult && !agentErrored && !wasSuperseded) {
         // A stopped turn ended as the user asked; any other exit without a result is an error.
         recordTurnEnd(
           (runner?.wasInterrupted ?? false) ? "ok" : "errored",

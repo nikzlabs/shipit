@@ -57,7 +57,12 @@ import {
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
 import { repoMemoryDir } from "./repo-memory-manager.js";
 import { restoreSessionWorkspace } from "./services/session.js";
-import { reattachInFlightTurns, unprobedAfterRestart } from "./restart-turn-reattach.js";
+import {
+  liveWorkAfterRestart,
+  reattachInFlightTurns,
+  unprobedAfterRestart,
+  workerHasLiveWork,
+} from "./restart-turn-reattach.js";
 import { ScheduleStore } from "./schedule-store.js";
 import { ScheduleRunner } from "./schedule-runner.js";
 import type { TurnEnd } from "./turn-settlement.js";
@@ -1069,6 +1074,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     startSession: (opts) => createHeadlessSession(scheduledRunStart, opts),
     redispatch: (sessionId, opts) => redispatchHeadlessPrompt(scheduledRunStart, sessionId, opts),
     unprobedSessions: unprobedAfterRestart,
+    liveWorkSessions: liveWorkAfterRestart,
+    probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
   });
   scheduleRunnerRef.ref = scheduleRunner;
 

@@ -67,6 +67,24 @@ function finalizeEndedTurnRows(deps: ReattachDeps, ended: ReadonlySet<string> | 
   }
 }
 
+/**
+ * Whether a session that has no runner still works in its worker: a turn, background tasks,
+ * an install or a terminal. A worker that does not answer counts as working.
+ */
+export async function workerHasLiveWork(
+  containerManager: SessionContainerManager | null,
+  sessionId: string,
+): Promise<boolean> {
+  const container = containerManager?.get(sessionId);
+  if (container?.status !== "running") return false;
+  try {
+    const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
+    return status.turnActive === true || staleIdleHoldReason(status) !== null;
+  } catch {
+    return true;
+  }
+}
+
 // The worker reports a turn nothing here follows; the runner's first connect adopts it.
 export async function followWorkerTurn(
   deps: Pick<ReattachDeps, "runnerRegistry" | "sessionManager" | "defaultAgentId">,

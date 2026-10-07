@@ -38,6 +38,10 @@ export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   redispatch: (sessionId: string, opts: RedispatchOptions) => Promise<TurnHandle>;
   /** Sessions whose worker no probe reached after a restart; any of them may still be working. */
   unprobedSessions?: ReadonlySet<string>;
+  /** Sessions whose worker had work but no turn at the restart, so no runner follows them. */
+  liveWorkSessions?: ReadonlySet<string>;
+  /** Whether a session with no runner still works in its worker; without it, such a session counts as working. */
+  probeLiveWork?: (sessionId: string) => Promise<boolean>;
 }
 
 /** The start was called off by a change the user made: no reason to show as needing them. */
@@ -151,7 +155,7 @@ export class ScheduleRunner implements ScheduleQueue {
   }
 
   /** Steps 1–4 of a pass: collect, record the missed slots, claim the latest, and skip it if a run is going. */
-  private claimDueRun(scheduleId: string, now: Date): ScheduleRun | null {
+  private async claimDueRun(scheduleId: string, now: Date): Promise<ScheduleRun | null> {
     const { store } = this.deps;
     const schedule = store.get(scheduleId);
     if (!schedule?.enabled) return null;
@@ -174,7 +178,7 @@ export class ScheduleRunner implements ScheduleQueue {
       const [, missed] = store.listRuns(scheduleId, 2);
       if (missed) this.announceRun(missed);
     }
-    const going = this.goingRun(scheduleId, claimed.id);
+    const going = await this.goingRun(scheduleId, claimed.id);
     if (going) {
       const skipped = store.updateRun(claimed.id, { outcome: "skipped", reason: going });
       if (skipped) this.announceRun(skipped);
@@ -188,16 +192,18 @@ export class ScheduleRunner implements ScheduleQueue {
    * Req 14 — why another run of the schedule still counts as going, or null. A run that
    * waits for the user's answer never does, background work or not (req 23).
    */
-  private goingRun(scheduleId: string, exceptRunId: string): string | null {
-    const { store, sessionManager, runnerRegistry, unprobedSessions } = this.deps;
+  private async goingRun(scheduleId: string, exceptRunId: string): Promise<string | null> {
+    const { store, sessionManager, runnerRegistry, unprobedSessions, liveWorkSessions, probeLiveWork } = this.deps;
     if (store.hasStartingRun(scheduleId, exceptRunId)) return "The previous run was still starting.";
-    for (const sessionId of new Set([...runnerRegistry.ids(), ...(unprobedSessions ?? [])])) {
+    const candidates = new Set([...runnerRegistry.ids(), ...(unprobedSessions ?? []), ...(liveWorkSessions ?? [])]);
+    for (const sessionId of candidates) {
       const session = sessionManager.get(sessionId);
       if (session?.scheduleId !== scheduleId || session.scheduleRunId === exceptRunId) continue;
       if (sessionManager.isAwaitingAnswer(sessionId)) continue;
       const runner = runnerRegistry.get(sessionId);
-      // No runner after a restart: a worker no probe reached may still be working.
-      const busy = runner ? runner.agentBusy : unprobedSessions?.has(sessionId) === true;
+      // After a restart a session can work with no runner, and the restart's sets never
+      // empty, so its worker is asked each time rather than the set trusted for good.
+      const busy = runner ? runner.agentBusy : await (probeLiveWork?.(sessionId) ?? Promise.resolve(true));
       if (busy) return `The previous run, "${session.title}", was still going.`;
     }
     return null;
@@ -243,8 +249,8 @@ export class ScheduleRunner implements ScheduleQueue {
         deliveryId: run.id,
         fetchBase: true,
         scheduleRun: { scheduleId: run.scheduleId, runId: run.id },
-        // A due run was claimed while the schedule ran; a Run now run may start a paused one.
-        dispatchGate: this.gate(run, { cancelOnPause: run.slotAt !== null || schedule.enabled }),
+        // A pause stops due runs; Run now has no restrictions (req 26).
+        dispatchGate: this.gate(run, { cancelOnPause: run.slotAt !== null }),
       });
     } catch (err) {
       this.startFailed(run.id, err);
@@ -377,6 +383,8 @@ export class ScheduleRunner implements ScheduleQueue {
           this.failRun(run.id, RESTARTED_WHILE_PREPARING, true);
           continue;
         }
+        // A worker no probe reached may still be running the turn; the overlap rule waits for it.
+        if (this.deps.unprobedSessions?.has(sessionId)) continue;
         await this.resend(run, sessionId);
       } catch (err) {
         console.error(`[schedules] recovering run ${run.id} failed:`, err);
@@ -384,9 +392,12 @@ export class ScheduleRunner implements ScheduleQueue {
     }
   }
 
+  /** The prompt's row is saved before the agent gets it, so only the agent's answer proves it arrived. */
   private delivered(sessionId: string, runId: string): boolean {
     if (this.deps.runnerRegistry.get(sessionId)?.hasDelivery(runId)) return true;
-    return this.deps.chatHistoryManager.load(sessionId).some((message) => message.role === "user");
+    const messages = this.deps.chatHistoryManager.load(sessionId);
+    const prompt = messages.findIndex((message) => message.role === "user");
+    return prompt >= 0 && messages.slice(prompt + 1).some((message) => message.role === "assistant" && !message.notice);
   }
 
   /** The turn is restart-turn-reattach's now, as for any session; a rebound one is watched. */

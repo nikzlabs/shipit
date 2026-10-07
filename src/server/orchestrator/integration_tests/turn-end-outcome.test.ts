@@ -6,6 +6,7 @@ import type { AgentId, LastTurnOutcome } from "../../shared/types.js";
 import type { TurnEnd } from "../turn-settlement.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import { executeAgentTurn } from "../turn-executor.js";
 
 /** docs/324-scheduled-sessions req 31 — the executor persists how each turn ended. */
 
@@ -68,7 +69,7 @@ function setup(opts: { billingMode?: "sub" | "key" } = {}) {
   };
   const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
   runner.setSystemTurnDeps(deps);
-  return { runner, agents, outcomes, ends, prepareAgentEnv };
+  return { runner, deps, agents, outcomes, ends, prepareAgentEnv };
 }
 
 async function flush(): Promise<void> {
@@ -176,5 +177,40 @@ describe("last_turn_outcome (docs/324-scheduled-sessions req 31)", () => {
     await waitFor(() => stopped.ends.length > 0, "turn end");
     expect(stopped.ends[0]).toMatchObject({ outcome: "ok" });
     stopped.runner.dispose({ force: true });
+  });
+
+  it("records a turn the resident agent started by itself, which keeps its predecessor's result", async () => {
+    const { runner, deps, agents, ends } = setup();
+    const agent = new EventEmitter() as FakeAgent;
+    agent.run = vi.fn();
+    agent.kill = vi.fn();
+    agent.interrupt = vi.fn();
+    agents.push(agent);
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "start a background job",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "agent run");
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => ends.length === 1, "the first turn's end");
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    await flush();
+    await flush();
+    agent.emit("done", 1);
+    await waitFor(() => ends.length === 2, "the woken turn's end");
+    expect(ends.map((e) => e.outcome)).toEqual(["ok", "errored"]);
+    runner.dispose({ force: true });
   });
 });

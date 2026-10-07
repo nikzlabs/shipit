@@ -247,11 +247,12 @@ describe("Integration: recovery after a restart", () => {
     expect(sessionManager.get(schedules.getRun(run.id)!.sessionId!)?.scheduleRunId).toBe(run.id);
   });
 
-  it("does not start again a run whose prompt reached its session", { timeout: 15_000 }, async () => {
+  it("does not start again a run whose prompt the agent answered", { timeout: 15_000 }, async () => {
     const id = await createSchedule("2026-10-07T09:00:00.000Z");
     const run = schedules.insertRun({ scheduleId: id, slotAt: at("2026-10-07T09:00:00Z"), spec: SPEC })!;
     const sessionId = await linkedSandbox(id, run.id);
     app.chatHistoryManager.append(sessionId, { role: "user", text: PROMPT });
+    app.chatHistoryManager.append(sessionId, { role: "assistant", text: "Looking at the open PRs." });
     await restart();
     await app.scheduleRunner.runPass(at("2026-10-07T09:01:00Z"));
     expect(schedules.getRun(run.id)).toMatchObject({ outcome: "started", sessionId });
@@ -294,6 +295,7 @@ describe("Integration: recovery after a restart", () => {
     })!;
     const sessionId = await linkedSandbox(id, run.id);
     app.chatHistoryManager.append(sessionId, { role: "user", text: PROMPT });
+    app.chatHistoryManager.append(sessionId, { role: "assistant", text: "Looking at the open PRs." });
     await restart({ runtimeMode: "local" });
     await app.scheduleRunner.runPass(at("2026-10-07T09:01:00Z"));
     expect(schedules.getRun(run.id)).toMatchObject({ outcome: "failed", reason: "ShipIt restarted during the run." });
