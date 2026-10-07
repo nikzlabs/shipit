@@ -362,9 +362,11 @@ reservation, and has no unfinished descendant (`isOwnWorkFinished`,
 `doneSessionTest`, `session-resolution.ts`). Runs follow the same rule — req 20
 asks for the same UI — with `isRunFinished` in place of the PR test:
 
-- `isWorkResolved(session)` is `isRunFinished` for a run and
-  `isTerminalPrResolved` for any other session; `workResolvedAt` is
-  `runFinishedAt` or `resolvedAt`.
+- `isWorkResolved(session)` is the stored `isRunFinished` decision
+  (`runFinishedAt` set) for a run and `isTerminalPrResolved` for any other
+  session; `workResolvedAt` is `runFinishedAt` or `resolvedAt`. The client
+  cannot work out `isRunFinished` itself, so the stored decision is what the
+  sidebar reads.
 - `isOwnWorkFinished` uses `isWorkResolved`, so `doneSessionTest` — Recently
   resolved, the sidebar cap, and the idle enforcer's container stop (docs/316)
   — treats runs like sessions. `touchUnlessResolved` (`sessions.ts`) and the

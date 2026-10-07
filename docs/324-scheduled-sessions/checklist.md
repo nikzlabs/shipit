@@ -23,7 +23,8 @@
 - [ ] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
 - [ ] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
 - [ ] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
-- [ ] Claim and outcome notice generalized by card kind (settings first); proposal card and notes access card on them
+- [x] Claim and outcome notice generalized by card kind (settings first; `services/card-kinds.ts`)
+- [ ] Proposal card and notes access card registered as card kinds
 - [ ] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
 - [ ] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
 - [ ] The run's notes folder: host layout, mount at `/schedule/notes/` with the session identity passed in, local-mode path
