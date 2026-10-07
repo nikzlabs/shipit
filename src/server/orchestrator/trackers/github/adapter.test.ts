@@ -757,3 +757,63 @@ describe("GitHubTracker rate limits (docs/247)", () => {
     expect(message).not.toMatch(/credential are fine|nothing to fix/);
   });
 });
+
+describe("GitHubTracker server errors", () => {
+  const CREATED_ANYWAY = /check whether it was created before you retry/;
+
+  function serverError(): Response {
+    return new Response("", {
+      status: 500,
+      statusText: "Internal Server Error",
+      headers: { "x-github-request-id": "C0DE:1234:ABCD" },
+    });
+  }
+
+  async function rejection(call: Promise<unknown>): Promise<string> {
+    try {
+      await call;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected the call to reject, but it resolved");
+  }
+
+  it("sends a comment body to GitHub unchanged, cross-repository references included", async () => {
+    const body = "Documents are in PR nikzlabs/shipit#3090.";
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ id: 1, body }));
+    await new GitHubTracker({ token: "t", repo: REPO, fetchImpl }).addComment("42", body);
+    expect(fetchImpl.mock.calls[0][1]?.body).toBe(JSON.stringify({ body }));
+  });
+
+  it("names GitHub's request id and a possible saved write when a comment POST answers 500", async () => {
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl: vi.fn(async () => serverError()) });
+    const message = await rejection(tracker.addComment("42", "hi"));
+    expect(message).toMatch(/^GitHub API returned 500 Internal Server Error \(GitHub request id C0DE:1234:ABCD\)/);
+    expect(message).toMatch(CREATED_ANYWAY);
+  });
+
+  it("gives a retry-safe PATCH the request id but not the created-anyway warning", async () => {
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl: vi.fn(async () => serverError()) });
+    const message = await rejection(tracker.setStatus("42", "closed"));
+    expect(message).toMatch(/GitHub request id C0DE:1234:ABCD/);
+    expect(message).not.toMatch(CREATED_ANYWAY);
+  });
+
+  it("names the request id on a read that answers 500", async () => {
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl: vi.fn(async () => serverError()) });
+    expect(await rejection(tracker.getIssue("42"))).toBe(
+      "GitHub API returned 500 Internal Server Error (GitHub request id C0DE:1234:ABCD)",
+    );
+  });
+
+  it("leaves a 4xx without the request id or the warning", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ message: "Validation Failed" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json", "x-github-request-id": "C0DE:1234:ABCD" },
+      }),
+    );
+    const message = await rejection(new GitHubTracker({ token: "t", repo: REPO, fetchImpl }).addComment("42", "hi"));
+    expect(message).toBe("Validation Failed");
+  });
+});
