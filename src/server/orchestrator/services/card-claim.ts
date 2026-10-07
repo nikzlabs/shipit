@@ -10,15 +10,12 @@ import { ServiceError } from "./types.js";
 
 /**
  * The claim of a user's decision on a card, for every card kind
- * (docs/324-scheduled-sessions plan.md → Cards: proposals and approvals). It is
- * docs/299-agent-settings-access's settings claim with the settings-specific
- * parts moved into {@link DecisionCardKind}; settings proposals are the first
- * kind (`settings-proposal.ts`).
+ * (docs/324-scheduled-sessions plan.md → Cards: proposals and approvals; the
+ * contract's argument is docs/299-agent-settings-access plan.md).
  *
- * A decision reaches these functions only from the browser: the settings
- * decision arrives on the session WebSocket, which no session container may
- * open (`api-container-guard.ts`). A kind's decision transport must stay
- * browser-only too, or an agent could decide its own card.
+ * A kind's decision transport must stay browser-only, or an agent could decide
+ * its own card: the settings decision arrives on the session WebSocket, which no
+ * session container may open (`api-container-guard.ts`).
  */
 
 export type DecisionCardPhase<F extends DecisionCardField> = DecisionCardOf<F>["phase"];
@@ -109,31 +106,28 @@ export function currentDecisionCard<F extends DecisionCardField>(
   return card;
 }
 
-/** A claim against a card the transcript no longer holds; rolls the record back. */
-class CardRowMissing extends Error {}
+/** A write that found only one half of a card; throwing rolls the other half back. */
+class CardHalfMissing extends Error {}
+
+function bothHalves<T>(write: () => T | null): T | null {
+  try {
+    return write();
+  } catch (err) {
+    if (err instanceof CardHalfMissing) return null;
+    throw err;
+  }
+}
 
 /**
- * **The one transition contract.** Every phase change a card ever makes goes
- * through here or through the claim below.
+ * **The one transition contract** for every phase change outside the claim.
+ * Not `persistCardTransition`, which writes the database only when it patched
+ * no in-flight card: a card is clicked hours after its turn as often as during
+ * it, so neither half may depend on a runner.
  *
- * It is not `persistCardTransition`. That helper requires a runner and runs its
- * database callback ONLY when it did not patch an in-flight card, so a card
- * resolved through it can end durable-but-unsynchronised, or synchronised but
- * never written down. A card is clicked hours after its turn as often as during
- * one, and the post-turn lease is no substitute (`POST_TURN_HOLD_MAX_MS` is
- * 120 s), so neither half may be conditional on the other.
- *
- * So, in order:
- *
- *  1. the transcript row and the record, in ONE transaction and **whether or not
- *     a runner exists** — a phase in one but not the other is the split this
- *     contract exists to prevent;
- *  2. only then, and only if a runner exists, the copy the turn is holding plus
- *     the live emit.
- *
- * The transcript lookup is session-scoped and gates the record write, so a
- * decision that cannot find the card in this session cannot reach a record that
- * shares its id.
+ *  1. The transcript row and the record, in ONE transaction, with or without a
+ *     runner. Both change or neither does; the session-scoped transcript lookup
+ *     goes first, so a card id from another session reaches no record.
+ *  2. Then, only if a runner exists, the turn's copy and the live emit.
  */
 export function transitionDecisionCard<F extends DecisionCardField, Row extends { sessionId: string }>(
   kind: DecisionCardKind<F>,
@@ -142,26 +136,22 @@ export function transitionDecisionCard<F extends DecisionCardField, Row extends 
   cardId: string,
   patch: DecisionCardPatch<F>,
 ): DecisionCardOf<F> | null {
-  const card = deps.records.transaction(() => {
+  const card = bothHalves(() => deps.records.transaction(() => {
     const updated = deps.chatHistoryManager.updateDecisionCard(kind.field, sessionId, cardId, patch);
     if (!updated) return null;
-    deps.records.setPhase(sessionId, cardId, patch.phase, patch.resolvedAt);
+    if (!deps.records.setPhase(sessionId, cardId, patch.phase, patch.resolvedAt)) throw new CardHalfMissing();
     return updated;
-  });
+  }));
   if (!card) return null;
   syncRecordedCard(kind, deps, sessionId, cardId, card);
   return card;
 }
 
 /**
- * **The claim**: the phase moves only if it is still `from`, and the card the
- * user sees moves with it in the same transaction.
- *
- * Both halves are the point. A database-only claim is undone when the next turn
- * snapshot rebuilds the in-progress rows from `recordedCards`
- * (`chat-history.ts` → `replaceInProgress`), which puts a pending card back in
- * front of the user — so a second click claims it again. And the conditional
- * update IS the test: of two racing clicks, the loser changes no rows.
+ * **The claim**: the record moves only if it is still in `from` — so of two
+ * racing clicks, the loser changes no rows — and the card moves with it in the
+ * same transaction. The runner's copy is patched too, or the next turn snapshot
+ * (`replaceInProgress`) shows a pending card over a decision already claimed.
  *
  * `null` when nothing was claimed: the record left `from` first, or the card or
  * its record is gone. Nothing is written in either case.
@@ -174,36 +164,26 @@ export function claimDecisionCard<F extends DecisionCardField, Row extends { ses
   from: DecisionCardPhase<F>,
   patch: DecisionCardPatch<F>,
 ): DecisionCardOf<F> | null {
-  let card: DecisionCardOf<F> | null;
-  try {
-    card = deps.records.transaction(() => {
-      if (!deps.records.claimPhase(sessionId, cardId, from, patch.phase, patch.resolvedAt)) {
-        return null;
-      }
-      const updated = deps.chatHistoryManager.updateDecisionCard(kind.field, sessionId, cardId, patch);
-      // Throwing rolls the record back with it, rather than leaving a card
-      // claimed against a transcript that does not show it.
-      if (!updated) throw new CardRowMissing();
-      return updated;
-    });
-  } catch (err) {
-    if (err instanceof CardRowMissing) return null;
-    throw err;
-  }
+  const card = bothHalves(() => deps.records.transaction(() => {
+    if (!deps.records.claimPhase(sessionId, cardId, from, patch.phase, patch.resolvedAt)) {
+      return null;
+    }
+    const updated = deps.chatHistoryManager.updateDecisionCard(kind.field, sessionId, cardId, patch);
+    if (!updated) throw new CardHalfMissing();
+    return updated;
+  }));
   if (!card) return null;
   syncRecordedCard(kind, deps, sessionId, cardId, card);
   return card;
 }
 
 /**
- * The runner half of a transition: the copy the turn is holding, and the live
- * emit. With no runner the durable row stands on its own.
+ * The runner half of a transition: the turn's copy and the live emit.
  *
- * The snapshot rewrite is narrower than the patch, and must be:
- * `recordedCards` is cleared at the start of the NEXT turn
- * (`resetRunnerTurnState`), so a card resolved after its turn ended is still
- * there to patch. Rebuilding the snapshot then would re-insert the finished turn
- * as in-progress rows beside the finalized ones.
+ * The snapshot rewrite is narrower than the patch: `recordedCards` is cleared
+ * only when the NEXT turn starts (`resetRunnerTurnState`), so a card resolved
+ * after its turn ended is still there to patch, and rebuilding the snapshot then
+ * would re-insert the finished turn as in-progress rows.
  */
 function syncRecordedCard<F extends DecisionCardField, Row extends { sessionId: string }>(
   kind: DecisionCardKind<F>,

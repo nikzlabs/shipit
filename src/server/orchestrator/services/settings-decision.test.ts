@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -348,10 +348,16 @@ describe("a decision on a card that has left the transcript (docs/324-scheduled-
     const card = await post();
     fx.dbManager.db.prepare("DELETE FROM messages WHERE session_id = ?").run(fx.sessionId);
     fx.emitted.length = 0;
+    // A claim that runs and then rolls back ends in the same state; the refusal
+    // must come before any write is tried.
+    const claimPhase = vi.spyOn(fx.proposals, "claimPhase");
+    const setPhase = vi.spyOn(fx.proposals, "setPhase");
 
     for (const action of ["apply", "dismiss"] as const) {
       await expect(decide(card.cardId, action)).rejects.toThrow(/not in this session/);
     }
+    expect(claimPhase).not.toHaveBeenCalled();
+    expect(setPhase).not.toHaveBeenCalled();
     expect(fx.proposals.get(card.cardId)?.phase).toBe("pending");
     expect(fx.credentialStore.getEnableSubAgents()).toBe(true);
     expect(settingsBroadcasts()).toHaveLength(0);

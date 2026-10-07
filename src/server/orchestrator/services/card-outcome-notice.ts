@@ -3,10 +3,7 @@ import type { NoticeDelivery } from "../turn-settlement.js";
 /**
  * The notice that tells the agent, at the start of its next turn, what the user
  * decided on its cards — for every card kind (docs/324-scheduled-sessions
- * plan.md → Cards: proposals and approvals). It is docs/299-agent-settings-access
- * req 8's settings notice with the settings-specific parts moved into
- * {@link CardOutcomeKind}; settings is the first kind
- * (`settings-outcome-notice.ts`).
+ * plan.md → Cards: proposals and approvals; docs/299-agent-settings-access req 8).
  *
  * **Delivery is at-least-once**: reading is not a consume, and the
  * {@link NoticeDelivery} handed back is acknowledged only once the agent has

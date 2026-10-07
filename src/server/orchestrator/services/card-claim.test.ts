@@ -5,6 +5,7 @@ import { SETTINGS_PROPOSAL_CARD } from "./settings-proposal.js";
 import {
   claimDecisionCard,
   loadDecisionCard,
+  transitionDecisionCard,
   type CardClaimDeps,
   type DecisionCardKind,
 } from "./card-claim.js";
@@ -109,5 +110,20 @@ describe("claimDecisionCard", () => {
 
     expect(updated).toHaveBeenCalledWith(fx.sessionId, cardId, claimed);
     expect(fx.emitted).toEqual([updated.mock.results[0]?.value]);
+  });
+});
+
+describe("transitionDecisionCard", () => {
+  it("writes neither half when the card's record has gone", async () => {
+    const cardId = await post();
+    dropRecord(cardId);
+
+    const moved = transitionDecisionCard(SETTINGS_PROPOSAL_CARD, claimDeps(), fx.sessionId, cardId, {
+      phase: "applied",
+    });
+
+    expect(moved).toBeNull();
+    expect(fx.history.getSettingsProposalCard(fx.sessionId, cardId)?.phase).toBe("pending");
+    expect(fx.emitted).toEqual([]);
   });
 });

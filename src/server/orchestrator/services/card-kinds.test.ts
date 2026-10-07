@@ -22,10 +22,10 @@ afterEach(() => {
   dbManager.close();
 });
 
-function resolveSettingsProposal(cardId: string): void {
+function resolveSettingsProposal(cardId: string, sessionId = SESSION): void {
   proposals.create({
     cardId,
-    sessionId: SESSION,
+    sessionId,
     target: { key: "advanced.enableSubAgents" },
     operation: "set",
     phase: "applied",
@@ -41,17 +41,22 @@ describe("prepareCardOutcomeNotices", () => {
     expect(prepareCardOutcomeNotices({ chatHistoryManager: history }, SESSION)).toEqual([]);
   });
 
-  it("collects the settings notice, and its receipt marks only the settings proposal", () => {
+  it("collects the settings notice, and its receipt marks only the proposal it carried", () => {
+    const stores = { chatHistoryManager: history, settingsProposals: proposals };
+    new SessionManager(dbManager).track("sess-2", "Another session");
     resolveSettingsProposal("set-a");
+    resolveSettingsProposal("set-other", "sess-2");
 
-    const notices = prepareCardOutcomeNotices({ chatHistoryManager: history, settingsProposals: proposals }, SESSION);
+    const notices = prepareCardOutcomeNotices(stores, SESSION);
+    resolveSettingsProposal("set-later");
 
     expect(notices).toHaveLength(1);
     expect(notices[0]?.notice).toContain("resolved a settings proposal you posted");
     expect(proposals.get("set-a")?.agentNotified).toBe(false);
     notices[0]?.delivered();
     expect(proposals.get("set-a")?.agentNotified).toBe(true);
-    expect(prepareCardOutcomeNotices({ chatHistoryManager: history, settingsProposals: proposals }, SESSION))
-      .toEqual([]);
+    expect(proposals.get("set-later")?.agentNotified).toBe(false);
+    expect(proposals.get("set-other")?.agentNotified).toBe(false);
+    expect(prepareCardOutcomeNotices(stores, SESSION).map((n) => n.cardIds)).toEqual([["set-later"]]);
   });
 });
