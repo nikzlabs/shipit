@@ -66,6 +66,10 @@ function requireUser(value: unknown): string {
   return user;
 }
 
+export interface SessionSshHostsBody {
+  granted?: unknown;
+}
+
 export interface SshGrantDeps {
   credentialStore: ApiDeps["credentialStore"];
   sessionManager: ApiDeps["sessionManager"];
@@ -239,7 +243,7 @@ export async function registerSshRoutes(app: FastifyInstance, deps: ApiDeps): Pr
    * may be granted a destination (req 6), while the capability editor next to it
    * is sandbox-only.
    */
-  app.put<{ Params: { id: string }; Body: { granted?: unknown } }>(
+  app.put<{ Params: { id: string }; Body: SessionSshHostsBody }>(
     "/api/sessions/:id/ssh-hosts",
     async (request, reply) => {
       const sessionId = request.params.id;

@@ -185,6 +185,16 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
   });
 }
 
+/** The composer's saved choices, seeded on the session WebSocket's URL. */
+export interface SessionSeedQuery {
+  agent?: string;
+  model?: string;
+  reasoning?: string;
+  service?: string;
+  billingMode?: string;
+  role?: string;
+}
+
 const REBASE_BANNER_OPENERS: ReadonlySet<WsServerMessage["type"]> = new Set([
   "auto_resolve_started",
   "rebase_started",
@@ -428,7 +438,7 @@ export async function registerRoutes(
 
   await serveStaticClient(app, clientDir, shouldServeStatic);
 
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string; service?: string; billingMode?: string; role?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: SessionSeedQuery }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {

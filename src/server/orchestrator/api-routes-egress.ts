@@ -31,6 +31,10 @@ import { serializeNetworkModeWrite } from "./services/network-mode-writes.js";
 import type { ApplyOutcome } from "../shared/settings-catalogue/index.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
+export interface EgressSessionOverrideBody {
+  override?: boolean | null;
+}
+
 function egressModeLabel(override: boolean | null | undefined): string {
   if (override === true) return "Contained";
   if (override === false) return "Open";
@@ -254,7 +258,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       },
     );
 
-    app.put<{ Params: { id: string }; Body: { override?: boolean | null } }>(
+    app.put<{ Params: { id: string }; Body: EgressSessionOverrideBody }>(
       "/api/egress/session/:id",
       async (request, reply) => {
         const sessionId = request.params.id;
