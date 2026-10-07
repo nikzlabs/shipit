@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
+import type { LastTurnOutcome, PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { doneSessionTest, isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
 import { dataDeletionTimeMs, type DataRetentionConfig } from "../shared/session-retention.js";
@@ -86,7 +86,15 @@ interface SessionRow {
   pr_number: number | null;
   agent_goal: string | null;
   session_status: string | null;
+  schedule_id: string | null;
+  schedule_run_id: string | null;
+  run_finished_at: string | null;
+  run_stopped_at: string | null;
+  last_turn_outcome: string | null;
+  schedule_notes_grants: string | null;
 }
+
+const LAST_TURN_OUTCOMES: readonly LastTurnOutcome[] = ["ok", "errored", "quota-refused"];
 
 /** A held turn as stored: everything but the process-bound callback and its own row id. */
 function serializeHeldTurn(entry: QueuedMessage): string {
@@ -149,7 +157,7 @@ function sameShownGoal(a: AgentGoal | null, b: AgentGoal | null): boolean {
 
 export const MAX_MERGED_SESSIONS_PER_REPO = 5;
 
-function parseSshHosts(json: string | null): string[] {
+function parseStringList(json: string | null): string[] {
   if (!json) return [];
   try {
     const parsed = JSON.parse(json) as unknown;
@@ -318,7 +326,7 @@ export class SessionManager {
         row.capabilities ? safeParseCapabilities(row.capabilities) : undefined,
       );
     }
-    const sshHosts = parseSshHosts(row.ssh_hosts);
+    const sshHosts = parseStringList(row.ssh_hosts);
     if (sshHosts.length > 0) info.sshHosts = sshHosts;
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
@@ -381,6 +389,14 @@ export class SessionManager {
       info.prNumber = row.pr_number;
       info.prRepoId = row.pr_repo_id;
     }
+    if (row.schedule_id) info.scheduleId = row.schedule_id;
+    if (row.schedule_run_id) info.scheduleRunId = row.schedule_run_id;
+    if (row.run_finished_at) info.runFinishedAt = row.run_finished_at;
+    if (row.run_stopped_at) info.runStoppedAt = row.run_stopped_at;
+    const outcome = LAST_TURN_OUTCOMES.find((o) => o === row.last_turn_outcome);
+    if (outcome) info.lastTurnOutcome = outcome;
+    const grants = parseStringList(row.schedule_notes_grants);
+    if (grants.length > 0) info.scheduleNotesGrants = grants;
     return info;
   }
 
@@ -952,6 +968,37 @@ export class SessionManager {
 
   setAwaitingAnswer(id: string, awaiting: boolean): void {
     this.db.prepare("UPDATE sessions SET awaiting_answer = ? WHERE id = ?").run(awaiting ? 1 : 0, id);
+  }
+
+  /** docs/324-scheduled-sessions — stamped when a run's session is created. */
+  setScheduleRun(id: string, scheduleId: string, scheduleRunId: string): void {
+    this.db.prepare("UPDATE sessions SET schedule_id = ?, schedule_run_id = ? WHERE id = ?")
+      .run(scheduleId, scheduleRunId, id);
+  }
+
+  setRunFinishedAt(id: string, at: string | null): void {
+    this.db.prepare("UPDATE sessions SET run_finished_at = ? WHERE id = ?").run(at, id);
+  }
+
+  setRunStoppedAt(id: string, at: string | null): void {
+    this.db.prepare("UPDATE sessions SET run_stopped_at = ? WHERE id = ?").run(at, id);
+  }
+
+  setLastTurnOutcome(id: string, outcome: LastTurnOutcome | null): void {
+    this.db.prepare("UPDATE sessions SET last_turn_outcome = ? WHERE id = ?").run(outcome, id);
+  }
+
+  /** Req 30 — one approval covers one schedule, so a grant is per schedule id. */
+  grantScheduleNotes(id: string, scheduleId: string): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare("SELECT schedule_notes_grants FROM sessions WHERE id = ?").get(id) as
+        { schedule_notes_grants: string | null } | undefined;
+      if (!row) return;
+      const grants = parseStringList(row.schedule_notes_grants);
+      if (grants.includes(scheduleId)) return;
+      this.db.prepare("UPDATE sessions SET schedule_notes_grants = ? WHERE id = ?")
+        .run(JSON.stringify([...grants, scheduleId]), id);
+    })();
   }
 
   /**
