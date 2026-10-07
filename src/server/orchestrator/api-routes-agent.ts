@@ -23,6 +23,7 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import { AgentTurnAdmissionError } from "./session-runner.js";
+import { followReportedTurn } from "./restart-turn-reattach.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 
 export async function registerAgentRoutes(
@@ -181,6 +182,29 @@ export async function registerAgentRoutes(
           return;
         }
         reply.code(500).send({ error: `Sub-agent spawn failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // From the session's own worker: its CLI started a turn while no orchestrator stream was
+  // open, so nothing here follows it (planning#639).
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/own-turn",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        const following = await followReportedTurn(
+          {
+            containerManager: deps.containerManager ?? null,
+            runnerRegistry: deps.runnerRegistry,
+            sessionManager: deps.sessionManager,
+            defaultAgentId: deps.defaultAgentId,
+          },
+          request.params.id,
+        );
+        reply.send({ following });
+      } catch (err) {
+        reply.code(500).send({ error: `Could not follow the turn: ${getErrorMessage(err)}` });
       }
     },
   );

@@ -61,7 +61,7 @@ is the fact the fix turns on.
 
 | Field | Set | Cleared |
 |---|---|---|
-| `turnActive` | `/agent/start`; `/agent/message` into an **idle** resident process (how every turn after the first starts under live steering) | `agent_result`; process `done`/`error`; `/agent/kill`; `stop()` |
+| `turnActive` | `/agent/start`; `/agent/message` into an **idle** resident process (how every turn after the first starts under live steering); a turn a resident streaming CLI starts on its own (§6) | `agent_result`; process `done`/`error`; `/agent/kill`; `stop()` |
 | `turnStartSseSeq` | the SSE seq at the instant the turn started, captured *before* the adapter can emit | — |
 | `runToken` / `agentId` / `streaming` | recorded per spawn | on process exit |
 
@@ -132,7 +132,8 @@ Since docs/242 the same sweep also *reclaims* a stale idle worker — destroying
 its agent container and not recreating it, so an update frees the memory it was
 holding. That never touches an adopted turn: the two branches are exclusive on
 `turnActive`, and the reclaim additionally consults the docs/235 liveness fields
-the worker now publishes, because a self-woken turn does not set `turnActive`.
+the worker publishes. A worker older than planning#639 needs them for a
+self-woken turn, which it reports with `selfWakeActive` and not `turnActive` (§6).
 
 ### 4. Exactly-once persistence
 
@@ -184,6 +185,95 @@ that turn's. This is what lets each point act while a new turn is already runnin
 The rows keep only what the previous orchestrator saved; the events after that
 are still skipped.
 
+### 6. A turn the CLI starts on its own (planning#639)
+
+A resident streaming CLI starts turns nobody sent it: on a task notification
+(`agent_self_wake`, docs/235-agent-self-wake-liveness) and by answering a late
+steer after the turn's result (docs/140-live-steering Phase 6.11). Without a
+restart, `adoptCliStartedTurn` follows them — but that is a closure on a proxy
+`executeAgentTurn` wired, so it died with the old orchestrator. Until
+planning#639 the worker did not count such a turn as a turn either, so neither
+adoption point saw it: every event was dropped `(no _agent)`, the session showed
+idle, nothing was saved or committed, and the next message replaced the CLI
+process mid-turn. An update is such a restart, and it keeps the session
+containers (`deployment/vps/deploy.sh`).
+
+**The worker counts it.** `startsOwnTurn` (`agent-controller.ts`) begins a turn
+at the two events, *before* it broadcasts the event, so `turnStartSseSeq` sits
+just ahead of it. The second event is the executor's own `adoptsCliStartedTurns`
+test — a backend that `startsOwnTurns` — and a one-shot process counts for
+neither: it exits at its turn's end. The status says which kind of turn it is:
+`ownTurn` is present while such a turn runs, and is `"unheard"` until an
+orchestrator stream has been open during it.
+
+From there, one path per moment the turn can start:
+
+- **In flight when the orchestrator starts.** `turnActive` is true, so the boot
+  sweep and a first connect adopt it like any turn (§2–§3), replaying from its
+  first event, and the stale reclaim never sees it as idle. A turn the
+  reclaim's confirming probe finds is adopted too: the server is not listening
+  yet, so the worker's report (below) found nobody.
+- **Later, on a connected runner with no agent.** The first connect remembers
+  the streaming process the worker already held (`_unfollowedResident`: its run
+  token and agent). An event from that process that starts a turn is adopted
+  before it is routed (`adoptOwnTurnAt`): adoption installs the agent, marks
+  the session running and wires its listeners before its first await, so the
+  event already finds the agent that follows it, and neither a message nor a
+  reclaim can get in first. Nothing is asked of the worker and nothing is
+  replayed, so a whole turn that arrives in one burst — after a stream gap, say
+  — is still followed, and no other event type is delivered twice. The run
+  token is what keeps the docs/140 case intact: a process the runner replaced
+  or killed is forgotten, and its late output stays dropped.
+- **Later, in a session nobody has open.** Nothing listens to such a worker.
+  When the turn starts unheard, the worker tells the orchestrator (`POST
+  /api/sessions/:id/agent/own-turn`, container-accessible). `followReportedTurn`
+  asks the worker's status first and gives the session its runner only for a
+  turn in flight — the agent can call the route too, and a runner starts the
+  session's Compose services. That runner's first connect adopts as above. The
+  sweep itself still wakes nothing (§3): a runner made at boot for a session
+  with an outstanding background task would restart those services under the
+  task that uses them (`setupServiceManager` → `killStaleContainers`).
+
+**Rows.** §4's exactly-once rule assumes the saved in-progress rows are the
+adopted turn's. An unheard turn has none: whatever is saved belongs to the turn
+before it, which ended with no orchestrator listening. So `adoptWorkerTurn`
+finalizes those rows first (`finalizeInheritedInProgress`), or the replay's
+first write would delete them. The adopting runner's stream then makes the turn
+heard, so a second restart inside the same turn keeps §4: the rows are the
+turn's own partial ones, and the replay replaces them.
+
+**New use.** An adopted turn of this kind is new use of the session (`track`,
+docs/316-done-sessions-return-memory req 5) where no orchestrator counted its
+start: on a connected runner, which adopts at the start, and for an unheard
+turn. A heard one was counted when it began. `ownTurn` is the provenance and
+`selfWakeActive` is not: a task notification inside a turn that was sent sets
+that flag too.
+
+**Holds.** Adoption takes and releases no system hold — `executeAgentTurn`
+leaves `systemTurnInProgress` alone in `adopt` mode — so a rebase or a recovery
+that holds the queue keeps it, as with `adoptCliStartedTurn`. And a turn of the
+CLI's own is stopped at once while the agent waits for the user's answer
+(`stopOwnTurnWhileAwaitingAnswer`, docs/322-question-holds-automatic-turns req 7),
+on either path.
+
+**Older workers.** A container outlives the update that ships this, and its
+worker reports none of the above. The connected-runner path needs nothing from
+the worker, so it follows both kinds of turn there too. The other two do not:
+on an older worker such a turn stays unfollowed until the session is opened,
+and is then followed from its next event that can start a turn.
+
+**Limits.** A turn that starts and ends while no orchestrator runs is still
+lost (§5 keeps what was saved; nothing commits it). The worker reports once and
+does not retry, and a turn that ends before the report's status request reaches
+the worker is not adopted. A first connect whose status request fails remembers
+no process, as it adopts no turn (§2). A message that reaches a brand-new
+runner before its first connect has adopted still replaces the process, as it
+does for any turn the sweep could not probe. Heard is decided by an open
+stream, so an orchestrator that dies between a turn's result and the next
+turn's first event leaves the earlier turn's rows to be replaced. And a runner
+made after a restart does not know the task list the old process held
+(docs/235), so the session shows no background-work marker until the turn starts.
+
 ## Known limit: a turn longer than the replay buffer
 
 The worker's ring buffer holds 5000 events. A turn that outruns it can only be
@@ -203,17 +293,20 @@ auto-commit — which is what almost every turn needs anyway.
 
 | File | Role |
 |---|---|
-| `src/server/session/agent-controller.ts` | Tracks `turnActive` / `turnStartSseSeq` / spawn metadata; publishes them on `GET /agent/status` |
+| `src/server/session/agent-controller.ts` | Tracks `turnActive` / `turnStartSseSeq` / spawn metadata; publishes them on `GET /agent/status`; `startsOwnTurn` counts a CLI-started turn and `ownTurn` marks it (§6) |
+| `src/server/session/session-worker.ts` | `reportUnheardTurn` — tells the orchestrator about a turn that started with no stream open; the stream route makes a turn heard (§6) |
+| `src/server/orchestrator/api-routes-agent.ts` | `POST /api/sessions/:id/agent/own-turn`, the receiving end of that report |
 | `src/server/session/sse-broadcaster.ts` | `oldestSeq` getter (partial-replay detection) |
 | `src/server/shared/types/agent-types.ts` | `WorkerAgentStatus` — the shared wire shape |
-| `src/server/orchestrator/container-session-runner.ts` | `reconcileWorkerTurnBeforeFirstConnect`, `adoptWorkerTurn`, `resumeInFlightTurn`, serialized worker-resource start; finalizes an ended turn's rows at the first connect |
-| `src/server/orchestrator/turn-adoption.ts` | Wires an already-running worker turn into a runner + proxy via `executeAgentTurn` |
+| `src/server/orchestrator/container-session-runner.ts` | `reconcileWorkerTurnBeforeFirstConnect`, `adoptWorkerTurn`, `resumeInFlightTurn`, serialized worker-resource start; finalizes an ended turn's rows at the first connect; `_unfollowedResident` / `adoptOwnTurnAt` for a turn that starts on a connected runner (§6) |
+| `src/server/orchestrator/turn-adoption.ts` | Wires an already-running worker turn into a runner + proxy via `executeAgentTurn`; new use and the answer hold for a CLI-started one (§6) |
 | `src/server/orchestrator/turn-executor.ts` | `TurnInput.adopt` — skip env-prep + spawn, keep everything else |
 | `src/server/orchestrator/proxy-agent-process.ts` | Optional `runToken` so an adopting proxy inherits the worker's spawn epoch |
-| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones — and (docs/242) reclaim the stale idle ones; then finalize the rows of turns their worker reports as ended (`workerReportsNoTurn`) |
+| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones — and (docs/242) reclaim the stale idle ones; `followReportedTurn` for the worker's own-turn report (§6); then finalize the rows of turns their worker reports as ended (`workerReportsNoTurn`) |
 | `src/server/orchestrator/chat-history.ts` | `sessionsWithInProgressRows`, and `finalizeInheritedInProgress` (only rows an earlier process wrote) |
 | `src/server/orchestrator/runner-registry-factory.ts` | Finalizes the rows when a runner is created for a new container |
 | `src/server/orchestrator/bootstrap-managers.ts` | Fires the sweep after the runner registry exists |
 | `src/server/orchestrator/integration_tests/restart-turn-adoption.test.ts` | Real worker + fresh runner: adoption, exactly-once persistence, post-turn flow, run-token correlation, and the two must-not-adopt cases; a turn that ended during the restart keeps its rows past the next turn (through the boot sweep, and through the first connect, also when a message arrives first), and a live one is saved once |
+| `src/server/orchestrator/integration_tests/restart-cli-started-turn.test.ts` | §6 against a real worker, runner and sweep: the three moments, the saved rows of the turn before, the message that must not kill the turn, the update that must not reclaim it, and what must not be adopted (a one-shot process, a killed or replaced process's late output, a backend that starts no turns) |
 | `src/server/orchestrator/restart-turn-reattach.test.ts` | Sweep: adopts live turns, never wakes idle/standby/archived sessions, survives one dead worker; finalizes only the rows of turns their worker reports as ended |
 | `src/server/orchestrator/runner-registry-factory.test.ts` | A runner for a new container finalizes the rows; one that reconnects does not |

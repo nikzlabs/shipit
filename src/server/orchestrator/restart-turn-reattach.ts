@@ -67,6 +67,36 @@ function finalizeEndedTurnRows(deps: ReattachDeps, ended: ReadonlySet<string> | 
   }
 }
 
+// The worker reports a turn nothing here follows; the runner's first connect adopts it.
+export async function followWorkerTurn(
+  deps: Pick<ReattachDeps, "runnerRegistry" | "sessionManager" | "defaultAgentId">,
+  sessionId: string,
+): Promise<boolean> {
+  const session = deps.sessionManager.get(sessionId);
+  if (!session?.workspaceDir || session.archived) return false;
+  const runner = deps.runnerRegistry.getOrCreate(
+    sessionId,
+    session.workspaceDir,
+    session.agentId ?? deps.defaultAgentId,
+  );
+  return (await runner.resumeInFlightTurn?.()) ?? false;
+}
+
+// A worker says its CLI started a turn that nothing follows. The worker's status decides,
+// not the caller: a runner starts the session's Compose services, and the agent can call this.
+export async function followReportedTurn(
+  deps: Pick<ReattachDeps, "containerManager" | "runnerRegistry" | "sessionManager" | "defaultAgentId">,
+  sessionId: string,
+): Promise<boolean> {
+  const runner = deps.runnerRegistry.get(sessionId);
+  if (runner) return (await runner.resumeInFlightTurn?.()) ?? false;
+  const container = deps.containerManager?.get(sessionId);
+  if (!container) return false;
+  const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
+  if (status.turnActive !== true) return false;
+  return followWorkerTurn(deps, sessionId);
+}
+
 // Boot-only adoption and stale-worker reclamation; Compose stacks are reaped separately.
 export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number> {
   // Only sessions whose worker answered: discovery can miss a live container, which a later
@@ -80,7 +110,7 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
 
 async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number> {
   const {
-    containerManager, runnerRegistry, sessionManager, defaultAgentId,
+    containerManager, runnerRegistry, sessionManager,
     orchestratorBuildId = process.env.SHIPIT_BUILD_ID,
     confirmDelayMs = RECLAIM_CONFIRM_DELAY_MS,
   } = deps;
@@ -93,6 +123,17 @@ async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number>
     return !!session?.workspaceDir && !session.archived;
   });
   if (candidates.length === 0) return 0;
+
+  const adoptTurn = async (sessionId: string): Promise<boolean> => {
+    if (runnerRegistry.get(sessionId)) return false;
+    try {
+      return await followWorkerTurn(deps, sessionId);
+    } catch (err) {
+      liveWorkAfterRestart.add(sessionId);
+      console.error(`[turn-reattach] failed to reattach ${sessionId}: ${getErrorMessage(err)}`);
+      return false;
+    }
+  };
 
   const results = await Promise.all(
     candidates.map(async (c) => {
@@ -137,13 +178,13 @@ async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number>
             return false;
           }
           if (confirm.turnActive === true) {
-            liveWorkAfterRestart.add(c.sessionId);
             ended.delete(c.sessionId);
             console.log(
               `[worker-reclaim] Keeping stale container for ${c.sessionId}`
               + ` — a turn started between the two probes`,
             );
-            return false;
+            // The worker's own report of that turn found no orchestrator listening yet.
+            return await adoptTurn(c.sessionId);
           }
           const confirmedHold = staleIdleHoldReason(confirm);
           if (confirmedHold) {
@@ -187,21 +228,7 @@ async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number>
         return false;
       }
 
-      if (runnerRegistry.get(c.sessionId)) return false;
-      try {
-        const runner = runnerRegistry.getOrCreate(
-          c.sessionId,
-          session.workspaceDir,
-          session.agentId ?? defaultAgentId,
-        );
-        return (await runner.resumeInFlightTurn?.()) ?? false;
-      } catch (err) {
-        liveWorkAfterRestart.add(c.sessionId);
-        console.error(
-          `[turn-reattach] failed to reattach ${c.sessionId}: ${getErrorMessage(err)}`,
-        );
-        return false;
-      }
+      return adoptTurn(c.sessionId);
     }),
   );
 
