@@ -5,8 +5,10 @@
 - [x] Design (`plan.md`) and UI sketch (`mockup.html`)
 - [x] Review rounds 1–3 (requirements alone, design against them), findings applied
 - [x] The two open questions in `requirements.md` answered
-- [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs; editor test that edits every key
-- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, run id as `deliveryId`, dispatch handle returned, base fetch
+- [x] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs
+- [ ] Editor test that edits every `SessionStartParams` key
+- [x] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, `deliveryId`, dispatch handle returned, base fetch (opt-in `fetchBase`)
+- [ ] Schedule ids on the run's session row; runs pass `fetchBase: true`; a start refused after the session exists is linked to the failed run or cleaned up
 - [x] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
 - [x] `croner` 10.0.1 added (exact pin); presets compile to cron; due slots by stepping `nextRun` forward; tests for the spring and autumn change days and a 30-minute zone
 - [ ] `ScheduleRunner`: in-flight flag; one queue per schedule for starts and every schedule change; missed slots recorded as one skipped row; slot claim; skip rules (`awaiting_answer` never still going); `active_since` on create/resume/timing edit; one start at a time

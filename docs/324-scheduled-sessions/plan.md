@@ -77,7 +77,9 @@ the two places a key can be forgotten:
   seed keys (`useSessionWebSocket.ts`), the per-message `permissionMode`, the
   `POST /api/sessions/headless` body keys, and the HTTP routes the composer
   and Session settings use for session choices — `PUT /api/egress/session/:id`
-  (network mode) and `PUT /api/sessions/:id/ssh-hosts`.
+  (network mode) and `PUT /api/sessions/:id/ssh-hosts`. The sandbox routes
+  (`POST /api/sessions/sandbox`, `PUT /api/sessions/:id/capabilities`) map to
+  the target.
 
 `CreateHeadlessSessionOptions` takes `SessionStartParams` instead of its own
 copy of the fields, so Quick Capture and runs share one path.
@@ -278,9 +280,12 @@ skipped by step 4.
      today takes no prompt, model or role;
    - `permissionMode` on the first dispatch, which already has the slot and
      passes `undefined` today (`headless-sessions.ts`);
-   - `sshHosts` and `networkMode`, applied before the container starts, because
-     a sandbox's Network and Docker grants take effect only at container start
-     (`sandbox-capabilities.ts`);
+   - `networkMode`, applied before the container starts, because a sandbox's
+     Network and Docker grants take effect only at container start
+     (`sandbox-capabilities.ts`); and `sshHosts`, applied before the first
+     dispatch — for a repository target once the container runs, because a
+     claimed warm session already has one, through the live firewall reload
+     that Session settings uses;
    - `title` = "*schedule name* · *date*", with AI naming off, so the history
      and the sidebar name runs the same way. Sandboxes never graduate, so the
      title must be set at creation;
