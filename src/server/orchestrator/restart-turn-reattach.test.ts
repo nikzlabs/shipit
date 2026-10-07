@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { reattachInFlightTurns } from "./restart-turn-reattach.js";
+import { followReportedTurn, followWorkerTurn, reattachInFlightTurns } from "./restart-turn-reattach.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -131,6 +131,54 @@ function makeHarness(
   };
 }
 
+describe("followWorkerTurn", () => {
+  it("gives the session a runner and lets its first connect decide", async () => {
+    const h = makeHarness([], { sessions: new Set(["s1"]), resumeResult: true });
+
+    expect(await followWorkerTurn(h.deps, "s1")).toBe(true);
+    expect(h.resumed).toEqual(["s1"]);
+  });
+
+  it("makes no runner for a session it does not know", async () => {
+    const h = makeHarness([], { sessions: new Set(["s1"]) });
+
+    expect(await followWorkerTurn(h.deps, "other")).toBe(false);
+    expect(h.created).toEqual([]);
+  });
+});
+
+describe("followReportedTurn", () => {
+  const workers: { close: () => Promise<void> }[] = [];
+  afterEach(async () => {
+    for (const w of workers.splice(0)) await w.close();
+  });
+
+  async function reported(status: Partial<WorkerAgentStatus>, opts: HarnessOpts = {}): Promise<Harness> {
+    const w = await startFakeWorker(status);
+    workers.push(w);
+    const h = makeHarness([{ sessionId: "s1", workerUrl: w.url }], opts);
+    h.deps.containerManager = Object.assign(h.deps.containerManager!, {
+      get: (id: string) => h.deps.containerManager!.getAll().find((c) => c.sessionId === id),
+    });
+    return h;
+  }
+
+  it("gives the session a runner when its worker has a turn in flight", async () => {
+    const h = await reported({ running: true, turnActive: true });
+
+    expect(await followReportedTurn(h.deps, "s1")).toBe(true);
+    expect(h.resumed).toEqual(["s1"]);
+  });
+
+  it("makes no runner when the worker has no turn in flight, or the session has no container", async () => {
+    const h = await reported({ running: true, turnActive: false, backgroundTaskCount: 1 });
+
+    expect(await followReportedTurn(h.deps, "s1")).toBe(false);
+    expect(await followReportedTurn(h.deps, "other")).toBe(false);
+    expect(h.created).toEqual([]);
+  });
+});
+
 describe("reattachInFlightTurns", () => {
   const workers: { close: () => Promise<void> }[] = [];
 
@@ -201,6 +249,15 @@ describe("reattachInFlightTurns", () => {
     expect(h.destroyed).toEqual([]);
   });
 
+  // Its runner would restart the session's Compose services under the task that uses them.
+  it("creates no runner for a session with outstanding background tasks", async () => {
+    const url = await worker({ running: true, turnActive: false, backgroundTaskCount: 1 });
+    const h = makeHarness([{ sessionId: "s1", workerUrl: url }]);
+
+    expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.created).toEqual([]);
+  });
+
   it("leaves a stale worker alone while a terminal or an install is live", async () => {
     const term = await worker({ running: true, turnActive: false, terminalActive: true });
     const inst = await worker({ running: false, turnActive: false, installRunning: true });
@@ -213,7 +270,7 @@ describe("reattachInFlightTurns", () => {
     expect(h.destroyed).toEqual([]);
   });
 
-  it("re-probes before destroying, and keeps a worker that woke in between", async () => {
+  it("re-probes before destroying, keeps a worker that woke in between, and adopts a turn that started", async () => {
     const woke = await worker(
       { running: true, turnActive: false },
       { running: true, turnActive: false, selfWakeActive: true },
@@ -227,8 +284,10 @@ describe("reattachInFlightTurns", () => {
       { sessionId: "turn-started", workerUrl: started, workerBuildId: "old-build" },
     ]);
 
-    expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(await reattachInFlightTurns(h.deps)).toBe(1);
     expect(h.destroyed).toEqual([]);
+    // The server is not listening yet, so the worker's own report of that turn was lost.
+    expect(h.resumed).toEqual(["turn-started"]);
   });
 
   it("keeps a worker whose confirming probe fails", async () => {

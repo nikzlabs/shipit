@@ -111,6 +111,23 @@ export interface WireListenersOpts {
   adoptsCliStartedTurns?: boolean;
 }
 
+/**
+ * docs/322-question-holds-automatic-turns req 7 — the agent is waiting for the user, so a
+ * turn its CLI starts on its own is stopped at once. What woke it stays in its context for
+ * the user's reply, and the turn ends as the question did: still waiting.
+ */
+export function stopOwnTurnWhileAwaitingAnswer(
+  runner: SessionRunnerInterface,
+  agent: Pick<AgentProcess, "interrupt">,
+  broadcastLog: AgentListenerDeps["broadcastLog"],
+): void {
+  if (!runner.answerHold) return;
+  runner.awaitingUserAnswer = true;
+  runner.wasInterrupted = true;
+  agent.interrupt();
+  broadcastLog("server", "Agent interrupted: its own turn started while it waits for the user's answer");
+}
+
 export function wireAgentListeners(
   agent: AgentProcess,
   runner: SessionRunnerInterface | null,
@@ -168,15 +185,7 @@ export function wireAgentListeners(
       }
     }
     console.log(`[cli-turn] runner=${runner.sessionId} adopted a turn the orchestrator did not start (${reason})`);
-    // docs/322-question-holds-automatic-turns req 7 — the agent is waiting for the user, so a
-    // turn its CLI starts on its own is stopped at once. What woke it stays in its context for
-    // the user's reply, and the turn ends as the question did: still waiting.
-    if (startsTurn && runner.answerHold) {
-      runner.awaitingUserAnswer = true;
-      runner.wasInterrupted = true;
-      agent.interrupt();
-      deps.broadcastLog("server", "Agent interrupted: its own turn started while it waits for the user's answer");
-    }
+    if (startsTurn) stopOwnTurnWhileAwaitingAnswer(runner, agent, deps.broadcastLog);
   };
 
   const persistAgentSessionIdIfReady = (): void => {

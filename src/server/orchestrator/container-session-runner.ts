@@ -17,7 +17,7 @@ import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
-import { adoptInFlightTurn } from "./turn-adoption.js";
+import { adoptInFlightTurn, type InFlightTurnInfo } from "./turn-adoption.js";
 import { reconcilePermissionCards } from "./permission-cards.js";
 import { workerReportsNoTurn } from "./restart-turn-reattach.js";
 import { originView, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
@@ -25,7 +25,7 @@ import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
 import { PostTurnHold } from "./post-turn-hold.js";
-import { getAgentDisplayName } from "../shared/agent-registry.js";
+import { getAgentCapabilities, getAgentDisplayName } from "../shared/agent-registry.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
@@ -65,6 +65,13 @@ export interface InstallCompletion {
   unverified?: boolean;
 }
 
+// The worker's `startsOwnTurn`, read off the wire.
+function startsOwnTurn(agentId: AgentId, data: Record<string, unknown>): boolean {
+  if (data.type === "agent_self_wake") return true;
+  if (data.type !== "agent_assistant" || data.parentToolUseId) return false;
+  return getAgentCapabilities(agentId)?.startsOwnTurns ?? false;
+}
+
 export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface, ProxyAgentRunner {
   readonly sessionId: string;
   readonly sessionDir: string;
@@ -96,6 +103,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _backgroundTasks = new BackgroundTaskTracker();
   // Retain the resident proxy when a one-shot process displaces `_agent`.
   private _streamingProxy: ProxyAgentProcess | null = null;
+  // A streaming process the worker already held at the first connect: after an orchestrator
+  // restart nothing here follows it, and it starts turns of its own (planning#639).
+  private _unfollowedResident: { runToken: string; agentId: AgentId } | null = null;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
   private _residentRoute: { kind: ProviderRouteKind; id: string } | undefined = undefined;
@@ -709,6 +719,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   createAgent(agentId: AgentId, opts?: { runToken?: string; deliveryId?: string }): ProxyAgentProcess {
+    this._unfollowedResident = null;
     const proxy = new ProxyAgentProcess(agentId, this, opts);
     this.supersedeDisplacedAgent(proxy);
     this._agent = proxy;
@@ -819,12 +830,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (status.turnActive === undefined && status.running) return status;
 
     this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+    if (status.streaming === true && status.runToken !== undefined && !this._agent) {
+      this._unfollowedResident = { runToken: status.runToken, agentId: status.agentId ?? this._agentId };
+    }
     return status;
   }
 
   private async adoptWorkerTurn(status: WorkerAgentStatus): Promise<boolean> {
-    const deps = this._systemTurnDeps;
-    if (!deps) {
+    if (!this._systemTurnDeps) {
       console.warn(
         `[container-runner:${this.sessionId}] worker reports a live turn but no system-turn deps are wired — not adopting`,
       );
@@ -841,24 +854,46 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         `${truncated ? `, PARTIAL replay — buffer starts at ${oldest}` : ""})`,
     );
     this.sse.fastForwardLastSeenSeq(turnStartSeq);
-    this._agentId = agentId;
-    const proxy = this.createAgent(agentId, {
-      ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
-      ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
-    });
-    await adoptInFlightTurn(this, deps, proxy, {
+    // No orchestrator has heard this turn, so the saved in-progress rows are an earlier
+    // turn's, and the replay's first write would delete them.
+    if (status.ownTurn === "unheard") this.finalizeInheritedRows();
+    const adopted = this.wireWorkerTurn({
       agentId,
       ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
       ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
       streaming: status.streaming === true,
+      ...(status.ownTurn !== undefined ? { ownTurn: status.ownTurn } : {}),
     });
+    if (!adopted) return false;
+    await adopted;
+    return true;
+  }
+
+  // The listeners are wired when this returns: adoption does all of it before its first await.
+  private wireWorkerTurn(turn: InFlightTurnInfo): Promise<void> | null {
+    const deps = this._systemTurnDeps;
+    if (!deps) return null;
+    this._agentId = turn.agentId;
+    const proxy = this.createAgent(turn.agentId, {
+      ...(turn.runToken !== undefined ? { runToken: turn.runToken } : {}),
+      ...(turn.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+    });
+    const adopted = adoptInFlightTurn(this, deps, proxy, turn);
     this.emitMessage({
       type: "session_status",
       sessionId: this.sessionId,
       running: true,
       queueLength: this.queueLength,
     });
-    return true;
+    return adopted;
+  }
+
+  private finalizeInheritedRows(): void {
+    try {
+      this._systemTurnDeps?.listenerDeps.chatHistoryManager.finalizeInheritedInProgress(this.sessionId);
+    } catch (err) {
+      console.error(`[container-runner:${this.sessionId}] finalizing an ended turn's rows failed:`, err);
+    }
   }
 
   async resumeInFlightTurn(): Promise<boolean> {
@@ -895,13 +930,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const status = await this.reconcileWorkerTurnBeforeFirstConnect();
     this.reconcileSavedPermissionCards(newContainer ? [] : status?.pendingPermissionIds);
     // The boot sweep skips a worker it could not probe (docs/240-turn-survives-orchestrator-restart).
-    if (status && workerReportsNoTurn(status)) {
-      try {
-        this._systemTurnDeps?.listenerDeps.chatHistoryManager.finalizeInheritedInProgress(this.sessionId);
-      } catch (err) {
-        console.error(`[container-runner:${this.sessionId}] finalizing an ended turn's rows failed:`, err);
-      }
-    }
+    if (status && workerReportsNoTurn(status)) this.finalizeInheritedRows();
     await this.connectEventStream();
     if (!this._disposed) void this.startWorkerResources();
   }
@@ -953,6 +982,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Guard both the worker kill and the local slot clear against a replacement process.
   async killAgentOnWorker(opts?: { timeoutMs?: number; victimRunToken?: string }): Promise<void> {
+    // A killed process can still emit; its late output must not read as a turn of its own.
+    this._unfollowedResident = null;
     const victim = this._agent;
     await workerPost(
       this.workerUrl,
@@ -1528,10 +1559,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return this._agent ?? (this._isStreamingActive ? this._streamingProxy : null);
   }
 
+  // The resident process starts a turn of its own: adopt it before the event that starts it
+  // is routed, so that event already finds the agent that follows it.
+  private adoptOwnTurnAt(event: SSEEvent, data: Record<string, unknown>): void {
+    const resident = this._unfollowedResident;
+    if (!resident || this._disposed || event.type !== "agent_event") return;
+    if (data.runToken !== resident.runToken || !startsOwnTurn(resident.agentId, data)) return;
+    console.log(
+      `[container-runner:${this.sessionId}] adopting a turn the CLI started on its own (agent=${resident.agentId})`,
+    );
+    void this.wireWorkerTurn({ ...resident, streaming: true, ownTurn: "unheard" })?.catch((err: unknown) => {
+      console.error(`[container-runner:${this.sessionId}] adopting a CLI-started turn failed:`, err);
+    });
+  }
+
   private handleSSEEvent(event: SSEEvent): void {
     try {
       const data = JSON.parse(event.data) as Record<string, unknown>;
       this.sse.markActivity();
+      this.adoptOwnTurnAt(event, data);
 
       switch (event.type) {
         case "agent_event": {

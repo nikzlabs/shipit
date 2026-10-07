@@ -2,6 +2,7 @@ import type { AgentId, AgentProcess } from "../shared/types.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import { buildTurnMessages } from "./chat-card-persistence.js";
+import { stopOwnTurnWhileAwaitingAnswer } from "./ws-handlers/agent-listeners.js";
 import {
   startQueuedMessage,
   queuedMessageToDispatchOptions,
@@ -13,6 +14,8 @@ export interface InFlightTurnInfo {
   runToken?: string;
   deliveryId?: string;
   streaming: boolean;
+  /** The CLI started this turn on its own; "unheard" when this adoption is the first any orchestrator knows of it. */
+  ownTurn?: "heard" | "unheard";
 }
 
 /** Install the agent in the runner before adoption, and wire listeners before SSE replay. */
@@ -63,7 +66,8 @@ export async function adoptInFlightTurn(
     agentId: info.agentId,
     sessionId,
     adopt: true,
-    continuesTurn: true,
+    // New use only where no orchestrator counted the turn at its start (docs/316 req 5).
+    continuesTurn: info.ownTurn !== "unheard",
     ...(info.deliveryId !== undefined ? { deliveryId: info.deliveryId } : {}),
     ...(rebound ? { onTurnComplete: rebound } : {}),
     prompt: "",
@@ -93,4 +97,7 @@ export async function adoptInFlightTurn(
       runner.clearTurnEventBuffer();
     },
   });
+  if (info.ownTurn !== undefined) {
+    stopOwnTurnWhileAwaitingAnswer(runner, agent, deps.listenerDeps.broadcastLog);
+  }
 }

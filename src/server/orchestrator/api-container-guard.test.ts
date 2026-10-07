@@ -510,6 +510,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/agent/result",
   "GET /api/sessions/:id/agent/roles",
   "GET /api/sessions/:id/agent/params",
+  // The worker's report of a turn nothing follows; it gives the session its runner and no more.
+  "POST /api/sessions/:id/agent/own-turn",
   "GET /api/sessions/:id/settings",
   "GET /api/sessions/:id/settings/detail",
   // The agent's only write path to a setting, and it writes no setting: it posts

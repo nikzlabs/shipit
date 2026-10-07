@@ -515,9 +515,14 @@ export interface WorkerAgentStatus {
   running: boolean;
   latestSseSeq: number;
   oldestSseSeq?: number;
-  /** Orchestrator-started turn is active; absent means unknown on legacy workers. */
+  /** A turn is active; absent means unknown on legacy workers. */
   turnActive?: boolean;
   turnStartSseSeq?: number;
+  /**
+   * Present while the active turn is one the CLI started on its own. "unheard": no
+   * orchestrator stream has been open since it began, so no saved row can be this turn's.
+   */
+  ownTurn?: "heard" | "unheard";
   runToken?: string;
   deliveryId?: string;
   agentId?: AgentId;
