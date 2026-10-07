@@ -10,9 +10,6 @@ Implements [requirements.md](./requirements.md), cited as `(req N)`. Prior art
 and the code facts behind the choices: [research.md](./research.md). UI sketch:
 [mockup.html](./mockup.html).
 
-Four questions in `requirements.md` are still open. Where the design depends on
-one, it follows the recommended answer and says **(open question)**.
-
 ## What this builds
 
 1. **A schedule** — a stored session-start description (target, parameters,
@@ -21,7 +18,7 @@ one, it follows the recommended answer and says **(open question)**.
 2. **A way to make one by chat** — `shipit schedule propose` posts a card; the
    schedule exists only after the user confirms it (reqs 8, 9).
 3. **Settings → Schedules** — list, editor, run history, Run now / Pause /
-   Delete (reqs 10, 11, 19, 24).
+   Delete, Stop on a run (reqs 10, 11, 19, 24, 32, 33).
 4. **A scheduler** — a 30-second pass in the orchestrator that starts due runs
    through the existing headless session start (reqs 1, 2, 14–18, 23).
 5. **One "finished" decision** for runs, used by every place that asks whether
@@ -107,9 +104,9 @@ Orchestrator SQLite, migrations in `database.ts`:
   `skipped` | `failed`), `reason`, `session_id`, `started_at`, `dispatched_at`,
   `created_at`; unique on (`schedule_id`, `slot_at`). This is the run history
   (req 24) and the record of which slots were handled.
-- **`sessions`** gains `schedule_id`, `schedule_run_id`, `run_finished_at` and
-  `schedule_notes_grants` (`SessionInfo.scheduleId`, `scheduleRunId`,
-  `runFinishedAt`, `scheduleNotesGrants`). `schedule_run_id` is stamped when
+- **`sessions`** gains `schedule_id`, `schedule_run_id`, `run_finished_at`,
+  `run_stopped_at` and `schedule_notes_grants` (`SessionInfo.scheduleId`,
+  `scheduleRunId`, `runFinishedAt`, `runStoppedAt`, `scheduleNotesGrants`). `schedule_run_id` is stamped when
   the session is created, so recovery can find a session whose run row was
   never updated, and the container setup knows which notes folder is the run's
   own.
@@ -163,7 +160,8 @@ A `schedules` section registered beside `roles` in
   repository, or Sandbox with its grants; the parameter controls above; the
   prompt; the next three run times.
 - **Runs**, newest first. Each row shows the time, a state, a one-line result,
-  and links to the session and its notes (req 27). The state comes from the run
+  links to the session and its notes (req 27), and **Stop** while the run is
+  not finished (req 33). The state comes from the run
   row for `skipped` and `failed`, and from the session for a started run:
   Running, Needs you, or Finished (req 22). The one-line result is the run's
   status-card `lastTurn` (docs/303) when there is one, or else the first line of
@@ -171,10 +169,18 @@ A `schedules` section registered beside `roles` in
   (`advanced.sessionStatusCard`), so most runs have none. Skipped and failed
   rows show their reason.
 
-**Delete (open question)** removes the schedule and its notes and keeps its run
+**Delete (req 32)** removes the schedule and its notes and keeps its run
 sessions. It is refused while a run of the schedule is not finished, so no
-notes folder is removed under a live run. A run whose schedule was deleted
-keeps its banner, which then says the schedule was deleted and has no links.
+notes folder is removed under a live run; the refusal lists those runs, each
+with **Stop**. Archived runs do not block it, as they count for nothing else
+either. A run whose schedule was deleted keeps its banner, which then says the
+schedule was deleted and has no links.
+
+**Stop (req 33)** — on a run's row, in the Delete refusal, and in the run's
+banner — interrupts the run's turn the way the chat's stop control does, and
+writes `run_stopped_at`. A stopped run is finished (below). It stays an
+ordinary session: a user turn in it after the stop makes it active again
+(req 7).
 
 ## The scheduler (reqs 1, 2, 14–18, 23, 26)
 
@@ -184,9 +190,10 @@ never overlap. Cron evaluation uses `croner` 10.0.1 (published 2026-02-01, no
 dependencies, so it passes `check-deps`): `previousRuns(1, now)` gives a pass's
 slot, and `nextRuns(n)` gives the next run times for the cards and the editor.
 Checked on 2026-10-07: `0 9 * * 1-5` in `Europe/Berlin` gives 08:00 UTC after
-the 25 October 2026 change, so 09:00 stays 09:00 local (req 16). A time that
-does not exist that day runs an hour later, and a time that occurs twice runs
-once **(open question)**. Presets compile to cron: daily 09:00 is `0 9 * * *`,
+the 25 October 2026 change, so 09:00 stays 09:00 local (req 16). On the change
+days it already does what req 29 asks: 02:30 runs at 03:30 on the day that
+time does not exist, and once on the day it occurs twice (checked the same
+day). Presets compile to cron: daily 09:00 is `0 9 * * *`,
 weekdays `0 9 * * 1-5`.
 
 **Every start of a schedule — due or Run now — goes through one queue per
@@ -273,20 +280,25 @@ docs/322 hold does not apply to it.
 
 **Failed starts (req 18)** set the schedule's `needs_user_reason`. It shows in
 Settings → Schedules, at the top of the Scheduled sidebar view, and in the
-"needs you" view **(open question)**; the Scheduled view's control carries a
-warning mark. The next successful start, an edit, or a resume clears it.
+"needs you" view (req 31); the Scheduled view's control carries a warning mark.
+The "needs you" view lists sessions today, so a schedule with a reason becomes
+a row of its own there — name, reason, opening Settings → Schedules at it —
+in the same arrival order as session rows (docs/260-attention-sidebar-view
+req 7), and it counts in the toggle's number. The next successful start, an
+edit, or a resume clears it. A run that stopped on an error is a session that
+is not finished, so it is in "needs you" the ordinary way.
 
 ## Finished runs (req 22)
 
 One decision, `isRunFinished`, says whether a scheduled run is finished. A run
-is finished when all of these hold:
+the user stopped (`run_stopped_at`, req 33) is finished until a user turn
+after the stop. Otherwise a run is finished when all of these hold:
 
 - it is not awaiting an answer (`awaiting_answer`, docs/322);
 - it has no manual steps: with the status card on, its card has no `needsYou`
   entries; with the card off (the default), a run has no manual steps;
 - it has no open PR;
-- its last turn did not end in an error, such as a quota refusal **(open
-  question)**.
+- its last turn did not end in an error, such as a quota refusal (req 31).
 
 ShipIt decides it again, and writes `run_finished_at` or clears it, whenever
 one of those inputs can change: when the runner's `idle` signal fires after a
@@ -383,8 +395,8 @@ checks the asking session:
 
 - a run of that schedule is always allowed — its notes are already mounted
   (req 13);
-- any other session needs an approval for that schedule **(open question)**,
-  saved in `sessions.schedule_notes_grants`. Without one, the command posts the
+- any other session needs an approval for that schedule — one approval, one
+  schedule (req 30) — saved in `sessions.schedule_notes_grants`. Without one, the command posts the
   notes access card — "This session's agent asks to read the notes of schedule
   *name*", **Allow for this session** and **Deny**, in the egress prompt card's
   shape (`EgressPromptCard.tsx`) — and returns at once, saying the user has to
@@ -393,9 +405,10 @@ checks the asking session:
 ## The run's banner (req 25)
 
 A `ScheduledRunBanner` in the chat panel, where `SandboxBanner` sits: "Started
-by schedule **name** · time · Open schedule · Notes". Open schedule opens
-Settings → Schedules at that schedule; Notes opens the run's notes (req 27). In
-a sandbox run the two banners share one bar.
+by schedule **name** · time · Open schedule · Notes", plus **Stop run** while
+the run is not finished (req 33). Open schedule opens Settings → Schedules at
+that schedule; Notes opens the run's notes (req 27). In a sandbox run the two
+banners share one bar.
 
 ## Local mode
 
@@ -436,7 +449,11 @@ route. Local mode is a development instance; this is the limit it already has.
 | 25 | `ScheduledRunBanner` |
 | 26 | Run now through the queue without the checks; the done-test warning |
 | 27 | Notes viewer; the safe read |
-| 28 | `shipit schedule notes`, the notes access card, `schedule_notes_grants` |
+| 28, 30 | `shipit schedule notes`, the notes access card, `schedule_notes_grants` per schedule |
+| 29 | `croner`'s handling of the change days |
+| 31 | Schedule rows in "needs you"; an errored run is not finished |
+| 32 | Delete, refused while a run is not finished |
+| 33 | Stop on a run row, in the Delete refusal and in the banner; `run_stopped_at` |
 
 ## Rejected
 

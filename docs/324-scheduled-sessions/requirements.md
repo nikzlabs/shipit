@@ -84,24 +84,22 @@ answers on the same day (see "Resolved questions").
 28. An agent in a session that is not a run of the schedule can read the
     schedule's notes only after the user explicitly approves it for that
     session.
+29. On a daylight-saving day, a run time that does not exist runs one hour
+    later, and a run time that occurs twice runs once.
+30. One approval (req 28) covers the notes of the one schedule the agent asked
+    about. Another schedule's notes need their own approval.
+31. A schedule that could not start (req 18), and a run that stopped on an
+    error — for example, out of quota — show in the "needs you" view. A run that
+    stopped on an error is not finished (req 22).
+32. The user can delete a schedule. Deleting removes the schedule and its notes
+    and keeps its run sessions. It is refused while a run of the schedule is not
+    finished.
+33. The user can stop a run that is not finished. A stopped run is finished, so
+    it does not block Delete (req 32).
 
 ## Open questions
 
-From the second review round on 2026-10-07.
-
-- A run time that does not exist on a daylight-saving day (02:30 when clocks go
-  from 02:00 to 03:00), or that occurs twice (02:30 when they go back): when
-  does the run happen? Recommended: the missing time runs one hour later
-  (03:30), and the repeated time runs once. This is what the cron library does.
-- Does one approval (req 28) let the session read the notes of the one schedule
-  the agent asked about, or of every schedule? Recommended: the one schedule.
-- A schedule that could not start (req 18), and a run that stopped on an error
-  such as running out of quota: do they also show in the "needs you" view, and
-  is such a run "not finished" (req 22)? Recommended: yes to both.
-- Can the user delete a schedule? Recommended: yes — Delete removes the
-  schedule and its notes and keeps its run sessions; it is refused while a run
-  of the schedule is not finished. The simpler alternative is no Delete for
-  now: Pause stops a schedule, and paused schedules stay in the list.
+- (none)
 
 ## Resolved questions
 
@@ -155,3 +153,19 @@ From the second review round on 2026-10-07.
   also for the agents (requires an explicit user approval per session)."
   Carried by reqs 27 and 28. An approval covers the schedule the agent asked
   about; that is the design's reading of "per session".
+- 2026-10-07 — Four questions from the second review round, each answered with
+  the recommended option:
+  - *A run time that does not exist, or occurs twice, on a daylight-saving day?*
+    "Hour later, once." Carried by req 29.
+  - *Does one notes approval cover one schedule or all?* "One schedule."
+    Carried by req 30.
+  - *Do a schedule that could not start and a run that stopped on an error show
+    in "needs you", and is such a run not finished?* "Yes to both." Carried by
+    req 31.
+  - *Can the user delete a schedule?* "Yes, when runs are finished": Delete
+    removes the schedule and its notes, keeps its run sessions, and is refused
+    while a run is not finished. Carried by req 32.
+- 2026-10-07 — Right after choosing req 32, the user: "but I should be able to
+  stop a run". Carried by req 33. That a stopped run counts as finished is the
+  reading of the remark in the context of req 32, where an unfinished run blocks
+  Delete.

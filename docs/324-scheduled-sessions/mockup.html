@@ -153,7 +153,7 @@
     <p class="note" style="max-width:300px">The same grouped list as the regular view, for runs only (req 20). A run that ended with no
       question, no manual step and no open PR is finished and moves under <b>Recently resolved</b> (req 22). Runs that need the user
       (amber) also appear in the <b>💬 needs you</b> view (req 21). The ◷ control shows once the user has a schedule or a scheduled run; ▲ marks a
-      schedule that could not start (req 18), which also shows in "needs you" (open question).</p>
+      schedule that could not start (req 18), which also shows in "needs you" (req 31).</p>
   </div>
 </div>
 
@@ -185,8 +185,8 @@
           <span></span><span class="inline"><span class="btn pri">Save</span><span class="btn ghost">Delete schedule</span></span>
         </div>
         <div class="runs">
-          <div class="run"><span>Wed 7 Oct 09:00</span><span style="color:#60a5fa">● Running</span><span class="res">—</span><span><a href="#">Notes</a> · <a href="#">Open</a></span></div>
-          <div class="run"><span>Tue 6 Oct 09:00</span><span style="color:var(--warn)">● Needs you</span><span class="res">Merged #3051 and #3055. #3060 changes an API; asked before merging.</span><span><a href="#">Notes</a> · <a href="#">Open</a></span></div>
+          <div class="run"><span>Wed 7 Oct 09:00</span><span style="color:#60a5fa">● Running</span><span class="res">—</span><span><a href="#">Stop</a> · <a href="#">Notes</a> · <a href="#">Open</a></span></div>
+          <div class="run"><span>Tue 6 Oct 09:00</span><span style="color:var(--warn)">● Needs you</span><span class="res">Merged #3051 and #3055. #3060 changes an API; asked before merging.</span><span><a href="#">Stop</a> · <a href="#">Notes</a> · <a href="#">Open</a></span></div>
           <div class="run"><span>Mon 5 Oct 09:00</span><span style="color:var(--ok)">✓ Finished</span><span class="res">Merged 2 security PRs; none left open.</span><span><a href="#">Notes</a> · <a href="#">Open</a></span></div>
           <div class="run"><span>Fri 2 Oct 09:00</span><span class="lbl">Skipped</span><span class="res">The previous run was still going.</span><span></span></div>
         </div>
@@ -201,7 +201,7 @@
   <div class="panel">
     <div class="cap">4 · A run is an ordinary session that says where it came from</div>
     <div class="hdr">
-      <div class="banner">◷ Started by schedule <b>Security PR sweep</b> · Tue 6 Oct 09:00 <span class="lnk">Open schedule · Notes</span></div>
+      <div class="banner">◷ Started by schedule <b>Security PR sweep</b> · Tue 6 Oct 09:00 <span class="lnk">Open schedule · Notes · Stop run</span></div>
       <div style="padding:12px 14px;color:var(--ts)">The first message is the schedule's prompt. The agent also gets its own notes folder and read access to
         the notes of earlier runs (req 13). The user can reply here like in any session (req 7).</div>
     </div>

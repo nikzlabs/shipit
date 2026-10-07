@@ -5,7 +5,7 @@
 - [x] Design (`plan.md`) and UI sketch (`mockup.html`)
 - [x] Independent review of the design, findings applied
 - [x] Second review round (requirements alone, then design), findings applied
-- [ ] The four open questions in `requirements.md` answered
+- [x] The four open questions in `requirements.md` answered
 - [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs; editor test that edits every key
 - [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, base fetch
 - [ ] `schedules`, `schedule_runs` (unique slot, spec copy, `started_at`, `dispatched_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `schedule_notes_grants`
@@ -14,7 +14,8 @@
 - [ ] Recovery of `starting` rows (no session / not dispatched / dispatched)
 - [ ] One-hour rule on actual start times; input guard at save and propose
 - [ ] Run now through the queue; done-test warning with Run anyway / Cancel
-- [ ] Pre-flight checks; first-turn watch (setup error and quota refusal); `needs_user_reason` set and cleared; shown in Settings, the Scheduled view and "needs you"
+- [ ] Pre-flight checks; first-turn watch (setup error and quota refusal); `needs_user_reason` set and cleared; shown in Settings, the Scheduled view and as a schedule row in "needs you"
+- [ ] Delete (refused while a run is not finished, lists those runs); Stop on a run row, in the refusal and in the banner; `run_stopped_at`
 - [ ] `isRunFinished`, `isWorkResolved`, `workResolvedAt`; decided on idle, PR change and answer; used by the done test, attention call sites, `touchUnlessResolved` and the cap
 - [ ] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
 - [ ] Proposal card and notes access card on docs/299's claim and notice machinery
