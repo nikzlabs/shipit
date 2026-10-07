@@ -84,23 +84,37 @@ answers on the same day (see "Resolved questions").
 28. An agent in a session that is not a run of the schedule can read the
     schedule's notes only after the user explicitly approves it for that
     session.
-29. On a daylight-saving day, a run time that does not exist runs one hour
-    later, and a run time that occurs twice runs once.
+29. On a daylight-saving day, a run time that does not exist runs later by the
+    size of the clock change — one hour in almost every time zone — and a run
+    time that occurs twice runs once.
 30. One approval (req 28) covers the notes of the one schedule the agent asked
     about. Another schedule's notes need their own approval.
 31. A schedule that could not start (req 18), and a run that stopped on an
     error — for example, out of quota — show in the "needs you" view. A run that
     stopped on an error is not finished (req 22).
 32. The user can delete a schedule. Deleting removes the schedule and its notes
-    and keeps its run sessions. It is refused while a run of the schedule is not
-    finished.
-33. The user can stop a run that is not finished. A stopped run is finished, so
-    it does not block Delete (req 32). The stop control inside the run's session
-    stops the run too.
+    and keeps its run sessions; those sessions lose their link to the schedule
+    (req 25) and their notes (req 27). Delete is refused while a run of the
+    schedule is not finished.
+33. The user can stop a run that is not finished. A run the user stops is
+    finished, so it does not block Delete (req 32). The stop control inside the
+    run's session stops the run too.
 
 ## Open questions
 
-- (none)
+From the third review round on 2026-10-07.
+
+- Reqs 15 and 17 together: ShipIt was down and missed three daily runs. When it
+  is back, does it start one catch-up run or one per missed run? And does "at
+  least one hour apart" count scheduled times or actual start times — that is,
+  if the catch-up starts at 08:59, is the 09:00 run skipped? Recommended: one
+  catch-up run, and the hour counts scheduled times, so 09:00 runs unless the
+  catch-up is still going (req 14).
+- Req 20 says scheduled runs are not in the regular session list. The user's
+  words were "a separate section"; the exclusion is the agent's reading
+  (see the receipt). Confirm, or should runs also appear in the regular list?
+  Recommended: confirm — runs only in the Scheduled view, and in "needs you"
+  when they need the user.
 
 ## Resolved questions
 
@@ -152,12 +166,18 @@ answers on the same day (see "Resolved questions").
 - 2026-10-07 — The design let only the schedule's own runs see the notes, so
   the user could not browse them. The user: "yes make them visible in the UI,
   also for the agents (requires an explicit user approval per session)."
-  Carried by reqs 27 and 28. An approval covers the schedule the agent asked
-  about; that is the design's reading of "per session".
+  Carried by reqs 27 and 28. The remark answered the agent's statement that
+  only the schedule's own runs (req 13) can read the notes, so "also for the
+  agents" means agents in other sessions; req 28 covers those. An approval
+  covers the schedule the agent asked about; that is the design's reading of
+  "per session", later confirmed by req 30.
 - 2026-10-07 — Four questions from the second review round, each answered with
   the recommended option:
   - *A run time that does not exist, or occurs twice, on a daylight-saving day?*
-    "Hour later, once." Carried by req 29.
+    "Hour later, once." The option said "This is what the cron library already
+    does"; the library moves a missing time by the size of the clock change,
+    which is one hour except in a zone such as Lord Howe Island (30 minutes).
+    Req 29 says that. Carried by req 29.
   - *Does one notes approval cover one schedule or all?* "One schedule."
     Carried by req 30.
   - *Do a schedule that could not start and a run that stopped on an error show
@@ -169,5 +189,7 @@ answers on the same day (see "Resolved questions").
 - 2026-10-07 — Right after choosing req 32, the user: "but I should be able to
   stop a run". Carried by req 33. That a stopped run counts as finished is the
   reading of the remark in the context of req 32, where an unfinished run blocks
-  Delete. The user then asked: "also if I open that run session and press stop,
-  right?" — the last sentence of req 33.
+  Delete. The agent put that reading to the user ("If you meant only 'stop the
+  agent's work', tell me"); the user's reply asked only about the stop button:
+  "also if I open that run session and press stop, right?" — the last sentence
+  of req 33.

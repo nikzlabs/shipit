@@ -10,6 +10,9 @@ Implements [requirements.md](./requirements.md), cited as `(req N)`. Prior art
 and the code facts behind the choices: [research.md](./research.md). UI sketch:
 [mockup.html](./mockup.html).
 
+Two questions in `requirements.md` are open. Where the design depends on one,
+it follows the recommended answer and says **(open question)**.
+
 ## What this builds
 
 1. **A schedule** — a stored session-start description (target, parameters,
@@ -20,13 +23,13 @@ and the code facts behind the choices: [research.md](./research.md). UI sketch:
 3. **Settings → Schedules** — list, editor, run history, Run now / Pause /
    Delete, Stop on a run (reqs 10, 11, 19, 24, 32, 33).
 4. **A scheduler** — a 30-second pass in the orchestrator that starts due runs
-   through the existing headless session start (reqs 1, 2, 14–18, 23).
-5. **One "finished" decision** for runs, used by every place that asks whether
-   a session is done (req 22).
+   through the existing headless session start (reqs 1, 2, 14–18, 23, 29).
+5. **A "finished" decision** for runs (reqs 22, 31, 33), and how it reaches the
+   sidebar and "needs you".
 6. **A Scheduled sidebar view** — the regular grouped list, filtered to runs
    (reqs 20, 21).
 7. **Notes folders** — one per run, readable by later runs, by the user, and by
-   other sessions the user approves (reqs 13, 27, 28).
+   other sessions the user approves (reqs 13, 27, 28, 30).
 
 Nothing here adds an element to the message input panel (req 12).
 
@@ -101,28 +104,33 @@ Orchestrator SQLite, migrations in `database.ts`:
   `active_since`, `needs_user_reason` (req 18), `created_at`, `updated_at`.
 - **`schedule_runs`** — `id`, `schedule_id`, `slot_at` (null for Run now),
   `spec` (the copy this run starts with), `outcome` (`starting` | `started` |
-  `skipped` | `failed`), `reason`, `session_id`, `started_at`, `dispatched_at`,
-  `created_at`; unique on (`schedule_id`, `slot_at`). This is the run history
-  (req 24) and the record of which slots were handled.
+  `skipped` | `failed`), `reason`, `session_id`, `result` (the one-line result,
+  copied when the run finishes, so the history outlives the session),
+  `started_at`, `created_at`; unique on (`schedule_id`, `slot_at`). This is the
+  run history (req 24) and the record of which slots were handled.
 - **`sessions`** gains `schedule_id`, `schedule_run_id`, `run_finished_at`,
-  `run_stopped_at` and `schedule_notes_grants` (`SessionInfo.scheduleId`,
-  `scheduleRunId`, `runFinishedAt`, `runStoppedAt`, `scheduleNotesGrants`). `schedule_run_id` is stamped when
-  the session is created, so recovery can find a session whose run row was
-  never updated, and the container setup knows which notes folder is the run's
-  own.
+  `run_stopped_at`, `last_turn_outcome` and `schedule_notes_grants`. The run id
+  is stamped when the session is created; it is the first dispatch's
+  `deliveryId` too (recovery, below). `last_turn_outcome` (`ok` | `errored` |
+  `quota-refused`) is the persisted end of the last turn, which "finished"
+  needs (req 31) and which today lives only inside the turn executor.
 
 The run row holds the spec it starts with, so an edit applies from the next run
 and never changes a run in progress (req 19), also when recovery restarts it.
 
-## Cards: proposals and approvals (reqs 8, 9, 28)
+## Cards: proposals and approvals (reqs 8, 9, 28, 30)
 
 Two cards ask the user: the **schedule proposal card** (req 9) and the **notes
-access card** (req 28). Their bodies are new; their mechanics are not. Both use
-docs/299's settings-proposal machinery: the card is persisted transcript
-content (docs/188-persist-transcript-cards), the user's decision is claimed
-atomically and written into the card's history record
-(`claimSettingsProposal`), and the outcome reaches the agent on its next turn
-as a durable notice (`prepareSettingsOutcomeNotice`). A decision on a card whose
+access card** (req 28). Their bodies are new. Their mechanics already exist for
+docs/299's settings proposals — a persisted card (docs/188-persist-transcript-cards),
+an atomic claim of the user's decision that updates the card's history record
+(`claimSettingsProposal`, `settings-proposal.ts`), and a durable outcome notice
+on the agent's next turn (`prepareSettingsOutcomeNotice`,
+`settings-outcome-notice.ts`). Both are written for settings today: the claim
+updates the settings card's own transcript field, and the notice reads settings
+rows and points the agent at `shipit settings get`. So they are generalized
+into a claim and a notice keyed by card kind, with settings as the first kind
+and these two cards as the next, rather than copied. A decision on a card whose
 record no longer exists is refused before anything is written. The decision
 routes are browser-only, so a container cannot confirm its own proposal or
 grant its own access.
@@ -148,7 +156,7 @@ browser's. A change card records the schedule's `updated_at`; if the schedule
 changed since, Confirm refuses, because the card's "before" is no longer true.
 The command needs no repository, so it works in a sandbox too.
 
-## Settings → Schedules (reqs 10, 11, 19, 24)
+## Settings → Schedules (reqs 10, 11, 19, 24, 32, 33)
 
 A `schedules` section registered beside `roles` in
 `Settings/components/registry.ts`.
@@ -161,93 +169,99 @@ A `schedules` section registered beside `roles` in
   prompt; the next three run times.
 - **Runs**, newest first. Each row shows the time, a state, a one-line result,
   links to the session and its notes (req 27), and **Stop** while the run is
-  not finished (req 33). The state comes from the run
-  row for `skipped` and `failed`, and from the session for a started run:
-  Running, Needs you, or Finished (req 22). The one-line result is the run's
-  status-card `lastTurn` (docs/303) when there is one, or else the first line of
-  the run's last agent message — the status card is off by default
-  (`advanced.sessionStatusCard`), so most runs have none. Skipped and failed
-  rows show their reason.
+  not finished (req 33). States: Starting and Skipped and Failed from the run
+  row; Running, Needs you, Finished or Stopped from the session; "Session
+  deleted" when it is gone. The one-line result is the run's status-card
+  `lastTurn` (docs/303) when there is one, or else the first line of the run's
+  last agent message — the status card is off by default
+  (`advanced.sessionStatusCard`). It is copied into the run row when the run
+  finishes, so it stays after the session is deleted. Skipped and failed rows
+  show their reason.
 
 **Delete (req 32)** removes the schedule and its notes and keeps its run
-sessions. It is refused while a run of the schedule is not finished, so no
-notes folder is removed under a live run; the refusal lists those runs, each
-with **Stop**. Archived runs do not block it, as they count for nothing else
-either. A run whose schedule was deleted keeps its banner, which then says the
-schedule was deleted and has no links.
+sessions. It is refused while any run of the schedule is not finished —
+archived runs included, since req 32 says any — and the refusal lists those
+runs, each with **Stop**. It is also refused while a stopped run's agent is
+still winding down (`agentBusy`), so no notes folder is removed under live
+work. A run whose schedule was deleted keeps its banner, which then says so and
+has no links.
 
 **Stop (req 33)** writes `run_stopped_at` and interrupts the run's turn if one
-is going. It is reached four ways: the chat's own stop control inside the run
-session — `handleInterruptAgent`, which the `interrupt_agent` message reaches,
-writes `run_stopped_at` when the session is a run — and **Stop** on the run's
-row, in the Delete refusal, and in the run's banner. The last three also work
-while no turn is going, for a run that waits for an answer, where the chat's
-stop control is not shown. A stopped run is finished (below). It stays an
-ordinary session: a user turn in it after the stop makes it active again
-(req 7), so "stop, then tell the agent to do something else" works as in any
-session.
+is going. It is reached four ways: the chat's own stop control inside the run —
+`handleInterruptAgent` (`ws-handlers/misc-handlers.ts`), which the
+`interrupt_agent` message reaches, writes `run_stopped_at` when the session is
+a run — and **Stop** on the run's row, in the Delete refusal, and in the run's
+banner. The last three also work while no turn is going, for a run that waits
+for an answer. Stop on a `starting` row cancels the start before its dispatch
+(the scheduler re-checks, below).
 
-## The scheduler (reqs 1, 2, 14–18, 23, 26)
+A stopped run takes no automatic turn until the user's next turn in it: the
+docs/322 admission gate, which holds automatic turns while a question waits,
+also holds them while `run_stopped_at` is later than the last user turn. That
+covers quota continuation, whose own check reads only archive state and
+`lastUsedAt` (`quota-continuation.ts`), and every other automatic turn the
+same way. A user turn after the stop makes the run active again, so "stop,
+then tell the agent to do something else" works as in any session (req 7).
+
+## The scheduler (reqs 1, 2, 14–18, 23, 26, 29)
 
 `ScheduleRunner`, started from `startup-monitors.ts`: one pass at startup, then
 every 30 seconds, like the idle enforcer, with an in-flight flag so two passes
 never overlap. Cron evaluation uses `croner` 10.0.1 (published 2026-02-01, no
-dependencies, so it passes `check-deps`): `previousRuns(1, now)` gives a pass's
-slot, and `nextRuns(n)` gives the next run times for the cards and the editor.
-Checked on 2026-10-07: `0 9 * * 1-5` in `Europe/Berlin` gives 08:00 UTC after
-the 25 October 2026 change, so 09:00 stays 09:00 local (req 16). On the change
-days it already does what req 29 asks: 02:30 runs at 03:30 on the day that
-time does not exist, and once on the day it occurs twice (checked the same
-day). Presets compile to cron: daily 09:00 is `0 9 * * *`,
-weekdays `0 9 * * 1-5`.
+dependencies, so it passes `check-deps`); presets compile to cron (daily 09:00
+is `0 9 * * *`, weekdays `0 9 * * 1-5`).
 
-**Every start of a schedule — due or Run now — goes through one queue per
-schedule**, so two starts of one schedule never interleave. Pause, edit and
-delete apply to starts that begin after them. A pass starts due runs one at a
-time; ten schedules due at 09:00 start one after another, which also spreads
-container starts on the host.
+**Due slots come from stepping forward, never from `previousRuns`.** Checked on
+2026-10-07: at 03:00 Berlin time on the spring change day, `previousRuns(1,
+now)` returns 03:30 that day — a time that has not come yet. Stepping forward
+with `nextRun` from the last handled point gives the right answer. So a pass
+walks `nextRun` from the later of `active_since` and the schedule's latest
+non-null `slot_at`, and collects every slot at or before now. Walking forward,
+`croner` moves a missing time by the size of the clock change and runs a
+repeated time once (req 29; checked for Berlin and for Lord Howe Island's
+30-minute change). `nextRuns(n)` gives the next run times for the cards and
+the editor.
+
+**One queue per schedule.** Every start — due or Run now — and every change to
+the schedule — edit, pause, resume, delete, Stop on a `starting` row — goes
+through one queue per schedule, so none of them interleave. A pass starts due
+runs one at a time; ten schedules due at 09:00 start one after another, which
+also spreads container starts on the host.
 
 Each pass, for each enabled schedule:
 
-1. `slot` = the latest run time at or before now. Nothing is due unless `slot`
-   is after `active_since` and after the latest non-null `slot_at` in the
-   schedule's run rows.
-2. **Claim the slot** by inserting a `starting` row with a copy of the spec.
-   The unique constraint makes a second claim of the same slot fail.
-3. **Skip** — mark the row `skipped` with the reason — when another run of the
-   schedule is still going (req 14): its row is `starting`, its session has a
-   runner whose `agentBusy` is true (a turn, background tasks, sub-agent
-   spawns, post-turn work, or an install), or, after a restart, its worker is
-   still being re-attached (`restart-turn-reattach.ts`). `awaiting_answer` is not
-   busy, so a run that waits for the user does not block the next one (req 23).
-   Also skip when the previous due run's `started_at` is less than an hour ago
-   (req 17).
-4. Otherwise **start** the run (below).
+1. **Collect** the due slots (above). None → nothing to do.
+2. **Missed slots.** When more than one slot is due — ShipIt was down, or busy
+   past a slot — only the latest runs (req 15) **(open question)**. The others
+   are recorded as one skipped row ("3 runs missed between … and …"), so no
+   slot disappears without a trace.
+3. **Claim** the latest slot by inserting a `starting` row with a copy of the
+   spec. The unique constraint makes a second claim of the same slot fail.
+4. **Skip** — mark the row `skipped` with the reason — when another run of the
+   schedule is still going (req 14): its row is `starting`, or its session's
+   runner has `agentBusy` true (a turn, background tasks, sub-agent spawns,
+   post-turn work, or an install), or after a restart its worker is still being
+   re-attached (`restart-turn-reattach.ts`). A run that waits for an answer
+   (`awaiting_answer`) never counts as still going, even with background work
+   left (req 23). The one-hour rule (req 17) counts scheduled times **(open
+   question)**: the save and propose check below already keeps a schedule's
+   times an hour apart, so it needs no check here.
+5. Otherwise **start** the run (below).
 
-`active_since` is set on create, on resume, and on any edit of the timing, so a
-slot that passed while a schedule was paused, or before its time changed, does
-not run. Only the latest slot is considered, so the slots missed while ShipIt
-was down become one run at the first pass after startup (req 15).
+`active_since` is set on create, on resume, and on any edit of the timing, so
+slots that passed while a schedule was paused, or before its time changed, do
+not run.
 
-**Recovery.** The startup pass also finishes `starting` rows that a restart
-interrupted:
+**One hour apart (req 17).** Saving or proposing a timing whose next 100 run
+times include two less than an hour apart is refused. Run now is not counted
+(req 26).
 
-- no session with that `schedule_run_id` → start the run from the row's spec;
-- a session, but no `dispatched_at` → send the row's prompt into that session;
-- `dispatched_at` set → mark the row `started`; the turn itself is the business
-  of `restart-turn-reattach.ts`, as for any session.
-
-**One hour apart (req 17).** The guarantee is step 3's check on actual start
-times. Saving or proposing a timing whose next 100 run times include two less
-than an hour apart is refused as well, so a schedule that would mostly be
-skipped is never saved; the check is a guard on input, not the guarantee.
-
-**Run now (req 26)** goes through the same queue without steps 1–3. Before it
-starts, the control checks the schedule's run sessions with the shared done
-test (below); if any that the user has not archived is not finished, it shows
-a warning that lists them, with **Run anyway** and **Cancel**. A Run now run is
-an ordinary run of the schedule, so a slot that comes due while it is still
-going is skipped by step 3.
+**Run now (req 26)** goes through the queue without steps 1–4. Before it
+starts, the control checks every run of the schedule — archived ones included
+— with `isRunFinished` (below); if any is not finished, it shows a warning that
+lists them, with **Run anyway** and **Cancel**. A Run now run is an ordinary
+run of the schedule, so a slot that comes due while it is still going is
+skipped by step 4.
 
 ### Starting a run — `startScheduledRun(row)`
 
@@ -264,68 +278,105 @@ going is skipped by step 3.
    - `sshHosts` and `networkMode`, applied before the container starts, because
      a sandbox's Network and Docker grants take effect only at container start
      (`sandbox-capabilities.ts`);
-   - `title` = "*schedule name* · *date*", with AI naming off. Sandboxes never
-     graduate, so the title must be set at creation;
+   - `title` = "*schedule name* · *date*", with AI naming off, so the history
+     and the sidebar name runs the same way. Sandboxes never graduate, so the
+     title must be set at creation;
    - `scheduleId` and `scheduleRunId` on the session row;
+   - the run id as the first dispatch's `deliveryId`, and the dispatch handle
+     returned to the caller instead of dropped;
    - a fetch of the base before the clone, as `spawnChildSession` asks for. It
      is best effort there (`refreshClaimedSession` logs a failure and goes on),
-     and the same is accepted here: the agent can fetch, and failing a run for
-     a slow fetch would be worse.
-3. Write `started_at`, then `dispatched_at` as soon as the dispatch is accepted.
-4. **Watch the first turn.** A dispatch that fails during setup does not throw
-   to the caller; `dispatchOnRunner` reports it through the turn's settlement
-   (`turnErrored`, `session-runner.ts`). A quota refusal can settle as
-   `completed`, so the settlement is also checked against the router's quota
-   refusal for that turn (docs/306-quota-continuation reads the same signal).
-   Either way the row becomes `failed` with the reason, and the session is
-   linked.
+     and the same is accepted here: the agent can fetch, and failing a run for a
+     slow fetch would be worse.
+3. **Re-check, then dispatch.** Inside the queue, just before the dispatch, the
+   start re-reads the schedule and the row: a schedule paused or deleted, or a
+   row stopped, since the claim cancels the start, and the row becomes `failed`
+   with that reason.
+4. **Watch the first turn** through its handle. A dispatch that fails during
+   setup does not throw to the caller; `dispatchOnRunner` reports it through
+   the settlement (`turnErrored`, `session-runner.ts`). A quota refusal can
+   settle as `completed` with the refusal only in the text; the executor's
+   refusal detection (`turn-executor.ts`, docs/306-quota-continuation) writes
+   `last_turn_outcome = quota-refused` once its retries are spent. Either way
+   the row becomes `failed` with the reason, and the session is linked.
 
 The first dispatch is not `automatic`: it is a new session's own task, so the
 docs/322 hold does not apply to it.
 
+**Recovery after a restart.** The startup pass finishes `starting` rows:
+
+- no session with that `schedule_run_id` → start the run from the row's spec;
+- a session → the runner's delivery tracking for the run's `deliveryId`
+  (`hasDelivery`, `rebindDelivery`, `session-runner.ts`) and the session's
+  chat history tell whether the prompt reached it. Delivered → the row becomes
+  `started`, and the turn is the business of `restart-turn-reattach.ts`, as for
+  any session. Not delivered → the row's prompt is sent into that session.
+
+In `RUNTIME_MODE=local` there is no worker to re-attach; a run whose turn was
+cut off by a restart there is marked `failed` ("ShipIt restarted during the
+run").
+
 **Failed starts (req 18)** set the schedule's `needs_user_reason`. It shows in
-Settings → Schedules, at the top of the Scheduled sidebar view, and in the
-"needs you" view (req 31); the Scheduled view's control carries a warning mark.
-The "needs you" view lists sessions today, so a schedule with a reason becomes
-a row of its own there — name, reason, opening Settings → Schedules at it —
-in the same arrival order as session rows (docs/260-attention-sidebar-view
-req 7), and it counts in the toggle's number. The next successful start, an
-edit, or a resume clears it. A run that stopped on an error is a session that
-is not finished, so it is in "needs you" the ordinary way.
+Settings → Schedules, at the top of the Scheduled sidebar view, and in "needs
+you" (req 31); the Scheduled view's control carries a warning mark. The next
+successful start, an edit, or a resume clears it — each is the user acting on
+the reason, and a reason that still holds comes back on the next start.
 
-## Finished runs (req 22)
+## Finished runs (reqs 22, 31, 33)
 
-One decision, `isRunFinished`, says whether a scheduled run is finished. A run
-the user stopped (`run_stopped_at`, req 33) is finished until a user turn
-after the stop. Otherwise a run is finished when all of these hold:
+`isRunFinished` is the requirement's "finished", and reqs 26, 32 and 33 use
+exactly it. A run the user stopped (`run_stopped_at`, req 33) is finished until
+a user turn after the stop. Otherwise a run is finished when all of these hold:
 
 - it is not awaiting an answer (`awaiting_answer`, docs/322);
 - it has no manual steps: with the status card on, its card has no `needsYou`
-  entries; with the card off (the default), a run has no manual steps;
+  entries;
 - it has no open PR;
-- its last turn did not end in an error, such as a quota refusal (req 31).
+- its last turn did not end in an error (`last_turn_outcome`, req 31).
 
-ShipIt decides it again, and writes `run_finished_at` or clears it, whenever
-one of those inputs can change: when the runner's `idle` signal fires after a
-turn — `signalIdleIfIdle` in `turn-executor.ts`, which runs last, after the
-commit and the PR flows — when the PR poller sees the run's PR change state, and
-when the user answers. A user turn in a finished run makes it active again
-until the next decision.
+With the status card off — the default — a run has no manual steps to show, so
+anything the user must act on has to be a question. The run's first-turn block
+says so (below): a run that only *writes* "please review #3060" in its last
+message would otherwise be filed as finished.
 
-Two tests decide "resolved" today, and both learn about runs through one
-function, `isWorkResolved(session)`: `isRunFinished` for a scheduled run,
-`isTerminalPrResolved` for every other session. A run's PR merging does not by
-itself make the run finished — an unanswered question still counts.
+ShipIt decides it again, and writes `run_finished_at` or clears it, when one of
+its inputs changes **and the runner is not busy**: when a turn's post-turn hold
+is released (`endPostTurnWork`, the last thing a turn does — after the commit,
+the PR flows, `signalIdleIfIdle` and quota detection), when the runner's
+background work drains, when the PR poller sees the run's PR change state, when
+the user answers, and on Stop. While the runner is busy nothing is decided, so
+a PR update in the middle of a turn changes nothing until the turn is over.
 
-- `isOwnWorkFinished` in `session-resolution.ts` uses `isWorkResolved`, so
-  `doneSessionTest` — the idle enforcer's container stop (docs/316), the sidebar
-  cap, the groups' **Recently resolved** split, and the Run now warning — gives
-  one answer everywhere.
-- The attention call sites (`SessionItem.tsx`, `useAttentionSessions.ts`,
-  `useAttentionNotifications.ts`), `touchUnlessResolved` (`sessions.ts`), and
-  the cap's ranking in `filterVisibleInSidebar` use `isWorkResolved` instead of
-  `isTerminalPrResolved`, and the ranking sorts by `workResolvedAt`
-  (`resolvedAt`, or `runFinishedAt` for a run).
+**Where "finished" shows.** Sidebar placement is not the same question as
+"finished". A regular session goes under **Recently resolved** only when its PR
+resolved *and* it is not pinned, not workspace-blocked, not holding a preview
+reservation, and has no unfinished descendant (`isOwnWorkFinished`,
+`doneSessionTest`, `session-resolution.ts`). Runs follow the same rule — req 20
+asks for the same UI — with `isRunFinished` in place of the PR test:
+
+- `isWorkResolved(session)` is `isRunFinished` for a run and
+  `isTerminalPrResolved` for any other session; `workResolvedAt` is
+  `runFinishedAt` or `resolvedAt`.
+- `isOwnWorkFinished` uses `isWorkResolved`, so `doneSessionTest` — Recently
+  resolved, the sidebar cap, and the idle enforcer's container stop (docs/316)
+  — treats runs like sessions. `touchUnlessResolved` (`sessions.ts`) and the
+  cap's ranking in `filterVisibleInSidebar` use `isWorkResolved` and
+  `workResolvedAt`.
+
+**"Needs you" (reqs 21, 31).** `computeAttentionReason` (`useAttentionInfo.ts`)
+stays silent for a merged or closed PR, pending checks and armed auto-merge,
+even when the session is not resolved. For a run, a waiting question, an error,
+or a manual step is reported first, before those silences, so a run whose PR
+merged but whose question is open still shows. The attention call sites
+(`SessionItem.tsx`, `useAttentionSessions.ts`, `useAttentionNotifications.ts`)
+pass `isWorkResolved` instead of `isTerminalPrResolved`.
+
+The "needs you" view lists sessions today. A schedule with a
+`needs_user_reason` becomes a row of its own: `AttentionSessionList` takes a
+union of session rows and schedule rows, keeps them in one arrival order with
+the same append-only and sticky rules (docs/260-attention-sidebar-view reqs 7
+and 8), and counts them in the toggle's number. A schedule row shows the name
+and the reason and opens Settings → Schedules at that schedule.
 
 ## The Scheduled sidebar view (reqs 20, 21)
 
@@ -336,8 +387,9 @@ itself make the run finished — an unanswered question still counts.
   (docs/272-user-selectable-roles req 16), and in the spirit of req 12.
 - A session belongs to the scheduled view when it, or the root of its spawn
   tree, has a `scheduleId`, so a child session a run spawned stays with its run.
-  The regular view drops those sessions (req 20). The scheduled view renders the
-  regular grouping (`useSessionGrouping`, `SessionGroup`) over only them.
+  The regular view drops those sessions (req 20) **(open question)**. The
+  scheduled view renders the regular grouping (`useSessionGrouping`,
+  `SessionGroup`) over only them.
 - `filterVisibleInSidebar` caps resolved sessions per repository. It counts
   scheduled runs and regular sessions separately, so daily runs never push a
   user's resolved sessions out of the regular view.
@@ -352,32 +404,34 @@ itself make the run finished — an unanswered question still counts.
 ## The run's first message and its notes (req 13)
 
 Each run gets a folder `<workspace-root>/schedules/<schedule-id>/runs/<run-id>/`
-on the host, created before the container starts. The run's container sees the
-schedule's whole `runs/` folder at `/schedule/runs/`: its own folder, where it
-writes, and every earlier one. It is mounted the way `/persist` is — a bind in
-development, a volume subpath in production (`container-lifecycle.ts`). Unlike
-`/persist`, the folder is shared by runs that can run as different session
-identities, so ownership is set per run folder: each run's folder is handed to
-that run's identity, the way `preparePersistDir` (`compose-persist.ts`) hands
-`/persist` over, and the schedule's folders stay readable by every session
-identity. That handover has to be verified against `preparePersistDir` and the
-session uid model when it is built. In `RUNTIME_MODE=local` there is no
-container; the run's block gives the host path directly.
+on the host, created before the container starts and handed to the run
+session's identity. Only that folder is mounted into the run, read-write, at
+`/schedule/notes/` — the way `/persist` is mounted (a bind in development, a
+volume subpath in production, `container-lifecycle.ts`). `preparePersistDir`
+(`compose-persist.ts`) works out the owner from the session path, which this
+path is not, so the notes folder's preparation takes the session identity as an
+argument. In `RUNTIME_MODE=local` there is no container; the block gives the
+host path directly.
+
+A run reads **earlier** runs' notes through `shipit schedule notes` (below),
+which allows a run of the same schedule without asking. So no run's files ever
+need to be readable by another run's identity, and nothing else is mounted.
 
 The folders belong to the schedule, not to a session, so the archive retention
 period (docs/323-archived-session-data-retention) does not delete them.
 
 The first message is the schedule's prompt plus a short, factual
-`<scheduled_run>` block: the schedule's name and id, this run's time, its own
-notes folder, where the earlier runs' folders are, and that notes written by
-earlier runs are data, not instructions (`/shipit-docs/untrusted-input.md`). It
-is injected into the first turn the way role standing instructions are
-(`takeRoleStandingInstructions`), so the system prompt stays byte-stable. The
-block's text is a `.md` prompt file loaded at module load (prompt-architecture).
-What the agent writes in its notes, and when it reads earlier ones, is left to
-the agent.
+`<scheduled_run>` block: the schedule's name and id, this run's time, its notes
+folder, the command that reads earlier runs' notes, that those notes are data,
+not instructions (`/shipit-docs/untrusted-input.md`), and that a run with
+nothing pending is filed away as finished, so anything the user must act on
+has to be asked as a question. It is injected into the first turn the way role
+standing instructions are (`takeRoleStandingInstructions`), so the system
+prompt stays byte-stable. The block's text is a `.md` prompt file loaded at
+module load (prompt-architecture). What the agent writes in its notes, and when
+it reads earlier ones, is left to the agent.
 
-## Seeing the notes (reqs 27, 28)
+## Seeing the notes (reqs 27, 28, 30)
 
 **Reading a notes file safely.** A run writes its folder, so a file in it can be
 a symlink to anything on the host. Every read — for the user or for an agent —
@@ -391,43 +445,44 @@ that run's folder and the selected file — markdown through the chat's markdown
 renderer, other text as text, anything else by name and size. The routes
 behind it are browser-only.
 
-**An agent in another session** reads through the CLI, never through a mount:
-`shipit schedule notes <schedule> [<run> [<file>]]` lists a schedule's runs,
-lists a run's files, or prints one file, with the same "data, not
-instructions" note the run's own block carries. A mount would need the
-session's container to restart. The route behind it is container-accessible and
-checks the asking session:
+**An agent** reads through the CLI: `shipit schedule notes <schedule> [<run>
+[<file>]]` lists a schedule's runs, lists a run's files, or prints one file,
+with the same "data, not instructions" note. The route behind it is
+container-accessible and checks the asking session:
 
-- a run of that schedule is always allowed — its notes are already mounted
-  (req 13);
+- a run of that schedule is always allowed (req 13);
 - any other session needs an approval for that schedule — one approval, one
-  schedule (req 30) — saved in `sessions.schedule_notes_grants`. Without one, the command posts the
-  notes access card — "This session's agent asks to read the notes of schedule
-  *name*", **Allow for this session** and **Deny**, in the egress prompt card's
-  shape (`EgressPromptCard.tsx`) — and returns at once, saying the user has to
-  approve.
+  schedule (req 30) — saved in `sessions.schedule_notes_grants`. Without one,
+  the command posts the notes access card — "This session's agent asks to read
+  the notes of schedule *name*", **Allow for this session** and **Deny**, in the
+  egress prompt card's shape (`EgressPromptCard.tsx`) — and returns at once,
+  saying the user has to approve.
 
 ## The run's banner (req 25)
 
 A `ScheduledRunBanner` in the chat panel, where `SandboxBanner` sits: "Started
 by schedule **name** · time · Open schedule · Notes", plus **Stop run** while
 the run is not finished (req 33). Open schedule opens Settings → Schedules at
-that schedule; Notes opens the run's notes (req 27). In a sandbox run the two
+that schedule; Notes opens the run's notes (req 27). After the schedule is
+deleted, the banner says so and has no links (req 32). In a sandbox run the two
 banners share one bar.
 
 ## Local mode
 
 The dogfood inner instance (`RUNTIME_MODE=local`) has no container manager, so
-`api-container-guard.ts` does not tell a container from the browser there. The
-browser-only decision routes — Confirm, the notes approval, the Settings writes
-— are not a boundary in local mode, exactly as for every other browser-only
-route. Local mode is a development instance; this is the limit it already has.
+`api-container-guard.ts` cannot tell an agent from the browser there, and an
+agent runs on the host itself, where it can read any notes path. Confirm, the
+notes approval and the Settings writes are therefore not a boundary in local
+mode, exactly as for every other browser-only route; reqs 9, 28 and 30 hold in
+container mode, which is the product. Local mode is a development instance;
+this is the limit it already has.
 
 ## Agent-facing docs
 
 - New `src/server/shipit-docs/schedules.md`: the three commands, the proposal
-  YAML, the notes folders, that the agent proposes and the user confirms, and
-  that reading another schedule's notes waits for the user's approval.
+  YAML, the notes folder and how to read earlier notes, that the agent proposes
+  and the user confirms, and that reading another schedule's notes waits for
+  the user's approval.
 - `src/server/shipit-docs/wiki/sessions.md`: a "Scheduled sessions" section —
   what a schedule is, where Settings → Schedules and the Scheduled view are.
 
@@ -440,25 +495,25 @@ route. Local mode is a development instance; this is the limit it already has.
 | 4, 5, 11 | `SessionStartParams`, exhaustive appliers and labels, the guard test, shared controls, the editor test |
 | 6 | `spec.prompt`; role optional |
 | 7 | Runs are ordinary sessions |
-| 8, 9 | `shipit schedule propose`, the proposal card on docs/299's machinery |
-| 10, 24 | Settings → Schedules |
+| 8, 9 | `shipit schedule propose`, the proposal card on the generalized claim and notice |
+| 10, 24 | Settings → Schedules; `result` copied into the run row |
 | 12 | No input-panel change |
-| 13 | Notes folders, `<scheduled_run>` block |
-| 14, 15, 23 | Scheduler steps 1–4, the per-schedule queue, recovery |
-| 16 | IANA zone, `croner` |
-| 17 | Step 3's check on start times; the input guard at save and propose |
-| 18 | Pre-flight, first-turn watch, `needs_user_reason` |
+| 13 | The run's notes folder; earlier notes through `shipit schedule notes`; the `<scheduled_run>` block |
+| 14, 23 | Scheduler step 4; `awaiting_answer` never counts as still going |
+| 15 | Step 2 **(open question)** |
+| 16, 29 | IANA zone; due slots by stepping `nextRun` forward |
+| 17 | The spacing check at save and propose **(open question)** |
+| 18 | Pre-flight, the re-check, the first-turn watch, `needs_user_reason` |
 | 19 | Run now / Pause / Edit; the spec is copied into the run row |
-| 20, 21 | `SidebarView` `"scheduled"`, membership by spawn root, separate caps, Sandbox group split |
-| 22 | `isRunFinished`, `isWorkResolved`, `workResolvedAt` |
+| 20 | `SidebarView` `"scheduled"`, membership by spawn root, separate caps, Sandbox group split **(open question)** |
+| 21, 31 | Attention for runs reported before the PR silences; schedule rows in "needs you"; `last_turn_outcome` |
+| 22 | `isRunFinished`, decided when inputs change and the runner is idle |
 | 25 | `ScheduledRunBanner` |
-| 26 | Run now through the queue without the checks; the done-test warning |
+| 26 | Run now through the queue without the checks; the `isRunFinished` warning |
 | 27 | Notes viewer; the safe read |
 | 28, 30 | `shipit schedule notes`, the notes access card, `schedule_notes_grants` per schedule |
-| 29 | `croner`'s handling of the change days |
-| 31 | Schedule rows in "needs you"; an errored run is not finished |
-| 32 | Delete, refused while a run is not finished |
-| 33 | The chat's stop control in a run, and Stop on a run row, in the Delete refusal and in the banner; `run_stopped_at` |
+| 32 | Delete, refused while a run is not finished or still winding down |
+| 33 | `run_stopped_at` from the chat's stop control and the Stop links; the stopped-run gate on automatic turns |
 
 ## Rejected
 
@@ -471,15 +526,22 @@ route. Local mode is a development instance; this is the limit it already has.
 - **A `last_slot_at` cursor written before the start** — it stops a double
   start, but a restart between the write and the start loses that run, which
   req 15 does not allow. The run row is the claim instead.
+- **`previousRuns` for the due slot** — it returns a future time on a spring
+  change day.
+- **A `dispatched_at` timestamp** — a crash between the dispatch and the write
+  makes a delivered prompt look undelivered; the runner's own delivery tracking
+  is the record.
 - **"Finished" from the status card's freshness** — the card is off by default,
   and any write marks it fresh, so freshness proves nothing about the end of a
   turn.
-- **Earlier runs' notes mounted read-only** — no requirement protects them, and
-  it costs a second, nested mount.
+- **Mounting the schedule's whole notes tree into each run** — runs can have
+  different session identities, so earlier runs' files would need to be
+  readable across them; the notes command already reads them.
 - **Mounting notes into an approved session** — a mount takes effect only when
   the container starts, so an approval would restart the session.
-- **New claim and notice machinery for the two cards** — docs/299's already
-  claims a decision atomically and delivers its outcome durably.
+- **Registering schedules as settings** — docs/299 proposes one scalar change
+  per card and rejected multi-change cards; a schedule is a whole object. Its
+  claim and notice are generalized instead.
 - **Auto-pause after repeated failures** — not asked for; req 18 makes every
   failure visible, and a failed start costs nothing.
 - **A deterministic pre-check that skips the agent** (Devin, gh-aw) — a quiet run

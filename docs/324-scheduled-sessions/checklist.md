@@ -3,27 +3,30 @@
 - [x] Requirements written
 - [x] Prior-art research
 - [x] Design (`plan.md`) and UI sketch (`mockup.html`)
-- [x] Independent review of the design, findings applied
-- [x] Second review round (requirements alone, then design), findings applied
-- [x] The four open questions in `requirements.md` answered
+- [x] Review rounds 1–3 (requirements alone, design against them), findings applied
+- [ ] The two open questions in `requirements.md` answered
 - [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs; editor test that edits every key
-- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, base fetch
-- [ ] `schedules`, `schedule_runs` (unique slot, spec copy, `started_at`, `dispatched_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `schedule_notes_grants`
-- [ ] `croner` 10.0.1 added (exact pin); presets compile to cron; daylight-saving tests, including missing and repeated times
-- [ ] `ScheduleRunner`: in-flight flag, per-schedule start queue, due check, slot claim, skip rules, catch-up, `active_since` on create/resume/timing edit, one start at a time
-- [ ] Recovery of `starting` rows (no session / not dispatched / dispatched)
-- [ ] One-hour rule on actual start times; input guard at save and propose
-- [ ] Run now through the queue; done-test warning with Run anyway / Cancel
-- [ ] Pre-flight checks; first-turn watch (setup error and quota refusal); `needs_user_reason` set and cleared; shown in Settings, the Scheduled view and as a schedule row in "needs you"
-- [ ] Delete (refused while a run is not finished, lists those runs); Stop on a run row, in the refusal and in the banner, and `handleInterruptAgent` in a run session; `run_stopped_at`
-- [ ] `isRunFinished`, `isWorkResolved`, `workResolvedAt`; decided on idle, PR change and answer; used by the done test, attention call sites, `touchUnlessResolved` and the cap
+- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, run id as `deliveryId`, dispatch handle returned, base fetch
+- [ ] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
+- [ ] `croner` 10.0.1 added (exact pin); presets compile to cron; due slots by stepping `nextRun` forward; tests for the spring and autumn change days and a 30-minute zone
+- [ ] `ScheduleRunner`: in-flight flag; one queue per schedule for starts and every schedule change; missed slots recorded as one skipped row; slot claim; skip rules (`awaiting_answer` never still going); `active_since` on create/resume/timing edit; one start at a time
+- [ ] Re-check of schedule and row inside the queue before dispatch
+- [ ] Recovery of `starting` rows through the runner's delivery tracking; local-mode cut-off runs marked failed
+- [ ] Spacing check at save and propose
+- [ ] Run now through the queue; `isRunFinished` warning (archived runs included) with Run anyway / Cancel
+- [ ] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
+- [ ] Delete (refused while a run is not finished or still busy; lists those runs with Stop); Stop on a run row, in the refusal, in the banner, on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
+- [ ] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
+- [ ] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; `isWorkResolved` / `workResolvedAt` in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
+- [ ] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
+- [ ] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
 - [ ] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
-- [ ] Proposal card and notes access card on docs/299's claim and notice machinery
+- [ ] Claim and outcome notice generalized by card kind (settings first); proposal card and notes access card on them
 - [ ] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
-- [ ] Settings → Schedules: list, editor, run history (states, result fallback), Run now / Pause / Delete
-- [ ] Notes folders: host layout, mount (bind / volume subpath), per-run ownership verified against `preparePersistDir`, local-mode path
-- [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes`; `schedule_notes_grants`
-- [ ] `<scheduled_run>` first-turn block (prompt `.md` file)
-- [ ] `ScheduledRunBanner` with Open schedule and Notes links; deleted-schedule state
+- [ ] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
+- [ ] The run's notes folder: host layout, mount at `/schedule/notes/` with the session identity passed in, local-mode path
+- [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes` (own schedule's runs allowed); `schedule_notes_grants`
+- [ ] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
+- [ ] `ScheduledRunBanner` with Open schedule, Notes and Stop run; deleted-schedule state
 - [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
-- [ ] Integration tests: restart mid-start in each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once, Run now not limited and not counted for the hour, a quota-refused first turn is a failed start
+- [ ] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start, stopped run takes no automatic turn, Delete refused while a run is busy
