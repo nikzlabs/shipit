@@ -1967,6 +1967,7 @@ describe("PrStatusPoller", () => {
       }],
       get: () => undefined,
       setPrStatus: vi.fn(),
+      getPrStatus: vi.fn(() => null),
       getAllPrStatuses: vi.fn().mockReturnValue([persistedMerged]),
     } as unknown as SessionManager;
 
@@ -3452,6 +3453,7 @@ describe("PrStatusPoller — GitHub rate-limit handling", () => {
       }],
       get: () => undefined,
       setPrStatus: vi.fn(),
+      getPrStatus: vi.fn(() => null),
       getAllPrStatuses: vi.fn().mockReturnValue([persistedMerged]),
     } as unknown as SessionManager;
 

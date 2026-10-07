@@ -57,5 +57,19 @@ export interface ScheduleRun {
   createdAt: string;
 }
 
+/**
+ * A run that is not finished (req 22), archived or not: it holds back Delete (req 32), and
+ * Run now warns about it (req 26).
+ */
+export interface UnfinishedScheduleRun {
+  runId: string;
+  /** Absent while the run's session does not exist yet. */
+  sessionId?: string;
+  title: string;
+  archived?: true;
+  /** The user stopped it and its agent is still winding down, so Stop has nothing left to do. */
+  stopping?: true;
+}
+
 /** How a session's last turn ended, persisted because a run's "finished" needs it (req 31). */
 export type LastTurnOutcome = "ok" | "errored" | "quota-refused";

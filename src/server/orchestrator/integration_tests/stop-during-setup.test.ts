@@ -50,8 +50,9 @@ function holdSetup(): { began: () => boolean; release: () => void } {
 
 let sent: unknown[] = [];
 
-function pressStop(): void {
+function pressStop(scheduledRuns?: { markRunStopped: (sessionId: string) => void }): void {
   const ctx = {
+    ...(scheduledRuns ? { scheduledRuns } : {}),
     getActiveAppSessionId: () => "sess-1",
     getRunnerRegistry: () => ({ get: () => runner }),
     getRunner: () => runner,
@@ -107,6 +108,30 @@ describe("Stop during turn setup", () => {
       "second turn settled as interrupted",
     );
     expect(runner.getAgent()).toBeNull();
+  });
+
+  it("keeps a scheduled run stopped when Stop lands before the turn's executor starts (docs/324 req 33)", async () => {
+    let stoppedAt: string | undefined;
+    const reopenRun = vi.fn(() => true);
+    Object.assign(deps.listenerDeps.sessionManager, {
+      get: () => ({ id: "sess-1", scheduleId: "schedule-1", ...(stoppedAt ? { runStoppedAt: stoppedAt } : {}) }),
+      reopenRun,
+    });
+    let releaseReset: () => void = () => {};
+    let resetBegan = false;
+    (deps.preTurnReset as unknown) = vi.fn(async () => {
+      resetBegan = true;
+      await new Promise<void>((resolve) => { releaseReset = resolve; });
+      return { agentPrefix: "" };
+    });
+    dispatch("Only list the PRs this time.");
+    await waitForTurn(() => resetBegan, "pre-turn reset");
+
+    pressStop({ markRunStopped: () => { stoppedAt = "2026-10-07T09:30:00.000Z"; } });
+    releaseReset();
+    await waitForTurn(() => settled.length === 1, "turn settled");
+    expect(settled[0]!.status).toBe("interrupted");
+    expect(reopenRun).not.toHaveBeenCalled();
   });
 
   it("stops a turn that has no agent yet", async () => {

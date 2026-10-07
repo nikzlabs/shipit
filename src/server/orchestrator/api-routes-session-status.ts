@@ -163,6 +163,8 @@ export async function registerSessionStatusRoutes(
         && deps.sessionManager.get(sessionId)?.scheduleId
       ) {
         deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+        // A manual step is an input of "finished" (req 22); during a turn its end decides.
+        deps.scheduleRunner?.decideRunFinished(sessionId);
       }
 
       // req 12 — the turn asked for the card, so the settlement step must not

@@ -19,6 +19,7 @@ import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { SecretStore } from "../secret-store.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
+import type { ScheduleRunner } from "../schedule-runner.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
@@ -109,6 +110,8 @@ export interface AppCtx {
   secretStore?: SecretStore;
   serviceManagers?: Map<string, ServiceManager>;
   agentMergeClaims?: AgentMergeClaimStore;
+  /** docs/324-scheduled-sessions req 33 — the chat's stop control stops a scheduled run. */
+  scheduledRuns?: Pick<ScheduleRunner, "markRunStopped">;
 
   generateText: GenerateText;
   getSharedRepoDir: (repoUrl: string) => string;

@@ -397,7 +397,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
 /** docs/322 — the "agent waits for the user's answer" mark, and the turns it holds. */
 export type AnswerHoldStore = Pick<
   SessionManager,
-  "isAwaitingAnswer" | "setAwaitingAnswer" | "holdTurn" | "heldTurns" | "forgetHeldTurn" | "hasHeldDelivery"
+  "automaticTurnsHeld" | "setAwaitingAnswer" | "holdTurn" | "heldTurns" | "forgetHeldTurn" | "hasHeldDelivery"
 >;
 
 export interface SystemTurnDeps {
@@ -602,6 +602,11 @@ export interface SessionRunnerEvents {
   /** Per-turn signal: each dispatch latches it before queue drain can replace runner state. */
   turn_result: [{ compact: boolean }];
   background_work: [];
+  /**
+   * A hold that keeps `agentBusy` true came off: the post-turn hold, the last thing a turn
+   * does (after its commit, PR flows and push), or an install.
+   */
+  work_released: [];
 }
 
 export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents> {
@@ -856,7 +861,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
-  endPostTurnWork(): void { this._postTurnHold.end(); }
+  endPostTurnWork(): void {
+    this._postTurnHold.end();
+    if (!this._postTurnHold.active) this.emit("work_released");
+  }
   get turnCommitPending(): boolean { return this._turnCommitHold.active; }
   beginTurnCommit(): void { this._turnCommitHold.begin(); }
   endTurnCommit(): void { this._turnCommitHold.end(); }

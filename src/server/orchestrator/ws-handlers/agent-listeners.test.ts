@@ -1569,7 +1569,7 @@ describe("wireAgentListeners — a CLI-started turn while the agent waits for an
     const runner = new SessionRunner({ sessionId: "session-held", sessionDir: "/tmp/session-held", defaultAgentId: "claude" });
     runner.setSystemTurnDeps({
       answerHold: {
-        isAwaitingAnswer: () => held,
+        automaticTurnsHeld: () => held,
         setAwaitingAnswer: vi.fn(),
         holdTurn: vi.fn(),
         heldTurns: () => [],

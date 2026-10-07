@@ -2,15 +2,17 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { ScheduleStore } from "../schedule-store.js";
 import type { CredentialStore } from "../credential-store.js";
-import type { ScheduleRun } from "../../shared/types.js";
+import type { ScheduleRun, UnfinishedScheduleRun } from "../../shared/types.js";
 import {
   createSchedule,
+  deleteSchedule,
   getSchedule,
   listScheduleRuns,
   listSchedules,
   pauseSchedule,
   resumeSchedule,
   runScheduleNow,
+  ScheduleDeleteRefused,
   scheduleSpecProblem,
   updateSchedule,
   type ScheduleServiceDeps,
@@ -31,6 +33,7 @@ let queued: string[];
 let announced: number;
 let trusted: boolean;
 let roles: string[];
+let unfinished: UnfinishedScheduleRun[];
 
 function input(over: Record<string, unknown> = {}): Record<string, unknown> {
   return { name: "Security PRs", timing: DAILY, timeZone: "Europe/Berlin", spec: SPEC, ...over };
@@ -43,6 +46,7 @@ beforeEach(() => {
   announced = 0;
   trusted = true;
   roles = ["reviewer"];
+  unfinished = [];
   deps = {
     store,
     repoStore: { get: (url: string) => (url === REPO ? ({ url } as never) : undefined), isTrusted: () => trusted },
@@ -57,6 +61,8 @@ beforeEach(() => {
         return fn();
       },
       runNow: async (id: string) => ({ id: "run-1", scheduleId: id, slotAt: null, outcome: "starting" }) as ScheduleRun,
+      stopRun: async () => null,
+      unfinishedRuns: async () => unfinished,
       announceSchedules: () => { announced += 1; },
     },
   };
@@ -175,5 +181,36 @@ describe("Run now and the run history", () => {
       "2026-10-02T00:00:00.000Z",
     ]);
     expect(() => listScheduleRuns(deps, "missing")).toThrow("Schedule not found");
+  });
+});
+
+describe("Delete (req 32)", () => {
+  it("is refused through the queue while a run is not finished, and names the runs", async () => {
+    const created = createSchedule(deps, input());
+    unfinished = [
+      { runId: "run-1", sessionId: "s-1", title: "Security PRs · Oct 7, 09:00", archived: true },
+      { runId: "run-2", sessionId: "s-2", title: "Security PRs · Oct 8, 09:00", stopping: true },
+    ];
+    const refusal = await deleteSchedule(deps, created.id).catch((err: unknown) => err);
+    expect(refusal).toBeInstanceOf(ScheduleDeleteRefused);
+    expect(refusal).toMatchObject({
+      statusCode: 409,
+      runs: unfinished,
+      message: "This schedule still has runs in progress. To delete it, stop the run that is not finished, "
+        + "and wait for the stopped run to wind down.",
+    });
+    expect(queued).toEqual([created.id]);
+    expect(getSchedule(deps, created.id).id).toBe(created.id);
+  });
+
+  it("removes the schedule and its run history once every run is finished", async () => {
+    const created = createSchedule(deps, input());
+    store.insertRun({ scheduleId: created.id, slotAt: null, outcome: "started" });
+    announced = 0;
+    await deleteSchedule(deps, created.id);
+    expect(store.get(created.id)).toBeNull();
+    expect(store.listRuns(created.id)).toEqual([]);
+    expect(announced).toBe(1);
+    await expect(deleteSchedule(deps, created.id)).rejects.toThrow("Schedule not found");
   });
 });

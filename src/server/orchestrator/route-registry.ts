@@ -1044,6 +1044,7 @@ export async function registerRoutes(
         repoStore, warmSessionForRepo, generateText,
         egressAllowlistStore,
         settingsProposals, secretStore, serviceManagers, agentMergeClaims,
+        ...(scheduleRunner ? { scheduledRuns: scheduleRunner } : {}),
         ...(containerManager ? { containerManager } : {}),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,

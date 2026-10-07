@@ -419,6 +419,20 @@ describe("Integration: session-status route", () => {
     expect((off.json() as { error: string }).error).toContain("propose_actions");
   });
 
+  it("docs/324-scheduled-sessions req 22: a manual step posted after the run finished makes it unfinished", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    sessionManager.setScheduleRun(sessionId, "sched-1", "run-1");
+    sessionManager.setRunFinishedAt(sessionId, "2026-10-07T10:00:00.000Z");
+    try {
+      const res = await post({ status: "Swept.", needsYou: ["Approve the deploy."] });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(sessionManager.get(sessionId)).not.toHaveProperty("runFinishedAt");
+    } finally {
+      client.close();
+    }
+  });
+
   it("docs/324-scheduled-sessions req 21: lists a run again when its manual steps change", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive();
