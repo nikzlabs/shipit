@@ -147,6 +147,12 @@ export interface SessionInfo {
   /** Req 33 — when the user stopped the run. */
   runStoppedAt?: string;
   lastTurnOutcome?: LastTurnOutcome;
+  /**
+   * Set on runs only, for the "needs you" view (reqs 21, 31): the last turn
+   * ended on a question (docs/322), and the status card's manual-step count.
+   */
+  awaitingAnswer?: boolean;
+  manualStepCount?: number;
   /** Req 28, req 30 — the schedules whose notes the user let this session read, by id. */
   scheduleNotesGrants?: string[];
 }

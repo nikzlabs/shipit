@@ -16,17 +16,21 @@ export function readAnswerHold(
   }
 }
 
-/** Never throws: its callers sit where a throw would abandon a turn's start or its commit. */
+/**
+ * Never throws: its callers sit where a throw would abandon a turn's start or its commit.
+ * Returns whether the mark changed.
+ */
 export function writeAnswerHold(
   deps: Pick<SystemTurnDeps, "answerHold">,
   sessionId: string,
   awaiting: boolean,
-): void {
-  if (!deps.answerHold) return;
+): boolean {
+  if (!deps.answerHold) return false;
   try {
-    deps.answerHold.setAwaitingAnswer(sessionId, awaiting);
+    return deps.answerHold.setAwaitingAnswer(sessionId, awaiting);
   } catch (err) {
     console.error(`[admission] writing the answer hold for ${sessionId} failed:`, err);
+    return false;
   }
 }
 

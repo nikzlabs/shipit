@@ -10,6 +10,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import type { TurnOutcome } from "../turn-settlement.js";
+import type { SessionInfo } from "../../shared/types.js";
 import { TURN_COMPLETED } from "../turn-settlement.js";
 import {
   TestClient,
@@ -19,6 +20,8 @@ import {
   waitFor,
   createTestCredentialStore,
   createTestDatabaseManager,
+  recordSse,
+  type SseEvent,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
@@ -442,5 +445,35 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
 
     stop();
     client.close();
+  });
+
+  it("docs/324-scheduled-sessions req 21: lists a run's question before the turn reads as finished", async () => {
+    const sse = await recordSse(port);
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const stop = pump(client);
+    try {
+      client.send({ type: "send_message", text: "Which backend should I use?" });
+      const asker = await waitForClaude(() => lastClaude);
+      await waitFor(() => sessionManager.get(client.sessionId) !== undefined, "session row");
+      sessionManager.setScheduleRun(client.sessionId, "sched-1", "run-1");
+      asker.initSession("question-turn");
+      asker.streamingInterrupt = true;
+      askQuestion(asker);
+      await waitFor(() => asker.interrupted, "the question interrupted the turn");
+      asker.finish("question-turn");
+
+      const isFinished = (e: SseEvent) =>
+        e.event === "session_agent_finished" && (e.data as { sessionId: string }).sessionId === client.sessionId;
+      await waitFor(() => sse.events.some(isFinished), "the turn read as finished");
+      const listsBefore = sse.events.slice(0, sse.events.findIndex(isFinished))
+        .filter((e) => e.event === "session_list")
+        .map((e) => (e.data as { sessions: SessionInfo[] }).sessions.find((s) => s.id === client.sessionId));
+      expect(listsBefore.at(-1)?.awaitingAnswer).toBe(true);
+    } finally {
+      sse.close();
+      stop();
+      client.close();
+    }
   });
 });

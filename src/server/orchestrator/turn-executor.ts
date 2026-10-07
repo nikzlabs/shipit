@@ -246,6 +246,17 @@ export async function executeAgentTurn(
       sessions: deps.listenerDeps.sessionManager.list(),
     });
   }
+  // docs/324-scheduled-sessions — a run's list row carries the mark for "needs you" (req 21).
+  // Never throws, like `writeAnswerHold`: the clear is in the turn start, the set in its settlement.
+  const writeAnswerHoldAndList = (awaiting: boolean): void => {
+    if (!writeAnswerHold(deps, sessionId, awaiting)) return;
+    try {
+      const sessions = deps.listenerDeps.sessionManager;
+      if (sessions.get(sessionId)?.scheduleId) deps.listenerDeps.sseBroadcast("session_list", { sessions: sessions.list() });
+    } catch (err) {
+      console.error(`[turn] listing the answer hold for ${sessionId} failed:`, err);
+    }
+  };
   const useStreaming = input.useStreaming ?? false;
   // Streaming alone is insufficient: some adapters emit final text after ending their process.
   const adoptsCliStartedTurns = useStreaming && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false);
@@ -443,7 +454,7 @@ export async function executeAgentTurn(
   // what holds it.
   forgetHeldTurn(deps.answerHold, input);
   if (input.automatic !== true && !input.adopt) {
-    writeAnswerHold(deps, sessionId, false);
+    writeAnswerHoldAndList(false);
     // req 4 — what the hold kept runs after this turn, from the queue it waits in now.
     if (runner && restoreHeldTurns(runner) > 0) {
       runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
@@ -905,7 +916,7 @@ export async function executeAgentTurn(
     };
     // docs/322 — before the drain reads it. Only set here: a turn that did not ask leaves
     // the hold to whatever the user does next.
-    if (facts.awaitingAnswer) writeAnswerHold(deps, sessionId, true);
+    if (facts.awaitingAnswer) writeAnswerHoldAndList(true);
     try {
       // Nothing to read while the feature is off, and nothing will be decided from it.
       if (cardOn) facts.writeSeq = storedStatus()?.writeSeq ?? 0;

@@ -58,11 +58,12 @@ export function saveSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
-export type SidebarView = "all" | "attention";
+export type SidebarView = "all" | "attention" | "scheduled";
 
 export function getSavedSidebarView(): SidebarView {
   try {
-    return localStorage.getItem(SIDEBAR_VIEW_KEY) === "attention" ? "attention" : "all";
+    const saved = localStorage.getItem(SIDEBAR_VIEW_KEY);
+    return saved === "attention" || saved === "scheduled" ? saved : "all";
   } catch {
     return "all";
   }

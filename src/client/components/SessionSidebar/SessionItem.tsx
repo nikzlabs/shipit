@@ -9,7 +9,6 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useAttentionInfo } from "../../hooks/useAttentionInfo.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
-import { isTerminalPrResolved } from "../../../server/shared/session-resolution.js";
 import { SessionStatusDot, AutoMergeBadge, DataDeletionBadge, DiskTierBadge } from "./SessionStatusIndicators.js";
 
 function rowPrState(session: SessionInfo): "open" | "merged" | "closed" | undefined {
@@ -42,9 +41,7 @@ interface SessionItemProps {
 export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch, overflowMenuPortaled = true }: SessionItemProps) {
   const isArchived = session.archived === true;
 
-  const attentionReason = useAttentionInfo(
-    session.id, !!session.mutedAt, session.workspaceBlock, isTerminalPrResolved(session),
-  );
+  const attentionReason = useAttentionInfo(session);
   const needsAttention = attentionReason !== null && !isArchived;
   const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
 

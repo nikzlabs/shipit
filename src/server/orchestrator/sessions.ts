@@ -1,8 +1,9 @@
 import path from "node:path";
 import type { LastTurnOutcome, PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
-import { doneSessionTest, isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
+import { doneSessionTest, isWorkResolved, scheduledViewTest, workResolvedAt } from "../shared/session-resolution.js";
 import { dataDeletionTimeMs, type DataRetentionConfig } from "../shared/session-retention.js";
+import { parseTimestampMs } from "../shared/utils.js";
 import { dataRetentionConfigFromEnv } from "./data-retention-config.js";
 
 export { holdsActiveReservation } from "../shared/session-resolution.js";
@@ -86,6 +87,7 @@ interface SessionRow {
   pr_number: number | null;
   agent_goal: string | null;
   session_status: string | null;
+  awaiting_answer: number;
   schedule_id: string | null;
   schedule_run_id: string | null;
   run_finished_at: string | null;
@@ -221,10 +223,13 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
 ): T[] {
   // Archived rows keep their rank so archiving does not promote an older session.
+  // docs/324-scheduled-sessions — each view has its own cap, so daily runs never
+  // push the user's own resolved sessions out of the regular list.
+  const isScheduled = scheduledViewTest(sessions);
   const resolvedByRepo = new Map<string, T[]>();
   for (const s of sessions) {
-    if (!isTerminalPrResolved(s)) continue;
-    const key = s.remoteUrl ?? "";
+    if (!isWorkResolved(s)) continue;
+    const key = `${isScheduled(s) ? "scheduled" : "regular"}\n${s.remoteUrl ?? ""}`;
     let group = resolvedByRepo.get(key);
     if (!group) {
       group = [];
@@ -234,7 +239,9 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   }
   const topResolvedIds = new Set<string>();
   for (const group of resolvedByRepo.values()) {
-    group.sort((a, b) => (Date.parse(resolvedAt(b) ?? "") || 0) - (Date.parse(resolvedAt(a) ?? "") || 0));
+    // The sidebar orders by the same parse, so the rows the cap keeps are the ones listed first.
+    const resolvedMs = (s: T) => parseTimestampMs(workResolvedAt(s) ?? "") || 0;
+    group.sort((a, b) => resolvedMs(b) - resolvedMs(a));
     for (const s of group.slice(0, maxMerged)) topResolvedIds.add(s.id);
   }
   // docs/316-done-sessions-return-memory req 2 — the cap hides only done
@@ -245,14 +252,14 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const shownOnItsOwn = (s: T | undefined): boolean =>
     !!s && !s.userArchived && (!isDone(s) || topResolvedIds.has(s.id));
-  return sessions.filter(
-    (s) =>
-      shownOnItsOwn(s)
-      || (!s.userArchived
-        && s.rootSessionId !== undefined
-        && s.rootSessionId !== s.id
-        && shownOnItsOwn(byId.get(s.rootSessionId))),
-  );
+  return sessions.filter((s) => {
+    if (s.userArchived) return false;
+    const root = s.rootSessionId !== undefined && s.rootSessionId !== s.id ? byId.get(s.rootSessionId) : undefined;
+    // docs/324-scheduled-sessions — the browser tells a run's spawned session by
+    // its run, so a done one is never listed without it.
+    if (root?.scheduleId && isDone(s)) return shownOnItsOwn(root);
+    return shownOnItsOwn(s) || shownOnItsOwn(root);
+  });
 }
 
 export class SessionManager {
@@ -395,7 +402,12 @@ export class SessionManager {
       info.prNumber = row.pr_number;
       info.prRepoId = row.pr_repo_id;
     }
-    if (row.schedule_id) info.scheduleId = row.schedule_id;
+    if (row.schedule_id) {
+      info.scheduleId = row.schedule_id;
+      if (row.awaiting_answer) info.awaitingAnswer = true;
+      const steps = row.session_status ? parseSessionStatus(row.session_status)?.needsYou?.length ?? 0 : 0;
+      if (steps > 0) info.manualStepCount = steps;
+    }
     if (row.schedule_run_id) info.scheduleRunId = row.schedule_run_id;
     if (row.run_finished_at) info.runFinishedAt = row.run_finished_at;
     if (row.run_stopped_at) info.runStoppedAt = row.run_stopped_at;
@@ -450,7 +462,7 @@ export class SessionManager {
   // the merge reopens a session, so work inside an earlier turn must not.
   touchUnlessResolved(id: string): void {
     const session = this.get(id);
-    if (!session || isTerminalPrResolved(session)) return;
+    if (!session || isWorkResolved(session)) return;
     this.db.prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?").run(new Date().toISOString(), id);
   }
 
@@ -1019,8 +1031,11 @@ export class SessionManager {
     return row?.awaiting_answer === 1;
   }
 
-  setAwaitingAnswer(id: string, awaiting: boolean): void {
-    this.db.prepare("UPDATE sessions SET awaiting_answer = ? WHERE id = ?").run(awaiting ? 1 : 0, id);
+  /** Returns whether the mark changed. */
+  setAwaitingAnswer(id: string, awaiting: boolean): boolean {
+    const value = awaiting ? 1 : 0;
+    return this.db.prepare("UPDATE sessions SET awaiting_answer = ? WHERE id = ? AND awaiting_answer != ?")
+      .run(value, id, value).changes > 0;
   }
 
   /** docs/324-scheduled-sessions — stamped when a run's session is created. */
