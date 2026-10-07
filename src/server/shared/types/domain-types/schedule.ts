@@ -1,4 +1,5 @@
 import type { SessionStartSpec } from "./session-start.js";
+import type { SessionListRow } from "./session.js";
 
 /**
  * docs/324-scheduled-sessions — when a schedule's runs come due (req 16). A
@@ -55,6 +56,17 @@ export interface ScheduleRun {
   result?: string;
   startedAt?: string;
   createdAt: string;
+}
+
+/**
+ * A run as Settings → Schedules lists it (req 24). The session row covers a run the session
+ * lists do not hold (archived, or past the sidebar cap); while the run is not finished,
+ * `result` is its current one-line result.
+ */
+export interface ScheduleRunView extends ScheduleRun {
+  session?: SessionListRow;
+  /** The run's session no longer exists. */
+  sessionDeleted?: true;
 }
 
 /**

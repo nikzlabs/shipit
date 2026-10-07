@@ -93,6 +93,7 @@ beforeEach(() => {
       stopRun: async () => null,
       unfinishedRuns: async () => [],
       announceSchedules: () => { announced += 1; },
+      viewRuns: (runs) => runs,
     },
   };
 });

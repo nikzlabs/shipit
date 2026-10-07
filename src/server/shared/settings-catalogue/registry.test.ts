@@ -230,7 +230,7 @@ describe("the settings registry", () => {
       ...SETTING_EXCLUSIONS.map((e) => e.tab),
     ]);
     const tabs: SettingTab[] = [
-      "services", "roles", "integrations", "git", "instructions", "skills", "keyboard",
+      "services", "roles", "schedules", "integrations", "git", "instructions", "skills", "keyboard",
       "voice", "network", "advanced",
       "project-deployments", "project-secrets", "project-appearance",
     ];

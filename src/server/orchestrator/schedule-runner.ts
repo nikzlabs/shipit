@@ -6,8 +6,9 @@ import type { RuntimeMode } from "./app-di.js";
 import type { CreateHeadlessSessionOptions, RedispatchOptions } from "./services/headless-sessions.js";
 import type { TurnEnd, TurnHandle, TurnOutcome } from "./turn-settlement.js";
 import type { DueSlots } from "../shared/schedule-timing.js";
-import type { Schedule, ScheduleRun, SessionInfo, UnfinishedScheduleRun } from "../shared/types.js";
+import type { Schedule, ScheduleRun, ScheduleRunView, SessionInfo, UnfinishedScheduleRun } from "../shared/types.js";
 import { DISPATCH_SETUP_FAILURE } from "./session-runner.js";
+import { toListRow } from "./sessions.js";
 import { isRunFinished, runResult } from "./run-finished.js";
 import { dueSlots, formatInZone } from "../shared/schedule-timing.js";
 import { parseSessionStartSpec } from "../shared/session-start-spec.js";
@@ -489,6 +490,26 @@ export class ScheduleRunner implements ScheduleQueue {
       unfinished.push({ runId: run.id, title: runTitle(schedule, run) });
     }
     return unfinished;
+  }
+
+  /**
+   * Req 24 — each run with its session as the lists show it, archived ones included. The
+   * result a run kept is its last finish's, so one not finished — never, or not since the user
+   * reopened it — reads its current one from its session.
+   */
+  viewRuns(runs: ScheduleRun[]): ScheduleRunView[] {
+    const { sessionManager, chatHistoryManager } = this.deps;
+    const statusCardOn = this.deps.statusCardEnabled?.() ?? false;
+    return runs.map((run) => {
+      const sessionId = run.sessionId ?? sessionManager.sessionIdForScheduleRun(run.id);
+      if (!sessionId) return run;
+      const session = sessionManager.get(sessionId);
+      if (!session) return { ...run, sessionId, sessionDeleted: true };
+      const result = session.runFinishedAt
+        ? run.result
+        : runResult(session, statusCardOn, chatHistoryManager.load(sessionId)) ?? run.result;
+      return { ...run, sessionId, session: toListRow(session), ...(result ? { result } : {}) };
+    });
   }
 
   private setNeedsUser(schedule: Schedule, reason: string | null): void {

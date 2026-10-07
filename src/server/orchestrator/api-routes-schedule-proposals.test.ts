@@ -47,6 +47,7 @@ beforeEach(async () => {
       stopRun: async () => null,
       unfinishedRuns: async () => [],
       announceSchedules: () => undefined,
+      viewRuns: (runs) => runs,
     },
   });
   await app.ready();

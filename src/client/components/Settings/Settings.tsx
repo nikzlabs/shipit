@@ -12,6 +12,7 @@ import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
+import { SchedulesSettings } from "./schedules/SchedulesSettings.js";
 // One map for the dialog's own tab strip and for anything else that names where
 // a setting lives, so the two cannot say different words for the same tab.
 import { SETTING_TAB_LABELS } from "../../../server/shared/settings-catalogue/index.js";
@@ -19,18 +20,21 @@ import { SETTING_TAB_LABELS } from "../../../server/shared/settings-catalogue/in
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
 /** Every tab this dialog renders, in order. */
-const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+const SETTINGS_TABS = ["services", "roles", "schedules", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
 type Tab = (typeof SETTINGS_TABS)[number];
 
 export interface SettingsProps {
   onFullReset?: () => void;
   onClose: () => void;
+  /** Opens a session from Settings → Schedules' run history. */
+  onOpenSession?: (sessionId: string) => void;
 }
 
 export function Settings({
   onFullReset,
   onClose,
+  onOpenSession,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
@@ -53,6 +57,8 @@ export function Settings({
 
   const dialogClass = activeTab === "skills"
     ? "rounded-lg border-(--color-border-secondary) max-w-5xl w-full md:mx-4 flex flex-col md:h-[80vh] max-md:h-full"
+    : activeTab === "schedules"
+    ? "rounded-lg border-(--color-border-secondary) max-w-4xl w-full md:mx-4 flex flex-col md:h-[80vh] max-md:h-full"
     : "rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full";
 
   return (
@@ -116,6 +122,12 @@ export function Settings({
           <TabsContent value="roles">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               <DeclaredSettings tab="roles" />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="schedules">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+              <SchedulesSettings onOpenSession={onOpenSession} />
             </div>
           </TabsContent>
 

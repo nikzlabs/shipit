@@ -4,6 +4,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type {
   Schedule,
   ScheduleRun,
+  ScheduleRunView,
   ScheduleTiming,
   ScheduleView,
   SessionStartSpec,
@@ -38,6 +39,8 @@ export interface ScheduleQueue {
   stopRun(scheduleId: string, runId: string): Promise<ScheduleRun | null>;
   unfinishedRuns(scheduleId: string): Promise<UnfinishedScheduleRun[]>;
   announceSchedules(): void;
+  /** The runs with what their sessions say (req 24). */
+  viewRuns(runs: ScheduleRun[]): ScheduleRunView[];
 }
 
 /** Req 32 — the refusal names the runs, so the user can stop each one. */
@@ -294,12 +297,12 @@ export async function runScheduleNow(deps: ScheduleServiceDeps, id: string): Pro
 }
 
 /** Req 24 — newest first. */
-export function listScheduleRuns(deps: ScheduleServiceDeps, id: string, limit?: number): ScheduleRun[] {
+export function listScheduleRuns(deps: ScheduleServiceDeps, id: string, limit?: number): ScheduleRunView[] {
   existing(deps, id);
   const capped = limit === undefined || !Number.isInteger(limit) || limit <= 0
     ? MAX_RUN_HISTORY
     : Math.min(limit, MAX_RUN_HISTORY);
-  return deps.store.listRuns(id, capped);
+  return deps.scheduler.viewRuns(deps.store.listRuns(id, capped));
 }
 
 /** Req 26 — what Run now warns about; archived runs count too. */
