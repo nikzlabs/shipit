@@ -1,0 +1,22 @@
+# Checklist
+
+- [x] Requirements written and every open question answered
+- [x] Prior-art research
+- [x] Design (`plan.md`) and UI sketch (`mockup.html`)
+- [ ] Independent review of the design against the requirements
+- [ ] `SessionStartParams` / `SessionStartSpec` types; headless options and composer seeds derive from them
+- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, title, schedule ids, fresh fetch
+- [ ] `schedules`, `schedule_runs` tables; `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`
+- [ ] Cron dependency added (passes `check-deps`); presets compile to cron; DST tests
+- [ ] `ScheduleRunner`: due check, `last_slot_at` written first, overlap skip, catch-up, pause/resume
+- [ ] Minimum-interval validation shared by save and propose
+- [ ] Failed starts recorded; `needs_user_reason` set and cleared
+- [ ] Notes folders: host layout, read-only + read-write binds, ownership, local mode, deleted with the schedule
+- [ ] `<scheduled_run>` first-turn block (prompt `.md` file)
+- [ ] `shipit schedule list` / `propose`; proposal card persisted; outcome notice to the agent
+- [ ] Settings → Schedules: list, editor with the shared controls, run history, Run now / Pause / Delete
+- [ ] `run_finished_at` at settlement; done-test clause; every `resolvedAt` consumer checked
+- [ ] Scheduled sidebar view and toggle; regular view filter; attention view still lists runs
+- [ ] `ScheduledRunBanner`
+- [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
+- [ ] Integration tests: restart does not double-fire, overlap skip, waiting run does not block, catch-up runs once

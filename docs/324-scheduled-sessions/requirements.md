@@ -52,31 +52,26 @@ questions".
     reason and is marked as needing the user.
 19. The user can run a schedule now, pause and resume it, and edit it. An edit
     applies from the next run; a run in progress keeps what it started with.
+20. Scheduled runs have their own section of the sidebar, opened by a control
+    next to the "needs you" control. It is the same UI as the regular session
+    list, for scheduled runs only: the active runs grouped by repository the
+    same way, and the finished runs under **Recently resolved**. Scheduled runs
+    are not in the regular session list.
+21. The "needs you" view also shows the scheduled runs that need the user.
+22. A run that ended with nothing left for the user — no question, no manual
+    step, no open PR — is finished.
+23. A run that waits for the user's answer is not "still going" for req 14: the
+    next run starts.
+24. The view of all schedules (req 10) is a **Schedules** section in Settings,
+    beside Roles. Each schedule lists its runs, newest first, with the time, a
+    one-line result and a link to the run's session. Skipped runs and failed
+    starts are listed there too.
+25. A run's session shows which schedule started it, with a link to that
+    schedule.
 
 ## Open questions
 
-Prior art and the ShipIt facts behind these: [research.md](./research.md).
-
-The user asked to think the runs question through carefully: "What happens if
-a run needs my action? Would they be grouped per repository? How to see all
-runs?" The first three bullets are that question, split up.
-
-- Where does a run appear in the sidebar, and what happens to a run that ended
-  with nothing for the user? Recommended: in its repository's group (or the
-  Sandbox group) like any session, marked as a scheduled run and named after
-  its schedule and date. A run that ends with no question, no manual step for
-  the user and no open PR counts as **done** (docs/316-done-sessions-return-memory):
-  it moves under **Recently resolved**, the sidebar cap hides it later, and its
-  container stops after 10 minutes. A run that needs the user shows in the
-  attention list and sends a voice note, as any session does.
-- A run is waiting for the user's answer when the next run is due. Is the
-  waiting run "still going" (req 14, so the next run is skipped)? Recommended:
-  no — the next run starts, so a task such as merging security fixes is not
-  held up by one open question.
-- Where is the view of all schedules (req 10), and how does the user see all
-  runs? Recommended: **Settings → Schedules**, beside Roles. Each schedule lists
-  its runs, newest first, with the time, a one-line result and a link to the
-  run's session; skipped and failed starts are listed there too.
+- (none)
 
 ## Resolved questions
 
@@ -95,3 +90,19 @@ runs?" The first three bullets are that question, split up.
   interval, failed starts, Run now / Pause / Edit, triggers)?* The user accepted
   all of them as offered. Carried by reqs 14–19. "The clock is the only trigger
   for now" limits scope only, so it is recorded here and not as a requirement.
+- 2026-10-07 — *Where does a run appear in the sidebar, and what happens to a
+  run that ended with nothing for the user (no question, no manual step, no open
+  PR)?* The user: "I'd say it is a separate section, next to 'needs you' button.
+  It would show all cron runs that currently active, grouped per repo same way as
+  regular sessions, with an ability to see finished runs in 'recently resolved'.
+  Essentially the exact same UI but for cron sessions. But the 'needs you'
+  section should show cron sessions that need me, too." Carried by reqs 20–22.
+  Req 22 takes "finished" from the case the question named.
+- 2026-10-07 — *A run waits for the user's answer when the next run is due:
+  start the next run, or skip it?* The user chose "next run starts". Carried by
+  req 23.
+- 2026-10-07 — *Where is the view of all schedules, and how does the user see all
+  runs?* The user chose Settings → Schedules, as offered: a section beside
+  Roles, each schedule with its run history (time, one-line result, link;
+  skipped runs and failed starts too), and a banner in each run's session that
+  links back to its schedule. Carried by reqs 24 and 25.

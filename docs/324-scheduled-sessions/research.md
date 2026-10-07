@@ -102,9 +102,10 @@ Each item names the product that taught it, then what it means for ShipIt.
 
 ## ShipIt facts that shape the design
 
-- **The composer is already one component.** `MessageInput` renders the
-  new-session composer, the in-session chat input and the Quick Capture overlay.
-  A schedule mode in it inherits every control those have.
+- **The composer's controls are shared components.** `MessageInput` renders the
+  new-session composer, the in-session chat input and the Quick Capture overlay,
+  and its role, harness, model, reasoning and permission controls are separate
+  components that a schedule editor can render too.
 - **But the composer's choices are not one object.** The new-session view claims
   a warm draft session and applies each pick to it as it happens (`set_agent`,
   `set_model`, `set_reasoning`, `set_role` over the WebSocket; network mode by
