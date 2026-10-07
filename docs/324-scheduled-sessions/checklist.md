@@ -10,7 +10,7 @@
 - [ ] Cron dependency added (passes `check-deps`); presets compile to cron; DST tests
 - [ ] `ScheduleRunner`: due check, slot claim, overlap and one-hour skips, catch-up, `starting` recovery, pause/resume
 - [ ] One-hour spacing check shared by save and propose; due-slot skip within an hour
-- [ ] Run now: no hour or overlap check; warning with Run anyway / Cancel when a run is still going
+- [ ] Run now: no hour or overlap check; warning with Run anyway / Cancel when any run is not done
 - [ ] Pre-flight checks; first-dispatch failure watch; `needs_user_reason` set and cleared
 - [ ] Notes folders: host layout, mount (bind / volume subpath), ownership, local mode, deleted with the schedule
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file)

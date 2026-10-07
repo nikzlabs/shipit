@@ -201,11 +201,12 @@ and a due slot within an hour of the previous due run — which only a catch-up
 can cause — is recorded as skipped. Run now runs are not counted.
 
 **Run now (req 26)** starts a run at once, with neither the hour nor the
-overlap check. When a run of the schedule is still going (the step 3 test),
-the Run now control first shows a warning that names the running session, with
-**Run anyway** and **Cancel**. A Run now run is an ordinary run of the
-schedule, so a slot that comes due while it is still going is skipped by
-step 3.
+overlap check. When any of the schedule's run sessions that the user has not
+archived is not done — by the shared done test, so still going, waiting for an
+answer, needing the user, or with an open PR — the Run now control first shows
+a warning that lists those sessions, with **Run anyway** and **Cancel**. A Run
+now run is an ordinary run of the schedule, so a slot that comes due while it
+is still going is skipped by step 3.
 
 **Starting a run** — `startScheduledRun(schedule, slot | "now")`:
 
@@ -343,7 +344,7 @@ at that schedule. In a sandbox run the two banners share one bar.
 | 20, 21 | `SidebarView` `"scheduled"`, regular-view filter, Sandbox group split |
 | 22 | `run_finished_at`, `isWorkResolved`, `workResolvedAt` |
 | 25 | `ScheduledRunBanner` |
-| 26 | Run now without checks; warning when a run is still going |
+| 26 | Run now without checks; warning when a run is not done |
 
 ## Rejected
 

@@ -71,8 +71,8 @@ questions".
     schedule.
 26. Run now has no restrictions: it starts a run at once, also within an hour of
     the previous run and while another run of the schedule is still going. When
-    a run of the schedule is still going, the user is warned before the new run
-    starts.
+    any run of the schedule is not done — still going, waiting for the user, or
+    otherwise not finished — the user is warned before the new run starts.
 
 ## Open questions
 
@@ -115,5 +115,6 @@ questions".
   first applied it to Run now as well. The user: "'run now' shouldn't have any
   restrictions. The user should be warned though if there are already runs in
   progress." Req 17 now covers only runs that come due; req 26 carries Run now.
-  "In progress" is read with req 14's "still going", which req 23 says a run
-  waiting for the user's answer is not.
+- 2026-10-07 — *Does Run now also warn about a run that only waits for the
+  user's answer?* The user: "yes warning if any existing runs are not done".
+  Carried by req 26.
