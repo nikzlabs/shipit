@@ -2082,13 +2082,15 @@ the broadcast), `services/settings-conflict-domain.ts` (the lock) and
 change is shown as, its counts, and the display-integrity check);
 `settings-proposal-store.ts` (the private proposal row: target, operation,
 proposed value, baseline, phase); `services/settings-proposal.ts` (the card as a
-transcript object: post, claim, transition); `services/settings-propose.ts` (the
+transcript object: post, and its kind in the claim and transition every decision
+card shares, `services/card-claim.ts` — docs/324-scheduled-sessions); `services/settings-propose.ts` (the
 propose path and its refusals); `services/settings-operations.ts` (what an Apply
 button runs, per declared operation); `services/settings-decision.ts` (claim,
 lock, baseline, apply, and the boot pass that resolves an interrupted one);
 `services/settings-proposal-deps.ts` (one assembly both callers share);
-`services/settings-outcome-notice.ts` (the next-turn notice and its deferred
-receipt); `ws-handlers/settings-proposal-handlers.ts`;
+`services/settings-outcome-notice.ts` (the next-turn notice, as a kind of the
+shared `services/card-outcome-notice.ts` and its deferred receipt;
+`services/card-kinds.ts` collects every kind's notice for a turn); `ws-handlers/settings-proposal-handlers.ts`;
 `shared/settings-catalogue/tabs.ts` (the tab labels the dialog and a card's
 breadcrumb share);
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;

@@ -9,7 +9,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
-import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import type { CardOutcomeNotice } from "./services/card-outcome-notice.js";
 import type { RepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import type { SessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
@@ -468,14 +468,15 @@ export interface SystemTurnDeps {
   consumeBugOutcomes?: (sessionId: string) => ResolvedBugReport[];
   /**
    * At-LEAST-once, and the difference from the line above is the point
-   * (docs/299-agent-settings-access req 8): this reads the outcomes without
-   * marking them, and the returned receipt is settled by the turn rather than by
-   * prompt assembly. `null` when nothing is owed.
+   * (docs/299-agent-settings-access req 8): this reads the outcomes of every
+   * decision card kind without marking them (`services/card-kinds.ts`), and each
+   * receipt is settled by the turn rather than by prompt assembly. Empty when
+   * nothing is owed.
    */
-  settingsOutcomeNotice?: (sessionId: string) => SettingsOutcomeNotice | null;
-  /** At-least-once, like `settingsOutcomeNotice` (docs/303-cross-repo-session-proposal req 11). */
+  cardOutcomeNotices?: (sessionId: string) => readonly CardOutcomeNotice[];
+  /** At-least-once, like `cardOutcomeNotices` (docs/303-cross-repo-session-proposal req 11). */
   repoSessionOutcomeNotice?: (sessionId: string) => RepoSessionOutcomeNotice | null;
-  /** At-least-once, like `settingsOutcomeNotice` (docs/314-session-message-proposal req 14). */
+  /** At-least-once, like `cardOutcomeNotices` (docs/314-session-message-proposal req 14). */
   sessionMessageOutcomeNotice?: (sessionId: string) => SessionMessageOutcomeNotice | null;
   /**
    * Consumes the role's first-turn instructions; subsequent calls return an empty string.

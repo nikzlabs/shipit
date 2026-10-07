@@ -14,8 +14,14 @@ import type { SettingsOperation, SettingsOperationDeps } from "./settings-operat
 import { getSettingForAgent } from "./settings-read.js";
 import type { SettingDetailEntry, SettingsReadDeps } from "./settings-read.js";
 import { baselineTargetOf } from "./settings-propose.js";
-import { claimSettingsProposal, transitionSettingsProposal } from "./settings-proposal.js";
-import type { SettingsProposalDeps, SettingsProposalPersister } from "./settings-proposal.js";
+import {
+  claimSettingsProposal,
+  loadSettingsProposal,
+  SETTINGS_PROPOSAL_CARD,
+  transitionSettingsProposal,
+} from "./settings-proposal.js";
+import type { SettingsProposalDeps } from "./settings-proposal.js";
+import { currentDecisionCard } from "./card-claim.js";
 import { getErrorMessage } from "../validation.js";
 import { ServiceError } from "./types.js";
 
@@ -56,9 +62,6 @@ export type SettingsDecisionAction = "apply" | "dismiss";
 
 export interface SettingsDecisionDeps extends SettingsProposalDeps {
   proposals: SettingsProposalStore;
-  chatHistoryManager: SettingsProposalPersister & {
-    getSettingsProposalCard(sessionId: string, cardId: string): SettingsProposalCard | undefined;
-  };
   read: SettingsReadDeps;
   baseline: SettingBaselineDeps;
   operations: SettingsOperationDeps;
@@ -68,20 +71,6 @@ export interface SettingsDecisionResult {
   card: SettingsProposalCard;
   /** False when the click found nothing to do: already resolved, or already claimed. */
   acted: boolean;
-}
-
-function loadRow(
-  deps: SettingsDecisionDeps,
-  sessionId: string,
-  cardId: string,
-): SettingsProposalRow {
-  const row = deps.proposals.get(cardId);
-  // Session-scoped: a card id names a row in one session's transcript, so a
-  // decision arriving under another session must not reach it.
-  if (row?.sessionId !== sessionId) {
-    throw new ServiceError(404, "That settings proposal is not in this session.");
-  }
-  return row;
 }
 
 function declarationOf(row: SettingsProposalRow): AnySettingDeclaration {
@@ -336,7 +325,8 @@ export async function resolveSettingsProposal(
   cardId: string,
   action: SettingsDecisionAction,
 ): Promise<SettingsDecisionResult> {
-  const row = loadRow(deps, sessionId, cardId);
+  // Refused before anything is written when the private row or the card has gone.
+  const row = loadSettingsProposal(deps, sessionId, cardId);
   const now = () => new Date().toISOString();
 
   if (action === "dismiss") {
@@ -389,9 +379,7 @@ function currentCard(
   sessionId: string,
   cardId: string,
 ): SettingsProposalCard {
-  const card = deps.chatHistoryManager.getSettingsProposalCard(sessionId, cardId);
-  if (!card) throw new ServiceError(404, "That settings proposal is not in this session.");
-  return card;
+  return currentDecisionCard(SETTINGS_PROPOSAL_CARD, deps, sessionId, cardId);
 }
 
 /**

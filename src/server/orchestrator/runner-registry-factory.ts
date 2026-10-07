@@ -57,7 +57,7 @@ import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
-import { prepareSettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import { prepareCardOutcomeNotices } from "./services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
@@ -488,12 +488,8 @@ export function createRunnerRegistry(
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
-        ...(settingsProposals
-          ? {
-              settingsOutcomeNotice: (sessionId: string) =>
-                prepareSettingsOutcomeNotice({ proposals: settingsProposals, chatHistoryManager }, sessionId),
-            }
-          : {}),
+        cardOutcomeNotices: (sessionId) =>
+          prepareCardOutcomeNotices({ chatHistoryManager, settingsProposals }, sessionId),
         repoSessionOutcomeNotice: (sessionId) =>
           prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId),
         sessionMessageOutcomeNotice: (sessionId) =>
