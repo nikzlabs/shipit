@@ -1,4 +1,5 @@
 ---
+issue: planning#640
 title: Scheduled sessions
 description: Sessions that ShipIt starts by itself on a schedule the user sets, fully preconfigured with the target, model, role and prompt.
 ---
