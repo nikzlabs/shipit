@@ -169,14 +169,17 @@ emphasis, tables or code fences — because the composer and the user's
 own bubble (`TranscriptRow.tsx`, `whitespace-pre-wrap`) both show the
 text as plain text, so it has to read cleanly with the markers visible.
 The rules live in `cleanup-prompt.md`. One client consequence: a
-transcript that opens with a list item is spliced onto its own line
-(`spliceTranscript` in `insert-transcript.ts`), because a marker glued
-to the end of a half-typed line is not a list.
+transcript that opens with a list (two items or more, so a sentence that
+merely starts "1." is left alone) is spliced onto its own lines, clear of
+the text before and after the cursor (`spliceTranscript` in
+`insert-transcript.ts`), because a marker glued to a half-typed line is
+not a list.
 
 **Failure mode — fall through, don't block.** If the cleanup provider
 errors, times out (>3 s), or returns something obviously wrong (empty
 string, dramatically longer than input, contains telltale "Here is
-the cleaned version:" preamble), the raw transcript is inserted
+the cleaned version:" preamble — unless the speaker said those opening
+words themselves, as in "Here's what I want:"), the raw transcript is inserted
 instead and a small non-fatal warning appears next to the mic button
 ("Cleanup unavailable — inserted raw transcript"). The user is never
 blocked on a flaky cleanup call. The warning is transient: it clears
