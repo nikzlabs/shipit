@@ -769,6 +769,51 @@ describe("ScheduleRunner — runs that are not finished (reqs 26, 32)", () => {
   });
 });
 
+describe("ScheduleRunner — the run history's view of each run (req 24)", () => {
+  it("adds each run's session row and its current result, and says when the session is gone", async () => {
+    const s = schedule();
+    const link = (sessionId: string): ScheduleRun => {
+      const run = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+      sessions.track(sessionId, "Security PRs · Oct 7, 09:00");
+      sessions.setScheduleRun(sessionId, s.id, run.id);
+      return store.updateRun(run.id, { sessionId })!;
+    };
+    const going = link("going");
+    chat.set("going", ANSWERED);
+    const finished = link("finished");
+    sessions.setRunFinishedAt("finished", "2026-10-07T09:30:00.000Z");
+    chat.set("finished", ANSWERED);
+    const kept = store.updateRun(link("kept").id, { result: "Merged 2 security PRs." })!;
+    const deleted = link("deleted");
+    sessions.delete("deleted");
+    sessions.archive("kept");
+    const skipped = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "skipped", reason: "The previous run was still going." })!;
+
+    const views = runner.viewRuns([going, finished, kept, deleted, skipped]);
+
+    expect(views[0]).toMatchObject({ sessionId: "going", result: "Looking at the open security PRs.", session: { id: "going" } });
+    // A finished run's result is the one its row kept, never read again.
+    expect(views[1]).toMatchObject({ sessionId: "finished", session: { runFinishedAt: "2026-10-07T09:30:00.000Z" } });
+    expect(views[1]!.result).toBeUndefined();
+    expect(views[2]).toMatchObject({ result: "Merged 2 security PRs.", session: { id: "kept", userArchived: true } });
+    expect(views[3]).toMatchObject({ sessionId: "deleted", sessionDeleted: true });
+    expect(views[3]!.session).toBeUndefined();
+    expect(views[4]).toEqual(skipped);
+    expect(views[0]!.session).not.toHaveProperty("sessionStatus");
+  });
+
+  it("reads a reopened run's current result, not the one its last finish kept", () => {
+    const s = schedule();
+    const run = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+    sessions.track("reopened", "Security PRs · Oct 7, 09:00");
+    sessions.setScheduleRun("reopened", s.id, run.id);
+    const kept = store.updateRun(run.id, { sessionId: "reopened", result: "Merged 2 security PRs." })!;
+    chat.set("reopened", [...ANSWERED, { role: "user", text: "Now look at #3060." }, { role: "assistant", text: "Should I merge #3060?" }]);
+
+    expect(runner.viewRuns([kept])[0]!.result).toBe("Should I merge #3060?");
+  });
+});
+
 function finishedAtOf(sessionId: string): string | undefined {
   return sessions.get(sessionId)?.runFinishedAt;
 }

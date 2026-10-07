@@ -117,6 +117,7 @@ const DiffPanel = lazy(() => {
 });
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { SandboxBanner } from "./components/SandboxBanner.js";
+import { ScheduledRunBanner, useAnyListSessionRow } from "./components/ScheduledRunBanner.js";
 import { NewSessionRepoBar } from "./components/NewSessionRepoBar.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
@@ -240,6 +241,7 @@ export default function App() {
   const wsSession = useSessionStore((s) =>
     wsSessionId ? s.sessions.find((x) => x.id === wsSessionId) : undefined,
   );
+  const fallbackSessionRow = useAnyListSessionRow(urlSessionId);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
   const historyLoaded = useSessionStore((s) => s.historyLoaded);
   const turnUsageForActiveSession = useSessionStore((s) =>
@@ -310,6 +312,8 @@ export default function App() {
   const isLocalMode = runtimeMode === "local";
   const isOpsSession = wsSession?.kind === "ops";
   const isSandboxSession = wsSession?.kind === "sandbox";
+  // The banners' session, also when it is past the sidebar's cap or archived.
+  const bannerSession = wsSession ?? fallbackSessionRow;
   const pluginSnapshot = usePluginReposStore((s) => snapshotForSession(s, sessionId));
   const showPluginsTab = pluginsTabVisible(pluginSnapshot);
   const rightTab = (() => {
@@ -1565,19 +1569,22 @@ export default function App() {
       {!showHomeScreen &&
         !showNewSessionView &&
         wsSessionId &&
-        (isSandboxSession ? (
-          <SandboxBanner capabilities={wsSession?.capabilities} />
+        (bannerSession?.kind === "sandbox" ? (
+          <SandboxBanner capabilities={bannerSession.capabilities} run={bannerSession} />
         ) : (
-          <PrLifecycleCard
-            sessionId={wsSessionId}
-            onOpenDetails={() => {
-              handleTabChange("pr");
-              useUiStore.getState().setMobilePanel("preview");
-            }}
-            onCreatePr={handleCreatePr}
-            canAutoMerge={!!currentSession?.remoteUrl}
-            onSearch={openSearch}
-          />
+          <>
+            {bannerSession?.scheduleId && <ScheduledRunBanner session={bannerSession} />}
+            <PrLifecycleCard
+              sessionId={wsSessionId}
+              onOpenDetails={() => {
+                handleTabChange("pr");
+                useUiStore.getState().setMobilePanel("preview");
+              }}
+              onCreatePr={handleCreatePr}
+              canAutoMerge={!!currentSession?.remoteUrl}
+              onSearch={openSearch}
+            />
+          </>
         ))}
       {isMobile && (
         <TopPanelBanner
@@ -1874,7 +1881,9 @@ export default function App() {
             onClose={() => {
               useUiStore.getState().setSettingsOpen(false);
               useUiStore.getState().setSettingsTab(undefined);
+              useUiStore.getState().setSettingsScheduleId(null);
             }}
+            onOpenSession={(sid) => handleSessionResume(sid, navigate)}
           />
         )}
         {projectSettingsRepoUrl && (

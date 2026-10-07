@@ -64,6 +64,7 @@ beforeEach(() => {
       stopRun: async () => null,
       unfinishedRuns: async () => unfinished,
       announceSchedules: () => { announced += 1; },
+      viewRuns: (runs) => runs,
     },
   };
 });
@@ -181,6 +182,13 @@ describe("Run now and the run history", () => {
       "2026-10-02T00:00:00.000Z",
     ]);
     expect(() => listScheduleRuns(deps, "missing")).toThrow("Schedule not found");
+  });
+
+  it("returns the scheduler's view of the runs", () => {
+    const created = createSchedule(deps, input());
+    store.insertRun({ scheduleId: created.id, slotAt: null, outcome: "started" });
+    deps.scheduler.viewRuns = (runs) => runs.map((run) => ({ ...run, sessionDeleted: true }));
+    expect(listScheduleRuns(deps, created.id)).toEqual([expect.objectContaining({ sessionDeleted: true })]);
   });
 });
 

@@ -37,6 +37,7 @@ type SettingsTab =
   // docs/261 — the two configured reviewers. Directly after Services because it
 
   | "roles"
+  | "schedules"
   | "integrations"
   | "git"
   | "instructions"
@@ -77,6 +78,8 @@ interface UiState {
 
   quickCaptureAutoMic: boolean;
   settingsTab: SettingsTab;
+  /** docs/324-scheduled-sessions — the schedule Settings → Schedules opens at (`openScheduleSettings`). */
+  settingsScheduleId: string | null;
 
   projectSettingsRepoUrl: string | null;
 
@@ -121,6 +124,7 @@ interface UiState {
   setQuickCaptureOpen: (open: boolean, autoMic?: boolean) => void;
   setQuickCaptureAutoMic: (active: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  setSettingsScheduleId: (id: string | null) => void;
 
   setProjectSettingsRepoUrl: (url: string | null, tab?: ProjectSettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -164,6 +168,7 @@ const initialState = {
   quickCaptureOpen: false,
   quickCaptureAutoMic: false,
   settingsTab: undefined as SettingsTab,
+  settingsScheduleId: null as string | null,
   projectSettingsRepoUrl: null as string | null,
   projectSettingsTab: "secrets" as ProjectSettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
@@ -225,6 +230,7 @@ export const useUiStore = create<UiState>((set) => ({
   setQuickCaptureAutoMic: (quickCaptureAutoMic) => set({ quickCaptureAutoMic }),
 
   setSettingsTab: (settingsTab) => set({ settingsTab }),
+  setSettingsScheduleId: (settingsScheduleId) => set({ settingsScheduleId }),
 
   setProjectSettingsRepoUrl: (projectSettingsRepoUrl, tab = "secrets") =>
     set({ projectSettingsRepoUrl, projectSettingsTab: tab }),
@@ -268,6 +274,7 @@ export const useUiStore = create<UiState>((set) => ({
   reset: () =>
     set((s) => ({
       settingsOpen: false,
+      settingsScheduleId: null,
       quickCaptureOpen: false,
       quickCaptureAutoMic: false,
       projectSettingsRepoUrl: null,
