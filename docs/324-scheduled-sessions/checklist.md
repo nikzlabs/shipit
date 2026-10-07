@@ -9,7 +9,8 @@
 - [ ] `schedules`, `schedule_runs` (unique slot) tables; `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`
 - [ ] Cron dependency added (passes `check-deps`); presets compile to cron; DST tests
 - [ ] `ScheduleRunner`: due check, slot claim, overlap and one-hour skips, catch-up, `starting` recovery, pause/resume
-- [ ] One-hour spacing check shared by save and propose; Run now refusal within an hour
+- [ ] One-hour spacing check shared by save and propose; due-slot skip within an hour
+- [ ] Run now: no hour or overlap check; warning with Run anyway / Cancel when a run is still going
 - [ ] Pre-flight checks; first-dispatch failure watch; `needs_user_reason` set and cleared
 - [ ] Notes folders: host layout, mount (bind / volume subpath), ownership, local mode, deleted with the schedule
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file)
@@ -19,4 +20,4 @@
 - [ ] Scheduled sidebar view and toggle; regular-view filter; Sandbox group resolved split; attention view still lists runs
 - [ ] `ScheduledRunBanner`
 - [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
-- [ ] Integration tests: restart mid-start recovers, no double start, overlap skip, waiting run does not block, catch-up runs once, one-hour skip after Run now
+- [ ] Integration tests: restart mid-start recovers, no double start, overlap skip, waiting run does not block, catch-up runs once, Run now not limited and not counted for the hour

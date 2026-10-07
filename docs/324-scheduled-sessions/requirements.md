@@ -46,7 +46,8 @@ questions".
 16. The user sets when a schedule runs with a preset (hourly, daily, weekdays,
     weekly) or a cron expression, in their own time zone. A run set for 09:00
     runs at 09:00 local time all year, also across daylight-saving changes.
-17. A schedule's runs are at least one hour apart.
+17. A schedule's runs that come due are at least one hour apart. Run now is not
+    limited by this (req 26).
 18. When a run cannot start — for example for want of a credential or quota, or
     because its repository is untrusted or removed — the schedule shows the
     reason and is marked as needing the user.
@@ -68,6 +69,10 @@ questions".
     starts are listed there too.
 25. A run's session shows which schedule started it, with a link to that
     schedule.
+26. Run now has no restrictions: it starts a run at once, also within an hour of
+    the previous run and while another run of the schedule is still going. When
+    a run of the schedule is still going, the user is warned before the new run
+    starts.
 
 ## Open questions
 
@@ -106,3 +111,9 @@ questions".
   Roles, each schedule with its run history (time, one-line result, link;
   skipped runs and failed starts too), and a banner in each run's session that
   links back to its schedule. Carried by reqs 24 and 25.
+- 2026-10-07 — *Does req 17's one-hour minimum also limit Run now?* The design
+  first applied it to Run now as well. The user: "'run now' shouldn't have any
+  restrictions. The user should be warned though if there are already runs in
+  progress." Req 17 now covers only runs that come due; req 26 carries Run now.
+  "In progress" is read with req 14's "still going", which req 23 says a run
+  waiting for the user's answer is not.

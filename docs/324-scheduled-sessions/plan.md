@@ -178,11 +178,12 @@ Each pass, for each enabled schedule:
    is after `active_since` and after the slot of the schedule's latest run row.
 2. **Claim the slot** by inserting a `starting` run row; the unique constraint
    makes a second claim of the same slot fail, so a slot never starts twice.
-3. If the previous run's session has a runner whose `agentBusy` is true (a turn,
-   background tasks, sub-agent spawns, post-turn work, or an install), or the
-   previous run started less than an hour ago (req 17), mark the row `skipped`
-   with that reason (req 14). `awaiting_answer` is not busy, so a run that waits
-   for the user does not block the next one (req 23).
+3. If a run of the schedule is still going — its session has a runner whose
+   `agentBusy` is true (a turn, background tasks, sub-agent spawns, post-turn
+   work, or an install) — mark the row `skipped` with that reason (req 14). The
+   same applies when the previous run that came due started less than an hour
+   ago (req 17). `awaiting_answer` is not busy, so a run that waits for the user
+   does not block the next one (req 23).
 4. Otherwise start the run and mark the row `started` with its session, or
    `failed` with the reason.
 
@@ -194,11 +195,17 @@ no session is started now. Resume sets `active_since`, so slots that passed
 during a pause do not run — req 15 is about ShipIt being down, not about a
 pause.
 
-**One hour apart (req 17)** covers every run of a schedule. Saving or proposing
-refuses a timing whose next 100 run times include two less than an hour apart.
-A due slot within an hour of the previous run — after a catch-up, or after Run
-now — is recorded as skipped, and Run now within an hour of the previous run is
-refused with the time it becomes possible.
+**One hour apart (req 17)** covers runs that come due. Saving or proposing
+refuses a timing whose next 100 run times include two less than an hour apart,
+and a due slot within an hour of the previous due run — which only a catch-up
+can cause — is recorded as skipped. Run now runs are not counted.
+
+**Run now (req 26)** starts a run at once, with neither the hour nor the
+overlap check. When a run of the schedule is still going (the step 3 test),
+the Run now control first shows a warning that names the running session, with
+**Run anyway** and **Cancel**. A Run now run is an ordinary run of the
+schedule, so a slot that comes due while it is still going is skipped by
+step 3.
 
 **Starting a run** — `startScheduledRun(schedule, slot | "now")`:
 
@@ -330,12 +337,13 @@ at that schedule. In a sandbox run the two banners share one bar.
 | 13 | Notes folders, `<scheduled_run>` block |
 | 14, 15, 23 | Scheduler steps 1–4, slot claim and recovery |
 | 16 | IANA zone, cron library |
-| 17 | Spacing check at save and propose; skip and Run now refusal within an hour |
+| 17 | Spacing check at save and propose; skip of a due slot within an hour |
 | 18 | Pre-flight, first-dispatch watch, `needs_user_reason` |
 | 19 | Run now / Pause / Edit; the spec is copied at start |
 | 20, 21 | `SidebarView` `"scheduled"`, regular-view filter, Sandbox group split |
 | 22 | `run_finished_at`, `isWorkResolved`, `workResolvedAt` |
 | 25 | `ScheduledRunBanner` |
+| 26 | Run now without checks; warning when a run is still going |
 
 ## Rejected
 
