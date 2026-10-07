@@ -29,6 +29,16 @@ describe("cleanTranscript", () => {
     expect(seen).toContain("um hello");
   });
 
+  // The prompt asks for lists and paragraphs, so the answer's line breaks and
+  // markers are part of the message and must reach the composer unchanged.
+  it("returns a formatted answer with its line structure intact", async () => {
+    const raw = "two changes fix the footer and rename the file then tell me";
+    const formatted = "Two changes:\n\n- Fix the footer.\n- Rename the file.\n\nThen tell me.";
+    const r = await cleanTranscript(raw, fakeRunner(() => `${formatted}\n`));
+    expect(r.text).toBe(formatted);
+    expect(r.cleanupErrorCode).toBeUndefined();
+  });
+
   it("falls through to raw on empty output", async () => {
     const r = await cleanTranscript("hello", fakeRunner(() => ""));
     expect(r.text).toBe("hello");

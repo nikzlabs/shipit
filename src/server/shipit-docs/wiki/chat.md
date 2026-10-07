@@ -201,9 +201,11 @@ hotkey, rebindable in **Settings → Keyboard**. Click starts and click stops �
 press-and-hold is deliberately not a gesture. On a phone, recording takes over
 the screen with a large Stop and a Cancel. The transcript is spliced in at the
 cursor, so dictation can extend a half-typed message rather than replacing it.
-Optionally an LLM cleans the transcript up first — mis-hearings, fillers, casing
-— and if that step fails the raw transcript lands anyway, with a note. Which
-provider transcribes, and in which language, are settings on the same tab.
+Optionally an LLM cleans the transcript up first — mis-hearings, fillers,
+casing, and layout, so several dictated points arrive as a Markdown list and
+separate topics as paragraphs — and if that step fails the raw transcript lands
+anyway, with a note. Which provider transcribes, and in which language, are
+settings on the same tab.
 
 **When a message was dictated, you are told.** ShipIt adds a `<dictated_input>`
 block to the prompt. Read it as intent rather than literally: expect mis-heard
