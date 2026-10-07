@@ -175,6 +175,12 @@ function safeParseCapabilities(json: string): unknown {
   }
 }
 
+/** docs/324-agent-requested-compaction — what `shipit compact` asked for. */
+export interface PendingCompaction {
+  instructions?: string;
+  note?: string;
+}
+
 export interface DiskLadderThresholds {
   lightAfterMs: number;
   evictMergedAfterMs: number;
@@ -595,16 +601,63 @@ export class SessionManager {
     ).run(id);
   }
 
+  // docs/324-agent-requested-compaction — one compaction per request: a later one replaces it.
+  setPendingCompaction(id: string, request: PendingCompaction | null): void {
+    this.db.prepare("UPDATE sessions SET pending_compaction = ? WHERE id = ?")
+      .run(request ? JSON.stringify(request) : null, id);
+  }
+
+  getPendingCompaction(id: string): PendingCompaction | undefined {
+    const row = this.db.prepare(
+      "SELECT pending_compaction FROM sessions WHERE id = ?",
+    ).get(id) as { pending_compaction: string | null } | undefined;
+    if (!row?.pending_compaction) return undefined;
+    try {
+      const parsed = JSON.parse(row.pending_compaction) as Record<string, unknown>;
+      return {
+        ...(typeof parsed.instructions === "string" ? { instructions: parsed.instructions } : {}),
+        ...(typeof parsed.note === "string" ? { note: parsed.note } : {}),
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  /** docs/324-agent-requested-compaction req 10 — Stop keeps the compaction, drops the continuation. */
+  dropPendingCompactionNote(id: string): void {
+    const request = this.getPendingCompaction(id);
+    if (request?.note === undefined) return;
+    this.setPendingCompaction(id, request.instructions !== undefined ? { instructions: request.instructions } : {});
+  }
+
+  /**
+   * docs/324-agent-requested-compaction req 9 — kept apart from the agent notice, which a branch move overwrites
+   * whole; delivered with it by `consumePendingAgentNotice`.
+   */
+  appendPendingCompactionNotice(id: string, notice: string): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT pending_compaction_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_compaction_notice: string | null } | undefined;
+      const existing = row?.pending_compaction_notice ?? "";
+      if (existing.includes(notice)) return;
+      const combined = existing ? `${existing}\n\n${notice}` : notice;
+      this.db.prepare("UPDATE sessions SET pending_compaction_notice = ? WHERE id = ?").run(combined, id);
+    })();
+  }
+
   // Read-and-clear prevents repeats; a crash before delivery can lose the notice.
   consumePendingAgentNotice(id: string): string | undefined {
     let notice: string | undefined;
     this.db.transaction(() => {
       const row = this.db.prepare(
-        "SELECT pending_agent_notice FROM sessions WHERE id = ?",
-      ).get(id) as { pending_agent_notice: string | null } | undefined;
-      if (row?.pending_agent_notice) {
-        this.db.prepare("UPDATE sessions SET pending_agent_notice = NULL WHERE id = ?").run(id);
-        notice = row.pending_agent_notice;
+        "SELECT pending_agent_notice, pending_compaction_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_agent_notice: string | null; pending_compaction_notice: string | null } | undefined;
+      if (row?.pending_agent_notice || row?.pending_compaction_notice) {
+        this.db.prepare(
+          "UPDATE sessions SET pending_agent_notice = NULL, pending_compaction_notice = NULL WHERE id = ?",
+        ).run(id);
+        notice = [row.pending_agent_notice, row.pending_compaction_notice].filter(Boolean).join("\n\n");
       }
     })();
     return notice;

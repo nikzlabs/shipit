@@ -66,6 +66,25 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  // docs/324-agent-requested-compaction req 11.
+  "advanced.agentCompaction": defineSetting({
+    key: "advanced.agentCompaction",
+    tab: "advanced",
+    section: "Agent",
+    scope: "global",
+    label: "Let the agent compact its own context",
+    description:
+      "Lets the agent compact its context itself with the shipit compact command, at a point it chooses — "
+      + "for example between two features — keeping the instructions it names. The compaction "
+      + "runs after the agent's turn. The harness's automatic compaction and your own /compact "
+      + "work either way.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "agentCompaction" },
+    wire: "agentCompaction",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.liveSteering": defineSetting({
     key: "advanced.liveSteering",
     tab: "advanced",

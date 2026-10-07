@@ -50,6 +50,11 @@ export function consumeSetupStop(runner: object): boolean {
   return true;
 }
 
+/** The turn now setting up or running: every false → true of `running` begins a new one. */
+export function currentTurnPhase(runner: object): object | undefined {
+  return phases.get(runner);
+}
+
 export function noteUserStop(runner: object): void {
   const phase = phases.get(runner);
   if (phase) phase.stoppedByUser = true;
