@@ -20,10 +20,12 @@
 - [x] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
 - [ ] Delete (refused while a run is not finished or still busy; lists those runs with Stop); Stop on a run row, in the refusal, in the banner, on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
 - [ ] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
-- [ ] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; `isWorkResolved` / `workResolvedAt` in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
-- [ ] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
+- [ ] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; cleared when a user turn starts; `session_list` published on each change
+- [x] `isWorkResolved` / `workResolvedAt` (the stored `run_finished_at`) in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
+- [x] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
 - [ ] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
-- [ ] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
+- [x] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
+- [ ] Scheduled view: the toggle also shows when a schedule exists; a schedule's `needs_user_reason` at the top of the view; the toggle's warning mark
 - [x] Claim and outcome notice generalized by card kind (settings first; `services/card-kinds.ts`)
 - [ ] Proposal card and notes access card registered as card kinds
 - [ ] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)

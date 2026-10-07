@@ -368,6 +368,10 @@ the PR flows, `signalIdleIfIdle` and quota detection), when the runner's
 background work drains, when the PR poller sees the run's PR change state, when
 the user answers, and on Stop. While the runner is busy nothing is decided, so
 a PR update in the middle of a turn changes nothing until the turn is over.
+One exception: a user turn that starts in a finished run clears
+`run_finished_at` at once, because a run with a turn going has not ended (req
+22) and a regular merged session opens again the same way. Each write or clear
+publishes the session list, since the sidebar reads only the stored decision.
 
 **Where "finished" shows.** Sidebar placement is not the same question as
 "finished". A regular session goes under **Recently resolved** only when its PR
