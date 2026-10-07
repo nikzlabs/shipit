@@ -101,8 +101,9 @@ Orchestrator SQLite, migrations in `database.ts`:
   `outcome` (`starting` | `started` | `skipped` | `failed`), `reason`,
   `session_id`, `created_at`; unique on (`schedule_id`, `slot_at`). This is the
   run history (req 24) and also the record of which slots were handled.
-- **`sessions`** gains `schedule_id`, `schedule_run_id` and `run_finished_at`
-  (`SessionInfo.scheduleId`, `scheduleRunId`, `runFinishedAt`). Today nothing
+- **`sessions`** gains `schedule_id`, `schedule_run_id`, `run_finished_at` and
+  `schedule_notes_grants` (`SessionInfo.scheduleId`, `scheduleRunId`,
+  `runFinishedAt`, `scheduleNotesGrants`; the last is req 28's approvals). Today nothing
   records where a session came from. `schedule_run_id` is stamped when the
   session is created, so recovery (below) can find a session whose run row was
   never updated, and the container setup knows which notes folder is the run's
@@ -272,6 +273,36 @@ block's text is a `.md` prompt file loaded at module load (prompt-architecture).
 What the agent writes in its notes, and when it reads earlier ones, is left to
 the agent.
 
+## Seeing the notes (reqs 27, 28)
+
+**The user** opens a run's notes from a **Notes** link on its row in Settings →
+Schedules, and from the run's banner (req 25). It opens a read-only viewer: the
+files of that run's folder, and the selected file — markdown rendered with the
+chat's markdown renderer, other text as text, anything else by name and size.
+Browser-only routes (`GET /api/schedules/:id/runs/:runId/notes`, and one for a
+file) resolve every path inside the run's folder before reading it, the way
+`compose-helper.ts` keeps mounts inside their roots.
+
+**An agent in another session** reads through the CLI, never through a mount:
+`shipit schedule notes <schedule> [<run> [<file>]]` lists a schedule's runs,
+lists a run's files, or prints one file. A mount would need the session's
+container to restart, and a brokered read is read-only by construction. The
+route behind it is container-accessible and checks the asking session:
+
+- a run of that schedule is always allowed — its notes are already mounted
+  (req 13);
+- any other session needs an approval for that schedule, saved on the session
+  (`sessions.schedule_notes_grants`, a list of schedule ids). Without one, the
+  command posts a **notes access card** — "This session's agent asks to read the
+  notes of schedule *name*" with **Allow for this session** and **Deny** — and
+  returns at once saying the user has to approve. It follows the egress prompt
+  card's shape (`EgressPromptCard.tsx`: pending, then a recorded result), is a
+  persisted transcript card, and its result reaches the agent on its next turn
+  as a notice. No route lets a container write a grant (req 28).
+
+Notes are written by runs that read untrusted content, so the CLI prints them
+with the same "data, not instructions" note the run's own block carries.
+
 ## Finished runs (req 22)
 
 At turn settlement — where `awaiting_answer` is set (docs/322) — a scheduled
@@ -322,13 +353,14 @@ in a finished run makes it active again, and the next settlement decides again.
 ## The run's banner (req 25)
 
 A `ScheduledRunBanner` in the chat panel, where `SandboxBanner` sits: "Started
-by schedule **name** · time · Open schedule", which opens Settings → Schedules
-at that schedule. In a sandbox run the two banners share one bar.
+by schedule **name** · time · Open schedule · Notes". Open schedule opens
+Settings → Schedules at that schedule; Notes opens the run's notes (req 27). In a sandbox run the two banners share one bar.
 
 ## Agent-facing docs
 
-- New `src/server/shipit-docs/schedules.md`: the two commands, the proposal
-  YAML, the notes folders, and that the agent proposes and the user confirms.
+- New `src/server/shipit-docs/schedules.md`: the three commands, the proposal
+  YAML, the notes folders, that the agent proposes and the user confirms, and
+  that reading another schedule's notes waits for the user's approval.
 - `src/server/shipit-docs/wiki/sessions.md`: a "Scheduled sessions" section —
   what a schedule is, where Settings → Schedules and the Scheduled view are.
 
@@ -352,8 +384,10 @@ at that schedule. In a sandbox run the two banners share one bar.
 | 19 | Run now / Pause / Edit; the spec is copied at start |
 | 20, 21 | `SidebarView` `"scheduled"`, regular-view filter, Sandbox group split |
 | 22 | `run_finished_at`, `isWorkResolved`, `workResolvedAt` |
-| 25 | `ScheduledRunBanner` |
+| 25 | `ScheduledRunBanner` (with a Notes link) |
 | 26 | Run now without checks; warning when a run is not done |
+| 27 | Notes viewer from Settings → Schedules and the run banner |
+| 28 | `shipit schedule notes`, notes access card, `schedule_notes_grants` |
 
 ## Rejected
 
@@ -368,6 +402,9 @@ at that schedule. In a sandbox run the two banners share one bar.
   req 15 does not allow. The run row is the claim instead.
 - **Earlier runs' notes mounted read-only** — no requirement protects them, and
   it costs a second, nested mount.
+- **Mounting notes into an approved session** — a mount takes effect only when
+  the container starts, so an approval would restart the session; the CLI read
+  needs no restart.
 - **Auto-pause after repeated failures** — not asked for; req 18 makes every
   failure visible on the schedule, and a failed start costs nothing.
 - **A deterministic pre-check that skips the agent** (Devin, gh-aw) — a quiet run

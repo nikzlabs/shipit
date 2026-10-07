@@ -18,6 +18,8 @@
 - [ ] Settings → Schedules: list, editor with the shared controls, run history with result fallback, Run now / Pause / Delete
 - [ ] `run_finished_at` at settlement; `isWorkResolved` / `workResolvedAt` in the done test, attention call sites, cap ranking and sort
 - [ ] Scheduled sidebar view and toggle; regular-view filter; Sandbox group resolved split; attention view still lists runs
-- [ ] `ScheduledRunBanner`
+- [ ] `ScheduledRunBanner` with Open schedule and Notes links
+- [ ] Notes viewer (browser-only routes, path kept inside the run folder) from Settings → Schedules and the banner
+- [ ] `shipit schedule notes`; `schedule_notes_grants`; notes access card (persisted, Allow for this session / Deny, outcome notice)
 - [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
 - [ ] Integration tests: restart mid-start recovers, no double start, overlap skip, waiting run does not block, catch-up runs once, Run now not limited and not counted for the hour

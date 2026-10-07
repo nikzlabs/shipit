@@ -185,9 +185,9 @@
           <span></span><span class="inline"><span class="btn pri">Save</span><span class="btn ghost">Delete schedule</span></span>
         </div>
         <div class="runs">
-          <div class="run"><span>Wed 7 Oct 09:00</span><span style="color:#60a5fa">● Running</span><span class="res">—</span><a href="#">Open</a></div>
-          <div class="run"><span>Tue 6 Oct 09:00</span><span style="color:var(--warn)">● Needs you</span><span class="res">Merged #3051 and #3055. #3060 changes an API; asked before merging.</span><a href="#">Open</a></div>
-          <div class="run"><span>Mon 5 Oct 09:00</span><span style="color:var(--ok)">✓ Finished</span><span class="res">Merged 2 security PRs; none left open.</span><a href="#">Open</a></div>
+          <div class="run"><span>Wed 7 Oct 09:00</span><span style="color:#60a5fa">● Running</span><span class="res">—</span><span><a href="#">Notes</a> · <a href="#">Open</a></span></div>
+          <div class="run"><span>Tue 6 Oct 09:00</span><span style="color:var(--warn)">● Needs you</span><span class="res">Merged #3051 and #3055. #3060 changes an API; asked before merging.</span><span><a href="#">Notes</a> · <a href="#">Open</a></span></div>
+          <div class="run"><span>Mon 5 Oct 09:00</span><span style="color:var(--ok)">✓ Finished</span><span class="res">Merged 2 security PRs; none left open.</span><span><a href="#">Notes</a> · <a href="#">Open</a></span></div>
           <div class="run"><span>Sun 4 Oct 09:00</span><span class="lbl">Skipped</span><span class="res">The previous run was still going.</span><span></span></div>
         </div>
       </div>
@@ -201,10 +201,47 @@
   <div class="panel">
     <div class="cap">4 · A run is an ordinary session that says where it came from</div>
     <div class="hdr">
-      <div class="banner">◷ Started by schedule <b>Security PR sweep</b> · Tue 6 Oct 09:00 <span class="lnk">Open schedule</span></div>
+      <div class="banner">◷ Started by schedule <b>Security PR sweep</b> · Tue 6 Oct 09:00 <span class="lnk">Open schedule · Notes</span></div>
       <div style="padding:12px 14px;color:var(--ts)">The first message is the schedule's prompt. The agent also gets its own notes folder and read access to
         the notes of earlier runs (req 13). The user can reply here like in any session (req 7).</div>
     </div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="panel">
+    <div class="cap">5 · Notes: the viewer, and an agent in another session asking to read them</div>
+    <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">
+      <div class="card" style="width:520px">
+        <div class="card-h">📄 <b>Notes · Security PR sweep · Tue 6 Oct 09:00</b><span class="tag">read-only</span></div>
+        <div style="display:flex">
+          <div style="width:150px;border-right:1px solid var(--bd);padding:8px;display:flex;flex-direction:column;gap:3px;font-size:12px">
+            <span style="background:var(--active);border-radius:5px;padding:3px 6px">summary.md</span>
+            <span style="padding:3px 6px;color:var(--ts)">skipped-prs.json</span>
+          </div>
+          <div style="padding:10px 12px;font-size:12.5px;color:var(--ts)">
+            <div style="color:var(--tp);font-weight:600;margin-bottom:4px">Run 2026-10-06</div>
+            Merged #3051, #3055 (lockfile-only bumps, CI green).<br>
+            Not merged: #3060 — changes a public API. Asked the user.<br>
+            Next run: re-check #3060 if the user answered.
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="chat" style="width:440px">
+          <div class="user">What did the security sweep find this week?</div>
+          <div class="card" style="border-color:rgba(245,158,11,.5);background:rgba(245,158,11,.08)">
+            <div class="card-h" style="border-bottom-color:rgba(245,158,11,.3)">🛡 <b>Read schedule notes?</b></div>
+            <div style="padding:9px 12px;color:var(--ts);font-size:12.5px">This session's agent asks to read the notes of schedule
+              <b style="color:var(--tp)">Security PR sweep</b> (12 runs). The approval holds for this session only.</div>
+            <div class="card-f" style="border-top-color:rgba(245,158,11,.3)"><span class="btn pri">Allow for this session</span><span class="btn ghost">Deny</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note">The user opens notes from <b>Notes</b> on a run in Settings → Schedules or in the run's banner (req 27). The schedule's own
+      runs read them without asking (req 13); an agent in any other session reads them through <span class="mono">shipit schedule notes</span>
+      only after the user allows it for that session (req 28).</p>
   </div>
 </div>
 </body>

@@ -73,6 +73,10 @@ questions".
     the previous run and while another run of the schedule is still going. When
     any run of the schedule is not done — still going, waiting for the user, or
     otherwise not finished — the user is warned before the new run starts.
+27. The user can open and read each run's notes in ShipIt's UI.
+28. An agent in a session that is not a run of the schedule can read the
+    schedule's notes only after the user explicitly approves it for that
+    session.
 
 ## Open questions
 
@@ -118,3 +122,8 @@ questions".
 - 2026-10-07 — *Does Run now also warn about a run that only waits for the
   user's answer?* The user: "yes warning if any existing runs are not done".
   Carried by req 26.
+- 2026-10-07 — The design let only the schedule's own runs see the notes, so
+  the user could not browse them. The user: "yes make them visible in the UI,
+  also for the agents (requires an explicit user approval per session)."
+  Carried by reqs 27 and 28. An approval covers the schedule the agent asked
+  about; that is the design's reading of "per session".
