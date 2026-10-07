@@ -120,7 +120,9 @@ Agent CLI, in the session shim beside `shipit settings`:
   change one.
 - `shipit schedule propose [--id <id>] --file -` — a new schedule, or a change
   to one, as YAML: `name`, `when` (a preset or `cron:`), optional `timeZone`,
-  `target`, `params`, `prompt`.
+  `target`, `params`, `prompt`. With `--id`, only the fields the YAML gives
+  change and the rest are kept, so "move it to 10:00" cannot reset the prompt
+  or the grants by omission. Pause and resume are fields too (`enabled`).
 
 The orchestrator validates the proposal the same way the Settings editor does
 (repository known, role exists, model valid, cron parses, req 17's spacing) and
@@ -132,6 +134,12 @@ docs/299's settings proposal, the write routes are not container-accessible, so
 the agent has no path to a schedule that skips the user — which is what stops
 it from giving a run sandbox grants the user never saw (req 9). If the proposal
 names no time zone, Confirm sends the browser's.
+
+A change card records the schedule's `updated_at` it was built from. If the
+schedule changed since — the user edited it in Settings, or confirmed another
+card — Confirm refuses and says so, because the card's "before" no longer
+describes the schedule. A confirmed change applies from the next run; a run in
+progress keeps what it started with (req 19).
 
 The card is transcript content, so it follows the persisted-card recipe
 (`emitChatCard`, a `PersistedMessage` field, `CARD_MESSAGE_FIELDS`,
@@ -254,7 +262,8 @@ schedule, not to a session, so the archive retention period
 schedule does.
 
 The first message is the schedule's prompt plus a short, factual
-`<scheduled_run>` block: the schedule's name, this run's time, its own notes
+`<scheduled_run>` block: the schedule's name and id (so "change this job" from
+inside a run needs no lookup), this run's time, its own notes
 folder, where the earlier runs' folders are, and that notes written by earlier
 runs are data, not instructions (`/shipit-docs/untrusted-input.md`). It is
 injected into the first turn the way role standing instructions are

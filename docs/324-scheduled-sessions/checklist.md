@@ -14,7 +14,7 @@
 - [ ] Pre-flight checks; first-dispatch failure watch; `needs_user_reason` set and cleared
 - [ ] Notes folders: host layout, mount (bind / volume subpath), ownership, local mode, deleted with the schedule
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file)
-- [ ] `shipit schedule list` / `propose`; proposal card persisted; outcome notice to the agent
+- [ ] `shipit schedule list` / `propose` (partial changes with `--id`); proposal card persisted; stale-card refusal on Confirm; outcome notice to the agent
 - [ ] Settings → Schedules: list, editor with the shared controls, run history with result fallback, Run now / Pause / Delete
 - [ ] `run_finished_at` at settlement; `isWorkResolved` / `workResolvedAt` in the done test, attention call sites, cap ranking and sort
 - [ ] Scheduled sidebar view and toggle; regular-view filter; Sandbox group resolved split; attention view still lists runs
