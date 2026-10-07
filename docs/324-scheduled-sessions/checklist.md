@@ -6,7 +6,7 @@
 - [x] Review rounds 1–3 (requirements alone, design against them), findings applied
 - [x] The two open questions in `requirements.md` answered
 - [x] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs
-- [ ] Editor test that edits every `SessionStartParams` key
+- [x] Editor test that edits every `SessionStartParams` key
 - [x] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, `deliveryId`, dispatch handle returned, base fetch (opt-in `fetchBase`)
 - [x] Schedule ids on the run's session row; runs pass `fetchBase: true`; a start refused after the session exists is linked to the failed run
 - [x] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
@@ -17,10 +17,10 @@
 - [x] Spacing check at save, clock changes not counted (the cron evaluated in UTC); propose calls the same check (slice 6b)
 - [x] Run now through the queue, also on a paused schedule
 - [x] Run now's warning data (`unfinishedRuns`, archived runs included)
-- [ ] Run now's warning dialog with Run anyway / Cancel
+- [x] Run now's warning dialog with Run anyway / Cancel
 - [x] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
 - [x] Delete on the server (refused while a run is not finished or still busy; lists those runs); the Stop route, Stop on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
-- [ ] Stop on a run row, in the Delete refusal and in the banner (UI)
+- [x] Stop on a run row, in the Delete refusal and in the banner (UI)
 - [x] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
 - [x] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; cleared when a user turn starts; `session_list` published on each change
 - [x] `isWorkResolved` / `workResolvedAt` (the stored `run_finished_at`) in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
@@ -32,14 +32,15 @@
 - [x] Proposal card registered as a card kind
 - [ ] Notes access card registered as a card kind
 - [x] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
-- [ ] The proposal card's **Open in Settings** button
-- [ ] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
+- [x] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
 - [ ] The run's notes folder: host layout, mount at `/schedule/notes/` with the session identity passed in, local-mode path
 - [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes` (own schedule's runs allowed); `schedule_notes_grants`
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
-- [ ] `ScheduledRunBanner` with Open schedule and Stop run; deleted-schedule state
+- [x] `ScheduledRunBanner` with Open schedule and Stop run; deleted-schedule state
+- [ ] Run times in the banner and history shown in the schedule's zone, as in the title
 - [ ] **Notes** links in the run history and the banner
 - [x] `shipit-docs/schedules.md`: `list`, `propose`, the proposal YAML
-- [ ] `shipit-docs/schedules.md` notes part; the wiki `sessions.md` section and its notes sentence
+- [x] The wiki `sessions.md` "Scheduled sessions" section
+- [ ] `shipit-docs/schedules.md` notes part; the notes in the wiki section
 - [x] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start
 - [x] Integration tests: stopped run takes no automatic turn, Delete refused while a run is busy

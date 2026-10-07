@@ -84,9 +84,11 @@ the two places a key can be forgotten:
 `CreateHeadlessSessionOptions` takes `SessionStartParams` instead of its own
 copy of the fields, so Quick Capture and runs share one path.
 
-The Settings editor is built from the composer's own controls — `RoleSelector`,
-`HarnessSelector`, `ModelSelector`, `ReasoningSelector`,
-`PermissionModeSelector` — and the sandbox grants are
+The Settings editor uses the composer's own `RoleSelector` and
+`PermissionModeSelector` (with its network section). The composer's
+`HarnessSelector`, `ModelSelector` and `ReasoningSelector` read the open
+session and cannot show a stored value, so the harness, model and reasoning
+use the shared `Picker`, as the role editor does. The sandbox grants are
 `SandboxCapabilityToggles`, which `SandboxDialog` and Session settings already
 share. One control can set several keys (the model picker sets the model,
 service and billing mode), so the editor's coverage is checked by a component
@@ -149,16 +151,20 @@ The orchestrator validates a proposal the way the Settings editor does
 (repository known, role exists, model valid, cron parses, the req 17 check
 below) and refuses it by name. A valid proposal posts the proposal card: every
 value through `START_PARAM_LABELS`, or before → after for a change; the next
-three run times in the browser's time zone; **Confirm**, **Open in Settings**
-and **Cancel**. If the proposal names no time zone, Confirm sends the
-browser's. A change card records the schedule's `updated_at`; if the schedule
+three run times in the browser's time zone; **Confirm** and **Cancel**. If the
+proposal names no time zone, Confirm sends the browser's. A change card records the schedule's `updated_at`; if the schedule
 changed since, Confirm refuses, because the card's "before" is no longer true.
 The command needs no repository, so it works in a sandbox too.
 
 ## Settings → Schedules (reqs 10, 11, 19, 24, 32, 33)
 
-A `schedules` section registered beside `roles` in
-`Settings/components/registry.ts`.
+A **Schedules** tab beside Roles. `Settings.tsx` renders it, not
+`Settings/components/registry.ts`: the registry holds settings, and schedules
+are not settings (see "Rejected"). The client keeps the schedules and their
+runs in one store (`stores/schedule-store.ts`), and `openScheduleSettings`
+opens the tab at a schedule from the banner and from "needs you". A run's
+times show in the schedule's zone, as its title does, with the zone named when
+it is not the browser's.
 
 - **List**: name, when (in words), target, next run, and a state — Paused, or
   the req 18 reason. Row actions: Run now, Pause / Resume, Edit, Delete.
@@ -578,6 +584,10 @@ this is the limit it already has.
 - **Registering schedules as settings** — docs/299 proposes one scalar change
   per card and rejected multi-change cards; a schedule is a whole object. Its
   claim and notice are generalized instead.
+- **Open in Settings on the proposal card** — no requirement asks for it, and
+  for a new schedule it needs an unsaved editor that must also settle the
+  card. Confirming and then editing in Settings, or asking the agent for a
+  change, gives the same result.
 - **Auto-pause after repeated failures** — not asked for; req 18 makes every
   failure visible, and a failed start costs nothing.
 - **A deterministic pre-check that skips the agent** (Devin, gh-aw) — a quiet run
