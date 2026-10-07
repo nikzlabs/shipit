@@ -109,8 +109,8 @@ export interface CompactionStepDeps {
  * The compaction is the docs/295 silent system turn, and what follows it is fixed BEFORE it
  * starts: the instructions are parked as a notice, which the compaction does not consume and
  * the next turn does, and the continuation goes to the queue's head, which the compaction's
- * own drain takes. Neither waits for the compaction to settle — OpenCode's compaction never
- * reports a process exit, and queued work drains before settlement.
+ * own drain takes. Neither waits for the compaction to settle: queued work drains at the
+ * result, before settlement.
  */
 export async function runRequestedCompaction(
   deps: CompactionStepDeps,

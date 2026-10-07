@@ -113,11 +113,11 @@ is put in place **before** it starts, and nothing waits for it to settle:
   own drain takes it, ahead of anything the user queued meanwhile. If it never
   reaches the agent, its `onTurnComplete` parks the note for the next turn.
 
-Waiting for settlement instead failed in review: OpenCode's compaction reports a
-result and never an exit, so a one-shot turn never settles; and the drain runs
-queued work before settlement, so a queued message would have started before
-the instructions were parked. The drain, which runs at the result, is what
-docs/295 already relies on.
+Waiting for settlement instead failed in review: OpenCode's compaction then
+reported a result and never an exit, so its one-shot turn never settled
+(planning#644, since fixed); and the drain runs queued work before settlement,
+so a queued message would have started before the instructions were parked. The
+drain, which runs at the result, is what docs/295 already relies on.
 
 Neither text claims that the compaction succeeded. Settlement status is not
 evidence of a compaction — a turn with an error result settles `completed` —
@@ -179,9 +179,6 @@ step posts it.
 - **An answer hold between the compaction and its continuation** would move the
   continuation out of the queue and out of Stop's reach. It cannot arise: the
   step does not start while a question waits, and a compaction turn asks none.
-- **OpenCode's compaction never reports `done`** (planning#644), so its turn
-  never settles and its post-turn hold runs to the deadline. The continuation
-  is unaffected: it runs from the drain at the result.
 
 ## Rejected alternatives
 
@@ -241,5 +238,6 @@ confirmed those fixes. Accepted and fixed: a branch notice overwrote the parked
 instructions (now their own column); the `killAgent` guard missed a successor
 still in setup (now also the turn phase); a detached settlement waiter (now the
 dispatch's `onTurnComplete`). Recorded as known limits above: a continuation
-whose setup throws, an answer hold that cannot arise, and OpenCode's missing
-`done`, filed as planning#644 because it affects every OpenCode compaction.
+whose setup throws, and an answer hold that cannot arise. OpenCode's missing
+`done` was filed as planning#644, because it affected every OpenCode
+compaction, and is now fixed in the adapter.
