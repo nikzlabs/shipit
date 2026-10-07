@@ -48,12 +48,14 @@ answers on the same day (see "Resolved questions").
     earlier runs of the same schedule.
 14. A run that comes due while another run of the same schedule is still going
     is skipped, and the skip is recorded on the schedule.
-15. A run that came due while ShipIt was down runs once when ShipIt is back.
+15. When runs came due while ShipIt was down, one catch-up run starts when
+    ShipIt is back, however many were missed.
 16. The user sets when a schedule runs with a preset (hourly, daily, weekdays,
     weekly) or a cron expression, in their own time zone. A run set for 09:00
     runs at 09:00 local time all year, also across daylight-saving changes.
-17. A schedule's runs that come due are at least one hour apart. Run now is not
-    limited by this (req 26).
+17. The times at which a schedule's runs come due are at least one hour apart.
+    A catch-up run (req 15) or Run now (req 26) does not move or cancel the next
+    scheduled run; only the overlap rule (req 14) can skip it.
 18. When a run cannot start — for example for want of a credential or quota, or
     because its repository is untrusted or removed — the schedule shows the
     reason and is marked as needing the user.
@@ -102,19 +104,7 @@ answers on the same day (see "Resolved questions").
 
 ## Open questions
 
-From the third review round on 2026-10-07.
-
-- Reqs 15 and 17 together: ShipIt was down and missed three daily runs. When it
-  is back, does it start one catch-up run or one per missed run? And does "at
-  least one hour apart" count scheduled times or actual start times — that is,
-  if the catch-up starts at 08:59, is the 09:00 run skipped? Recommended: one
-  catch-up run, and the hour counts scheduled times, so 09:00 runs unless the
-  catch-up is still going (req 14).
-- Req 20 says scheduled runs are not in the regular session list. The user's
-  words were "a separate section"; the exclusion is the agent's reading
-  (see the receipt). Confirm, or should runs also appear in the regular list?
-  Recommended: confirm — runs only in the Scheduled view, and in "needs you"
-  when they need the user.
+- (none)
 
 ## Resolved questions
 
@@ -193,3 +183,11 @@ From the third review round on 2026-10-07.
   agent's work', tell me"); the user's reply asked only about the stop button:
   "also if I open that run session and press stop, right?" — the last sentence
   of req 33.
+- 2026-10-07 — Two questions from the third review round, each answered with
+  the recommended option:
+  - *ShipIt missed three daily runs: one catch-up run or one per missed run?
+    And if the catch-up starts at 08:59, does the 09:00 run still start?* "One
+    catch-up, 09:00 runs": the hour counts scheduled times, and 09:00 is skipped
+    only if the catch-up is still going. Carried by reqs 15 and 17.
+  - *Should scheduled runs stay out of the regular session list?* "Yes, keep
+    them out." Confirms req 20's last sentence.

@@ -4,7 +4,7 @@
 - [x] Prior-art research
 - [x] Design (`plan.md`) and UI sketch (`mockup.html`)
 - [x] Review rounds 1–3 (requirements alone, design against them), findings applied
-- [ ] The two open questions in `requirements.md` answered
+- [x] The two open questions in `requirements.md` answered
 - [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs; editor test that edits every key
 - [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, run id as `deliveryId`, dispatch handle returned, base fetch
 - [ ] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`

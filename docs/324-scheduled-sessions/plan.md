@@ -10,9 +10,6 @@ Implements [requirements.md](./requirements.md), cited as `(req N)`. Prior art
 and the code facts behind the choices: [research.md](./research.md). UI sketch:
 [mockup.html](./mockup.html).
 
-Two questions in `requirements.md` are open. Where the design depends on one,
-it follows the recommended answer and says **(open question)**.
-
 ## What this builds
 
 1. **A schedule** — a stored session-start description (target, parameters,
@@ -232,7 +229,7 @@ Each pass, for each enabled schedule:
 
 1. **Collect** the due slots (above). None → nothing to do.
 2. **Missed slots.** When more than one slot is due — ShipIt was down, or busy
-   past a slot — only the latest runs (req 15) **(open question)**. The others
+   past a slot — only the latest runs (req 15). The others
    are recorded as one skipped row ("3 runs missed between … and …"), so no
    slot disappears without a trace.
 3. **Claim** the latest slot by inserting a `starting` row with a copy of the
@@ -243,8 +240,7 @@ Each pass, for each enabled schedule:
    post-turn work, or an install), or after a restart its worker is still being
    re-attached (`restart-turn-reattach.ts`). A run that waits for an answer
    (`awaiting_answer`) never counts as still going, even with background work
-   left (req 23). The one-hour rule (req 17) counts scheduled times **(open
-   question)**: the save and propose check below already keeps a schedule's
+   left (req 23). The one-hour rule (req 17) counts scheduled times: the save and propose check below already keeps a schedule's
    times an hour apart, so it needs no check here.
 5. Otherwise **start** the run (below).
 
@@ -387,7 +383,7 @@ and the reason and opens Settings → Schedules at that schedule.
   (docs/272-user-selectable-roles req 16), and in the spirit of req 12.
 - A session belongs to the scheduled view when it, or the root of its spawn
   tree, has a `scheduleId`, so a child session a run spawned stays with its run.
-  The regular view drops those sessions (req 20) **(open question)**. The
+  The regular view drops those sessions (req 20). The
   scheduled view renders the regular grouping (`useSessionGrouping`,
   `SessionGroup`) over only them.
 - `filterVisibleInSidebar` caps resolved sessions per repository. It counts
@@ -500,12 +496,12 @@ this is the limit it already has.
 | 12 | No input-panel change |
 | 13 | The run's notes folder; earlier notes through `shipit schedule notes`; the `<scheduled_run>` block |
 | 14, 23 | Scheduler step 4; `awaiting_answer` never counts as still going |
-| 15 | Step 2 **(open question)** |
+| 15 | Step 2 |
 | 16, 29 | IANA zone; due slots by stepping `nextRun` forward |
-| 17 | The spacing check at save and propose **(open question)** |
+| 17 | The spacing check at save and propose; catch-ups and Run now not counted |
 | 18 | Pre-flight, the re-check, the first-turn watch, `needs_user_reason` |
 | 19 | Run now / Pause / Edit; the spec is copied into the run row |
-| 20 | `SidebarView` `"scheduled"`, membership by spawn root, separate caps, Sandbox group split **(open question)** |
+| 20 | `SidebarView` `"scheduled"`, membership by spawn root, separate caps, Sandbox group split |
 | 21, 31 | Attention for runs reported before the PR silences; schedule rows in "needs you"; `last_turn_outcome` |
 | 22 | `isRunFinished`, decided when inputs change and the runner is idle |
 | 25 | `ScheduledRunBanner` |
