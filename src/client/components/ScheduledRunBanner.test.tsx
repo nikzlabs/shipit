@@ -6,6 +6,7 @@ import { SandboxBanner } from "./SandboxBanner.js";
 import { useScheduleStore } from "../stores/schedule-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { browserTimeZone, formatRunTime } from "./Settings/schedules/schedule-format.js";
 import type { ScheduleView, SessionListRow } from "../../server/shared/types.js";
 
 /**
@@ -73,6 +74,21 @@ describe("ScheduledRunBanner", () => {
     expect(screen.queryByTestId("scheduled-run-stop")).toBeNull();
     rerender(<ScheduledRunBanner session={runSession({ runStoppedAt: "2026-10-06T09:10:00.000Z" })} />);
     expect(screen.queryByTestId("scheduled-run-stop")).toBeNull();
+  });
+
+  it("gives the time in the schedule's zone, as the run's title does, and names a zone that is not the browser's", () => {
+    const zone = browserTimeZone() === "Asia/Tokyo" ? "America/New_York" : "Asia/Tokyo";
+    const createdAt = runSession().createdAt;
+    useScheduleStore.setState({ schedules: [{ ...SCHEDULE, timeZone: browserTimeZone() }] });
+    const { rerender } = render(<ScheduledRunBanner session={runSession()} />);
+    const banner = () => screen.getByTestId("scheduled-run-banner").textContent ?? "";
+    expect(banner()).toContain(`· ${formatRunTime(createdAt)}`);
+    expect(banner()).not.toContain("(");
+
+    useScheduleStore.setState({ schedules: [{ ...SCHEDULE, timeZone: zone }] });
+    rerender(<ScheduledRunBanner session={runSession()} />);
+    expect(banner()).toContain(`· ${formatRunTime(createdAt, zone)} (${zone})`);
+    expect(formatRunTime(createdAt, zone)).not.toBe(formatRunTime(createdAt));
   });
 
   it("says the schedule was deleted, with no links", () => {

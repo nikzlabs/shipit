@@ -5,7 +5,7 @@ import { useSessionStore } from "../../../stores/session-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { RUNS_PAGE, stopScheduleRun, useScheduleStore } from "../../../stores/schedule-store.js";
 import { useAttentionInfo } from "../../../hooks/useAttentionInfo.js";
-import { formatRunTime } from "./schedule-format.js";
+import { formatRunTime, otherZone } from "./schedule-format.js";
 import { runState, type RunState, type RunStateKind } from "./run-state.js";
 import type { ScheduleRunView, SessionListRow } from "../../../../server/shared/types.js";
 
@@ -34,6 +34,8 @@ export function ScheduleRuns({
 }) {
   const runs = useScheduleStore((s) => s.runsBySchedule[scheduleId]);
   const limit = useScheduleStore((s) => s.runLimits[scheduleId] ?? RUNS_PAGE);
+  const timeZone = useScheduleStore((s) => s.schedules.find((x) => x.id === scheduleId)?.timeZone);
+  const zone = timeZone ? otherZone(timeZone) : null;
   // A run's result line is read from its session while it is not finished, so the history is
   // read again when one of them changes.
   const changes = useRunSessionChanges(scheduleId);
@@ -55,9 +57,14 @@ export function ScheduleRuns({
   }
   return (
     <div>
+      {zone && (
+        <p className="px-3 pt-1.5 text-[11px] text-(--color-text-tertiary)" data-testid={`schedule-runs-zone-${scheduleId}`}>
+          Times in {zone}, the schedule&rsquo;s time zone.
+        </p>
+      )}
       <ul className="divide-y divide-(--color-border-secondary)" data-testid={`schedule-runs-${scheduleId}`}>
         {runs.map((run) => (
-          <RunRow key={run.id} run={run} onOpenSession={onOpenSession} />
+          <RunRow key={run.id} run={run} zone={zone} onOpenSession={onOpenSession} />
         ))}
       </ul>
       {runs.length >= limit && (
@@ -93,27 +100,27 @@ export function useRunSessionChanges(scheduleId: string): string {
   );
 }
 
-function RunRow({ run, onOpenSession }: { run: ScheduleRunView; onOpenSession?: (sessionId: string) => void }) {
+interface RunRowProps {
+  run: ScheduleRunView;
+  /** The schedule's zone when it is not the browser's. */
+  zone: string | null;
+  onOpenSession?: (sessionId: string) => void;
+}
+
+function RunRow({ run, zone, onOpenSession }: RunRowProps) {
   const live = useSessionStore((s) => (run.sessionId ? s.sessions.find((x) => x.id === run.sessionId) : undefined));
   const session = live ?? run.session;
   return session
-    ? <RunRowWithSession run={run} session={session} onOpenSession={onOpenSession} />
-    : <RunRowBody run={run} state={runState(run, undefined, null)} onOpenSession={onOpenSession} />;
+    ? <RunRowWithSession run={run} zone={zone} session={session} onOpenSession={onOpenSession} />
+    : <RunRowBody run={run} zone={zone} state={runState(run, undefined, null)} onOpenSession={onOpenSession} />;
 }
 
-function RunRowWithSession({
-  run,
-  session,
-  onOpenSession,
-}: {
-  run: ScheduleRunView;
-  session: SessionListRow;
-  onOpenSession?: (sessionId: string) => void;
-}) {
+function RunRowWithSession({ run, zone, session, onOpenSession }: RunRowProps & { session: SessionListRow }) {
   const attention = useAttentionInfo(session);
   return (
     <RunRowBody
       run={run}
+      zone={zone}
       state={runState(run, session, attention)}
       attention={attention}
       archived={!!(session.userArchived || session.archived)}
@@ -124,16 +131,15 @@ function RunRowWithSession({
 
 function RunRowBody({
   run,
+  zone,
   state,
   attention,
   archived,
   onOpenSession,
-}: {
-  run: ScheduleRunView;
+}: RunRowProps & {
   state: RunState;
   attention?: string | null;
   archived?: boolean;
-  onOpenSession?: (sessionId: string) => void;
 }) {
   const [stopping, setStopping] = useState(false);
   const shownResult = run.outcome === "skipped" || run.outcome === "failed" ? run.reason : run.result;
@@ -155,7 +161,7 @@ function RunRowBody({
       className="grid grid-cols-[8.5rem_6.5rem_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1.5 text-xs"
       data-testid={`schedule-run-${run.id}`}
     >
-      <span className="text-(--color-text-secondary)">{formatRunTime(run.slotAt ?? run.createdAt)}</span>
+      <span className="text-(--color-text-secondary)">{formatRunTime(run.slotAt ?? run.createdAt, zone ?? undefined)}</span>
       <span className="flex items-center gap-1">
         <Badge
           variant={STATE_VARIANT[state.kind]}

@@ -5,6 +5,7 @@ import { SchedulesSettings } from "./SchedulesSettings.js";
 import { useScheduleStore } from "../../../stores/schedule-store.js";
 import { useSessionStore } from "../../../stores/session-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
+import { browserTimeZone, formatRunTime } from "./schedule-format.js";
 import type {
   ScheduleRunView,
   ScheduleView,
@@ -254,6 +255,38 @@ describe("SchedulesSettings — runs (reqs 24, 33)", () => {
 
     await userEvent.click(screen.getByTestId("schedule-run-open-done"));
     expect(onOpenSession).toHaveBeenCalledWith("s-done");
+  });
+
+  it("gives run times in the schedule's zone, as the run titles do, and names a zone that is not the browser's", async () => {
+    const slotAt = "2026-10-07T09:00:00.000Z";
+    runs = [run("r1", { outcome: "skipped", slotAt })];
+    const { unmount } = render(<SchedulesSettings />);
+    await userEvent.click(screen.getByTestId("schedule-toggle-a"));
+    await screen.findByTestId("schedule-runs-a");
+    expect(screen.getByTestId("schedule-run-r1").textContent).toContain(formatRunTime(slotAt));
+    expect(screen.queryByTestId("schedule-runs-zone-a")).toBeNull();
+    unmount();
+
+    const zone = browserTimeZone() === "Asia/Tokyo" ? "America/New_York" : "Asia/Tokyo";
+    const askedAt = "2026-10-07T11:30:00.000Z";
+    runs = [
+      run("r1", { outcome: "skipped", slotAt }),
+      run("live", { sessionId: "s-live", slotAt }),
+      run("kept", { sessionId: "s-kept", slotAt, session: session("s-kept", { runFinishedAt: "x" }) }),
+      run("asked", { slotAt: null, createdAt: askedAt }),
+    ];
+    useSessionStore.setState({ sessions: [session("s-live")] });
+    useScheduleStore.setState({ schedules: [schedule("a", { timeZone: zone })] });
+    render(<SchedulesSettings />);
+    await userEvent.click(screen.getByTestId("schedule-toggle-a"));
+    await screen.findByTestId("schedule-runs-a");
+    for (const id of ["r1", "live", "kept"]) {
+      expect(screen.getByTestId(`schedule-run-${id}`).textContent).toContain(formatRunTime(slotAt, zone));
+    }
+    // Run now has no slot; it is named by when it was asked for.
+    expect(screen.getByTestId("schedule-run-asked").textContent).toContain(formatRunTime(askedAt, zone));
+    expect(formatRunTime(slotAt, zone)).not.toBe(formatRunTime(slotAt));
+    expect(screen.getByTestId("schedule-runs-zone-a").textContent).toBe(`Times in ${zone}, the schedule’s time zone.`);
   });
 
   it("reads the runs again when a run's turn ends, so its result line is current", async () => {

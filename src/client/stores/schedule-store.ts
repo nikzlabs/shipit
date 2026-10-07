@@ -128,8 +128,16 @@ export const useScheduleStore = create<ScheduleState>()((set, get) => ({
 }));
 
 /**
+ * Req 18, req 31 — a schedule whose last start failed needs the user until they act on it. The
+ * one test for the "needs you" rows and count, and the Scheduled view's reasons and mark.
+ */
+export function scheduleNeedsYou(schedule: ScheduleView): boolean {
+  return !!schedule.needsUserReason;
+}
+
+/**
  * Opens Settings → Schedules, at one schedule when given. The one way in: the run banner's
- * Open schedule, the proposal card's Open in Settings and the schedule rows in "needs you".
+ * Open schedule, the Scheduled view's reasons and the schedule rows in "needs you".
  */
 export function openScheduleSettings(scheduleId?: string): void {
   const ui = useUiStore.getState();

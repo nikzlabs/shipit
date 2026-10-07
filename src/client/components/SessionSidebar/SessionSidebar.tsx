@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WarningIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
 import { Button } from "../ui/button.js";
@@ -11,6 +11,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useRepoStore } from "../../stores/repo-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { openScheduleSettings, scheduleNeedsYou, useScheduleStore } from "../../stores/schedule-store.js";
 import { useMediaQuery } from "../../hooks/useMediaQuery.js";
 import { useAttentionSessions } from "../../hooks/useAttentionSessions.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
@@ -113,6 +114,9 @@ export function SessionSidebar({
     return [visibleSessions.filter((s) => !isScheduled(s)), visibleSessions.filter(isScheduled)];
   }, [sessions, visibleSessions]);
   const hasScheduledRuns = useMemo(() => sessions.some((s) => s.scheduleId), [sessions]);
+  const schedules = useScheduleStore((s) => s.schedules);
+  const failedSchedules = useMemo(() => schedules.filter(scheduleNeedsYou), [schedules]);
+  const hasScheduledView = hasScheduledRuns || schedules.length > 0;
   const repoGroups = useMemo(
     () => computeRepoGroups(visibleRepos, regularSessions, isDone),
     [visibleRepos, regularSessions, isDone],
@@ -125,8 +129,8 @@ export function SessionSidebar({
   const savedSidebarView = useUiStore((s) => s.sidebarView);
   const toggleSidebarView = useUiStore((s) => s.toggleSidebarView);
   const setSidebarView = useUiStore((s) => s.setSidebarView);
-  // With no run left the Scheduled switch is gone, so its view must not stay stuck open.
-  const sidebarView = savedSidebarView === "scheduled" && !hasScheduledRuns ? "all" : savedSidebarView;
+  // With no schedule and no run left the Scheduled switch is gone, so its view must not stay stuck open.
+  const sidebarView = savedSidebarView === "scheduled" && !hasScheduledView ? "all" : savedSidebarView;
   // The attention view keeps every session as its input, runs included (req 21).
   const attentionIds = useAttentionSessions(visibleSessions);
   const attentionView = sidebarView === "attention";
@@ -141,6 +145,11 @@ export function SessionSidebar({
 
     useSessionStore.getState().setAllSessionsDialogOpen(true, repoUrl);
 
+    if (mobile) onClose?.();
+  }, [mobile, onClose]);
+
+  const handleOpenSchedule = useCallback((scheduleId: string) => {
+    openScheduleSettings(scheduleId);
     if (mobile) onClose?.();
   }, [mobile, onClose]);
 
@@ -494,12 +503,13 @@ export function SessionSidebar({
             slot is free and the switch is simply first (req 15). */}
         <AttentionViewToggle
           active={attentionView}
-          count={attentionIds.size}
+          count={attentionIds.size + failedSchedules.length}
           onToggle={toggleSidebarView}
         />
-        {hasScheduledRuns && (
+        {hasScheduledView && (
           <ScheduledViewToggle
             active={scheduledView}
+            failedCount={failedSchedules.length}
             onToggle={() => setSidebarView(scheduledView ? "all" : "scheduled")}
           />
         )}
@@ -526,8 +536,9 @@ export function SessionSidebar({
 
       {/* The list body: the grouped repo tree, docs/260's flat
           needs-attention list, or the grouped tree of scheduled runs. All scroll
-          in this same container — no view adds chrome of its own above the list
-          (req 10). */}
+          in this same container. The needs-attention view adds no chrome of its
+          own above the list (req 10); the Scheduled view opens with the reason
+          of each schedule that could not start (docs/324-scheduled-sessions req 18). */}
       <div
 
         className={`flex-1 overflow-y-auto min-h-0 flex flex-col pb-1 ${!attentionView && separated ? "" : "pt-1"}`}
@@ -536,6 +547,8 @@ export function SessionSidebar({
           <AttentionSessionList
             sessions={visibleSessions}
             attentionIds={attentionIds}
+            schedules={schedules}
+            onOpenSchedule={handleOpenSchedule}
             currentSessionId={currentSessionId}
             onResume={onResume}
             onSelectCurrent={handleSelectCurrent}
@@ -543,13 +556,34 @@ export function SessionSidebar({
             isTouch={isTouch}
           />
         ) : scheduledView ? (
-          scheduledGroups.length === 0 ? (
-            <p className="px-4 py-8 text-xs text-(--color-text-tertiary) text-center">
-              No scheduled runs to show.
-            </p>
-          ) : (
-            scheduledGroups.map(renderGroup)
-          )
+          <>
+            {failedSchedules.length > 0 && (
+              <div className="flex flex-col gap-1 px-2 py-1.5">
+                {failedSchedules.map((schedule) => (
+                  <button
+                    key={schedule.id}
+                    type="button"
+                    onClick={() => handleOpenSchedule(schedule.id)}
+                    className="flex items-start gap-1.5 rounded-md border border-(--color-border-secondary) bg-(--color-warning-subtle) px-2.5 py-1.5 text-left text-xs text-(--color-text-secondary) hover:text-(--color-text-primary)"
+                    data-testid={`scheduled-view-reason-${schedule.id}`}
+                  >
+                    <WarningIcon size={ICON_SIZE.XS} weight="fill" className="mt-0.5 shrink-0 text-(--color-warning)" />
+                    <span className="min-w-0">
+                      <span className="font-semibold text-(--color-text-primary)">{schedule.name}</span> could not start:{" "}
+                      {schedule.needsUserReason}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {scheduledGroups.length === 0 ? (
+              <p className="px-4 py-8 text-xs text-(--color-text-tertiary) text-center">
+                No scheduled runs to show.
+              </p>
+            ) : (
+              scheduledGroups.map(renderGroup)
+            )}
+          </>
         ) : (
           <>
         {repoGroups.length === 0 && hiddenRepos.length === 0 ? (

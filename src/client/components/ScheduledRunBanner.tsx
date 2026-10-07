@@ -5,7 +5,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { openScheduleSettings, stopScheduleRun, useScheduleStore } from "../stores/schedule-store.js";
-import { formatRunTime } from "./Settings/schedules/schedule-format.js";
+import { formatRunTime, formatScheduleRunTime } from "./Settings/schedules/schedule-format.js";
 import type { SessionListRow } from "../../server/shared/types.js";
 
 /**
@@ -21,16 +21,16 @@ export function ScheduledRunLine({ session }: { session: SessionListRow }) {
   // Until the schedules are read, "deleted" cannot be told from "not read yet".
   if (!loaded || !session.scheduleId) return null;
 
-  const when = formatRunTime(session.createdAt);
   if (!schedule) {
     return (
       <div className="flex items-center gap-2 text-[12.5px] text-(--color-text-secondary)" data-testid="scheduled-run-banner">
         <ClockIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
-        <span className="min-w-0">Started by a schedule that was deleted · {when}</span>
+        <span className="min-w-0">Started by a schedule that was deleted · {formatRunTime(session.createdAt)}</span>
       </div>
     );
   }
 
+  const when = formatScheduleRunTime(session.createdAt, schedule.timeZone);
   const runId = session.scheduleRunId;
   const stop = async () => {
     if (!runId) return;
