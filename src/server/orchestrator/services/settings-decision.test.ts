@@ -343,6 +343,22 @@ describe("a decision that names another session's card", () => {
   });
 });
 
+describe("a decision on a card that has left the transcript (docs/324-scheduled-sessions plan.md → Cards)", () => {
+  it("is refused before anything is written, whatever the action", async () => {
+    const card = await post();
+    fx.dbManager.db.prepare("DELETE FROM messages WHERE session_id = ?").run(fx.sessionId);
+    fx.emitted.length = 0;
+
+    for (const action of ["apply", "dismiss"] as const) {
+      await expect(decide(card.cardId, action)).rejects.toThrow(/not in this session/);
+    }
+    expect(fx.proposals.get(card.cardId)?.phase).toBe("pending");
+    expect(fx.credentialStore.getEnableSubAgents()).toBe(true);
+    expect(settingsBroadcasts()).toHaveLength(0);
+    expect(fx.emitted).toEqual([]);
+  });
+});
+
 describe("recoverInterruptedProposals", () => {
   it("converts a card found mid-apply, and never retries it", async () => {
     const card = await post();

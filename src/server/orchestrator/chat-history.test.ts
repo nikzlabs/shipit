@@ -1127,6 +1127,16 @@ describe("ChatHistoryManager", () => {
       mgr.append("sess-1", proposal("set-a"));
       expect(mgr.getSettingsProposalCard("sess-1", "set-a")?.cardId).toBe("set-a");
     });
+
+    it("updates a card past an unparseable row beside it", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      dbManager.db
+        .prepare("INSERT INTO messages (session_id, role, content, settings_proposal) VALUES (?, 'assistant', '', ?)")
+        .run("sess-1", "{not json");
+      mgr.append("sess-1", proposal("set-a"));
+      expect(mgr.updateSettingsProposalCard("sess-1", "set-a", { phase: "dismissed" })?.phase).toBe("dismissed");
+      expect(mgr.getSettingsProposalCard("sess-1", "set-a")?.phase).toBe("dismissed");
+    });
   });
 
   describe("issue-write card persistence (docs/177)", () => {

@@ -249,6 +249,20 @@ const UPDATE_SQL = `
   WHERE id = @id
 `;
 
+/**
+ * The transcript fields that hold a card the user decides on, by their columns
+ * (docs/324-scheduled-sessions plan.md → Cards: proposals and approvals). The
+ * shared claim (`services/card-claim.ts`) updates a card through this map, and a
+ * field added here does not compile until its outcome notice is registered
+ * (`services/card-kinds.ts`).
+ */
+const DECISION_CARD_COLUMNS = {
+  settingsProposal: "settings_proposal",
+} as const satisfies { [F in keyof PersistedMessage]?: keyof MessageRow };
+
+export type DecisionCardField = keyof typeof DECISION_CARD_COLUMNS;
+export type DecisionCardOf<F extends DecisionCardField> = NonNullable<PersistedMessage[F]>;
+
 function likeEscape(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
@@ -259,7 +273,7 @@ export class ChatHistoryManager {
   private stmtUpdate;
   private stmtLoadAll;
   private stmtLoadBugReportRows;
-  private stmtLoadSettingsProposalRows;
+  private stmtLoadDecisionCardRows;
   private stmtLoadRepoSessionProposalRows;
   private stmtLoadSessionMessageProposalRows;
   private stmtLoadPermissionRows;
@@ -291,8 +305,13 @@ export class ChatHistoryManager {
     this.stmtLoadBugReportRows = this.db.prepare(
       "SELECT id, bug_report FROM messages WHERE session_id = ? AND bug_report IS NOT NULL ORDER BY id",
     );
-    this.stmtLoadSettingsProposalRows = this.db.prepare(
-      "SELECT id, settings_proposal FROM messages WHERE session_id = ? AND settings_proposal IS NOT NULL ORDER BY id",
+    this.stmtLoadDecisionCardRows = new Map(
+      Object.values(DECISION_CARD_COLUMNS).map((column) => [
+        column,
+        this.db.prepare(
+          `SELECT id, ${column} AS card FROM messages WHERE session_id = ? AND ${column} IS NOT NULL ORDER BY id`,
+        ),
+      ]),
     );
     this.stmtLoadRepoSessionProposalRows = this.db.prepare(
       "SELECT id, repo_session_proposal FROM messages WHERE session_id = ? AND repo_session_proposal IS NOT NULL ORDER BY id",
@@ -621,42 +640,62 @@ export class ChatHistoryManager {
     })();
   }
 
-  getSettingsProposalCard(sessionId: string, cardId: string): SettingsProposalCard | undefined {
-    const rows = this.stmtLoadSettingsProposalRows.all(sessionId) as {
-      id: number;
-      settings_proposal: string;
-    }[];
-    for (const row of rows) {
+  /** The message id and stored card for one decision card, or null when this session has none by that id. */
+  private findDecisionCard<F extends DecisionCardField>(
+    field: F,
+    sessionId: string,
+    cardId: string,
+  ): { id: number; card: DecisionCardOf<F> } | null {
+    const column = DECISION_CARD_COLUMNS[field];
+    const stmt = this.stmtLoadDecisionCardRows.get(column);
+    if (!stmt) return null;
+    for (const row of stmt.all(sessionId) as { id: number; card: string }[]) {
       try {
-        const card = JSON.parse(row.settings_proposal) as SettingsProposalCard;
-        if (card.cardId === cardId) return card;
+        const card = JSON.parse(row.card) as DecisionCardOf<F>;
+        if (card.cardId === cardId) return { id: row.id, card };
       } catch {
-        console.error(`[chat-history] skipping unparseable settings_proposal on message ${row.id}`);
+        console.error(`[chat-history] skipping unparseable ${column} on message ${row.id}`);
       }
     }
-    return undefined;
+    return null;
+  }
+
+  getDecisionCard<F extends DecisionCardField>(
+    field: F,
+    sessionId: string,
+    cardId: string,
+  ): DecisionCardOf<F> | undefined {
+    return this.findDecisionCard(field, sessionId, cardId)?.card;
   }
 
   /** Returns the merged card, so a caller emits exactly what it stored. */
+  updateDecisionCard<F extends DecisionCardField>(
+    field: F,
+    sessionId: string,
+    cardId: string,
+    patch: Partial<DecisionCardOf<F>>,
+  ): DecisionCardOf<F> | null {
+    return this.db.transaction(() => {
+      const found = this.findDecisionCard(field, sessionId, cardId);
+      const row = found ? this.stmtLoadById.get(found.id) as MessageRow | undefined : undefined;
+      if (!found || !row) return null;
+      const merged: DecisionCardOf<F> = { ...found.card, ...patch };
+      const msg: PersistedMessage = { ...this.fromRow(row), [field]: merged };
+      this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+      return merged;
+    })();
+  }
+
+  getSettingsProposalCard(sessionId: string, cardId: string): SettingsProposalCard | undefined {
+    return this.getDecisionCard("settingsProposal", sessionId, cardId);
+  }
+
   updateSettingsProposalCard(
     sessionId: string,
     cardId: string,
     patch: Partial<SettingsProposalCard>,
   ): SettingsProposalCard | null {
-    return this.db.transaction(() => {
-      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
-      for (const row of rows) {
-        if (!row.settings_proposal) continue;
-        const card = JSON.parse(row.settings_proposal) as SettingsProposalCard;
-        if (card.cardId !== cardId) continue;
-        const merged: SettingsProposalCard = { ...card, ...patch };
-        const msg = this.fromRow(row);
-        msg.settingsProposal = merged;
-        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
-        return merged;
-      }
-      return null;
-    })();
+    return this.updateDecisionCard("settingsProposal", sessionId, cardId, patch);
   }
 
   pendingPermissionRequestIds(sessionId: string): string[] {

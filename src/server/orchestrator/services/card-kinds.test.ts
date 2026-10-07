@@ -1,0 +1,57 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DatabaseManager } from "../../shared/database.js";
+import { ChatHistoryManager } from "../chat-history.js";
+import { SessionManager } from "../sessions.js";
+import { SettingsProposalStore } from "../settings-proposal-store.js";
+import { prepareCardOutcomeNotices } from "./card-kinds.js";
+
+const SESSION = "sess-1";
+
+let dbManager: DatabaseManager;
+let history: ChatHistoryManager;
+let proposals: SettingsProposalStore;
+
+beforeEach(() => {
+  dbManager = new DatabaseManager(":memory:");
+  new SessionManager(dbManager).track(SESSION, "A session");
+  history = new ChatHistoryManager(dbManager);
+  proposals = new SettingsProposalStore(dbManager);
+});
+
+afterEach(() => {
+  dbManager.close();
+});
+
+function resolveSettingsProposal(cardId: string): void {
+  proposals.create({
+    cardId,
+    sessionId: SESSION,
+    target: { key: "advanced.enableSubAgents" },
+    operation: "set",
+    phase: "applied",
+    from: false,
+    proposed: true,
+    createdAt: "2026-10-07T00:00:00.000Z",
+  });
+}
+
+describe("prepareCardOutcomeNotices", () => {
+  it("owes nothing for a kind whose store this install lacks", () => {
+    resolveSettingsProposal("set-a");
+    expect(prepareCardOutcomeNotices({ chatHistoryManager: history }, SESSION)).toEqual([]);
+  });
+
+  it("collects the settings notice, and its receipt marks only the settings proposal", () => {
+    resolveSettingsProposal("set-a");
+
+    const notices = prepareCardOutcomeNotices({ chatHistoryManager: history, settingsProposals: proposals }, SESSION);
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.notice).toContain("resolved a settings proposal you posted");
+    expect(proposals.get("set-a")?.agentNotified).toBe(false);
+    notices[0]?.delivered();
+    expect(proposals.get("set-a")?.agentNotified).toBe(true);
+    expect(prepareCardOutcomeNotices({ chatHistoryManager: history, settingsProposals: proposals }, SESSION))
+      .toEqual([]);
+  });
+});
