@@ -1,25 +1,28 @@
 # Checklist
 
-- [x] Requirements written and every open question answered
+- [x] Requirements written
 - [x] Prior-art research
 - [x] Design (`plan.md`) and UI sketch (`mockup.html`)
-- [x] Independent review of the design against the requirements, findings applied
-- [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over composer, seed and headless inputs
-- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, fresh fetch
-- [ ] `schedules`, `schedule_runs` (unique slot) tables; `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`
-- [ ] `croner` 10.0.1 added (exact pin); presets compile to cron; DST tests
-- [ ] `ScheduleRunner`: due check, slot claim, overlap and one-hour skips, catch-up, `starting` recovery, pause/resume
-- [ ] One-hour spacing check shared by save and propose; due-slot skip within an hour
-- [ ] Run now: no hour or overlap check; warning with Run anyway / Cancel when any run is not done
-- [ ] Pre-flight checks; first-dispatch failure watch; `needs_user_reason` set and cleared
-- [ ] Notes folders: host layout, mount (bind / volume subpath), ownership, local mode, deleted with the schedule
+- [x] Independent review of the design, findings applied
+- [x] Second review round (requirements alone, then design), findings applied
+- [ ] The four open questions in `requirements.md` answered
+- [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs; editor test that edits every key
+- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, base fetch
+- [ ] `schedules`, `schedule_runs` (unique slot, spec copy, `started_at`, `dispatched_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `schedule_notes_grants`
+- [ ] `croner` 10.0.1 added (exact pin); presets compile to cron; daylight-saving tests, including missing and repeated times
+- [ ] `ScheduleRunner`: in-flight flag, per-schedule start queue, due check, slot claim, skip rules, catch-up, `active_since` on create/resume/timing edit, one start at a time
+- [ ] Recovery of `starting` rows (no session / not dispatched / dispatched)
+- [ ] One-hour rule on actual start times; input guard at save and propose
+- [ ] Run now through the queue; done-test warning with Run anyway / Cancel
+- [ ] Pre-flight checks; first-turn watch (setup error and quota refusal); `needs_user_reason` set and cleared; shown in Settings, the Scheduled view and "needs you"
+- [ ] `isRunFinished`, `isWorkResolved`, `workResolvedAt`; decided on idle, PR change and answer; used by the done test, attention call sites, `touchUnlessResolved` and the cap
+- [ ] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
+- [ ] Proposal card and notes access card on docs/299's claim and notice machinery
+- [ ] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
+- [ ] Settings → Schedules: list, editor, run history (states, result fallback), Run now / Pause / Delete
+- [ ] Notes folders: host layout, mount (bind / volume subpath), per-run ownership verified against `preparePersistDir`, local-mode path
+- [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes`; `schedule_notes_grants`
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file)
-- [ ] `shipit schedule list` / `propose` (partial changes with `--id`); proposal card persisted; stale-card refusal on Confirm; outcome notice to the agent
-- [ ] Settings → Schedules: list, editor with the shared controls, run history with result fallback, Run now / Pause / Delete
-- [ ] `run_finished_at` at settlement; `isWorkResolved` / `workResolvedAt` in the done test, attention call sites, cap ranking and sort
-- [ ] Scheduled sidebar view and toggle; regular-view filter; Sandbox group resolved split; attention view still lists runs
-- [ ] `ScheduledRunBanner` with Open schedule and Notes links
-- [ ] Notes viewer (browser-only routes, path kept inside the run folder) from Settings → Schedules and the banner
-- [ ] `shipit schedule notes`; `schedule_notes_grants`; notes access card (persisted, Allow for this session / Deny, outcome notice)
+- [ ] `ScheduledRunBanner` with Open schedule and Notes links; deleted-schedule state
 - [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
-- [ ] Integration tests: restart mid-start recovers, no double start, overlap skip, waiting run does not block, catch-up runs once, Run now not limited and not counted for the hour
+- [ ] Integration tests: restart mid-start in each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once, Run now not limited and not counted for the hour, a quota-refused first turn is a failed start
