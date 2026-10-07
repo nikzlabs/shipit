@@ -167,6 +167,18 @@ describe("resolveSettingsProposal — apply", () => {
     expect(resolved.outcome).toContain("registry.npmjs.org");
     expect(fx.egressAllowlistStore.listHosts("global")).toContain("registry.npmjs.org");
   });
+
+  it("applies two pending host cards one after the other", async () => {
+    const addHost = (item: string) =>
+      post({ key: "network.egress.hosts[].host", operation: "add", item, valueText: undefined });
+    const first = await addHost("api.example.com");
+    const second = await addHost("cdn.example.com");
+
+    expect((await decide(first.cardId)).card.phase).toBe("applied");
+    expect((await decide(second.cardId)).card.phase).toBe("applied");
+    expect(fx.egressAllowlistStore.listHosts("global"))
+      .toEqual(expect.arrayContaining(["api.example.com", "cdn.example.com"]));
+  });
 });
 
 describe("resolveSettingsProposal — stale", () => {
@@ -211,6 +223,18 @@ describe("resolveSettingsProposal — stale", () => {
 
     expect(resolved.phase).toBe("stale");
     expect(fx.credentialStore.getMcpServer("notion")?.enabled).toBe(true);
+  });
+
+  it("is stale when the card's own host moved", async () => {
+    const card = await post({
+      key: "network.egress.hosts[].host",
+      operation: "add",
+      item: "api.example.com",
+      valueText: undefined,
+    });
+    fx.egressAllowlistStore.addHost("global", "api.example.com");
+
+    expect((await decide(card.cardId)).card.phase).toBe("stale");
   });
 });
 

@@ -1266,7 +1266,9 @@ Apply:
 **The baseline is not the displayed `from`.** Projections drop fields, so two
 stored configurations can share a `from` — a target that changed only in a
 dropped field would compare equal and apply anyway. `baseline(ctx)` is a
-server-only revision over the whole stored value.
+server-only revision over the whole stored value. For one entry of a list, that
+value is the entry's own stored state, never the whole list: two cards that add
+two different hosts must both apply, in either order.
 
 Phases:
 
