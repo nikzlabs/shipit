@@ -517,6 +517,11 @@ const GOLDEN_CONTAINER_ROUTES = [
   // The agent's only write path to a setting, and it writes no setting: it posts
   // the card the user clicks (docs/299-agent-settings-access req 4).
   "POST /api/sessions/:id/settings/propose",
+  // docs/324-scheduled-sessions req 9 — the agent reads schedules and posts a card; the matching
+  // `…/schedule-proposals/:cardId/confirm` and `…/cancel` are absent on purpose, so only the
+  // user's click saves a schedule.
+  "GET /api/sessions/:id/schedules",
+  "POST /api/sessions/:id/schedules/propose",
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",
   "GET /api/sessions/:parentId/children/:childId",

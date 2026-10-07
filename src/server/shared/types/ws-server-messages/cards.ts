@@ -13,6 +13,7 @@ import type {
   SessionRenamedCard,
   SessionSettingsChangeCard,
   SettingsProposalCard,
+  ScheduleProposalCard,
   NonTurnFailureCard,
   SshHostKeyCard,
 } from "../domain-types.js";
@@ -250,6 +251,21 @@ export interface WsSettingsProposalUpdate {
   sessionId: string;
   cardId: string;
   card: SettingsProposalCard;
+}
+
+/** docs/324-scheduled-sessions req 9 — a schedule, or a change to one, that the user confirms. */
+export interface WsScheduleProposalCard {
+  type: "schedule_proposal_card";
+  sessionId: string;
+  card: ScheduleProposalCard;
+}
+
+/** The whole card, as for the settings proposal: a viewer that attached later has nothing to patch. */
+export interface WsScheduleProposalUpdate {
+  type: "schedule_proposal_update";
+  sessionId: string;
+  cardId: string;
+  card: ScheduleProposalCard;
 }
 
 export interface WsNonTurnFailureCard {

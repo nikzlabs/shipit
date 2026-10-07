@@ -15,6 +15,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { SettingsProposalStore } from "./settings-proposal-store.js";
+import type { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
@@ -151,6 +152,7 @@ export interface RunnerRegistryDeps {
   resolvePluginServices?: ServiceSetupDeps["resolvePluginServices"];
   /** Absent in minimal setups; without it a turn simply carries no settings notice. */
   settingsProposals?: SettingsProposalStore;
+  scheduleProposals?: ScheduleProposalStore;
 }
 
 export function assertSessionCanDispatch(
@@ -191,6 +193,7 @@ export function createRunnerRegistry(
     activatePluginRepos,
     resolvePluginServices,
     settingsProposals,
+    scheduleProposals,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -501,7 +504,7 @@ export function createRunnerRegistry(
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
         cardOutcomeNotices: (sessionId) =>
-          prepareCardOutcomeNotices({ chatHistoryManager, settingsProposals }, sessionId),
+          prepareCardOutcomeNotices({ chatHistoryManager, settingsProposals, scheduleProposals }, sessionId),
         repoSessionOutcomeNotice: (sessionId) =>
           prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId),
         sessionMessageOutcomeNotice: (sessionId) =>

@@ -11,6 +11,7 @@ import {
   STALE_PERMISSION_CARD_MIGRATION,
   DATA_RETENTION_MIGRATION,
   SCHEDULES_MIGRATION,
+  SCHEDULE_PROPOSALS_MIGRATION,
   DatabaseManager,
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
@@ -1292,7 +1293,7 @@ describe("docs/324-scheduled-sessions — the schedule tables (real migration)",
     m.close();
 
     const migrated = new DatabaseManager(file);
-    expect(tables(migrated)).toEqual(["schedule_runs", "schedules"]);
+    expect(tables(migrated)).toEqual(["schedule_proposals", "schedule_runs", "schedules"]);
     expect(sessionColumns(migrated)).toEqual(expect.arrayContaining(SESSION_COLUMNS));
     migrated.close();
   });
@@ -1320,6 +1321,45 @@ describe("docs/324-scheduled-sessions — the schedule tables (real migration)",
     expect(replayed.db.prepare("SELECT id, slot_at FROM schedule_runs ORDER BY id").all()).toEqual(before.runs);
     expect(session(replayed)).toEqual(before.session);
     expect(before.runs).toHaveLength(2);
+    replayed.close();
+  });
+});
+
+describe("docs/324-scheduled-sessions — the schedule proposal card (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const hasProposalColumn = (m: DatabaseManager) =>
+    (m.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).some((c) => c.name === "schedule_proposal");
+
+  it("adds the transcript column and the record table to an older database, and replays over them", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec("DROP TABLE schedule_proposals; ALTER TABLE messages DROP COLUMN schedule_proposal;");
+    m.db.pragma(`user_version = ${SCHEDULE_PROPOSALS_MIGRATION}`);
+    m.close();
+
+    const migrated = new DatabaseManager(file);
+    expect(hasProposalColumn(migrated)).toBe(true);
+    migrated.db.exec(`
+      INSERT INTO sessions (id, title, created_at, last_used_at) VALUES ('s1', 'S', 'x', 'x');
+      INSERT INTO schedule_proposals (card_id, session_id, proposal, phase, created_at)
+        VALUES ('sch-1', 's1', '{}', 'pending', 'x');
+    `);
+    migrated.db.pragma(`user_version = ${SCHEDULE_PROPOSALS_MIGRATION}`);
+    migrated.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(replayed.db.prepare("SELECT card_id, phase FROM schedule_proposals").all())
+      .toEqual([{ card_id: "sch-1", phase: "pending" }]);
     replayed.close();
   });
 });

@@ -478,6 +478,13 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/settings/propose", request.body ?? {}, reply),
   );
 
+  app.get("/agent-ops/schedules", async (_request, reply) => relay("GET", "/schedules", undefined, reply));
+
+  app.post<{ Body: { id?: string; text?: string } }>(
+    "/agent-ops/schedules/propose",
+    async (request, reply) => relay("POST", "/schedules/propose", request.body ?? {}, reply),
+  );
+
   app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
 
   app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));

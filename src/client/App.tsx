@@ -68,7 +68,7 @@ import { GitHistory } from "./components/GitHistory.js";
 import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
 import { ProjectSettings } from "./components/ProjectSettings.js";
-import type { TrackerId } from "../server/shared/types.js";
+import type { ScheduleProposalCard as ScheduleProposalCardData, TrackerId } from "../server/shared/types.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { IssuesPanel } from "./components/IssuesPanel.js";
@@ -138,6 +138,7 @@ import type {
 
 import { useSessionStore } from "./stores/session-store.js";
 import { applySessionMessageProposalUpdate } from "./hooks/message-handlers/session-message-proposal.js";
+import { applyScheduleProposalUpdate } from "./hooks/message-handlers/schedule-proposal-card.js";
 import { applyRepoSessionProposalUpdate } from "./hooks/message-handlers/repo-session-proposal.js";
 import { useGitStore } from "./stores/git-store.js";
 import { useFileStore, markUploadDeleted, noteUploadDismissed } from "./stores/file-store.js";
@@ -1634,6 +1635,17 @@ export default function App() {
             onSettingsProposalDecision={(cardId, action) =>
               send({ type: "settings_proposal_decision", cardId, action })
             }
+            onScheduleProposalDecision={async (cardId, action, timeZone) => {
+              if (!sessionId) return;
+              const res = await apiPost<{ card: ScheduleProposalCardData }>(
+                `/api/sessions/${sessionId}/schedule-proposals/${cardId}/${action}`,
+                timeZone ? { timeZone } : undefined,
+              );
+              // With no runner on this session the route emits no WS update, so apply the
+              // response itself — scoped, in case the user switched.
+              if (useSessionStore.getState().sessionId !== sessionId) return;
+              applyScheduleProposalUpdate(cardId, res.card);
+            }}
             onUndoIssueWrite={(cardId) =>
               send({ type: "undo_issue_write", cardId })
             }

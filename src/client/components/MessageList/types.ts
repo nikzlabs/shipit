@@ -13,6 +13,7 @@ import type {
   SessionSettingsChangeCard as SessionSettingsChangeCardData,
   SshHostKeyCard as SshHostKeyCardData,
   SettingsProposalCard as SettingsProposalCardData,
+  ScheduleProposalCard as ScheduleProposalCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
@@ -320,6 +321,12 @@ export interface ChatMessage {
    * server is the only thing that ever moves it on.
    */
   settingsProposal?: SettingsProposalCardData;
+
+  /**
+   * docs/324-scheduled-sessions req 9 — a schedule, or a change to one, that the agent proposes.
+   * It is saved only when the user confirms; like the settings card, every phase rides here.
+   */
+  scheduleProposal?: ScheduleProposalCardData;
 }
 
 export interface TextSegment {

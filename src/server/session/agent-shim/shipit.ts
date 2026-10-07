@@ -56,6 +56,7 @@ import {
   handleSettingsList,
   handleSettingsPropose,
 } from "./shipit-settings.js";
+import { handleScheduleList, handleSchedulePropose } from "./shipit-schedule.js";
 import { settingsDeps, type SettingsDeps } from "./settings-out.js";
 import { renderLine } from "../../shared/settings-catalogue/rendered.js";
 import {
@@ -369,6 +370,18 @@ ShipIt's own settings (docs/299 — read what the user configured, propose a cha
   Post the card INSTEAD of telling the user which control to go and find. Keep
   the prose to what the card does not say.
 
+Scheduled sessions (docs/324 — sessions ShipIt starts by itself on a schedule):
+  shipit schedule list    [--json]
+  shipit schedule propose [--id ID] --file FILE [--json]   (YAML; --file - reads stdin)
+
+  When the user asks for something to happen regularly ("every weekday at 9,
+  check the security PRs"), propose a schedule. 'list' shows the schedules with
+  their ids. 'propose' posts a card with the schedule — or, with --id, a change
+  to one, where only the fields your YAML gives change. Nothing is saved until
+  the user clicks Confirm on the card; there is no way to save a schedule
+  yourself. It returns immediately: never wait for the card, and never post the
+  same one twice. /shipit-docs/schedules.md has the YAML.
+
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
   shipit source tree     [PATH] [--json]
@@ -616,6 +629,7 @@ const ISSUE_HANDLERS: Record<
 
 const COMMAND_DOCS: Record<string, string> = {
   settings: "/shipit-docs/settings.md",
+  schedule: "/shipit-docs/schedules.md",
   session: "/shipit-docs/sessions.md",
   source: "/shipit-docs/ops-session.md",
   issue: "/shipit-docs/issues.md",
@@ -687,6 +701,15 @@ const SETTINGS_HANDLERS: Record<
   propose: handleSettingsPropose,
 };
 
+/** Printed through the settings printer, which takes rendered lines only (`settings-out.ts`). */
+const SCHEDULE_HANDLERS: Record<
+  string,
+  (args: string[], deps: SettingsDeps) => Promise<void>
+> = {
+  list: handleScheduleList,
+  propose: handleSchedulePropose,
+};
+
 const SOURCE_HANDLERS: Record<
   string,
   (args: string[], deps: RunDeps) => Promise<void>
@@ -750,6 +773,11 @@ export async function runShim(
 
   if (command === "settings" || command === "setting") {
     await dispatchSettings(args.slice(1), deps, io);
+    return;
+  }
+
+  if (command === "schedule" || command === "schedules") {
+    await dispatchSchedule(args.slice(1), deps, io);
     return;
   }
 
@@ -953,6 +981,44 @@ async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Prom
   }
   if (requestsHelp(args.slice(1))) {
     success(io, commandHelp("settings", sub));
+    return;
+  }
+  await handler(args.slice(1), settingsDeps(deps));
+}
+
+const REJECTED_SCHEDULE_SUBCOMMANDS = new Set([
+  "create",
+  "add",
+  "update",
+  "edit",
+  "set",
+  "delete",
+  "remove",
+  "pause",
+  "resume",
+  "run",
+]);
+
+async function dispatchSchedule(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_SCHEDULE_SUBCOMMANDS.has(sub)) {
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit schedule ${sub}\` — a schedule takes effect only when the user confirms it.\n`
+        + "Post a card with `shipit schedule propose [--id ID] --file -`; the user's Confirm saves it.\n"
+        + "See /shipit-docs/schedules.md.",
+    );
+  }
+  const handler = handlerFor(SCHEDULE_HANDLERS, sub);
+  if (!handler) {
+    fail(io, `${renderLine(`Unsupported shipit schedule subcommand: ${sub}`)}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("schedule", sub));
     return;
   }
   await handler(args.slice(1), settingsDeps(deps));

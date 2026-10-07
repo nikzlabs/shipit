@@ -9,6 +9,7 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements, type VisualElement } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
+import type { ScheduleProposalAction } from "../ScheduleProposalCard.js";
 import type { WsRewindPreview, ReleaseMechanism } from "../../../server/shared/types.js";
 import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-policy.js";
 
@@ -102,6 +103,7 @@ export function MessageList({
   onResolvePermission,
   onEgressDecision,
   onSettingsProposalDecision,
+  onScheduleProposalDecision,
   onUndoIssueWrite,
   onStartRepoSession,
   onDeclineRepoSession,
@@ -135,6 +137,7 @@ export function MessageList({
 
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
+  onScheduleProposalDecision?: (cardId: string, action: ScheduleProposalAction, timeZone?: string) => Promise<void>;
 
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
@@ -352,6 +355,7 @@ export function MessageList({
     onResolvePermission,
     onEgressDecision,
     onSettingsProposalDecision,
+    onScheduleProposalDecision,
     onUndoIssueWrite,
     onStartRepoSession,
     onDeclineRepoSession,

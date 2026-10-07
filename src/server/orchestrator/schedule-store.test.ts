@@ -88,6 +88,16 @@ describe("ScheduleStore — schedules", () => {
     });
   });
 
+  it("moves updatedAt strictly forward, also for two edits in one millisecond", () => {
+    const s = store.create(newSchedule(), T0);
+    const first = store.update(s.id, { name: "One" }, T1)!.updatedAt;
+    const second = store.update(s.id, { name: "Two" }, T1)!.updatedAt;
+    const third = store.update(s.id, { name: "Three" }, T0)!.updatedAt;
+    expect(first).toBe(T1);
+    expect(Date.parse(second)).toBe(Date.parse(T1) + 1);
+    expect(Date.parse(third)).toBe(Date.parse(T1) + 2);
+  });
+
   it("records a start's reason without moving updatedAt, and clears it", () => {
     const s = store.create(newSchedule(), T0);
     store.setNeedsUserReason(s.id, "The repository is no longer trusted.");

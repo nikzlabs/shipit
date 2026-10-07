@@ -55,6 +55,7 @@ function useNeedsUser(): NeedsUser {
       return phase === "pending";
     }
     if (m.settingsProposal) return m.settingsProposal.phase === "pending";
+    if (m.scheduleProposal) return m.scheduleProposal.phase === "pending";
     if (m.releaseCard) return m.releaseCard.phase === "proposed";
     return false;
   }, [bugReports, permissions, egress]);
