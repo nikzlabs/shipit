@@ -25,15 +25,21 @@ export function fetchGitHub(
 }
 
 export async function parseGitHubError(res: Response): Promise<string> {
+  let message = "";
   try {
     const err = (await res.json()) as { message?: string };
-    if (err.message) return err.message;
+    if (err.message) message = err.message;
   } catch {
     // body wasn't JSON — fall through to status-based message
   }
-  return res.statusText
-    ? `GitHub API returned ${res.status} ${res.statusText}`
-    : `GitHub API returned ${res.status}`;
+  if (!message) {
+    message = res.statusText
+      ? `GitHub API returned ${res.status} ${res.statusText}`
+      : `GitHub API returned ${res.status}`;
+  }
+  // GitHub Support traces a server error by this id; nothing else in a 5xx identifies the request.
+  const requestId = res.status >= 500 ? res.headers.get("x-github-request-id") : null;
+  return requestId ? `${message} (GitHub request id ${requestId})` : message;
 }
 
 export function fetchGitHubGraphQL(

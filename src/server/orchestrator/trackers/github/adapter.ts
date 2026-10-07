@@ -630,7 +630,13 @@ export class GitHubTracker implements Tracker {
       throw new Error(this.accessError(res.status));
     }
     if (!res.ok) {
-      throw new Error(await parseGitHubError(res));
+      const message = await parseGitHubError(res);
+      // GitHub can save a new comment or issue and still answer 5xx, so a blind retry posts it twice.
+      throw new Error(
+        method === "POST" && res.status >= 500
+          ? `${message} — GitHub sometimes saves the write before it fails, so check whether it was created before you retry.`
+          : message,
+      );
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
@@ -657,7 +663,7 @@ export class GitHubTracker implements Tracker {
       throw new Error(this.accessError(404));
     }
     if (!res.ok) {
-      throw new Error(`GitHub API returned ${res.status}`);
+      throw new Error(await parseGitHubError(res));
     }
   }
 
