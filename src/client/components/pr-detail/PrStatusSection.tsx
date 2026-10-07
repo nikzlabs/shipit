@@ -29,6 +29,8 @@ import {
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
+  autoFixRunningLabel,
+  useAutoFixPaused,
 } from "../PrStatusControls.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
 import { Spinner } from "../Spinner.js";
@@ -109,6 +111,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   const reviewDecision = status?.reviewDecision;
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const autoFixPaused = useAutoFixPaused(sessionId);
   const checks = card.checks ?? (status ? status.checks : undefined);
   const ciDisplay = useCiDisplay(checks);
   const autoFix = card.autoFix;
@@ -126,7 +129,8 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   const canMerge = (isCiPassed || isCiNone) && !isConflicting && !isReviewBlocked;
   const showMergeButton = card.phase === "open" && canMerge && !autoMerge?.enabled;
 
-  const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
+  const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning
+    && (!autoFixCi || autoFixPaused || isAutoFixExhausted);
   const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
   return (
     <section className="px-4 py-3 border-b border-(--color-border-primary) space-y-3">
@@ -169,7 +173,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
       {isAutoFixRunning && autoFix && (
         <div className="flex items-center gap-2 text-xs text-(--color-warning)">
           <Spinner size={12} />
-          Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
+          {autoFixRunningLabel(autoFix, autoFixPaused)}
         </div>
       )}
       {isAutoFixExhausted && autoFix && (

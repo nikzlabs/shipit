@@ -472,6 +472,10 @@ export class PrStatusPoller {
     return this.autoFix.get(sessionId);
   }
 
+  withdrawAutoFix(sessionId: string): void {
+    this.autoFix.withdrawAttempt(sessionId);
+  }
+
   notifyRunnerIdle(sessionId: string): void {
     void this.autoFix.onRunnerIdle(sessionId).catch((err: unknown) => {
       console.error(`[pr-poller] auto-fix onRunnerIdle error for ${sessionId}:`, err);

@@ -156,10 +156,24 @@ function ManagedMergeInfo({
   );
 }
 
-export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
-  const paused = useSessionStore(
+export function useAutoFixPaused(sessionId: string): boolean {
+  return useSessionStore(
     (s) => s.sessions.find((sess) => sess.id === sessionId)?.autoFixCiPaused ?? false,
   );
+}
+
+/** A pause lets a fix turn that already runs finish, so "running" can outlast it. */
+export function autoFixRunningLabel(
+  autoFix: { attemptCount: number; maxAttempts: number },
+  paused: boolean,
+): string {
+  return paused
+    ? "Auto-fix paused — the current fix turn will finish"
+    : `Auto-fixing (attempt ${autoFix.attemptCount}/${autoFix.maxAttempts})...`;
+}
+
+export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
+  const paused = useAutoFixPaused(sessionId);
   const setAutoFixCiPaused = useSessionStore((s) => s.setAutoFixCiPaused);
 
   return (

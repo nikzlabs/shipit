@@ -122,6 +122,14 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
     expect(sessionManager.list().find((s) => s.id === sessionId)?.autoFixCiPaused).toBe(true);
   });
 
+  it("withdraws a fix attempt that has not started when pausing, and not when resuming", async () => {
+    const withdraw = vi.spyOn(prStatusPoller, "withdrawAutoFix");
+    await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/auto-fix-pause`, payload: { paused: true } });
+    await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/auto-fix-pause`, payload: { paused: false } });
+    expect(withdraw.mock.calls).toEqual([[sessionId]]);
+    withdraw.mockRestore();
+  });
+
   it("resumes by clearing the flag", async () => {
     sessionManager.setAutoFixCiPaused(sessionId, true);
     const res = await app.inject({

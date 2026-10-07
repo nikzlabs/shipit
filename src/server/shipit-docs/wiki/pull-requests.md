@@ -45,6 +45,7 @@ icons leave too little room beside it.
 | **Merge conflicts** | The branch no longer merges cleanly into its base |
 | **Send review (n)** | The user has n unsent line comments — see below |
 | **Auto-fixing (attempt n/3)** | ShipIt is running a turn against the failing checks |
+| **Auto-fix paused — the current fix turn will finish** | Auto-fix was paused for this session while a fix turn was already running; that turn finishes, and no new one starts |
 
 Clicking anywhere on the card that is not a control opens the **PR** tab.
 
@@ -58,7 +59,7 @@ known here. And a **⋮** menu:
 | Menu item | Appears |
 |---|---|
 | **Auto-merge** switch | Only when the pull request is *not* open — while it is open the switch is on the card itself. Before one exists it arms in advance, and ShipIt applies it the moment the pull request opens |
-| **Auto-fix CI** switch | Only when the workspace auto-fix setting is on. Off here pauses auto-fixing for this session alone |
+| **Auto-fix CI** switch | Only when the workspace auto-fix setting is on. Off here pauses auto-fixing for this session alone. A fix turn that is still waiting to start is removed; one already running finishes |
 | **Sync with `<base>`** | Whenever the session has a remote. Rebases onto the base; on a session whose pull request already merged it resets the branch to the base instead |
 | **Copy branch name** | Whenever the branch is known |
 | **Close pull request** | Only while the pull request is open. Two clicks — the second confirms |
@@ -181,11 +182,12 @@ Two controls sit either side of that:
 
 - **Auto-fix CI** on the pull request's **⋮** menu pauses it for **this session
   only**, and appears only when the workspace setting is on. It stops further
-  fix turns being started; a fix turn already under way is not interrupted.
+  fix turns being started and removes one still waiting to start; a fix turn
+  already under way is not interrupted, and the card says it will finish.
 - **Fix CI**, a red button on the card, starts the same fix turn by hand. It
   appears when checks have failed and ShipIt is not itself auto-fixing — because
-  the workspace setting is off, or because this session's three attempts are
-  used up.
+  the workspace setting is off, because auto-fix is paused for this session, or
+  because this session's three attempts are used up.
 
 ## Merge conflicts, resolved in the session
 

@@ -4,6 +4,7 @@ import {
   releaseQueuedTurn,
   startQueuedMessage,
   takeRunnableQueuedTurn,
+  withdrawWaitingTurns,
 } from "./queue-drain.js";
 import { toQueuedMessage } from "./session-runner.js";
 import type { AgentDispatchOptions, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
@@ -252,6 +253,71 @@ describe("a question holds automatic entries (docs/322)", () => {
 
     expect(takeRunnableQueuedTurn(fakeHeldRunner(queue, false))?.text).toBe("[ci-fix] CI failed");
     expect(queue).toHaveLength(0);
+  });
+});
+
+describe("withdrawWaitingTurns", () => {
+  const fixText = "[ci-fix] CI failed";
+
+  function fakeWithdrawRunner(queue: QueuedMessage[], held: QueuedMessage[] = []) {
+    const forgotten: number[] = [];
+    const emitted: unknown[] = [];
+    const runner = {
+      sessionId: "s1",
+      messageQueue: queue,
+      answerHoldStore: {
+        heldTurns: () => held.filter((m) => m.heldId === undefined || !forgotten.includes(m.heldId)),
+        forgetHeldTurn: (heldId: number) => { forgotten.push(heldId); },
+      },
+      emitMessage: (m: unknown) => { emitted.push(m); },
+      getQueueSnapshot: () => queue.map((m, i) => ({ text: m.text, position: i + 1 })),
+    } as unknown as SessionRunnerInterface;
+    return { runner, forgotten, emitted };
+  }
+
+  it("removes a queued match, settles it as dropped, and leaves the user's turn queued", () => {
+    const onTurnComplete = vi.fn();
+    const queue: QueuedMessage[] = [
+      { text: "typed by the user", execution: "interactive" },
+      { text: fixText, execution: "dispatched", systemTurn: true, automatic: true, onTurnComplete },
+    ];
+    const { runner, emitted } = fakeWithdrawRunner(queue);
+
+    expect(withdrawWaitingTurns(runner, (m) => m.text === fixText, "auto-fix paused")).toBe(1);
+
+    expect(queue.map((m) => m.text)).toEqual(["typed by the user"]);
+    expect(onTurnComplete).toHaveBeenCalledWith(expect.objectContaining({ status: "dropped", detail: "auto-fix paused" }));
+    expect(emitted).toEqual([{ type: "queue_updated", queue: [{ text: "typed by the user", position: 1 }] }]);
+  });
+
+  it("forgets a match saved behind a question and settles it once, even when it is also queued", () => {
+    const savedOnly = vi.fn();
+    const restored = vi.fn();
+    const queue: QueuedMessage[] = [{ text: fixText, execution: "dispatched", heldId: 3, onTurnComplete: restored }];
+    const held: QueuedMessage[] = [
+      { text: fixText, execution: "dispatched", heldId: 3, onTurnComplete: restored },
+      { text: fixText, execution: "dispatched", heldId: 4, onTurnComplete: savedOnly },
+      { text: "Child PR #42 merged", execution: "dispatched", heldId: 5 },
+    ];
+    const { runner, forgotten } = fakeWithdrawRunner(queue, held);
+
+    expect(withdrawWaitingTurns(runner, (m) => m.text === fixText, "auto-fix paused")).toBe(2);
+
+    expect(queue).toEqual([]);
+    expect(forgotten.sort()).toEqual([3, 4]);
+    expect(restored).toHaveBeenCalledTimes(1);
+    expect(savedOnly).toHaveBeenCalledTimes(1);
+  });
+
+  it("touches nothing when no turn waits", () => {
+    const queue: QueuedMessage[] = [{ text: "typed by the user", execution: "interactive" }];
+    const { runner, emitted, forgotten } = fakeWithdrawRunner(queue);
+
+    expect(withdrawWaitingTurns(runner, (m) => m.text === fixText, "auto-fix paused")).toBe(0);
+
+    expect(queue).toHaveLength(1);
+    expect(emitted).toEqual([]);
+    expect(forgotten).toEqual([]);
   });
 });
 

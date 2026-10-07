@@ -1404,6 +1404,7 @@ export async function registerGitHubRoutes(
         return;
       }
       sessionManager.setAutoFixCiPaused(request.params.id, request.body.paused);
+      if (request.body.paused) deps.prStatusPoller?.withdrawAutoFix(request.params.id);
       deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
       return { paused: request.body.paused };
     },

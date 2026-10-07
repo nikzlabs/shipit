@@ -659,6 +659,43 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Fix CI Issues")).toBeNull();
   });
 
+  describe("auto-fix paused for this session", () => {
+    let autoFixCiBefore: boolean;
+    beforeEach(() => {
+      autoFixCiBefore = useSettingsStore.getState().autoFixCi;
+      useSettingsStore.setState({ autoFixCi: true });
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1", autoFixCiPaused: true })] });
+    });
+    afterEach(() => {
+      useSettingsStore.setState({ autoFixCi: autoFixCiBefore });
+    });
+
+    it("says the running fix turn will finish, not that it is auto-fixing", () => {
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+        autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
+      });
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.getByText("Auto-fix paused — the current fix turn will finish")).toBeInTheDocument();
+      expect(screen.queryByText(/Auto-fixing/)).toBeNull();
+    });
+
+    it("offers Fix CI once no fix turn runs, though the workspace setting is on", () => {
+      setCard("s1", {
+        ...openPrCard,
+        checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+        autoFix: { status: "deferred", attemptCount: 0, maxAttempts: 3 },
+      });
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.getByRole("button", { name: "Fix CI" })).toBeInTheDocument();
+    });
+  });
+
   it("does not show failure list or fix button when CI passes", () => {
     setCard("s1", {
       ...openPrCard,

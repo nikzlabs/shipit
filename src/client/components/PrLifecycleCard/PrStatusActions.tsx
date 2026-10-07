@@ -33,6 +33,7 @@ import {
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
+  useAutoFixPaused,
 } from "../PrStatusControls.js";
 import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
@@ -180,6 +181,7 @@ export function PrStatusActions({
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const autoFixPaused = useAutoFixPaused(sessionId);
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   const ciDisplay = useCiDisplay(card.checks);
   if (!pr) return null;
@@ -190,7 +192,7 @@ export function PrStatusActions({
   const isCiFailed = ciDisplay.kind === "failure";
   const isConflicting = mergeable === "conflicting";
 
-  const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
+  const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFixCi || autoFixPaused || isAutoFixExhausted);
 
   const showConflictUi = isConflicting && rebaseStatus === "idle";
 

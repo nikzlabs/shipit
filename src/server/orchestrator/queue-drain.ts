@@ -4,7 +4,8 @@ import type {
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import { automaticTurnHeldForAnswer, systemTurnBlockedByResidentWork } from "./turn-admission.js";
-import { holdTurn } from "./held-turns.js";
+import { forgetHeldEntries, holdTurn } from "./held-turns.js";
+import { settleDroppedQueueEntries } from "./turn-settlement.js";
 
 export { queuedMessageToDispatchOptions };
 
@@ -81,6 +82,35 @@ export async function startQueuedMessage(
     return runInteractive(next);
   }
   await runner.runDispatchedTurn(queuedMessageToDispatchOptions(next));
+}
+
+/**
+ * Remove the turns that match and have not started — queued, or saved behind a question —
+ * and settle each as dropped. A turn that already started is not touched.
+ */
+export function withdrawWaitingTurns(
+  runner: Pick<SessionRunnerInterface, "sessionId" | "messageQueue" | "answerHoldStore" | "emitMessage" | "getQueueSnapshot">,
+  matches: (entry: QueuedMessage) => boolean,
+  reason: string,
+): number {
+  const queue = runner.messageQueue;
+  const queued = queue.filter(matches);
+  if (queued.length > 0) {
+    queue.splice(0, queue.length, ...queue.filter((m) => !queued.includes(m)));
+    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  }
+  let held: QueuedMessage[] = [];
+  try {
+    const inQueue = new Set(queued.map((m) => m.heldId));
+    held = (runner.answerHoldStore?.heldTurns(runner.sessionId) ?? [])
+      .filter((m) => matches(m) && !inQueue.has(m.heldId));
+  } catch (err) {
+    console.error(`[queue] reading the held turns of ${runner.sessionId} failed:`, err);
+  }
+  const withdrawn = [...queued, ...held];
+  forgetHeldEntries(runner.answerHoldStore, withdrawn);
+  settleDroppedQueueEntries(withdrawn, reason);
+  return withdrawn.length;
 }
 
 /**

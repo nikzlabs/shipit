@@ -1,4 +1,5 @@
 ---
+issue: planning#641
 description: Per-session pause for the auto-fix-CI loop, toggled from the PR card overflow menu.
 ---
 
@@ -41,7 +42,26 @@ takes effect on the next poll with no per-session fan-out.
 
 Note the gate sits *after* the signal is cached (base step 2), so a resume's
 first poll has the right CI baseline — mirroring how the global re-enable works.
-Pausing does not kill an in-flight fix turn; it only blocks new fires.
+
+**An attempt already in flight.** Pausing does not kill a fix turn that has
+started; it finishes. A fix turn that has *not* started is removed: the dispatch
+can wait in the runner's queue (behind a user turn, or behind resident background
+work a system turn would destroy) or in the saved hold behind a question
+(docs/322), and either way the card read "Auto-fixing" while nothing ran, and the
+turn ran later despite the pause. So the route calls
+`PrStatusPoller.withdrawAutoFix` → `AutoFixManager.withdrawAttempt`, which aborts
+the `AbortSignal` the manager passed to `fetchAndFixCb` for that attempt. The
+callback (`app-lifecycle.ts`) skips the dispatch if the signal is already aborted,
+and otherwise calls `withdrawWaitingTurns` (`queue-drain.ts`), which removes the
+entry carrying the fix prompt from the queue and the hold store and settles it
+`dropped` — the attempt then ends as a no-op (`deferred`, budget untouched). An
+entry that has already started is in neither place, so it is left alone. The
+match is on the exact prompt text that attempt dispatched.
+
+While a started fix turn finishes, the card and the PR panel read "Auto-fix
+paused — the current fix turn will finish" instead of the attempt counter, and a
+paused session with failing checks shows the **Fix CI** button, as when the
+workspace setting is off.
 
 **Route.** `POST /api/sessions/:id/pr/auto-fix-pause { paused }` sets the flag and
 re-broadcasts `session_list` over SSE so every tab's PR menu reconciles and a
@@ -63,14 +83,18 @@ optimistically flips the session record, POSTs, and reverts on failure.
 - `src/server/orchestrator/auto-remediation-manager.ts` — `isSessionEnabled` config hook + gate in `runTransition` / `onRunnerIdle`.
 - `src/server/orchestrator/auto-fix-manager.ts` — passes the per-session gate to the base.
 - `src/server/orchestrator/pr-status-poller.ts` — wires the gate to the session flag.
-- `src/server/orchestrator/api-routes-github.ts` — `POST /pr/auto-fix-pause`.
+- `src/server/orchestrator/api-routes-github.ts` — `POST /pr/auto-fix-pause`; a pause withdraws the waiting attempt.
+- `src/server/orchestrator/app-lifecycle.ts` — `fetchAndFixCb` honors the withdrawal signal.
+- `src/server/orchestrator/queue-drain.ts` — `withdrawWaitingTurns`.
 - `src/client/stores/session-store.ts` — `setAutoFixCiPaused` optimistic action.
 - `src/client/components/PrStatusControls.tsx` — `AutoFixPauseToggle`.
 - `src/client/components/PrActionsMenu.tsx` — renders the toggle (gated on global setting).
 
 ## Tests
 
-- `auto-fix-manager.test.ts` — paused session never fires; resuming re-enables.
+- `auto-fix-manager.test.ts` — paused session never fires; resuming re-enables; a pause aborts the attempt in flight.
+- `queue-drain.test.ts` — `withdrawWaitingTurns` removes queued and held matches, settles each once.
+- `PrLifecycleCard.test.tsx` — paused label while a fix turn finishes; Fix CI offered while paused.
 - `sessions.test.ts` — `autoFixCiPaused` round-trips and persists across instances.
 - `integration_tests/pr-ci-fix.test.ts` — route persists/clears the flag, 404/400 validation.
 

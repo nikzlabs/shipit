@@ -12,6 +12,7 @@ import { PrMergeActions, PrStatusActions } from "../PrStatusActions.js";
 import { BranchLabel } from "../shared.js";
 import { Spinner } from "../../Spinner.js";
 import { FailedChecksList, DeploymentStatusRow } from "../indicators/index.js";
+import { autoFixRunningLabel, useAutoFixPaused } from "../../PrStatusControls.js";
 
 export function OpenPhase({
   card,
@@ -30,6 +31,7 @@ export function OpenPhase({
   // The arming that can still act on THIS pull request — never the raw card
 
   const autoMerge = useActiveAutoMerge(sessionId);
+  const autoFixPaused = useAutoFixPaused(sessionId);
   if (!pr) return null;
 
   const autoFix = card.autoFix;
@@ -103,7 +105,7 @@ export function OpenPhase({
           <div className="mt-1 flex items-center gap-2">
             <Spinner size={14} className="text-(--color-info) shrink-0" />
             <span className="text-xs text-(--color-warning)">
-              Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
+              {autoFixRunningLabel(autoFix, autoFixPaused)}
             </span>
           </div>
         )}
