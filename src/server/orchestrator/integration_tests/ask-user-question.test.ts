@@ -378,18 +378,8 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       duration_ms: 80,
     });
 
-    let sawCommit = false;
-    const deadline = Date.now() + 2000;
-    while (!sawCommit && Date.now() < deadline) {
-      let msg;
-      try {
-        msg = await client.receive(500);
-      } catch {
-        break;
-      }
-      if (msg.type === "git_committed") sawCommit = true;
-    }
-    expect(sawCommit).toBe(true);
+    // A real git commit runs first, and a loaded runner can be silent for longer than a short poll.
+    await client.receiveType("git_committed", 10_000);
 
     client.close();
   });

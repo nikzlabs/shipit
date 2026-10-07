@@ -1552,6 +1552,64 @@ describe("post-turn flow for a self-woken turn", () => {
     runner.dispose({ force: true });
   });
 
+  // planning#644 — a one-shot `done` can arrive after the result's drain started a successor,
+  // which holds `running` through its setup before it installs an agent of its own.
+  it("leaves a successor still in setup running when the predecessor's done arrives late", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent();
+    let idleSignals = 0;
+    runner.on("idle", () => { idleSignals += 1; });
+    // As drainNextQueuedMessage does: the entry is claimed before the successor's setup.
+    const drainNext = vi.fn(async () => {
+      runner.dequeue();
+      runner.running = true;
+    });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: vi.fn(realAutoCommit),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    runner.setAgent(agent as never);
+    runner.enqueue({ text: "first queued", execution: "interactive" });
+    runner.enqueue({ text: "second queued", execution: "interactive" });
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "one-shot",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext,
+      emit: () => {},
+      useStreaming: false,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => drainNext.mock.calls.length === 1, "successor claimed at agent_result");
+
+    agent.emit("done", 0);
+    await waitFor(() => !runner.postTurnWorkInFlight, "predecessor's teardown finished");
+
+    expect(runner.running).toBe(true);
+    expect(drainNext).toHaveBeenCalledTimes(1);
+    expect(runner.queueLength).toBe(1);
+    expect(idleSignals).toBe(0);
+
+    runner.dispose({ force: true });
+  });
+
   it("gives an adopted turn its own turn-start head, so a no-op wake neither re-scans nor re-pushes", async () => {
     const filePath = path.join(repoDir, "file.txt");
     const runner = new SessionRunner({

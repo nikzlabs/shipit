@@ -38,7 +38,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
-import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup } from "./turn-stop-request.js";
+import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup, turnInSetup } from "./turn-stop-request.js";
 import path from "node:path";
 import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import type { ReplaySpillTarget } from "./services/replay.js";
@@ -1562,8 +1562,9 @@ export async function executeAgentTurn(
         return;
       }
 
-      // A late task notification can leave a one-shot process marked running after exit.
-      const unlatched = runner?.getAgent() === null && runner.running;
+      // A late task notification can leave a one-shot process marked running after exit. A
+      // successor this turn's drain started holds `running` too while in setup (planning#644).
+      const unlatched = runner?.getAgent() === null && runner.running && !turnInSetup(runner);
       if (unlatched) runner.running = false;
 
       await postTurnStep("drain", tryDrain);

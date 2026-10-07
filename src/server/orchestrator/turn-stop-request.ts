@@ -50,6 +50,12 @@ export function consumeSetupStop(runner: object): boolean {
   return true;
 }
 
+/** A turn holds `running` and has not submitted its prompt yet. */
+export function turnInSetup(runner: object): boolean {
+  const phase = phases.get(runner);
+  return phase !== undefined && !phase.submitted;
+}
+
 /** The turn now setting up or running: every false → true of `running` begins a new one. */
 export function currentTurnPhase(runner: object): object | undefined {
   return phases.get(runner);

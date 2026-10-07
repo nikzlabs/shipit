@@ -246,7 +246,7 @@ describe("runRequestedCompaction — after the compaction", () => {
     expect(prompts[1]).toContain(buildContinuationPrompt("start B"));
   });
 
-  it("continues on a compaction that reports a result and never exits, as OpenCode's does", async () => {
+  it("continues from the compaction's result, before its process exits", async () => {
     const { deps, turn, agents, prompts } = setup({ note: "start B" });
     await runRequestedCompaction(deps, turn);
     await waitForTurn(() => prompts.length === 1, "compaction spawn");
