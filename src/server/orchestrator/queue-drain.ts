@@ -1,4 +1,5 @@
 import type {
+  AnswerHoldStore,
   QueuedMessage,
   SessionRunnerInterface,
 } from "./session-runner.js";
@@ -85,30 +86,32 @@ export async function startQueuedMessage(
 }
 
 /**
- * Remove the turns that match and have not started — queued, or saved behind a question —
- * and settle each as dropped. A turn that already started is not touched.
+ * Remove the turns that match and have not started — queued on the session's current runner,
+ * or saved behind a question, which outlives runners and restarts — and settle each as
+ * dropped. A turn that already started is in neither place, so it is not touched.
  */
 export function withdrawWaitingTurns(
-  runner: Pick<SessionRunnerInterface, "sessionId" | "messageQueue" | "answerHoldStore" | "emitMessage" | "getQueueSnapshot">,
+  sessionId: string,
+  runner: Pick<SessionRunnerInterface, "messageQueue" | "emitMessage" | "getQueueSnapshot"> | undefined,
+  holdStore: AnswerHoldStore | undefined,
   matches: (entry: QueuedMessage) => boolean,
   reason: string,
 ): number {
-  const queue = runner.messageQueue;
-  const queued = queue.filter(matches);
-  if (queued.length > 0) {
+  const queued = runner?.messageQueue.filter(matches) ?? [];
+  if (runner && queued.length > 0) {
+    const queue = runner.messageQueue;
     queue.splice(0, queue.length, ...queue.filter((m) => !queued.includes(m)));
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
   }
   let held: QueuedMessage[] = [];
   try {
     const inQueue = new Set(queued.map((m) => m.heldId));
-    held = (runner.answerHoldStore?.heldTurns(runner.sessionId) ?? [])
-      .filter((m) => matches(m) && !inQueue.has(m.heldId));
+    held = (holdStore?.heldTurns(sessionId) ?? []).filter((m) => matches(m) && !inQueue.has(m.heldId));
   } catch (err) {
-    console.error(`[queue] reading the held turns of ${runner.sessionId} failed:`, err);
+    console.error(`[queue] reading the held turns of ${sessionId} failed:`, err);
   }
   const withdrawn = [...queued, ...held];
-  forgetHeldEntries(runner.answerHoldStore, withdrawn);
+  forgetHeldEntries(holdStore, withdrawn);
   settleDroppedQueueEntries(withdrawn, reason);
   return withdrawn.length;
 }

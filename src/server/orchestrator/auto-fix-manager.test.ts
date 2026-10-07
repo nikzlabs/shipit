@@ -191,40 +191,20 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(1);
   });
 
-  it("a pause withdraws the attempt in flight, and its dropped turn leaves the card", async () => {
-    let withdrawn: AbortSignal | undefined;
+  it("docs/186 — a fix turn the pause removed ends the attempt without counting it", async () => {
     let settle!: (r: AutoFixResult) => void;
-    const cb: FetchAndFixCb = (_s, _o, _r, _c, signal) => {
-      withdrawn = signal;
-      return new Promise((resolve) => { settle = resolve; });
-    };
+    const cb: FetchAndFixCb = () => new Promise((resolve) => { settle = resolve; });
     fx = makeFixture({ cb: cb as RecordingCb });
     await fx.fail();
     await tick();
     expect(fx.manager.get("s1")?.status).toBe("running");
 
     fx.setPaused(true);
-    fx.manager.withdrawAttempt("s1");
-    expect(withdrawn?.aborted).toBe(true);
-
     settle(autoFixResultForOutcome(turnDropped("auto-fix paused")));
     await tick();
+
     expect(fx.manager.get("s1")?.status).toBe("deferred");
     expect(fx.manager.get("s1")?.attemptCount).toBe(0);
-  });
-
-  it("withdrawing after the attempt settled aborts nothing", async () => {
-    let withdrawn: AbortSignal | undefined;
-    const cb: FetchAndFixCb = async (_s, _o, _r, _c, signal) => {
-      withdrawn = signal;
-      return { outcome: "fixed" };
-    };
-    fx = makeFixture({ cb: cb as RecordingCb });
-    await fx.fail();
-    await tick();
-
-    fx.manager.withdrawAttempt("s1");
-    expect(withdrawn?.aborted).toBe(false);
   });
 
   it("PENDING / none / SUCCESS never fire", async () => {

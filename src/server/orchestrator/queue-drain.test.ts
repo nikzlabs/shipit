@@ -7,7 +7,7 @@ import {
   withdrawWaitingTurns,
 } from "./queue-drain.js";
 import { toQueuedMessage } from "./session-runner.js";
-import type { AgentDispatchOptions, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
+import type { AgentDispatchOptions, AnswerHoldStore, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 
 function fakeRunner(opts: { canRunDispatchedTurn?: boolean } = {}) {
@@ -87,6 +87,7 @@ describe("queue drain routing (planning#257)", () => {
       postTurn: "none",
       systemTurn: true,
       automatic: true,
+      ciAutoFix: true,
       heldId: 7,
       onTurnComplete,
       deliveryId: "watch-1:1",
@@ -257,51 +258,66 @@ describe("a question holds automatic entries (docs/322)", () => {
 });
 
 describe("withdrawWaitingTurns", () => {
-  const fixText = "[ci-fix] CI failed";
+  const isFix = (m: QueuedMessage): boolean => m.ciAutoFix === true;
+  const fix = (extra: Partial<QueuedMessage> = {}): QueuedMessage => ({
+    text: "[ci-fix] CI failed",
+    execution: "dispatched",
+    systemTurn: true,
+    automatic: true,
+    ciAutoFix: true,
+    ...extra,
+  });
 
-  function fakeWithdrawRunner(queue: QueuedMessage[], held: QueuedMessage[] = []) {
-    const forgotten: number[] = [];
+  function fakeQueueOwner(queue: QueuedMessage[]) {
     const emitted: unknown[] = [];
     const runner = {
-      sessionId: "s1",
       messageQueue: queue,
-      answerHoldStore: {
-        heldTurns: () => held.filter((m) => m.heldId === undefined || !forgotten.includes(m.heldId)),
-        forgetHeldTurn: (heldId: number) => { forgotten.push(heldId); },
-      },
       emitMessage: (m: unknown) => { emitted.push(m); },
       getQueueSnapshot: () => queue.map((m, i) => ({ text: m.text, position: i + 1 })),
     } as unknown as SessionRunnerInterface;
-    return { runner, forgotten, emitted };
+    return { runner, emitted };
   }
 
-  it("removes a queued match, settles it as dropped, and leaves the user's turn queued", () => {
+  function fakeHoldStore(held: QueuedMessage[]) {
+    const forgotten: number[] = [];
+    const store = {
+      heldTurns: () => held.filter((m) => m.heldId === undefined || !forgotten.includes(m.heldId)),
+      forgetHeldTurn: (heldId: number) => { forgotten.push(heldId); },
+    } as unknown as AnswerHoldStore;
+    return { store, forgotten };
+  }
+
+  it("removes a queued match, settles it as dropped, and leaves the user's turns — a manual Fix CI too", () => {
     const onTurnComplete = vi.fn();
     const queue: QueuedMessage[] = [
       { text: "typed by the user", execution: "interactive" },
-      { text: fixText, execution: "dispatched", systemTurn: true, automatic: true, onTurnComplete },
+      fix({ onTurnComplete }),
+      { text: "[ci-fix] CI failed", execution: "dispatched", activity: "Fixing CI…" },
     ];
-    const { runner, emitted } = fakeWithdrawRunner(queue);
+    const { runner, emitted } = fakeQueueOwner(queue);
 
-    expect(withdrawWaitingTurns(runner, (m) => m.text === fixText, "auto-fix paused")).toBe(1);
+    expect(withdrawWaitingTurns("s1", runner, undefined, isFix, "auto-fix paused")).toBe(1);
 
-    expect(queue.map((m) => m.text)).toEqual(["typed by the user"]);
+    expect(queue.map((m) => m.activity ?? m.text)).toEqual(["typed by the user", "Fixing CI…"]);
     expect(onTurnComplete).toHaveBeenCalledWith(expect.objectContaining({ status: "dropped", detail: "auto-fix paused" }));
-    expect(emitted).toEqual([{ type: "queue_updated", queue: [{ text: "typed by the user", position: 1 }] }]);
+    expect(emitted).toEqual([{
+      type: "queue_updated",
+      queue: [{ text: "typed by the user", position: 1 }, { text: "[ci-fix] CI failed", position: 2 }],
+    }]);
   });
 
   it("forgets a match saved behind a question and settles it once, even when it is also queued", () => {
     const savedOnly = vi.fn();
     const restored = vi.fn();
-    const queue: QueuedMessage[] = [{ text: fixText, execution: "dispatched", heldId: 3, onTurnComplete: restored }];
-    const held: QueuedMessage[] = [
-      { text: fixText, execution: "dispatched", heldId: 3, onTurnComplete: restored },
-      { text: fixText, execution: "dispatched", heldId: 4, onTurnComplete: savedOnly },
-      { text: "Child PR #42 merged", execution: "dispatched", heldId: 5 },
-    ];
-    const { runner, forgotten } = fakeWithdrawRunner(queue, held);
+    const queue: QueuedMessage[] = [fix({ heldId: 3, onTurnComplete: restored })];
+    const { runner } = fakeQueueOwner(queue);
+    const { store, forgotten } = fakeHoldStore([
+      fix({ heldId: 3, onTurnComplete: restored }),
+      fix({ heldId: 4, onTurnComplete: savedOnly }),
+      { text: "Child PR #42 merged", execution: "dispatched", automatic: true, heldId: 5 },
+    ]);
 
-    expect(withdrawWaitingTurns(runner, (m) => m.text === fixText, "auto-fix paused")).toBe(2);
+    expect(withdrawWaitingTurns("s1", runner, store, isFix, "auto-fix paused")).toBe(2);
 
     expect(queue).toEqual([]);
     expect(forgotten.sort()).toEqual([3, 4]);
@@ -309,11 +325,20 @@ describe("withdrawWaitingTurns", () => {
     expect(savedOnly).toHaveBeenCalledTimes(1);
   });
 
+  it("withdraws a saved match with no runner and no callback, as after a restart", () => {
+    const { store, forgotten } = fakeHoldStore([fix({ heldId: 9 })]);
+
+    expect(withdrawWaitingTurns("s1", undefined, store, isFix, "auto-fix paused")).toBe(1);
+
+    expect(forgotten).toEqual([9]);
+  });
+
   it("touches nothing when no turn waits", () => {
     const queue: QueuedMessage[] = [{ text: "typed by the user", execution: "interactive" }];
-    const { runner, emitted, forgotten } = fakeWithdrawRunner(queue);
+    const { runner, emitted } = fakeQueueOwner(queue);
+    const { store, forgotten } = fakeHoldStore([]);
 
-    expect(withdrawWaitingTurns(runner, (m) => m.text === fixText, "auto-fix paused")).toBe(0);
+    expect(withdrawWaitingTurns("s1", runner, store, isFix, "auto-fix paused")).toBe(0);
 
     expect(queue).toHaveLength(1);
     expect(emitted).toEqual([]);

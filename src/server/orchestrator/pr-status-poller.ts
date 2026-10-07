@@ -23,6 +23,7 @@ import {
   prStatusEqual,
 } from "./pr-status-parser.js";
 import { AutoFixManager, MAX_AUTO_FIX_ATTEMPTS, type FetchAndFixCb } from "./auto-fix-manager.js";
+import { withdrawWaitingTurns } from "./queue-drain.js";
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import { CiGraceTracker } from "./ci-grace-tracker.js";
 import { AutoConflictResolveManager, MAX_AUTO_RESOLVE_ATTEMPTS, type RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
@@ -472,8 +473,16 @@ export class PrStatusPoller {
     return this.autoFix.get(sessionId);
   }
 
+  /** docs/186 — a pause removes the fix turn that still waits; one that already runs finishes. */
   withdrawAutoFix(sessionId: string): void {
-    this.autoFix.withdrawAttempt(sessionId);
+    const count = withdrawWaitingTurns(
+      sessionId,
+      this.runnerRegistry?.get(sessionId),
+      this.sessionManager,
+      (entry) => entry.ciAutoFix === true,
+      "auto-fix paused",
+    );
+    if (count > 0) console.log(`[auto-fix] ${sessionId} — paused; removed ${count} waiting fix turn(s)`);
   }
 
   notifyRunnerIdle(sessionId: string): void {

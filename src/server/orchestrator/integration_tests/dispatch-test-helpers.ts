@@ -20,6 +20,7 @@ export function testDispatch(
     postTurn: opts.postTurn,
     systemTurn: opts.systemTurn,
     automatic: opts.automatic,
+    ciAutoFix: opts.ciAutoFix,
     heldId: opts.heldId,
     onTurnComplete: opts.onTurnComplete,
     resetMergedBranch: opts.resetMergedBranch,

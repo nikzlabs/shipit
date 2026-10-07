@@ -6,6 +6,8 @@ import { execSync } from "node:child_process";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { PrStatusPoller } from "../pr-status-poller.js";
+import { toQueuedMessage } from "../session-runner.js";
+import { autoFixDispatch } from "../services/github-ci-fix.js";
 import {
   StubAuthManager,
   StubGitHubAuthManager,
@@ -122,12 +124,17 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
     expect(sessionManager.list().find((s) => s.id === sessionId)?.autoFixCiPaused).toBe(true);
   });
 
-  it("withdraws a fix attempt that has not started when pausing, and not when resuming", async () => {
-    const withdraw = vi.spyOn(prStatusPoller, "withdrawAutoFix");
-    await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/auto-fix-pause`, payload: { paused: true } });
+  it("removes a saved automatic fix turn on pause, and keeps a manual Fix CI and other held work", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    sessionManager.holdTurn(sessionId, toQueuedMessage(autoFixDispatch("CI failed: lint")));
+    sessionManager.holdTurn(sessionId, { text: "CI failed: lint", execution: "dispatched", activity: "Fixing CI…" });
+    sessionManager.holdTurn(sessionId, { text: "Child PR #42 merged", execution: "dispatched", automatic: true });
+
     await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/auto-fix-pause`, payload: { paused: false } });
-    expect(withdraw.mock.calls).toEqual([[sessionId]]);
-    withdraw.mockRestore();
+    expect(sessionManager.heldTurns(sessionId)).toHaveLength(3);
+
+    await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/auto-fix-pause`, payload: { paused: true } });
+    expect(sessionManager.heldTurns(sessionId).map((m) => m.activity ?? m.text)).toEqual(["Fixing CI…", "Child PR #42 merged"]);
   });
 
   it("resumes by clearing the flag", async () => {

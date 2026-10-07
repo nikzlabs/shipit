@@ -24,13 +24,11 @@ export function autoFixResultForOutcome(outcome: TurnOutcome): AutoFixResult {
   return { outcome: "fixed" };
 }
 
-/** `withdrawn` aborts when the user pauses: a fix turn that has not started must not start. */
 export type FetchAndFixCb = (
   sessionId: string,
   owner: string,
   repo: string,
   failedChecks: FailedCheck[],
-  withdrawn: AbortSignal,
 ) => Promise<AutoFixResult>;
 
 interface CiSignal {
@@ -46,8 +44,6 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
   private signalCache = new Map<string, CiSignal>();
 
   private dispatchedCheckIds = new Map<string, Set<number>>();
-
-  private inFlight = new Map<string, AbortController>();
 
   private fetchAndFixCb?: FetchAndFixCb;
 
@@ -166,17 +162,10 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
     void this.runAttempt(sessionId, signal, cb);
   }
 
-  /** The user paused auto-fix: drop the attempt unless its fix turn already started. */
-  withdrawAttempt(sessionId: string): void {
-    this.inFlight.get(sessionId)?.abort();
-  }
-
   private async runAttempt(sessionId: string, signal: CiSignal, cb: FetchAndFixCb): Promise<void> {
-    const withdrawal = new AbortController();
-    this.inFlight.set(sessionId, withdrawal);
     try {
       const toSend = this.notYetDispatched(sessionId, signal.failedChecks);
-      const result = await cb(sessionId, signal.owner, signal.repo, toSend, withdrawal.signal);
+      const result = await cb(sessionId, signal.owner, signal.repo, toSend);
       // A no-op must remain retryable; do not restore caches deleted during the await.
       if (result.outcome === "fixed" && this.states.has(sessionId)) {
         this.recordDispatched(sessionId, toSend);
@@ -184,8 +173,6 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
       this.completeTurn(sessionId, result);
     } catch (err: unknown) {
       this.completeTurn(sessionId, { outcome: "noop", lastError: getErrorMessage(err) });
-    } finally {
-      if (this.inFlight.get(sessionId) === withdrawal) this.inFlight.delete(sessionId);
     }
   }
 

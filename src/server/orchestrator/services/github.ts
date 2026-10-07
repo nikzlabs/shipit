@@ -99,6 +99,7 @@ export {
   stripCILogBloat,
   extractErrorLines,
   buildCIFixPrompt,
+  autoFixDispatch,
   triggerCIFix,
 } from "./github-ci-fix.js";
 
