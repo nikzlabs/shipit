@@ -3784,7 +3784,8 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
     let settled = false;
 
     const flow = runFlow(flowDeps(git, runner), "main").finally(() => { settled = true; });
-    await vi.waitFor(() => expect(prepare).toHaveBeenCalled());
+    // A real rebase and force push come first; on a loaded CI runner they outlast the 1 s default.
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 10_000 });
     await new Promise((r) => setImmediate(r));
 
     expect(settled).toBe(false);
