@@ -56,9 +56,12 @@ instructions (in addition to the harness-native compaction)."
     the compaction still runs, but the agent does not continue on its own: the
     session waits for the user's next message.
 
+11. The feature is behind a setting, off by default. While the setting is off,
+    the agent cannot compact its own context with the command.
+
 ## Requirement provenance
 
-Requirements 1 to 4 and 8 to 10 come from what the user asked for and decided.
+Requirements 1 to 4 and 8 to 11 come from what the user asked for and decided.
 Requirements 5 to 7 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, docs/295 req 9 for a failed compaction,
@@ -94,3 +97,6 @@ None.
 - 2026-10-07 — Does **Stop** on the requesting turn cancel the compaction?
   Chosen: the compaction still runs, but the agent does not continue on its own.
   Requirement 10 added.
+- 2026-10-07 — After the first implementation, the user asked: "Make this
+  feature behind a setting, off by default." An instruction, not an answer to an
+  open question; recorded here as its receipt. Requirement 11 added.

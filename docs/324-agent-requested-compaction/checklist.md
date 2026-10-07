@@ -11,3 +11,4 @@
 - [x] Unit tests for the request, the step and the shim; executor placement test; end-to-end test
 - [x] `shipit-docs/sessions.md` and the wiki
 - [x] Independent review against the requirements, and its findings applied
+- [x] `advanced.agentCompaction` setting, off by default, read by the route and the step (req 11)

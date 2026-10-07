@@ -581,7 +581,11 @@ export async function registerSessionSpawnRoutes(
     async (request, reply) => {
       try {
         return recordCompactionRequest(
-          { sessionManager, defaultAgentId: deps.defaultAgentId },
+          {
+            sessionManager,
+            defaultAgentId: deps.defaultAgentId,
+            isEnabled: () => deps.credentialStore.getAgentCompaction(),
+          },
           request.params.sessionId,
           request.body ?? {},
         );

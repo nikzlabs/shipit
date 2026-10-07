@@ -139,7 +139,10 @@ Context (docs/324):
                           starts with them, word for word. With --note, ShipIt
                           gives you a new turn after the compaction with the note,
                           so you continue on your own; without one, the session
-                          waits for the user. 'shipit compact --help' has more.
+                          waits for the user. Needs the user's setting
+                          'advanced.agentCompaction' (off by default) — read it
+                          with 'shipit settings get advanced.agentCompaction'.
+                          'shipit compact --help' has more.
 
 Branch (docs/239):
   shipit branch reset-to-base [--json]

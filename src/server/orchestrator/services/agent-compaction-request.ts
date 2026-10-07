@@ -3,6 +3,8 @@
 // (docs/324-agent-requested-compaction).
 import type { AgentId } from "../../shared/types.js";
 import { getAgentCapabilities } from "../../shared/agent-registry.js";
+import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
+import { settingPath } from "../../shared/settings-catalogue/tabs.js";
 import type { PendingCompaction, SessionManager } from "../sessions.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -28,9 +30,18 @@ const COMPACTION_ACTIVITY = "Compacting context…";
 const FOLLOWUP_ACTIVITY = "Continuing after the compaction…";
 const MAX_CHARS = 4000;
 
+const SETTING = GLOBAL_SETTINGS["advanced.agentCompaction"];
+
+/** Named from the declaration: a hand-quoted label goes stale on the next reword (planning#580). */
+export const AGENT_COMPACTION_OFF =
+  `Compacting your own context is turned off: "${SETTING.label}" in ${settingPath(SETTING.tab)} is off. `
+  + `To ask the user to turn it on, run \`shipit settings propose ${SETTING.key}=true --reason "..."\`.`;
+
 export interface CompactionRequestDeps {
   sessionManager: Pick<SessionManager, "get" | "setPendingCompaction">;
   defaultAgentId: AgentId;
+  /** docs/324 req 11 — `advanced.agentCompaction`, off by default. */
+  isEnabled: () => boolean;
 }
 
 export function recordCompactionRequest(
@@ -42,6 +53,7 @@ export function recordCompactionRequest(
   const note = optionalText(body.note, "note");
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
+  if (!deps.isEnabled()) throw new ServiceError(403, AGENT_COMPACTION_OFF);
   const agentId = session.agentId ?? deps.defaultAgentId;
   if (!canCompact(agentId)) {
     throw new ServiceError(
@@ -86,6 +98,7 @@ export interface CompactionStepDeps {
   >;
   runnerRegistry: Pick<SessionRunnerRegistry, "get">;
   chatHistoryManager: { append(sessionId: string, message: PersistedMessage): unknown };
+  isEnabled: () => boolean;
 }
 
 /**
@@ -132,6 +145,11 @@ export async function runRequestedCompaction(
   // First: if this write throws, nothing has started and the next turn's end retries.
   deps.sessionManager.setPendingCompaction(sessionId, null);
 
+  // req 11 — a request recorded before the user turned the setting off does not run.
+  if (!deps.isEnabled()) {
+    notStarted(deps, runner, request, `"${SETTING.label}" is off`);
+    return;
+  }
   const agentId = reconcileRunnerAgent(runner, deps.sessionManager.get(sessionId)?.agentId);
   // A harness switched since the request would read `/compact` as an ordinary prompt.
   if (!canCompact(agentId)) {

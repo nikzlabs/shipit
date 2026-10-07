@@ -582,6 +582,14 @@ one feature and are about to start the next, so the next one does not carry the
 step-by-step detail of the last. It is in addition to the harness's own
 automatic compaction, which is unchanged.
 
+**It needs a setting the user owns**, `advanced.agentCompaction` (*Let the agent
+compact its own context*, Settings → Advanced), which is off by default. While it
+is off the command is refused at once and nothing is scheduled, and a request
+made before the user turned it off does not run. Read it with
+`shipit settings get advanced.agentCompaction` before you plan on it; if
+compacting would genuinely help, propose it with
+`shipit settings propose advanced.agentCompaction=true --reason "..."`.
+
 - **It runs after your turn ends**, never inside it. The command only records
   the request; finish the piece of work and end your turn. If a turn is still
   running, a merge holds the session, you are waiting for the user's answer, or

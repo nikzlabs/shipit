@@ -18,7 +18,9 @@ import {
   runRequestedCompaction,
   buildInstructionsNotice,
   buildContinuationPrompt,
+  AGENT_COMPACTION_OFF,
 } from "./agent-compaction-request.js";
+import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
 import { stopCompactionContinuation } from "./agent-compaction-stop.js";
 
 const SESSION = "compact-session";
@@ -40,7 +42,7 @@ function makeSessionManager(request?: PendingCompaction, agentId = "claude") {
 
 let runner: SessionRunnerInterface | undefined;
 
-function setup(request: PendingCompaction | undefined, opts: { agentId?: string } = {}) {
+function setup(request: PendingCompaction | undefined, opts: { agentId?: string; enabled?: boolean } = {}) {
   const { manager, state } = makeSessionManager(request, opts.agentId);
   const runnerRegistry = new SessionRunnerRegistry();
   runner = runnerRegistry.getOrCreate(SESSION, "/tmp/ws", "claude");
@@ -64,6 +66,7 @@ function setup(request: PendingCompaction | undefined, opts: { agentId?: string 
     chatHistoryManager: {
       append: (_sid: string, msg: { text?: string }) => { userNotices.push(msg.text ?? ""); },
     },
+    isEnabled: () => opts.enabled ?? true,
   };
   const turn = {
     sessionId: SESSION,
@@ -88,7 +91,7 @@ afterEach(() => {
 describe("recordCompactionRequest", () => {
   it("stores trimmed instructions and note, and a later request replaces it (req 1, 3, 8)", () => {
     const { manager, state } = makeSessionManager();
-    const deps = { sessionManager: manager, defaultAgentId: "claude" as const };
+    const deps = { sessionManager: manager, defaultAgentId: "claude" as const, isEnabled: () => true };
     expect(recordCompactionRequest(deps, SESSION, { instructions: "  keep A  ", note: " start B " }))
       .toEqual({ requested: true, continues: true });
     expect(state.request).toEqual({ instructions: "keep A", note: "start B" });
@@ -100,7 +103,9 @@ describe("recordCompactionRequest", () => {
     const { manager, state } = makeSessionManager(undefined, "antigravity");
     let thrown: unknown;
     try {
-      recordCompactionRequest({ sessionManager: manager, defaultAgentId: "claude" }, SESSION, { note: "x" });
+      recordCompactionRequest(
+        { sessionManager: manager, defaultAgentId: "claude", isEnabled: () => true }, SESSION, { note: "x" },
+      );
     } catch (err) {
       thrown = err;
     }
@@ -108,9 +113,26 @@ describe("recordCompactionRequest", () => {
     expect(state.request).toBeUndefined();
   });
 
+  it("is refused while the setting is off, its default, and names the setting (req 11)", () => {
+    const { manager, state } = makeSessionManager();
+    let thrown: unknown;
+    try {
+      recordCompactionRequest(
+        { sessionManager: manager, defaultAgentId: "claude", isEnabled: () => false }, SESSION, { note: "x" },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect((thrown as ServiceError).statusCode).toBe(403);
+    expect((thrown as ServiceError).message).toBe(AGENT_COMPACTION_OFF);
+    expect(AGENT_COMPACTION_OFF).toContain("advanced.agentCompaction");
+    expect(GLOBAL_SETTINGS["advanced.agentCompaction"].type.read(undefined)).toBe(false);
+    expect(state.request).toBeUndefined();
+  });
+
   it("refuses an unknown session, non-text fields and overlong text", () => {
     const { manager } = makeSessionManager();
-    const deps = { sessionManager: manager, defaultAgentId: "claude" as const };
+    const deps = { sessionManager: manager, defaultAgentId: "claude" as const, isEnabled: () => true };
     expect(() => recordCompactionRequest(deps, "other", {})).toThrow(expect.objectContaining({ statusCode: 404 }));
     expect(() => recordCompactionRequest(deps, SESSION, { note: 42 })).toThrow(ServiceError);
     expect(() => recordCompactionRequest(deps, SESSION, { instructions: "x".repeat(4001) })).toThrow(ServiceError);
@@ -184,6 +206,17 @@ describe("runRequestedCompaction — the compaction turn", () => {
     turn.settle.mockImplementation(() => { r.systemTurnInProgress = false; });
     await runRequestedCompaction(deps, { ...turn, ownsSystemHold: () => true });
     await waitForTurn(() => prompts.length === 1, "compaction spawn");
+  });
+
+  it("does not run a request recorded before the setting was turned off (req 11)", async () => {
+    const { deps, state, turn, prompts, userNotices } = setup({ instructions: "keep A", note: "start B" }, { enabled: false });
+    await runRequestedCompaction(deps, turn);
+    await flushTurn();
+    expect(prompts).toHaveLength(0);
+    expect(state.request).toBeUndefined();
+    expect(userNotices).toContain(MISSED_COMPACTION_NOTICE);
+    expect(state.notices).toHaveLength(1);
+    expect(state.notices[0]).toContain(buildContinuationPrompt("start B"));
   });
 
   it("re-checks the harness: one that can no longer compact never receives /compact (req 6)", async () => {

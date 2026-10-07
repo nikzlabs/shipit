@@ -39,6 +39,21 @@ harness has no `supportsCompaction` (Antigravity today), so nothing is recorded
 agent that the compaction runs after this turn, what happens then, and to say in
 its reply that it compacts and why.
 
+**1b. The setting (req 11).** `advanced.agentCompaction` — *Let the agent
+compact its own context*, Settings → Advanced, section Agent — a boolean,
+**off by default**, declared once in
+`shared/settings-catalogue/global-settings.ts` (docs/308), so its row, its
+storage in the credential store and its save route follow from the
+declaration. `propose: yes`, so the agent can read it with `shipit settings
+get` and ask for it with `shipit settings propose`. Read in two places:
+
+- the route refuses with 403 while it is off, naming the setting and how to
+  propose it (`AGENT_COMPACTION_OFF`, built from the declaration so a reworded
+  label cannot go stale), so nothing is recorded;
+- the step re-reads it before it dispatches, so a request recorded before the
+  user turned the setting off does not run — it is reported like any other
+  compaction that cannot start (piece 7).
+
 **2. The request is persisted.** A nullable `sessions.pending_compaction` column
 holds `{instructions?, note?}` as JSON, so an orchestrator restart keeps an
 accepted request.
@@ -136,8 +151,9 @@ a successor still in setup) has moved.
 **7. Failure (req 6).** A compaction turn that leaves no card gets the docs/295
 warn notice from `noteMissedCompaction` (its text is now neutral, because this
 compaction precedes no message), and the continuation still runs. A compaction
-that cannot start — a harness that can no longer compact, a runner that cannot
-start turns, a dispatch that throws — gets the warn notice from the step, and
+that cannot start — the setting turned off since the request, a harness that can
+no longer compact, a runner that cannot start turns, a dispatch that throws —
+gets the warn notice from the step, and
 the note is parked for the next turn with `agent-compaction-not-started.md`. A
 dispatch that fails during setup never reaches the turn's own notice, so the
 step posts it.
@@ -177,13 +193,15 @@ step posts it.
 - **A note that is always required.** The user chose an optional note (req 8).
 - **Hand the instructions back only on Codex and OpenCode.** The user chose one
   behaviour on every harness (req 9).
-- **A setting to turn the command off, or a confirmation card.** Nothing asks for
-  either; the compaction card is the record.
+- **A confirmation card per compaction.** Nothing asks for one; the setting is
+  the user's control, and the compaction card is the record.
 
 ## Docs to change
 
-- `src/server/shipit-docs/sessions.md` — the command.
-- `src/server/shipit-docs/wiki/chat.md` — the agent can compact its own context.
+- `src/server/shipit-docs/sessions.md` — the command and its setting.
+- `src/server/shipit-docs/wiki/chat.md` — the agent can compact its own context
+  while the setting is on.
+- `src/server/shipit-docs/wiki/settings-and-accounts.md` — the Advanced tab row.
 - `agent-shim/shipit.ts` — `HELP`.
 
 ## Key files
@@ -192,6 +210,7 @@ step posts it.
 |---|---|
 | `src/server/session/agent-shim/shipit-compact.ts`, `shipit.ts` | The command and its help |
 | `src/server/session/agent-ops-routes.ts` | Worker relay |
+| `src/server/shared/settings-catalogue/global-settings.ts`, `src/server/orchestrator/credential-store.ts` | `advanced.agentCompaction`, off by default, and its getter |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `POST /api/sessions/:id/compact-after-turn` |
 | `src/server/shared/database.ts`, `src/server/orchestrator/sessions.ts` | `pending_compaction` and `pending_compaction_notice` columns; the notice is delivered by `consumePendingAgentNotice` |
 | `src/server/orchestrator/services/agent-compaction-request.ts` | The request, and the step: checks, settle, parked instructions, compaction turn, queued continuation, failure |

@@ -268,10 +268,13 @@ ways it happens:
   harnesses take only the instruction to compact and summarise on their own
   terms, so do not promise that a phrasing will be obeyed.
 - **You do it yourself** with `shipit compact [INSTRUCTIONS] [--note "TEXT"]`,
-  at a point you choose — between two features, say. It runs after your turn
-  ends; your next turn starts with your instructions word for word, and with a
-  note you continue on your own. When the user says context is the problem, do
-  this rather than asking them to type `/compact`. Details:
+  at a point you choose — between two features, say — when the user's setting
+  *Let the agent compact its own context* (Settings → Advanced, off by default)
+  allows it; read it with `shipit settings get advanced.agentCompaction`. It runs
+  after your turn ends; your next turn starts with your instructions word for
+  word, and with a note you continue on your own. When the user says context is
+  the problem, do this if the setting is on; if it is off, propose turning it on
+  with `shipit settings propose`, or let them type `/compact`. Details:
   `/shipit-docs/sessions.md` → *Compacting your own context*.
 - **The harness does it itself** when its context fills.
 - **After a merge.** When a session's pull request has merged and the user's
@@ -370,7 +373,7 @@ to say "this part, specifically".
 | Types, dictates, attaches, and sends | Read the message, including the attachments and the `@` files |
 | Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work |
 | Answers a question, approves or denies a permission, accepts a plan | Ask only when the answer changes what you do |
-| Types `/compact` when context is full | Compact your own context with `shipit compact` at a point you choose, such as between features |
+| Types `/compact` when context is full; turns on *Let the agent compact its own context* | Compact your own context with `shipit compact` at a point you choose, such as between features — only while that setting is on |
 | Sets and clears a goal | Work toward it |
 | Chooses the permission mode | Say what the work needs, and why |
 | Ticks a proposed action | Offer them; then do the work |

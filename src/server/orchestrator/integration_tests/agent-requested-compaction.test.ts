@@ -12,6 +12,7 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { CredentialStore } from "../credential-store.js";
 import {
   TestClient,
   StubAuthManager,
@@ -30,6 +31,7 @@ describe("Integration: a compaction the agent asked for (docs/324)", () => {
   let sessionManager: SessionManager;
   let spawns: FakeClaudeProcess[] = [];
   let dbManager: DatabaseManager;
+  let credentialStore: CredentialStore;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -48,8 +50,10 @@ describe("Integration: a compaction the agent asked for (docs/324)", () => {
 
     sessionManager = new SessionManager(dbManager);
     sessionManager.track(SESSION_ID, "Two features", sessionDir);
+    credentialStore = createTestCredentialStore(tmpDir);
+    credentialStore.setDeclaredSetting("advanced.agentCompaction", true);
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager: new ChatHistoryManager(dbManager),
@@ -140,6 +144,14 @@ describe("Integration: a compaction the agent asked for (docs/324)", () => {
     expect(next.lastPrompt).toContain("keep the API contract");
     expect(next.lastPrompt).not.toContain("start feature B");
     client.close();
+  });
+
+  it("is refused while the setting is off, which is its default (req 11)", async () => {
+    credentialStore.setDeclaredSetting("advanced.agentCompaction", false);
+    const res = await request(SESSION_ID, { instructions: "keep A" });
+    expect(res.statusCode).toBe(403);
+    expect((res.json() as { error: string }).error).toContain("advanced.agentCompaction");
+    expect(sessionManager.getPendingCompaction(SESSION_ID)).toBeUndefined();
   });
 
   it("refuses a harness that cannot compact, an unknown session and overlong text", async () => {

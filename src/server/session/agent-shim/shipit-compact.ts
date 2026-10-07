@@ -14,7 +14,11 @@ Either way, your next turn starts with your INSTRUCTIONS, word for word.
     --note 'Start feature B: the CSV export.'
 
 A later call in the same turn replaces the earlier one. The harness's own
-automatic compaction is not affected. See /shipit-docs/sessions.md.`;
+automatic compaction is not affected.
+
+The command needs the user's setting 'advanced.agentCompaction', which is off
+by default; while it is off, the command is refused. Read it with
+'shipit settings get advanced.agentCompaction'. See /shipit-docs/sessions.md.`;
 
 export async function handleCompact(args: string[], deps: RunDeps): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {

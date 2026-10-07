@@ -648,7 +648,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const runRequestedCompactionForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
     const registry = registryHolder.ref;
     if (!registry) return;
-    await runRequestedCompaction({ sessionManager, runnerRegistry: registry, chatHistoryManager }, turn);
+    await runRequestedCompaction({
+      sessionManager,
+      runnerRegistry: registry,
+      chatHistoryManager,
+      isEnabled: () => credentialStore.getAgentCompaction(),
+    }, turn);
   };
 
   const runnerRegistry = createRunnerRegistry({

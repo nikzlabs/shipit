@@ -135,6 +135,7 @@ describe("the record covers the settings the converted tabs generate", () => {
     expect(GENERATED_SETTINGS.map((d) => d.key)).toEqual([
       "advanced.releaseChannel",
       "advanced.enableSubAgents",
+      "advanced.agentCompaction",
       "advanced.liveSteering",
       "integrations.autoCreatePr",
       "advanced.autoFixCi",
