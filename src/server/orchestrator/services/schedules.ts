@@ -125,7 +125,12 @@ function body(input: unknown): Record<string, unknown> {
   return input as Record<string, unknown>;
 }
 
-function readName(value: unknown): string {
+/*
+ * The field checks create and update use. A proposal runs the same ones when it is posted and
+ * again on Confirm (reqs 9, 17).
+ */
+
+export function readScheduleName(value: unknown): string {
   const name = typeof value === "string" ? value.trim() : "";
   if (!name) throw new ServiceError(400, "The schedule needs a name.");
   if (name.length > MAX_NAME_CHARS || /[\r\n]/.test(name)) {
@@ -134,7 +139,7 @@ function readName(value: unknown): string {
   return name;
 }
 
-function readTimeZone(value: unknown): string {
+export function readScheduleTimeZone(value: unknown): string {
   const zone = typeof value === "string" ? normalizeTimeZone(value.trim()) : null;
   if (!zone) throw new ServiceError(400, `Unknown time zone ${JSON.stringify(value)}. Use an IANA name such as Europe/Berlin.`);
   return zone;
@@ -152,12 +157,12 @@ function readTiming(value: unknown): ScheduleTiming {
   return timing;
 }
 
-function checkTiming(timing: ScheduleTiming, timeZone: string): void {
+export function checkScheduleTiming(timing: ScheduleTiming, timeZone: string): void {
   const problem = timingProblem(timing, timeZone);
   if (problem) throw new ServiceError(400, problem);
 }
 
-function readSpec(value: unknown, deps: ScheduleSpecDeps): SessionStartSpec {
+export function readScheduleSpec(value: unknown, deps: ScheduleSpecDeps): SessionStartSpec {
   const parsed = parseSessionStartSpec(value);
   if ("problem" in parsed) throw new ServiceError(400, parsed.problem);
   const problem = scheduleSpecProblem(parsed.spec, deps, "save");
@@ -165,7 +170,7 @@ function readSpec(value: unknown, deps: ScheduleSpecDeps): SessionStartSpec {
   return parsed.spec;
 }
 
-function existing(deps: ScheduleServiceDeps, id: string): Schedule {
+function existing(deps: Pick<ScheduleServiceDeps, "store">, id: string): Schedule {
   const schedule = deps.store.get(id);
   if (!schedule) throw new ServiceError(404, "Schedule not found");
   return schedule;
@@ -180,73 +185,104 @@ export function getSchedule(deps: ScheduleServiceDeps, id: string): ScheduleView
   return toScheduleView(existing(deps, id));
 }
 
-/** Its first slot comes after now (`active_since`): a schedule never runs for a time before it existed. */
-export function createSchedule(deps: ScheduleServiceDeps, input: unknown): ScheduleView {
+/**
+ * Create's checks and write, without telling the browser. Its first slot comes after now
+ * (`active_since`): a schedule never runs for a time before it existed.
+ */
+export function insertSchedule(deps: Pick<ScheduleServiceDeps, "store" | keyof ScheduleSpecDeps>, input: unknown): Schedule {
   const fields = body(input);
-  const name = readName(fields.name);
-  const timeZone = readTimeZone(fields.timeZone);
+  const name = readScheduleName(fields.name);
+  const timeZone = readScheduleTimeZone(fields.timeZone);
   const timing = readTiming(fields.timing);
-  checkTiming(timing, timeZone);
-  const spec = readSpec(fields.spec, deps);
+  checkScheduleTiming(timing, timeZone);
+  const spec = readScheduleSpec(fields.spec, deps);
   if (fields.enabled !== undefined && typeof fields.enabled !== "boolean") {
     throw new ServiceError(400, "enabled must be true or false.");
   }
-  const schedule = deps.store.create({ name, enabled: fields.enabled !== false, timing, timeZone, spec });
+  return deps.store.create({ name, enabled: fields.enabled !== false, timing, timeZone, spec });
+}
+
+export function createSchedule(deps: ScheduleServiceDeps, input: unknown): ScheduleView {
+  const schedule = insertSchedule(deps, input);
   deps.scheduler.announceSchedules();
   return toScheduleView(schedule);
 }
 
 const EDITABLE_FIELDS = new Set(["name", "timing", "timeZone", "spec"]);
 
-/**
- * Req 19 — applies from the next run; a run holds its own copy of the spec. A changed
- * timing or zone moves `active_since`, so a slot of the old timing does not run. Any edit
- * clears the reason a start failed (req 18): the user has acted on it.
- */
-export async function updateSchedule(deps: ScheduleServiceDeps, id: string, input: unknown): Promise<ScheduleView> {
+function editableFields(input: unknown): Record<string, unknown> {
   const fields = body(input);
   for (const key of Object.keys(fields)) {
     if (key === "enabled") throw new ServiceError(400, "Pause or resume the schedule to change whether it runs.");
     if (!EDITABLE_FIELDS.has(key)) throw new ServiceError(400, `Unknown schedule field "${key}".`);
   }
+  return fields;
+}
+
+/**
+ * Update's checks and write, without telling the browser; the caller holds the schedule's queue.
+ * Req 19 — applies from the next run; a run holds its own copy of the spec. A changed timing or
+ * zone moves `active_since`, so a slot of the old timing does not run. Any edit clears the reason
+ * a start failed (req 18): the user has acted on it.
+ */
+export function applyScheduleUpdate(
+  deps: Pick<ScheduleServiceDeps, "store" | keyof ScheduleSpecDeps>,
+  id: string,
+  input: unknown,
+): Schedule {
+  const fields = editableFields(input);
+  const current = existing(deps, id);
+  const changes: ScheduleChanges = {};
+  if (fields.name !== undefined) changes.name = readScheduleName(fields.name);
+  if (fields.timeZone !== undefined) changes.timeZone = readScheduleTimeZone(fields.timeZone);
+  if (fields.timing !== undefined) changes.timing = readTiming(fields.timing);
+  const timing = changes.timing ?? current.timing;
+  const timeZone = changes.timeZone ?? current.timeZone;
+  if (JSON.stringify(timing) !== JSON.stringify(current.timing) || timeZone !== current.timeZone) {
+    checkScheduleTiming(timing, timeZone);
+    changes.activeSince = new Date().toISOString();
+  }
+  if (fields.spec !== undefined) changes.spec = readScheduleSpec(fields.spec, deps);
+  deps.store.update(id, changes);
+  deps.store.setNeedsUserReason(id, null);
+  return existing(deps, id);
+}
+
+export async function updateSchedule(deps: ScheduleServiceDeps, id: string, input: unknown): Promise<ScheduleView> {
+  editableFields(input);
   return deps.scheduler.enqueue(id, () => {
-    const current = existing(deps, id);
-    const changes: ScheduleChanges = {};
-    if (fields.name !== undefined) changes.name = readName(fields.name);
-    if (fields.timeZone !== undefined) changes.timeZone = readTimeZone(fields.timeZone);
-    if (fields.timing !== undefined) changes.timing = readTiming(fields.timing);
-    const timing = changes.timing ?? current.timing;
-    const timeZone = changes.timeZone ?? current.timeZone;
-    if (JSON.stringify(timing) !== JSON.stringify(current.timing) || timeZone !== current.timeZone) {
-      checkTiming(timing, timeZone);
-      changes.activeSince = new Date().toISOString();
-    }
-    if (fields.spec !== undefined) changes.spec = readSpec(fields.spec, deps);
-    deps.store.update(id, changes);
-    deps.store.setNeedsUserReason(id, null);
+    const schedule = applyScheduleUpdate(deps, id, input);
     deps.scheduler.announceSchedules();
-    return toScheduleView(existing(deps, id));
+    return toScheduleView(schedule);
   });
+}
+
+/**
+ * Pause or resume, without telling the browser; the caller holds the schedule's queue. A resume
+ * skips the slots that passed while paused and clears the reason a start failed (req 18). False
+ * when the schedule already was so.
+ */
+export function applyScheduleEnabled(deps: Pick<ScheduleServiceDeps, "store">, id: string, enabled: boolean): boolean {
+  if (existing(deps, id).enabled === enabled) return false;
+  if (enabled) {
+    deps.store.update(id, { enabled: true, activeSince: new Date().toISOString() });
+    deps.store.setNeedsUserReason(id, null);
+  } else {
+    deps.store.update(id, { enabled: false });
+  }
+  return true;
 }
 
 export async function pauseSchedule(deps: ScheduleServiceDeps, id: string): Promise<ScheduleView> {
   return deps.scheduler.enqueue(id, () => {
-    if (existing(deps, id).enabled) {
-      deps.store.update(id, { enabled: false });
-      deps.scheduler.announceSchedules();
-    }
+    if (applyScheduleEnabled(deps, id, false)) deps.scheduler.announceSchedules();
     return toScheduleView(existing(deps, id));
   });
 }
 
-/** Slots that passed while paused do not run, and the reason a start failed is cleared (req 18). */
 export async function resumeSchedule(deps: ScheduleServiceDeps, id: string): Promise<ScheduleView> {
   return deps.scheduler.enqueue(id, () => {
-    if (!existing(deps, id).enabled) {
-      deps.store.update(id, { enabled: true, activeSince: new Date().toISOString() });
-      deps.store.setNeedsUserReason(id, null);
-      deps.scheduler.announceSchedules();
-    }
+    if (applyScheduleEnabled(deps, id, true)) deps.scheduler.announceSchedules();
     return toScheduleView(existing(deps, id));
   });
 }

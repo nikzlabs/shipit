@@ -1,6 +1,8 @@
 import type { DecisionCardField } from "../chat-history.js";
+import type { ScheduleProposalStore } from "../schedule-proposal-store.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { CardOutcomeNotice } from "./card-outcome-notice.js";
+import { prepareScheduleOutcomeNotice } from "./schedule-outcome-notice.js";
 import {
   prepareSettingsOutcomeNotice,
   type SettingsOutcomeNoticeDeps,
@@ -17,6 +19,7 @@ import {
 export interface CardKindStores {
   chatHistoryManager: SettingsOutcomeNoticeDeps["chatHistoryManager"];
   settingsProposals?: SettingsProposalStore | undefined;
+  scheduleProposals?: ScheduleProposalStore | undefined;
 }
 
 const OUTCOME_NOTICES: Readonly<
@@ -28,6 +31,10 @@ const OUTCOME_NOTICES: Readonly<
           { proposals: stores.settingsProposals, chatHistoryManager: stores.chatHistoryManager },
           sessionId,
         )
+      : null,
+  scheduleProposal: (stores, sessionId) =>
+    stores.scheduleProposals
+      ? prepareScheduleOutcomeNotice({ proposals: stores.scheduleProposals }, sessionId)
       : null,
 };
 

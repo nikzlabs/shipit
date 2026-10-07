@@ -145,9 +145,17 @@ export class ScheduleStore {
     return rows.map(fromRow);
   }
 
+  /**
+   * `updated_at` moves strictly forward, also for two edits in one millisecond: a proposal card
+   * compares it to tell whether the schedule changed since the card was written.
+   */
   update(id: string, changes: ScheduleChanges, now = new Date().toISOString()): Schedule | null {
+    const previous = this.get(id);
+    if (!previous) return null;
+    const last = Date.parse(previous.updatedAt);
+    const updatedAt = Number.isNaN(last) || Date.parse(now) > last ? now : new Date(last + 1).toISOString();
     const sets: string[] = ["updated_at = ?"];
-    const params: unknown[] = [now];
+    const params: unknown[] = [updatedAt];
     const set = (column: string, value: unknown) => {
       sets.push(`${column} = ?`);
       params.push(value);

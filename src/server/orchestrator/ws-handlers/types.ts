@@ -16,6 +16,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
+import type { ScheduleProposalStore } from "../schedule-proposal-store.js";
 import type { SecretStore } from "../secret-store.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
@@ -107,6 +108,8 @@ export interface AppCtx {
   // is the whole act each settings route does — so the stores those writes
   // reach have to be here too (docs/299-agent-settings-access req 4).
   settingsProposals?: SettingsProposalStore;
+  /** So a turn carries the outcome notice of a schedule proposal (docs/324-scheduled-sessions req 9). */
+  scheduleProposals?: ScheduleProposalStore;
   secretStore?: SecretStore;
   serviceManagers?: Map<string, ServiceManager>;
   agentMergeClaims?: AgentMergeClaimStore;

@@ -106,7 +106,7 @@ export function currentDecisionCard<F extends DecisionCardField>(
   return card;
 }
 
-/** A write that found only one half of a card; throwing rolls the other half back. */
+/** A half of the card has gone, or another click claimed it first; throwing rolls back what was written. */
 class CardHalfMissing extends Error {}
 
 function bothHalves<T>(write: () => T | null): T | null {
@@ -164,11 +164,30 @@ export function claimDecisionCard<F extends DecisionCardField, Row extends { ses
   from: DecisionCardPhase<F>,
   patch: DecisionCardPatch<F>,
 ): DecisionCardOf<F> | null {
+  return claimDecisionCardWith(kind, deps, sessionId, cardId, from, patch, () => ({}));
+}
+
+/**
+ * The claim, with the write the decision makes committed in the same transaction: `write` runs
+ * first, and what it returns joins the patch. A write that throws, a claim another click won, or
+ * a card that has gone rolls both back. The runner is touched only after the commit, so it can
+ * never show a decision the database does not hold.
+ */
+export function claimDecisionCardWith<F extends DecisionCardField, Row extends { sessionId: string }>(
+  kind: DecisionCardKind<F>,
+  deps: CardClaimDeps<F, Row>,
+  sessionId: string,
+  cardId: string,
+  from: DecisionCardPhase<F>,
+  patch: DecisionCardPatch<F>,
+  write: () => Partial<DecisionCardOf<F>>,
+): DecisionCardOf<F> | null {
   const card = bothHalves(() => deps.records.transaction(() => {
+    const written = write();
     if (!deps.records.claimPhase(sessionId, cardId, from, patch.phase, patch.resolvedAt)) {
-      return null;
+      throw new CardHalfMissing();
     }
-    const updated = deps.chatHistoryManager.updateDecisionCard(kind.field, sessionId, cardId, patch);
+    const updated = deps.chatHistoryManager.updateDecisionCard(kind.field, sessionId, cardId, { ...patch, ...written });
     if (!updated) throw new CardHalfMissing();
     return updated;
   }));

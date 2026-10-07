@@ -4,6 +4,7 @@ import { proposeSettingChange } from "./settings-propose.js";
 import { SETTINGS_PROPOSAL_CARD } from "./settings-proposal.js";
 import {
   claimDecisionCard,
+  claimDecisionCardWith,
   loadDecisionCard,
   transitionDecisionCard,
   type CardClaimDeps,
@@ -110,6 +111,54 @@ describe("claimDecisionCard", () => {
 
     expect(updated).toHaveBeenCalledWith(fx.sessionId, cardId, claimed);
     expect(fx.emitted).toEqual([updated.mock.results[0]?.value]);
+  });
+});
+
+describe("claimDecisionCardWith", () => {
+  const sessionCount = () => (fx.dbManager.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
+
+  it("commits the write with the claim, and joins what it returns to the card", async () => {
+    const cardId = await post();
+    const claimed = claimDecisionCardWith(SETTINGS_PROPOSAL_CARD, claimDeps(), fx.sessionId, cardId, "pending",
+      { phase: "applied" },
+      () => {
+        fx.sessions.track("written-with-the-claim", "W");
+        return { outcome: "written" };
+      });
+    expect(claimed).toMatchObject({ phase: "applied", outcome: "written" });
+    expect(fx.sessions.get("written-with-the-claim")).toBeDefined();
+  });
+
+  it("rolls the write back when another click claimed the card first", async () => {
+    const cardId = await post();
+    claimDecisionCard(SETTINGS_PROPOSAL_CARD, claimDeps(), fx.sessionId, cardId, "pending", { phase: "dismissed" });
+    fx.emitted.length = 0;
+    const before = sessionCount();
+
+    const claimed = claimDecisionCardWith(SETTINGS_PROPOSAL_CARD, claimDeps(), fx.sessionId, cardId, "pending",
+      { phase: "applied" },
+      () => {
+        fx.sessions.track("lost-the-race", "L");
+        return {};
+      });
+
+    expect(claimed).toBeNull();
+    expect(sessionCount()).toBe(before);
+    expect(fx.emitted).toEqual([]);
+  });
+
+  it("leaves the record and the runner as they were when the write throws", async () => {
+    const cardId = await post();
+    const recorded = [...fx.runner.recordedCards];
+
+    expect(() => claimDecisionCardWith(SETTINGS_PROPOSAL_CARD, claimDeps(), fx.sessionId, cardId, "pending",
+      { phase: "applied" },
+      () => { throw new Error("refused"); })).toThrow("refused");
+
+    expect(fx.proposals.get(cardId)?.phase).toBe("pending");
+    expect(fx.history.getSettingsProposalCard(fx.sessionId, cardId)?.phase).toBe("pending");
+    expect(fx.runner.recordedCards).toEqual(recorded);
+    expect(fx.emitted).toEqual([]);
   });
 });
 

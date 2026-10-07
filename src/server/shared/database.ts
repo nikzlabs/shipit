@@ -1104,6 +1104,27 @@ const MIGRATIONS: Migration[] = [
     addSessionColumnIfMissing(db, "pending_compaction");
     addSessionColumnIfMissing(db, "pending_compaction_notice");
   },
+  // docs/324-scheduled-sessions req 9 — the schedule proposal card, and its private record: what
+  // Confirm writes is loaded from here, never taken from the browser.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "schedule_proposal")) {
+      db.exec("ALTER TABLE messages ADD COLUMN schedule_proposal TEXT");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_proposals (
+        card_id         TEXT PRIMARY KEY,
+        session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        schedule_id     TEXT,
+        base_updated_at TEXT,
+        proposal        TEXT NOT NULL,
+        phase           TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        resolved_at     TEXT,
+        agent_notified  INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1129,6 +1150,8 @@ export const STALE_PERMISSION_CARD_MIGRATION = 101;
 export const DATA_RETENTION_MIGRATION = 105;
 
 export const SCHEDULES_MIGRATION = 106;
+
+export const SCHEDULE_PROPOSALS_MIGRATION = 108;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

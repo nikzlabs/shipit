@@ -22,6 +22,7 @@ import { SessionRenamedCard } from "../../SessionRenamedCard.js";
 import { SessionSettingsChangeCard } from "../../SessionSettingsChangeCard.js";
 import { SshHostKeyCard } from "../../SshHostKeyCard.js";
 import { SettingsProposalCard } from "../../SettingsProposalCard.js";
+import { ScheduleProposalCard, type ScheduleProposalAction } from "../../ScheduleProposalCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
@@ -57,6 +58,7 @@ export interface MessageCardCallbacks {
   onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
   /** docs/299-agent-settings-access req 4 — the click that moves a setting. */
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
+  onScheduleProposalDecision?: (cardId: string, action: ScheduleProposalAction, timeZone?: string) => Promise<void>;
 
   onStartRepoSession?: (cardId: string) => Promise<void>;
   onDeclineRepoSession?: (cardId: string) => Promise<void>;
@@ -379,6 +381,19 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
           <SettingsProposalCard
             card={msg.settingsProposal}
             {...(cb.onSettingsProposalDecision ? { onDecide: cb.onSettingsProposalDecision } : {})}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.scheduleProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <ScheduleProposalCard
+            card={msg.scheduleProposal}
+            {...(cb.onScheduleProposalDecision ? { onDecide: cb.onScheduleProposalDecision } : {})}
           />
         </div>
       </div>

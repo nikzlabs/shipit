@@ -65,6 +65,7 @@ import {
 } from "./restart-turn-reattach.js";
 import { ScheduleStore } from "./schedule-store.js";
 import { ScheduleRunner } from "./schedule-runner.js";
+import { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { TurnEnd } from "./turn-settlement.js";
 import { createClaimSessionService } from "./services/claim-session.js";
 import {
@@ -641,6 +642,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // A second handle over the same table as the routes' own: the store holds a
   // database and no state, and a turn needs it before the route layer exists.
   const settingsProposals = new SettingsProposalStore(databaseManager);
+  const scheduleProposals = new ScheduleProposalStore(databaseManager);
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
   const restoreWorkspace = (sessionId: string) =>
@@ -693,6 +695,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     activatePluginRepos,
     resolvePluginServices,
     settingsProposals,
+    scheduleProposals,
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
@@ -1224,6 +1227,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     claimSessionService,
     scheduleStore,
     scheduleRunner,
+    scheduleProposals,
   };
 }
 

@@ -73,3 +73,45 @@ export interface UnfinishedScheduleRun {
 
 /** How a session's last turn ended, persisted because a run's "finished" needs it (req 31). */
 export type LastTurnOutcome = "ok" | "errored" | "quota-refused";
+
+/**
+ * docs/324-scheduled-sessions req 9 — a proposal card ends in exactly one of these. `stale`: the
+ * schedule changed after the card was written; `refused`: ShipIt can no longer accept it.
+ */
+export type ScheduleProposalPhase = "pending" | "confirmed" | "stale" | "refused" | "cancelled";
+
+/** One value on the card, in ShipIt's words; `before` only on a change. */
+export interface ScheduleProposalValue {
+  label: string;
+  before?: string;
+  after: string;
+}
+
+/**
+ * The schedule proposal card (reqs 8, 9). The values are rendered on the server when the card is
+ * written, so the card keeps saying what the user confirmed. What Confirm writes is in the private
+ * proposal record (`schedule-proposal-store.ts`), never taken from the browser.
+ */
+export interface ScheduleProposalCard {
+  cardId: string;
+  kind: "create" | "update";
+  /** The schedule a change is about, or the one Confirm created. */
+  scheduleId?: string;
+  /** The proposed name of a new schedule; the current name of a changed one. */
+  name: string;
+  /** Every value of a new schedule; only the values a change changes. */
+  values: ScheduleProposalValue[];
+  /** The prompt is many lines, so it is not a value; on a change, only when it changes. */
+  prompt?: { before?: string; after: string };
+  /** The timing after Confirm, for the next run times the browser shows. */
+  timing: ScheduleTiming;
+  /** The zone after Confirm; null when the proposal names none and Confirm sends the browser's. */
+  timeZone: string | null;
+  /** Whether the schedule runs after Confirm; a paused one shows no run times. */
+  enabled: boolean;
+  phase: ScheduleProposalPhase;
+  createdAt: string;
+  resolvedAt?: string;
+  /** ShipIt's own account of an ending that is not `confirmed` or `cancelled`. */
+  outcome?: string;
+}

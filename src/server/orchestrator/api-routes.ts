@@ -75,7 +75,9 @@ import { registerSshRoutes } from "./api-routes-ssh.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
 import { registerScheduleRoutes } from "./api-routes-schedules.js";
+import { registerScheduleProposalRoutes } from "./api-routes-schedule-proposals.js";
 import type { ScheduleStore } from "./schedule-store.js";
+import type { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { ScheduleRunner } from "./schedule-runner.js";
 import type { PluginRefreshResult } from "./services/plugin-refresh.js";
 import type { PluginCliRequest, PluginCliResult } from "./plugin-cli-run.js";
@@ -171,6 +173,8 @@ export interface ApiDeps {
   /** docs/324-scheduled-sessions; absent in minimal setups, which then have no schedule routes. */
   scheduleStore?: ScheduleStore;
   scheduleRunner?: ScheduleRunner;
+  /** The private half of a schedule proposal card. */
+  scheduleProposals?: ScheduleProposalStore;
   serviceManagers?: Map<string, ServiceManager>;
   composeStopPromises?: Map<string, Promise<void>>;
   pruneSessionVolumes?: (sessionId: string) => Promise<void>;
@@ -289,6 +293,19 @@ export async function registerApiRoutes(
       repoStore: deps.repoStore,
       credentialStore: deps.credentialStore,
     });
+    if (deps.scheduleProposals) {
+      const { runnerRegistry } = deps;
+      registerScheduleProposalRoutes(app, {
+        store: deps.scheduleStore,
+        scheduler: deps.scheduleRunner,
+        proposals: deps.scheduleProposals,
+        repoStore: deps.repoStore,
+        credentialStore: deps.credentialStore,
+        chatHistoryManager: deps.chatHistoryManager,
+        sessionManager: deps.sessionManager,
+        getRunnerRegistry: () => runnerRegistry,
+      });
+    }
   }
 
   if (deps.marketplaceStore) {

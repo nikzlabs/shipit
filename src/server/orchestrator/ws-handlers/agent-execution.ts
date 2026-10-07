@@ -484,7 +484,11 @@ async function composeAndRunAgentTurn(
   const cardOutcomes =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareCardOutcomeNotices(
-          { chatHistoryManager: ctx.chatHistoryManager, settingsProposals: ctx.settingsProposals },
+          {
+            chatHistoryManager: ctx.chatHistoryManager,
+            settingsProposals: ctx.settingsProposals,
+            scheduleProposals: ctx.scheduleProposals,
+          },
           capturedSessionId,
         )
       : [];
