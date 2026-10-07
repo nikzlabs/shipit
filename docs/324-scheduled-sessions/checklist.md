@@ -16,11 +16,13 @@
 - [x] Recovery of `starting` rows through the runner's delivery tracking (an undelivered half-prepared start fails; a `started` row's lost prompt is re-sent); local-mode cut-off runs marked failed
 - [x] Spacing check at save, clock changes not counted (the cron evaluated in UTC); propose calls the same check (slice 6b)
 - [x] Run now through the queue, also on a paused schedule
-- [ ] Run now's `isRunFinished` warning (archived runs included) with Run anyway / Cancel
+- [x] Run now's warning data (`unfinishedRuns`, archived runs included)
+- [ ] Run now's warning dialog with Run anyway / Cancel
 - [x] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
-- [ ] Delete (refused while a run is not finished or still busy; lists those runs with Stop); Stop on a run row, in the refusal, in the banner, on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
-- [ ] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
-- [ ] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; cleared when a user turn starts; `session_list` published on each change
+- [x] Delete on the server (refused while a run is not finished or still busy; lists those runs); the Stop route, Stop on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
+- [ ] Stop on a run row, in the Delete refusal and in the banner (UI)
+- [x] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
+- [x] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; cleared when a user turn starts; `session_list` published on each change
 - [x] `isWorkResolved` / `workResolvedAt` (the stored `run_finished_at`) in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
 - [x] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
 - [ ] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
@@ -29,6 +31,7 @@
 - [x] Claim and outcome notice generalized by card kind (settings first; `services/card-kinds.ts`)
 - [ ] Proposal card and notes access card registered as card kinds
 - [ ] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
+- [ ] The proposal card's **Open in Settings** button
 - [ ] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
 - [ ] The run's notes folder: host layout, mount at `/schedule/notes/` with the session identity passed in, local-mode path
 - [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes` (own schedule's runs allowed); `schedule_notes_grants`
@@ -36,4 +39,4 @@
 - [ ] `ScheduledRunBanner` with Open schedule, Notes and Stop run; deleted-schedule state
 - [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
 - [x] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start
-- [ ] Integration tests: stopped run takes no automatic turn, Delete refused while a run is busy
+- [x] Integration tests: stopped run takes no automatic turn, Delete refused while a run is busy

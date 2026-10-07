@@ -347,8 +347,12 @@ the reason, and a reason that still holds comes back on the next start.
 ## Finished runs (reqs 22, 31, 33)
 
 `isRunFinished` is the requirement's "finished", and reqs 26, 32 and 33 use
-exactly it. A run the user stopped (`run_stopped_at`, req 33) is finished until
-a user turn after the stop. Otherwise a run is finished when all of these hold:
+exactly it (`orchestrator/run-finished.ts`). A run the user stopped
+(`run_stopped_at`, req 33) is finished until a user turn after the stop; the
+decision is saved once its agent has wound down, so until then Delete is
+refused and the run is listed as not finished (`unfinishedRuns`, which Delete
+and Run now's warning share). Otherwise a run is finished when all of these
+hold:
 
 - it is not awaiting an answer (`awaiting_answer`, docs/322);
 - it has no manual steps: with the status card on, its card has no `needsYou`
