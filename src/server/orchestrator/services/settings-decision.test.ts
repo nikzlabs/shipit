@@ -639,4 +639,38 @@ describe("creating a role from a card", () => {
     await decide(card.cardId, "dismiss");
     expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
   });
+
+  it("says so when the store holds other instructions than the card showed, however alike in size", async () => {
+    const prompt = Array.from({ length: 30 }, (_, i) => `Rule ${i}: read the code before answering.`).join("\n");
+    const card = await proposeRole("deep-dive", { model: OPUS, prompt });
+    // A writer that keeps the length and changes the words: the card's summary
+    // ("N characters") cannot tell the two apart, and the approved text can.
+    const setRole = fx.credentialStore.setRole.bind(fx.credentialStore);
+    vi.spyOn(fx.credentialStore, "setRole").mockImplementation((name, role) =>
+      setRole(name, role ? { ...role, prompt: role.prompt?.replace("Rule 0", "Rule X") } : role));
+
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("partial");
+    expect(resolved.outcomeDetail).toContain("Standing instructions does not now hold the text");
+  });
+
+  it("refuses when the harness it derived is uninstalled before the click", async () => {
+    // Both speak this model, and the card was written while the role would
+    // land on claude.
+    report.restore();
+    report = installReport(["claude", "opencode"]);
+    const card = await proposeRole("deep-dive", {
+      model: { serviceId: "zai", billingMode: "sub", modelId: "glm-5.3[1m]" },
+    });
+    expect(card.alsoChanges?.find((side) => side.key === "roles[].harness")?.to).toBe('"claude"');
+
+    report.restore();
+    report = installReport(["opencode"]);
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("refused");
+    expect(resolved.outcomeDetail).toContain("opencode");
+    expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
+  });
 });

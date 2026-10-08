@@ -1430,7 +1430,12 @@ Each field goes through its own declaration's type (`roles[].description`,
 `roles[].prompt`, `roles[].reasoningEffort`, `roles[].harness`), so a card can
 create only what the dialog's own box would accept. A key the body does not
 know is refused rather than dropped, because a role the agent believes has
-standing instructions and does not is worse than a refusal.
+standing instructions and does not is worse than a refusal — and so is a field
+that is not a string, which `text` validation would otherwise read as its empty
+default. The description and standing-instructions declarations carry the role
+writer's own bounds (`MAX_ROLE_DESCRIPTION_LENGTH`, `MAX_ROLE_PROMPT_LENGTH`).
+They were wider, so a 501-character description passed the card and failed the
+click, for a field edit as much as for a create.
 
 A separate `create` kind was the alternative, and it would have bought a word.
 `add` already means "an entry joins a list" everywhere the proposal type, the

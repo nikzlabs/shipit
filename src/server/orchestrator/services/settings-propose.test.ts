@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { findSetting } from "../../shared/settings-catalogue/index.js";
+import { MAX_ROLE_DESCRIPTION_LENGTH, MAX_ROLE_PROMPT_LENGTH } from "../credential-store.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { addMcpServer, MAX_ENABLED_MCP_SERVERS } from "./mcp.js";
 import { settingsPayloadDomain, withConflictDomains } from "./settings-conflict-domain.js";
@@ -838,6 +839,26 @@ describe("creating a role", () => {
       .toContain("not JSON");
     expect(await refusal({ key: "roles", operation: "add", item: "deep-dive", reason: "why" }))
       .toContain("A new role is one JSON object");
+  });
+
+  it("refuses a field that is not text, rather than creating the role without it", async () => {
+    for (const prompt of [["Read widely", "Cite"], { text: "x" }, 7, true]) {
+      expect(await refusal(create("deep-dive", { model: OPUS, prompt }))).toContain('"prompt" is text');
+    }
+  });
+
+  it("refuses what the role writer would refuse, so no card is posted that the click cannot apply", async () => {
+    const message = await refusal(create("deep-dive", { model: OPUS, description: "x".repeat(MAX_ROLE_DESCRIPTION_LENGTH + 1) }));
+    expect(message).toContain("too long");
+    // The declarations an existing role's fields are proposed through carry the
+    // same bounds, so the field cards cannot drift from the writer either.
+    expect(findSetting("roles[].description")!.type.shape.maxLength).toBe(MAX_ROLE_DESCRIPTION_LENGTH);
+    expect(findSetting("roles[].prompt")!.type.shape.maxLength).toBe(MAX_ROLE_PROMPT_LENGTH);
+  });
+
+  it("refuses standing instructions the card would display as something else", async () => {
+    const prompt = `Never push to main.‮${"x".repeat(CARD_VALUE_MAX)}`;
+    expect(await refusal(create("deep-dive", { model: OPUS, prompt }))).toContain("bidirectional override");
   });
 
   it("refuses a level the model does not offer, rather than dropping it", async () => {

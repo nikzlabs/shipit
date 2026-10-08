@@ -326,11 +326,11 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
                       <TextChange change={change.textChange} label={change.label} className="" />
                     ) : (
                       <>
-                        <span className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)">
+                        <span className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono break-all text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)">
                           {change.from}
                         </span>
                         <span className="text-(--color-text-tertiary)" aria-hidden>→</span>
-                        <span className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold text-(--color-success)">
+                        <span className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold break-all text-(--color-success)">
                           {change.to}
                         </span>
                       </>

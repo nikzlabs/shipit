@@ -680,9 +680,15 @@ function readRoleEntry(raw: unknown): RoleEntry {
   }
   const entry: RoleEntry = { model: requireSelection(body.model) };
   for (const [field, key] of Object.entries(ROLE_ENTRY_FIELDS) as [keyof typeof ROLE_ENTRY_FIELDS, string][]) {
-    if (body[field] === undefined || body[field] === null) continue;
+    const supplied = body[field];
+    if (supplied === undefined || supplied === null) continue;
+    // `text` validation reads a non-string as its default, which here would
+    // drop the field rather than refuse it.
+    if (typeof supplied !== "string") {
+      throw new ServiceError(400, `"${field}" is text, so pass it as one JSON string. ${ROLE_ENTRY_SHAPE}`);
+    }
     const declaration = findSetting(key)!;
-    const checked = declaration.type.validate(body[field], declaration.label);
+    const checked = declaration.type.validate(supplied, declaration.label);
     if (!checked.ok) throw new ServiceError(400, checked.message);
     if (typeof checked.value === "string" && checked.value !== "") entry[field] = checked.value;
   }

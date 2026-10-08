@@ -256,8 +256,9 @@ EOF
   instructions.** They are stored trimmed. Long standing instructions are shown
   as a diff behind **Review the change**, with the same bounds as any prose
   proposal (*Proposing prose* below).
-- A key the object does not know is refused, so a misspelt field cannot leave
-  the role without something you meant it to have.
+- Every field but `model` is one JSON string. A key the object does not know is
+  refused, and so is a field that is not a string, so a misspelt or misshapen
+  field cannot leave the role without something you meant it to have.
 
 The card shows the whole role: its name, then each field it sets, the model and
 the derived harness included. One card creates one role; for several roles,

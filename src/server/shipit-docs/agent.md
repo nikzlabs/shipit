@@ -20,7 +20,7 @@ you supply is the name:
   override the user asked for; never **decide** one yourself.
 
 If the role you need does not exist, propose it: `shipit settings propose roles
---add NAME --value-file -` posts a card that shows the whole role, and the
+--add NAME --value-file - --reason "..."` posts a card that shows the whole role, and the
 user's click creates it (`/shipit-docs/settings.md` → *Creating a role*).
 `shipit agent roles` is what tells you which roles exist;
 `shipit settings list` indexes the settings around them, so you can say what is

@@ -223,7 +223,7 @@ standing instructions and the model. Picking the model re-derives the harness
 and the level, because a level only exists on a harness that honours it there.
 A row in the list is a summary, never a control: name, what it is for, and what
 it resolves to. **Or you propose one**: when the work needs a role that does not
-exist, `shipit settings propose roles --add NAME --value-file -` posts a card
+exist, `shipit settings propose roles --add NAME --value-file - --reason "..."` posts a card
 that shows the whole role, and the user's click creates it. Do that rather than
 sending the user to the editor; the syntax is in `/shipit-docs/settings.md` →
 *Creating a role*.

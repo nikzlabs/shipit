@@ -911,3 +911,19 @@ Two findings, both the same class one layer down, both reproduced at the code.
       missing role instead of sending the user to Settings
 - [x] Guards proven red alone: a list-wide baseline stales the second card, and
       a summary comparison of the instructions resolves the create `partial`
+
+#### The independent review of role creation
+
+- [x] A body field that is not a string is refused. `text` validation read it as
+      the empty default, so `"prompt": ["…"]` created a role with no
+      instructions on a card that showed none
+- [x] `roles[].description` and `roles[].prompt` declare the role writer's
+      bounds (500 and 20,000), not 2,000 and 50,000, so a card is never posted
+      that the click can only refuse. A test keeps them equal to
+      `MAX_ROLE_*_LENGTH`
+- [x] The short `propose roles --add` examples carry `--reason`, which the CLI
+      requires; `shipit agent roles`' empty-list line proposes a role
+- [x] Tests the review found missing: instructions stored differently but with
+      the same length resolve `partial` (proven red against a check that accepts
+      everything), a derived harness uninstalled before the click is refused,
+      and a bidi character in the instructions is refused
