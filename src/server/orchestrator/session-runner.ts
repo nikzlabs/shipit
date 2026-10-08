@@ -719,6 +719,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly awaitingContainer?: boolean;
   readonly lastSseEventAt?: number;
   readonly workerStreamDownSince?: number;
+  /** The first connect could not read the worker's status, so the stream is not open (planning#665). */
+  readonly waitingForWorkerStatus?: boolean;
   createAgent?(agentId: AgentId): AgentProcess;
   getCodexBuiltinSkills?(): Promise<SkillInfo[]>;
 

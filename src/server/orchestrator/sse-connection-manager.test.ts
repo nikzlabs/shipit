@@ -114,3 +114,23 @@ describe("SseConnectionManager.streamDownSince", () => {
     await server.close();
   });
 });
+
+describe("SseConnectionManager.connect", () => {
+  it("resolves for its first caller when a later attempt opens the stream", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const port = await deadPort();
+    let url = `http://127.0.0.1:${port}`;
+    const { manager, disconnects, opens } = makeManager(() => url);
+    const connected = manager.connect();
+    await until(() => disconnects.length >= 1);
+
+    const server = await startServer();
+    url = server.url;
+    await until(() => opens() >= 1);
+    await connected;
+
+    manager.disconnect();
+    await server.close();
+    vi.restoreAllMocks();
+  });
+});

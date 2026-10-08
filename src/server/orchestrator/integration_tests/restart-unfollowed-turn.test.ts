@@ -10,6 +10,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionRunnerRegistry, type SystemTurnDeps } from "../session-runner.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 import type { SessionContainerManager } from "../session-container.js";
 import {
   followReportedTurn,
@@ -130,14 +131,17 @@ describe("Integration: a sent turn that continues across an orchestrator restart
         res.writeHead(503).end();
         return;
       }
-      setTimeout(() => forward(req, res), statusDelayMs);
+      // The worker answers now; the answer arrives late.
+      forward(req, res, statusDelayMs);
     });
-    const forward = (req: http.IncomingMessage, res: http.ServerResponse): void => {
+    const forward = (req: http.IncomingMessage, res: http.ServerResponse, delayMs = 0): void => {
       const upstream = http.request(
         { host: target.hostname, port: target.port, path: req.url, method: req.method, headers: req.headers },
         (up) => {
-          res.writeHead(up.statusCode ?? 502, up.headers);
-          up.pipe(res);
+          setTimeout(() => {
+            res.writeHead(up.statusCode ?? 502, up.headers);
+            up.pipe(res);
+          }, delayMs);
         },
       );
       upstream.on("error", () => res.destroy());
@@ -446,21 +450,81 @@ describe("Integration: a sent turn that continues across an orchestrator restart
       await expectFollowed();
     });
 
-    it("when the idle reclaim takes a waiting runner, the next call from the turn gets one that follows it", async () => {
+    it("a call from the turn makes a waiting runner read the status at once", async () => {
+      ContainerSessionRunner.firstConnectRetryDelaysMs = [60_000];
+      await sentTurnOfThePreviousOrchestrator();
+      await previousOrchestratorStops();
+      statusReads = ["ok"];
+      statusUnreadable = true;
+      await restartSweep("current-build", []);
+      await waitFor(() => runner()?.waitingForWorkerStatus === true, 3000, "the runner waits");
+
+      statusUnreadable = false;
+      expect(await agentRunFindsItsSession()).toBe(true);
+      expect(runner()?.running).toBe(true);
+    });
+
+    it("the idle reclaim does not take a runner that waits for the status", async () => {
       await sentTurnOfThePreviousOrchestrator();
       await previousOrchestratorStops();
       say("WHILE_DOWN");
       statusReads = ["ok"];
       statusUnreadable = true;
       await restartSweep("current-build", []);
+      await waitFor(() => runner()?.waitingForWorkerStatus === true, 3000, "the runner waits");
+
+      expect(runner()!.agentBusy).toBe(true);
       registry.dispose(SESSION_ID);
-      expect(runner()).toBeUndefined();
+      expect(runner()?.disposed).toBe(false);
 
       statusUnreadable = false;
-      expect(await agentRunFindsItsSession()).toBe(true);
       await expectFollowed();
       say("AFTER_RESTART");
       await expectSavedOnceAndCommitted("BEFORE_RESTART", "WHILE_DOWN", "AFTER_RESTART");
+    });
+
+    it("a message sent while the runner waits is saved, though its turn ends before the status reads", async () => {
+      await sentTurnOfThePreviousOrchestrator();
+      endTurn();
+      await previousOrchestratorStops();
+      statusUnreadable = true;
+      const waiting = registry.getOrCreate(SESSION_ID, SESSION_DIR, "claude");
+      waiting.attachViewer();
+      await waitFor(() => waiting.waitingForWorkerStatus === true, 3000, "the runner waits");
+
+      waiting.dispatch(testDispatch({ text: "next task" }));
+      await waitFor(() => agents.length === 2 && agents[1]!.runCalled, 3000, "the message started a turn");
+      agents[1]!.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "NEXT_TEXT" }] });
+      agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+
+      statusUnreadable = false;
+      await waitFor(() => commits.length === 1, 3000, "the message's turn is committed");
+      expect(occurrences("NEXT_TEXT")).toBe(1);
+      expect(waiting.running).toBe(false);
+    });
+
+    it("a kill while a status read is in flight is not undone by that read", async () => {
+      ContainerSessionRunner.firstConnectRetryDelaysMs = [60_000];
+      await sentTurnOfThePreviousOrchestrator();
+      await previousOrchestratorStops();
+      statusReads = ["ok"];
+      statusUnreadable = true;
+      await restartSweep("current-build", []);
+      const waiting = runner()!;
+      await waitFor(() => waiting.waitingForWorkerStatus, 3000, "the runner waits");
+
+      statusUnreadable = false;
+      statusDelayMs = 300;
+      const resumed = waiting.resumeInFlightTurn();
+      await new Promise((r) => setTimeout(r, 100));
+      await waiting.killAgentOnWorker();
+      expect(agent().killed).toBe(true);
+
+      expect(await resumed).toBe(false);
+      say("LATE_OUTPUT");
+      await new Promise((r) => setTimeout(r, 200));
+      expect(waiting.running).toBe(false);
+      expect(historyText()).not.toContain("LATE_OUTPUT");
     });
 
     it("a runner disposed while it reads the status again adopts nothing, and leaves the worker's turn alone", async () => {
@@ -470,11 +534,11 @@ describe("Integration: a sent turn that continues across an orchestrator restart
       statusUnreadable = true;
       await restartSweep("current-build", []);
       const disposed = runner()!;
-      // The runner's next try reads a live turn, but only after it is disposed.
+      // The runner's next try reads a live turn, but the answer comes after the disposal.
       statusUnreadable = false;
       statusDelayMs = 300;
       await new Promise((r) => setTimeout(r, 100));
-      registry.dispose(SESSION_ID);
+      registry.dispose(SESSION_ID, { force: true });
 
       await new Promise((r) => setTimeout(r, 500));
       expect(disposed.disposed).toBe(true);

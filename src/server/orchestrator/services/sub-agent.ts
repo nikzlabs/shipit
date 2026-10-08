@@ -88,7 +88,7 @@ export interface RunSubAgentDeps {
   agentRegistry: AgentRegistry;
   providerAccountManager?: ProviderAccountManager;
   runnerRegistry: SessionRunnerRegistry;
-  containerManager?: SessionContainerManager | null;
+  containerManager: SessionContainerManager | null;
   usageManager: UsageManager;
   chatHistoryManager: ConsultCardPersister;
   recordAgentRateLimits?: (

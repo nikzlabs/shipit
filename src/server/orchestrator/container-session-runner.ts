@@ -109,6 +109,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _statusUnreadSince = 0;
   private _firstConnectRetry: ReturnType<typeof setTimeout> | null = null;
   private _firstConnectAttempt = 0;
+  // A turn may be live there, so the idle reclaim waits too, for at most the hold's deadline.
+  private readonly _statusWaitHold = new PostTurnHold();
+  private _kills = 0;
+  private _startPosted = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
   private _residentRoute: { kind: ProviderRouteKind; id: string } | undefined = undefined;
@@ -293,10 +297,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       || this.backgroundTaskCount > 0
       || this.subAgentSpawnsInFlight > 0
       || this._postTurnHold.active
+      || this._statusWaitHold.active
       // dispose() does not check installs; this filter alone cannot prevent a reclaim race.
       || this._installInFlight;
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
+  get waitingForWorkerStatus(): boolean { return this._statusUnreadSince > 0; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
   endPostTurnWork(): void {
     this._postTurnHold.end();
@@ -773,6 +779,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       ...modelListField(),
     };
 
+    this._startPosted = true;
     try {
       await workerPost(this.workerUrl, "/agent/start", body, { timeoutMs: 0 });
     } catch (err) {
@@ -820,6 +827,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async reconcileWorkerTurnBeforeFirstConnect(): Promise<WorkerAgentStatus | null | "unread"> {
     // A container still being created holds no earlier turn.
     if (this.sse.isConnected || this.workerUrl === PLACEHOLDER_WORKER_URL) return null;
+    const killsBefore = this._kills;
     let status: WorkerAgentStatus;
     try {
       status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
@@ -831,13 +839,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       return "unread";
     }
     if (this._disposed) return null;
+    // The process this reading describes may be the one that was killed meanwhile.
+    if (this._kills !== killsBefore) return "unread";
 
     if (status.turnActive === true && !this._agent && !this._isRunning) {
       await this.adoptWorkerTurn(status);
       return status;
     }
 
-    if (status.turnActive === true) return status;
+    // The events after the start of a turn this runner started are that turn's.
+    if (status.turnActive === true || this._startPosted) return status;
     // Legacy workers cannot distinguish an active turn from an idle resident process.
     if (status.turnActive === undefined && status.running) return status;
 
@@ -914,7 +925,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return !this._disposed && this._isRunning;
   }
 
-  // Tests shorten this. The last delay repeats until the status reads or the runner is disposed.
+  // The last delay repeats until the status reads or the runner is disposed.
   static firstConnectRetryDelaysMs = [500, 1000, 2000, 5000, 10_000];
 
   private retryFirstConnect(): void {
@@ -959,12 +970,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (status === "unread") {
       // Without the status the replay would drop a live turn's events (planning#665).
       this._workerResourcesStarted = false;
-      this._statusUnreadSince ||= Date.now();
+      if (this._statusUnreadSince === 0) {
+        this._statusUnreadSince = Date.now();
+        this._statusWaitHold.begin();
+      }
       this.retryFirstConnect();
       return;
     }
-    this._statusUnreadSince = 0;
-    this._firstConnectAttempt = 0;
+    if (this._statusUnreadSince > 0) {
+      this._statusUnreadSince = 0;
+      this._firstConnectAttempt = 0;
+      this._statusWaitHold.end();
+      if (!this._postTurnHold.active) this.emit("work_released");
+    }
     this.reconcileSavedPermissionCards(newContainer ? [] : status?.pendingPermissionIds);
     // The boot sweep skips a worker it could not probe (docs/240-turn-survives-orchestrator-restart).
     if (status && workerReportsNoTurn(status)) this.finalizeInheritedRows();
@@ -995,6 +1013,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const proxy = new ProxyAgentProcess(agentId, this);
     this.supersedeDisplacedAgent(proxy);
     this._agent = proxy;
+    this._startPosted = true;
 
     await workerPost(
       this.workerUrl,
@@ -1021,6 +1040,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   async killAgentOnWorker(opts?: { timeoutMs?: number; victimRunToken?: string }): Promise<void> {
     // A killed process can still emit; its late output must not read as a turn of its own.
     this._unfollowedResident = null;
+    this._kills += 1;
     const victim = this._agent;
     await workerPost(
       this.workerUrl,
@@ -2063,9 +2083,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       );
       return;
     }
+    if (this._statusWaitHold.active && !opts?.force) {
+      console.log(`[container-runner:${this.sessionId}] dispose() skipped — the worker's status is not read yet`);
+      return;
+    }
     this._disposed = true;
     this._postTurnHold.reset();
     this._turnCommitHold.reset();
+    this._statusWaitHold.reset();
 
     // Orchestrator shutdown must leave the CLI alive so the next process can adopt its turn.
     if (!opts?.preserveAgent) {

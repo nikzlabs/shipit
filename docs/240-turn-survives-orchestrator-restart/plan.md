@@ -300,23 +300,37 @@ adoption of §2, with its replay from the turn's first event:
   it. The runner tries the whole first connect again on its own (after 0.5 s,
   1 s, 2 s, 5 s, then every 10 s), and at once when something needs it — a
   viewer, a message, the sweep, the worker's report, a container call. While
-  it waits, `workerStreamDownSince` counts from the first failed read, so the
-  orphan-runner check still reports a worker that stays unreachable. A runner
-  disposed during a read adopts nothing.
+  it waits:
+  - it reads as busy for up to two minutes (a hold, as for post-turn work), so
+    the idle reclaim does not destroy a container whose turn may be live;
+  - `workerStreamDownSince` counts from the first failed read, so the
+    orphan-runner check still reports a worker that stays unreachable;
+  - a message it is sent still starts its turn, and the replay keeps that
+    turn's events when the stream opens (the cursor skips the completed turns
+    only until this runner has posted a start).
+
+  A reading that comes back after the runner was disposed, or after it killed
+  the worker's process, adopts nothing: that reading may describe the killed
+  process, so it is read again.
 - **The sweep tries again later** (after 2 s, 10 s, 30 s, 90 s; through
   `followReportedTurn`) for a session whose probe failed. That session has no
   runner, so nothing else would ask its worker. This runs after the server
   listens, so it does not delay boot.
 - **A call from the session's own container** gets its runner through
   `runnerForContainerCall`. With no runner, it asks the worker, and a turn in
-  flight gets a runner whose first connect adopts it before the call is
-  answered. The worker's status decides, as for the worker's report, so a call
-  from an idle session still makes no runner and starts no Compose services. A
-  runner that exists is returned as it is: one that waits for the status tries
-  again on its own. Every container route that refused with "Session is not
-  active" uses it: `shipit agent run`, the status card,
-  propose actions, bug report, propose session message, propose repo session,
-  and the issue writes.
+  flight gets a runner whose first connect adopts it. A runner that waits for
+  the status reads it at once. Any other runner is returned as it is, so a
+  call never waits for a stream to reconnect. The worker's status decides, as
+  for the worker's report, so a call from an idle session still makes no
+  runner and starts no Compose services. The call waits at most 15 s for the
+  follow. Every container route that refused with "Session is not active" uses
+  it: `shipit agent run`, the status card, propose actions, bug report,
+  propose session message, propose repo session, and the issue writes.
+
+A first connect that waited on a stream which failed before it opened used to
+wait for good: a reconnect replaced the promise it awaited
+(`SseConnectionManager.connect`). The promise now carries over, so the sweep,
+the report and a container call return once the stream opens.
 
 `followReportedTurn` logs why it answers false, and the worker logs the answer
 to its report, so the next case of a turn that nothing follows names the reason.
@@ -330,11 +344,15 @@ adoption after a further restart.
 
 **Limits.** While a runner waits for the status it gets no events — terminal
 output, install progress, preview ports — so a viewer sees nothing live until
-the read succeeds. The idle reclaim may dispose a waiting runner (it reads as
-idle); its turn is then followed at the next container call or viewer. A worker
-that answers no status read for the whole time is not followed at all. A turn
-on a worker older than planning#639 that the CLI started on its own still
-reports `turnActive: false`, so no attempt finds it (§6, "Older workers").
+the read succeeds. After two minutes of waiting the hold ends and the idle
+reclaim may take the runner; so it may a session that has no runner because the
+sweep's probe failed, until a later try gives it one. A turn that ends while
+the status cannot be read is not adopted (§5 keeps its saved rows). A message
+that reaches a waiting runner while the worker's turn is live still replaces
+that process, as in §6. A worker that answers no status read for the whole
+time is not followed at all. A turn on a worker older than planning#639 that
+the CLI started on its own still reports `turnActive: false`, so no attempt
+finds it (§6, "Older workers").
 
 ## Known limit: a turn longer than the replay buffer
 
@@ -360,7 +378,8 @@ auto-commit — which is what almost every turn needs anyway.
 | `src/server/orchestrator/api-routes-agent.ts` | `POST /api/sessions/:id/agent/own-turn`, the receiving end of that report |
 | `src/server/session/sse-broadcaster.ts` | `oldestSeq` getter (partial-replay detection) |
 | `src/server/shared/types/agent-types.ts` | `WorkerAgentStatus` — the shared wire shape |
-| `src/server/orchestrator/container-session-runner.ts` | `reconcileWorkerTurnBeforeFirstConnect`, `adoptWorkerTurn`, `resumeInFlightTurn`, serialized worker-resource start; finalizes an ended turn's rows at the first connect; `_unfollowedResident` / `adoptOwnTurnAt` for a turn that starts on a connected runner (§6); `retryFirstConnect` while the status cannot be read (§7) |
+| `src/server/orchestrator/container-session-runner.ts` | `reconcileWorkerTurnBeforeFirstConnect`, `adoptWorkerTurn`, `resumeInFlightTurn`, serialized worker-resource start; finalizes an ended turn's rows at the first connect; `_unfollowedResident` / `adoptOwnTurnAt` for a turn that starts on a connected runner (§6); `retryFirstConnect` and its hold while the status cannot be read (§7) |
+| `src/server/orchestrator/sse-connection-manager.ts` | `connect()` keeps the promise an earlier caller awaits across reconnects (§7) |
 | `src/server/orchestrator/turn-adoption.ts` | Wires an already-running worker turn into a runner + proxy via `executeAgentTurn`; new use and the answer hold for a CLI-started one (§6) |
 | `src/server/orchestrator/turn-executor.ts` | `TurnInput.adopt` — skip env-prep + spawn, keep everything else |
 | `src/server/orchestrator/proxy-agent-process.ts` | Optional `runToken` so an adopting proxy inherits the worker's spawn epoch |

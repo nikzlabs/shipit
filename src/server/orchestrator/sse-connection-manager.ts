@@ -55,9 +55,12 @@ export class SseConnectionManager {
       return this._sseConnected ?? Promise.resolve();
     }
 
-    this._sseConnected = new Promise<void>((resolve) => {
-      this._resolveSseConnected = resolve;
-    });
+    // A reconnect keeps the promise an earlier caller still waits on (planning#665).
+    if (!this._resolveSseConnected || !this._sseConnected) {
+      this._sseConnected = new Promise<void>((resolve) => {
+        this._resolveSseConnected = resolve;
+      });
+    }
 
     // eslint-disable-next-line no-restricted-syntax -- waits for container readiness in sync context
     void this.opts.workerReady().then(() => {

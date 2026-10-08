@@ -150,22 +150,30 @@ export async function followReportedTurn(deps: FollowDeps, sessionId: string): P
   return following;
 }
 
+const CONTAINER_CALL_FOLLOW_MS = 15_000;
+
 /**
  * The runner for a call from the session's own container. The call can come from a turn that
  * nothing here follows after a restart, and the worker's status decides whether it gets one
- * (planning#665).
+ * (planning#665). The wait is bounded: a stream that is slow to open must not hold the call.
  */
 export async function runnerForContainerCall(
   deps: Omit<FollowDeps, "containerManager"> & { containerManager?: SessionContainerManager | null },
   sessionId: string,
 ): Promise<SessionRunnerInterface | undefined> {
   const runner = deps.runnerRegistry.get(sessionId);
-  if (runner || !deps.containerManager) return runner;
-  try {
-    await followReportedTurn({ ...deps, containerManager: deps.containerManager }, sessionId);
-  } catch (err) {
+  const containerManager = deps.containerManager;
+  if (runner ? !runner.waitingForWorkerStatus : !containerManager) return runner;
+  const follow = (runner
+    ? runner.resumeInFlightTurn?.()
+    : followReportedTurn({ ...deps, containerManager: containerManager ?? null }, sessionId)
+  )?.catch((err: unknown) => {
     console.warn(`[turn-reattach] following ${sessionId} for a container call failed: ${getErrorMessage(err)}`);
-  }
+  });
+  await Promise.race([
+    follow,
+    new Promise((r) => { setTimeout(r, CONTAINER_CALL_FOLLOW_MS).unref(); }),
+  ]);
   return deps.runnerRegistry.get(sessionId);
 }
 

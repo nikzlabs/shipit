@@ -223,6 +223,7 @@ function makeDeps(opts: {
           })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
+    containerManager: null,
     providerAccountManager: { selectAccountForTurn, markAccountExhausted, subscriptionLimitsFor: vi.fn(() => ({})) } as never,
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
