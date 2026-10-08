@@ -132,6 +132,8 @@ async function linkedSandbox(scheduleId: string, runId: string): Promise<string>
 }
 
 beforeEach(async () => {
+  // The app's startup pass reads the clock; on the real date, daily 09:00 runs since 2026-10-07 are due.
+  vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: at("2026-10-07T08:00:00Z") });
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-schedules-"));
   openStores();
   credentialStore = createTestCredentialStore(tmpDir);
@@ -143,6 +145,7 @@ afterEach(async () => {
   await app.close();
   dbManager.close();
   fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  vi.useRealTimers();
 });
 
 describe("Integration: scheduled runs", () => {
