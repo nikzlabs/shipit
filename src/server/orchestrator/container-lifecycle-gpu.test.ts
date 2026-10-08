@@ -20,8 +20,18 @@ interface Created {
   removed: boolean;
 }
 
-function fakeDocker(startFails: (created: Created) => Error | null): { docker: Docker; created: Created[] } {
+interface FakeOpts {
+  startFails: (created: Created) => Error | null;
+  createFails?: (attempt: number) => Error | null;
+  removeFails?: (created: Created) => boolean;
+}
+
+function fakeDocker(
+  startFails: FakeOpts["startFails"],
+  more: Omit<FakeOpts, "startFails"> = {},
+): { docker: Docker; created: Created[]; removedById: string[] } {
   const created: Created[] = [];
+  const removedById: string[] = [];
   const docker = {
     createVolume: async () => {},
     getVolume: () => ({
@@ -32,21 +42,26 @@ function fakeDocker(startFails: (created: Created) => Error | null): { docker: D
     listNetworks: async () => [],
     listVolumes: async () => ({ Volumes: [] }),
     getNetwork: () => ({ remove: async () => {} }),
-    getContainer: () => ({
+    getContainer: (id: string) => ({
       inspect: async () => { throw Object.assign(new Error("none"), { statusCode: 404 }); },
       stop: async () => {},
-      remove: async () => {},
+      remove: async () => { removedById.push(id); },
     }),
     createContainer: async (options: Docker.ContainerCreateOptions) => {
+      const err = more.createFails?.(created.length + 1);
+      if (err) throw err;
       const record: Created = { id: `cid-${created.length + 1}`, options, removed: false };
       created.push(record);
       return {
         id: record.id,
         start: async () => {
-          const err = startFails(record);
-          if (err) throw err;
+          const startErr = startFails(record);
+          if (startErr) throw startErr;
         },
-        remove: async () => { record.removed = true; },
+        remove: async () => {
+          if (more.removeFails?.(record)) throw new Error("removal failed");
+          record.removed = true;
+        },
         inspect: async () => ({
           Config: { Labels: {} },
           NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
@@ -54,7 +69,7 @@ function fakeDocker(startFails: (created: Created) => Error | null): { docker: D
       };
     },
   } as unknown as Docker;
-  return { docker, created };
+  return { docker, created, removedById };
 }
 
 const tmpDirs: string[] = [];
@@ -62,7 +77,7 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-async function create(docker: Docker, gpuAccess?: () => boolean) {
+async function create(docker: Docker, gpuAccess?: () => boolean, extraLabels?: Record<string, string>) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-gpu-"));
   tmpDirs.push(tmp);
   fs.mkdirSync(path.join(tmp, "session", "workspace"), { recursive: true });
@@ -89,6 +104,7 @@ async function create(docker: Docker, gpuAccess?: () => boolean) {
     memoryLimit: 512 * 1024 * 1024,
     cpuQuota: 50_000,
     pidsLimit: 256,
+    ...(extraLabels ? { extraLabels } : {}),
   } as unknown as ContainerConfig;
   return createContainer(deps, config);
 }
@@ -120,6 +136,8 @@ describe("createContainer — the GPU", () => {
     const sc = await create(docker, () => true);
 
     expect(created).toHaveLength(1);
+    // Spelled out, so a change to the shared constant cannot pass by changing both sides.
+    expect(requested(created[0])).toEqual([{ Driver: "", Count: -1, Capabilities: [["gpu"]] }]);
     expect(requested(created[0])).toEqual([GPU_DEVICE_REQUEST]);
     expect(env(created[0])).toContain("SHIPIT_GPU=granted");
     expect(sc.gpu).toEqual({ state: "granted" });
@@ -138,6 +156,23 @@ describe("createContainer — the GPU", () => {
     expect(env(created[1])).toContain(`SHIPIT_GPU_REASON=(HTTP code 500) ${reason}`);
     expect(sc.gpu).toEqual({ state: "unavailable", reason: `(HTTP code 500) ${reason}` });
     expect(sc.id).toBe("cid-2");
+  });
+
+  it("removes a GPU attempt it could not remove at once, when the retry fails too", async () => {
+    const { docker, created, removedById } = fakeDocker(
+      (c) => (requested(c) ? new Error("gpu") : null),
+      { removeFails: () => true, createFails: (attempt) => (attempt === 2 ? new Error("name already in use") : null) },
+    );
+
+    await expect(create(docker, () => true)).rejects.toThrow("name already in use");
+    expect(created).toHaveLength(1);
+    expect(removedById).toContain("cid-1");
+  });
+
+  it("marks a standby unclaimed from the moment it exists", async () => {
+    const { docker } = fakeDocker(() => null);
+    expect((await create(docker, () => false, { "shipit-standby": "true" })).standbyUnclaimed).toBe(true);
+    expect((await create(fakeDocker(() => null).docker, () => false)).standbyUnclaimed).toBeUndefined();
   });
 
   it("fails with the second error when the start fails without the GPU too", async () => {

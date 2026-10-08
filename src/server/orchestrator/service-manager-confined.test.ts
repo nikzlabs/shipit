@@ -9,6 +9,7 @@ import { ComposeHelperError } from "./compose-helper.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import { composeStateDirForWorkspace, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
 import type { PluginComposeService } from "./plugin-compose.js";
+import type { SessionGpu } from "./session-gpu.js";
 import {
   FakeConfinedCompose,
   recordedOverride,
@@ -117,7 +118,9 @@ describe("GPU requests (docs/325-session-gpu-access req 3)", () => {
 
   it("starts a service without the GPU it asked for, and says why in its log", async () => {
     const dir = setup(GPU_WEB);
-    const { mgr } = harness(dir, { extra: { sessionGpu: () => ({ state: "unavailable", reason: "no driver" }) } });
+    const { mgr } = harness(dir, {
+      extra: { sessionGpu: () => Promise.resolve({ state: "unavailable", reason: "no driver" }) },
+    });
     await mgr.start();
 
     const snapshot = parseYaml(recordedSnapshot(dir, "web")) as Model;
@@ -128,14 +131,27 @@ describe("GPU requests (docs/325-session-gpu-access req 3)", () => {
     );
   });
 
-  it("keeps the request when the session has the GPU", async () => {
+  it("waits for the agent container's decision, and keeps the request when it has the GPU", async () => {
     const dir = setup(GPU_WEB);
-    const { mgr } = harness(dir, { extra: { sessionGpu: () => ({ state: "granted" }) } });
-    await mgr.start();
+    let decide: (gpu: SessionGpu) => void = () => {};
+    const decision = new Promise<SessionGpu>((resolve) => { decide = resolve; });
+    const { mgr, fake } = harness(dir, { extra: { sessionGpu: () => decision } });
+    const started = mgr.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fake.ups).toHaveLength(0);
 
+    decide({ state: "granted" });
+    await started;
     const snapshot = parseYaml(recordedSnapshot(dir, "web")) as Model;
     expect(snapshot.services.web.gpus).toBe("all");
     expect(mgr.getLogBuffer("web")).not.toContain("asks for a GPU");
+  });
+
+  it("does not wait for the decision when no service asks for a GPU", async () => {
+    const dir = setup(AUTO_WEB);
+    const { mgr, fake } = harness(dir, { extra: { sessionGpu: () => new Promise(() => {}) } });
+    await mgr.start();
+    expect(fake.ups).toHaveLength(1);
   });
 });
 

@@ -1066,7 +1066,8 @@ export function requestsGpu(svc: Record<string, unknown>): boolean {
   return hasEntries(reservedDevices(svc)?.devices) || hasEntries(svc.gpus);
 }
 
-function validateGpuEntry(name: string, where: string, entry: unknown, capabilitiesRequired: boolean): void {
+/** `gpus:` entries carry an implicit `gpu` capability: Compose adds it when it creates the container. */
+function validateGpuEntry(name: string, where: string, entry: unknown, implicitGpu: boolean): void {
   if (!isMapping(entry)) {
     throw new ComposeValidationError(`Service \`${name}\`: each \`${where}\` entry must be a mapping.`);
   }
@@ -1075,12 +1076,13 @@ function validateGpuEntry(name: string, where: string, entry: unknown, capabilit
     throw new ComposeValidationError(`Service \`${name}\`: \`${where}\` field \`${extra}\` is not allowed.`);
   }
   const caps = entry.capabilities;
+  // A Compose list is one set that must all hold.
+  const set: unknown = implicitGpu && Array.isArray(caps) && !caps.includes("gpu") ? [...(caps as unknown[]), "gpu"] : caps;
   const refusal = gpuRequestRefusal({
     driver: entry.driver,
-    // A Compose list is one set that must all hold.
-    capabilities: caps === undefined || caps === null ? caps : [caps],
+    capabilities: set === undefined || set === null ? set : [set],
     options: entry.options,
-    capabilitiesRequired,
+    capabilitiesRequired: !implicitGpu,
   });
   if (refusal) {
     throw new ComposeValidationError(
@@ -1096,15 +1098,14 @@ function validateGpuRequests(name: string, svc: Record<string, unknown>): void {
     if (!Array.isArray(devices)) {
       throw new ComposeValidationError(`Service \`${name}\`: \`deploy.resources.reservations.devices\` must be a list.`);
     }
-    for (const entry of devices) validateGpuEntry(name, "deploy.resources.reservations.devices", entry, true);
+    for (const entry of devices) validateGpuEntry(name, "deploy.resources.reservations.devices", entry, false);
   }
   const gpus = svc.gpus;
   if (!hasEntries(gpus) || gpus === "all") return;
   if (!Array.isArray(gpus)) {
     throw new ComposeValidationError(`Service \`${name}\`: \`gpus\` must be \`all\` or a list.`);
   }
-  // Compose adds the `gpu` capability to a `gpus:` entry itself.
-  for (const entry of gpus) validateGpuEntry(name, "gpus", entry, false);
+  for (const entry of gpus) validateGpuEntry(name, "gpus", entry, true);
 }
 
 function removeGpuRequests(svc: Record<string, unknown>): void {

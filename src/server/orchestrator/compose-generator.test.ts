@@ -1568,11 +1568,19 @@ describe("settings that reach outside the service (docs/318 req 7)", () => {
   });
 
   it("accepts `gpus: all` and NVIDIA GPU lists, and nothing else (docs/325-session-gpu-access)", () => {
-    for (const value of ["all", "[{ driver: nvidia, count: 1 }]", "[{ device_ids: [\"0\"], capabilities: [gpu] }]"]) {
+    for (const value of [
+      "all",
+      "[{ driver: nvidia, count: 1 }]",
+      "[{ device_ids: [\"0\"], capabilities: [gpu] }]",
+      // Compose adds `gpu` to a `gpus:` entry itself.
+      "[{ driver: nvidia, count: 1, capabilities: [compute, utility] }]",
+    ]) {
       expect(() => parseComposeFile(service(`    gpus: ${value}\n`), { dockerSocket: false }), value).not.toThrow();
     }
     expect(() => parseComposeFile(service("    gpus: [{ driver: amd }]\n"), { dockerSocket: false }))
       .toThrow("driver `amd`");
+    expect(() => parseComposeFile(service("    gpus: [{ capabilities: [tpu] }]\n"), { dockerSocket: false }))
+      .toThrow("capability `tpu`");
     expect(() => parseComposeFile(service("    gpus: [{ path: /dev/dri }]\n"), { dockerSocket: false }))
       .toThrow("`gpus` field `path` is not allowed");
     expect(() => parseComposeFile(service("    gpus: some\n"), { dockerSocket: false }))

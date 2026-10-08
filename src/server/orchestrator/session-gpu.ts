@@ -46,7 +46,8 @@ export function gpuFromContainer(
 
 /** Why a container of this session gets no GPU; completes "…, because …". */
 export function noGpuWhy(gpu: SessionGpu | undefined): string {
-  if (gpu?.state === "unavailable") {
+  if (gpu === undefined) return "this session's agent container had not started yet";
+  if (gpu.state === "unavailable") {
     return `this session's container could not get the GPU when it started: ${gpu.reason || "no reason given"}`;
   }
   return "GPU access is off for this ShipIt install (Settings → Advanced)";

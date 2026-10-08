@@ -786,6 +786,7 @@ describe("Docker API proxy", () => {
       };
 
       it("refuses one in a session without the GPU, and says why", async () => {
+        grant({ state: "off" });
         const off = await create(gpusAll);
         expect(off.status).toBe(403);
         expect((off.body as any).message).toContain("GPU access is off for this ShipIt install");

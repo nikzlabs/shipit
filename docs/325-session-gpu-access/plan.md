@@ -30,7 +30,7 @@ The session image carries no CUDA toolkit. It does not need one: the hook brings
 
 `advanced.sessionGpu` — a boolean in the settings catalogue (`global-settings.ts`), **off by default**, stored in the credential store like `advanced.enableSubAgents`. One declaration gives the Settings → Advanced toggle, `PUT /api/settings`, `shipit settings list/get`, and an agent proposal path; nothing else on the client changes. It sits beside the memory budget, the other row about the install rather than about a session's agent.
 
-The orchestrator reads it once per container creation through a `gpuAccess` closure that `bootstrap-managers.ts` gives `SessionContainerManager` (the same route `resolveEgressConfig` takes). A change applies to every container created after it. A running container keeps the state it started with until it is next created.
+The orchestrator reads it once per container creation through a `gpuAccess` closure that `bootstrap-managers.ts` gives `SessionContainerManager` (the same route `resolveEgressConfig` takes). A change applies to every container created after it. A running container keeps the state it started with until it is next created — so an existing session also gets the change at its next container start. That is a design choice, not something req 5 asks: re-creating every running container when the switch moves would restart work the user did not ask to restart.
 
 ## The agent container (req 1, 2, 6)
 
@@ -40,6 +40,8 @@ The orchestrator reads it once per container creation through a `gpuAccess` clos
 - **Switch on** → create and start with the request. State `granted`.
 - **Switch on, and that create or start fails** → remove the container, create and start it again without the request. State `unavailable`, with Docker's error as the reason (req 6).
 
+The GPU attempt's container id is not published to `sc.id` until it starts, so a failed start cannot read as the session's container exiting to the health monitor (`container-health.ts` ignores an event whose id is not `sc.id`). The attempt's id is held separately until the container is removed, and the create's failure cleanup removes it too if the first removal failed.
+
 The fallback runs on *any* failure of the GPU attempt, not on a matched error string. Docker's messages for a missing toolkit, a broken driver, a gVisor runtime without `nvproxy`, and a read-only rootfs the hook cannot write differ by host and version, and a list of them would turn the next unknown one into a session that cannot start — the one outcome req 6 forbids. The cost is one extra create when the start fails for a reason that is not the GPU; then the second attempt fails too and its error propagates as before, and the reason recorded for the first is the real error text, so a wrong attribution is visible.
 
 The state is recorded on `SessionContainer.gpu` and, for the agent, in the container's environment: `SHIPIT_GPU=granted|unavailable|off` and, when unavailable, `SHIPIT_GPU_REASON`. After an orchestrator restart, adoption (`container-discovery.ts`) reads the state back from the container itself — `HostConfig.DeviceRequests` and that env — so the proxy and Compose keep the right answer across a ShipIt update without a label or a table.
@@ -48,23 +50,27 @@ The state is recorded on `SessionContainer.gpu` and, for the agent, in the conta
 
 A standby container is created before any session claims it, so one made before the switch flipped would give a new session the old answer. At claim time (`buildRunnerFactory`, `app-lifecycle.ts`) a standby whose GPU request disagrees with the switch is not claimed: the session takes the cold path and gets a fresh container. A non-standby container that is already running is not affected — that session is not new.
 
+The check reads `SessionContainer.standbyUnclaimed`, set when the container is created with the standby label and cleared by `claimStandby`, not the manager's standby set: `createStandby` registers the standby only after the create returns, and the create marks the container `running` one await before that, so a claim can land in between.
+
 ## Telling the user and the agent (req 6)
 
 A `container_started` listener (`gpu-container-start.ts`, wired beside the egress one in `bootstrap-managers.ts`) acts when the container's state is `unavailable`:
 
-- **User:** a persisted `warn` system notice in the transcript — "This session started without the GPU: …" — through the existing notice helpers (`emitNoticeInTurn` / `emitNoticePostTurn` / `persistNoticeUnattached`). No new card type.
+- **User:** a persisted `warn` system notice in the transcript — "This session started without the GPU: …" — as a final row (`emitNoticePostTurn`, or `persistNoticeUnattached` with no runner). Not `emitNoticeInTurn`: a turn's setup runs `resetRunnerTurnState` after `running` is already true, which drops cards recorded in that window. No new card type.
 - **Agent:** `appendPendingAgentNotice`, the one-time `[ShipIt]` prefix on the next turn that the data-retention sweep and the reroute notice use. The system prompt is untouched (prompt-cache contract); the env var is what a later turn reads.
 
-The listener posts once per session and reason in this process, so a container recreated after idle reclaim does not repeat a notice the user already has. A changed reason, or a session that got the GPU in between, posts again.
+The listener posts once per session and reason in this process, so a container recreated after idle reclaim does not repeat a notice the user already has. Each audience is recorded only once its write succeeded, so a failed write is tried at the next start. A changed reason, or a session that got the GPU in between, posts again.
+
+**Known limit:** an interactive turn consumes pending agent notices while it builds its prompt, before it waits for the worker. A first message sent while a cold container is still starting can therefore go out without the notice, and the agent reads it on the next turn. The user's notice is not affected, and `$SHIPIT_GPU` is in the container from the start. Moving that consumption after the worker wait would change the path every pending notice takes, for one turn's delay.
 
 ## Compose services (req 3)
 
 A service declares a GPU in standard Compose syntax — `deploy.resources.reservations.devices` with `capabilities: [gpu]`, or the service-level `gpus:` key. Both are checked on the resolved model (`validateServiceSettings`), in every mode:
 
-- An entry is accepted only when it is a GPU request: `capabilities` names `gpu` (required in a reservation; Compose adds it for `gpus:`) and only NVIDIA's driver capabilities, `driver` is `nvidia` or absent, and there are no `options`. Anything else is refused, as every device reservation is today. `gpus` joins the classified fields.
+- An entry is accepted only when it is a GPU request: `capabilities` names `gpu` (required in a reservation; Compose adds it for `gpus:`) and only NVIDIA's driver capabilities, `driver` is `nvidia` or absent, and there are no `options`. Anything else is refused, as every device reservation is today. `gpus` joins the classified fields. A `gpus:` entry's `capabilities` get an implicit `gpu`, because Compose adds it when it creates the container; a reservation must name it.
 - A plugin fragment cannot request a GPU: its own key list (`plugin-compose.ts` `ALLOWED_SERVICE_KEYS`) has neither `deploy` nor `gpus`. Req 3 names the project's services, so nothing changes there.
 
-The snapshot rewrite (`rewriteResolvedModel`) then applies the session's state. **Granted:** the requests pass through, and Compose — running on the real socket, not through the proxy — creates the container with them. **Off or unavailable:** the rewrite deletes them and the service starts on the CPU, with a `[shipit]` line in that service's log saying why. That covers the switch-off case the same way req 6 covers the unavailable one: a project that declares a GPU still runs on a machine that cannot give it, instead of failing the whole file as it does today.
+The snapshot rewrite (`rewriteResolvedModel`) then applies the session's state. When a service asks for a GPU, `ServiceManager.prepareStart` first awaits the agent container's decision (`SessionContainerManager.gpuDecision`, which resolves at that container's `container_started`, or after two minutes with no state): without overlays, Compose starts without waiting for the worker, and would otherwise read an undecided state as no GPU. A project that asks for no GPU does not wait. **Granted:** the requests pass through, and Compose — running on the real socket, not through the proxy — creates the container with them. **Off or unavailable:** the rewrite deletes them and the service starts on the CPU, with a `[shipit]` line in that service's log saying why. Req 6 decides the unavailable case. The switch-off case is a design choice the requirements do not make: applying the same rule there means a project that declares a GPU still runs on a machine that cannot give it, instead of failing the whole file as it did before this feature.
 
 ## Containers the agent starts (req 3)
 
@@ -81,7 +87,7 @@ This repository's session containers have no GPU and no Docker CLI, so the tests
 - `src/server/shared/settings-catalogue/global-settings.ts` — `advanced.sessionGpu`.
 - `src/server/orchestrator/session-gpu.ts` — the request, the state type, env, adoption read-back, the GPU-request check shared by Compose and the proxy.
 - `src/server/orchestrator/container-lifecycle.ts` — request, fallback, state.
-- `src/server/orchestrator/session-container.ts` — `gpuAccess` option, `gpuOutOfDate`.
+- `src/server/orchestrator/session-container.ts` — `gpuAccess` option, `standbyGpuOutOfDate`, `gpuDecision`.
 - `src/server/orchestrator/container-discovery.ts` — state on adoption.
 - `src/server/orchestrator/app-lifecycle.ts` — standby mismatch; proxy `SessionInfo.gpu`.
 - `src/server/orchestrator/gpu-container-start.ts` — user and agent notices.

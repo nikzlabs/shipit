@@ -10,6 +10,7 @@ import type {
 import {
   CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
+  CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import {
   CONTAINER_PLUGIN_STORE_DIR,
@@ -743,6 +744,7 @@ export async function createContainer(
       pidsLimit: config.pidsLimit,
     } : undefined,
     overlayVolumeNames: config.overlaySpecs?.map((s) => s.volumeName),
+    ...(config.extraLabels?.[CONTAINER_STANDBY_LABEL] === "true" ? { standbyUnclaimed: true } : {}),
     // Match adoption order to avoid changing Compose override bytes and recreating services.
     overlayDepDirs: config.overlaySpecs
       && sortOverlayDepDirs(config.overlaySpecs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }))),
@@ -752,6 +754,8 @@ export async function createContainer(
   const shortId = config.sessionId.slice(0, 12);
 
   let signalEgressFirewallReady: () => void = () => {};
+  // A GPU attempt's container until it starts or is removed; the cleanup below reads only `sc.id`.
+  let unpublishedId: string | undefined;
 
   try {
     selfHealWorkspaceOwnership(config, deps.workspaceVolume);
@@ -819,7 +823,8 @@ export async function createContainer(
       // Publish before start so the health monitor can identify an immediate exit. Not for a GPU
       // attempt: its failure is retried without the GPU, so it must not read as the session's exit.
       const gpuAttempt = gpu.state === "granted";
-      if (!gpuAttempt) sc.id = created.id;
+      if (gpuAttempt) unpublishedId = created.id;
+      else sc.id = created.id;
 
       try {
         // Recheck after container creation: Docker silently replaces a missing overlay volume with a plain volume.
@@ -834,10 +839,14 @@ export async function createContainer(
         await created.start();
       } catch (err) {
         if (gpuAttempt) {
-          try { await created.remove({ force: true }); } catch { /* the next create reports a name clash */ }
+          try {
+            await created.remove({ force: true });
+            unpublishedId = undefined;
+          } catch { /* the cleanup below tries again */ }
         }
         throw err;
       }
+      unpublishedId = undefined;
       sc.id = created.id;
       return created;
     };
@@ -1020,6 +1029,9 @@ export async function createContainer(
       }
     }
     // Remove all requested volume names after the container, including plain volumes Docker substituted.
+    if (unpublishedId) {
+      try { await deps.docker.getContainer(unpublishedId).remove({ force: true }); } catch { /* may already be gone */ }
+    }
     if (sc.overlayVolumeNames && !supersededByNewer) {
       for (const name of sc.overlayVolumeNames) {
         await removeOverlayVolume(deps.docker, name);

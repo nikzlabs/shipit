@@ -23,6 +23,7 @@ import {
   parseComposeContent,
   pluginStubModel,
   resolvedPersistUse,
+  requestsGpu,
   rewriteResolvedModel,
   serializeComposeModel,
   unescapeComposeDollars,
@@ -211,8 +212,11 @@ export interface ServiceManagerOptions {
   opsSession?: boolean;
   /** Read at each parse (docs/318 req 8); absent means not granted. */
   dockerSocketGrant?: () => DockerSocketGrant;
-  /** The agent container's GPU state, read at each start (docs/325-session-gpu-access req 3). */
-  sessionGpu?: () => SessionGpu | undefined;
+  /**
+   * The agent container's GPU state, awaited at a start whose services ask for a GPU, since Compose
+   * can start before the container decides it (docs/325-session-gpu-access req 3).
+   */
+  sessionGpu?: () => Promise<SessionGpu | undefined>;
   networkJoinFn?: (networkName: string) => Promise<void>;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
@@ -281,7 +285,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly dockerSocketGrant: () => DockerSocketGrant;
-  private readonly sessionGpu: () => SessionGpu | undefined;
+  private readonly sessionGpu: () => Promise<SessionGpu | undefined>;
   // The services the last snapshot started without the GPU they asked for, with why.
   private gpuRemovals = new Map<string, string>();
   private noProjectCompose: boolean;
@@ -383,7 +387,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
     this.dockerSocketGrant = opts.dockerSocketGrant ?? (() => "not_granted");
-    this.sessionGpu = opts.sessionGpu ?? (() => undefined);
+    this.sessionGpu = opts.sessionGpu ?? (() => Promise.resolve(undefined));
     this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
@@ -1450,7 +1454,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         persist = { device: await this.persistDevicePath(scratchDir) };
       }
       const workspaceDevice = await this.workspaceDevice();
-      const gpu = this.sessionGpu();
+      const gpu = Object.values(services).some(requestsGpu) ? await this.sessionGpu() : undefined;
       const rewrite = rewriteResolvedModel(model, {
         sessionId: this.sessionId,
         workspaceDir: this.workspaceDir,

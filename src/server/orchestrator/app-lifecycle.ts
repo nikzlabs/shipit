@@ -561,7 +561,7 @@ export function buildRunnerFactory(
 
     const existing = mgr.get(o.sessionId);
     // Made before the GPU switch moved, so a new session must not inherit it (docs/325-session-gpu-access req 5).
-    const staleStandby = (): boolean => mgr.isStandby(o.sessionId) && mgr.gpuOutOfDate(o.sessionId);
+    const staleStandby = (): boolean => mgr.standbyGpuOutOfDate(o.sessionId);
 
     if (existing?.status === "running" && !staleStandby()) {
       const standby = mgr.isStandby(o.sessionId);

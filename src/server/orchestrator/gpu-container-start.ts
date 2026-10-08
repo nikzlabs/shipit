@@ -1,15 +1,15 @@
 import type { EventEmitter } from "node:events";
 import type { SessionContainer, SessionContainerManagerEvents } from "./session-container.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
-import { emitNoticeInTurn, persistNoticeUnattached, type InProgressPersister } from "./chat-card-persistence.js";
+import { emitNoticePostTurn, persistNoticeUnattached, type InProgressPersister } from "./chat-card-persistence.js";
 import { getErrorMessage } from "./validation.js";
 
 export interface GpuNoticeDeps {
   containerManager: EventEmitter<SessionContainerManagerEvents> & {
     get(sessionId: string): SessionContainer | undefined;
   };
-  getRunner: (sessionId: string) => SessionRunnerInterface | undefined;
-  chatHistory: InProgressPersister;
+  getRunner: (sessionId: string) => Pick<SessionRunnerInterface, "emitMessage"> | undefined;
+  chatHistory: Pick<InProgressPersister, "append">;
   sessionManager: { appendPendingAgentNotice(id: string, notice: string): void };
 }
 
@@ -30,31 +30,39 @@ export function gpuUnavailableAgentNotice(reason: string): string {
 
 /**
  * docs/325-session-gpu-access req 6: tell the user and the agent once per session and reason, so a
- * container recreated after an idle reclaim does not repeat a notice the user already has.
+ * container recreated after an idle reclaim does not repeat a notice the user already has. Each
+ * audience is recorded only once its write succeeds, so a failed one is tried at the next start.
  */
 export function announceGpuOnContainerStart(deps: GpuNoticeDeps): void {
-  const announced = new Map<string, string>();
+  const toldUser = new Map<string, string>();
+  const toldAgent = new Map<string, string>();
   deps.containerManager.on("container_started", (sessionId) => {
     const gpu = deps.containerManager.get(sessionId)?.gpu;
     if (gpu?.state !== "unavailable") {
-      announced.delete(sessionId);
+      toldUser.delete(sessionId);
+      toldAgent.delete(sessionId);
       return;
     }
-    if (announced.get(sessionId) === gpu.reason) return;
-    announced.set(sessionId, gpu.reason);
-    // Separate: one failed write must not lose the other.
-    try {
-      const runner = deps.getRunner(sessionId);
-      const message = gpuUnavailableNotice(gpu.reason);
-      if (runner) emitNoticeInTurn(runner, sessionId, message, deps.chatHistory, "warn");
-      else persistNoticeUnattached(deps.chatHistory, sessionId, message, "warn");
-    } catch (err) {
-      console.warn(`[gpu] transcript notice failed for ${sessionId}:`, getErrorMessage(err));
+    if (toldUser.get(sessionId) !== gpu.reason) {
+      try {
+        const runner = deps.getRunner(sessionId);
+        const message = gpuUnavailableNotice(gpu.reason);
+        // A final row even mid-turn: a turn's setup resets the cards it records, and the start of
+        // a session is where this belongs anyway.
+        if (runner) emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, sessionId, message, "warn");
+        else persistNoticeUnattached(deps.chatHistory, sessionId, message, "warn");
+        toldUser.set(sessionId, gpu.reason);
+      } catch (err) {
+        console.warn(`[gpu] transcript notice failed for ${sessionId}:`, getErrorMessage(err));
+      }
     }
-    try {
-      deps.sessionManager.appendPendingAgentNotice(sessionId, gpuUnavailableAgentNotice(gpu.reason));
-    } catch (err) {
-      console.warn(`[gpu] agent notice failed for ${sessionId}:`, getErrorMessage(err));
+    if (toldAgent.get(sessionId) !== gpu.reason) {
+      try {
+        deps.sessionManager.appendPendingAgentNotice(sessionId, gpuUnavailableAgentNotice(gpu.reason));
+        toldAgent.set(sessionId, gpu.reason);
+      } catch (err) {
+        console.warn(`[gpu] agent notice failed for ${sessionId}:`, getErrorMessage(err));
+      }
     }
   });
 }

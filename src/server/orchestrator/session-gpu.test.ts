@@ -23,8 +23,8 @@ describe("gpuReason", () => {
 });
 
 describe("noGpuWhy", () => {
-  it("names the switch, or the reason the container recorded", () => {
-    expect(noGpuWhy(undefined)).toContain("GPU access is off");
+  it("names the switch, the reason the container recorded, or that it has not started", () => {
+    expect(noGpuWhy(undefined)).toContain("had not started yet");
     expect(noGpuWhy({ state: "off" })).toContain("GPU access is off");
     expect(noGpuWhy({ state: "unavailable", reason: "no driver" })).toContain("no driver");
   });
