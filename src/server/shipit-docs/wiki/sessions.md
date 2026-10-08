@@ -61,7 +61,9 @@ There is a second sidebar view, **"Needs you"**, reached from the icon in the
 sidebar header, which carries a count. It is a flat list — no repository
 grouping — of only the sessions waiting on the user. A session that stops
 needing attention while that view is open keeps its place and is marked as no
-longer waiting, rather than vanishing under the cursor.
+longer waiting, rather than vanishing under the cursor. A session of a
+repository the user hid from the sidebar is listed there too, and counted,
+when it waits on the user.
 
 ShipIt can also raise a browser notification when a session starts needing the
 user, where the browser permits it — some mobile browsers refuse notifications

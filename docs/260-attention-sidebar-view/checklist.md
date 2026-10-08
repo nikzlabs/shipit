@@ -22,3 +22,13 @@
 - [x] Tests — first press leaves the view, next press collapses, label and tooltip follow, no name collision at inbox zero, and the expand-into-the-remembered-view path; all four proven red without the fix.
 - [x] Browser check in both views.
 - [x] Independent review (Codex) — no severe finding; its name-collision and test-gap findings are folded in above.
+
+## Follow-up — req 18, hidden repositories (2026-10-08)
+
+- [x] `requirements.md` — requirement 18 plus a dated receipt for the decision.
+- [x] `plan.md` — the view and the count take the whole session list.
+- [x] `SessionSidebar` — the attention view and its count no longer use the hidden-repository filter.
+- [x] Tests — a hidden repository's session is listed and counted, and its row stays when the repository is hidden while the view is open; both proven red without the fix. A third follows a hidden repository's session as it starts and stops waiting.
+- [x] Wiki — `sessions.md` and `repos-and-sandboxes.md` say that hiding does not remove a session from "Needs you".
+- [x] Browser check in the dogfood instance: repository hidden, its waiting session listed with the repository name, count correct in both views.
+- [x] Independent review of the diff against every numbered requirement — no severe finding; its test-gap and `docs/222-hide-repository` wording findings are folded in above.

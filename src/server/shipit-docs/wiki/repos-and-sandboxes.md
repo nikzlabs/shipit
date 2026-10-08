@@ -167,7 +167,8 @@ Both are on that same repository menu, and they are very different acts.
 **Hide from sidebar** declutters and destroys nothing. The group disappears; a
 collapsed **"Hidden · N"** section appears at the bottom of the sidebar, and
 expanding it offers **Show** on each row. Adding the repository again also
-un-hides it.
+un-hides it. A hidden repository's session that waits on the user still shows
+in the sidebar's "Needs you" view and in its count.
 
 **Remove Repository** asks for confirmation first. What it does:
 

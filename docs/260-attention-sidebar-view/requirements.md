@@ -47,6 +47,8 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
     control says what it will do: in the second view its tooltip and its
     accessible name name the view it goes to, in wording of its own that no other
     control on the row shares.
+18. A session that needs the user's attention appears in the second view also
+    when its repository is hidden from the sidebar.
 
 ## Open questions
 
@@ -54,6 +56,17 @@ _(none — see the receipts below)_
 
 ## Resolved questions
 
+- **2026-10-08 · Does hiding a repository take its sessions out of the second
+  view?** No. Nik: *"if a repo is hidden in the sidebar, its 'needs you'
+  sessions should still show up in the 'needs you' section."* → requirement 18.
+  This reverses a choice the agent made in `plan.md` and Nik never approved:
+  the first build left a hidden repository's sessions out of the view and out
+  of the count, on the reasoning that a second sidebar view must not show what
+  docs/222-hide-repository removed. The count follows without a new
+  requirement: requirement 4 defines it as the count of the sessions that need
+  attention, and a row in the list that the count leaves out would make the two
+  disagree. Hiding still removes the repository's group from the first view;
+  that is docs/222-hide-repository and is unchanged.
 - **2026-09-01 · The collapse button is pressed by mistake in the second view.**
   Nik, from use: *"I often click on the collapse sidebar button, meaning to
   switch the mode to the regular mode of showing all the sessions. I always do
