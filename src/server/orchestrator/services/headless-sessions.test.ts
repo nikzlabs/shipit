@@ -28,7 +28,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import { DEFAULT_SANDBOX_CAPABILITIES } from "../../shared/types.js";
-import type { AgentId, AutoMergeState, SessionStartParams } from "../../shared/types.js";
+import type { AgentId, AutoMergeState, SessionInfo, SessionStartParams } from "../../shared/types.js";
 import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 
 type InstalledHarnessesModule = typeof InstalledHarnesses;
@@ -873,6 +873,37 @@ describe("createHeadlessSession", () => {
       });
       await expect(redispatchHeadlessPrompt(deps(), "missing", { params: {}, prompt: "x" }))
         .rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it("has a run's agent, model and graduation saved when its gate records it started, so a restart re-sends it as configured (reqs 2, 4, 20)", async () => {
+      // With credentials, as in production, the first turn saves the agent only once its container runs.
+      const withCredentials = { credentialsDir: tmpDir, credentialStore: new CredentialStore(tmpDir) };
+      let atStart: SessionInfo | undefined;
+      await createHeadlessSession(deps(withCredentials), {
+        ...repo({ model: "gpt-6-astra", serviceId: "openai", billingMode: "key", reasoning: "high" }),
+        prompt: "Check the PRs",
+        title: "Nightly · Oct 7, 09:00",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-1", timeZone: "UTC" },
+        // The scheduler's gate marks the run started right after the dispatch; a restart can come next.
+        dispatchGate: async (sessionId, dispatch) => {
+          const turn = dispatch();
+          atStart = sessionManager.get(sessionId);
+          return turn;
+        },
+      });
+      expect(atStart).toMatchObject({
+        agentId: "codex",
+        model: "gpt-6-astra",
+        serviceId: "openai",
+        billingMode: "key",
+        reasoningEffort: "high",
+        title: "Nightly · Oct 7, 09:00",
+      });
+      expect(atStart?.warm).toBeUndefined();
+
+      registry = new FakeRunnerRegistry();
+      await redispatchHeadlessPrompt(deps(withCredentials), "quick-1", { params: {}, prompt: "Check the PRs" });
+      expect(registry.created).toEqual([expect.objectContaining({ sessionId: "quick-1", agentId: "codex" })]);
     });
   });
 });

@@ -60,6 +60,7 @@ import { restoreSessionWorkspace } from "./services/session.js";
 import {
   liveWorkAfterRestart,
   reattachInFlightTurns,
+  stopWorkerAgent,
   unprobedAfterRestart,
   workerHasLiveWork,
 } from "./restart-turn-reattach.js";
@@ -1102,23 +1103,22 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     unprobedSessions: unprobedAfterRestart,
     liveWorkSessions: liveWorkAfterRestart,
     probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
-    interruptTurn: (sessionId) => {
-      interruptAgentTurn({
+    stopLiveWork: (sessionId) => stopWorkerAgent(containerManager, sessionId),
+    interruptTurn: (sessionId) => interruptAgentTurn({
+      sessionManager,
+      broadcastLog: (source, text) => broadcastLog(sessionId, source, text),
+      postInterruptCommitDeps: {
         sessionManager,
-        broadcastLog: (source, text) => broadcastLog(sessionId, source, text),
-        postInterruptCommitDeps: {
-          sessionManager,
-          chatHistoryManager,
-          prStatusPoller,
-          githubAuthManager,
-          credentialStore,
-          generateText: effectiveGenerateText,
-          createGitManager,
-          scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
-          sseBroadcast,
-        },
-      }, runnerRegistry.get(sessionId) ?? null);
-    },
+        chatHistoryManager,
+        prStatusPoller,
+        githubAuthManager,
+        credentialStore,
+        generateText: effectiveGenerateText,
+        createGitManager,
+        scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
+        sseBroadcast,
+      },
+    }, runnerRegistry.get(sessionId) ?? null),
     statusCardEnabled: () => credentialStore.getSessionStatusCard(),
     notes: scheduleNotes,
   });

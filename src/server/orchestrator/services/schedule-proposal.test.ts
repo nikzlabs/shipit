@@ -92,6 +92,7 @@ beforeEach(() => {
       runNow: async (id: string) => ({ id: "run-1", scheduleId: id, slotAt: null, outcome: "starting" }) as ScheduleRun,
       stopRun: async () => null,
       unfinishedRuns: async () => [],
+      unfinishedRunsNow: () => [],
       announceSchedules: () => { announced += 1; },
       viewRuns: (runs) => runs,
     },

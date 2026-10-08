@@ -47,10 +47,12 @@ export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   unprobedSessions?: ReadonlySet<string>;
   /** Sessions whose worker had work but no turn at the restart, so no runner follows them. */
   liveWorkSessions?: ReadonlySet<string>;
-  /** Whether a session with no runner still works in its worker; without it, such a session counts as working. */
+  /** Whether a session's worker still does work no runner follows; without it, such a session counts as working. */
   probeLiveWork?: (sessionId: string) => Promise<boolean>;
-  /** Ends the session's turn, as the chat's stop control does (req 33). */
-  interruptTurn?: (sessionId: string) => void;
+  /** Ends the session's turn, as the chat's stop control does (req 33); false when its runner had nothing to stop. */
+  interruptTurn?: (sessionId: string) => boolean;
+  /** Ends the agent work a session's worker still does with no runner to stop it (req 33). */
+  stopLiveWork?: (sessionId: string) => Promise<unknown>;
   /** `advanced.sessionStatusCard`: a run's manual steps count only while the card is on. */
   statusCardEnabled?: () => boolean;
   /** The runs' notes folders (req 13); without them a run starts with none. */
@@ -100,6 +102,8 @@ export class ScheduleRunner implements ScheduleQueue {
   private readonly queues = new Map<string, Promise<unknown>>();
   private pass: Promise<void> | null = null;
   private recovered = false;
+  /** Runs whose turn ended before a restart and that have no decision saved (reqs 20, 22). */
+  private readonly undecided = new Set<string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
 
@@ -161,6 +165,7 @@ export class ScheduleRunner implements ScheduleQueue {
       this.recovered = true;
       await this.recover();
     }
+    await this.decideUndecided();
     for (const schedule of this.deps.store.list()) {
       if (this.stopped) return;
       if (!schedule.enabled) continue;
@@ -227,13 +232,13 @@ export class ScheduleRunner implements ScheduleQueue {
   }
 
   /**
-   * After a restart a session can work with no runner, and the restart's sets never empty,
-   * so its worker is asked each time rather than the set trusted for good.
+   * After a restart a session can work with no runner, or with a runner that a viewer made and
+   * that does not follow the worker's work. The restart's sets never empty, so its worker is
+   * asked each time rather than the set trusted for good.
    */
   private async sessionBusy(sessionId: string): Promise<boolean> {
     const { runnerRegistry, unprobedSessions, liveWorkSessions, probeLiveWork } = this.deps;
-    const runner = runnerRegistry.get(sessionId);
-    if (runner) return runner.agentBusy;
+    if (runnerRegistry.get(sessionId)?.agentBusy) return true;
     if (!unprobedSessions?.has(sessionId) && !liveWorkSessions?.has(sessionId)) return false;
     return probeLiveWork ? probeLiveWork(sessionId) : true;
   }
@@ -475,7 +480,7 @@ export class ScheduleRunner implements ScheduleQueue {
    * schedule was deleted is found through its session. Null when no row is left.
    */
   stopRun(scheduleId: string, runId: string): Promise<ScheduleRun | null> {
-    return this.enqueue(scheduleId, () => {
+    return this.enqueue(scheduleId, async () => {
       const { store, sessionManager } = this.deps;
       const run = store.getRun(runId);
       const sessionId = sessionManager.sessionIdForScheduleRun(runId);
@@ -491,7 +496,8 @@ export class ScheduleRunner implements ScheduleQueue {
       }
       if (sessionId) {
         this.markRunStopped(sessionId);
-        this.deps.interruptTurn?.(sessionId);
+        // After a restart a worker can still work with no runner, or with one that does not follow it.
+        if (!this.deps.interruptTurn?.(sessionId)) await this.deps.stopLiveWork?.(sessionId);
       }
       return store.getRun(runId);
     });
@@ -504,12 +510,29 @@ export class ScheduleRunner implements ScheduleQueue {
    * missed moment left stale neither blocks Delete nor lets it through.
    */
   async unfinishedRuns(scheduleId: string): Promise<UnfinishedScheduleRun[]> {
-    const { store, sessionManager } = this.deps;
+    const busy = new Set<string>();
+    for (const session of this.deps.sessionManager.runSessionsOfSchedule(scheduleId)) {
+      if (session.scheduleRunId && await this.sessionBusy(session.id)) busy.add(session.id);
+    }
+    return this.listUnfinished(scheduleId, busy);
+  }
+
+  /**
+   * Req 32 — `unfinishedRuns` without its worker probes, for Delete's last check: the user can
+   * resume a run in chat while a probe waits, and nothing waits between this and the removal.
+   * A run with no runner counts as idle, as the probes just before found it.
+   */
+  unfinishedRunsNow(scheduleId: string): UnfinishedScheduleRun[] {
+    return this.listUnfinished(scheduleId, new Set());
+  }
+
+  private listUnfinished(scheduleId: string, workerBusy: ReadonlySet<string>): UnfinishedScheduleRun[] {
+    const { store, sessionManager, runnerRegistry } = this.deps;
     const unfinished: UnfinishedScheduleRun[] = [];
     const listed = new Set<string>();
     for (const candidate of sessionManager.runSessionsOfSchedule(scheduleId)) {
       if (!candidate.scheduleRunId) continue;
-      const busy = await this.sessionBusy(candidate.id);
+      const busy = workerBusy.has(candidate.id) || (runnerRegistry.get(candidate.id)?.agentBusy ?? false);
       if (!busy) this.decideRunFinished(candidate.id);
       const session = sessionManager.get(candidate.id) ?? candidate;
       if (session.runFinishedAt && !busy) continue;
@@ -562,7 +585,8 @@ export class ScheduleRunner implements ScheduleQueue {
    * Finishes what a restart cut off. A run whose prompt reached its session is started —
    * or, in local mode, where no turn survives a restart, failed. One dispatched but not
    * delivered is sent again; one whose session was still being prepared is failed, since
-   * its parameters may be half applied.
+   * its parameters may be half applied. A run whose turn ended before its decision was saved
+   * is kept for the passes to decide, since nothing else may decide it again (reqs 20, 22).
    */
   private async recover(): Promise<void> {
     const { store, sessionManager, runtimeMode } = this.deps;
@@ -591,6 +615,21 @@ export class ScheduleRunner implements ScheduleQueue {
         await this.resend(run, sessionId);
       } catch (err) {
         console.error(`[schedules] recovering run ${run.id} failed:`, err);
+      }
+    }
+    for (const sessionId of sessionManager.undecidedRunSessionIds()) this.undecided.add(sessionId);
+  }
+
+  /** Each pass decides the runs recovery found undecided, once nothing works in them any more. */
+  private async decideUndecided(): Promise<void> {
+    for (const sessionId of this.undecided) {
+      if (this.stopped) return;
+      try {
+        if (await this.sessionBusy(sessionId)) continue;
+        this.undecided.delete(sessionId);
+        this.decideRunFinished(sessionId);
+      } catch (err) {
+        console.error(`[schedules] deciding run session ${sessionId} after a restart failed:`, err);
       }
     }
   }
