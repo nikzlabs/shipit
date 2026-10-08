@@ -163,11 +163,11 @@ A **Schedules** tab beside Roles. `Settings.tsx` renders it, not
 are not settings (see "Rejected"). The client keeps the schedules and their
 runs in one store (`stores/schedule-store.ts`), and `openScheduleSettings`
 opens the tab at a schedule from the banner and from "needs you". A run's
-times show in the schedule's zone, as its title does, with the zone named when
-it is not the browser's. The run row does not store the zone, so after the
-user changes a schedule's zone, an earlier run's banner and history show its
-time in the new zone while its title keeps the old one; both times are right,
-but they no longer match.
+times show in the zone it ran in, as its title does, with the zone named when
+it is not the browser's. The run row and the run's session store that zone
+(`schedule_runs.time_zone`, `sessions.run_time_zone`), so a later change of the
+schedule's zone does not change how earlier runs read; rows from before that
+column fall back to the schedule's zone.
 
 - **List**: name, when (in words), target, next run, and a state — Paused, or
   the req 18 reason. Row actions: Run now, Pause / Resume, Edit, Delete.

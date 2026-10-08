@@ -38,6 +38,7 @@
 - [x] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
 - [x] `ScheduledRunBanner` with Open schedule and Stop run; deleted-schedule state
 - [x] Run times in the banner and history shown in the schedule's zone, as in the title
+- [x] Each run stores the zone it ran in (`schedule_runs.time_zone`, `sessions.run_time_zone`)
 - [x] **Notes** links in the run history and the banner
 - [x] `shipit-docs/schedules.md`: `list`, `propose`, the proposal YAML
 - [x] The wiki `sessions.md` "Scheduled sessions" section
