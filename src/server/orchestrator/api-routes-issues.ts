@@ -117,9 +117,8 @@ function areDeclarationsPending(
   return session.diskTier === "evicted" || !fs.existsSync(session.workspaceDir);
 }
 
-function isDoneStatus(type?: string): boolean {
-  return type === "completed" || type === "canceled";
-}
+// The agent's list keeps the size it had when one page was all it read.
+const DEFAULT_AGENT_LIST_LIMIT = 100;
 
 export async function registerIssueRoutes(
   app: FastifyInstance,
@@ -379,7 +378,10 @@ export async function registerIssueRoutes(
     },
   );
 
-  app.get<{ Params: { id: string }; Querystring: { tracker?: string; state?: string } }>(
+  app.get<{
+    Params: { id: string };
+    Querystring: { tracker?: string; state?: string; search?: string; label?: string | string[]; limit?: string };
+  }>(
     "/api/sessions/:id/issue/list",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -387,18 +389,22 @@ export async function registerIssueRoutes(
         reply.code(404).send({ error: "Session not found" });
         return;
       }
+      const { state, search, label, limit: rawLimit } = request.query;
       const trackerId = request.query.tracker ?? "github";
-      const state = request.query.state;
-      const includeDone = state === "all" || state === "closed";
+      const limit = rawLimit === undefined ? DEFAULT_AGENT_LIST_LIMIT : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1) {
+        reply.code(400).send({ error: `limit must be a positive whole number (got '${rawLimit}')` });
+        return;
+      }
       const github = resolveGitHubContext(request.params.id);
       try {
-        const result = await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
-          includeDone,
+        return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
+          includeDone: state === "all" || state === "closed",
+          doneOnly: state === "closed",
+          ...(search ? { search } : {}),
+          ...(label !== undefined ? { labels: Array.isArray(label) ? label : [label] } : {}),
+          limit,
         });
-        if (state === "closed") {
-          result.issues = result.issues.filter((i) => isDoneStatus(i.status?.type));
-        }
-        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

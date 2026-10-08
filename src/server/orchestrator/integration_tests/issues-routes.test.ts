@@ -251,6 +251,39 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(body.issues[0].priority.level).toBe("high");
   });
 
+  it("GET /api/issues reads every page, so the panel is not cut at a hundred", async () => {
+    await githubAuthManager.setToken("ghp_test_token");
+    sessionManager.track("gh-sess", "GH session");
+    sessionManager.setRemoteUrl("gh-sess", "https://github.com/octocat/hello-world.git");
+    trackerFetch.mockImplementation(async (url: string) => {
+      const page = Number(new URL(url).searchParams.get("page"));
+      const size = [100, 100, 20][page - 1] ?? 0;
+      return jsonResponse(
+        Array.from({ length: size }, (_, i) => {
+          const n = (page - 1) * 100 + i + 1;
+          return { id: n, number: n, title: `Issue ${n}`, html_url: `https://x/${n}`, state: "open", labels: [] };
+        }),
+      );
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=github&sessionId=gh-sess" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { issues: TrackerIssue[]; total: number; incomplete?: boolean };
+    expect(body.issues).toHaveLength(220);
+    expect(body.total).toBe(220);
+    expect(body.incomplete).toBeUndefined();
+  });
+
+  it("the agent list route rejects a limit that is not a positive whole number", async () => {
+    sessionManager.track("gh-sess", "GH session");
+    for (const limit of ["0", "-3", "ten", "2.5"]) {
+      const res = await app.inject({ method: "GET", url: `/api/sessions/gh-sess/issue/list?limit=${limit}` });
+      expect(res.statusCode).toBe(400);
+      expect((res.json() as { error: string }).error).toContain("positive whole number");
+    }
+  });
+
   it("GitHub tracker stays unconfigured without an active GitHub session", async () => {
     await githubAuthManager.setToken("ghp_test_token");
     const res = await app.inject({ method: "GET", url: "/api/issues?tracker=github" });
