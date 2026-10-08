@@ -297,6 +297,33 @@ describe("SchedulesSettings — runs (reqs 24, 33)", () => {
     expect(screen.getByTestId("schedule-runs-zone-a").textContent).toBe(`Times in ${zone}, the schedule’s time zone.`);
   });
 
+  it("gives each run's time in the zone the run kept after the schedule's zone changes, and names it on the row", async () => {
+    const [zone, other] = ["Asia/Tokyo", "America/New_York", "Europe/Berlin"].filter((z) => z !== browserTimeZone()) as [string, string];
+    const slotAt = "2026-10-07T09:00:00.000Z";
+    runs = [
+      run("before", { slotAt, timeZone: other }),
+      run("same", { slotAt, timeZone: zone }),
+      run("old", { slotAt }),
+      run("browser", { slotAt, timeZone: browserTimeZone() }),
+    ];
+    useScheduleStore.setState({ schedules: [schedule("a", { timeZone: zone })] });
+    render(<SchedulesSettings />);
+    await userEvent.click(screen.getByTestId("schedule-toggle-a"));
+    await screen.findByTestId("schedule-runs-a");
+    expect(screen.getByTestId("schedule-runs-zone-a").textContent).toBe(`Times in ${zone}, the schedule’s time zone.`);
+
+    expect(screen.getByTestId("schedule-run-before").textContent).toContain(formatRunTime(slotAt, other));
+    expect(formatRunTime(slotAt, other)).not.toBe(formatRunTime(slotAt, zone));
+    expect(screen.getByTestId("schedule-run-zone-before").textContent).toBe(other);
+    // A row from before runs kept their zone falls back to the schedule's.
+    for (const id of ["same", "old"]) {
+      expect(screen.getByTestId(`schedule-run-${id}`).textContent).toContain(formatRunTime(slotAt, zone));
+      expect(screen.queryByTestId(`schedule-run-zone-${id}`)).toBeNull();
+    }
+    expect(screen.getByTestId("schedule-run-browser").textContent).toContain(formatRunTime(slotAt));
+    expect(screen.getByTestId("schedule-run-zone-browser").textContent).toBe("your time");
+  });
+
   it("reads the runs again when a run's turn ends, so its result line is current", async () => {
     runs = [run("going", { sessionId: "s-going" })];
     useSessionStore.setState({ sessions: [session("s-going")], activeRunnerSessions: new Set(["s-going"]) });

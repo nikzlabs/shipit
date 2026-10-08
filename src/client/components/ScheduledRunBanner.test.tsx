@@ -77,7 +77,7 @@ describe("ScheduledRunBanner", () => {
     expect(screen.queryByTestId("scheduled-run-stop")).toBeNull();
   });
 
-  it("gives the time in the schedule's zone, as the run's title does, and names a zone that is not the browser's", () => {
+  it("gives a run from before runs kept their zone the time in the schedule's zone, and names a zone that is not the browser's", () => {
     const zone = browserTimeZone() === "Asia/Tokyo" ? "America/New_York" : "Asia/Tokyo";
     const createdAt = runSession().createdAt;
     useScheduleStore.setState({ schedules: [{ ...SCHEDULE, timeZone: browserTimeZone() }] });
@@ -92,6 +92,27 @@ describe("ScheduledRunBanner", () => {
     expect(formatRunTime(createdAt, zone)).not.toBe(formatRunTime(createdAt));
   });
 
+  it("keeps the run's own zone after the schedule's zone changes, so the time still reads as its title does", () => {
+    const [made, changed] = ["Asia/Tokyo", "America/New_York", "Europe/Berlin"].filter((z) => z !== browserTimeZone()) as [string, string];
+    // The title as `runTitle` writes it: the slot, in the zone the run was made in.
+    const when = new Date("2026-10-06T09:00:00.000Z").toLocaleString("en-US", {
+      timeZone: made, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    });
+    const session = runSession({ title: `Security PR sweep · ${when}`, runTimeZone: made });
+    const banner = () => screen.getByTestId("scheduled-run-banner").textContent ?? "";
+    useScheduleStore.setState({ schedules: [{ ...SCHEDULE, timeZone: made }] });
+    const { rerender } = render(<ScheduledRunBanner session={session} />);
+    const before = banner();
+
+    useScheduleStore.setState({ schedules: [{ ...SCHEDULE, timeZone: changed }] });
+    rerender(<ScheduledRunBanner session={session} />);
+    expect(banner()).toBe(before);
+    expect(banner()).toContain(`· ${formatRunTime(session.createdAt, made)} (${made})`);
+    const hourMinute = when.slice(-5);
+    expect(banner()).toContain(hourMinute);
+    expect(formatRunTime(session.createdAt, changed)).not.toContain(hourMinute);
+  });
+
   it("opens the run's notes (req 27)", async () => {
     const open = vi.fn();
     useScheduleNotesStore.setState({ open });
@@ -100,11 +121,16 @@ describe("ScheduledRunBanner", () => {
     expect(open).toHaveBeenCalledWith({ scheduleId: "sched-1", runId: "run-1" });
   });
 
-  it("says the schedule was deleted, with no links", () => {
+  it("says the schedule was deleted, with no links, and still gives the time in the run's zone", () => {
     useScheduleStore.setState({ schedules: [] });
-    render(<ScheduledRunBanner session={runSession()} />);
-    expect(screen.getByTestId("scheduled-run-banner").textContent).toContain("Started by a schedule that was deleted");
+    const { rerender } = render(<ScheduledRunBanner session={runSession()} />);
+    const banner = () => screen.getByTestId("scheduled-run-banner").textContent ?? "";
+    expect(banner()).toContain("Started by a schedule that was deleted");
     expect(screen.queryByRole("button")).toBeNull();
+
+    const zone = browserTimeZone() === "Asia/Tokyo" ? "America/New_York" : "Asia/Tokyo";
+    rerender(<ScheduledRunBanner session={runSession({ runTimeZone: zone })} />);
+    expect(banner()).toContain(`· ${formatRunTime(runSession().createdAt, zone)} (${zone})`);
   });
 
   it("shows nothing until the schedules are read, so a run is never taken for one of a deleted schedule", () => {

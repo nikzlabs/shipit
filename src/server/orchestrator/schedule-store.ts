@@ -24,6 +24,7 @@ interface RunRow {
   id: string;
   schedule_id: string;
   slot_at: string | null;
+  time_zone: string | null;
   spec: string | null;
   outcome: string;
   reason: string | null;
@@ -48,6 +49,8 @@ export interface NewScheduleRun {
   scheduleId: string;
   /** The slot this row claims; null for Run now, which never collides. */
   slotAt: Date | null;
+  /** The schedule's zone as the row is made (`ScheduleRun.timeZone`). */
+  timeZone?: string;
   spec?: unknown;
   outcome?: ScheduleRunOutcome;
   reason?: string;
@@ -56,6 +59,7 @@ export interface NewScheduleRun {
 export interface SlotClaim {
   scheduleId: string;
   slotAt: Date;
+  timeZone: string;
   spec: unknown;
   /** Req 15 — the earlier due slots, kept as one skipped row at the last of them. */
   missed?: { slotAt: Date; reason: string };
@@ -98,6 +102,7 @@ function runFromRow(row: RunRow): ScheduleRun {
     id: row.id,
     scheduleId: row.schedule_id,
     slotAt: row.slot_at,
+    ...(row.time_zone ? { timeZone: row.time_zone } : {}),
     ...(row.spec === null ? {} : { spec: parseJson(row.spec) }),
     outcome: row.outcome as ScheduleRunOutcome,
     ...(row.reason ? { reason: row.reason } : {}),
@@ -187,13 +192,14 @@ export class ScheduleStore {
   insertRun(input: NewScheduleRun, now = new Date().toISOString()): ScheduleRun | null {
     const id = randomUUID();
     const res = this.db.prepare(
-      `INSERT INTO schedule_runs (id, schedule_id, slot_at, spec, outcome, reason, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO schedule_runs (id, schedule_id, slot_at, time_zone, spec, outcome, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (schedule_id, slot_at) DO NOTHING`,
     ).run(
       id,
       input.scheduleId,
       input.slotAt?.toISOString() ?? null,
+      input.timeZone ?? null,
       input.spec === undefined ? null : JSON.stringify(input.spec),
       input.outcome ?? "starting",
       input.reason ?? null,
@@ -214,11 +220,17 @@ export class ScheduleStore {
           this.insertRun({
             scheduleId: claim.scheduleId,
             slotAt: claim.missed.slotAt,
+            timeZone: claim.timeZone,
             outcome: "skipped",
             reason: claim.missed.reason,
           }, now);
         }
-        const run = this.insertRun({ scheduleId: claim.scheduleId, slotAt: claim.slotAt, spec: claim.spec }, now);
+        const run = this.insertRun({
+          scheduleId: claim.scheduleId,
+          slotAt: claim.slotAt,
+          timeZone: claim.timeZone,
+          spec: claim.spec,
+        }, now);
         if (!run) throw alreadyClaimed;
         return run;
       })();

@@ -417,9 +417,9 @@ schedule:
   run sessions stay. It is refused while a run is not finished, and the refusal
   lists those runs, each with **Stop**.
 
-Opening a schedule there shows its runs, newest first: the time (in the
-schedule's time zone, as in each run's title, and named when it is not the
-user's own), a state — *Starting*, *Running*, *Needs you*, *Finished*,
+Opening a schedule there shows its runs, newest first: the time (in the time
+zone the run was made in, as in its title, so an earlier run keeps its zone
+after the schedule's zone changes; named when it is not the user's own), a state — *Starting*, *Running*, *Needs you*, *Finished*,
 *Stopping*, *Stopped*, *Skipped*, *Failed* or *Session deleted* — a one-line
 result, **Stop** on a run that is not finished, **Open**, and **Notes** on a run
 that has notes.

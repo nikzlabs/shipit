@@ -47,6 +47,11 @@ export interface ScheduleRun {
   scheduleId: string;
   /** The slot this run claimed; null for Run now. */
   slotAt: string | null;
+  /**
+   * The schedule's zone when the row was made, which the run's title names its time in. Absent
+   * on rows from before it was stored, which use the schedule's current zone.
+   */
+  timeZone?: string;
   /** The copy of the schedule's spec this run starts with (req 19). */
   spec?: unknown;
   outcome: ScheduleRunOutcome;

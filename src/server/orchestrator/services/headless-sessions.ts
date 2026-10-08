@@ -187,7 +187,7 @@ export interface CreateHeadlessSessionOptions {
    * docs/324-scheduled-sessions — the schedule run this session is. Stamped as soon as the
    * session exists, so a start that fails later still leaves a session linked to its run.
    */
-  scheduleRun?: { scheduleId: string; runId: string };
+  scheduleRun?: { scheduleId: string; runId: string; timeZone: string };
   /** Runs once the run's session is linked, before its container starts; a throw fails the start. */
   onRunLinked?: (sessionId: string) => void;
   /** Runs the first dispatch; a throw cancels it, and the session stays without a turn. */
@@ -344,7 +344,8 @@ export async function createHeadlessSession(
 
   const linkScheduleRun = (sessionId: string): void => {
     if (!opts.scheduleRun) return;
-    sessionManager.setScheduleRun(sessionId, opts.scheduleRun.scheduleId, opts.scheduleRun.runId);
+    const { scheduleId, runId, timeZone } = opts.scheduleRun;
+    sessionManager.setScheduleRun(sessionId, scheduleId, runId, timeZone);
     if (explicitTitle) sessionManager.rename(sessionId, explicitTitle);
     opts.onRunLinked?.(sessionId);
   };
