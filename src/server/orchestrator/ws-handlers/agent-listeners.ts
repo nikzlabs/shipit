@@ -16,7 +16,7 @@ import {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
 } from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
-import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, finalizeTurnRows, persistTurnInProgress } from "../chat-card-persistence.js";
 import { denyAbandonedPermissionCards, settlePermissionCard } from "../permission-cards.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
@@ -28,7 +28,7 @@ import {
   isWellFormedAskUserQuestion,
   createAgentToolTracker,
 } from "./agent-event-normalizer.js";
-import { projectAgentEventForWire, markMessagesCommitted } from "../transcript-projection.js";
+import { projectAgentEventForWire } from "../transcript-projection.js";
 import {
   accumulateAssistantGroups,
   attachSubagentAssistant,
@@ -657,16 +657,11 @@ export function wireAgentListeners(
       }
 
       const usageSessionId = opts.capturedSessionId;
-      if (usageSessionId) {
-        const inProgressMessages = buildTurnMessages(
-          runner?.chatMessageGroups ?? [],
-          runner?.steeredMessages ?? [],
-          runner?.recordedCards ?? [],
-          { inProgress: true },
-        );
-        deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
-        if (runner) markMessagesCommitted(runner.committedBodyIds, inProgressMessages);
-        if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
+      if (usageSessionId && runner) {
+        persistTurnInProgress(deps.chatHistoryManager, runner, usageSessionId);
+        runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
+      } else if (usageSessionId) {
+        deps.chatHistoryManager.replaceInProgress(usageSessionId, []);
       }
     }
 
@@ -850,14 +845,7 @@ export function wireAgentListeners(
         }
       }
 
-      const finalMessages = buildTurnMessages(
-        runner?.chatMessageGroups ?? [],
-        runner?.steeredMessages ?? [],
-        runner?.recordedCards ?? [],
-        { inProgress: false },
-      );
-      deps.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
-      deps.chatHistoryManager.finalizeInProgress(usageSessionId);
+      finalizeTurnRows(deps.chatHistoryManager, runner, usageSessionId);
       if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
 
       if (runner?.pendingCommitLink) {
@@ -934,14 +922,7 @@ export function wireAgentListeners(
       }
     }
     if (turnSessionId) {
-      const partialMessages = buildTurnMessages(
-        runner?.chatMessageGroups ?? [],
-        runner?.steeredMessages ?? [],
-        runner?.recordedCards ?? [],
-        { inProgress: false },
-      );
-      deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
-      deps.chatHistoryManager.finalizeInProgress(turnSessionId);
+      finalizeTurnRows(deps.chatHistoryManager, runner, turnSessionId);
       if (!persistedTerminalErrorRow) {
         persistedTerminalErrorRow = true;
         deps.chatHistoryManager.append(turnSessionId, {

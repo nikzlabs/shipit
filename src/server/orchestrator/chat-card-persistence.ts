@@ -78,9 +78,52 @@ export function buildTurnMessages(
   return out;
 }
 
+interface TurnRowsLatch {
+  turnEpoch?: number;
+  finalizedTurnEpoch?: number;
+}
+
+type TurnRows = TurnRowsLatch & {
+  chatMessageGroups: ChatMessageGroup[];
+  steeredMessages: SteeredMessage[];
+  recordedCards: RecordedChatCard[];
+};
+
+export function turnRowsFinalized(runner: TurnRowsLatch): boolean {
+  return runner.finalizedTurnEpoch !== undefined && runner.finalizedTurnEpoch === (runner.turnEpoch ?? 0);
+}
+
+export function markTurnRowsFinalized(runner: TurnRowsLatch): void {
+  runner.finalizedTurnEpoch = runner.turnEpoch ?? 0;
+}
+
+/**
+ * One attempt can end through several terminal events (an auth failure, a result, a process
+ * error), and each rebuilds the turn from the runner. Once its rows are final no row is in
+ * progress, so a second rebuild would insert every row again (planning#645). Only the first counts.
+ */
+export function finalizeTurnRows(
+  chatHistoryManager: Pick<InProgressPersister, "replaceInProgress"> & { finalizeInProgress(sessionId: string): void },
+  runner: TurnRows | null,
+  sessionId: string,
+  opts: { skipEmpty?: boolean } = {},
+): void {
+  if (runner && turnRowsFinalized(runner)) return;
+  const messages = buildTurnMessages(
+    runner?.chatMessageGroups ?? [],
+    runner?.steeredMessages ?? [],
+    runner?.recordedCards ?? [],
+    { inProgress: false },
+  );
+  if (opts.skipEmpty && messages.length === 0) return;
+  chatHistoryManager.replaceInProgress(sessionId, messages);
+  chatHistoryManager.finalizeInProgress(sessionId);
+  if (runner) markTurnRowsFinalized(runner);
+}
+
 export function persistTurnInProgress(
   chatHistoryManager: Pick<InProgressPersister, "replaceInProgress">,
-  runner: {
+  runner: TurnRowsLatch & {
     chatMessageGroups: ChatMessageGroup[];
     steeredMessages: SteeredMessage[];
     recordedCards: RecordedChatCard[];
@@ -88,6 +131,7 @@ export function persistTurnInProgress(
   },
   sessionId: string,
 ): void {
+  if (turnRowsFinalized(runner)) return;
   const messages = buildTurnMessages(
     runner.chatMessageGroups,
     runner.steeredMessages,
@@ -117,15 +161,15 @@ export function emitChatCard(
     | "steeredMessages"
     | "getTurnEventBuffer"
     | "lastPersistedBufferIndex"
-  >,
+  > & TurnRowsLatch,
   wsMessage: WsServerMessage,
   persisted: PersistedMessage,
   persist: CardPersistCtx,
 ): void {
   runner.emitMessage(wsMessage);
 
-  // Rebuilding a finished turn would make the next turn delete this card.
-  if (!runner.running) {
+  // Rebuilding a finished turn would make the next turn delete this card, or insert its final rows again.
+  if (!runner.running || turnRowsFinalized(runner)) {
     persist.chatHistoryManager.append(persist.sessionId, persisted);
     return;
   }
@@ -162,7 +206,7 @@ export function persistCardTransition(
     | "steeredMessages"
     | "getTurnEventBuffer"
     | "lastPersistedBufferIndex"
-  >,
+  > & TurnRowsLatch,
   persist: CardPersistCtx,
   matches: (m: PersistedMessage) => boolean,
   patchRecorded: (m: PersistedMessage) => PersistedMessage,
@@ -170,7 +214,9 @@ export function persistCardTransition(
 ): boolean {
   // running becomes true before old recordedCards clear; check actual in-progress rows.
   const turnOwnsInProgressRows =
-    runner.running && (persist.chatHistoryManager.hasInProgress?.(persist.sessionId) ?? true);
+    runner.running
+    && !turnRowsFinalized(runner)
+    && (persist.chatHistoryManager.hasInProgress?.(persist.sessionId) ?? true);
   const patchedInFlight =
     turnOwnsInProgressRows && updateRecordedCard(runner, matches, patchRecorded);
   if (patchedInFlight) {
