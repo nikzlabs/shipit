@@ -32,6 +32,7 @@ export function wireAuthRequiredHandler(
       : null;
     const failingAgentId = turnSession?.agentId;
     const turnSessionId = opts.capturedSessionId;
+    const failingTurnEpoch = runner?.turnEpoch;
 
     const failurePolicy =
       opts.getCapturedRoutePolicy?.() ?? credentialFailurePolicyFor(turnSession ?? undefined);
@@ -58,13 +59,20 @@ export function wireAuthRequiredHandler(
         emitToViewers({ type: "error", message });
         return;
       }
+      const errorRow = { role: "assistant" as const, text: `Error: ${message}`, isError: true };
+      // A failed heal settles first, so a queued turn may own the runner by now.
+      if (runner.turnEpoch !== failingTurnEpoch) {
+        emitToViewers({ type: "error", message, sessionId: turnSessionId });
+        deps.chatHistoryManager.append(turnSessionId, errorRow);
+        return;
+      }
       // Flush partial output before the error; the executor skips auth-path finalization.
       // The turn's rows are final after this, so the error row is appended after them.
       finalizeTurnRows(deps.chatHistoryManager, runner, turnSessionId);
       emitChatCard(
         runner,
         { type: "error", message, sessionId: turnSessionId },
-        { role: "assistant", text: `Error: ${message}`, isError: true },
+        errorRow,
         { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
       );
     };

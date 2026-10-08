@@ -633,6 +633,8 @@ export async function executeAgentTurn(
         return true;
       }
       recordTurnEnd("errored", "The agent's account could not authenticate.");
+      // The settle can start a queued turn, which would take over these rows (planning#645).
+      finalizeAttemptOutput();
       await settleTurnWithoutRedispatch();
       return false;
     }

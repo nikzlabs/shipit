@@ -76,7 +76,21 @@ final, `persistTurnInProgress` writes nothing, `emitChatCard` appends the card
 (as it does after the turn), and `persistCardTransition` patches the database
 row. Every terminal site uses it: the listener's `agent_result` and `error`
 paths, the auth handler, the executor's retry and fallback finalizes,
-`onInterruptedTurn`, and turn adoption.
+`onInterruptedTurn`, and turn adoption. The tool-result boundary goes through
+`persistTurnInProgress`, so a late tool result cannot rebuild a final turn
+either. The worker-loss rescue and the abandoned-turn handler keep their own
+finalize (the abandoned turn's permission denial patched only the database row,
+so a rebuild would restore it as pending) and set the latch with
+`markTurnRowsFinalized`.
+
+A failed sign-in heal settles the turn, and can start a queued turn, before the
+auth handler writes its error. So the executor makes the failing turn's rows
+final before it settles, and the auth handler only appends its error row when
+a newer turn owns the runner.
+
+Late assistant text after a result, in the same turn (Codex), is not saved on a
+plain exit, and was not saved before this change either. Only an error after it
+used to save it, as a second copy of the whole turn.
 
 ## Key files
 

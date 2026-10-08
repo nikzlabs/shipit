@@ -23,6 +23,7 @@ const CARD: PersistedMessage = {
 async function startTurn(opts: { healFails?: boolean } = {}): Promise<{
   runner: SessionRunner;
   agent: FakeAgent;
+  agents: FakeAgent[];
   history: ChatHistoryManager;
 }> {
   const history = new ChatHistoryManager(new DatabaseManager(":memory:"));
@@ -34,7 +35,7 @@ async function startTurn(opts: { healFails?: boolean } = {}): Promise<{
   runner.setSystemTurnDeps(deps);
   runner.dispatch(testDispatch({ text: "do work" }));
   await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "agent run");
-  return { runner, agent: agents[0]!, history };
+  return { runner, agent: agents[0]!, agents, history };
 }
 
 function postCard(runner: SessionRunner, history: ChatHistoryManager): void {
@@ -80,7 +81,49 @@ describe("a turn's rows are saved once, however many terminal events end it (pla
     await settle(runner);
 
     expect(cards(history)).toHaveLength(1);
-    expect(history.load("s1").some((m) => m.isError && m.text.includes("not authenticated"))).toBe(true);
+    const rows = history.load("s1");
+    const authError = rows.findIndex((m) => m.isError && m.text.includes("not authenticated"));
+    expect(authError).toBeGreaterThan(rows.findIndex((m) => m.voiceNote?.id === "card-645"));
+    runner.dispose({ force: true });
+  });
+
+  it("a tool result that arrives after the result does not save the turn again", async () => {
+    const { runner, agent, history } = await startTurn();
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Partial output" }] });
+    postCard(runner, history);
+
+    agent.emit("event", { type: "agent_result", status: "error", sessionId: "cli", error: "API Error: 500" });
+    agent.emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "t1", content: "late" }] });
+    agent.emit("error", new Error("process exited"));
+    agent.emit("done", 1);
+    await settle(runner);
+
+    const rows = history.load("s1");
+    expect(rows.filter((m) => m.text === "Partial output")).toHaveLength(1);
+    expect(cards(history)).toHaveLength(1);
+    expect(rows.every((m) => !m.inProgress)).toBe(true);
+    runner.dispose({ force: true });
+  });
+
+  it("a failed heal that starts a queued turn leaves the queued turn's rows its own", async () => {
+    const { runner, agent, agents, history } = await startTurn({ healFails: true });
+    postCard(runner, history);
+    runner.dispatch(testDispatch({ text: "next message" }));
+
+    agent.emit("auth_required");
+    agent.emit("done", 0);
+    await waitForTurn(() => agents[1]?.run.mock.calls.length === 1, "queued turn run");
+    for (let i = 0; i < 20; i++) await flushTurn();
+    agents[1]!.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Queued turn answer" }] });
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "cli" });
+    agents[1]!.emit("done", 0);
+    await settle(runner);
+
+    const rows = history.load("s1");
+    expect(cards(history)).toHaveLength(1);
+    expect(rows.filter((m) => m.text === "Queued turn answer")).toHaveLength(1);
+    expect(rows.filter((m) => m.isError && m.text.includes("not authenticated"))).toHaveLength(1);
+    expect(rows.every((m) => !m.inProgress)).toBe(true);
     runner.dispose({ force: true });
   });
 

@@ -93,6 +93,10 @@ export function turnRowsFinalized(runner: TurnRowsLatch): boolean {
   return runner.finalizedTurnEpoch !== undefined && runner.finalizedTurnEpoch === (runner.turnEpoch ?? 0);
 }
 
+export function markTurnRowsFinalized(runner: TurnRowsLatch): void {
+  runner.finalizedTurnEpoch = runner.turnEpoch ?? 0;
+}
+
 /**
  * One attempt can end through several terminal events (an auth failure, a result, a process
  * error), and each rebuilds the turn from the runner. Once its rows are final no row is in
@@ -114,7 +118,7 @@ export function finalizeTurnRows(
   if (opts.skipEmpty && messages.length === 0) return;
   chatHistoryManager.replaceInProgress(sessionId, messages);
   chatHistoryManager.finalizeInProgress(sessionId);
-  if (runner) runner.finalizedTurnEpoch = runner.turnEpoch ?? 0;
+  if (runner) markTurnRowsFinalized(runner);
 }
 
 export function persistTurnInProgress(
