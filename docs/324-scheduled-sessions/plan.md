@@ -77,14 +77,18 @@ the two places a key can be forgotten:
   seed keys (`useSessionWebSocket.ts`), the per-message `permissionMode`, the
   `POST /api/sessions/headless` body keys, and the HTTP routes the composer
   and Session settings use for session choices — `PUT /api/egress/session/:id`
-  (network mode) and `PUT /api/sessions/:id/ssh-hosts`.
+  (network mode) and `PUT /api/sessions/:id/ssh-hosts`. The sandbox routes
+  (`POST /api/sessions/sandbox`, `PUT /api/sessions/:id/capabilities`) map to
+  the target.
 
 `CreateHeadlessSessionOptions` takes `SessionStartParams` instead of its own
 copy of the fields, so Quick Capture and runs share one path.
 
-The Settings editor is built from the composer's own controls — `RoleSelector`,
-`HarnessSelector`, `ModelSelector`, `ReasoningSelector`,
-`PermissionModeSelector` — and the sandbox grants are
+The Settings editor uses the composer's own `RoleSelector` and
+`PermissionModeSelector` (with its network section). The composer's
+`HarnessSelector`, `ModelSelector` and `ReasoningSelector` read the open
+session and cannot show a stored value, so the harness, model and reasoning
+use the shared `Picker`, as the role editor does. The sandbox grants are
 `SandboxCapabilityToggles`, which `SandboxDialog` and Session settings already
 share. One control can set several keys (the model picker sets the model,
 service and billing mode), so the editor's coverage is checked by a component
@@ -147,16 +151,23 @@ The orchestrator validates a proposal the way the Settings editor does
 (repository known, role exists, model valid, cron parses, the req 17 check
 below) and refuses it by name. A valid proposal posts the proposal card: every
 value through `START_PARAM_LABELS`, or before → after for a change; the next
-three run times in the browser's time zone; **Confirm**, **Open in Settings**
-and **Cancel**. If the proposal names no time zone, Confirm sends the
-browser's. A change card records the schedule's `updated_at`; if the schedule
+three run times in the browser's time zone; **Confirm** and **Cancel**. If the
+proposal names no time zone, Confirm sends the browser's. A change card records the schedule's `updated_at`; if the schedule
 changed since, Confirm refuses, because the card's "before" is no longer true.
 The command needs no repository, so it works in a sandbox too.
 
 ## Settings → Schedules (reqs 10, 11, 19, 24, 32, 33)
 
-A `schedules` section registered beside `roles` in
-`Settings/components/registry.ts`.
+A **Schedules** tab beside Roles. `Settings.tsx` renders it, not
+`Settings/components/registry.ts`: the registry holds settings, and schedules
+are not settings (see "Rejected"). The client keeps the schedules and their
+runs in one store (`stores/schedule-store.ts`), and `openScheduleSettings`
+opens the tab at a schedule from the banner and from "needs you". A run's
+times show in the zone it ran in, as its title does, with the zone named when
+it is not the browser's. The run row and the run's session store that zone
+(`schedule_runs.time_zone`, `sessions.run_time_zone`), so a later change of the
+schedule's zone does not change how earlier runs read; rows from before that
+column fall back to the schedule's zone.
 
 - **List**: name, when (in words), target, next run, and a state — Paused, or
   the req 18 reason. Row actions: Run now, Pause / Resume, Edit, Delete.
@@ -180,8 +191,11 @@ sessions. It is refused while any run of the schedule is not finished —
 archived runs included, since req 32 says any — and the refusal lists those
 runs, each with **Stop**. It is also refused while a stopped run's agent is
 still winding down (`agentBusy`), so no notes folder is removed under live
-work. A run whose schedule was deleted keeps its banner, which then says so and
-has no links.
+work. A chat turn is not in the schedule's queue, so a finished run can start
+working again while Delete probes the other runs; Delete therefore checks
+again (`unfinishedRunsNow`), with no `await` between that check and the
+removal. A run whose schedule was deleted keeps its banner, which then says so
+and has no links.
 
 **Stop (req 33)** writes `run_stopped_at` and interrupts the run's turn if one
 is going. It is reached four ways: the chat's own stop control inside the run —
@@ -190,7 +204,10 @@ is going. It is reached four ways: the chat's own stop control inside the run �
 a run — and **Stop** on the run's row, in the Delete refusal, and in the run's
 banner. The last three also work while no turn is going, for a run that waits
 for an answer. Stop on a `starting` row cancels the start before its dispatch
-(the scheduler re-checks, below).
+(the scheduler re-checks, below). After a restart, a worker can keep background
+work that no runner follows; when the interrupt stops nothing, Stop kills the
+worker's resident agent by its run token (`stopWorkerAgent`,
+`restart-turn-reattach.ts`), as the runner's own stop does for a streaming CLI.
 
 A stopped run takes no automatic turn until the user's next turn in it: the
 docs/322 admission gate, which holds automatic turns while a question waits,
@@ -208,16 +225,19 @@ never overlap. Cron evaluation uses `croner` 10.0.1 (published 2026-02-01, no
 dependencies, so it passes `check-deps`); presets compile to cron (daily 09:00
 is `0 9 * * *`, weekdays `0 9 * * 1-5`).
 
-**Due slots come from stepping forward, never from `previousRuns`.** Checked on
-2026-10-07: at 03:00 Berlin time on the spring change day, `previousRuns(1,
-now)` returns 03:30 that day — a time that has not come yet. Stepping forward
-with `nextRun` from the last handled point gives the right answer. So a pass
-walks `nextRun` from the later of `active_since` and the schedule's latest
-non-null `slot_at`, and collects every slot at or before now. Walking forward,
-`croner` moves a missing time by the size of the clock change and runs a
-repeated time once (req 29; checked for Berlin and for Lord Howe Island's
-30-minute change). `nextRuns(n)` gives the next run times for the cards and
-the editor.
+**Run times come from one forward walk, never from `croner`'s `previousRuns`
+or `nextRuns`.** Both are wrong on clock-change days (checked 2026-10-07): at
+03:00 Berlin time on the spring day, `previousRuns(1, now)` returns 03:30 that
+day, a time that has not come yet; `nextRuns(n)` lists a moved spring time
+twice; and `nextRun` from inside the repeated autumn hour returns an earlier
+instant. So `runsAfter` (`shared/schedule-timing.ts`) steps `nextRun` from 3
+hours before its start point and keeps only the instants after it. A pass walks
+from the later of `active_since` and the schedule's latest non-null `slot_at`
+(`dueSlots`: the latest due slot, plus a count and range of the missed ones).
+The walk moves a missing time by the size of the clock change and runs a
+repeated time once (req 29); tests pin Berlin and Lord Howe Island's 30-minute
+change, where the repeated time runs at its second occurrence. The same
+module's `nextRuns(n)` gives the next run times for the cards and the editor.
 
 **One queue per schedule.** Every start — due or Run now — and every change to
 the schedule — edit, pause, resume, delete, Stop on a `starting` row — goes
@@ -248,16 +268,22 @@ Each pass, for each enabled schedule:
 slots that passed while a schedule was paused, or before its time changed, do
 not run.
 
-**One hour apart (req 17).** Saving or proposing a timing whose next 100 run
-times include two less than an hour apart is refused. Run now is not counted
-(req 26).
+**One hour apart (req 17).** Saving or proposing a timing whose run times, as
+the schedule gives them, include two less than an hour apart is refused — for
+example, the cron's next 100 times evaluated in UTC. Clock changes are not
+counted, so a timing is accepted or refused the same on every date. On a day
+with a 30-minute clock change, a moved run (req 29) can come 30 minutes before
+the next one; the overlap rule (req 14) still skips the next while the moved
+run is going. Run now is not counted (req 26).
 
 **Run now (req 26)** goes through the queue without steps 1–4. Before it
 starts, the control checks every run of the schedule — archived ones included
 — with `isRunFinished` (below); if any is not finished, it shows a warning that
 lists them, with **Run anyway** and **Cancel**. A Run now run is an ordinary
 run of the schedule, so a slot that comes due while it is still going is
-skipped by step 4.
+skipped by step 4. Run now also starts on a paused schedule, and a pause during
+its start does not cancel it: a pause stops only due runs (req 26 has no
+restrictions).
 
 ### Starting a run — `startScheduledRun(row)`
 
@@ -271,9 +297,12 @@ skipped by step 4.
      today takes no prompt, model or role;
    - `permissionMode` on the first dispatch, which already has the slot and
      passes `undefined` today (`headless-sessions.ts`);
-   - `sshHosts` and `networkMode`, applied before the container starts, because
-     a sandbox's Network and Docker grants take effect only at container start
-     (`sandbox-capabilities.ts`);
+   - `networkMode`, applied before the container starts, because a sandbox's
+     Network and Docker grants take effect only at container start
+     (`sandbox-capabilities.ts`); and `sshHosts`, applied before the first
+     dispatch — for a repository target once the container runs, because a
+     claimed warm session already has one, through the live firewall reload
+     that Session settings uses;
    - `title` = "*schedule name* · *date*", with AI naming off, so the history
      and the sidebar name runs the same way. Sandboxes never graduate, so the
      title must be set at creation;
@@ -283,30 +312,51 @@ skipped by step 4.
    - a fetch of the base before the clone, as `spawnChildSession` asks for. It
      is best effort there (`refreshClaimedSession` logs a failure and goes on),
      and the same is accepted here: the agent can fetch, and failing a run for a
-     slow fetch would be worse.
+     slow fetch would be worse;
+   - no warm session for a repository run (`skipWarm`): a warm standby
+     container already runs without the notes mount, so the run would have no
+     `/schedule/notes/`.
 3. **Re-check, then dispatch.** Inside the queue, just before the dispatch, the
    start re-reads the schedule and the row: a schedule paused or deleted, or a
    row stopped, since the claim cancels the start, and the row becomes `failed`
    with that reason.
-4. **Watch the first turn** through its handle. A dispatch that fails during
-   setup does not throw to the caller; `dispatchOnRunner` reports it through
-   the settlement (`turnErrored`, `session-runner.ts`). A quota refusal can
-   settle as `completed` with the refusal only in the text; the executor's
-   refusal detection (`turn-executor.ts`, docs/306-quota-continuation) writes
-   `last_turn_outcome = quota-refused` once its retries are spent. Either way
-   the row becomes `failed` with the reason, and the session is linked.
+4. **Watch the first turn.** A dispatch that fails during setup does not throw
+   to the caller; `dispatchOnRunner` reports it through the handle's
+   settlement (`turnErrored`, `session-runner.ts`). The handle is not enough
+   for the rest: a resident streaming turn never settles it, and a quota
+   refusal settles `completed`, sometimes before the executor has read the
+   refusal. So the executor records every turn end — `last_turn_outcome` (`ok`,
+   `errored`, or `quota-refused` once the docs/306-quota-continuation retries
+   are spent) and an `onTurnEnd` call that says whether it was the session's
+   first. The scheduler fails a run only on its first turn end: `quota-refused`,
+   or `errored` before the prompt reached an agent. The row becomes `failed`
+   with the reason, and the session is linked. A later error is req 31's.
 
 The first dispatch is not `automatic`: it is a new session's own task, so the
 docs/322 hold does not apply to it.
 
-**Recovery after a restart.** The startup pass finishes `starting` rows:
+**Recovery after a restart.** The startup pass finishes unfinished starts:
 
-- no session with that `schedule_run_id` → start the run from the row's spec;
-- a session → the runner's delivery tracking for the run's `deliveryId`
-  (`hasDelivery`, `rebindDelivery`, `session-runner.ts`) and the session's
-  chat history tell whether the prompt reached it. Delivered → the row becomes
-  `started`, and the turn is the business of `restart-turn-reattach.ts`, as for
-  any session. Not delivered → the row's prompt is sent into that session.
+- a `starting` row with no session with that `schedule_run_id` → start the run
+  from the row's spec;
+- a `starting` row with a session → the runner's delivery tracking for the
+  run's `deliveryId` (`hasDelivery`, `rebindDelivery`, `session-runner.ts`)
+  and the session's chat history tell whether the prompt reached it. Delivered
+  → the row becomes `started`, and the turn is the business of
+  `restart-turn-reattach.ts`, as for any session. Not delivered → the run
+  fails with the reason (req 18) and the session stays linked. The prompt is
+  not sent again: the crash can fall before the network containment, the SSH
+  grant or the role was applied, so that session may not be what the spec
+  asks for. The next slot runs as usual, and Run now can repeat it;
+- a `started` row whose prompt did not reach the agent (the crash fell between
+  the dispatch and the agent) → the prompt is sent again, unchanged. This is
+  safe because a run's session gets its agent id when the run is linked, and a
+  repository session graduates in the same synchronous step as the dispatch
+  and the row's `started` write, so a `started` run always has its agent,
+  model and graduation saved;
+- a run with a saved turn outcome (or a stop) and no saved "finished" decision
+  (the crash fell between the two writes) → every pass decides it once neither
+  its runner nor its worker is busy.
 
 In `RUNTIME_MODE=local` there is no worker to re-attach; a run whose turn was
 cut off by a restart there is marked `failed` ("ShipIt restarted during the
@@ -321,8 +371,12 @@ the reason, and a reason that still holds comes back on the next start.
 ## Finished runs (reqs 22, 31, 33)
 
 `isRunFinished` is the requirement's "finished", and reqs 26, 32 and 33 use
-exactly it. A run the user stopped (`run_stopped_at`, req 33) is finished until
-a user turn after the stop. Otherwise a run is finished when all of these hold:
+exactly it (`orchestrator/run-finished.ts`). A run the user stopped
+(`run_stopped_at`, req 33) is finished until a user turn after the stop; the
+decision is saved once its agent has wound down, so until then Delete is
+refused and the run is listed as not finished (`unfinishedRuns`, which Delete
+and Run now's warning share). Otherwise a run is finished when all of these
+hold:
 
 - it is not awaiting an answer (`awaiting_answer`, docs/322);
 - it has no manual steps: with the status card on, its card has no `needsYou`
@@ -342,6 +396,10 @@ the PR flows, `signalIdleIfIdle` and quota detection), when the runner's
 background work drains, when the PR poller sees the run's PR change state, when
 the user answers, and on Stop. While the runner is busy nothing is decided, so
 a PR update in the middle of a turn changes nothing until the turn is over.
+One exception: a user turn that starts in a finished run clears
+`run_finished_at` at once, because a run with a turn going has not ended (req
+22) and a regular merged session opens again the same way. Each write or clear
+publishes the session list, since the sidebar reads only the stored decision.
 
 **Where "finished" shows.** Sidebar placement is not the same question as
 "finished". A regular session goes under **Recently resolved** only when its PR
@@ -350,9 +408,11 @@ reservation, and has no unfinished descendant (`isOwnWorkFinished`,
 `doneSessionTest`, `session-resolution.ts`). Runs follow the same rule — req 20
 asks for the same UI — with `isRunFinished` in place of the PR test:
 
-- `isWorkResolved(session)` is `isRunFinished` for a run and
-  `isTerminalPrResolved` for any other session; `workResolvedAt` is
-  `runFinishedAt` or `resolvedAt`.
+- `isWorkResolved(session)` is the stored `isRunFinished` decision
+  (`runFinishedAt` set) for a run and `isTerminalPrResolved` for any other
+  session; `workResolvedAt` is `runFinishedAt` or `resolvedAt`. The client
+  cannot work out `isRunFinished` itself, so the stored decision is what the
+  sidebar reads.
 - `isOwnWorkFinished` uses `isWorkResolved`, so `doneSessionTest` — Recently
   resolved, the sidebar cap, and the idle enforcer's container stop (docs/316)
   — treats runs like sessions. `touchUnlessResolved` (`sessions.ts`) and the
@@ -498,7 +558,7 @@ this is the limit it already has.
 | 14, 23 | Scheduler step 4; `awaiting_answer` never counts as still going |
 | 15 | Step 2 |
 | 16, 29 | IANA zone; due slots by stepping `nextRun` forward |
-| 17 | The spacing check at save and propose; catch-ups and Run now not counted |
+| 17 | The spacing check at save and propose, clock changes not counted; catch-ups and Run now not counted |
 | 18 | Pre-flight, the re-check, the first-turn watch, `needs_user_reason` |
 | 19 | Run now / Pause / Edit; the spec is copied into the run row |
 | 20 | `SidebarView` `"scheduled"`, membership by spawn root, separate caps, Sandbox group split |
@@ -524,6 +584,10 @@ this is the limit it already has.
   req 15 does not allow. The run row is the claim instead.
 - **`previousRuns` for the due slot** — it returns a future time on a spring
   change day.
+- **A spacing check over the real run times** — in a zone with a 30-minute
+  clock change, it refused an hourly timing only when the change day was among
+  the next 100 runs, so the same timing was refused on some dates and not
+  others. The user chose to ignore the shift (requirements, req 17).
 - **A `dispatched_at` timestamp** — a crash between the dispatch and the write
   makes a delivered prompt look undelivered; the runner's own delivery tracking
   is the record.
@@ -538,6 +602,10 @@ this is the limit it already has.
 - **Registering schedules as settings** — docs/299 proposes one scalar change
   per card and rejected multi-change cards; a schedule is a whole object. Its
   claim and notice are generalized instead.
+- **Open in Settings on the proposal card** — no requirement asks for it, and
+  for a new schedule it needs an unsaved editor that must also settle the
+  card. Confirming and then editing in Settings, or asking the agent for a
+  change, gives the same result.
 - **Auto-pause after repeated failures** — not asked for; req 18 makes every
   failure visible, and a failed start costs nothing.
 - **A deterministic pre-check that skips the agent** (Devin, gh-aw) — a quiet run

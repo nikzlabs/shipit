@@ -5,28 +5,46 @@
 - [x] Design (`plan.md`) and UI sketch (`mockup.html`)
 - [x] Review rounds 1–3 (requirements alone, design against them), findings applied
 - [x] The two open questions in `requirements.md` answered
-- [ ] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs; editor test that edits every key
-- [ ] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, schedule ids, run id as `deliveryId`, dispatch handle returned, base fetch
-- [ ] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
-- [ ] `croner` 10.0.1 added (exact pin); presets compile to cron; due slots by stepping `nextRun` forward; tests for the spring and autumn change days and a 30-minute zone
-- [ ] `ScheduleRunner`: in-flight flag; one queue per schedule for starts and every schedule change; missed slots recorded as one skipped row; slot claim; skip rules (`awaiting_answer` never still going); `active_since` on create/resume/timing edit; one start at a time
-- [ ] Re-check of schedule and row inside the queue before dispatch
-- [ ] Recovery of `starting` rows through the runner's delivery tracking; local-mode cut-off runs marked failed
-- [ ] Spacing check at save and propose
-- [ ] Run now through the queue; `isRunFinished` warning (archived runs included) with Run anyway / Cancel
-- [ ] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
-- [ ] Delete (refused while a run is not finished or still busy; lists those runs with Stop); Stop on a run row, in the refusal, in the banner, on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
-- [ ] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
-- [ ] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; `isWorkResolved` / `workResolvedAt` in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
-- [ ] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
-- [ ] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
-- [ ] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
-- [ ] Claim and outcome notice generalized by card kind (settings first); proposal card and notes access card on them
-- [ ] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
-- [ ] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
-- [ ] The run's notes folder: host layout, mount at `/schedule/notes/` with the session identity passed in, local-mode path
-- [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes` (own schedule's runs allowed); `schedule_notes_grants`
-- [ ] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
-- [ ] `ScheduledRunBanner` with Open schedule, Notes and Stop run; deleted-schedule state
-- [ ] `shipit-docs/schedules.md` and the wiki `sessions.md` section
-- [ ] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start, stopped run takes no automatic turn, Delete refused while a run is busy
+- [x] `SessionStartParams` / `SessionStartSpec`; `START_PARAM_APPLIERS` and `START_PARAM_LABELS`; guard test over WebSocket, seed, headless and HTTP inputs
+- [x] Editor test that edits every `SessionStartParams` key
+- [x] `createHeadlessSession`: sandbox target, permission mode, SSH hosts, network mode, auto-merge, title, `deliveryId`, dispatch handle returned, base fetch (opt-in `fetchBase`)
+- [x] Schedule ids on the run's session row; runs pass `fetchBase: true`; a start refused after the session exists is linked to the failed run
+- [x] `schedules`, `schedule_runs` (unique slot, spec copy, `result`, `started_at`); `sessions.schedule_id`, `schedule_run_id`, `run_finished_at`, `run_stopped_at`, `last_turn_outcome`, `schedule_notes_grants`
+- [x] `croner` 10.0.1 added (exact pin); presets compile to cron; due slots by stepping `nextRun` forward; tests for the spring and autumn change days and a 30-minute zone
+- [x] `ScheduleRunner`: in-flight flag; one queue per schedule for starts and every schedule change; missed slots recorded as one skipped row; slot claim; skip rules (`awaiting_answer` never still going); `active_since` on create/resume/timing edit; one start at a time
+- [x] Re-check of schedule and row inside the queue before dispatch
+- [x] Recovery of `starting` rows through the runner's delivery tracking (an undelivered half-prepared start fails; a `started` row's lost prompt is re-sent); local-mode cut-off runs marked failed
+- [x] Spacing check at save, clock changes not counted (the cron evaluated in UTC); propose calls the same check (slice 6b)
+- [x] Run now through the queue, also on a paused schedule
+- [x] Run now's warning data (`unfinishedRuns`, archived runs included)
+- [x] Run now's warning dialog with Run anyway / Cancel
+- [x] Pre-flight checks; first-turn watch; `last_turn_outcome` written by the executor (errored, quota-refused after retries); `needs_user_reason` set and cleared
+- [x] Delete on the server (refused while a run is not finished or still busy; lists those runs); the Stop route, Stop on a `starting` row, and `handleInterruptAgent` in a run; `run_stopped_at`
+- [x] Stop on a run row, in the Delete refusal and in the banner (UI)
+- [x] Stopped runs hold automatic turns through the docs/322 admission gate (quota continuation included)
+- [x] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; cleared when a user turn starts; `session_list` published on each change
+- [x] `isWorkResolved` / `workResolvedAt` (the stored `run_finished_at`) in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
+- [x] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
+- [x] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
+- [x] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
+- [x] Scheduled view: the toggle also shows when a schedule exists; a schedule's `needs_user_reason` at the top of the view; the toggle's warning mark
+- [x] Claim and outcome notice generalized by card kind (settings first; `services/card-kinds.ts`)
+- [x] Proposal card registered as a card kind
+- [x] Notes access card registered as a card kind
+- [x] `shipit schedule list` / `propose` (partial changes with `--id`, stale-card refusal)
+- [x] Settings → Schedules: list, editor, run history (states, result fallback, deleted session), Run now / Pause / Delete
+- [x] The run's notes folder: host layout, mount at `/schedule/notes/` with the session identity passed in, local-mode path; no warm session for a repository run (`skipWarm`)
+- [x] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes` (own schedule's runs allowed); `schedule_notes_grants`
+- [x] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
+- [x] `ScheduledRunBanner` with Open schedule and Stop run; deleted-schedule state
+- [x] Run times in the banner and history shown in the schedule's zone, as in the title
+- [x] Each run stores the zone it ran in (`schedule_runs.time_zone`, `sessions.run_time_zone`)
+- [x] **Notes** links in the run history and the banner
+- [x] `shipit-docs/schedules.md`: `list`, `propose`, the proposal YAML
+- [x] The wiki `sessions.md` "Scheduled sessions" section
+- [x] `shipit-docs/schedules.md` notes part; the notes in the wiki section
+- [x] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start
+- [x] Integration tests: stopped run takes no automatic turn, Delete refused while a run is busy
+- [x] Independent review of the whole feature against every requirement (eight findings)
+- [x] Review findings, fix A: Delete during a resumed run, Stop without a runner after restart, recovery before graduation, completion after restart
+- [x] Review findings, fix B: error outcome not published, waiting question hidden by background work, Run now response over a failure, history capped at 1,000 runs
