@@ -419,24 +419,24 @@ schedule:
 
 Opening a schedule there shows its runs, newest first: the time (in the
 schedule's time zone, as in each run's title, and named when it is not the
-user's own), a state —
-*Starting*, *Running*, *Needs you*, *Finished*, *Stopping*, *Stopped*,
-*Skipped*, *Failed* or *Session deleted* — a one-line result, **Stop** on a run
-that is not finished, **Open**, and **Notes** on a run that has notes.
+user's own), a state — *Starting*, *Running*, *Needs you*, *Finished*,
+*Stopping*, *Stopped*, *Skipped*, *Failed* or *Session deleted* — a one-line
+result, **Stop** on a run that is not finished, **Open**, and **Notes** on a run
+that has notes.
 
 **Where the runs are.** Runs are not in the regular session list. The clock
-button beside the "Needs you" button in the sidebar header, there while the
-user has a schedule or a run, opens the **Scheduled** view: the same grouped
-list, for runs only, with finished runs under **Recently resolved**. A run that
-needs the user is in "Needs you" too. A
-run is *finished* when nothing is left for the user: no question waiting, no
-manual step, no open pull request, and no error at its end. So in a run,
-anything the user must decide has to be asked as a question; a request written
-only in a message is filed away with the finished runs.
+button beside the "Needs you" button in the sidebar header, there while the user
+has a schedule or a run, opens the **Scheduled** view: the same grouped list,
+for runs only, with finished runs under **Recently resolved**. A run that needs
+the user is in "Needs you" too. A run is *finished* when nothing is left for the
+user: no question waiting, no manual step, no open pull request, and no error at
+its end. So in a run, anything the user must decide has to be asked as a
+question; a request written only in a message is filed away with the finished
+runs.
 
-**Inside a run**, the top of the chat says *Started by schedule …*, with
-**Open schedule**, which opens Settings → Schedules at that schedule, **Notes**,
-and **Stop run** while the run is not finished. Stopping a run — there, on its row
+**Inside a run**, the top of the chat says *Started by schedule …*, with **Open
+schedule**, which opens Settings → Schedules at that schedule, **Notes**, and
+**Stop run** while the run is not finished. Stopping a run — there, on its row
 in Settings, or with the chat's own stop control — makes it finished and holds
 every automatic turn until the user writes in it again. After the schedule is
 deleted, that line says so and has no controls.
