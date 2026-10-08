@@ -427,10 +427,10 @@ export function MessageList({
                   pointer-coarse:before:-left-2 pointer-coarse:before:h-11 pointer-coarse:before:w-11`}
                 aria-expanded={closes.open}
                 aria-controls={closes.controls}
-                aria-label={`${closes.open ? "Show compact turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}
+                aria-label={`${closes.open ? "Collapse turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}
                 aria-disabled={closes.search || undefined}
                 title={closes.search ? "Revealed by the active search"
-                  : `${closes.open ? "Show compact turn" : "Show full turn"}${closes.holds ? ` — ${closes.holds}` : ""}`}
+                  : `${closes.open ? "Collapse turn" : "Show full turn"}${closes.holds ? ` — ${closes.holds}` : ""}`}
                 onClick={() => { if (!closes.search) compact.toggle(closes.run, closes.open); }}>
                 {closes.open
                   ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
