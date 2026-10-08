@@ -191,8 +191,11 @@ sessions. It is refused while any run of the schedule is not finished —
 archived runs included, since req 32 says any — and the refusal lists those
 runs, each with **Stop**. It is also refused while a stopped run's agent is
 still winding down (`agentBusy`), so no notes folder is removed under live
-work. A run whose schedule was deleted keeps its banner, which then says so and
-has no links.
+work. A chat turn is not in the schedule's queue, so a finished run can start
+working again while Delete probes the other runs; Delete therefore checks
+again (`unfinishedRunsNow`), with no `await` between that check and the
+removal. A run whose schedule was deleted keeps its banner, which then says so
+and has no links.
 
 **Stop (req 33)** writes `run_stopped_at` and interrupts the run's turn if one
 is going. It is reached four ways: the chat's own stop control inside the run —
@@ -201,7 +204,10 @@ is going. It is reached four ways: the chat's own stop control inside the run �
 a run — and **Stop** on the run's row, in the Delete refusal, and in the run's
 banner. The last three also work while no turn is going, for a run that waits
 for an answer. Stop on a `starting` row cancels the start before its dispatch
-(the scheduler re-checks, below).
+(the scheduler re-checks, below). After a restart, a worker can keep background
+work that no runner follows; when the interrupt stops nothing, Stop kills the
+worker's resident agent by its run token (`stopWorkerAgent`,
+`restart-turn-reattach.ts`), as the runner's own stop does for a streaming CLI.
 
 A stopped run takes no automatic turn until the user's next turn in it: the
 docs/322 admission gate, which holds automatic turns while a question waits,
@@ -343,8 +349,14 @@ docs/322 hold does not apply to it.
   grant or the role was applied, so that session may not be what the spec
   asks for. The next slot runs as usual, and Run now can repeat it;
 - a `started` row whose prompt did not reach the agent (the crash fell between
-  the dispatch and the agent) → the prompt is sent again, because every
-  parameter was applied before that dispatch.
+  the dispatch and the agent) → the prompt is sent again, unchanged. This is
+  safe because a run's session gets its agent id when the run is linked, and a
+  repository session graduates in the same synchronous step as the dispatch
+  and the row's `started` write, so a `started` run always has its agent,
+  model and graduation saved;
+- a run with a saved turn outcome (or a stop) and no saved "finished" decision
+  (the crash fell between the two writes) → every pass decides it once neither
+  its runner nor its worker is busy.
 
 In `RUNTIME_MODE=local` there is no worker to re-attach; a run whose turn was
 cut off by a restart there is marked `failed` ("ShipIt restarted during the
