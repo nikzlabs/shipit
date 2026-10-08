@@ -48,6 +48,15 @@ export async function createPullRequest(
   }
 }
 
+interface RepoJson { name?: unknown; owner?: { login?: unknown } | null }
+interface PullBase { ref: string; repo?: RepoJson | null }
+
+function repoIdentity(data: RepoJson | null | undefined): { owner: string; repo: string } | null {
+  const login = data?.owner?.login;
+  if (typeof login !== "string" || typeof data?.name !== "string") return null;
+  return { owner: login, repo: data.name };
+}
+
 async function canonicalRepo(
   token: string,
   owner: string,
@@ -56,10 +65,7 @@ async function canonicalRepo(
   try {
     const res = await fetchGitHub(`https://api.github.com/repos/${owner}/${repo}`, token);
     if (!res.ok) return null;
-    const data = (await res.json()) as { name?: unknown; owner?: { login?: unknown } } | null;
-    const login = data?.owner?.login;
-    if (typeof login !== "string" || typeof data?.name !== "string") return null;
-    return { owner: login, repo: data.name };
+    return repoIdentity((await res.json()) as RepoJson | null);
   } catch {
     return null;
   }
@@ -70,7 +76,7 @@ async function canonicalRepo(
  * names the old owner selects that owner's branches, never the repo's own
  * (docs/064-pr-lifecycle-flow).
  */
-async function listPullsByHead<T>(
+async function listPullsByHead<T extends { base: PullBase }>(
   token: string,
   owner: string,
   repo: string,
@@ -87,7 +93,8 @@ async function listPullsByHead<T>(
   const prs = (await res.json()) as T[];
   if (!res.redirected) return prs;
 
-  const moved = await canonicalRepo(token, owner, repo);
+  // A PR names its repo, so only an empty answer costs a request to learn the owner.
+  const moved = repoIdentity(prs[0]?.base.repo) ?? await canonicalRepo(token, owner, repo);
   if (!moved || moved.owner.toLowerCase() === owner.toLowerCase()) return prs;
   try {
     const retry = await list(moved.owner, moved.repo);
@@ -104,7 +111,7 @@ export async function findPullRequest(
   head: string,
 ): Promise<{ url: string; number: number; base: string; title: string; body: string } | null> {
   const prs = await listPullsByHead<{
-    html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
+    html_url: string; number: number; base: PullBase; title: string; body: string | null;
   }>(token, owner, repo, head, "state=open");
   if (!prs || prs.length === 0) return null;
 
@@ -129,7 +136,7 @@ export async function findPullRequestAnyState(
   head_sha: string | null; additions: number; deletions: number;
 } | null> {
   const prs = await listPullsByHead<{
-    html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
+    html_url: string; number: number; base: PullBase; title: string; body: string | null;
     state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
     head: { sha: string } | null; additions: number; deletions: number;
   }>(token, owner, repo, head, "state=all&sort=updated&direction=desc&per_page=1");

@@ -8,6 +8,8 @@ import {
 } from "./pr-status-parser.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import { noteMergePerformed, resetMergeAttribution } from "./services/merge-attribution.js";
+import { findPullRequestAnyState } from "./github-auth-prs.js";
+import { mockGitHubPulls } from "./github-pulls-test-helpers.js";
 import * as workflowLoader from "./workflow-loader.js";
 import { NO_CHECKS_GRACE_MS } from "./ci-grace-tracker.js";
 import type { SessionManager } from "./sessions.js";
@@ -833,6 +835,8 @@ describe("PrStatusPoller", () => {
   });
 
   describe("repo transfer canonical-owner targeting", () => {
+    afterEach(() => vi.restoreAllMocks());
+
     it("uses the canonical owner for the REST merge probe and detects the merge", async () => {
       githubAuth = makeGitHubAuth({
         data: {
@@ -871,40 +875,34 @@ describe("PrStatusPoller", () => {
       expect(sessionManager.setRemoteUrl).not.toHaveBeenCalled();
     });
 
-    it("uses the canonical owner for the post-merge fast-path verify (forceVerifySessionPrState)", async () => {
-      githubAuth = makeGitHubAuth({
-        data: {
-          repository: {
-            nameWithOwner: "nikzlabs/shipit",
-            pullRequests: { nodes: [] },
-          },
-        },
+    it("detects the merge through the forced verify with no owner request of its own", async () => {
+      const requests = mockGitHubPulls({
+        formerly: "nicolasalt/shipit",
+        now: "nikzlabs/shipit",
+        prs: [{
+          head: "nikzlabs:shipit/abc-feature", number: 42, state: "closed", merged_at: "2026-05-21T10:00:00Z",
+        }],
       });
-      (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue({
-        number: 42,
-        url: "https://github.com/nikzlabs/shipit/pull/42",
-        title: "Add feature",
-        body: "Original description",
-        state: "closed",
-        merged_at: "2026-05-21T10:00:00Z",
-        merge_commit_sha: "deadbeef",
-        base: "main",
-        additions: 100,
-        deletions: 20,
-      });
+      // No GraphQL data: the poll path cannot supply the canonical owner.
+      githubAuth = makeGitHubAuth(null);
+      (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockImplementation(
+        (owner: string, repo: string, head: string) => findPullRequestAnyState("tok", owner, repo, head),
+      );
       sessionManager = makeSessionManager([
         { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/nicolasalt/shipit.git" },
       ]);
 
       poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
       poller.trackSession("s1", "https://github.com/nicolasalt/shipit.git");
+      await vi.advanceTimersByTimeAsync(0);
+      const graphqlRequests = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
+      expect(requests).toHaveLength(0);
+
       await poller.forceVerifySessionPrState("s1");
 
-      expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledWith(
-        "nikzlabs",
-        "shipit",
-        "shipit/abc-feature",
-      );
+      expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(graphqlRequests);
+      expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledWith("nicolasalt", "shipit", "shipit/abc-feature");
+      expect(requests.at(-1)?.pathname).toBe("/repos/nikzlabs/shipit/pulls");
       expect(poller.getStatus("s1")?.prState).toBe("merged");
       expect(sessionManager.setRemoteUrl).not.toHaveBeenCalled();
     });
@@ -3020,6 +3018,38 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       .find((u) => u.sessionId === "s1");
     expect(update?.checks.state).toBe("pending");
     expect(update?.checks.graceUntil).toBe(Date.now() + NO_CHECKS_GRACE_MS);
+
+    poller.destroy();
+  });
+
+  it("applies the grace to a REST-found open PR on a transferred repository", async () => {
+    const githubAuth = makeGitHubAuth(
+      { data: { repository: { nameWithOwner: "nikzlabs/shipit", pullRequests: { nodes: [] } } } },
+      {
+        url: "https://github.com/nikzlabs/shipit/pull/99", number: 99, base: "main", title: "Add the widget",
+        body: "", state: "open" as const, merged_at: null, additions: 42, deletions: 3,
+      },
+    );
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/nicolasalt/shipit.git" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/nicolasalt/shipit",
+    });
+    poller.trackSession("s1", "https://github.com/nicolasalt/shipit.git");
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledWith("nikzlabs", "shipit", "shipit/abc-feature");
+    expect(poller.getStatus("s1")?.checks.state).toBe("pending");
 
     poller.destroy();
   });

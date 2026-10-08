@@ -502,19 +502,24 @@ absent or already matches, so the steady-state path is unchanged. Key files:
 `pr-status-parser.ts` (query + `GraphQLResponse.nameWithOwner`),
 `pr-status-poller.ts` (`canonicalApiTarget`).
 
-The same retarget is needed by the **post-merge fast path** (planning#161). After
-ShipIt merges a PR, `forceVerifySessionPrState` runs a one-shot REST any-state
-probe — it deliberately bypasses `pollRepo` because the bulk query is
-`states: [OPEN]` and GitHub's GraphQL view can still report a just-merged PR as
-open for a beat (eventual consistency); going through `pollRepo` would match it
-on the open path and never reach `verifyMissingPr`, reintroducing the staleness
-the fast path exists to prevent. Bypassing `pollRepo` means it does **not**
-inherit the canonical retarget, so on a transferred repo it filtered
-`head=<old-owner>:<branch>` and matched nothing — the merge showed stale until
-the next regular poll recovered it. Fix: `forceVerifySessionPrState` resolves
-the canonical owner itself via `resolveCanonicalApiTarget` (a lightweight
-`repository { nameWithOwner }` probe → `canonicalApiTarget`) before the REST
-probe, falling back to the polled owner when the probe yields nothing.
+The **post-merge fast path** (planning#161) does not get that retarget. After
+ShipIt merges a PR, and in the pre-turn merge recheck, `forceVerifySessionPrState`
+runs a one-shot REST any-state probe — it deliberately bypasses `pollRepo`
+because the bulk query is `states: [OPEN]` and GitHub's GraphQL view can still
+report a just-merged PR as open for a beat (eventual consistency); going through
+`pollRepo` would match it on the open path and never reach `verifyMissingPr`,
+reintroducing the staleness the fast path exists to prevent. Bypassing `pollRepo`
+means it has no `nameWithOwner` to hand, so it passes the **stored** owner and
+leaves the correction to the lookup itself (next paragraph). It used to ask for
+the canonical owner first, with a `repository { nameWithOwner }` GraphQL request
+before every forced verify; that request was removed once the lookup corrected
+itself, because every repo paid for it and only a moved one used the answer.
+
+`verifyMissingPr` receives an **API target**, which on the poll path is the
+canonical owner. What it keys by repo identity — the CI grace state — it reads
+from the tracked key (`sessionRepos`), the one that state was loaded under.
+Keying it by the API target lost the grace on a transferred repo: a PR that REST
+found open showed "no checks" instead of pending.
 
 The service layer has lookups of its own that never go through the poller: the
 merge button (`services/github.ts` `mergePullRequest`), the live PR read,
@@ -523,13 +528,21 @@ repo the card showed the PR (GraphQL) while the merge button answered "No active
 PR for current branch" (REST, stale owner). So the correction also lives where
 the owner-qualified filter is built: `listPullsByHead` in `github-auth-prs.ts`,
 which backs both `findPullRequest` and `findPullRequestAnyState`. When the list
-is answered **through a redirect** (`Response.redirected`), it reads the
-repository's canonical name once; if the owner differs, the first answer was
+is answered **through a redirect** (`Response.redirected`), it learns the
+repository's canonical name; if the owner differs, the first answer was
 filtered on the wrong owner — empty, or a PR from the former owner's fork — and
-the lookup is repeated under the canonical one. A repo that did not move is never
-redirected, so the steady-state cost is unchanged. For these PR lookups the
-`head` filter is the only part that needed this: everything addressed by path or
-PR number, the merge call included, already follows GitHub's redirect.
+the lookup is repeated under the canonical one. A PR in the answer names its own
+repository (`base.repo`), so only an **empty** answer costs a request
+(`GET /repos/<owner>/<repo>`) to learn the owner. That makes the fork case safe
+without that request: a PR whose repository has a different owner than the
+filter named is never returned. If the request fails on an empty answer, the
+answer stays empty — the same "no PR" every failed lookup reports, which the
+next forced verify corrects. A repo that did not move is never redirected, so
+the steady-state cost is unchanged; a transferred one costs the forced verify
+three REST requests (list, owner, list) inside the pre-turn recheck's deadline.
+For these PR lookups the `head` filter is the only part that needed this:
+everything addressed by path or PR number, the merge call included, already
+follows GitHub's redirect.
 
 (If ShipIt ever wants the *repo record itself* to follow a transfer — so the
 sidebar shows the new owner — that is a separate, deliberate migration of all
