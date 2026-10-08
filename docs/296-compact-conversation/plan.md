@@ -18,7 +18,7 @@ See [requirements](./requirements.md) and [interactive mockup](./mockup.html). T
 
 ## Experience
 
-Add **Conversation** under Settings → Advanced, next to other local preferences. Label: **Compact completed turns**. Help: “Show the last agent message and all cards. Hide tool output and progress messages in finished turns.” Default off. Add a short note: “Saved for this browser. In-app search includes hidden messages. Browser Find searches displayed content in compact mode.” Reuse the existing toggle. A new settings tab for one switch is unnecessary.
+Add **Conversation** under Settings → Advanced, next to other local preferences. Label: **Collapse completed turns** (renamed from "Compact completed turns", which read as context compaction). Help: “Show the last agent message and all cards. Hide tool output and progress messages in finished turns.” Default off. Add a short note: “Saved for this browser. In-app search includes hidden messages. Browser Find searches displayed content in compact mode.” Reuse the existing toggle. A new settings tab for one switch is unnecessary.
 
 Each eligible turn gets a quiet “Show full turn” control before its content; when expanded it reads “Show compact turn”. Only show it when something can be hidden. The control is a real button with aria-expanded and aria-controls. Expansion is local to that session visit. Use the current row anchor; reset expansion when history is replaced or rewound so an index cannot transfer expansion to unrelated content. All user content stays in place, including messages sent while the agent was working. An active or uncertain turn has no collapse control.
 

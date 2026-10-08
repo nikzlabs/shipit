@@ -227,7 +227,7 @@ whole reply aloud.
 
 ## A long conversation
 
-**Collapsed turns.** *Compact completed turns*, in **Settings → Advanced**,
+**Collapsed turns.** *Collapse completed turns*, in **Settings → Advanced**,
 collapses every turn but the newest down to the user's message and your last
 reply: tool calls, progress and cards are hidden, while errors, action cards and
 any card that still needs them stay — an action card stays whether or not it has
