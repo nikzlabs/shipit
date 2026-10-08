@@ -1061,6 +1061,18 @@ export class SessionManager {
     return rows.map((r) => this.fromRow(r));
   }
 
+  /**
+   * Runs whose last turn ended, or that the user stopped, with no "finished" saved: the two
+   * are separate writes, and a restart can come between them.
+   */
+  undecidedRunSessionIds(): string[] {
+    const rows = this.db.prepare(
+      `SELECT id FROM sessions WHERE schedule_id IS NOT NULL AND run_finished_at IS NULL
+       AND (last_turn_outcome IS NOT NULL OR run_stopped_at IS NOT NULL)`,
+    ).all() as { id: string }[];
+    return rows.map((row) => row.id);
+  }
+
   setRunFinishedAt(id: string, at: string | null): void {
     this.db.prepare("UPDATE sessions SET run_finished_at = ? WHERE id = ?").run(at, id);
   }

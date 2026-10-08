@@ -40,6 +40,8 @@ export interface ScheduleQueue {
   runNow(scheduleId: string): Promise<ScheduleRun>;
   stopRun(scheduleId: string, runId: string): Promise<ScheduleRun | null>;
   unfinishedRuns(scheduleId: string): Promise<UnfinishedScheduleRun[]>;
+  /** The same without waiting on any worker, right after `unfinishedRuns` found none. */
+  unfinishedRunsNow(scheduleId: string): UnfinishedScheduleRun[];
   announceSchedules(): void;
   /** The runs with what their sessions say (req 24). */
   viewRuns(runs: ScheduleRun[]): ScheduleRunView[];
@@ -329,6 +331,9 @@ export async function deleteSchedule(deps: ScheduleServiceDeps, id: string): Pro
     existing(deps, id);
     const runs = await deps.scheduler.unfinishedRuns(id);
     if (runs.length > 0) throw new ScheduleDeleteRefused(runs);
+    // A chat turn is not in the schedule's queue: one started while the check waited is seen here.
+    const resumed = deps.scheduler.unfinishedRunsNow(id);
+    if (resumed.length > 0) throw new ScheduleDeleteRefused(resumed);
     // Notes first: a schedule whose notes are still there is never reported deleted.
     try {
       deps.notes?.remove(id);

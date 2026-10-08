@@ -38,6 +38,7 @@ let announced: number;
 let trusted: boolean;
 let roles: string[];
 let unfinished: UnfinishedScheduleRun[];
+let unfinishedNow: UnfinishedScheduleRun[] | null;
 
 function input(over: Record<string, unknown> = {}): Record<string, unknown> {
   return { name: "Security PRs", timing: DAILY, timeZone: "Europe/Berlin", spec: SPEC, ...over };
@@ -51,6 +52,7 @@ beforeEach(() => {
   trusted = true;
   roles = ["reviewer"];
   unfinished = [];
+  unfinishedNow = null;
   deps = {
     store,
     repoStore: { get: (url: string) => (url === REPO ? ({ url } as never) : undefined), isTrusted: () => trusted },
@@ -67,6 +69,7 @@ beforeEach(() => {
       runNow: async (id: string) => ({ id: "run-1", scheduleId: id, slotAt: null, outcome: "starting" }) as ScheduleRun,
       stopRun: async () => null,
       unfinishedRuns: async () => unfinished,
+      unfinishedRunsNow: () => unfinishedNow ?? unfinished,
       announceSchedules: () => { announced += 1; },
       viewRuns: (runs) => runs,
     },
@@ -213,6 +216,16 @@ describe("Delete (req 32)", () => {
     });
     expect(queued).toEqual([created.id]);
     expect(getSchedule(deps, created.id).id).toBe(created.id);
+  });
+
+  it("checks again, without waiting, just before it removes anything: a run resumed during the check keeps it", async () => {
+    const removed: string[] = [];
+    const withNotes = { ...deps, notes: { remove: (id: string) => { removed.push(id); } } };
+    const created = createSchedule(withNotes, input());
+    unfinishedNow = [{ runId: "run-1", sessionId: "s-1", title: "Security PRs · Oct 7, 09:00" }];
+    await expect(deleteSchedule(withNotes, created.id)).rejects.toMatchObject({ runs: unfinishedNow });
+    expect(removed).toEqual([]);
+    expect(store.get(created.id)).not.toBeNull();
   });
 
   it("removes the schedule and its run history once every run is finished", async () => {

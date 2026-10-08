@@ -51,6 +51,8 @@ export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   probeLiveWork?: (sessionId: string) => Promise<boolean>;
   /** Ends the session's turn, as the chat's stop control does (req 33). */
   interruptTurn?: (sessionId: string) => void;
+  /** Ends the agent work a session with no runner still does in its worker (req 33). */
+  stopLiveWork?: (sessionId: string) => Promise<unknown>;
   /** `advanced.sessionStatusCard`: a run's manual steps count only while the card is on. */
   statusCardEnabled?: () => boolean;
   /** The runs' notes folders (req 13); without them a run starts with none. */
@@ -464,8 +466,8 @@ export class ScheduleRunner implements ScheduleQueue {
    * schedule was deleted is found through its session. Null when no row is left.
    */
   stopRun(scheduleId: string, runId: string): Promise<ScheduleRun | null> {
-    return this.enqueue(scheduleId, () => {
-      const { store, sessionManager } = this.deps;
+    return this.enqueue(scheduleId, async () => {
+      const { store, sessionManager, runnerRegistry } = this.deps;
       const run = store.getRun(runId);
       const sessionId = sessionManager.sessionIdForScheduleRun(runId);
       const owner = run?.scheduleId ?? (sessionId ? sessionManager.get(sessionId)?.scheduleId : undefined);
@@ -480,7 +482,9 @@ export class ScheduleRunner implements ScheduleQueue {
       }
       if (sessionId) {
         this.markRunStopped(sessionId);
-        this.deps.interruptTurn?.(sessionId);
+        // After a restart a run can still work in its worker with no runner to interrupt.
+        if (runnerRegistry.get(sessionId)) this.deps.interruptTurn?.(sessionId);
+        else await this.deps.stopLiveWork?.(sessionId);
       }
       return store.getRun(runId);
     });
@@ -493,12 +497,29 @@ export class ScheduleRunner implements ScheduleQueue {
    * missed moment left stale neither blocks Delete nor lets it through.
    */
   async unfinishedRuns(scheduleId: string): Promise<UnfinishedScheduleRun[]> {
-    const { store, sessionManager } = this.deps;
+    const busy = new Set<string>();
+    for (const session of this.deps.sessionManager.runSessionsOfSchedule(scheduleId)) {
+      if (session.scheduleRunId && await this.sessionBusy(session.id)) busy.add(session.id);
+    }
+    return this.listUnfinished(scheduleId, busy);
+  }
+
+  /**
+   * Req 32 — `unfinishedRuns` without its worker probes, for Delete's last check: the user can
+   * resume a run in chat while a probe waits, and nothing waits between this and the removal.
+   * A run with no runner counts as idle, as the probes just before found it.
+   */
+  unfinishedRunsNow(scheduleId: string): UnfinishedScheduleRun[] {
+    return this.listUnfinished(scheduleId, new Set());
+  }
+
+  private listUnfinished(scheduleId: string, workerBusy: ReadonlySet<string>): UnfinishedScheduleRun[] {
+    const { store, sessionManager, runnerRegistry } = this.deps;
     const unfinished: UnfinishedScheduleRun[] = [];
     const listed = new Set<string>();
     for (const candidate of sessionManager.runSessionsOfSchedule(scheduleId)) {
       if (!candidate.scheduleRunId) continue;
-      const busy = await this.sessionBusy(candidate.id);
+      const busy = workerBusy.has(candidate.id) || (runnerRegistry.get(candidate.id)?.agentBusy ?? false);
       if (!busy) this.decideRunFinished(candidate.id);
       const session = sessionManager.get(candidate.id) ?? candidate;
       if (session.runFinishedAt && !busy) continue;
@@ -551,7 +572,8 @@ export class ScheduleRunner implements ScheduleQueue {
    * Finishes what a restart cut off. A run whose prompt reached its session is started —
    * or, in local mode, where no turn survives a restart, failed. One dispatched but not
    * delivered is sent again; one whose session was still being prepared is failed, since
-   * its parameters may be half applied.
+   * its parameters may be half applied. A run whose turn ended before its decision was saved
+   * is decided now, since nothing else may decide it again (reqs 20, 22).
    */
   private async recover(): Promise<void> {
     const { store, sessionManager, runtimeMode } = this.deps;
@@ -580,6 +602,14 @@ export class ScheduleRunner implements ScheduleQueue {
         await this.resend(run, sessionId);
       } catch (err) {
         console.error(`[schedules] recovering run ${run.id} failed:`, err);
+      }
+    }
+    for (const sessionId of sessionManager.undecidedRunSessionIds()) {
+      if (this.stopped) return;
+      try {
+        if (!(await this.sessionBusy(sessionId))) this.decideRunFinished(sessionId);
+      } catch (err) {
+        console.error(`[schedules] deciding run session ${sessionId} after a restart failed:`, err);
       }
     }
   }

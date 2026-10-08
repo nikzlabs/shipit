@@ -4,7 +4,7 @@ import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import { holdsActiveReservation } from "./sessions.js";
 import type { AgentId, WorkerAgentStatus } from "../shared/types.js";
-import { workerGet } from "./worker-http.js";
+import { workerGet, workerPost } from "./worker-http.js";
 import { getErrorMessage } from "./validation.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { sleep } from "./disk-utils.js";
@@ -82,6 +82,28 @@ export async function workerHasLiveWork(
     return status.turnActive === true || staleIdleHoldReason(status) !== null;
   } catch {
     return true;
+  }
+}
+
+/**
+ * Stop for a session whose worker still works with no runner to interrupt (docs/324-scheduled-sessions
+ * req 33): kills the resident agent, which ends its turn and background tasks. Targets the resident by
+ * its run token, so a kill that arrives late spares a replacement. False when there is none.
+ */
+export async function stopWorkerAgent(
+  containerManager: SessionContainerManager | null,
+  sessionId: string,
+): Promise<boolean> {
+  const container = containerManager?.get(sessionId);
+  if (container?.status !== "running") return false;
+  try {
+    const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
+    if (status.runToken === undefined) return false;
+    await workerPost(container.workerUrl, "/agent/kill", { runToken: status.runToken }, { timeoutMs: PROBE_TIMEOUT_MS });
+    return true;
+  } catch (err) {
+    console.warn(`[turn-reattach] stopping the worker agent of ${sessionId} failed: ${getErrorMessage(err)}`);
+    return false;
   }
 }
 

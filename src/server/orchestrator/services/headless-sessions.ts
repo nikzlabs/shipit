@@ -513,8 +513,10 @@ export interface RedispatchOptions {
 
 /**
  * Sends a started session's first prompt again, when a restart came between its dispatch
- * and its delivery (docs/324-scheduled-sessions → recovery). Every parameter applied
- * before the dispatch is already stored on the session; only the `started` ones remain.
+ * and its delivery (docs/324-scheduled-sessions → recovery). The parameters applied before
+ * the dispatch are stored on the session, but not the agent, which the first turn saves,
+ * nor, for a repository, the model and the graduation, which come after the dispatch: those
+ * are done again here.
  */
 export async function redispatchHeadlessPrompt(
   deps: HeadlessSessionDeps,
@@ -524,7 +526,12 @@ export async function redispatchHeadlessPrompt(
   const { sessionManager, runnerRegistry, credentialsDir, credentialStore, providerAccountManager } = deps;
   const session = sessionManager.get(sessionId);
   if (!session?.workspaceDir) throw new ServiceError(404, "The run's session no longer exists.");
-  const agentId = session.agentId ?? deps.defaultAgentId;
+  const selection = session.agentPinned ? null : resolveSelection(startSelection(opts.params), deps);
+  const agentId = selection?.agentId ?? session.agentId ?? deps.defaultAgentId;
+  if (selection) {
+    sessionManager.setAgentId(sessionId, agentId);
+    applySessionSelection(sessionManager, sessionId, agentId, selection);
+  }
   const runner = runnerRegistry.getOrCreate(sessionId, session.workspaceDir, agentId);
   if (credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
@@ -538,12 +545,26 @@ export async function redispatchHeadlessPrompt(
       },
     });
   }
+  const text = opts.prompt.trim();
   const dispatch = (): TurnHandle => runner.dispatch(firstDispatch({
-    text: opts.prompt.trim(),
+    text,
     params: opts.params,
     deliveryId: opts.deliveryId,
   }));
   const turn = opts.dispatchGate ? await opts.dispatchGate(sessionId, dispatch) : dispatch();
+  if (session.warm) {
+    // A run's title was set when its session was linked.
+    graduateSession(deps.graduationDeps, {
+      sessionId,
+      userText: text,
+      agentId,
+      explicitTitle: session.title,
+      ...(selection?.model ? { model: selection.model } : {}),
+      ...(selection?.serviceId ? { serviceId: selection.serviceId } : {}),
+      ...(selection?.billingMode ? { billingMode: selection.billingMode } : {}),
+      ...(selection?.reasoning ? { reasoning: selection.reasoning } : {}),
+    });
+  }
   await applyStartParams("started", opts.params, { sessionId, agentId, deps });
   return turn;
 }

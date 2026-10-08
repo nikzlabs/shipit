@@ -60,6 +60,7 @@ import { restoreSessionWorkspace } from "./services/session.js";
 import {
   liveWorkAfterRestart,
   reattachInFlightTurns,
+  stopWorkerAgent,
   unprobedAfterRestart,
   workerHasLiveWork,
 } from "./restart-turn-reattach.js";
@@ -1102,6 +1103,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     unprobedSessions: unprobedAfterRestart,
     liveWorkSessions: liveWorkAfterRestart,
     probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
+    stopLiveWork: (sessionId) => stopWorkerAgent(containerManager, sessionId),
     interruptTurn: (sessionId) => {
       interruptAgentTurn({
         sessionManager,

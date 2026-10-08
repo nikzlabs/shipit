@@ -873,5 +873,40 @@ describe("createHeadlessSession", () => {
       await expect(redispatchHeadlessPrompt(deps(), "missing", { params: {}, prompt: "x" }))
         .rejects.toMatchObject({ statusCode: 404 });
     });
+
+    it("sends it with the run's own agent and model, and graduates a session the restart left warm (reqs 2, 4, 20)", async () => {
+      // The restart came after the dispatch, before the start graduated the session and before
+      // the first turn saved its agent.
+      const { sessionId, workspaceDir } = await claimService().claim(REPO_URL);
+      sessionManager.rename(sessionId, "Nightly · Oct 7, 09:00");
+      const params = { model: "gpt-6-astra", serviceId: "openai", billingMode: "key", reasoning: "high" } as const;
+
+      await redispatchHeadlessPrompt(deps(), sessionId, { params, prompt: "Check the PRs", deliveryId: "run-1" });
+
+      expect(registry.created).toEqual([{ sessionId, workspaceDir, agentId: "codex" }]);
+      const session = sessionManager.get(sessionId);
+      expect(session).toMatchObject({
+        agentId: "codex",
+        model: "gpt-6-astra",
+        serviceId: "openai",
+        billingMode: "key",
+        reasoningEffort: "high",
+        title: "Nightly · Oct 7, 09:00",
+        branchRenamed: true,
+      });
+      expect(session?.warm).toBeUndefined();
+      expect(sessionManager.list().map((s) => s.id)).toContain(sessionId);
+    });
+
+    it("keeps the agent a session's first turn already saved", async () => {
+      const { appSessionId } = await createSandboxDir("Nightly · Oct 7, 09:00");
+      sessionManager.setAgentId(appSessionId, "claude");
+      sessionManager.setAgentPinned(appSessionId);
+
+      await redispatchHeadlessPrompt(deps(), appSessionId, { params: { agent: "codex" }, prompt: "Check the PRs" });
+
+      expect(registry.created).toEqual([expect.objectContaining({ sessionId: appSessionId, agentId: "claude" })]);
+      expect(sessionManager.get(appSessionId)?.agentId).toBe("claude");
+    });
   });
 });

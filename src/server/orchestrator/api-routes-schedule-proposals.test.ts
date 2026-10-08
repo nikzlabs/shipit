@@ -46,6 +46,7 @@ beforeEach(async () => {
       runNow: async () => ({}) as ScheduleRun,
       stopRun: async () => null,
       unfinishedRuns: async () => [],
+      unfinishedRunsNow: () => [],
       announceSchedules: () => undefined,
       viewRuns: (runs) => runs,
     },
