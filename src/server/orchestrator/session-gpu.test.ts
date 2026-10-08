@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { gpuEnv, gpuFromContainer, gpuReason, gpuRequestRefusal, noGpuWhy } from "./session-gpu.js";
+import { gpuEnv, gpuFromContainer, gpuGraphicsBinds, gpuReason, gpuRequestRefusal, noGpuWhy } from "./session-gpu.js";
 
 describe("gpuFromContainer — an adopted container's state", () => {
   it("reads the state each create leaves on the container", () => {
@@ -11,6 +11,19 @@ describe("gpuFromContainer — an adopted container's state", () => {
 
   it("reads a container from before the switch existed as off", () => {
     expect(gpuFromContainer(undefined, undefined)).toEqual({ state: "off" });
+  });
+});
+
+describe("gpuGraphicsBinds", () => {
+  it("binds WSL2's DirectX and driver directories read-only, at their own paths", () => {
+    const binds = ["/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro", "/usr/lib/wsl/drivers:/usr/lib/wsl/drivers:ro"];
+    expect(gpuGraphicsBinds("6.6.87.2-microsoft-standard-WSL2")).toEqual(binds);
+    expect(gpuGraphicsBinds("4.19.104-microsoft-standard")).toEqual(binds);
+  });
+
+  it("binds nothing on a kernel that is not WSL2's", () => {
+    expect(gpuGraphicsBinds("6.8.0-1017-azure")).toEqual([]);
+    expect(gpuGraphicsBinds("6.1.0-18-amd64")).toEqual([]);
   });
 });
 

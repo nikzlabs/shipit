@@ -117,6 +117,11 @@ Check it on the host with `docker run --rm --gpus all ubuntu nvidia-smi`, then t
 starts; if Docker cannot give it, the session starts without it and its transcript says why
 (docs/325-session-gpu-access).
 
+On WSL2 the agent's container also gets the host's DirectX libraries and GPU driver files, read-only
+(`/usr/lib/wsl/lib`, `/usr/lib/wsl/drivers`). A Chrome that the agent starts needs them to draw WebGL
+on the GPU. If Docker cannot start a container with those two mounts, the session keeps the GPU and
+starts without them.
+
 ### Reaching a local install from another device (Tailscale)
 
 The local install binds `127.0.0.1` only — ShipIt has no built-in authentication, so it must not be

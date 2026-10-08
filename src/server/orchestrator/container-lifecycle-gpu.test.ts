@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,7 +10,7 @@ import type { ContainerConfig } from "./session-container.js";
 import { GPU_DEVICE_REQUEST } from "./session-gpu.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
-/** docs/325-session-gpu-access req 1, 5 and 6, at the one place the request is made. */
+/** docs/325-session-gpu-access req 1, 5, 6 and 7, at the one place the request is made. */
 
 const SESSION_ID = "sess-gpu";
 
@@ -72,8 +72,15 @@ function fakeDocker(
   return { docker, created, removedById };
 }
 
+const WSL2_KERNEL = "6.6.87.2-microsoft-standard-WSL2";
+
 const tmpDirs: string[] = [];
+// A WSL2 host gets one more GPU attempt, so the kernel is pinned: these tests also run on WSL2.
+beforeEach(() => {
+  vi.spyOn(os, "release").mockReturnValue("6.8.0-1017-azure");
+});
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
@@ -111,6 +118,7 @@ async function create(docker: Docker, gpuAccess?: () => boolean, extraLabels?: R
 
 const requested = (c: Created) => c.options.HostConfig?.DeviceRequests;
 const env = (c: Created) => c.options.Env ?? [];
+const wslBinds = (c: Created) => (c.options.HostConfig?.Binds ?? []).filter((bind) => bind.startsWith("/usr/lib/wsl/"));
 
 describe("createContainer — the GPU", () => {
   it("asks for nothing while the switch is off", async () => {
@@ -158,6 +166,18 @@ describe("createContainer — the GPU", () => {
     expect(sc.id).toBe("cid-2");
   });
 
+  it("starts without the GPU when Docker refuses to create the GPU attempt", async () => {
+    let calls = 0;
+    const { docker, created } = fakeDocker(() => null, {
+      createFails: () => (++calls === 1 ? new Error("invalid mount config") : null),
+    });
+    const sc = await create(docker, () => true);
+
+    expect(created).toHaveLength(1);
+    expect(requested(created[0])).toBeUndefined();
+    expect(sc.gpu).toEqual({ state: "unavailable", reason: "invalid mount config" });
+  });
+
   it("removes a GPU attempt it could not remove at once, when the retry fails too", async () => {
     const { docker, created, removedById } = fakeDocker(
       (c) => (requested(c) ? new Error("gpu") : null),
@@ -180,5 +200,66 @@ describe("createContainer — the GPU", () => {
 
     await expect(create(docker, () => true)).rejects.toThrow("no space left on device");
     expect(created).toHaveLength(2);
+  });
+});
+
+describe("createContainer — WSL2 graphics for a GPU container", () => {
+  beforeEach(() => {
+    vi.spyOn(os, "release").mockReturnValue(WSL2_KERNEL);
+  });
+
+  it("mounts DirectX and the Windows GPU drivers read-only with the GPU", async () => {
+    const { docker, created } = fakeDocker(() => null);
+    await create(docker, () => true);
+
+    expect(created).toHaveLength(1);
+    expect(wslBinds(created[0])).toEqual([
+      "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro",
+      "/usr/lib/wsl/drivers:/usr/lib/wsl/drivers:ro",
+    ]);
+    expect(env(created[0]).some((entry) => entry.startsWith("SHIPIT_GPU_GRAPHICS_REASON="))).toBe(false);
+  });
+
+  it("keeps the GPU, and says why, when the container starts only without the mounts", async () => {
+    const { docker, created } = fakeDocker((c) => (wslBinds(c).length > 0 ? new Error("mount\nfailed") : null));
+    const sc = await create(docker, () => true);
+
+    expect(created).toHaveLength(2);
+    expect(created[0].removed).toBe(true);
+    expect(requested(created[1])).toEqual([GPU_DEVICE_REQUEST]);
+    expect(wslBinds(created[1])).toEqual([]);
+    expect(env(created[1])).toContain("SHIPIT_GPU=granted");
+    expect(env(created[1])).toContain("SHIPIT_GPU_GRAPHICS_REASON=mount failed");
+    expect(sc.gpu).toEqual({ state: "granted" });
+    expect(sc.id).toBe("cid-2");
+  });
+
+  it("starts without the GPU and the mounts when no GPU attempt starts", async () => {
+    const { docker, created } = fakeDocker((c) => (requested(c) ? new Error("no driver") : null));
+    const sc = await create(docker, () => true);
+
+    expect(created).toHaveLength(3);
+    expect(created.slice(0, 2).every((c) => c.removed)).toBe(true);
+    expect(requested(created[2])).toBeUndefined();
+    expect(wslBinds(created[2])).toEqual([]);
+    expect(env(created[2])).toContain("SHIPIT_GPU_REASON=no driver");
+    expect(env(created[2]).some((entry) => entry.startsWith("SHIPIT_GPU_GRAPHICS_REASON="))).toBe(false);
+    expect(sc.gpu).toEqual({ state: "unavailable", reason: "no driver" });
+  });
+
+  it("mounts neither while the switch is off", async () => {
+    const { docker, created } = fakeDocker(() => null);
+    await create(docker, () => false);
+
+    expect(wslBinds(created[0])).toEqual([]);
+  });
+
+  it("mounts neither on a host that is not WSL2", async () => {
+    vi.spyOn(os, "release").mockReturnValue("6.8.0-1017-azure");
+    const { docker, created } = fakeDocker(() => null);
+    await create(docker, () => true);
+
+    expect(requested(created[0])).toEqual([GPU_DEVICE_REQUEST]);
+    expect(wslBinds(created[0])).toEqual([]);
   });
 });

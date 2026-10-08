@@ -87,7 +87,9 @@ import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { RUN_NOTES_CONTAINER_DIR } from "./schedule-notes.js";
-import { GPU_DEVICE_REQUEST, gpuEnv, gpuReason, type SessionGpu } from "./session-gpu.js";
+import {
+  GPU_DEVICE_REQUEST, GPU_GRAPHICS_REASON_ENV, gpuEnv, gpuGraphicsBinds, gpuReason, type SessionGpu,
+} from "./session-gpu.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 
@@ -780,9 +782,14 @@ export async function createContainer(
 
     await removeStaleContainer(deps.docker, `agent-${shortId}`);
 
-    const createAndStart = async (gpu: SessionGpu): Promise<Docker.Container> => {
+    const createAndStart = async (
+      gpu: SessionGpu,
+      graphicsBinds: string[] = [],
+      graphicsEnv: string[] = [],
+    ): Promise<Docker.Container> => {
       abortIfTornDown("before createContainer");
 
+      const attemptBinds = [...binds, ...graphicsBinds];
       const created = await deps.docker.createContainer({
         name: `agent-${shortId}`,
         Image: imageName,
@@ -793,7 +800,7 @@ export async function createContainer(
           ...config.extraLabels,
         },
         HostConfig: {
-          Binds: binds.length > 0 ? binds : undefined,
+          Binds: attemptBinds.length > 0 ? attemptBinds : undefined,
           Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
           Memory: config.memoryLimit,
           CpuQuota: config.cpuQuota,
@@ -817,7 +824,7 @@ export async function createContainer(
           CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
           DeviceRequests: gpu.state === "granted" ? [GPU_DEVICE_REQUEST] : undefined,
         },
-        Env: [...env, ...gpuEnv(gpu)],
+        Env: [...env, ...gpuEnv(gpu), ...graphicsEnv],
       });
 
       // Publish before start so the health monitor can identify an immediate exit. Not for a GPU
@@ -851,10 +858,27 @@ export async function createContainer(
       return created;
     };
 
+    // The graphics binds are tried first and dropped alone, so they cannot cost a session the GPU
+    // that starts without them (docs/325-session-gpu-access req 7).
+    const startWithGpu = async (): Promise<Docker.Container> => {
+      const graphicsBinds = gpuGraphicsBinds();
+      if (graphicsBinds.length === 0) return createAndStart({ state: "granted" });
+      try {
+        return await createAndStart({ state: "granted" }, graphicsBinds);
+      } catch (err) {
+        if (err instanceof ContainerCreateCancelledError) throw err;
+        const reason = gpuReason(err);
+        console.warn(
+          `[containers] ${config.sessionId} could not start with the WSL2 graphics mounts; trying the GPU alone: ${reason}`,
+        );
+        return createAndStart({ state: "granted" }, [], [`${GPU_GRAPHICS_REASON_ENV}=${reason}`]);
+      }
+    };
+
     let container: Docker.Container;
     if (deps.gpuAccess?.()) {
       try {
-        container = await createAndStart({ state: "granted" });
+        container = await startWithGpu();
         sc.gpu = { state: "granted" };
       } catch (err) {
         if (err instanceof ContainerCreateCancelledError) throw err;

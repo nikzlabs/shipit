@@ -1,8 +1,21 @@
+import os from "node:os";
 import type Docker from "dockerode";
 import { getErrorMessage } from "../shared/utils.js";
 
 /** What `docker run --gpus all` sends; the NVIDIA runtime hook does the rest (docs/325-session-gpu-access). */
 export const GPU_DEVICE_REQUEST: Docker.DeviceRequest = { Driver: "", Count: -1, Capabilities: [["gpu"]] };
+
+/**
+ * Where WSL2 keeps DirectX and the Windows GPU drivers. Mesa's D3D12 driver needs both to draw with
+ * the GPU, and the NVIDIA hook mounts only the CUDA files from them (docs/325-session-gpu-access req 7).
+ */
+export const WSL_GRAPHICS_DIRS: readonly string[] = ["/usr/lib/wsl/lib", "/usr/lib/wsl/drivers"];
+
+/** Empty off WSL2: Docker creates a bind source that does not exist, so a guess would litter the host. */
+export function gpuGraphicsBinds(kernelRelease: string = os.release()): string[] {
+  if (!/microsoft|wsl/i.test(kernelRelease)) return [];
+  return WSL_GRAPHICS_DIRS.map((dir) => `${dir}:${dir}:ro`);
+}
 
 /** What a session's agent container started with; decided once per container. */
 export type SessionGpu =
@@ -12,6 +25,8 @@ export type SessionGpu =
 
 export const GPU_ENV = "SHIPIT_GPU";
 export const GPU_REASON_ENV = "SHIPIT_GPU_REASON";
+/** Set on a granted container that could not start with `gpuGraphicsBinds`, with Docker's error. */
+export const GPU_GRAPHICS_REASON_ENV = "SHIPIT_GPU_GRAPHICS_REASON";
 
 const MAX_REASON_LENGTH = 500;
 

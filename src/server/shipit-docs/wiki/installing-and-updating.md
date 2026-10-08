@@ -126,6 +126,14 @@ Docker cannot give the GPU, the session starts without it and the transcript
 says why — that is a host problem from step 1. Inside a session,
 `$SHIPIT_GPU` says what the container got (`/shipit-docs/environment.md`).
 
+On WSL2, your container is also set up so that a Chrome you start yourself can
+draw WebGL on the GPU — for a rendering test or a benchmark. When the user asks
+for that, do it: `/shipit-docs/environment.md` has the display and the flags
+Chrome needs. That path is not yet confirmed on a real host, so run the check
+it gives and tell the user which renderer Chrome reported. It does not reach
+the built-in browser behind your browser tools, which draws in software, nor
+WebGPU, Compose services, or a native Linux host.
+
 ## Updating
 
 **Which path applies depends on how ShipIt was installed, so establish that
