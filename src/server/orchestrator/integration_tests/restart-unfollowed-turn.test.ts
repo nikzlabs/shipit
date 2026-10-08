@@ -81,6 +81,8 @@ describe("Integration: a sent turn that continues across an orchestrator restart
   let statusReads: ("ok" | "fail")[];
   let statusUnreadable: boolean;
   let statusDelayMs: number;
+  let killDelayMs: number;
+  let refuseStarts: boolean;
   let agents: FakeWorkerAgent[];
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
@@ -101,6 +103,8 @@ describe("Integration: a sent turn that continues across an orchestrator restart
     statusReads = [];
     statusUnreadable = false;
     statusDelayMs = 0;
+    killDelayMs = 0;
+    refuseStarts = false;
     stream = null;
     unprobedAfterRestart.clear();
     ContainerSessionRunner.firstConnectRetryDelaysMs = [20, 20, 40];
@@ -122,6 +126,14 @@ describe("Integration: a sent turn that continues across an orchestrator restart
     workerUrl = `http://127.0.0.1:${Number(/:(\d+)$/.exec(address)?.[1] ?? 0)}`;
     const target = new URL(workerUrl);
     proxy = http.createServer((req, res) => {
+      if (req.url?.startsWith("/agent/start") && refuseStarts) {
+        res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "start refused" }));
+        return;
+      }
+      if (req.url?.startsWith("/agent/kill")) {
+        setTimeout(() => forward(req, res), killDelayMs);
+        return;
+      }
       if (!req.url?.startsWith("/agent/status")) {
         forward(req, res);
         return;
@@ -265,6 +277,11 @@ describe("Integration: a sent turn that continues across an orchestrator restart
     stream?.destroy();
     stream = null;
     await new Promise((r) => setTimeout(r, 50));
+  }
+
+  function selfWake(): void {
+    agent().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed", summary: "tests finished" });
+    agent().emit("event", { type: "agent_assistant", content: [{ type: "text", text: "WAKE_TEXT" }] });
   }
 
   function say(text: string): void {
@@ -525,6 +542,51 @@ describe("Integration: a sent turn that continues across an orchestrator restart
       await new Promise((r) => setTimeout(r, 200));
       expect(waiting.running).toBe(false);
       expect(historyText()).not.toContain("LATE_OUTPUT");
+    });
+
+    it("a kill that a status read overlaps is not undone by that read", async () => {
+      ContainerSessionRunner.firstConnectRetryDelaysMs = [60_000];
+      await sentTurnOfThePreviousOrchestrator();
+      await previousOrchestratorStops();
+      statusReads = ["ok"];
+      statusUnreadable = true;
+      await restartSweep("current-build", []);
+      const waiting = runner()!;
+      await waitFor(() => waiting.waitingForWorkerStatus, 3000, "the runner waits");
+
+      // The read reaches the worker before the kill does, and its answer comes after the kill.
+      statusUnreadable = false;
+      killDelayMs = 100;
+      statusDelayMs = 300;
+      const killing = waiting.killAgentOnWorker();
+      const resumed = waiting.resumeInFlightTurn();
+      await killing;
+      expect(agent().killed).toBe(true);
+
+      expect(await resumed).toBe(false);
+      expect(waiting.running).toBe(false);
+    });
+
+    it("a start that failed while the runner waited leaves the worker's resident to be followed", async () => {
+      await sentTurnOfThePreviousOrchestrator();
+      endTurn();
+      await previousOrchestratorStops();
+      statusUnreadable = true;
+      refuseStarts = true;
+      const waiting = registry.getOrCreate(SESSION_ID, SESSION_DIR, "claude");
+      waiting.attachViewer();
+      await waitFor(() => waiting.waitingForWorkerStatus === true, 3000, "the runner waits");
+
+      waiting.dispatch(testDispatch({ text: "next task" }));
+      await waitFor(() => waiting.running, 3000, "the message started a turn");
+      await waitFor(() => !waiting.running, 3000, "the refused start ended it");
+      refuseStarts = false;
+      statusUnreadable = false;
+      await waitFor(() => waiting.waitingForWorkerStatus === false, 3000, "the status reads");
+
+      selfWake();
+      await waitFor(() => waiting.running, 3000, "the resident's own turn is followed");
+      expect(agents).toHaveLength(1);
     });
 
     it("a runner disposed while it reads the status again adopts nothing, and leaves the worker's turn alone", async () => {

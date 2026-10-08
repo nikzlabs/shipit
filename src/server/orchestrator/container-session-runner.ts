@@ -781,6 +781,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     this._startPosted = true;
     try {
+      await this.postAgentStart(body);
+    } catch (err) {
+      // The worker's own resident is still there, and the first connect must still see it.
+      this._startPosted = false;
+      throw err;
+    }
+  }
+
+  private async postAgentStart(body: WorkerAgentStartBody): Promise<void> {
+    try {
       await workerPost(this.workerUrl, "/agent/start", body, { timeoutMs: 0 });
     } catch (err) {
       // Completion can arrive before the worker clears its slot. Retry before clearing it.
@@ -1015,12 +1025,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._agent = proxy;
     this._startPosted = true;
 
-    await workerPost(
-      this.workerUrl,
-      "/agent/start",
-      { agentId, params, runToken: proxy.runToken, ...modelListField() } satisfies WorkerAgentStartBody,
-      { timeoutMs: 0 },
-    );
+    try {
+      await workerPost(
+        this.workerUrl,
+        "/agent/start",
+        { agentId, params, runToken: proxy.runToken, ...modelListField() } satisfies WorkerAgentStartBody,
+        { timeoutMs: 0 },
+      );
+    } catch (err) {
+      this._startPosted = false;
+      throw err;
+    }
 
     return proxy;
   }
@@ -1040,14 +1055,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   async killAgentOnWorker(opts?: { timeoutMs?: number; victimRunToken?: string }): Promise<void> {
     // A killed process can still emit; its late output must not read as a turn of its own.
     this._unfollowedResident = null;
+    // Counted at both ends: a status read that overlaps the kill can describe the killed process.
     this._kills += 1;
     const victim = this._agent;
-    await workerPost(
-      this.workerUrl,
-      "/agent/kill",
-      opts?.victimRunToken !== undefined ? { runToken: opts.victimRunToken } : undefined,
-      opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined,
-    );
+    try {
+      await workerPost(
+        this.workerUrl,
+        "/agent/kill",
+        opts?.victimRunToken !== undefined ? { runToken: opts.victimRunToken } : undefined,
+        opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined,
+      );
+    } finally {
+      this._kills += 1;
+    }
     if (this._agent !== victim) {
       console.warn(
         `[container-runner:${this.sessionId}] /agent/kill resolved after the slot moved on — not clearing the incoming agent`,

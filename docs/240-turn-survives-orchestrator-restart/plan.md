@@ -307,11 +307,12 @@ adoption of §2, with its replay from the turn's first event:
     orphan-runner check still reports a worker that stays unreachable;
   - a message it is sent still starts its turn, and the replay keeps that
     turn's events when the stream opens (the cursor skips the completed turns
-    only until this runner has posted a start).
+    only until this runner has started a turn; a start the worker refused does
+    not count, so the worker's own resident is still remembered).
 
-  A reading that comes back after the runner was disposed, or after it killed
-  the worker's process, adopts nothing: that reading may describe the killed
-  process, so it is read again.
+  A reading that comes back after the runner was disposed, or that overlaps a
+  kill the runner sent, adopts nothing: it may describe the killed process, so
+  it is read again.
 - **The sweep tries again later** (after 2 s, 10 s, 30 s, 90 s; through
   `followReportedTurn`) for a session whose probe failed. That session has no
   runner, so nothing else would ask its worker. This runs after the server
