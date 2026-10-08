@@ -553,8 +553,12 @@ export class SessionWorker extends EventEmitter {
   // Best-effort: a turn this does not hand over is adopted at the next connect or boot sweep.
   private async reportUnheardTurn(): Promise<void> {
     const res = await this.orchestratorClient()?.request("POST", "/agent/own-turn", {}, { timeoutMs: 10_000 });
-    if (res && !res.ok) {
-      console.warn(`[agent] the orchestrator did not take over a self-started turn (status ${res.status})`);
+    if (!res) return;
+    const following = (res.body as { following?: unknown } | null | undefined)?.following;
+    if (!res.ok || following !== true) {
+      console.warn(
+        `[agent] the orchestrator did not take over a self-started turn (status ${res.status}, following=${String(following)})`,
+      );
     }
   }
 

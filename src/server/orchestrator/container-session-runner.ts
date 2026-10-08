@@ -106,6 +106,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // A streaming process the worker already held at the first connect: after an orchestrator
   // restart nothing here follows it, and it starts turns of its own (planning#639).
   private _unfollowedResident: { runToken: string; agentId: AgentId } | null = null;
+  private _statusUnreadAtConnect = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
   private _residentRoute: { kind: ProviderRouteKind; id: string } | undefined = undefined;
@@ -815,11 +816,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Adopt live turns before replay; skip completed turns to avoid persisting them twice.
   private async reconcileWorkerTurnBeforeFirstConnect(): Promise<WorkerAgentStatus | null> {
-    if (this.sse.isConnected) return null;
-    let status: WorkerAgentStatus;
-    try {
-      status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
-    } catch {
+    // A container still being created holds no earlier turn.
+    if (this.sse.isConnected || this.workerUrl === PLACEHOLDER_WORKER_URL) return null;
+    const status = await this.readStatusBeforeFirstConnect();
+    if (!status) {
+      this._statusUnreadAtConnect = true;
       return null;
     }
 
@@ -837,6 +838,27 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._unfollowedResident = { runToken: status.runToken, agentId: status.agentId ?? this._agentId };
     }
     return status;
+  }
+
+  // A connect without a status replays a live turn with no agent to follow it (planning#665).
+  static statusRetryDelaysMs = [500, 2000, 5000];
+
+  private async readStatusBeforeFirstConnect(): Promise<WorkerAgentStatus | null> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+      } catch (err) {
+        const delayMs = ContainerSessionRunner.statusRetryDelaysMs[attempt];
+        if (delayMs === undefined || this._disposed) {
+          console.warn(
+            `[container-runner:${this.sessionId}] could not read the worker's status before the first connect `
+            + `(${err instanceof Error ? err.message : String(err)}) — a turn in flight there loses its events until now`,
+          );
+          return null;
+        }
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
   }
 
   private async adoptWorkerTurn(status: WorkerAgentStatus): Promise<boolean> {
@@ -902,7 +924,38 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   async resumeInFlightTurn(): Promise<boolean> {
     if (this._disposed) return false;
     await this.ensureWorkerResourcesStarted();
+    if (this._statusUnreadAtConnect) await this.followTurnMissedAtConnect();
     return this._isRunning;
+  }
+
+  // The first connect's replay dropped the events of a turn it could not see. The turn is followed
+  // from here, and the rows an earlier orchestrator saved are kept. A failed read throws: it is not
+  // a worker with no turn.
+  private async followTurnMissedAtConnect(): Promise<void> {
+    const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+    this._statusUnreadAtConnect = false;
+    if (this._agent || this._isRunning || this._disposed) return;
+    if (status.turnActive !== true) {
+      if (workerReportsNoTurn(status)) this.finalizeInheritedRows();
+      if (status.streaming === true && status.runToken !== undefined) {
+        this._unfollowedResident = { runToken: status.runToken, agentId: status.agentId ?? this._agentId };
+      }
+      return;
+    }
+    console.warn(
+      `[container-runner:${this.sessionId}] following a turn that its first connect could not see; `
+      + `its events before now are not saved`,
+    );
+    this.finalizeInheritedRows();
+    void this.wireWorkerTurn({
+      agentId: status.agentId ?? this._agentId,
+      ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
+      ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
+      streaming: status.streaming === true,
+      ...(status.ownTurn !== undefined ? { ownTurn: status.ownTurn } : {}),
+    })?.catch((err: unknown) => {
+      console.error(`[container-runner:${this.sessionId}] following a missed turn failed:`, err);
+    });
   }
 
   private async ensureWorkerResourcesStarted(): Promise<void> {

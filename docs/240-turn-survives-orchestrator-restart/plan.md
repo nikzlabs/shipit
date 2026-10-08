@@ -112,6 +112,11 @@ The slot must be filled **before** the stream opens or the replay is dropped, so
 in-flight promise (`_workerStartInFlight`) — otherwise a viewer attaching at the
 same moment as the reattach sweep could connect SSE mid-probe.
 
+For the same reason a failed status read is tried again (after 0.5 s, 2 s and
+5 s) before the stream opens without it (planning#665, §7). A runner for a
+container still being created reads nothing: that container holds no earlier
+turn.
+
 ### 3. Reattaching without a viewer
 
 A runner is only created lazily, on viewer attach. Left at that, a turn running
@@ -265,14 +270,64 @@ and is then followed from its next event that can start a turn.
 **Limits.** A turn that starts and ends while no orchestrator runs is still
 lost (§5 keeps what was saved; nothing commits it). The worker reports once and
 does not retry, and a turn that ends before the report's status request reaches
-the worker is not adopted. A first connect whose status request fails remembers
-no process, as it adopts no turn (§2). A message that reaches a brand-new
+the worker is not adopted. A first connect that cannot read the status at all
+remembers no process until a later read (§7). A message that reaches a brand-new
 runner before its first connect has adopted still replaces the process, as it
 does for any turn the sweep could not probe. Heard is decided by an open
 stream, so an orchestrator that dies between a turn's result and the next
 turn's first event leaves the earlier turn's rows to be replaced. And a runner
 made after a restart does not know the task list the old process held
 (docs/235), so the session shows no background-work marker until the turn starts.
+
+### 7. A status read that fails does not leave a turn unfollowed (planning#665)
+
+Every path above decides on one read of the worker's status: the sweep's probe
+(§3), the first connect (§2), the worker's report (§6). Until planning#665 a
+failed read ended the attempt, and nothing asked again. A sent turn that
+continued across a restart then had either no runner (the sweep's probe
+failed) or a runner that did not follow it (the first connect's read failed:
+the stream opened from the start of the replay buffer, and every event of the
+turn was dropped `(no _agent)`). Both looked idle: no transcript, no commit, and
+the idle reclaim was free to dispose the second. And every container route that
+needs a runner refused the turn's own calls with "Session is not active" —
+`shipit agent run` among them — until a message from outside made a runner. The
+own-turn report answered `following=false` for a runner that existed and did
+not follow.
+
+Each read is now followed by another attempt, where the turn can still be
+found:
+
+- **The first connect** tries a failed read again before it opens the stream
+  (§2). That keeps the replay from the turn's first event.
+- **A runner that connected without a status** reads it again at its next
+  `resumeInFlightTurn` (the sweep, its later tries, the worker's report). A turn
+  in flight is adopted on the open stream, as a CLI-started turn is (§6): the
+  rows an earlier orchestrator saved are finalized and kept, the events that
+  the first connect dropped are not saved, and the rest of the turn is
+  followed as any turn. A failed read throws, so no caller takes it for a
+  worker with no turn.
+- **The sweep** tries again later (after 2 s, 10 s, 30 s, 90 s; through
+  `followReportedTurn`) for a session whose probe failed, and for one whose
+  runner did not adopt a turn the probe saw. It runs after the server
+  listens, so it does not delay boot.
+- **A call from the session's own container** gets its runner through
+  `runnerForContainerCall`: with no runner, it asks the worker, and a turn in
+  flight gets a runner (whose first connect adopts it from its first event)
+  before the call is answered. The worker's status decides, as for the
+  worker's report, so a call from an idle session still makes no runner and
+  starts no Compose services. Every container route that refused with "Session
+  is not active" uses it: `shipit agent run`, the status card, propose actions,
+  bug report, propose session message, propose repo session, and the issue
+  writes.
+
+`followReportedTurn` logs why it answers false, and the worker logs the answer
+to its report, so the next case of a turn that nothing follows names the reason.
+
+**Limits.** A worker that answers no status read for the whole time is not
+followed until a call from its container, which also needs a status read. A
+turn on a worker older than planning#639 that the CLI started on its own still
+reports `turnActive: false`, so neither a call nor a later try finds it (§6,
+"Older workers").
 
 ## Known limit: a turn longer than the replay buffer
 
@@ -302,11 +357,12 @@ auto-commit — which is what almost every turn needs anyway.
 | `src/server/orchestrator/turn-adoption.ts` | Wires an already-running worker turn into a runner + proxy via `executeAgentTurn`; new use and the answer hold for a CLI-started one (§6) |
 | `src/server/orchestrator/turn-executor.ts` | `TurnInput.adopt` — skip env-prep + spawn, keep everything else |
 | `src/server/orchestrator/proxy-agent-process.ts` | Optional `runToken` so an adopting proxy inherits the worker's spawn epoch |
-| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones — and (docs/242) reclaim the stale idle ones; `followReportedTurn` for the worker's own-turn report (§6); then finalize the rows of turns their worker reports as ended (`workerReportsNoTurn`) |
+| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones — and (docs/242) reclaim the stale idle ones; `followReportedTurn` for the worker's own-turn report (§6); then finalize the rows of turns their worker reports as ended (`workerReportsNoTurn`); `followLater` and `runnerForContainerCall` (§7) |
 | `src/server/orchestrator/chat-history.ts` | `sessionsWithInProgressRows`, and `finalizeInheritedInProgress` (only rows an earlier process wrote) |
 | `src/server/orchestrator/runner-registry-factory.ts` | Finalizes the rows when a runner is created for a new container |
 | `src/server/orchestrator/bootstrap-managers.ts` | Fires the sweep after the runner registry exists |
 | `src/server/orchestrator/integration_tests/restart-turn-adoption.test.ts` | Real worker + fresh runner: adoption, exactly-once persistence, post-turn flow, run-token correlation, and the two must-not-adopt cases; a turn that ended during the restart keeps its rows past the next turn (through the boot sweep, and through the first connect, also when a message arrives first), and a live one is saved once |
 | `src/server/orchestrator/integration_tests/restart-cli-started-turn.test.ts` | §6 against a real worker, runner and sweep: the three moments, the saved rows of the turn before, the message that must not kill the turn, the update that must not reclaim it, and what must not be adopted (a one-shot process, a killed or replaced process's late output, a backend that starts no turns) |
+| `src/server/orchestrator/integration_tests/restart-unfollowed-turn.test.ts` | §7 against a real worker, runner registry and sweep: a sent turn across a restart when the sweep's probe fails, when the first connect cannot read the status (at once, or at all), when the idle reclaim takes a runner that missed the turn, on an update, and when the orchestrator is down as the turn's next events come |
 | `src/server/orchestrator/restart-turn-reattach.test.ts` | Sweep: adopts live turns, never wakes idle/standby/archived sessions, survives one dead worker; finalizes only the rows of turns their worker reports as ended |
 | `src/server/orchestrator/runner-registry-factory.test.ts` | A runner for a new container finalizes the rows; one that reconnects does not |

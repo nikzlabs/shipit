@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -40,6 +42,7 @@ interface FakeSession {
   id: string;
   agentId?: string;
   agentPinned?: boolean;
+  workspaceDir?: string;
   serviceId?: string;
   billingMode?: "sub" | "key";
   model?: string;
@@ -282,6 +285,47 @@ describe("runSubAgent — authorization gates", () => {
   it("rejects a pre-pin session (409)", async () => {
     const { deps } = makeDeps({ session: { id: "s1", agentId: "claude", agentPinned: false } });
     await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 409);
+  });
+
+  it("rejects a session with no runner whose worker has no turn in flight (409)", async () => {
+    const { deps, runner } = makeDeps({ runnerPresent: false });
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 409);
+    expect(err.message).toBe("Session is not active.");
+    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
+  });
+
+  // planning#665: after an orchestrator restart, a turn can call this before anything follows it.
+  it("follows a worker's turn in flight that has no runner, and spawns on the runner it gets", async () => {
+    const worker = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ running: true, turnActive: true }));
+    });
+    await new Promise<void>((resolve) => worker.listen(0, "127.0.0.1", resolve));
+    try {
+      const workerUrl = `http://127.0.0.1:${(worker.address() as AddressInfo).port}`;
+      const { deps, runner } = makeDeps({
+        session: { id: "s1", agentId: "claude", agentPinned: true, workspaceDir: "/tmp/s1" },
+      });
+      let followed: typeof runner | undefined;
+      const followingRunner = Object.assign(runner, { resumeInFlightTurn: vi.fn(async () => true) });
+      const result = await runSubAgent(
+        {
+          ...deps,
+          runnerRegistry: {
+            get: () => followed,
+            getOrCreate: () => (followed = followingRunner),
+          } as never,
+          containerManager: { get: () => ({ workerUrl }) } as never,
+        },
+        "s1",
+        { target: explicit("codex"), prompt: "review", depth: 0 },
+      );
+      expect(followingRunner.resumeInFlightTurn).toHaveBeenCalled();
+      expect(runner.spawnSubAgent).toHaveBeenCalled();
+      expect(result.status).toBe("success");
+    } finally {
+      await new Promise<void>((resolve) => worker.close(() => resolve()));
+    }
   });
 
   it("rejects a non-zero depth — recursion guard (403)", async () => {

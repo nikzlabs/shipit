@@ -17,6 +17,7 @@ export interface ReattachDeps {
   chatHistoryManager?: Pick<ChatHistoryManager, "sessionsWithInProgressRows" | "finalizeInheritedInProgress">;
   orchestratorBuildId?: string;
   confirmDelayMs?: number;
+  followRetryDelaysMs?: number[];
 }
 
 const PROBE_TIMEOUT_MS = 3000;
@@ -123,19 +124,65 @@ export async function followWorkerTurn(
   return (await runner.resumeInFlightTurn?.()) ?? false;
 }
 
+type FollowDeps = Pick<ReattachDeps, "containerManager" | "runnerRegistry" | "sessionManager" | "defaultAgentId">;
+
 // A worker says its CLI started a turn that nothing follows. The worker's status decides,
 // not the caller: a runner starts the session's Compose services, and the agent can call this.
-export async function followReportedTurn(
-  deps: Pick<ReattachDeps, "containerManager" | "runnerRegistry" | "sessionManager" | "defaultAgentId">,
-  sessionId: string,
-): Promise<boolean> {
+export async function followReportedTurn(deps: FollowDeps, sessionId: string): Promise<boolean> {
   const runner = deps.runnerRegistry.get(sessionId);
-  if (runner) return (await runner.resumeInFlightTurn?.()) ?? false;
+  if (runner) {
+    const following = (await runner.resumeInFlightTurn?.()) ?? false;
+    if (!following) console.warn(`[turn-reattach] not following ${sessionId}: its runner has no turn in flight`);
+    return following;
+  }
   const container = deps.containerManager?.get(sessionId);
-  if (!container) return false;
+  if (!container) {
+    console.warn(`[turn-reattach] not following ${sessionId}: no container is tracked for it`);
+    return false;
+  }
   const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
-  if (status.turnActive !== true) return false;
-  return followWorkerTurn(deps, sessionId);
+  if (status.turnActive !== true) {
+    console.warn(`[turn-reattach] not following ${sessionId}: its worker reports turnActive=${String(status.turnActive)}`);
+    return false;
+  }
+  const following = await followWorkerTurn(deps, sessionId);
+  if (!following) console.warn(`[turn-reattach] not following ${sessionId}: the runner it got did not adopt the turn`);
+  return following;
+}
+
+/**
+ * The runner for a call from the session's own container. The call can come from a turn that
+ * nothing here follows after a restart, and the worker's status decides whether it gets one
+ * (planning#665).
+ */
+export async function runnerForContainerCall(
+  deps: Omit<FollowDeps, "containerManager"> & { containerManager?: SessionContainerManager | null },
+  sessionId: string,
+): Promise<SessionRunnerInterface | undefined> {
+  const runner = deps.runnerRegistry.get(sessionId);
+  if (runner || !deps.containerManager) return runner;
+  try {
+    await followReportedTurn({ ...deps, containerManager: deps.containerManager }, sessionId);
+  } catch (err) {
+    console.warn(`[turn-reattach] following ${sessionId} for a container call failed: ${getErrorMessage(err)}`);
+  }
+  return deps.runnerRegistry.get(sessionId);
+}
+
+const FOLLOW_RETRY_DELAYS_MS = [2_000, 10_000, 30_000, 90_000];
+
+// After the sweep, nothing else asks this worker about a turn the sweep could not follow.
+async function followLater(deps: ReattachDeps, sessionId: string): Promise<void> {
+  for (const delayMs of deps.followRetryDelaysMs ?? FOLLOW_RETRY_DELAYS_MS) {
+    await new Promise((r) => { setTimeout(r, delayMs).unref(); });
+    try {
+      await followReportedTurn(deps, sessionId);
+      return;
+    } catch (err) {
+      console.warn(`[turn-reattach] probe of ${sessionId} failed again: ${getErrorMessage(err)}`);
+    }
+  }
+  console.warn(`[turn-reattach] gave up probing ${sessionId}; a turn in flight there is followed at its next container call`);
 }
 
 // Boot-only adoption and stale-worker reclamation; Compose stacks are reaped separately.
@@ -168,12 +215,13 @@ async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number>
   const adoptTurn = async (sessionId: string): Promise<boolean> => {
     if (runnerRegistry.get(sessionId)) return false;
     try {
-      return await followWorkerTurn(deps, sessionId);
+      if (await followWorkerTurn(deps, sessionId)) return true;
     } catch (err) {
       liveWorkAfterRestart.add(sessionId);
       console.error(`[turn-reattach] failed to reattach ${sessionId}: ${getErrorMessage(err)}`);
-      return false;
     }
+    void followLater(deps, sessionId);
+    return false;
   };
 
   const results = await Promise.all(
@@ -186,6 +234,7 @@ async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number>
           `[turn-reattach] /agent/status probe failed for ${c.sessionId}: ${getErrorMessage(err)}`,
         );
         unprobedAfterRestart.add(c.sessionId);
+        void followLater(deps, c.sessionId);
         return false;
       }
       const session = sessionManager.get(c.sessionId);
