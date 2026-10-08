@@ -25,9 +25,9 @@
 - [x] `isRunFinished`; decided on post-turn hold release, background drain, PR change, answer and Stop, never while busy; cleared when a user turn starts; `session_list` published on each change
 - [x] `isWorkResolved` / `workResolvedAt` (the stored `run_finished_at`) in `isOwnWorkFinished`, `touchUnlessResolved`, the cap's ranking and the attention call sites
 - [x] `computeAttentionReason`: a run's question, error or manual step reported before the PR silences
-- [ ] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
+- [x] "Needs you": schedule rows in `AttentionSessionList` (row union, same order and sticky rules, counted)
 - [x] Scheduled sidebar view and toggle; membership by spawn root; separate caps; Sandbox group split; attention view still lists runs
-- [ ] Scheduled view: the toggle also shows when a schedule exists; a schedule's `needs_user_reason` at the top of the view; the toggle's warning mark
+- [x] Scheduled view: the toggle also shows when a schedule exists; a schedule's `needs_user_reason` at the top of the view; the toggle's warning mark
 - [x] Claim and outcome notice generalized by card kind (settings first; `services/card-kinds.ts`)
 - [x] Proposal card registered as a card kind
 - [ ] Notes access card registered as a card kind
@@ -37,7 +37,7 @@
 - [ ] Safe notes read (no symlinks, stays inside the run folder); notes viewer; `shipit schedule notes` (own schedule's runs allowed); `schedule_notes_grants`
 - [ ] `<scheduled_run>` first-turn block (prompt `.md` file), including "ask a question for anything the user must act on"
 - [x] `ScheduledRunBanner` with Open schedule and Stop run; deleted-schedule state
-- [ ] Run times in the banner and history shown in the schedule's zone, as in the title
+- [x] Run times in the banner and history shown in the schedule's zone, as in the title
 - [ ] **Notes** links in the run history and the banner
 - [x] `shipit-docs/schedules.md`: `list`, `propose`, the proposal YAML
 - [x] The wiki `sessions.md` "Scheduled sessions" section

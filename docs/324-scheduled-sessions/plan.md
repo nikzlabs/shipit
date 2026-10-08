@@ -164,7 +164,10 @@ are not settings (see "Rejected"). The client keeps the schedules and their
 runs in one store (`stores/schedule-store.ts`), and `openScheduleSettings`
 opens the tab at a schedule from the banner and from "needs you". A run's
 times show in the schedule's zone, as its title does, with the zone named when
-it is not the browser's.
+it is not the browser's. The run row does not store the zone, so after the
+user changes a schedule's zone, an earlier run's banner and history show its
+time in the new zone while its title keeps the old one; both times are right,
+but they no longer match.
 
 - **List**: name, when (in words), target, next run, and a state — Paused, or
   the req 18 reason. Row actions: Run now, Pause / Resume, Edit, Delete.
@@ -303,7 +306,10 @@ restrictions).
    - a fetch of the base before the clone, as `spawnChildSession` asks for. It
      is best effort there (`refreshClaimedSession` logs a failure and goes on),
      and the same is accepted here: the agent can fetch, and failing a run for a
-     slow fetch would be worse.
+     slow fetch would be worse;
+   - no warm session for a repository run (`skipWarm`): a warm standby
+     container already runs without the notes mount, so the run would have no
+     `/schedule/notes/`.
 3. **Re-check, then dispatch.** Inside the queue, just before the dispatch, the
    start re-reads the schedule and the row: a schedule paused or deleted, or a
    row stopped, since the claim cancels the start, and the row becomes `failed`
