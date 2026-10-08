@@ -1,14 +1,15 @@
 import type { ScheduleChanges, ScheduleStore } from "../schedule-store.js";
 import type { RepoStore } from "../repo-store.js";
 import type { CredentialStore } from "../credential-store.js";
-import type {
-  Schedule,
-  ScheduleRun,
-  ScheduleRunView,
-  ScheduleTiming,
-  ScheduleView,
-  SessionStartSpec,
-  UnfinishedScheduleRun,
+import {
+  MAX_RUNS_PER_READ,
+  type Schedule,
+  type ScheduleRun,
+  type ScheduleRunView,
+  type ScheduleTiming,
+  type ScheduleView,
+  type SessionStartSpec,
+  type UnfinishedScheduleRun,
 } from "../../shared/types.js";
 import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import { KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
@@ -27,7 +28,6 @@ import { getErrorMessage } from "../validation.js";
 
 const NEXT_RUNS_SHOWN = 3;
 const MAX_NAME_CHARS = 120;
-export const MAX_RUN_HISTORY = 1000;
 
 export interface ScheduleSpecDeps {
   repoStore: Pick<RepoStore, "get" | "isTrusted">;
@@ -302,13 +302,21 @@ export async function runScheduleNow(deps: ScheduleServiceDeps, id: string): Pro
   return deps.scheduler.runNow(id);
 }
 
-/** Req 24 — newest first. */
-export function listScheduleRuns(deps: ScheduleServiceDeps, id: string, limit?: number): ScheduleRunView[] {
+/** Req 24 — newest first; with `beforeRunId`, the runs older than that run of the schedule. */
+export function listScheduleRuns(
+  deps: ScheduleServiceDeps,
+  id: string,
+  limit?: number,
+  beforeRunId?: string,
+): ScheduleRunView[] {
   existing(deps, id);
+  if (beforeRunId !== undefined && deps.store.getRun(beforeRunId)?.scheduleId !== id) {
+    throw new ServiceError(404, "Run not found");
+  }
   const capped = limit === undefined || !Number.isInteger(limit) || limit <= 0
-    ? MAX_RUN_HISTORY
-    : Math.min(limit, MAX_RUN_HISTORY);
-  return deps.scheduler.viewRuns(deps.store.listRuns(id, capped));
+    ? MAX_RUNS_PER_READ
+    : Math.min(limit, MAX_RUNS_PER_READ);
+  return deps.scheduler.viewRuns(deps.store.listRuns(id, capped, beforeRunId));
 }
 
 /** Req 26 — what Run now warns about; archived runs count too. */

@@ -82,8 +82,10 @@ describe("GitHubTracker", () => {
     );
 
     const tracker = new GitHubTracker({ token: "ghp_x", repo: REPO, fetchImpl });
-    const issues = await tracker.listIssues();
+    const { issues, complete } = await tracker.listIssues();
 
+    expect(complete).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(issues.map((i) => i.identifier)).toEqual([
       "octocat/hello-world#9",
       "octocat/hello-world#7",
@@ -111,6 +113,131 @@ describe("GitHubTracker", () => {
     await expect(new GitHubTracker({ token: null, repo: null }).listIssues()).rejects.toThrow(
       /not configured/,
     );
+  });
+
+  describe("paging (a list is not one page)", () => {
+    const issueNode = (n: number, pr = false) => ({
+      id: n,
+      number: n,
+      title: `Issue ${n}`,
+      html_url: `https://github.com/octocat/hello-world/issues/${n}`,
+      state: "open",
+      labels: [],
+      ...(pr ? { pull_request: { url: "…" } } : {}),
+    });
+    const pageOf = (url: string): number => Number(new URL(url).searchParams.get("page"));
+    // Pages are 1-based and numbered from the newest; `sizes[i]` is page i+1's length.
+    const pagedFetch = (sizes: number[], node: (n: number) => unknown) =>
+      vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
+        const page = pageOf(url as string);
+        const size = sizes[page - 1] ?? 0;
+        const first = (page - 1) * 100;
+        return jsonResponse(Array.from({ length: size }, (_, i) => node(first + i + 1)));
+      });
+
+    it("follows every page, so issues past the first hundred are listed", async () => {
+      // Every 10th item is a pull request, which still fills a page.
+      const fetchImpl = pagedFetch([100, 100, 30], (n) => issueNode(n, n % 10 === 0));
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      const { issues, complete } = await tracker.listIssues({ includeDone: true });
+
+      expect(complete).toBe(true);
+      expect(fetchImpl.mock.calls.map(([u]) => pageOf(u as string))).toEqual([1, 2, 3]);
+      expect(issues).toHaveLength(230 - 23);
+      expect(issues.map((i) => i.id)).toContain("229");
+      const url = new URL(fetchImpl.mock.calls[0][0] as string);
+      expect(url.searchParams.get("state")).toBe("all");
+      expect(url.searchParams.get("per_page")).toBe("100");
+    });
+
+    it("stops at the ceiling and reports the listing incomplete", async () => {
+      const fetchImpl = pagedFetch(Array.from({ length: 40 }, () => 100), (n) => issueNode(n));
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      const { issues, complete } = await tracker.listIssues();
+
+      expect(complete).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledTimes(20);
+      expect(issues).toHaveLength(2000);
+    });
+
+    it("trusts a Link header without rel=next, so exactly 2,000 items are complete", async () => {
+      const fetchImpl = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
+        const page = pageOf(url as string);
+        const nodes = Array.from({ length: 100 }, (_, i) => issueNode((page - 1) * 100 + i + 1));
+        const link = page < 20 ? `<https://api.github.com/x?page=${page + 1}>; rel="next"` : `<https://api.github.com/x?page=1>; rel="first"`;
+        return new Response(JSON.stringify(nodes), { status: 200, headers: { "Content-Type": "application/json", Link: link } });
+      });
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      const { issues, complete } = await tracker.listIssues();
+
+      expect(complete).toBe(true);
+      expect(issues).toHaveLength(2000);
+      expect(fetchImpl).toHaveBeenCalledTimes(20);
+    });
+
+    it("stops at the read deadline and reports the listing incomplete", async () => {
+      let now = 1_000_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const pages = pagedFetch(Array.from({ length: 20 }, () => 100), (n) => issueNode(n));
+      const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        now += 50_000;
+        return pages(url, init);
+      });
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      try {
+        const { issues, complete } = await tracker.listIssues();
+        expect(complete).toBe(false);
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+        expect(issues).toHaveLength(300);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("reads past the list ceiling when the caller asks for a deeper read", async () => {
+      const fetchImpl = pagedFetch([...Array.from({ length: 30 }, () => 100), 1], (n) => issueNode(n));
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      const { issues, complete } = await tracker.listIssues({ maxItems: 10_000 });
+
+      expect(complete).toBe(true);
+      expect(issues).toHaveLength(3001);
+    });
+
+    it("fails a comment read past the guard instead of returning part of the thread", async () => {
+      const fetchImpl = pagedFetch(Array.from({ length: 101 }, () => 100), (n) => ({ id: n, body: `c${n}` }));
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      await expect(tracker.listComments("7")).rejects.toThrow(/comment thread of #7 has more than 10000 entries/);
+    });
+
+    it("reads a comment thread longer than one page", async () => {
+      const fetchImpl = pagedFetch([100, 5], (n) => ({ id: n, body: `c${n}`, user: { login: "nik" } }));
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      const comments = await tracker.listComments("7");
+
+      expect(comments).toHaveLength(105);
+      expect(comments[104].body).toBe("c105");
+      expect(fetchImpl.mock.calls[1][0] as string).toContain("/issues/7/comments?per_page=100&page=2");
+    });
+
+    it("resolves a label that sits on the second page of the repo's labels", async () => {
+      const labels = pagedFetch([100, 1], (n) => ({ name: n === 101 ? "zeta" : `label-${n}` }));
+      const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) =>
+        (init?.method ?? "GET") === "GET" ? labels(url, init) : jsonResponse(issueNode(5)),
+      );
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      expect((await tracker.listLabels()).map((l) => l.name)).toContain("zeta");
+      await tracker.createIssue({ title: "x", body: "y", labels: ["Zeta"] });
+      const post = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+      expect(JSON.parse(post[1]!.body as string).labels).toEqual(["zeta"]);
+    });
   });
 
   it("getIssue returns null on 404 and null for a PR number", async () => {

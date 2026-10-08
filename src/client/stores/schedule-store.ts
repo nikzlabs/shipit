@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { useUiStore } from "./ui-store.js";
-import type {
-  ScheduleRun,
-  ScheduleRunView,
-  ScheduleView,
-  UnfinishedScheduleRun,
+import {
+  MAX_RUNS_PER_READ,
+  type ScheduleRun,
+  type ScheduleRunView,
+  type ScheduleView,
+  type UnfinishedScheduleRun,
 } from "../../server/shared/types.js";
 
 /**
@@ -44,10 +45,28 @@ interface ScheduleState {
 let schedulesVersion = 0;
 const runsInFlight = new Map<string, Set<ScheduleRun[]>>();
 
+/** The newest `asked` runs, or all there are: one read returns at most `MAX_RUNS_PER_READ`. */
+async function readRuns(scheduleId: string, asked: number): Promise<ScheduleRunView[]> {
+  const runs: ScheduleRunView[] = [];
+  for (;;) {
+    const limit = Math.min(asked - runs.length, MAX_RUNS_PER_READ);
+    const before = runs.at(-1)?.id;
+    const page = await request<{ runs: ScheduleRunView[] }>(
+      path(scheduleId, `/runs?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ""}`),
+    );
+    runs.push(...page.runs);
+    if (page.runs.length < limit || runs.length >= asked) return runs;
+  }
+}
+
 function withRun(runs: ScheduleRunView[], run: ScheduleRun): ScheduleRunView[] {
   const index = runs.findIndex((r) => r.id === run.id);
+  if (index < 0) return [run, ...runs];
+  // A row is `starting` only as it is made, so a `starting` copy that arrives late — Run now's
+  // answer, sent after its pre-flight already failed the run — is older than the one held.
+  if (run.outcome === "starting" && runs[index]?.outcome !== "starting") return runs;
   // The event carries the row alone; what the last read said of its session stays.
-  return index < 0 ? [run, ...runs] : runs.map((r, i) => (i === index ? { ...r, ...run } : r));
+  return runs.map((r, i) => (i === index ? { ...r, ...run } : r));
 }
 
 export const useScheduleStore = create<ScheduleState>()((set, get) => ({
@@ -72,9 +91,7 @@ export const useScheduleStore = create<ScheduleState>()((set, get) => ({
     const pending = runsInFlight.get(scheduleId) ?? new Set();
     runsInFlight.set(scheduleId, pending.add(arrived));
     try {
-      const { runs } = await request<{ runs: ScheduleRunView[] }>(
-        `/api/schedules/${encodeURIComponent(scheduleId)}/runs?limit=${asked}`,
-      );
+      const runs = await readRuns(scheduleId, asked);
       set((s) => ({
         runsBySchedule: { ...s.runsBySchedule, [scheduleId]: arrived.reduce(withRun, runs) },
         runLimits: { ...s.runLimits, [scheduleId]: asked },

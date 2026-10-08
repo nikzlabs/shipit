@@ -155,7 +155,7 @@ Branch (docs/239):
 
 Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   shipit issue view      <ref> [--tracker NAME] [--comments] [--json]
-  shipit issue list      [--tracker NAME] [--state open|closed|all] [--full] [--json]
+  shipit issue list      [--tracker NAME] [--state open|closed|all] [--search TEXT] [--label NAME]... [--limit N] [--full] [--json]
   shipit issue labels    [--tracker NAME] [--json]
   shipit issue statuses  [--tracker NAME] [--json]
   shipit issue create    --tracker NAME --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--json]
@@ -215,7 +215,11 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   'labels'/'statuses' list the tracker's valid label names and status targets so
   you can pick one before a create/edit/status write instead of guessing. 'list
   --json' omits each issue's body by default to save tokens — pass --full to
-  include it. Every issue subcommand takes --help for its own usage.
+  include it. 'list' reads up to 2,000 items (10,000 with --search or --label)
+  but prints at most --limit rows (default 100), and says when it cut either.
+  To find an existing issue before filing one, search it: --search TEXT (every
+  word in the title or body) and --label NAME, with --state all to include done
+  issues. Every issue subcommand takes --help for its own usage.
 
 Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   shipit release plan    [<patch|minor|major|VERSION>] [--prerelease] [--version-source-path FILE] [--json]

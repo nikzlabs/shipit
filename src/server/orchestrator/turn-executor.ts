@@ -439,9 +439,15 @@ export async function executeAgentTurn(
     if (turnEndRecorded) return;
     turnEndRecorded = true;
     try {
-      const { sessionManager } = deps.listenerDeps;
-      const first = sessionManager.get(sessionId)?.lastTurnOutcome === undefined;
+      const { sessionManager, sseBroadcast } = deps.listenerDeps;
+      const before = sessionManager.get(sessionId);
+      const first = before?.lastTurnOutcome === undefined;
       sessionManager.setLastTurnOutcome(sessionId, outcome);
+      // "Needs you" reads a run's outcome from its list row (req 31), and the run's finish,
+      // which lists it too, need not change: an open PR already kept it unfinished.
+      if (before?.scheduleId && before.lastTurnOutcome !== outcome) {
+        sseBroadcast("session_list", { sessions: sessionManager.list() });
+      }
       deps.onTurnEnd?.({
         sessionId,
         outcome,

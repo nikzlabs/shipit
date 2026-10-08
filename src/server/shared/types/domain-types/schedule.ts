@@ -41,6 +41,9 @@ export interface ScheduleView extends Omit<Schedule, "spec"> {
 
 export type ScheduleRunOutcome = "starting" | "started" | "skipped" | "failed";
 
+/** The most runs one read of a run history returns; older ones are read after the oldest returned. */
+export const MAX_RUNS_PER_READ = 1000;
+
 /** One entry of a schedule's run history (req 24), and the claim of its slot. */
 export interface ScheduleRun {
   id: string;

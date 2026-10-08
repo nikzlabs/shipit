@@ -117,7 +117,7 @@ declare it under `issues.trackers` as well and both names will address it.
 
 ```
 shipit issue view <reference> [--tracker NAME] [--comments] [--json]
-shipit issue list [--tracker NAME] [--state open|closed|all] [--full] [--json]
+shipit issue list [--tracker NAME] [--state open|closed|all] [--search TEXT] [--label NAME]... [--limit N] [--full] [--json]
 shipit issue labels   [--tracker NAME] [--json]
 shipit issue statuses [--tracker NAME] [--json]
 ```
@@ -133,6 +133,53 @@ identifier/title/status/priority/assignee, and shipping every body burns tokens
 you didn't ask for. Pass `--full` when you actually need the bodies in one shot;
 otherwise `view` the one issue you picked. (The text-mode list is already lean —
 identifier · priority · title.)
+
+### Finding an issue: `--search`, `--label`, `--limit`
+
+`list` reads **the whole tracker**, page by page, and then filters and cuts:
+
+- `--search TEXT` keeps issues whose title or body contains **every word** of
+  TEXT, ignoring case. Words match as substrings, so `--search "list paginat"`
+  matches both "Paginate the issue list" and "List pagination is broken" —
+  use a word stem to catch the variants.
+- `--label NAME` keeps issues that carry **every** named label (repeatable or
+  comma-separated, ignoring case).
+- `--limit N` caps the rows printed. **The default is 100.** Filters apply
+  before the limit, so a search covers every issue, not only the first 100.
+  Rows are ordered by priority, then newest first (GitHub: by creation;
+  Linear: by last update), so a limit keeps the most urgent and most recent.
+
+So, **before you file an issue, search for an existing one** — and include the
+done issues, because a closed duplicate is still a duplicate:
+
+```
+shipit issue list --tracker planning --state all --search "list paginat"
+shipit issue list --tracker planning --state all --label bug --search timeout
+```
+
+**A cut list always says so.** When more issues matched than `--limit` printed,
+the text output ends with a line such as `Showing 100 of 412 matching issues.
+Narrow with --search TEXT or --label NAME, or raise --limit.` — after the
+untrusted-content envelope, because ShipIt wrote it. `--json` prints an object,
+not a bare array:
+
+```json
+{"issues":[...],"total":412,"truncated":true,"note":"Showing 100 of 412 matching issues. ..."}
+```
+
+`total` is how many issues matched; `truncated` is `true` whenever `issues` is
+not all of them, and `note` then says how to get the rest. Read rows with
+`jq '.issues[]'`.
+
+One list reads at most **2,000** items from the tracker; a list with
+`--search` or `--label` reads up to **10,000**, because it prints only the
+matches. On GitHub, pull requests count toward both numbers, because GitHub's
+issue list includes them. A read also stops after **two minutes**, so a slow
+tracker cannot outlast the command. The read starts at the newest (GitHub: by
+creation; Linear: by last update), so when either limit stops it the oldest
+are not read, and the output says so: `incomplete: true` in `--json`, plus a note in both modes.
+Then search instead of listing, or open a known issue directly with
+`shipit issue view <reference>`, which reaches any issue.
 
 Every issue subcommand accepts `--help` for its own one-line usage
 (`shipit issue list --help`), and top-level `shipit issue help` prints the full

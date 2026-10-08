@@ -632,6 +632,16 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/issue/list?tracker=linear&state=all");
   });
 
+  it("GET /agent-ops/issue/list forwards search, every label and the limit", async () => {
+    client.setResponse("GET", "/issue/list", { ok: true, status: 200, body: { tracker: { id: "linear" }, issues: [] } });
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent-ops/issue/list?tracker=linear&search=page%20list&label=bug&label=cli&limit=20",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/list?tracker=linear&search=page+list&label=bug&label=cli&limit=20");
+  });
+
   it("GET /agent-ops/issue/labels forwards the tracker (planning#201)", async () => {
     client.setResponse("GET", "/issue/labels", { ok: true, status: 200, body: { labels: [{ name: "bug" }] } });
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/labels?tracker=github" });
