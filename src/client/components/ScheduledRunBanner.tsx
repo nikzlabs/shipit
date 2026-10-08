@@ -23,15 +23,18 @@ export function ScheduledRunLine({ session }: { session: SessionListRow }) {
   if (!loaded || !session.scheduleId) return null;
 
   if (!schedule) {
+    const when = session.runTimeZone
+      ? formatScheduleRunTime(session.createdAt, session.runTimeZone)
+      : formatRunTime(session.createdAt);
     return (
       <div className="flex items-center gap-2 text-[12.5px] text-(--color-text-secondary)" data-testid="scheduled-run-banner">
         <ClockIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
-        <span className="min-w-0">Started by a schedule that was deleted · {formatRunTime(session.createdAt)}</span>
+        <span className="min-w-0">Started by a schedule that was deleted · {when}</span>
       </div>
     );
   }
 
-  const when = formatScheduleRunTime(session.createdAt, schedule.timeZone);
+  const when = formatScheduleRunTime(session.createdAt, session.runTimeZone ?? schedule.timeZone);
   const runId = session.scheduleRunId;
   const stop = async () => {
     if (!runId) return;

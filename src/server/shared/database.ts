@@ -1146,6 +1146,15 @@ const MIGRATIONS: Migration[] = [
         ON schedule_notes_requests(session_id, schedule_id);
     `);
   },
+  // docs/324-scheduled-sessions — the zone a run's title names its time in, so its banner and its
+  // history time keep that zone after the schedule's zone changes. Older rows stay NULL.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(schedule_runs)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "time_zone")) {
+      db.exec("ALTER TABLE schedule_runs ADD COLUMN time_zone TEXT");
+    }
+    addSessionColumnIfMissing(db, "run_time_zone");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1175,6 +1184,8 @@ export const SCHEDULES_MIGRATION = 106;
 export const SCHEDULE_PROPOSALS_MIGRATION = 108;
 
 export const SCHEDULE_NOTES_ACCESS_MIGRATION = 109;
+
+export const SCHEDULE_RUN_TIME_ZONE_MIGRATION = 110;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

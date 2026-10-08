@@ -68,11 +68,16 @@ function missedReason(missed: NonNullable<DueSlots["missed"]>, timeZone: string)
   return `${missed.count} runs missed between ${first} and ${formatInZone(missed.last, timeZone)} (${timeZone}).`;
 }
 
+/** The zone the run's times are given in; a row from before the zone was stored has none. */
+function runTimeZone(schedule: Schedule, run: ScheduleRun): string {
+  return run.timeZone ?? schedule.timeZone;
+}
+
 /** "*schedule name* · *date*"; a Run now run is named by when it was asked for. */
 function runTitle(schedule: Schedule, run: ScheduleRun): string {
   const at = new Date(run.slotAt ?? run.createdAt);
   const when = at.toLocaleString("en-US", {
-    timeZone: schedule.timeZone,
+    timeZone: runTimeZone(schedule, run),
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -185,6 +190,7 @@ export class ScheduleRunner implements ScheduleQueue {
     const claimed = store.claimSlot({
       scheduleId,
       slotAt: due.latest,
+      timeZone: schedule.timeZone,
       spec: schedule.spec,
       ...(due.missed ? { missed: { slotAt: due.missed.last, reason: missedReason(due.missed, schedule.timeZone) } } : {}),
     });
@@ -237,7 +243,12 @@ export class ScheduleRunner implements ScheduleQueue {
     const run = await this.enqueue(scheduleId, () => {
       const schedule = this.deps.store.get(scheduleId);
       if (!schedule) throw new ServiceError(404, "Schedule not found");
-      const inserted = this.deps.store.insertRun({ scheduleId, slotAt: null, spec: schedule.spec });
+      const inserted = this.deps.store.insertRun({
+        scheduleId,
+        slotAt: null,
+        timeZone: schedule.timeZone,
+        spec: schedule.spec,
+      });
       if (!inserted) throw new ServiceError(500, "The run could not be recorded.");
       this.announceRun(inserted);
       return inserted;
@@ -271,7 +282,7 @@ export class ScheduleRunner implements ScheduleQueue {
         title: runTitle(schedule, run),
         deliveryId: run.id,
         fetchBase: true,
-        scheduleRun: { scheduleId: run.scheduleId, runId: run.id },
+        scheduleRun: { scheduleId: run.scheduleId, runId: run.id, timeZone: runTimeZone(schedule, run) },
         onRunLinked: (sessionId) => this.prepareNotes(run, sessionId),
         // A pause stops due runs; Run now has no restrictions (req 26).
         dispatchGate: this.gate(run, { cancelOnPause: run.slotAt !== null }),

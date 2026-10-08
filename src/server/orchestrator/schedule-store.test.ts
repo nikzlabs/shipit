@@ -168,6 +168,18 @@ describe("ScheduleStore — runs", () => {
       .toMatchObject({ outcome: "skipped", reason: "3 runs missed", slotAt: null });
   });
 
+  it("keeps the zone a run was made in after the schedule's zone changes; an older row has none", () => {
+    const s = store.create(newSchedule(), T0);
+    const run = store.insertRun({ scheduleId: s.id, slotAt: new Date(T1), timeZone: "Europe/Berlin" }, T1)!;
+    expect(run.timeZone).toBe("Europe/Berlin");
+    store.update(s.id, { timeZone: "Asia/Tokyo" });
+    expect(store.getRun(run.id)!.timeZone).toBe("Europe/Berlin");
+    expect(store.listRuns(s.id)[0]!.timeZone).toBe("Europe/Berlin");
+
+    const older = store.insertRun({ scheduleId: s.id, slotAt: null }, T1)!;
+    expect(older).not.toHaveProperty("timeZone");
+  });
+
   it("updates a run's outcome, reason, session, result and start time", () => {
     const s = store.create(newSchedule(), T0);
     const run = store.insertRun({ scheduleId: s.id, slotAt: new Date(T1) }, T1)!;
@@ -219,13 +231,14 @@ describe("ScheduleStore — runs", () => {
     const claimed = store.claimSlot({
       scheduleId: s.id,
       slotAt: new Date(T1),
+      timeZone: "Europe/Berlin",
       spec: SPEC,
       missed: { slotAt: new Date(T0), reason: "2 runs missed" },
     }, T1)!;
-    expect(claimed).toMatchObject({ slotAt: T1, outcome: "starting", spec: SPEC });
-    expect(store.listRuns(s.id).map((r) => [r.outcome, r.reason])).toEqual([
-      ["starting", undefined],
-      ["skipped", "2 runs missed"],
+    expect(claimed).toMatchObject({ slotAt: T1, timeZone: "Europe/Berlin", outcome: "starting", spec: SPEC });
+    expect(store.listRuns(s.id).map((r) => [r.outcome, r.reason, r.timeZone])).toEqual([
+      ["starting", undefined, "Europe/Berlin"],
+      ["skipped", "2 runs missed", "Europe/Berlin"],
     ]);
   });
 
@@ -235,6 +248,7 @@ describe("ScheduleStore — runs", () => {
     const again = store.claimSlot({
       scheduleId: s.id,
       slotAt: new Date(T1),
+      timeZone: "Europe/Berlin",
       spec: SPEC,
       missed: { slotAt: new Date(T0), reason: "missed" },
     });

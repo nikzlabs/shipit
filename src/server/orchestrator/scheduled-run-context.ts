@@ -48,10 +48,11 @@ export function scheduledRunContext(
   const schedule = deps.store.get(session.scheduleId);
   const run = deps.store.getRun(deliveryId);
   if (!schedule || !run) return "";
+  const timeZone = run.timeZone ?? schedule.timeZone;
   return renderScheduledRunBlock({
     name: schedule.name,
     scheduleId: schedule.id,
-    runAt: `${formatInZone(new Date(run.slotAt ?? run.createdAt), schedule.timeZone)} (${schedule.timeZone})`,
+    runAt: `${formatInZone(new Date(run.slotAt ?? run.createdAt), timeZone)} (${timeZone})`,
     notesDir: deps.runtimeMode === "local" ? deps.notes.runDir(schedule.id, run.id) : RUN_NOTES_CONTAINER_DIR,
   });
 }

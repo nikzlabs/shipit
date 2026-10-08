@@ -1694,7 +1694,7 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
   it("round-trip through get, list and listAll", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("run");
-    mgr.setScheduleRun("run", "sched-1", "run-1");
+    mgr.setScheduleRun("run", "sched-1", "run-1", "Europe/Berlin");
     mgr.setRunFinishedAt("run", "2026-10-07T10:00:00.000Z");
     mgr.setRunStoppedAt("run", "2026-10-07T09:30:00.000Z");
     mgr.setLastTurnOutcome("run", "quota-refused");
@@ -1703,6 +1703,7 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
     const expected = {
       scheduleId: "sched-1",
       scheduleRunId: "run-1",
+      runTimeZone: "Europe/Berlin",
       runFinishedAt: "2026-10-07T10:00:00.000Z",
       runStoppedAt: "2026-10-07T09:30:00.000Z",
       lastTurnOutcome: "quota-refused",
@@ -1716,7 +1717,7 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
   it("are absent on a session that is not a run, and cleared by null", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("plain");
-    const fields = ["scheduleId", "scheduleRunId", "runFinishedAt", "runStoppedAt", "lastTurnOutcome", "scheduleNotesGrants"];
+    const fields = ["scheduleId", "scheduleRunId", "runTimeZone", "runFinishedAt", "runStoppedAt", "lastTurnOutcome", "scheduleNotesGrants"];
     for (const field of fields) expect(mgr.get("plain")).not.toHaveProperty(field);
 
     mgr.setRunFinishedAt("plain", "2026-10-07T10:00:00.000Z");
