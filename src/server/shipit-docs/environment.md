@@ -660,6 +660,55 @@ than working around it: `shipit settings propose advanced.sessionGpu=true
 --reason "..."` (see [settings.md](settings.md)). The session gets the GPU when
 its container next starts.
 
+### Chrome on the GPU (WSL2)
+
+On a WSL2 host, a `granted` container also has the host's DirectX libraries
+(`/usr/lib/wsl/lib`) and Windows GPU driver files (`/usr/lib/wsl/drivers`),
+read-only. With them, Mesa's OpenGL draws on the GPU through its Direct3D 12
+driver. Without them, it draws on the CPU (`llvmpipe`).
+
+A Chrome **you start yourself** — a Playwright or Puppeteer script, a test run,
+a benchmark — draws WebGL on the GPU when it has both of these. Without both,
+WebGL runs on SwiftShader, Chrome's own software renderer, or is not available, and
+Chrome says nothing:
+
+- **An X display.** Chrome reaches Mesa through GLX and this container has no
+  display, so start the command under `xvfb-run -a`. Headless or headed, both
+  work there.
+- **The flags `--use-angle=gl --ignore-gpu-blocklist`.**
+
+```bash
+# In the script: chromium.launch({ args: ["--use-angle=gl", "--ignore-gpu-blocklist"] })
+xvfb-run -a node render-check.mjs
+```
+
+Read the renderer in the page before you trust a result:
+
+```js
+const gl = document.createElement("canvas").getContext("webgl2");
+gl.getParameter(gl.getExtension("WEBGL_debug_renderer_info").UNMASKED_RENDERER_WEBGL);
+```
+
+| The renderer names | Meaning |
+|---|---|
+| `D3D12 (…)` with the card's name | Chrome draws on the GPU. If it names another adapter of the machine, an integrated one for example, set `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`. |
+| `llvmpipe` | Chrome uses Mesa, but Mesa draws on the CPU. If `/usr/lib/wsl/lib/libd3d12.so` does not exist, this container has no DirectX libraries: the host is not WSL2, or `$SHIPIT_GPU` is not `granted`. If it exists, Mesa could not load the card's driver; run a Mesa program with `LD_DEBUG=files` to see which file it did not find. |
+| `SwiftShader` | Chrome does not use Mesa: the display or a flag is missing. |
+
+What this does not cover:
+
+- **WebGPU.** It needs Vulkan, and this image has no Vulkan driver for the card.
+- **The browser tools.** `browser_navigate` and the screenshots use ShipIt's
+  built-in browser, which draws in software. To look at a page on the GPU, start
+  your own Chrome as above and take the screenshot from that script.
+- **Other containers.** Compose services and containers you start through Docker
+  get the GPU for CUDA, but not these two directories.
+- **A native Linux host.** There the GPU is for CUDA only.
+
+Every OpenGL program that uses Mesa in this container gets the GPU the same way,
+not only Chrome. Set `LIBGL_ALWAYS_SOFTWARE=1` for a run that must draw on the
+CPU — a pixel comparison against software-rendered snapshots, for example.
+
 ## Network
 
 In both Network modes, no container in this session — this one, its Compose

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,7 +10,7 @@ import type { ContainerConfig } from "./session-container.js";
 import { GPU_DEVICE_REQUEST } from "./session-gpu.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
-/** docs/325-session-gpu-access req 1, 5 and 6, at the one place the request is made. */
+/** docs/325-session-gpu-access req 1, 5, 6 and 7, at the one place the request is made. */
 
 const SESSION_ID = "sess-gpu";
 
@@ -74,6 +74,7 @@ function fakeDocker(
 
 const tmpDirs: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
@@ -111,6 +112,8 @@ async function create(docker: Docker, gpuAccess?: () => boolean, extraLabels?: R
 
 const requested = (c: Created) => c.options.HostConfig?.DeviceRequests;
 const env = (c: Created) => c.options.Env ?? [];
+const wslBinds = (c: Created) => (c.options.HostConfig?.Binds ?? []).filter((bind) => bind.startsWith("/usr/lib/wsl/"));
+const WSL2_KERNEL = "6.6.87.2-microsoft-standard-WSL2";
 
 describe("createContainer — the GPU", () => {
   it("asks for nothing while the switch is off", async () => {
@@ -180,5 +183,39 @@ describe("createContainer — the GPU", () => {
 
     await expect(create(docker, () => true)).rejects.toThrow("no space left on device");
     expect(created).toHaveLength(2);
+  });
+});
+
+describe("createContainer — WSL2 graphics for a GPU container", () => {
+  it("mounts DirectX and the Windows GPU drivers read-only with the GPU", async () => {
+    vi.spyOn(os, "release").mockReturnValue(WSL2_KERNEL);
+    const { docker, created } = fakeDocker(() => null);
+    await create(docker, () => true);
+
+    expect(wslBinds(created[0])).toEqual([
+      "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro",
+      "/usr/lib/wsl/drivers:/usr/lib/wsl/drivers:ro",
+    ]);
+  });
+
+  it("mounts neither in a container without the GPU", async () => {
+    vi.spyOn(os, "release").mockReturnValue(WSL2_KERNEL);
+    const off = fakeDocker(() => null);
+    await create(off.docker, () => false);
+    expect(wslBinds(off.created[0])).toEqual([]);
+
+    const failed = fakeDocker((c) => (requested(c) ? new Error("gpu") : null));
+    await create(failed.docker, () => true);
+    expect(wslBinds(failed.created[0])).toHaveLength(2);
+    expect(wslBinds(failed.created[1])).toEqual([]);
+  });
+
+  it("mounts neither on a host that is not WSL2", async () => {
+    vi.spyOn(os, "release").mockReturnValue("6.8.0-1017-azure");
+    const { docker, created } = fakeDocker(() => null);
+    await create(docker, () => true);
+
+    expect(requested(created[0])).toEqual([GPU_DEVICE_REQUEST]);
+    expect(wslBinds(created[0])).toEqual([]);
   });
 });

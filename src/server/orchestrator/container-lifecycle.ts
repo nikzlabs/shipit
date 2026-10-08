@@ -87,7 +87,7 @@ import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { RUN_NOTES_CONTAINER_DIR } from "./schedule-notes.js";
-import { GPU_DEVICE_REQUEST, gpuEnv, gpuReason, type SessionGpu } from "./session-gpu.js";
+import { GPU_DEVICE_REQUEST, gpuEnv, gpuGraphicsBinds, gpuReason, type SessionGpu } from "./session-gpu.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 
@@ -783,6 +783,7 @@ export async function createContainer(
     const createAndStart = async (gpu: SessionGpu): Promise<Docker.Container> => {
       abortIfTornDown("before createContainer");
 
+      const attemptBinds = gpu.state === "granted" ? [...binds, ...gpuGraphicsBinds()] : binds;
       const created = await deps.docker.createContainer({
         name: `agent-${shortId}`,
         Image: imageName,
@@ -793,7 +794,7 @@ export async function createContainer(
           ...config.extraLabels,
         },
         HostConfig: {
-          Binds: binds.length > 0 ? binds : undefined,
+          Binds: attemptBinds.length > 0 ? attemptBinds : undefined,
           Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
           Memory: config.memoryLimit,
           CpuQuota: config.cpuQuota,

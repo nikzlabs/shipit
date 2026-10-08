@@ -1,7 +1,7 @@
 ---
 issue: planning#664
 title: GPU access for session containers — design
-description: How an install-wide switch gives the machine's NVIDIA GPU to a session's agent container, its Compose services and the containers the agent starts.
+description: How an install-wide switch gives the machine's NVIDIA GPU to a session's agent container, its Compose services and the containers the agent starts, and how Chrome draws with it on WSL2.
 ---
 
 # 325 — GPU access for session containers: design
@@ -22,7 +22,7 @@ Every container gets the GPU the same way: the `DeviceRequests` entry that `dock
 | WSL2, Docker Engine inside the distro | The NVIDIA Container Toolkit, which has the same WSL path. |
 | Native Linux | The NVIDIA Container Toolkit and the NVIDIA driver. |
 
-Rejected: mapping `/dev/dxg` and binding `/usr/lib/wsl` by hand. It covers AMD and Intel through DirectX too, which the user ruled out (resolved question 2), it is WSL-only, and it is a second device path to secure.
+Rejected as the way a container gets the device: mapping `/dev/dxg` by hand. It covers AMD and Intel through DirectX too, which the user ruled out (resolved question 2), it is WSL-only, and it is a second device path to secure. The `/usr/lib/wsl` directories are bound for a different reason, and only beside a granted request — see [Chrome on the GPU](#chrome-on-the-gpu-req-7).
 
 The session image carries no CUDA toolkit. It does not need one: the hook brings the driver and `nvidia-smi`, and PyTorch's wheels bring their own CUDA runtime (req 2).
 
@@ -78,19 +78,58 @@ The snapshot rewrite (`rewriteResolvedModel`) then applies the session's state. 
 
 docs/172-agent-containment refuses device fields because a child keeps `CAP_MKNOD`, so a wider device cgroup is a device it can create. A GPU request widens the cgroup to the GPU's own devices, which is exactly the access the switch grants; nothing else is opened.
 
+## Chrome on the GPU (req 7)
+
+### What was missing
+
+Measured on 2026-10-08 in a `granted` session container on Docker Desktop/WSL2 (an RTX 4090, Windows driver 595.79). The GPU request gives a container the device and CUDA. OpenGL needs two more things from the host, and it got neither:
+
+- **Chrome can use the system's Mesa.** Its default renderer is SwiftShader. Under Xvfb with `--use-angle=gl --ignore-gpu-blocklist` it reports `ANGLE (Mesa/X.org, llvmpipe …)`, in full Chrome and in the headless shell. Without a display it stays on SwiftShader, whatever the flags: its route to Mesa is GLX.
+- **Mesa tries its D3D12 driver first and falls back to `llvmpipe`.** The image's Mesa (22.3.6, a dependency of Xvfb) opens `libdxcore.so`, which the hook mounts, and `libd3d12.so`, which it does not.
+- **With `libd3d12.so` and `libd3d12core.so` on the loader path, D3D12 finds the card and then misses its driver.** It reads the NVIDIA adapter through `/dev/dxg` and opens `/usr/lib/wsl/drivers/nv_dispi.inf_amd64_…/libnvwgf2umx.so`, the card's Direct3D user-mode driver. The hook mounts eight files from that directory, for CUDA and `nvidia-smi`, and this is not one of them.
+
+So a container needs the DirectX runtime in `/usr/lib/wsl/lib` and the whole driver store in `/usr/lib/wsl/drivers`.
+
+### The mechanism
+
+1. **Two read-only binds** — `gpuGraphicsBinds()` (`session-gpu.ts`) gives those two directories at their own paths, where D3D12 looks for them, and `createAndStart` adds them to a `granted` attempt only. The retry without the GPU does not get them. No setting and no state is new (req 5): the binds follow the request.
+2. **Two links in the worker images** — `libd3d12.so` and `libd3d12core.so`, from `/usr/lib/wsl/lib` into `/usr/lib`. Mesa and DirectX open them by bare name. `/usr/lib` is in the loader's built-in path, and it is not the multiarch directory the hook mounts into, so a later hook that mounts one of them cannot meet a link there. Off WSL2 the links dangle and Mesa falls back to `llvmpipe`, as before.
+3. **Xvfb and xauth, installed by name** — they were in the image only as dependencies of Playwright, and the documented way to start Chrome now depends on them.
+
+**The binds are for WSL2 only**, decided from the kernel release (`os.release()` names `microsoft` or `wsl`). The orchestrator and the session containers run on one Docker host, so they share a kernel — verified by observation: a session container reports `…-microsoft-standard-WSL2`. They are `Binds`, not `Mounts`: Docker creates a bind source that does not exist, where a `Mounts` entry fails the create. So a WSL2 host without the directories costs two empty directories and never the GPU — and that is also why the kernel is checked, because off WSL2 every GPU host would get them.
+
+Rejected for the loader path: `LD_LIBRARY_PATH` in the container's environment, which is what Microsoft's sample uses — one command that sets its own value loses the GPU with no message. And an `ld.so.conf.d` entry — the cache must be rebuilt after the bind exists, which a read-only rootfs cannot do.
+
+### What the answers leave out
+
+The resolved questions of 2026-10-08 keep req 7 to a Chrome the agent starts, WebGL, and the agent's container on WSL2. So:
+
+- **The built-in browser** (`playwright-mcp.ts`) is unchanged and draws in software. It has no display, and a fault in the GPU path would reach every browser check of every GPU session.
+- **Compose services and containers the agent starts** get no binds. The Compose rewrite and the proxy would each have to add a host path to a container they do not own the image of.
+- **Native Linux** is unchanged: the request names `gpu` only, so the hook mounts no graphics libraries.
+- **WebGPU** needs Vulkan, and the image has no Vulkan driver for the card.
+
+Two side effects. Every OpenGL program that uses Mesa in a granted WSL2 container now draws on the GPU, not only Chrome; `LIBGL_ALWAYS_SOFTWARE=1` is the way back, and `environment.md` says so. And the driver store holds the drivers of every adapter of the machine, so Mesa can also reach an integrated Intel or AMD adapter that the device already exposed. That is not required (resolved question 2) and not tested; `MESA_D3D12_DEFAULT_ADAPTER_NAME` selects the adapter.
+
 ## What is not verified here
 
-This repository's session containers have no GPU and no Docker CLI, so the tests drive fakes. Not yet checked on a real host: that the request starts a container on Docker Desktop/WSL2, on Docker Engine + the toolkit in WSL2, and on native Linux; that it works with `SESSION_READONLY_ROOTFS=1` and `SESSION_SECCOMP=1`; and what `docker compose config` writes for `gpus: all` (the check accepts both the string and the list form). The fallback means a failure on any of these leaves a session without the GPU, not a session that cannot start.
+The tests drive fakes. One real host was observed on 2026-10-08, Docker Desktop with the WSL 2 backend: a session container created with the switch on has `SHIPIT_GPU=granted`, and `nvidia-smi` lists the card. Not yet checked: Docker Engine + the toolkit in WSL2, and native Linux; `SESSION_READONLY_ROOTFS=1` and `SESSION_SECCOMP=1`; and what `docker compose config` writes for `gpus: all` (the check accepts both the string and the list form). The fallback means a failure on any of these leaves a session without the GPU, not a session that cannot start.
+
+For req 7, each step up to the driver load was run in that container. The last step could not be, because the driver file is only on the host. Not yet checked:
+
+- That with the two binds Mesa reports `D3D12 (…)`, and that Chrome draws with it.
+- That the hook accepts `/usr/lib/wsl/drivers` already being a read-only mount when it mounts its eight files into it. Microsoft's WSLg container sample (`samples/container/Containers.md`) runs `--gpus all` with `-v /usr/lib/wsl:/usr/lib/wsl`, which is the same layout. If the hook does refuse it, the GPU attempt fails and the fallback above starts the session without the GPU, with Docker's error in the notice.
 
 ## Key files
 
 - `src/server/shared/settings-catalogue/global-settings.ts` — `advanced.sessionGpu`.
-- `src/server/orchestrator/session-gpu.ts` — the request, the state type, env, adoption read-back, the GPU-request check shared by Compose and the proxy.
-- `src/server/orchestrator/container-lifecycle.ts` — request, fallback, state.
+- `src/server/orchestrator/session-gpu.ts` — the request, the state type, env, adoption read-back, the GPU-request check shared by Compose and the proxy, the WSL2 graphics binds.
+- `src/server/orchestrator/container-lifecycle.ts` — request, fallback, state, graphics binds.
+- `docker/Dockerfile.session-worker.prod`, `Dockerfile.session-worker.dev` — the DirectX links, Xvfb; `session-gpu-dockerfiles.test.ts` keeps them on the bound directory.
 - `src/server/orchestrator/session-container.ts` — `gpuAccess` option, `standbyGpuOutOfDate`, `gpuDecision`.
 - `src/server/orchestrator/container-discovery.ts` — state on adoption.
 - `src/server/orchestrator/app-lifecycle.ts` — standby mismatch; proxy `SessionInfo.gpu`.
 - `src/server/orchestrator/gpu-container-start.ts` — user and agent notices.
 - `src/server/orchestrator/compose-generator.ts`, `service-manager.ts`, `service-manager-setup.ts` — Compose check, strip, log line.
 - `src/server/orchestrator/docker-proxy-sanitize.ts`, `docker-proxy-field-casing.ts`, `docker-proxy-helpers.ts` — proxy.
-- Docs: `src/server/shipit-docs/environment.md`, `compose.md`, `wiki/settings-and-accounts.md`, `deployment/README.md`.
+- Docs: `src/server/shipit-docs/environment.md`, `compose.md`, `wiki/settings-and-accounts.md`, `wiki/installing-and-updating.md`, `deployment/README.md`.
