@@ -134,6 +134,7 @@ export interface ContainerSetupDeps {
   sessionManager: SessionManager;
   runtimeMode: RuntimeMode;
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  gpuAccess?: () => boolean;
 }
 
 export interface ContainerSetupResult {
@@ -175,6 +176,7 @@ export async function setupContainerManager(
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
       stackName: process.env.DOCKER_STACK,
       ...(setupDeps.resolveEgressConfig ? { resolveEgressConfig: setupDeps.resolveEgressConfig } : {}),
+      ...(setupDeps.gpuAccess ? { gpuAccess: setupDeps.gpuAccess } : {}),
     });
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
@@ -279,6 +281,7 @@ export async function setupContainerManager(
             dockerAccess: sc.dockerAccess,
             sessionNetworkName: sc.sessionNetworkName,
             resourceLimits: sc.resourceLimits,
+            ...(sc.gpu ? { gpu: sc.gpu } : {}),
           };
         },
         onTopologyChange: () => containerManager.beginContainerTopologyChange(),
@@ -557,8 +560,10 @@ export function buildRunnerFactory(
     const acquireStart = Date.now();
 
     const existing = mgr.get(o.sessionId);
+    // Made before the GPU switch moved, so a new session must not inherit it (docs/325-session-gpu-access req 5).
+    const staleStandby = (): boolean => mgr.standbyGpuOutOfDate(o.sessionId);
 
-    if (existing?.status === "running") {
+    if (existing?.status === "running" && !staleStandby()) {
       const standby = mgr.isStandby(o.sessionId);
       mgr.claimStandby(o.sessionId);
       console.log(
@@ -589,8 +594,13 @@ export function buildRunnerFactory(
 
       void (async () => {
         const deadline = Date.now() + 30_000;
+        let stale = false;
         while (Date.now() < deadline) {
           const sc = mgr.get(o.sessionId);
+          if (sc?.status === "running" && staleStandby()) {
+            stale = true;
+            break;
+          }
           if (sc?.status === "running") {
             mgr.claimStandby(o.sessionId);
             console.log(
@@ -617,7 +627,7 @@ export function buildRunnerFactory(
           workspaceDir: o.sessionDir,
           credentialsDir,
           depCacheDir: o.depCacheDir,
-          destroyExisting: false,
+          destroyExisting: stale,
           opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
           session: sessionManager?.get(o.sessionId),
           runNotesDir,

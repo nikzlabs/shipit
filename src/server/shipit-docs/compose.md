@@ -643,6 +643,40 @@ services:
 - The agent reaches adb over the session network by service name
   (`adb connect emulator:5555`); host ports aren't published.
 
+## GPU services
+
+A service asks for the NVIDIA GPU in standard Compose syntax — the short form:
+
+```yaml
+services:
+  llm:
+    image: ollama/ollama
+    gpus: all
+```
+
+or a device reservation:
+
+```yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+- **Only an NVIDIA GPU request is accepted.** `driver` must be `nvidia` or
+  unset, a reservation's `capabilities` must include `gpu` and may add only
+  NVIDIA's own (`compute`, `utility`, `graphics`, `video`, `display`,
+  `compat32`), and `options` are refused. Any other device reservation fails
+  validation.
+- **The service gets the GPU only when this session has it** (`$SHIPIT_GPU` is
+  `granted`; see [environment.md](environment.md)). Otherwise ShipIt removes the
+  request and starts the service on the CPU, and writes a `[shipit]` line to the
+  service's log saying why — so the same file works on a machine without a GPU.
+- A plugin's services cannot ask for a GPU.
+
 ## What not to do
 
 - **Don't mount the Docker socket** (`/var/run/docker.sock`) unless the user
@@ -659,7 +693,8 @@ services:
 - **Don't use `network_mode: host`** — use explicit port mappings.
 - **Don't set `privileged: true`** — not allowed for security.
 - **Don't request arbitrary `devices:`** — only `/dev/kvm:/dev/kvm` is permitted
-  (Android emulator; see above). Every other device is rejected.
+  (Android emulator; see above). Every other device is rejected. A GPU is not a
+  `devices:` entry: use `gpus:` or a reservation (see "GPU services" above).
 - **Don't use `build:`** — use pre-built public images. If you need custom
   setup, run commands in the `command` field or use multi-step entrypoints.
 - **Don't use absolute or `~` volume paths** — a bind source must be relative to
@@ -713,8 +748,9 @@ These rules apply in Open and contained sessions alike:
 - **Top-level `secrets:` and `configs:`** use `file:` inside the workspace;
   `external:` and `name:` are refused, as for volumes and networks.
 - **`logging`** may use only the `json-file` or `local` driver, or none.
-- **`deploy.resources.reservations.devices`** is refused, and a `post_start`
-  or `pre_stop` hook may not set `privileged`.
+- **`deploy.resources.reservations.devices`** and **`gpus`** may only request
+  an NVIDIA GPU (see "GPU services" above), and a `post_start` or `pre_stop`
+  hook may not set `privileged`.
 - **`label_file`** must be inside the workspace.
 - **Ops sessions** trust `docker-socket-proxy` only as the ops template
   defines it. ShipIt always runs the proxy image at its pinned digest, and no

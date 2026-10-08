@@ -12,6 +12,7 @@ import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { stackLabel } from "./stack-label.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
+import { gpuRequestRefusal } from "./session-gpu.js";
 
 export interface ComposeServiceOrigin {
   kind: "plugin";
@@ -153,7 +154,7 @@ export const CLASSIFIED_SERVICE_FIELDS: ReadonlySet<string> = new Set([
   "cpu_count", "cpu_percent", "cpu_period", "cpu_quota", "cpu_shares", "cpus", "cpuset",
   "depends_on", "deploy", "develop", "device_cgroup_rules", "devices", "dns", "dns_opt",
   "dns_search", "domainname", "entrypoint", "env_file", "environment", "expose", "extends",
-  "extra_hosts", "group_add", "healthcheck", "hostname", "image", "init", "ipc", "label_file",
+  "extra_hosts", "gpus", "group_add", "healthcheck", "hostname", "image", "init", "ipc", "label_file",
   "labels", "links", "logging", "mem_limit", "mem_reservation", "mem_swappiness", "memswap_limit",
   "network_mode", "networks", "pid", "pids_limit", "platform", "ports", "post_start", "pre_stop",
   "privileged", "profiles", "provider", "pull_policy", "pull_refresh_after", "read_only", "restart",
@@ -1047,17 +1048,70 @@ function validateVolumesFrom(name: string, volumesFrom: unknown): void {
   }
 }
 
-function validateDeployDevices(name: string, deploy: Record<string, unknown>): void {
-  const resources = deploy.resources;
-  if (!resources || typeof resources !== "object") return;
-  const reservations = (resources as Record<string, unknown>).reservations;
-  if (!reservations || typeof reservations !== "object") return;
-  const devices = (reservations as Record<string, unknown>).devices;
-  if (devices === undefined || devices === null || isEmptyList(devices)) return;
-  throw new ComposeValidationError(
-    `Service \`${name}\`: \`deploy.resources.reservations.devices\` is not allowed. `
-    + `The one device a service may use is \`${ALLOWED_DEVICE}\`, through \`devices:\`.`,
-  );
+const GPU_REQUEST_FIELDS: ReadonlySet<string> = new Set(["capabilities", "count", "device_ids", "driver", "options"]);
+
+function reservedDevices(svc: Record<string, unknown>): Record<string, unknown> | undefined {
+  const deploy = svc.deploy;
+  if (!isMapping(deploy) || !isMapping(deploy.resources)) return undefined;
+  const reservations = deploy.resources.reservations;
+  return isMapping(reservations) ? reservations : undefined;
+}
+
+function hasEntries(value: unknown): boolean {
+  return value !== undefined && value !== null && !isEmptyList(value);
+}
+
+/** A GPU in either Compose spelling; whether the session can give one is the rewrite's question. */
+export function requestsGpu(svc: Record<string, unknown>): boolean {
+  return hasEntries(reservedDevices(svc)?.devices) || hasEntries(svc.gpus);
+}
+
+/** `gpus:` entries carry an implicit `gpu` capability: Compose adds it when it creates the container. */
+function validateGpuEntry(name: string, where: string, entry: unknown, implicitGpu: boolean): void {
+  if (!isMapping(entry)) {
+    throw new ComposeValidationError(`Service \`${name}\`: each \`${where}\` entry must be a mapping.`);
+  }
+  const extra = Object.keys(entry).find((key) => !GPU_REQUEST_FIELDS.has(key));
+  if (extra !== undefined) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`${where}\` field \`${extra}\` is not allowed.`);
+  }
+  const caps = entry.capabilities;
+  // A Compose list is one set that must all hold.
+  const set: unknown = implicitGpu && Array.isArray(caps) && !caps.includes("gpu") ? [...(caps as unknown[]), "gpu"] : caps;
+  const refusal = gpuRequestRefusal({
+    driver: entry.driver,
+    capabilities: set === undefined || set === null ? set : [set],
+    options: entry.options,
+    capabilitiesRequired: !implicitGpu,
+  });
+  if (refusal) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`${where}\` may only request an NVIDIA GPU: ${refusal}.`,
+    );
+  }
+}
+
+/** The one device reservation a service may make is a GPU (docs/325-session-gpu-access req 3). */
+function validateGpuRequests(name: string, svc: Record<string, unknown>): void {
+  const devices = reservedDevices(svc)?.devices;
+  if (hasEntries(devices)) {
+    if (!Array.isArray(devices)) {
+      throw new ComposeValidationError(`Service \`${name}\`: \`deploy.resources.reservations.devices\` must be a list.`);
+    }
+    for (const entry of devices) validateGpuEntry(name, "deploy.resources.reservations.devices", entry, false);
+  }
+  const gpus = svc.gpus;
+  if (!hasEntries(gpus) || gpus === "all") return;
+  if (!Array.isArray(gpus)) {
+    throw new ComposeValidationError(`Service \`${name}\`: \`gpus\` must be \`all\` or a list.`);
+  }
+  for (const entry of gpus) validateGpuEntry(name, "gpus", entry, true);
+}
+
+function removeGpuRequests(svc: Record<string, unknown>): void {
+  delete svc.gpus;
+  const reservations = reservedDevices(svc);
+  if (reservations) delete reservations.devices;
 }
 
 /** Host or volume source of a mount entry; undefined for an anonymous volume. */
@@ -1356,7 +1410,8 @@ function validateServiceSettings(
   if (svc.device_cgroup_rules !== undefined && !isEmptyList(svc.device_cgroup_rules)) {
     throw new ComposeValidationError(
       `Service \`${name}\`: \`device_cgroup_rules: ${showValue(svc.device_cgroup_rules)}\` is not allowed. `
-      + `The one device a service may use is \`${ALLOWED_DEVICE}\`, through \`devices:\`.`,
+      + `A service may use \`${ALLOWED_DEVICE}\` through \`devices:\`, and an NVIDIA GPU through \`gpus:\` `
+      + "or `deploy.resources.reservations.devices`.",
     );
   }
   validateLogging(name, svc.logging);
@@ -1403,8 +1458,8 @@ function validateServiceSettings(
         : `Service \`${name}\`: \`deploy.restart_policy\` is not allowed. A restarted service runs without the `
           + "firewall that keeps sessions away from this machine and private networks. Remove it.");
     }
-    validateDeployDevices(name, deploy as Record<string, unknown>);
   }
+  validateGpuRequests(name, svc);
 
   validateDevices(name, svc, isDevKvmAllowed());
 
@@ -1539,6 +1594,8 @@ export interface SnapshotRewriteOptions {
   /** Required when the model mounts or declares `persist`. */
   persist?: PersistVolume;
   stackName?: string;
+  /** The session's agent container has the GPU; otherwise GPU requests are removed. */
+  gpuGranted?: boolean;
 }
 
 export interface ProjectFileReference {
@@ -1556,6 +1613,8 @@ export interface SnapshotRewrite {
   projectFiles: ProjectFileReference[];
   /** Services with a `build:`, which this start builds. */
   builtServices: string[];
+  /** Services that asked for a GPU and start without one (docs/325-session-gpu-access). */
+  gpuRemoved: string[];
 }
 
 /**
@@ -1571,6 +1630,7 @@ export function rewriteResolvedModel(
   const services = isMapping(out.services) ? out.services : {};
   const workspaceMounts = new Map<string, WorkspaceMountRecord[]>();
   const builtServices: string[] = [];
+  const gpuRemoved: string[] = [];
   const mounted = new Set<string>();
   for (const [name, svc] of Object.entries(services)) {
     if (!isMapping(svc)) continue;
@@ -1579,6 +1639,10 @@ export function rewriteResolvedModel(
     delete svc.label_file;
     delete svc.ports;
     if (svc.build !== undefined) builtServices.push(name);
+    if (!opts.gpuGranted && requestsGpu(svc)) {
+      removeGpuRequests(svc);
+      gpuRemoved.push(name);
+    }
     if (!Array.isArray(svc.volumes)) continue;
     const records: WorkspaceMountRecord[] = [];
     const rewritten = svc.volumes.map((vol) => rewriteResolvedMount(name, vol, opts, records));
@@ -1617,7 +1681,7 @@ export function rewriteResolvedModel(
       if (isMapping(entry) && typeof entry.file === "string") projectFiles.push({ kind, name, file: entry.file });
     }
   }
-  return { model: out, workspaceMounts, projectFiles, builtServices };
+  return { model: out, workspaceMounts, projectFiles, builtServices, gpuRemoved };
 }
 
 /**

@@ -765,7 +765,6 @@ describe("Docker API proxy", () => {
     it.each([
       ["Devices", [{ PathOnHost: "/dev/sda", PathInContainer: "/dev/sda" }]],
       ["DeviceCgroupRules", ["b 8:* rwm"]],
-      ["DeviceRequests", [{ Driver: "nvidia", Count: -1 }]],
     ])("rejects HostConfig.%s", async (field, value) => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
@@ -774,6 +773,53 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(403);
       expect((res.body as any).message).toContain("Device mappings");
       expect(daemon.containers.size).toBe(0);
+    });
+
+    describe("GPU requests (docs/325-session-gpu-access req 3)", () => {
+      const gpusAll = [{ Driver: "", Count: -1, DeviceIDs: null, Capabilities: [["gpu"]], Options: {} }];
+      const create = (DeviceRequests: unknown) => makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { DeviceRequests },
+      });
+      const grant = (gpu: SessionInfo["gpu"]) => {
+        sessionMap.set("127.0.0.1", { ...sessionMap.get("127.0.0.1")!, gpu });
+      };
+
+      it("refuses one in a session without the GPU, and says why", async () => {
+        grant({ state: "off" });
+        const off = await create(gpusAll);
+        expect(off.status).toBe(403);
+        expect((off.body as any).message).toContain("GPU access is off for this ShipIt install");
+
+        grant({ state: "unavailable", reason: "could not select device driver" });
+        const unavailable = await create(gpusAll);
+        expect(unavailable.status).toBe(403);
+        expect((unavailable.body as any).message).toContain("could not select device driver");
+        expect(daemon.containers.size).toBe(0);
+      });
+
+      it("forwards `--gpus all`, rebuilt from the fields it checked", async () => {
+        grant({ state: "granted" });
+        const res = await create(gpusAll);
+        expect(res.status).toBe(201);
+        expect(daemon.containers.get((res.body as any).Id)?.hostConfig?.DeviceRequests)
+          .toEqual([{ Driver: "", Count: -1, Capabilities: [["gpu"]] }]);
+      });
+
+      it.each([
+        ["another driver", [{ Driver: "cdi", DeviceIDs: ["vendor.com/device=all"], Capabilities: [["gpu"]] }], "driver `cdi`"],
+        ["no gpu capability", [{ Driver: "nvidia", Count: -1 }], "`gpu` capability"],
+        ["a foreign capability", [{ Count: -1, Capabilities: [["gpu", "tpu"]] }], "capability `tpu`"],
+        ["driver options", [{ Count: -1, Capabilities: [["gpu"]], Options: { a: "b" } }], "`options`"],
+        ["an unknown field", [{ Count: -1, Capabilities: [["gpu"]], Extra: 1 }], "field \"Extra\""],
+        ["a miscased field", [{ Count: -1, Capabilities: [["gpu"]], driver: "cdi" }], "Ambiguous field casing"],
+      ])("refuses %s even with the GPU", async (_name, requests, message) => {
+        grant({ state: "granted" });
+        const res = await create(requests);
+        expect(res.status).toBe(403);
+        expect((res.body as any).message).toContain(message);
+        expect(daemon.containers.size).toBe(0);
+      });
     });
 
     // Container create is a volume-create surface too, so the DriverOpts rule POST /volumes/create

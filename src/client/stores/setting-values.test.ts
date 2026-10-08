@@ -142,6 +142,7 @@ describe("the record covers the settings the converted tabs generate", () => {
       "advanced.sessionStatusCard",
       "advanced.autoResolveConflicts",
       "advanced.autoResetMergedBranch",
+      "advanced.sessionGpu",
       "advanced.memoryBudgetMb",
       "git.identity",
       "instructions.agentInstructionsEnabled",

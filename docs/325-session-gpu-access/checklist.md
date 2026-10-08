@@ -1,0 +1,11 @@
+- [x] `advanced.sessionGpu` setting (catalogue, guard tests)
+- [x] `session-gpu.ts`: request, state, env, adoption read-back, request check
+- [x] Agent container: request when on, fallback without it, state recorded
+- [x] Adoption reads the state back from the container
+- [x] Warm-pool standby with a stale GPU state is not claimed
+- [x] Transcript notice and agent notice when the GPU is unavailable
+- [x] Compose: GPU requests checked, stripped without a granted GPU, `[shipit]` log line
+- [x] Docker proxy: GPU-only `DeviceRequests` accepted when granted, rebuilt from checked fields
+- [x] Docs: environment.md, compose.md, wiki, deployment README, docs/172 note
+- [ ] Verify on a real WSL2 + NVIDIA host: Docker Desktop, Docker Engine + toolkit, and with `SESSION_READONLY_ROOTFS=1` / `SESSION_SECCOMP=1`
+- [ ] Verify what `docker compose config` writes for `gpus: all`

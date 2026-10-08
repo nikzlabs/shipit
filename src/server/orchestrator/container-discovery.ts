@@ -10,6 +10,7 @@ import { cleanupSessionDockerResources, OPS_DOCKER_HOST } from "./container-life
 import { getContainerFreshness } from "./container-freshness.js";
 import { overlayDepDirsFromMounts } from "./overlay-session.js";
 import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
+import { gpuFromContainer } from "./session-gpu.js";
 import { isShipItOwnSession } from "./shipit-own-sessions.js";
 import {
   CPU_PERIOD_US as DEFAULT_CPU_PERIOD_US,
@@ -156,6 +157,7 @@ export async function rediscoverContainers(
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
           otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
           joinedSessionNetworks: sessionNetworksOf(info.NetworkSettings?.Networks),
+          gpu: gpuFromContainer(info.HostConfig, info.Config?.Env),
         });
         // Do not restore standby status: the immutable label survives a claim.
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
@@ -220,6 +222,7 @@ export async function adoptRunningContainer(
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
           otherAddresses: containerAddresses(info.NetworkSettings?.Networks, networkInfo.IPAddress),
           joinedSessionNetworks: sessionNetworksOf(info.NetworkSettings?.Networks),
+          gpu: gpuFromContainer(info.HostConfig, info.Config?.Env),
         });
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         return true;

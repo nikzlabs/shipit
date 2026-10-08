@@ -31,6 +31,10 @@ const GUARDED_FIELDS: readonly string[] = [
   "Devices",
   "DeviceCgroupRules",
   "DeviceRequests",
+  // sanitizeDeviceRequests: an entry's fields, which it rebuilds from these spellings.
+  "Count",
+  "DeviceIDs",
+  "Capabilities",
   "Binds",
   "Mounts",
   "Type",

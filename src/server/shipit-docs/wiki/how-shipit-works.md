@@ -215,6 +215,7 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Reach it from a phone over Tailscale or a Cloudflare tunnel | [installing-and-updating.md](installing-and-updating.md) |
 | Host overview — memory, disk, uptime, what is running | The Host tab, which exists only in an Ops session |
 | A memory budget that decides what idle sessions keep | [sessions.md](sessions.md) |
+| Give sessions the machine's NVIDIA GPU (WSL2 or Linux) | [installing-and-updating.md](installing-and-updating.md) — Settings → Advanced → GPU access |
 | Session diagnostics when a container misbehaves | [sessions.md](sessions.md) — the health strip at the top of the Terminal tab. The overflow menu's **Investigate in Ops session** is a different thing |
 | Work out why something is broken, from the symptom the user describes | [troubleshooting.md](troubleshooting.md) |
 | File a bug against ShipIt itself, redacted, with the user's consent | `/shipit-docs/bug-filing.md` |
