@@ -68,8 +68,9 @@ function finalizeEndedTurnRows(deps: ReattachDeps, ended: ReadonlySet<string> | 
 }
 
 /**
- * Whether a session that has no runner still works in its worker: a turn, background tasks,
- * an install or a terminal. A worker that does not answer counts as working.
+ * Whether a session's worker still does work that no runner follows: a turn, background tasks
+ * or an install. An open terminal is the user's shell, which Stop cannot end and which does not
+ * keep a scheduled run going. A worker that does not answer counts as working.
  */
 export async function workerHasLiveWork(
   containerManager: SessionContainerManager | null,
@@ -79,7 +80,7 @@ export async function workerHasLiveWork(
   if (container?.status !== "running") return false;
   try {
     const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
-    return status.turnActive === true || staleIdleHoldReason(status) !== null;
+    return staleIdleHoldReason({ ...status, terminalActive: false }) !== null;
   } catch {
     return true;
   }

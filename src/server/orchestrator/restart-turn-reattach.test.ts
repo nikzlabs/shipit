@@ -229,6 +229,8 @@ describe("stopWorkerAgent", () => {
 
   it("does nothing for a worker with no resident agent, or a session with no running container", async () => {
     const { containerManager, kills } = await workerWithResident({ running: false, turnActive: false, terminalActive: true });
+    // The user's shell keeps no run going, and Stop cannot end it.
+    expect(await workerHasLiveWork(containerManager, "s1")).toBe(false);
     expect(await stopWorkerAgent(containerManager, "s1")).toBe(false);
     expect(await stopWorkerAgent(containerManager, "other")).toBe(false);
     expect(kills).toEqual([]);

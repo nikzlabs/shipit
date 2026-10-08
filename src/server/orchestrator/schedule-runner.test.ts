@@ -571,13 +571,18 @@ describe("ScheduleRunner — recovery after a restart", () => {
     expect(redispatches).toHaveLength(0);
   });
 
-  it("does not decide such a run while its worker may still work", async () => {
-    runner = makeRunner({ probeLiveWork: async () => true });
+  it("decides such a run on a later pass, once its worker no longer works", async () => {
+    let live = true;
+    runner = makeRunner({ probeLiveWork: async () => live });
     leftover("started", "s-working");
     sessions.setLastTurnOutcome("s-working", "ok");
     unprobed.add("s-working");
     await runner.runPass(NOW);
     expect(finishedAtOf("s-working")).toBeUndefined();
+
+    live = false;
+    await runner.runPass(at("2026-10-07T09:01:30Z"));
+    expect(finishedAtOf("s-working")).toEqual(expect.any(String));
   });
 
   it("restores the first-turn watch for a turn adopted after the restart", async () => {
@@ -667,7 +672,14 @@ describe("ScheduleRunner — finished runs (reqs 22, 31)", () => {
 describe("ScheduleRunner — Stop (req 33)", () => {
   it("stops a running run: its turn is interrupted, automatic turns are held, and it is finished once it winds down", async () => {
     const interrupted: string[] = [];
-    runner = makeRunner({ interruptTurn: (sessionId) => interrupted.push(sessionId) });
+    const stopLiveWork = vi.fn(async () => undefined);
+    runner = makeRunner({
+      interruptTurn: (sessionId) => {
+        interrupted.push(sessionId);
+        return true;
+      },
+      stopLiveWork,
+    });
     const s = schedule();
     await runner.runPass(at("2026-10-07T09:00:30Z"));
     const [run] = runs(s.id);
@@ -676,6 +688,7 @@ describe("ScheduleRunner — Stop (req 33)", () => {
 
     await runner.stopRun(s.id, run!.id);
     expect(interrupted).toEqual(["session-1"]);
+    expect(stopLiveWork).not.toHaveBeenCalled();
     expect(sessions.get("session-1")?.runStoppedAt).toEqual(expect.any(String));
     expect(sessions.automaticTurnsHeld("session-1")).toBe(true);
     expect(finishedAtOf("session-1")).toBeUndefined();
@@ -728,31 +741,35 @@ describe("ScheduleRunner — Stop (req 33)", () => {
     await expect(runner.stopRun("gone", "run-y")).rejects.toThrow("Run not found");
   });
 
-  it("ends the work a run left without a runner by a restart still does in its worker", async () => {
-    let live = true;
-    const stopped: string[] = [];
-    const interrupted: string[] = [];
-    runner = makeRunner({
-      liveWorkSessions: new Set(["leftover"]),
-      probeLiveWork: async () => live,
-      stopLiveWork: async (sessionId) => {
-        stopped.push(sessionId);
-        live = false;
-      },
-      interruptTurn: (sessionId) => interrupted.push(sessionId),
-    });
-    const s = schedule();
-    const run = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
-    sessions.track("leftover", "Security PRs · Oct 7, 09:00");
-    sessions.setScheduleRun("leftover", s.id, run.id);
-    sessions.setLastTurnOutcome("leftover", "ok");
+  for (const viewer of [false, true]) {
+    it(`ends the work a restart left in a run's worker, ${viewer ? "under a runner a viewer made" : "with no runner"}`, async () => {
+      let live = true;
+      const stopped: string[] = [];
+      runner = makeRunner({
+        liveWorkSessions: new Set(["leftover"]),
+        probeLiveWork: async () => live,
+        stopLiveWork: async (sessionId) => {
+          stopped.push(sessionId);
+          live = false;
+        },
+        // The chat's stop control: nothing to stop, since no runner follows the worker's work.
+        interruptTurn: () => false,
+      });
+      const s = schedule();
+      const run = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+      sessions.track("leftover", "Security PRs · Oct 7, 09:00");
+      sessions.setScheduleRun("leftover", s.id, run.id);
+      sessions.setLastTurnOutcome("leftover", "ok");
+      // A runner made for a viewer is idle: it does not know the worker's background tasks.
+      if (viewer) registry.getOrCreate("leftover", "/tmp/leftover", "claude");
+      expect((await runner.unfinishedRuns(s.id)).map((r) => r.sessionId)).toEqual(["leftover"]);
 
-    await runner.stopRun(s.id, run.id);
-    expect(stopped).toEqual(["leftover"]);
-    expect(interrupted).toEqual([]);
-    expect(finishedAtOf("leftover")).toBeDefined();
-    expect(await runner.unfinishedRuns(s.id)).toEqual([]);
-  });
+      await runner.stopRun(s.id, run.id);
+      expect(stopped).toEqual(["leftover"]);
+      expect(finishedAtOf("leftover")).toBeDefined();
+      expect(await runner.unfinishedRuns(s.id)).toEqual([]);
+    });
+  }
 
   it("does not send again, after a restart, the prompt of a run the user stopped", async () => {
     const s = schedule({}, "2026-10-07T09:00:00.000Z");

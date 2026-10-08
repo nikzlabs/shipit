@@ -1104,23 +1104,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     liveWorkSessions: liveWorkAfterRestart,
     probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
     stopLiveWork: (sessionId) => stopWorkerAgent(containerManager, sessionId),
-    interruptTurn: (sessionId) => {
-      interruptAgentTurn({
+    interruptTurn: (sessionId) => interruptAgentTurn({
+      sessionManager,
+      broadcastLog: (source, text) => broadcastLog(sessionId, source, text),
+      postInterruptCommitDeps: {
         sessionManager,
-        broadcastLog: (source, text) => broadcastLog(sessionId, source, text),
-        postInterruptCommitDeps: {
-          sessionManager,
-          chatHistoryManager,
-          prStatusPoller,
-          githubAuthManager,
-          credentialStore,
-          generateText: effectiveGenerateText,
-          createGitManager,
-          scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
-          sseBroadcast,
-        },
-      }, runnerRegistry.get(sessionId) ?? null);
-    },
+        chatHistoryManager,
+        prStatusPoller,
+        githubAuthManager,
+        credentialStore,
+        generateText: effectiveGenerateText,
+        createGitManager,
+        scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
+        sseBroadcast,
+      },
+    }, runnerRegistry.get(sessionId) ?? null),
     statusCardEnabled: () => credentialStore.getSessionStatusCard(),
     notes: scheduleNotes,
   });
