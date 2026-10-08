@@ -225,8 +225,9 @@ A row in the list is a summary, never a control: name, what it is for, and what
 it resolves to. **Or you propose one**: when the work needs a role that does not
 exist, `shipit settings propose roles --add NAME --value-file - --reason "..."` posts a card
 that shows the whole role, and the user's click creates it. Do that rather than
-sending the user to the editor; the syntax is in `/shipit-docs/settings.md` →
-*Creating a role*.
+sending the user to the editor. `--remove NAME` proposes deleting one the same
+way. The syntax is in `/shipit-docs/settings.md` → *Creating a role* and
+*Deleting a role*.
 
 Two ways a role is used, and you own the second:
 

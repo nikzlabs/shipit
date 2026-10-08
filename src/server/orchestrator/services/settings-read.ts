@@ -1324,7 +1324,10 @@ function summarize(row: SettingsProposalRow | null): SettingProposalSummary | un
     operation: row.operation,
     ...(row.target.item ? { item: renderOwn(row.target.item) } : {}),
     from: renderValue(row.from),
-    proposed: renderValue(row.proposed),
+    // A list operation reports membership, as an allowlist card always did. The
+    // body a create carries is the card's, and a new MCP server's URL or
+    // arguments are fields this read otherwise shortens or withholds.
+    proposed: renderValue(row.operation === "set" ? row.proposed : row.operation === "add"),
     proposedAt: renderOwn(row.createdAt),
     ...(row.resolvedAt ? { resolvedAt: renderOwn(row.resolvedAt) } : {}),
     sessionId: renderOwn(row.sessionId),

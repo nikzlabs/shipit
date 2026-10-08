@@ -447,12 +447,21 @@ function membershipChange(
   target: SettingsProposalTarget,
   proposedValue: unknown,
 ): ProposedChange {
-  const present = current.item !== undefined;
+  // A collection that reads as the list of its names (`roles`, `mcp.servers`)
+  // has no instances, so the name being in that list is what membership is.
+  const names = current.entry.valueType === "collection" && Array.isArray(current.entry.value)
+    ? current.entry.value
+    : [];
+  const present = current.item !== undefined || names.includes(target.item);
   const wording = operation.wording ?? { from: "not set", to: "set" };
   // Both refusals say the same thing — the entry is already in the state this
   // operation would move it to — so both quote `to` and never `from`.
   if (present === (kind === "add")) {
-    refuse(renderLine(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to change.`));
+    const known = kind === "remove" && names.length > 0
+      ? ` The ones that exist: ${joinRendered(names.map((name) => renderLine(String(name))))}.`
+      : "";
+    refuse(renderLine(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to `
+      + `change.${known}`));
   }
   return {
     from: renderOwn(wording.from),

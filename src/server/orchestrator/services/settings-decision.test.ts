@@ -674,3 +674,141 @@ describe("creating a role from a card", () => {
     expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
   });
 });
+
+/** docs/299-agent-settings-access req 11 — the click deletes the role the card showed. */
+describe("deleting a role from a card", () => {
+  const OPUS = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" } as const;
+
+  it("deletes it, and `shipit agent roles` no longer lists it", async () => {
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      description: "Open-ended research.",
+      params: { kind: "pinned", harnessId: "claude", ...OPUS },
+    });
+    const card = await post({ key: "roles", operation: "remove", item: "deep-dive" });
+
+    const { card: resolved } = await decide(card.cardId);
+
+    // Not `partial`: a side read back at an address that is gone says nothing.
+    expect(resolved.phase).toBe("applied");
+    expect(resolved.outcome).toBe("deleted the deep-dive role");
+    expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
+    expect(listRolesForAgent({ credentialStore: fx.credentialStore }).map((role) => role.name))
+      .not.toContain("deep-dive");
+  });
+
+  it("goes stale, and deletes nothing, when the role changed before the click", async () => {
+    fx.credentialStore.setRole("deep-dive", { name: "deep-dive", params: { kind: "pinned", harnessId: "claude", ...OPUS } });
+    const card = await post({ key: "roles", operation: "remove", item: "deep-dive" });
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      description: "edited in the dialog",
+      params: { kind: "pinned", harnessId: "claude", ...OPUS },
+    });
+
+    expect((await decide(card.cardId)).card.phase).toBe("stale");
+    expect(fx.credentialStore.getRole("deep-dive")?.description).toBe("edited in the dialog");
+  });
+});
+
+/** docs/299-agent-settings-access req 11 and req 12 — the click creates the server, with no secret value. */
+describe("creating an MCP server from a card", () => {
+  function proposeServer(name: string, body: Record<string, unknown>) {
+    return post({ key: "mcp.servers", operation: "add", item: name, valueText: JSON.stringify(body) });
+  }
+
+  it("stores the configuration, placeholders for the secrets, and no secret value", async () => {
+    const card = await proposeServer("github", {
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    });
+
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    expect(fx.credentialStore.getMcpServer("github")).toEqual({
+      name: "github",
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: "$secret:mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN" },
+      enabled: true,
+    });
+    expect(Object.keys(fx.credentialStore.getAllAgentEnv()).filter((key) => key.startsWith("mcp__github__")))
+      .toEqual([]);
+    // What the user still has to do, and where, in ShipIt's own words.
+    expect(resolved.outcome).toContain('"GITHUB_PERSONAL_ACCESS_TOKEN"');
+    expect(resolved.outcome).toContain("Settings › Integrations › MCP servers");
+  });
+
+  it("names a header's placeholder so the panel's form can fill it", async () => {
+    const card = await proposeServer("linear", { type: "http", url: "https://mcp.linear.app/mcp", headers: ["X-Api-Key"] });
+    await decide(card.cardId);
+    expect(fx.credentialStore.getMcpServer("linear")).toMatchObject({
+      headers: { "X-Api-Key": "$secret:mcp__linear__X_Api_Key" },
+    });
+  });
+
+  it("never points a placeholder at a value already stored, which would fill it with no one typing it", async () => {
+    // Left by an earlier server of this name, kept because another server uses it.
+    fx.credentialStore.setMcpSecret("mcp__linear__Authorization", "Bearer old-token");
+    const card = await proposeServer("linear", { type: "http", url: "https://mcp.linear.app/mcp", headers: ["Authorization"] });
+    await decide(card.cardId);
+    expect(fx.credentialStore.getMcpServer("linear")).toMatchObject({
+      headers: { Authorization: "$secret:mcp__linear__Authorization_2" },
+    });
+  });
+
+  it("applies two creations in either order", async () => {
+    const first = await proposeServer("github", { type: "stdio", command: "npx" });
+    const second = await proposeServer("linear", { type: "http", url: "https://mcp.linear.app/mcp" });
+    expect((await decide(second.cardId)).card.phase).toBe("applied");
+    expect((await decide(first.cardId)).card.phase).toBe("applied");
+  });
+});
+
+/** docs/299-agent-settings-access req 11 — the click deletes the server and its stored secrets. */
+describe("deleting an MCP server from a card", () => {
+  it("deletes the server and the secret values stored for it", async () => {
+    addMcpServer(
+      fx.credentialStore,
+      {
+        name: "github",
+        type: "stdio",
+        command: "npx",
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "$secret:mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN" },
+      },
+      { mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_secret" },
+    );
+    const card = await post({ key: "mcp.servers", operation: "remove", item: "github" });
+
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    expect(resolved.outcome).toBe("deleted the github MCP server");
+    expect(fx.credentialStore.getMcpServer("github")).toBeUndefined();
+    expect(fx.credentialStore.getAllAgentEnv()).not.toHaveProperty("mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN");
+  });
+
+  it("goes stale when a secret value was replaced before the click, and deletes nothing", async () => {
+    addMcpServer(
+      fx.credentialStore,
+      {
+        name: "github",
+        type: "stdio",
+        command: "npx",
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "$secret:mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN" },
+      },
+      { mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_old" },
+    );
+    const card = await post({ key: "mcp.servers", operation: "remove", item: "github" });
+    // Rotated in the panel: the configuration is the same, the value is not.
+    fx.credentialStore.setMcpSecret("mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN", "ghp_new");
+
+    expect((await decide(card.cardId)).card.phase).toBe("stale");
+    expect(fx.credentialStore.getMcpServer("github")).toBeDefined();
+    expect(fx.credentialStore.getAllAgentEnv().mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN).toBe("ghp_new");
+  });
+});

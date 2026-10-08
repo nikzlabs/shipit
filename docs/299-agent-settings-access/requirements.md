@@ -94,6 +94,13 @@ agent is the actor.
    and the agent is told where that line is before it writes a value, not after.
 10. A proposal card can create a role that does not exist yet. The agent proposes
     the new role, and the user's click on the card creates it.
+11. A proposal card can delete a role, and can create or delete an MCP server.
+    The agent proposes the change, and the user's click on the card makes it.
+12. A card that creates an MCP server carries its whole configuration except
+    secret values: the name, the transport, the command, the arguments, the npm
+    package or the URL, and the names of the environment variables or headers it
+    needs. A secret value is never on a card. The user types those values in the
+    MCP panel after Apply, and the server cannot work until they do.
 
 ## Open questions
 
@@ -139,6 +146,26 @@ agent is the actor.
 
 ## Resolved questions
 
+- 2026-10-08 — *Do the collection writes requirement 10 left refused stay refused?*
+  Requirement 10 named roles, so deleting a role and creating or deleting an MCP
+  server kept their refusal, and the session offered to file them as a follow-up.
+  The user: **"after the current PR is done: implement the follow-up directly
+  here"**. → requirement 11. Creating a credential stays refused: it needs a
+  secret the user types (requirement 2).
+- 2026-10-08 — *How much of a new MCP server may the agent write onto a card?*
+  What makes a server work is mostly in fields that were unproposable: its
+  environment variables and headers are secrets (requirement 2), and its
+  arguments and URL were refused because a token often travels in them. Three
+  options were offered: the whole configuration except secret values, with the
+  user typing those values in the panel after Apply; only a server that needs no
+  secret; or no create from a card. The user chose **the whole configuration
+  except secret values**. → requirement 12.
+
+  The constraint this carries: the arguments and the URL are shown in full on
+  the card and in the transcript, so the agent is told to put a credential only
+  in an environment variable or a header, whose value the user types. Nothing
+  can enforce that for free text; the card showing it in full is what lets the
+  user see it before the click.
 - 2026-10-08 — *Can a proposal card create a role?* It could not: creating a role
   was refused at propose time as a write nobody had built, so an agent whose task
   needed a role had to send the user to Settings › Roles. The question came up in

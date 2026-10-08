@@ -13,6 +13,8 @@ shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
 shipit settings propose <key> --add|--remove <entry> --reason "..."
 shipit settings propose <key> --value-file - --reason "..."   (prose, on stdin)
 shipit settings propose roles --add NAME --value-file - --reason "..."   (a new role, JSON on stdin)
+shipit settings propose mcp.servers --add NAME --value-file - --reason "..."   (a new MCP server)
+shipit settings propose roles|mcp.servers --remove NAME --reason "..."   (delete one)
 ```
 
 **Read before you tell the user a setting is the problem.** The value may
@@ -265,7 +267,52 @@ the derived harness included. One card creates one role; for several roles,
 post one card each — applying one does not make another stale. A name that is
 already taken is refused, and so is `reviewer`, the role ShipIt ships. To change
 a role that exists, propose its fields (`roles[].model`, `roles[].prompt`, …)
-with `--item NAME` instead. Deleting a role is not something a card can do yet.
+with `--item NAME` instead.
+
+### Deleting a role
+
+`shipit settings propose roles --remove NAME --reason "..."`. The card shows
+every field the role has going to "not set", its standing instructions as a diff,
+so the user sees what the click removes. `reviewer` cannot be deleted.
+
+### Creating or deleting an MCP server
+
+A new server is one JSON object on stdin, with `--add` naming it:
+
+```
+shipit settings propose mcp.servers --add github --value-file - \
+  --reason "The issue triage you asked for needs GitHub's tools." <<'EOF'
+{"type": "stdio", "command": "npx",
+ "args": ["-y", "@modelcontextprotocol/server-github"],
+ "env": ["GITHUB_PERSONAL_ACCESS_TOKEN"]}
+EOF
+```
+
+- **stdio** takes `command`, `args` (a list), `npmPackage` and `env`. **http**
+  takes `url` and `headers`. Either may add `"enabled": false`.
+- **`env` and `headers` are NAMES, never values.** The card shows each name, and
+  after Apply the user types its value under Settings › Integrations › MCP
+  servers, with **Edit** on the server. The server cannot work until they do,
+  and the applied card says so. Do not ask the user to paste a secret into the
+  chat for you to put on a card. There is nowhere on a card for it.
+- **Everything else is shown on the card exactly as you wrote it**: the command,
+  the arguments, the npm package, the whole URL. So a credential goes only under
+  `env` or `headers`, never in an argument or in the URL. A reference to a stored
+  secret (`$secret:…`, `$platform:…`) anywhere in the body is refused, because
+  it would give this server a credential that the card shows only as text.
+- **Each argument is one word.** The panel edits arguments as one
+  space-separated line, so an argument with whitespace in it, or an empty one,
+  is refused: it would change the first time the user saves the server.
+- The name is lowercase letters and digits, starting with a letter. A name that
+  is taken, a command with shell metacharacters, a URL that is not http(s), and
+  an eleventh enabled server are refused before any card exists.
+
+`shipit settings propose mcp.servers --remove NAME --reason "..."` deletes one.
+The card shows the server's fields going, the secret-bearing ones only as
+*configured → not configured*: its stored secret values go with it. A server that
+a connected provider manages (the one-click connections at the top of the panel)
+is refused. Disconnecting the provider is what releases it, and that is the
+user's act.
 
 ### Proposing prose
 
@@ -316,7 +363,8 @@ it. Two things to know before you write the value:
 `shipit settings get <key>` carries the last proposal for that setting — from any
 session, because what was done about a setting is a fact about the setting. Read
 it before proposing. It is printed as a `Last proposal:` block in the plain
-output and carried as `lastProposal` under `--json`; a setting that exists once
+output and carried as `lastProposal` under `--json` (for `--add` / `--remove`,
+as membership: `add: off → on`, never the body you sent); a setting that exists once
 per item carries one per instance, under the instance it belongs to, because a
 card about the `reviewer` role says nothing about `deep-dive`.
 

@@ -53,14 +53,16 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes } from "./credential-routes.js";
 import { buildEffectiveAllowlist } from "../egress-allowlist.js";
-import { MAX_ENABLED_MCP_SERVERS } from "./mcp.js";
+import { MAX_ENABLED_MCP_SERVERS, validateMcpServerConfig } from "./mcp.js";
 import {
   applyCredentialLabel,
   applyEgressGlobalEnabled,
   applyEgressHostAdd,
   applyEgressHostRemove,
   applyGlobalSettings,
+  applyMcpServerAdd,
   applyMcpServerEnabled,
+  applyMcpServerRemove,
   applyProviderAccountLabel,
   applyReleaseChannel,
   applyRepoSettings,
@@ -200,7 +202,12 @@ export interface SettingsOperation {
    */
   entry?(raw: unknown): unknown;
   /** ShipIt's own account of what the click did, for the resolved card. */
-  applied(target: SettingsOperationTarget, display: string, declaration: AnySettingDeclaration): string;
+  applied(
+    target: SettingsOperationTarget,
+    display: string,
+    declaration: AnySettingDeclaration,
+    value: unknown,
+  ): string;
 }
 
 function requireCredentialStore(deps: SettingsOperationDeps): CredentialStore {
@@ -305,8 +312,9 @@ export function appliedOutcome(
   target: SettingsOperationTarget,
   card: SettingsProposalCard,
   declaration: AnySettingDeclaration,
+  value: unknown,
 ): string {
-  if (!card.textChange) return operation.applied(target, card.to, declaration);
+  if (!card.textChange) return operation.applied(target, card.to, declaration, value);
   const instance = target.item ? ` · ${echoSupplied(target.item)}` : "";
   return `${declaration.label}${instance} changed `
     + `(+${card.textChange.added} −${card.textChange.removed})`;
@@ -711,9 +719,10 @@ function newRoleParams(deps: SettingsOperationDeps, entry: RoleEntry): RolePinne
 /**
  * The name is checked here rather than by `roles[].name`'s own validation,
  * because on an `add` it arrives as the address: the same type, the same shape
- * gate the read applies, the reserved name, and a name that is free. The params
- * then go through the role validator with purpose `"save"`, as the dialog's
- * create does.
+ * gate the read applies. A taken name — the reserved `reviewer` included, which
+ * the read always lists — is refused by membership at propose time and goes
+ * stale at the click. The params then go through the role validator with
+ * purpose `"save"`, as the dialog's create does.
  */
 function roleCreatePreflight(
   deps: SettingsOperationDeps,
@@ -729,13 +738,6 @@ function roleCreatePreflight(
     // Not quoted back: a name ShipIt will not repeat can carry a credential.
     return renderOwn("ShipIt would not read that name back, so the card could not show which role it "
       + "creates. A name is letters, digits, spaces and . _ + ( ) [ ] -.");
-  }
-  if (name === RESERVED_ROLE_NAME) {
-    return renderOwn(`"${RESERVED_ROLE_NAME}" is the name of the role ShipIt ships, so another role cannot take it.`);
-  }
-  if (storedRole(deps, name)) {
-    return renderLine(`A role called "${echoSupplied(name)}" already exists. Propose a change to one of `
-      + `its fields instead, with --item ${echoSupplied(name)}.`);
   }
   let params: RolePinnedParams;
   try {
@@ -785,6 +787,301 @@ const roleCreateOperation: SettingsOperation = {
     ]);
   },
   applied: (target) => `created the ${echoSupplied(target.item ?? "")} role`,
+};
+
+/**
+ * Deleting a role (req 11): the dialog's own delete, a `roles` entry set to
+ * `null`. Every field the role has is a side change to "not set", so the card
+ * shows what the click removes.
+ */
+const roleDeleteOperation: SettingsOperation = {
+  ...savingOperation(
+    (_deps, target) => ({ roles: { [target.item ?? ""]: null } }),
+    (target) => domainsOfSave({ roles: { [target.item ?? ""]: null } }),
+    {
+      preflight: (_deps, target) => target.item === RESERVED_ROLE_NAME
+        ? renderOwn(`The "${RESERVED_ROLE_NAME}" role cannot be deleted: "review this" has to keep resolving `
+          + "to something.")
+        : null,
+    },
+  ),
+  wording: { from: "a role", to: "deleted" },
+  alsoChanges: (deps, target) => {
+    const role = storedRole(deps, target.item);
+    if (!role) return [];
+    const params = role.params.kind === "pinned" ? role.params : undefined;
+    return sideChanges([
+      sideChange("roles[].model", params
+        ? { serviceId: params.serviceId, billingMode: params.billingMode, modelId: params.modelId }
+        : null, null),
+      sideChange("roles[].harness", params?.harnessId, null),
+      sideChange("roles[].reasoningEffort", params?.reasoningEffort, null),
+      sideChange("roles[].description", role.description, null),
+      sideChange("roles[].prompt", role.prompt, null),
+    ]);
+  },
+  applied: (target) => `deleted the ${echoSupplied(target.item ?? "")} role`,
+};
+
+// MCP servers ---------------------------------------------------------------
+
+/**
+ * A new MCP server as a card proposes it (req 12). The name is the `--add`
+ * address. `env` and `headers` are NAMES: a secret value is never on a card, so
+ * each becomes a placeholder the user fills in the panel after Apply.
+ */
+interface McpEntry {
+  type: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  npmPackage?: string;
+  /** Environment variable names, never values. */
+  env?: string[];
+  url?: string;
+  /** Header names, never values. */
+  headers?: string[];
+  enabled: boolean;
+}
+
+/** The names whose values the user types after Apply. */
+function secretNamesOf(entry: McpEntry): string[] {
+  return (entry.type === "stdio" ? entry.env : entry.headers) ?? [];
+}
+
+const MCP_ENTRY_SHAPE = 'A new MCP server is one JSON object: {"type": "stdio", "command": …, "args": [ … ], '
+  + '"npmPackage": …, "env": ["VAR_NAME", …]} or {"type": "http", "url": …, "headers": ["Header-Name", …]}, '
+  + 'plus "enabled" if it should start off. "env" and "headers" are NAMES; the user types their values after Apply.';
+
+const MCP_ENTRY_KEYS = {
+  stdio: ["type", "command", "args", "npmPackage", "env", "enabled"],
+  http: ["type", "url", "headers", "enabled"],
+} as const;
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const STORED_REFERENCE = /\$(secret|platform):/;
+const HEADER_NAME = /^[A-Za-z][A-Za-z0-9-]*$/;
+
+function readMcpEntry(raw: unknown): McpEntry {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ServiceError(400, MCP_ENTRY_SHAPE);
+  const body = raw as Record<string, unknown>;
+  if (body.type !== "stdio" && body.type !== "http") {
+    throw new ServiceError(400, `A new MCP server needs "type": "stdio" or "http". ${MCP_ENTRY_SHAPE}`);
+  }
+  const type = body.type;
+  const allowed: readonly string[] = MCP_ENTRY_KEYS[type];
+  const stray = Object.keys(body).find((key) => !allowed.includes(key));
+  if (stray !== undefined) {
+    throw new ServiceError(400, `A new ${type} MCP server has no field "${echoSupplied(stray)}". ${MCP_ENTRY_SHAPE}`);
+  }
+  const text = (field: string): string | undefined => {
+    const value = body[field];
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string") {
+      throw new ServiceError(400, `"${field}" is text, so pass it as one JSON string. ${MCP_ENTRY_SHAPE}`);
+    }
+    return value.trim() || undefined;
+  };
+  // A reference resolves to a credential ShipIt already stores — another
+  // server's, or a provider connection's — and the card would show only the
+  // reference, not that a credential goes to this server.
+  const referencesStored = (value: string | undefined) => value !== undefined && STORED_REFERENCE.test(value);
+  const list = (field: string): string[] => {
+    const value = body[field];
+    if (value === undefined || value === null) return [];
+    // A map here is a secret VALUE arriving where only names are taken.
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+      throw new ServiceError(400, `"${field}" is a list of strings. ${MCP_ENTRY_SHAPE}`);
+    }
+    return value as string[];
+  };
+  const secretField = type === "stdio" ? "env" : "headers";
+  const secretNames = list(secretField);
+  const shape = type === "stdio" ? ENV_NAME : HEADER_NAME;
+  const misnamed = secretNames.find((name) => !shape.test(name));
+  if (misnamed !== undefined) {
+    throw new ServiceError(400, `"${echoSupplied(misnamed)}" is not ${type === "stdio"
+      ? "an environment variable name" : "a header name"}. Pass names only; their values are typed after Apply.`);
+  }
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+    throw new ServiceError(400, `"enabled" is true or false. ${MCP_ENTRY_SHAPE}`);
+  }
+  const entry: McpEntry = { type, enabled: body.enabled !== false };
+  if (secretNames.length > 0) entry[secretField] = [...new Set(secretNames)];
+  const command = text("command");
+  const npmPackage = text("npmPackage");
+  const url = text("url");
+  const args = list("args");
+  // The panel's form edits arguments as one space-separated line, so an argument
+  // with whitespace in it, or an empty one, would change the first time the
+  // user saves the server to type its secret values.
+  if (args.some((arg) => arg === "" || /\s/.test(arg))) {
+    throw new ServiceError(400, "An argument with whitespace in it, or an empty one, is not one the MCP panel "
+      + "can keep: pass each word as an argument of its own.");
+  }
+  if ([command, npmPackage, url, ...args].some(referencesStored)) {
+    throw new ServiceError(400, "A card does not write a reference to a stored secret. Name the variable or "
+      + `header under "${secretField}"; the user types its value after Apply.`);
+  }
+  if (command !== undefined) entry.command = command;
+  if (npmPackage !== undefined) entry.npmPackage = npmPackage;
+  if (url !== undefined) entry.url = url;
+  if (args.length > 0) entry.args = args;
+  return entry;
+}
+
+/**
+ * The placeholder the panel's form writes for a row with no value, as an
+ * identifier it can fill later — and one nothing stores yet. A value left in
+ * this namespace by an earlier server would otherwise fill the placeholder at
+ * once, while the card says the user types it.
+ */
+function secretPlaceholder(server: string, name: string, taken: Set<string>): string {
+  const base = `mcp__${server}__${name.replace(/[^A-Za-z0-9_]/g, "_")}`;
+  let key = base;
+  for (let n = 2; taken.has(key); n++) key = `${base}_${n}`;
+  taken.add(key);
+  return `$secret:${key}`;
+}
+
+/** The config the writer stores, in one place so the preflight and the write agree. */
+function mcpConfigOf(deps: SettingsOperationDeps, name: string, entry: McpEntry): Record<string, unknown> {
+  const names = secretNamesOf(entry);
+  const taken = new Set(Object.keys(requireCredentialStore(deps).getAllAgentEnv()));
+  const placeholders = Object.fromEntries(names.map((key) => [key, secretPlaceholder(name, key, taken)]));
+  const secrets = names.length > 0 ? { [entry.type === "stdio" ? "env" : "headers"]: placeholders } : {};
+  return entry.type === "stdio"
+    ? {
+        name, type: "stdio", command: entry.command ?? "", enabled: entry.enabled,
+        ...(entry.args ? { args: entry.args } : {}),
+        ...(entry.npmPackage ? { npmPackage: entry.npmPackage } : {}),
+        ...secrets,
+      }
+    : { name, type: "http", url: entry.url ?? "", enabled: entry.enabled, ...secrets };
+}
+
+/**
+ * A field the read withholds or shortens — the command, the arguments, the URL —
+ * shown as the agent wrote it, which req 12 is the user's decision to allow.
+ */
+function writtenChange(key: string, to: unknown): RenderedSideChange | null {
+  if (to === undefined || to === null) return null;
+  const declaration = findSetting(key);
+  if (!declaration) {
+    throw new ServiceError(400, `Applying this would also set ${key}, which ShipIt no longer declares.`);
+  }
+  return { key, label: declaration.label, from: renderOwn("not set"), to: renderValue(to) };
+}
+
+function mcpManagerDeps(deps: SettingsOperationDeps) {
+  return {
+    sseBroadcast: deps.sseBroadcast,
+    credentialStore: requireCredentialStore(deps),
+    serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
+  };
+}
+
+/**
+ * Creating an MCP server (req 11, req 12): the panel's own create, with no
+ * secret values submitted. The writer's own validation decides what may be
+ * stored, so it runs here before any card is posted.
+ */
+const mcpCreateOperation: SettingsOperation = {
+  domains: (target) => [mcpServerDomain(target.item ?? "")],
+  entry: readMcpEntry,
+  preflight: (deps, target, value) => {
+    try {
+      validateMcpServerConfig(mcpConfigOf(deps, target.item ?? "", value as McpEntry));
+    } catch (err) {
+      if (err instanceof ServiceError) return renderLine(err.message);
+      throw err;
+    }
+    if (!(value as McpEntry).enabled) return null;
+    const enabled = Object.values(deps.credentialStore?.getAllMcpServers() ?? {}).filter((s) => s.enabled).length;
+    return enabled + 1 > MAX_ENABLED_MCP_SERVERS
+      ? renderOwn(`${MAX_ENABLED_MCP_SERVERS} MCP servers are already enabled, which is the limit. Propose `
+        + 'this one with "enabled": false, or turn another one off first.')
+      : null;
+  },
+  async apply(deps, target, value) {
+    const { outcome } = await applyMcpServerAdd(
+      mcpManagerDeps(deps),
+      mcpConfigOf(deps, target.item ?? "", value as McpEntry),
+      {},
+    );
+    return outcome;
+  },
+  alsoChanges: (_deps, _target, value) => {
+    const entry = value as McpEntry;
+    const secretNames = secretNamesOf(entry);
+    const names = secretNames.length > 0
+      ? renderLine(`${joinRendered(secretNames.map(renderValue))} (you type the value after Apply)`)
+      : null;
+    const secretKey = entry.type === "stdio" ? "mcp.servers[].env" : "mcp.servers[].headers";
+    return sideChanges([
+      sideChange("mcp.servers[].type", null, entry.type),
+      writtenChange("mcp.servers[].command", entry.command),
+      writtenChange("mcp.servers[].args", entry.args),
+      writtenChange("mcp.servers[].npmPackage", entry.npmPackage),
+      writtenChange("mcp.servers[].url", entry.url),
+      names ? { key: secretKey, label: findSetting(secretKey)!.label, from: renderOwn("not set"), to: names } : null,
+      sideChange("mcp.servers[].enabled", null, entry.enabled),
+    ]);
+  },
+  wording: { from: "no such server", to: "created" },
+  applied: (target, _display, _declaration, value) => {
+    const created = `created the ${echoSupplied(target.item ?? "")} MCP server`;
+    const names = secretNamesOf(value as McpEntry);
+    return names.length === 0
+      ? created
+      : `${created}. It cannot work until you type the value of ${joinRendered(names.map(renderValue))} `
+        + "under Settings › Integrations › MCP servers";
+  },
+};
+
+/**
+ * Deleting an MCP server (req 11): the panel's own delete, which takes the
+ * server's stored secret values with it. Each field is shown going to "not set"
+ * through the read's own projection, so the card says a secret goes without
+ * naming one.
+ */
+const mcpDeleteOperation: SettingsOperation = {
+  domains: (target) => [mcpServerDomain(target.item ?? "")],
+  // The panel offers no Delete for a server a connected provider owns: the
+  // connection manages it, and disconnecting is what releases it.
+  preflight: (deps, target) => {
+    const server = deps.credentialStore?.getMcpServer(target.item ?? "");
+    const source = server?.type === "http"
+      ? Object.values(server.headers ?? {}).map((value) => /\$platform:([a-z][a-z0-9_]*)/.exec(value)?.[1])
+        .find((match) => match !== undefined)
+      : undefined;
+    return source && deps.credentialStore?.getMcpOAuthTokens(source)
+      ? renderLine(`The ${echoSupplied(target.item ?? "")} server belongs to a connected provider, so it is `
+        + "not deleted on its own. Disconnecting the provider on its card under Settings › Integrations › "
+        + "MCP servers is what releases it.")
+      : null;
+  },
+  async apply(deps, target) {
+    const { outcome } = await applyMcpServerRemove(mcpManagerDeps(deps), target.item ?? "");
+    return outcome;
+  },
+  alsoChanges: (deps, target) => {
+    const server = deps.credentialStore?.getMcpServer(target.item ?? "");
+    if (!server) return [];
+    const stdio = server.type === "stdio" ? server : undefined;
+    const http = server.type === "http" ? server : undefined;
+    return sideChanges([
+      sideChange("mcp.servers[].type", server.type, null),
+      sideChange("mcp.servers[].command", stdio?.command, null),
+      sideChange("mcp.servers[].args", stdio?.args, null),
+      sideChange("mcp.servers[].npmPackage", stdio?.npmPackage, null),
+      sideChange("mcp.servers[].url", http?.url, null),
+      sideChange("mcp.servers[].env", stdio?.env, null),
+      sideChange("mcp.servers[].headers", http?.headers, null),
+      sideChange("mcp.servers[].enabled", server.enabled, null),
+    ]);
+  },
+  wording: { from: "a server", to: "deleted" },
+  applied: (target) => `deleted the ${echoSupplied(target.item ?? "")} MCP server`,
 };
 
 // Reviewer slots ------------------------------------------------------------
@@ -1086,6 +1383,7 @@ const OPERATIONS: Record<string, SettingsOperation> = {
   // Roles. A field is merged into the stored role; the role's own params ride
   // through untouched, which is what keeps the reserved role automatic.
   "roles::add": roleCreateOperation,
+  "roles::remove": roleDeleteOperation,
   "roles[].description::set": rolePatchOperation((_role, value) => ({ description: asText(value) })),
   "roles[].prompt::set": rolePatchOperation((_role, value) => ({ prompt: asText(value) })),
   "roles[].model::set": roleModelOperation,
@@ -1183,8 +1481,11 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     applied: (target) => `${target.item ?? "the host"} is off the global allowlist`,
   },
 
-  // MCP. One boolean, which is the whole of what the card shows — every other
-  // field of a server is refused by its declaration.
+  // MCP. A whole server is created or deleted; of an existing server, only the
+  // one boolean is changed, because every other field is refused by its
+  // declaration.
+  "mcp.servers::add": mcpCreateOperation,
+  "mcp.servers::remove": mcpDeleteOperation,
   "mcp.servers[].enabled::set": {
     domains: (target) => [mcpServerDomain(target.item ?? "")],
     preflight: (deps, target, value) => {
