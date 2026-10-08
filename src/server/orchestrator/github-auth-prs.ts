@@ -48,20 +48,65 @@ export async function createPullRequest(
   }
 }
 
+async function canonicalRepo(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<{ owner: string; repo: string } | null> {
+  try {
+    const res = await fetchGitHub(`https://api.github.com/repos/${owner}/${repo}`, token);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { name?: unknown; owner?: { login?: unknown } } | null;
+    const login = data?.owner?.login;
+    if (typeof login !== "string" || typeof data?.name !== "string") return null;
+    return { owner: login, repo: data.name };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GitHub's redirect for a moved repo keeps the query string, so a `head` filter that still
+ * names the old owner selects that owner's branches, never the repo's own
+ * (docs/064-pr-lifecycle-flow).
+ */
+async function listPullsByHead<T>(
+  token: string,
+  owner: string,
+  repo: string,
+  head: string,
+  params: string,
+): Promise<T[] | null> {
+  const list = (o: string, r: string) => fetchGitHub(
+    `https://api.github.com/repos/${o}/${r}/pulls?head=${encodeURIComponent(`${o}:${head}`)}&${params}`,
+    token,
+  );
+
+  const res = await list(owner, repo);
+  if (!res.ok) return null;
+  const prs = (await res.json()) as T[];
+  if (!res.redirected) return prs;
+
+  const moved = await canonicalRepo(token, owner, repo);
+  if (!moved || moved.owner.toLowerCase() === owner.toLowerCase()) return prs;
+  try {
+    const retry = await list(moved.owner, moved.repo);
+    return retry.ok ? ((await retry.json()) as T[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function findPullRequest(
   token: string,
   owner: string,
   repo: string,
   head: string,
 ): Promise<{ url: string; number: number; base: string; title: string; body: string } | null> {
-  const res = await fetchGitHub(
-    `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=open`,
-    token,
-  );
-
-  if (!res.ok) return null;
-  const prs = (await res.json()) as { html_url: string; number: number; base: { ref: string }; title: string; body: string | null }[];
-  if (prs.length === 0) return null;
+  const prs = await listPullsByHead<{
+    html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
+  }>(token, owner, repo, head, "state=open");
+  if (!prs || prs.length === 0) return null;
 
   const pr = prs[0];
   return {
@@ -83,18 +128,12 @@ export async function findPullRequestAnyState(
   state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
   head_sha: string | null; additions: number; deletions: number;
 } | null> {
-  const res = await fetchGitHub(
-    `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=all&sort=updated&direction=desc&per_page=1`,
-    token,
-  );
-
-  if (!res.ok) return null;
-  const prs = (await res.json()) as {
+  const prs = await listPullsByHead<{
     html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
     state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
     head: { sha: string } | null; additions: number; deletions: number;
-  }[];
-  if (prs.length === 0) return null;
+  }>(token, owner, repo, head, "state=all&sort=updated&direction=desc&per_page=1");
+  if (!prs || prs.length === 0) return null;
 
   const pr = prs[0];
 

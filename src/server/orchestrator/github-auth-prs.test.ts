@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { viewPullRequestConversation, viewPullRequest, viewPullRequestResult, listPullRequests } from "./github-auth-prs.js";
+import {
+  viewPullRequestConversation, viewPullRequest, viewPullRequestResult, listPullRequests,
+  findPullRequest, findPullRequestAnyState,
+} from "./github-auth-prs.js";
 
 function mockFetch(payload: unknown, status = 200): void {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -379,5 +382,111 @@ describe("listPullRequests", () => {
       mockFetch(graphqlNodes([]));
       expect(await listPullRequests("tok", "o", "r", "merged")).toEqual({ ok: true, prs: [] });
     });
+  });
+});
+
+describe("PR lookup by branch", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const BRANCH = "shipit/abc123";
+
+  interface FakePr { head: string; number: number; state: "open" | "closed"; merged_at?: string }
+
+  /**
+   * GitHub as measured: a path under a repo's former name is answered through a
+   * redirect that keeps the query string, and `head` selects the owner it names.
+   */
+  function mockGitHub(repo: { formerly?: string; now: string; prs: FakePr[]; unreadableName?: boolean }): URL[] {
+    const requests: URL[] = [];
+    const [owner, name] = repo.now.split("/");
+    const oldPath = repo.formerly ? `/repos/${repo.formerly}` : null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      requests.push(url);
+      const isList = url.pathname.endsWith("/pulls");
+      if (!isList && repo.unreadableName) throw new Error("socket hang up");
+      const payload = isList
+        ? repo.prs
+          .filter((pr) => pr.head === url.searchParams.get("head"))
+          .filter((pr) => url.searchParams.get("state") === "all" || pr.state === "open")
+          .map((pr) => ({
+            html_url: `https://github.com/${repo.now}/pull/${pr.number}`, number: pr.number,
+            base: { ref: "main" }, title: "Add a thing", body: null, state: pr.state,
+            merged_at: pr.merged_at ?? null, merge_commit_sha: null, head: { sha: "h1" },
+            additions: 3, deletions: 1,
+          }))
+        : { name, owner: { login: owner } };
+      const res = new Response(JSON.stringify(payload), { status: 200 });
+      if (oldPath && (url.pathname === oldPath || url.pathname.startsWith(`${oldPath}/`))) {
+        Object.defineProperty(res, "redirected", { value: true });
+      }
+      return res;
+    });
+    return requests;
+  }
+
+  const transferred = (prs: FakePr[]) => mockGitHub({ formerly: "olduser/app", now: "neworg/app", prs });
+
+  it("finds the open PR through the old address after a transfer", async () => {
+    const requests = transferred([{ head: `neworg:${BRANCH}`, number: 7, state: "open" }]);
+
+    expect(await findPullRequest("tok", "olduser", "app", BRANCH)).toMatchObject({ number: 7, base: "main" });
+    expect(requests.at(-1)?.pathname).toBe("/repos/neworg/app/pulls");
+  });
+
+  it("keeps the open and any-state lookups apart after a transfer", async () => {
+    transferred([{ head: `neworg:${BRANCH}`, number: 7, state: "closed", merged_at: "2026-10-01T00:00:00Z" }]);
+
+    expect(await findPullRequest("tok", "olduser", "app", BRANCH)).toBeNull();
+    expect(await findPullRequestAnyState("tok", "olduser", "app", BRANCH)).toMatchObject({
+      number: 7, merged_at: "2026-10-01T00:00:00Z",
+    });
+  });
+
+  it("does not take the former owner's fork PR for the repository's own", async () => {
+    transferred([
+      { head: `olduser:${BRANCH}`, number: 9, state: "open" },
+      { head: `neworg:${BRANCH}`, number: 7, state: "open" },
+    ]);
+    expect(await findPullRequest("tok", "olduser", "app", BRANCH)).toMatchObject({ number: 7 });
+
+    vi.restoreAllMocks();
+    transferred([{ head: `olduser:${BRANCH}`, number: 9, state: "open" }]);
+    expect(await findPullRequest("tok", "olduser", "app", BRANCH)).toBeNull();
+  });
+
+  it("finds the PR after a rename that kept the owner", async () => {
+    mockGitHub({
+      formerly: "neworg/old-name", now: "neworg/app",
+      prs: [{ head: `neworg:${BRANCH}`, number: 7, state: "open" }],
+    });
+
+    expect(await findPullRequest("tok", "neworg", "old-name", BRANCH)).toMatchObject({ number: 7 });
+  });
+
+  it("spends one request per lookup when the repository did not move", async () => {
+    const requests = mockGitHub({ now: "neworg/app", prs: [{ head: `neworg:${BRANCH}`, number: 7, state: "open" }] });
+
+    expect(await findPullRequest("tok", "neworg", "app", BRANCH)).toMatchObject({ number: 7 });
+    expect(await findPullRequest("tok", "neworg", "app", "shipit/no-pr")).toBeNull();
+    expect(await findPullRequestAnyState("tok", "neworg", "app", "shipit/no-pr")).toBeNull();
+    expect(requests).toHaveLength(3);
+  });
+
+  it("matches the whole branch name when it holds URL-reserved characters", async () => {
+    mockGitHub({ now: "neworg/app", prs: [{ head: "neworg:fix", number: 7, state: "open" }] });
+
+    expect(await findPullRequest("tok", "neworg", "app", "fix#123")).toBeNull();
+    expect(await findPullRequest("tok", "neworg", "app", "fix&state=all")).toBeNull();
+  });
+
+  it("keeps the first answer when the canonical name cannot be read", async () => {
+    mockGitHub({
+      formerly: "neworg/old-name", now: "neworg/app", unreadableName: true,
+      prs: [{ head: `neworg:${BRANCH}`, number: 7, state: "open" }],
+    });
+
+    expect(await findPullRequest("tok", "neworg", "old-name", BRANCH)).toMatchObject({ number: 7 });
+    expect(await findPullRequest("tok", "neworg", "old-name", "shipit/no-pr")).toBeNull();
   });
 });
