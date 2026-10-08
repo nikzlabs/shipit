@@ -642,6 +642,24 @@ they do **not** draw on the session's CPU budget — they get their own. ShipIt
 gives them a low scheduling weight so they yield to the platform under
 contention; set your own `deploy.resources` limits if a service needs a cap.
 
+## GPU
+
+ShipIt gives the machine's NVIDIA GPU to a session only when the user has turned
+on **GPU access** (`advanced.sessionGpu`, Settings → Advanced, off by default).
+The switch is read when a container is created, so a change reaches this session
+when its container next starts. `$SHIPIT_GPU` says what this container got:
+
+| `$SHIPIT_GPU` | Meaning |
+|---|---|
+| `granted` | This container has the GPU. `nvidia-smi` lists it, and the driver's CUDA libraries are mounted in, so a framework that brings its own CUDA runtime (PyTorch's pip wheels, for example) uses it. Compose services that declare a GPU get it ([compose.md](compose.md)), and so do containers you start with `docker run --gpus all` in a session with Docker access. |
+| `unavailable` | The switch is on, but Docker could not give the GPU, so the session started without it. `$SHIPIT_GPU_REASON` holds Docker's error, and the user has a notice about it in the transcript. The fix is on the host (the NVIDIA driver, Docker Desktop's WSL 2 backend, or the NVIDIA Container Toolkit), not in this container. |
+| `off` | The switch is off. |
+
+When a task needs the GPU and `$SHIPIT_GPU` is `off`, propose the switch rather
+than working around it: `shipit settings propose advanced.sessionGpu=true
+--reason "..."` (see [settings.md](settings.md)). The session gets the GPU when
+its container next starts.
+
 ## Network
 
 In both Network modes, no container in this session — this one, its Compose

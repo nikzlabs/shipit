@@ -74,7 +74,9 @@ doesn't weaken it:
   `Privileged` at exec time undid the create-time refusal one request later (planning#607).
   `DeviceCgroupRules` and `DeviceRequests` are refused with `Devices`: a child keeps Docker's
   default capability set, which includes `CAP_MKNOD`, so widening the device cgroup is a device
-  mapping the container makes for itself.
+  mapping the container makes for itself. The one exception is an NVIDIA GPU request in a session
+  whose agent container has the GPU (docs/325-session-gpu-access): it widens the cgroup to the
+  GPU's own devices only, and the proxy rebuilds each request from the fields it checked.
 - **A check only counts if the daemon reads the field the check read.** Docker decodes bodies
   with Go's `encoding/json`, which matches a JSON key to a struct field case-insensitively, so
   `{"HostConfig":{"privileged":true,"binds":["/:/host"]}}` passed every exact-property check

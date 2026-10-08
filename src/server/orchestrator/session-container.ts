@@ -77,6 +77,7 @@ import { listEgressAllowedHosts } from "./egress-policy.js";
 import type { PluginEgressPolicy } from "./plugin-egress.js";
 import { STACK_LABEL } from "./stack-label.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
+import type { SessionGpu } from "./session-gpu.js";
 import type { SessionCapabilities, SessionInfo } from "../shared/types.js";
 
 export {
@@ -187,6 +188,8 @@ export interface SessionContainer {
   egressUserHostsExcluded?: boolean;
   /** Separate from containment: both network-on and network-off sandboxes are contained. */
   capabilitiesAtStart?: SessionCapabilities;
+  /** docs/325-session-gpu-access; undefined until the create decides it. */
+  gpu?: SessionGpu;
   /** Subnet rules must wait until installation finishes flushing OUTPUT. */
   egressFirewallReady?: Promise<void>;
   /**
@@ -245,6 +248,8 @@ export interface SessionContainerManagerOpts {
   dockerProxyHost?: string;
   dockerProxyPort?: number;
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  /** The GPU switch, read at each container create (docs/325-session-gpu-access req 5). */
+  gpuAccess?: () => boolean;
   readOwnContainerId?: () => Promise<string>;
 }
 
@@ -329,6 +334,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
   private resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  private gpuAccess?: () => boolean;
   private workerImageId?: string;
   private workerBaseDigest?: string;
   private workerNodeVersion?: string;
@@ -365,7 +371,15 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.dockerProxyHost = opts.dockerProxyHost;
     this.dockerProxyPort = opts.dockerProxyPort;
     this.resolveEgressConfig = opts.resolveEgressConfig;
+    this.gpuAccess = opts.gpuAccess;
     if (opts.readOwnContainerId) this.readOwnContainerId = opts.readOwnContainerId;
+  }
+
+  /** A container that asked for the GPU under the other switch value; a new session must not claim it. */
+  gpuOutOfDate(sessionId: string): boolean {
+    const gpu = this.containers.get(sessionId)?.gpu;
+    if (!gpu) return false;
+    return (gpu.state !== "off") !== (this.gpuAccess?.() ?? false);
   }
 
   get dockerClient(): Docker {
@@ -856,6 +870,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       kernelRuntime: kernelRuntime(),
       seccompSecurityOpt: resolveSeccompSecurityOpt(),
       readonlyRootfs: readonlyRootfsEnabled(),
+      ...(this.gpuAccess ? { gpuAccess: this.gpuAccess } : {}),
       stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),

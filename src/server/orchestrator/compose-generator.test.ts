@@ -1548,16 +1548,35 @@ describe("settings that reach outside the service (docs/318 req 7)", () => {
     }
   });
 
-  it("refuses device_cgroup_rules and device reservations in every mode", () => {
+  it("refuses device_cgroup_rules and every device reservation but an NVIDIA GPU, in every mode", () => {
     const rules = service("    device_cgroup_rules: [\"c 1:3 mr\"]\n");
-    const reserved = service("    deploy:\n      resources:\n        reservations:\n          devices:\n            - capabilities: [gpu]\n");
+    const reserve = (entry: string) =>
+      service(`    deploy:\n      resources:\n        reservations:\n          devices:\n            - ${entry}\n`);
     for (const containEgress of bothModes) {
-      expect(() => parseComposeFile(rules, { dockerSocket: false, containEgress })).toThrow("device_cgroup_rules");
-      expect(() => parseComposeFile(reserved, { dockerSocket: false, containEgress }))
-        .toThrow("deploy.resources.reservations.devices");
+      const opts = { dockerSocket: false, containEgress };
+      expect(() => parseComposeFile(rules, opts)).toThrow("device_cgroup_rules");
+      expect(() => parseComposeFile(reserve("{ driver: nvidia, count: all, capabilities: [gpu] }"), opts)).not.toThrow();
+      expect(() => parseComposeFile(reserve("{ capabilities: [gpu, compute, utility] }"), opts)).not.toThrow();
+      expect(() => parseComposeFile(reserve("{ capabilities: [tpu] }"), opts)).toThrow("may only request an NVIDIA GPU");
+      expect(() => parseComposeFile(reserve("{ capabilities: [compute] }"), opts)).toThrow("`gpu` capability");
+      expect(() => parseComposeFile(reserve("{ count: 1 }"), opts)).toThrow("`gpu` capability");
+      expect(() => parseComposeFile(reserve("{ driver: cdi, capabilities: [gpu] }"), opts)).toThrow("driver `cdi`");
+      expect(() => parseComposeFile(reserve("{ capabilities: [gpu], options: { a: b } }"), opts)).toThrow("options");
     }
     const limits = service("    deploy:\n      resources:\n        limits: { cpus: \"1\", memory: 512M }\n");
     expect(() => parseComposeFile(limits, { dockerSocket: false })).not.toThrow();
+  });
+
+  it("accepts `gpus: all` and NVIDIA GPU lists, and nothing else (docs/325-session-gpu-access)", () => {
+    for (const value of ["all", "[{ driver: nvidia, count: 1 }]", "[{ device_ids: [\"0\"], capabilities: [gpu] }]"]) {
+      expect(() => parseComposeFile(service(`    gpus: ${value}\n`), { dockerSocket: false }), value).not.toThrow();
+    }
+    expect(() => parseComposeFile(service("    gpus: [{ driver: amd }]\n"), { dockerSocket: false }))
+      .toThrow("driver `amd`");
+    expect(() => parseComposeFile(service("    gpus: [{ path: /dev/dri }]\n"), { dockerSocket: false }))
+      .toThrow("`gpus` field `path` is not allowed");
+    expect(() => parseComposeFile(service("    gpus: some\n"), { dockerSocket: false }))
+      .toThrow("`gpus` must be `all` or a list");
   });
 
   it("allows only log drivers that keep logs local", () => {
@@ -1582,7 +1601,7 @@ describe("settings that reach outside the service (docs/318 req 7)", () => {
   });
 
   it("refuses a service field ShipIt has not classified, naming it", () => {
-    for (const key of ["gpus", "runtime", "cgroup_parent", "pre_start", "oom_score_adj", "not_a_field"]) {
+    for (const key of ["runtime", "cgroup_parent", "pre_start", "oom_score_adj", "not_a_field"]) {
       const p = service(`    ${key}: x\n`);
       for (const containEgress of bothModes) {
         expect(() => parseComposeFile(p, { dockerSocket: false, containEgress }), key)
@@ -1838,6 +1857,37 @@ describe("rewriteResolvedModel", () => {
     ({ name: PROJECT, services: { [name]: { image: "node:20", volumes } }, ...top });
   const rewrite = (model: Record<string, unknown>, opts: Parameters<typeof rewriteResolvedModel>[1] = rewriteOpts): Doc =>
     rewriteResolvedModel(model, opts).model as unknown as Doc;
+
+  describe("GPU requests (docs/325-session-gpu-access req 3)", () => {
+    const gpuStack = () => ({
+      name: PROJECT,
+      services: {
+        llm: {
+          image: "ollama/ollama",
+          deploy: { resources: { reservations: { devices: [{ capabilities: ["gpu"], count: -1 }], cpus: "1" } } },
+        },
+        trainer: { image: "pytorch/pytorch", gpus: "all" },
+        web: { image: "node:20" },
+      },
+    });
+
+    it("keeps them when the session has the GPU", () => {
+      const { model, gpuRemoved } = rewriteResolvedModel(gpuStack(), { ...rewriteOpts, gpuGranted: true });
+      const doc = model as unknown as Doc;
+      expect(gpuRemoved).toEqual([]);
+      expect(doc.services.llm.deploy).toEqual(gpuStack().services.llm.deploy);
+      expect(doc.services.trainer.gpus).toBe("all");
+    });
+
+    it("removes them, and only them, when it does not", () => {
+      const { model, gpuRemoved } = rewriteResolvedModel(gpuStack(), rewriteOpts);
+      const doc = model as unknown as Doc;
+      expect(gpuRemoved).toEqual(["llm", "trainer"]);
+      expect(doc.services.llm.deploy).toEqual({ resources: { reservations: { cpus: "1" } } });
+      expect(doc.services.trainer).not.toHaveProperty("gpus");
+      expect(doc.services.web).toEqual({ image: "node:20" });
+    });
+  });
 
   // Compose 5.5.1 writes `networks: {default: null}` for a service that names no network.
   it("drops Compose's implicit default network, and keeps networks a service names", () => {

@@ -102,6 +102,21 @@ Overrides (set before the command):
 - `SHIPIT_REPO_URL=https://github.com/you/shipit.git` — install a fork.
 - `SHIPIT_HOME=/path/to/dir` — install somewhere other than `~/.shipit`.
 
+### Giving sessions the GPU (WSL2 and Linux, NVIDIA)
+
+Sessions can use the machine's NVIDIA GPU — the agent's container, Compose services that declare a
+GPU, and containers the agent starts — once Docker on the host can run `--gpus` containers:
+
+- **WSL2:** install the NVIDIA driver on Windows (not inside the distro). Then use Docker Desktop
+  with the WSL 2 backend, or Docker Engine inside the distro with the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- **Linux:** the NVIDIA driver and the NVIDIA Container Toolkit.
+
+Check it on the host with `docker run --rm --gpus all ubuntu nvidia-smi`, then turn on
+**Settings → Advanced → GPU access** (off by default). A session gets the GPU when its container next
+starts; if Docker cannot give it, the session starts without it and its transcript says why
+(docs/325-session-gpu-access).
+
 ### Reaching a local install from another device (Tailscale)
 
 The local install binds `127.0.0.1` only — ShipIt has no built-in authentication, so it must not be

@@ -92,6 +92,7 @@ import {
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { announceEgressOnContainerStart } from "./egress-container-start.js";
+import { announceGpuOnContainerStart } from "./gpu-container-start.js";
 import { isOverlayEligible, isOverlayEnabled } from "./overlay-session.js";
 import {
   publishDepDirOverlayBases,
@@ -170,6 +171,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   const { containerManager, dockerProxyServer } = await setupContainerManager({
     deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, resolveEgressConfig,
+    gpuAccess: () => credentialStore.getDeclaredSetting("advanced.sessionGpu"),
   });
 
   // Restore untrusted network identities before requests can mistake plugin callers for browsers.
@@ -257,6 +259,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const latestHostCpu: { value: HostCpuStats | null } = { value: null };
 
   const registryHolder: { ref: SessionRunnerRegistry | null } = { ref: null };
+  if (containerManager) {
+    announceGpuOnContainerStart({
+      containerManager,
+      getRunner: (sessionId) => registryHolder.ref?.get(sessionId),
+      chatHistory: chatHistoryManager,
+      sessionManager,
+    });
+  }
   // Reuse the enforcer: its state prevents repeated reclaim against a stale memory reading.
   let idleEnforcer: (() => void) | null = null;
   const enforceIdleContainerLimit = () => {

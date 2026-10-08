@@ -41,6 +41,7 @@ import {
   type SnapshotRewrite,
 } from "./compose-generator.js";
 import { preparePersistDir } from "./compose-persist.js";
+import { noGpuWhy, type SessionGpu } from "./session-gpu.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
 import {
@@ -210,6 +211,8 @@ export interface ServiceManagerOptions {
   opsSession?: boolean;
   /** Read at each parse (docs/318 req 8); absent means not granted. */
   dockerSocketGrant?: () => DockerSocketGrant;
+  /** The agent container's GPU state, read at each start (docs/325-session-gpu-access req 3). */
+  sessionGpu?: () => SessionGpu | undefined;
   networkJoinFn?: (networkName: string) => Promise<void>;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
@@ -278,6 +281,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly dockerSocketGrant: () => DockerSocketGrant;
+  private readonly sessionGpu: () => SessionGpu | undefined;
+  // The services the last snapshot started without the GPU they asked for, with why.
+  private gpuRemovals = new Map<string, string>();
   private noProjectCompose: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
@@ -377,6 +383,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
     this.dockerSocketGrant = opts.dockerSocketGrant ?? (() => "not_granted");
+    this.sessionGpu = opts.sessionGpu ?? (() => undefined);
     this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
@@ -838,6 +845,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     for (const { service, message } of pending) this.reportPortConflict(service, message);
   }
 
+  private reportGpuRemovals(started: string[]): void {
+    for (const name of started) {
+      const message = this.gpuRemovals.get(name);
+      if (message) this.appendShipitLog(name, message);
+    }
+  }
+
   private reportPortConflict(service: string, message: string): void {
     console.warn(`[compose:${this.sessionId}] ${message}`);
     this.appendShipitLog(service, message);
@@ -973,6 +987,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
       // Persist refusals after followers decide whether to replay the container backlog.
       this.reportPortRefusals();
+      this.reportGpuRemovals(autoNames);
       this.warnOnAmbiguousPreviewPorts();
 
       this.emit("stack_ready");
@@ -1010,6 +1025,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       if (this.stoppedByUser.has(name)) return;
       // Attach before the poll can consume the replay anchor with a follower we would replace.
       this.streamLogs(name);
+      this.reportGpuRemovals([name]);
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
     } catch (err) {
@@ -1038,6 +1054,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       });
       if (this.stoppedByUser.has(name)) return;
       this.streamLogs(name);
+      this.reportGpuRemovals([name]);
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
     } catch (err) {
@@ -1271,6 +1288,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       await this.poller.pollOnce();
       for (const name of autoNames) this.ensureLogFollower(name);
       this.disarmLogFollowerSince(autoNames);
+      this.reportGpuRemovals(autoNames);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
     }
@@ -1432,6 +1450,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         persist = { device: await this.persistDevicePath(scratchDir) };
       }
       const workspaceDevice = await this.workspaceDevice();
+      const gpu = this.sessionGpu();
       const rewrite = rewriteResolvedModel(model, {
         sessionId: this.sessionId,
         workspaceDir: this.workspaceDir,
@@ -1440,7 +1459,12 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         ...(workspaceDevice ? { workspaceDevice } : {}),
         ...(persist ? { persist } : {}),
         ...(this.stackName ? { stackName: this.stackName } : {}),
+        gpuGranted: gpu?.state === "granted",
       });
+      this.gpuRemovals = new Map(rewrite.gpuRemoved.map((name) => [
+        name,
+        `${name} asks for a GPU. ShipIt started it without one, because ${noGpuWhy(gpu)}.`,
+      ]));
       const buildModel = serializeComposeModel(composeBuildModel(rewrite.model, rewrite.projectFiles, stubs));
       await this.copyProjectFiles(rewrite);
       writeRootOnlyFile(files.snapshotFile, serializeComposeModel(rewrite.model));
@@ -1718,6 +1742,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
       this.disarmLogFollowerSince([name]);
+      this.reportGpuRemovals([name]);
     } catch (err) {
       const msg = (err as Error).message;
       if (this._installRunning) {
@@ -1842,6 +1867,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
       this.disarmLogFollowerSince(names);
+      this.reportGpuRemovals(names);
     } catch (err) {
       const msg = (err as Error).message;
       for (const name of names) {

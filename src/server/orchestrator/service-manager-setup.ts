@@ -489,6 +489,7 @@ export function buildServiceManager(args: {
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
     dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
+    ...(containerManager ? { sessionGpu: () => containerManager.get(sessionId)?.gpu } : {}),
     secretsLoader: createSecretsLoader(sessionId, deps),
     accountAgentEnvLoader,
     pluginCredentialsLoader: () => collectPluginCredentialDeclarations(workspaceDir),

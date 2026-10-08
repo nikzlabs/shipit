@@ -194,11 +194,32 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  // docs/325-session-gpu-access req 5.
+  "advanced.sessionGpu": defineSetting({
+    key: "advanced.sessionGpu",
+    tab: "advanced",
+    // Beside the memory budget: the two rows about the install, not a session's agent.
+    order: 1,
+    scope: "global",
+    label: "GPU access",
+    description:
+      "Gives this machine's NVIDIA GPU to every new session: the agent's container, Compose "
+      + "services that declare a GPU, and containers the agent starts through Docker. Docker on "
+      + "this machine must support GPUs — Docker Desktop with the WSL 2 backend, or Docker Engine "
+      + "with the NVIDIA Container Toolkit. When Docker cannot give the GPU, the session starts "
+      + "without it and says why. A running session gets the change when its container next starts.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "sessionGpu" },
+    wire: "sessionGpu",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.memoryBudgetMb": defineSetting({
     key: "advanced.memoryBudgetMb",
     tab: "advanced",
-    // Last on the tab, before the hand-placed Reset Container: it is the one
-    // row about the install rather than about a session's agent.
+    // Last on the tab, before the hand-placed Reset Container: with GPU access,
+    // one of the two rows about the install rather than about a session's agent.
     order: 1,
     // Stored in MB and shown in GB, with an explicit Save (inventory.md P4).
     component: "memory-budget",

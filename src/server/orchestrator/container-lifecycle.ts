@@ -86,6 +86,7 @@ import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { RUN_NOTES_CONTAINER_DIR } from "./schedule-notes.js";
+import { GPU_DEVICE_REQUEST, gpuEnv, gpuReason, type SessionGpu } from "./session-gpu.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 
@@ -137,6 +138,8 @@ export interface LifecycleDeps {
   kernelRuntime?: string;
   seccompSecurityOpt?: string;
   readonlyRootfs?: boolean;
+  /** The GPU switch (docs/325-session-gpu-access req 5); absent means off. */
+  gpuAccess?: () => boolean;
   stateDir?: string;
   emitter: EventEmitter<SessionContainerManagerEvents>;
   baseLabels: () => Record<string, string>;
@@ -773,57 +776,91 @@ export async function createContainer(
 
     await removeStaleContainer(deps.docker, `agent-${shortId}`);
 
-    abortIfTornDown("before createContainer");
+    const createAndStart = async (gpu: SessionGpu): Promise<Docker.Container> => {
+      abortIfTornDown("before createContainer");
 
-    const container = await deps.docker.createContainer({
-      name: `agent-${shortId}`,
-      Image: imageName,
-      Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
-      Labels: {
-        ...deps.baseLabels(),
-        [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
-        ...config.extraLabels,
-      },
-      HostConfig: {
-        Binds: binds.length > 0 ? binds : undefined,
-        Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
-        Memory: config.memoryLimit,
-        CpuQuota: config.cpuQuota,
-        CpuPeriod: DEFAULT_CPU_PERIOD,
-        // Quota bounds one session; the weight is what keeps the orchestrator scheduled when many run.
-        CpuShares: SESSION_CPU_SHARES,
-        PidsLimit: config.pidsLimit,
-        NetworkMode: deps.networkName,
-        // Node cannot reap orphaned grandchildren; docker-init prevents PID exhaustion.
-        Init: true,
-        // Allow loopback SNI redirects here; the installer sidecar cannot write /proc/sys.
-        Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
-        Runtime: deps.kernelRuntime,
-        SecurityOpt: deps.seccompSecurityOpt
-          ? ["no-new-privileges", deps.seccompSecurityOpt]
-          : ["no-new-privileges"],
-        ReadonlyRootfs: deps.readonlyRootfs ?? false,
-        Tmpfs: deps.readonlyRootfs ? readonlyRootfsTmpfs() : undefined,
-        CapDrop: ["ALL"],
-        // The root entrypoint needs ownership and identity capabilities before dropping privileges.
-        CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
-      },
-      Env: env,
-    });
-
-    // Publish before start so the health monitor can identify an immediate exit.
-    sc.id = container.id;
-
-    // Recheck after container creation: Docker silently replaces a missing overlay volume with a plain volume.
-    if (config.overlaySpecs && config.overlaySpecs.length > 0) {
-      await assertOverlayVolumesMatch(deps.docker, config.overlaySpecs, {
-        sessionId: config.sessionId,
+      const created = await deps.docker.createContainer({
+        name: `agent-${shortId}`,
+        Image: imageName,
+        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
+        Labels: {
+          ...deps.baseLabels(),
+          [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
+          ...config.extraLabels,
+        },
+        HostConfig: {
+          Binds: binds.length > 0 ? binds : undefined,
+          Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
+          Memory: config.memoryLimit,
+          CpuQuota: config.cpuQuota,
+          CpuPeriod: DEFAULT_CPU_PERIOD,
+          // Quota bounds one session; the weight is what keeps the orchestrator scheduled when many run.
+          CpuShares: SESSION_CPU_SHARES,
+          PidsLimit: config.pidsLimit,
+          NetworkMode: deps.networkName,
+          // Node cannot reap orphaned grandchildren; docker-init prevents PID exhaustion.
+          Init: true,
+          // Allow loopback SNI redirects here; the installer sidecar cannot write /proc/sys.
+          Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
+          Runtime: deps.kernelRuntime,
+          SecurityOpt: deps.seccompSecurityOpt
+            ? ["no-new-privileges", deps.seccompSecurityOpt]
+            : ["no-new-privileges"],
+          ReadonlyRootfs: deps.readonlyRootfs ?? false,
+          Tmpfs: deps.readonlyRootfs ? readonlyRootfsTmpfs() : undefined,
+          CapDrop: ["ALL"],
+          // The root entrypoint needs ownership and identity capabilities before dropping privileges.
+          CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
+          DeviceRequests: gpu.state === "granted" ? [GPU_DEVICE_REQUEST] : undefined,
+        },
+        Env: [...env, ...gpuEnv(gpu)],
       });
+
+      // Publish before start so the health monitor can identify an immediate exit. Not for a GPU
+      // attempt: its failure is retried without the GPU, so it must not read as the session's exit.
+      const gpuAttempt = gpu.state === "granted";
+      if (!gpuAttempt) sc.id = created.id;
+
+      try {
+        // Recheck after container creation: Docker silently replaces a missing overlay volume with a plain volume.
+        if (config.overlaySpecs && config.overlaySpecs.length > 0) {
+          await assertOverlayVolumesMatch(deps.docker, config.overlaySpecs, {
+            sessionId: config.sessionId,
+          });
+        }
+
+        abortIfTornDown("before container start");
+
+        await created.start();
+      } catch (err) {
+        if (gpuAttempt) {
+          try { await created.remove({ force: true }); } catch { /* the next create reports a name clash */ }
+        }
+        throw err;
+      }
+      sc.id = created.id;
+      return created;
+    };
+
+    let container: Docker.Container;
+    if (deps.gpuAccess?.()) {
+      try {
+        container = await createAndStart({ state: "granted" });
+        sc.gpu = { state: "granted" };
+      } catch (err) {
+        if (err instanceof ContainerCreateCancelledError) throw err;
+        // Any failure, not a matched message: an unknown GPU error must not stop the session
+        // (docs/325-session-gpu-access req 6).
+        sc.gpu = { state: "unavailable", reason: gpuReason(err) };
+        console.warn(
+          `[containers] ${config.sessionId} could not start with the GPU; starting without it: ${sc.gpu.reason}`,
+        );
+        container = await createAndStart(sc.gpu);
+      }
+    } else {
+      sc.gpu = { state: "off" };
+      container = await createAndStart(sc.gpu);
     }
-
-    abortIfTornDown("before container start");
-
-    await container.start();
 
     const info = await container.inspect();
     sc.workerBuildId = info.Config?.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined;

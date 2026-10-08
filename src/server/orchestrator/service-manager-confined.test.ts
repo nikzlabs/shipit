@@ -112,6 +112,33 @@ function plugin(overrides: Partial<PluginComposeService> = {}): PluginComposeSer
 const AUTO_WEB = "services:\n  web:\n    image: node:20\n    x-shipit-preview: auto\n";
 const MANUAL_WEB = "services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n";
 
+describe("GPU requests (docs/325-session-gpu-access req 3)", () => {
+  const GPU_WEB = "services:\n  web:\n    image: ollama/ollama\n    x-shipit-preview: auto\n    gpus: all\n";
+
+  it("starts a service without the GPU it asked for, and says why in its log", async () => {
+    const dir = setup(GPU_WEB);
+    const { mgr } = harness(dir, { extra: { sessionGpu: () => ({ state: "unavailable", reason: "no driver" }) } });
+    await mgr.start();
+
+    const snapshot = parseYaml(recordedSnapshot(dir, "web")) as Model;
+    expect(snapshot.services.web.gpus).toBeUndefined();
+    expect(mgr.getLogBuffer("web")).toContain(
+      "[shipit] web asks for a GPU. ShipIt started it without one, because this session's container "
+      + "could not get the GPU when it started: no driver.",
+    );
+  });
+
+  it("keeps the request when the session has the GPU", async () => {
+    const dir = setup(GPU_WEB);
+    const { mgr } = harness(dir, { extra: { sessionGpu: () => ({ state: "granted" }) } });
+    await mgr.start();
+
+    const snapshot = parseYaml(recordedSnapshot(dir, "web")) as Model;
+    expect(snapshot.services.web.gpus).toBe("all");
+    expect(mgr.getLogBuffer("web")).not.toContain("asks for a GPU");
+  });
+});
+
 describe("the before-up sequence", () => {
   const STACK = `
 services:
