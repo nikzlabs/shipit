@@ -15,6 +15,7 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 /**
  * Resolve what the agent typed to a repository IDENTITY, then build every URL
@@ -132,7 +133,7 @@ export async function registerProposeRepoSessionRoutes(
         return;
       }
 
-      const runner = deps.runnerRegistry.get(sessionId);
+      const runner = await runnerForContainerCall(deps, sessionId);
       if (!runner) {
         reply.code(409).send({ error: "Session is not active — open it to propose a session." });
         return;

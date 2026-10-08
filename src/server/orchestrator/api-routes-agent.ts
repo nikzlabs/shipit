@@ -147,6 +147,7 @@ export async function registerAgentRoutes(
             agentRegistry: deps.agentRegistry,
             ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
             runnerRegistry: deps.runnerRegistry,
+            containerManager: deps.containerManager ?? null,
             usageManager: deps.usageManager,
             chatHistoryManager: deps.chatHistoryManager,
             ...(deps.recordAgentRateLimits ? { recordAgentRateLimits: deps.recordAgentRateLimits } : {}),

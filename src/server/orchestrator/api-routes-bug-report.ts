@@ -7,6 +7,7 @@ import { resolveBuildId } from "./build-id.js";
 import { compileBugReport, type BugReportProducer } from "./services/bug-report.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import type { PersistedBugReport } from "./chat-history.js";
+import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   app.post<{
@@ -31,7 +32,7 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
       if (!resolveSessionDir(deps.sessionManager, sessionId, reply)) return;
       const session = deps.sessionManager.get(sessionId);
 
-      const runner = deps.runnerRegistry.get(sessionId);
+      const runner = await runnerForContainerCall(deps, sessionId);
       if (!runner) {
         reply.code(409).send({ error: "Session is not active — open it to file a bug report." });
         return;

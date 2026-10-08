@@ -8,6 +8,7 @@ import {
   recordSessionStatus,
   turnsAgoCount,
 } from "./services/session-status.js";
+import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 const CARD_OFF =
   "The session status card is off, so there is no card to read: "
@@ -126,7 +127,7 @@ export async function registerSessionStatusRoutes(
         return;
       }
 
-      const runner = deps.runnerRegistry.get(sessionId);
+      const runner = await runnerForContainerCall(deps, sessionId);
       if (!runner) {
         reply.code(409).send({ error: "Session is not active — open it to write the status card." });
         return;

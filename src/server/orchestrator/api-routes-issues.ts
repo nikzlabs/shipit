@@ -43,6 +43,7 @@ import { isGitHubTracker } from "../shared/tracker-id.js";
 import { resolveDestinationByName } from "../shared/issue-ref-resolution.js";
 import { getErrorMessage } from "./validation.js";
 import { emitChatCard } from "./chat-card-persistence.js";
+import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 export function resolveGitHubTrackerContext(
   githubAuthManager: GitHubAuthManager,
@@ -627,7 +628,7 @@ export async function registerIssueRoutes(
       reply.code(400).send({ error: unnamed });
       return;
     }
-    const runner = deps.runnerRegistry.get(sessionId);
+    const runner = await runnerForContainerCall(deps, sessionId);
     if (!runner) {
       reply.code(409).send({ error: "Session is not active — open it to record the write." });
       return;
@@ -676,7 +677,7 @@ export async function registerIssueRoutes(
       reply.code(400).send({ error: mismatch });
       return;
     }
-    const runner = deps.runnerRegistry.get(sessionId);
+    const runner = await runnerForContainerCall(deps, sessionId);
     if (!runner) {
       reply.code(409).send({ error: "Session is not active — open it to record the write." });
       return;
