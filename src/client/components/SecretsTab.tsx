@@ -18,6 +18,7 @@ import { usePreviewStore, type DeclaredSecretState } from "../stores/preview-sto
 import { usePluginReposStore } from "../stores/plugin-repos-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useAnyListSessionRow } from "./ScheduledRunBanner.js";
 import { ApiError, useApi } from "../hooks/useApi.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 
@@ -65,9 +66,7 @@ function SecretsPanel({ repoUrl }: { repoUrl: string | null }) {
     repository's declaration hides a stored key from the custom rows, and a
     hidden key is in neither `set` nor `keep`, so saving deletes it.
   */
-  const sessionRepoUrl = useSessionStore(
-    (s) => s.sessions.find((session) => session.id === s.sessionId)?.remoteUrl,
-  );
+  const sessionRepoUrl = useAnyListSessionRow(useSessionStore((s) => s.sessionId))?.remoteUrl;
   const describesThisRepo = repoUrl !== null && sessionRepoUrl === repoUrl;
   const snapshotDeclared = usePreviewStore((s) => s.secrets.declared);
   const snapshotMissing = usePreviewStore((s) => s.secrets.missingByService);
