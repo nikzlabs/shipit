@@ -6,7 +6,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { ScheduleStore } from "../schedule-store.js";
 import { ScheduleNotes } from "../schedule-notes.js";
 import type { CredentialStore } from "../credential-store.js";
-import type { ScheduleRun, UnfinishedScheduleRun } from "../../shared/types.js";
+import { MAX_RUNS_PER_READ, type ScheduleRun, type UnfinishedScheduleRun } from "../../shared/types.js";
 import {
   createSchedule,
   deleteSchedule,
@@ -186,6 +186,21 @@ describe("Run now and the run history", () => {
       "2026-10-02T00:00:00.000Z",
     ]);
     expect(() => listScheduleRuns(deps, "missing")).toThrow("Schedule not found");
+  });
+
+  it("reads past the cap of one read: the runs older than a given run (reqs 24, 27)", () => {
+    const created = createSchedule(deps, input());
+    for (let i = 0; i < MAX_RUNS_PER_READ + 1; i++) {
+      store.insertRun({ scheduleId: created.id, slotAt: null }, new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString());
+    }
+    const page = listScheduleRuns(deps, created.id, MAX_RUNS_PER_READ + 50);
+    expect(page).toHaveLength(MAX_RUNS_PER_READ);
+    expect(listScheduleRuns(deps, created.id, 50, page.at(-1)!.id).map((r) => r.createdAt)).toEqual([
+      "2026-01-01T00:00:00.000Z",
+    ]);
+    const other = createSchedule(deps, input({ name: "Other" }));
+    expect(() => listScheduleRuns(deps, other.id, 50, page[0]!.id)).toThrow("Run not found");
+    expect(() => listScheduleRuns(deps, created.id, 50, "missing")).toThrow("Run not found");
   });
 
   it("returns the scheduler's view of the runs", () => {

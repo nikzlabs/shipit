@@ -53,6 +53,8 @@ export interface AttentionInputs {
   workspaceBlockKind: WorkspaceBlockKind | undefined;
   /** docs/324-scheduled-sessions — from {@link runAttentionReason}; null for any other session. */
   runReason: string | null;
+  /** A run waits for the user's answer; false for any other session. */
+  runAwaitingAnswer: boolean;
 }
 
 /**
@@ -74,12 +76,13 @@ export function runAttentionReason(session: SessionListRow, statusCardOn: boolea
 export function rowAttentionInputs(
   session: SessionListRow,
   statusCardOn: boolean,
-): Pick<AttentionInputs, "resolved" | "muted" | "workspaceBlockKind" | "runReason"> {
+): Pick<AttentionInputs, "resolved" | "muted" | "workspaceBlockKind" | "runReason" | "runAwaitingAnswer"> {
   return {
     resolved: isWorkResolved(session),
     muted: !!session.mutedAt,
     workspaceBlockKind: session.workspaceBlock,
     runReason: runAttentionReason(session, statusCardOn),
+    runAwaitingAnswer: !!session.scheduleId && !!session.awaitingAnswer,
   };
 }
 
@@ -109,6 +112,7 @@ export function computeAttentionReason({
   muted,
   workspaceBlockKind,
   runReason,
+  runAwaitingAnswer,
 }: AttentionInputs): string | null {
 
   // count, and the notification watcher all go quiet together precisely because
@@ -133,7 +137,10 @@ export function computeAttentionReason({
   // user. Below the permission prompt, which is the more immediate block.
   if (workspaceBlockKind) return WORKSPACE_BLOCK_REASON[workspaceBlockKind];
 
-  if (isAgentRunning || hasBackgroundTasks) return null;
+  if (isAgentRunning) return null;
+  // docs/324-scheduled-sessions req 21 — a run's question waits for the user whatever
+  // background work is left; the scheduler does not count that run as going either (req 23).
+  if (hasBackgroundTasks && !runAwaitingAnswer) return null;
 
   // resolve signal, so a row in "Recently resolved" never wears the bar.
   if (resolved) return null;

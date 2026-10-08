@@ -213,6 +213,10 @@ describe("ScheduleStore — runs", () => {
     const sameMs = store.insertRun({ scheduleId: s.id, slotAt: new Date(T1) }, T1)!;
     expect(store.listRuns(s.id).map((r) => r.id)).toEqual([sameMs.id, runNow.id, first.id]);
     expect(store.listRuns(s.id, 2).map((r) => r.id)).toEqual([sameMs.id, runNow.id]);
+    // Older than a given run: two in one millisecond keep their order across the cut.
+    expect(store.listRuns(s.id, 5, sameMs.id).map((r) => r.id)).toEqual([runNow.id, first.id]);
+    expect(store.listRuns(s.id, 1, runNow.id).map((r) => r.id)).toEqual([first.id]);
+    expect(store.listRuns(s.id, 5, first.id)).toEqual([]);
   });
 
   it("gives the latest claimed slot, ignoring Run now rows", () => {
