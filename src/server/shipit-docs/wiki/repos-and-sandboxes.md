@@ -251,7 +251,8 @@ What follows from the design, and answers most of what users ask:
   it.
 - **Marking a secret `required: true`** surfaces a banner above the preview
   naming what is missing, with **Configure** on it. It is informational — the
-  stack still tries to start.
+  stack still tries to start. A session with no repository has no store to put
+  the values in, so its banner says that instead and has no **Configure**.
 - **Saving applies immediately.** ShipIt rewrites the env files and recreates
   the affected containers; nobody has to restart anything. A service the user
   started by hand is left alone.

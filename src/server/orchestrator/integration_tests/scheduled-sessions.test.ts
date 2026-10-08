@@ -242,6 +242,16 @@ describe("Integration: scheduled runs", () => {
 });
 
 describe("Integration: recovery after a restart", () => {
+  // A restart's startup pass reads the real clock; on any later day it would claim that
+  // day's 09:00 slot and start an agent of its own.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"], now: at("2026-10-07T09:01:00Z"), shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("starts a run that was claimed but had no session yet", { timeout: 15_000 }, async () => {
     const id = await createSchedule("2026-10-07T09:00:00.000Z");
     const run = schedules.insertRun({ scheduleId: id, slotAt: at("2026-10-07T09:00:00Z"), spec: SPEC })!;

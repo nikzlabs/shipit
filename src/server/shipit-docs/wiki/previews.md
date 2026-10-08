@@ -244,7 +244,8 @@ Three other failures surface in their own place, not in that panel:
   declares a required secret with no value, with a **Configure** button that
   opens Project Settings → Secrets for that repository. Only the user can enter
   the values. (Project Settings is also on the repository's overflow menu in the
-  sidebar.) See `/shipit-docs/secrets.md` for declaring them.
+  sidebar.) A session with no repository has nowhere to store them, so the row
+  says so and has no button. See `/shipit-docs/secrets.md` for declaring them.
 
 ## "Why is the preview blank?"
 
