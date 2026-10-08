@@ -118,12 +118,12 @@ export function registerScheduleRoutes(app: FastifyInstance, deps: ScheduleServi
     },
   );
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; before?: string } }>(
     "/api/schedules/:id/runs",
     async (request, reply) => {
       try {
         const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
-        return { runs: listScheduleRuns(deps, request.params.id, limit) };
+        return { runs: listScheduleRuns(deps, request.params.id, limit, request.query.before) };
       } catch (err) {
         fail(reply, err, "read the runs");
       }

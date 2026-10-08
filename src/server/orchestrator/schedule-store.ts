@@ -287,11 +287,13 @@ export class ScheduleStore {
     return this.getRun(id);
   }
 
-  /** Newest first (req 24). */
-  listRuns(scheduleId: string, limit?: number): ScheduleRun[] {
+  /** Newest first (req 24); with `beforeRunId`, only the runs older than that one. */
+  listRuns(scheduleId: string, limit?: number, beforeRunId?: string): ScheduleRun[] {
     const rows = this.db.prepare(
-      "SELECT * FROM schedule_runs WHERE schedule_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
-    ).all(scheduleId, limit ?? -1) as RunRow[];
+      `SELECT * FROM schedule_runs WHERE schedule_id = ?
+         AND (? IS NULL OR (created_at, rowid) < (SELECT created_at, rowid FROM schedule_runs WHERE id = ?))
+       ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+    ).all(scheduleId, beforeRunId ?? null, beforeRunId ?? null, limit ?? -1) as RunRow[];
     return rows.map(runFromRow);
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeAttentionReason, runAttentionReason, type AttentionInputs } from "./useAttentionInfo.js";
+import { computeAttentionReason, rowAttentionInputs, runAttentionReason, type AttentionInputs } from "./useAttentionInfo.js";
 import type { SessionListRow } from "../../server/shared/types.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
@@ -17,6 +17,7 @@ function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
     muted: false,
     workspaceBlockKind: undefined,
     runReason: null,
+    runAwaitingAnswer: false,
     ...overrides,
   };
 }
@@ -375,6 +376,15 @@ describe("computeAttentionReason", () => {
       expect(computeAttentionReason(inputs({ runReason: question, resolved: true }))).toBeNull();
       expect(computeAttentionReason(inputs({ runReason: question, muted: true }))).toBeNull();
     });
+
+    it("reports a run's question while background work goes on, which the scheduler does not count as going (req 23)", () => {
+      const waiting = { runReason: question, runAwaitingAnswer: true, hasBackgroundTasks: true };
+      expect(computeAttentionReason(inputs(waiting))).toBe(question);
+      expect(computeAttentionReason(inputs({ ...waiting, resolved: true }))).toBeNull();
+      expect(computeAttentionReason(inputs({ ...waiting, isAgentRunning: true }))).toBeNull();
+      // Any other reason a run has still waits for the background work, as the scheduler does.
+      expect(computeAttentionReason(inputs({ runReason: "Run stopped on an error", hasBackgroundTasks: true }))).toBeNull();
+    });
   });
 });
 
@@ -399,5 +409,10 @@ describe("runAttentionReason", () => {
 
   it("ignores manual steps while the status card is off, as the card itself does", () => {
     expect(runAttentionReason(row({ manualStepCount: 2 }), false)).toBeNull();
+  });
+
+  it("marks a run's question for the background-work rule, and only a run's", () => {
+    expect(rowAttentionInputs(row({ awaitingAnswer: true }), false).runAwaitingAnswer).toBe(true);
+    expect(rowAttentionInputs(row({ scheduleId: undefined, awaitingAnswer: true }), false).runAwaitingAnswer).toBe(false);
   });
 });

@@ -18,11 +18,16 @@ interface FakeAgent extends EventEmitter {
 
 const QUOTA_ERROR = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
 
-function setup(opts: { billingMode?: "sub" | "key" } = {}) {
+function setup(opts: { billingMode?: "sub" | "key"; scheduleId?: string } = {}) {
   const agents: FakeAgent[] = [];
   const outcomes: LastTurnOutcome[] = [];
   const ends: TurnEnd[] = [];
+  /** The outcome writes and the browser events, in the order they happened. */
+  const log: string[] = [];
   const prepareAgentEnv = vi.fn().mockResolvedValue(undefined);
+  const session = (): unknown => opts.scheduleId
+    ? { scheduleId: opts.scheduleId, ...(outcomes.length > 0 ? { lastTurnOutcome: outcomes.at(-1) } : {}) }
+    : opts.billingMode ? { agentId: "claude", billingMode: opts.billingMode } : undefined;
   const deps: SystemTurnDeps = {
     agentFactory: () => {
       const agent = new EventEmitter() as FakeAgent;
@@ -46,8 +51,11 @@ function setup(opts: { billingMode?: "sub" | "key" } = {}) {
       sessionManager: {
         setAgentSessionId: vi.fn(),
         setLastTurnErrored: vi.fn(),
-        setLastTurnOutcome: (_id: string, outcome: LastTurnOutcome) => outcomes.push(outcome),
-        get: vi.fn().mockReturnValue(opts.billingMode ? { agentId: "claude", billingMode: opts.billingMode } : undefined),
+        setLastTurnOutcome: (_id: string, outcome: LastTurnOutcome) => {
+          outcomes.push(outcome);
+          log.push(`outcome:${outcome}`);
+        },
+        get: vi.fn(session),
         track: vi.fn(),
         touchUnlessResolved: vi.fn(),
         setMuted: vi.fn(),
@@ -61,7 +69,7 @@ function setup(opts: { billingMode?: "sub" | "key" } = {}) {
         indexOfMessageId: vi.fn().mockReturnValue(-1),
       } as never,
       usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as never,
-      sseBroadcast: vi.fn(),
+      sseBroadcast: vi.fn((event: string) => { log.push(event); }),
       broadcastLog: vi.fn(),
       getSelectedModel: () => undefined,
     },
@@ -69,7 +77,7 @@ function setup(opts: { billingMode?: "sub" | "key" } = {}) {
   };
   const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
   runner.setSystemTurnDeps(deps);
-  return { runner, deps, agents, outcomes, ends, prepareAgentEnv };
+  return { runner, deps, agents, outcomes, ends, log, prepareAgentEnv };
 }
 
 async function flush(): Promise<void> {
@@ -177,6 +185,17 @@ describe("last_turn_outcome (docs/324-scheduled-sessions req 31)", () => {
     await waitFor(() => stopped.ends.length > 0, "turn end");
     expect(stopped.ends[0]).toMatchObject({ outcome: "ok" });
     stopped.runner.dispose({ force: true });
+  });
+
+  it("lists a run again when a terminal adapter error changes its outcome (req 31)", async () => {
+    const { runner, agents, ends, log } = setup({ scheduleId: "sched-1" });
+    const agent = await startTurn(runner, agents);
+    agent.emit("error", new Error("API Error: 500"));
+    await waitFor(() => !runner.running && ends.length > 0, "turn end");
+    // "Needs you" reads the outcome from the list row, and the run's finish did not change.
+    expect(log.indexOf("outcome:errored")).toBeGreaterThanOrEqual(0);
+    expect(log.lastIndexOf("session_list")).toBeGreaterThan(log.indexOf("outcome:errored"));
+    runner.dispose({ force: true });
   });
 
   it("records a turn the resident agent started by itself, which keeps its predecessor's result", async () => {
