@@ -12,8 +12,13 @@ description: Let a ShipIt install on WSL2 or Linux give the machine's NVIDIA GPU
 4. NVIDIA GPUs must work through CUDA, on WSL2 and on a native Linux install.
 5. One install-wide switch in ShipIt's Settings turns GPU access on and off. It is off by default. When it is on, every new session gets the GPU.
 6. When the switch is on but Docker cannot give a GPU, a new session starts as normal without the GPU, and ShipIt tells the user and the agent that the GPU is not available, and why.
+7. With GPU access, the agent can run Chrome in a session and Chrome draws with the GPU: a page that asks Chrome for its graphics renderer gets the machine's GPU, not a software renderer.
 
 ## Open questions
+
+- Which Chrome must draw with the GPU (req 7): only a Chrome that the agent starts itself (a test, a benchmark, a script), or also ShipIt's built-in browser that the agent's browser tools use?
+- Which graphics must run on the GPU (req 7): WebGL only, or WebGPU also?
+- Where must req 7 hold: in the agent's container on WSL2 only, or also on a native Linux install, in Compose services, and in containers that the agent starts through Docker?
 
 ## Resolved questions
 
