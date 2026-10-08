@@ -44,4 +44,5 @@
 - [x] `shipit-docs/schedules.md` notes part; the notes in the wiki section
 - [x] Integration tests: each recovery case, no double start, overlap skip, waiting run does not block, catch-up runs once with the rest recorded, Run now not limited, quota-refused first turn is a failed start
 - [x] Integration tests: stopped run takes no automatic turn, Delete refused while a run is busy
-- [ ] Independent review of the whole feature against every requirement
+- [x] Independent review of the whole feature against every requirement (eight findings)
+- [ ] Review findings fixed or refuted: Delete during a resumed run, Stop without a runner after restart, recovery before graduation, completion after restart (fix A); error outcome not published, waiting question hidden by background work, Run now response over a failure, history capped at 1,000 runs (fix B)
