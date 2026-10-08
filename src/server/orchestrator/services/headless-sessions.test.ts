@@ -883,7 +883,7 @@ describe("createHeadlessSession", () => {
         ...repo({ model: "gpt-6-astra", serviceId: "openai", billingMode: "key", reasoning: "high" }),
         prompt: "Check the PRs",
         title: "Nightly · Oct 7, 09:00",
-        scheduleRun: { scheduleId: "schedule-1", runId: "run-1" },
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-1", timeZone: "UTC" },
         // The scheduler's gate marks the run started right after the dispatch; a restart can come next.
         dispatchGate: async (sessionId, dispatch) => {
           const turn = dispatch();
