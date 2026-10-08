@@ -1,7 +1,7 @@
 import type { AgentId, AgentProcess } from "../shared/types.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { buildTurnMessages } from "./chat-card-persistence.js";
+import { finalizeTurnRows } from "./chat-card-persistence.js";
 import { stopOwnTurnWhileAwaitingAnswer } from "./ws-handlers/agent-listeners.js";
 import {
   startQueuedMessage,
@@ -84,16 +84,7 @@ export async function adoptInFlightTurn(
     emitErrorOnNoResult: true,
     onInterruptedTurn: () => {
       // Finalize partial replay rows so the next turn cannot replace them.
-      const partial = buildTurnMessages(
-        runner.chatMessageGroups,
-        runner.steeredMessages ?? [],
-        runner.recordedCards ?? [],
-        { inProgress: false },
-      );
-      if (partial.length > 0) {
-        deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, partial);
-        deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
-      }
+      finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
       runner.clearTurnEventBuffer();
     },
   });

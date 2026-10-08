@@ -46,7 +46,8 @@ async function fakeStart(opts: CreateHeadlessSessionOptions, beforeGate?: () => 
   starts.push(opts);
   const sessionId = `session-${++counter}`;
   sessions.track(sessionId, opts.title);
-  sessions.setScheduleRun(sessionId, opts.scheduleRun!.scheduleId, opts.scheduleRun!.runId);
+  const { scheduleId, runId, timeZone } = opts.scheduleRun!;
+  sessions.setScheduleRun(sessionId, scheduleId, runId, timeZone);
   opts.onRunLinked?.(sessionId);
   await beforeGate?.();
   const turn = createTurnSettlement();
@@ -143,7 +144,7 @@ describe("ScheduleRunner — due runs", () => {
       title: "Security PRs · Oct 7, 09:00",
       deliveryId: run!.id,
       fetchBase: true,
-      scheduleRun: { scheduleId: s.id, runId: run!.id },
+      scheduleRun: { scheduleId: s.id, runId: run!.id, timeZone: "UTC" },
       onRunLinked: expect.any(Function),
       dispatchGate: expect.any(Function),
     });
@@ -254,6 +255,24 @@ describe("ScheduleRunner — due runs", () => {
     await runner.runPass(at("2026-10-08T09:00:30Z"));
     expect(runs(s.id)[0]).toMatchObject({ outcome: "started" });
     expect(probed).toEqual(["leftover", "leftover"]);
+  });
+
+  it("gives a run the schedule's zone when it is claimed, for its title, its session and its row", async () => {
+    const s = schedule({ timeZone: "Asia/Tokyo" });
+    await runner.runPass(at("2026-10-08T00:00:30Z"));
+    const [run] = runs(s.id);
+    expect(starts[0]).toMatchObject({
+      title: "Security PRs · Oct 8, 09:00",
+      scheduleRun: { scheduleId: s.id, runId: run!.id, timeZone: "Asia/Tokyo" },
+    });
+    expect(run!.timeZone).toBe("Asia/Tokyo");
+    expect(sessions.get("session-1")!.runTimeZone).toBe("Asia/Tokyo");
+
+    store.update(s.id, { timeZone: "Europe/Berlin" });
+    expect(store.getRun(run!.id)!.timeZone).toBe("Asia/Tokyo");
+    expect(sessions.get("session-1")!.runTimeZone).toBe("Asia/Tokyo");
+    const now = await runner.runNow(s.id);
+    expect(now.timeZone).toBe("Europe/Berlin");
   });
 
   it("starts due runs one at a time", async () => {
@@ -474,6 +493,23 @@ describe("ScheduleRunner — recovery after a restart", () => {
     expect(starts).toHaveLength(1);
     expect(starts[0]).toMatchObject({ deliveryId: run.id, prompt: SANDBOX_SPEC.prompt });
     expect(store.getRun(run.id)).toMatchObject({ outcome: "started", sessionId: "session-1" });
+  });
+
+  it("titles a run in the zone it was claimed in after the schedule's zone changed; an older row takes the schedule's", async () => {
+    const s = schedule({}, "2026-10-07T09:00:00.000Z");
+    const claimed = store.insertRun(
+      { scheduleId: s.id, slotAt: at("2026-10-07T09:00:00Z"), timeZone: "UTC", spec: SANDBOX_SPEC },
+      "2026-10-07T09:00:05.000Z",
+    )!;
+    const older = store.insertRun({ scheduleId: s.id, slotAt: null, spec: SANDBOX_SPEC }, "2026-10-07T09:00:30.000Z")!;
+    store.update(s.id, { timeZone: "Asia/Tokyo" });
+    await runner.runPass(NOW);
+    expect(starts.map((o) => [o.deliveryId, o.title, o.scheduleRun!.timeZone])).toEqual([
+      [claimed.id, "Security PRs · Oct 7, 09:00", "UTC"],
+      [older.id, "Security PRs · Oct 7, 18:00", "Asia/Tokyo"],
+    ]);
+    expect(sessions.get("session-1")!.runTimeZone).toBe("UTC");
+    expect(sessions.get("session-2")!.runTimeZone).toBe("Asia/Tokyo");
   });
 
   it("marks a starting run whose prompt reached its runner as started, without starting it again", async () => {

@@ -13,6 +13,7 @@ import {
   SCHEDULES_MIGRATION,
   SCHEDULE_NOTES_ACCESS_MIGRATION,
   SCHEDULE_PROPOSALS_MIGRATION,
+  SCHEDULE_RUN_TIME_ZONE_MIGRATION,
   DatabaseManager,
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
@@ -1400,6 +1401,54 @@ describe("docs/324-scheduled-sessions — the notes access card (real migration)
     const replayed = new DatabaseManager(file);
     expect(replayed.db.prepare("SELECT card_id, phase FROM schedule_notes_requests").all())
       .toEqual([{ card_id: "snr-1", phase: "pending" }]);
+    replayed.close();
+  });
+});
+
+describe("docs/324-scheduled-sessions — a run's own time zone (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const zones = (m: DatabaseManager) => ({
+    run: m.db.prepare("SELECT time_zone FROM schedule_runs WHERE id = 'r1'").get(),
+    session: m.db.prepare("SELECT run_time_zone FROM sessions WHERE id = 'run'").get(),
+  });
+
+  it("adds the columns to an older database, leaves its rows without a zone, and replays over them", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec(`
+      ALTER TABLE schedule_runs DROP COLUMN time_zone;
+      ALTER TABLE sessions DROP COLUMN run_time_zone;
+      INSERT INTO schedules (id, name, timing, time_zone, spec, active_since, created_at, updated_at)
+        VALUES ('s1', 'Daily', '{}', 'UTC', '{}', 'x', 'x', 'x');
+      INSERT INTO schedule_runs (id, schedule_id, slot_at, outcome, created_at)
+        VALUES ('r1', 's1', '2026-10-07T09:00:00.000Z', 'started', 'x');
+      INSERT INTO sessions (id, title, created_at, last_used_at, schedule_id, schedule_run_id)
+        VALUES ('run', 'Daily · Oct 7, 09:00', 'x', 'x', 's1', 'r1');
+    `);
+    m.db.pragma(`user_version = ${SCHEDULE_RUN_TIME_ZONE_MIGRATION}`);
+    m.close();
+
+    const migrated = new DatabaseManager(file);
+    expect(zones(migrated)).toEqual({ run: { time_zone: null }, session: { run_time_zone: null } });
+    migrated.db.exec(`
+      UPDATE schedule_runs SET time_zone = 'Europe/Berlin';
+      UPDATE sessions SET run_time_zone = 'Europe/Berlin';
+    `);
+    migrated.db.pragma(`user_version = ${SCHEDULE_RUN_TIME_ZONE_MIGRATION}`);
+    migrated.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(zones(replayed)).toEqual({ run: { time_zone: "Europe/Berlin" }, session: { run_time_zone: "Europe/Berlin" } });
     replayed.close();
   });
 });

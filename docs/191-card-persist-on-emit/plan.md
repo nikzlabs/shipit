@@ -60,10 +60,42 @@ re-running it at the boundary reproduces the identical set. Lifecycle transition
 (bug-report filed/failed, issue-write undone) still patch the persisted row in
 place by `cardId`.
 
+## A turn's rows are made final once (planning#645)
+
+One agent attempt can end through more than one terminal event: an auth failure
+and a result, an auth failure and a process error, a result and a process error
+from the same death. Each terminal handler rebuilt the turn from the runner and
+called `replaceInProgress` + `finalizeInProgress`. After the first one no row is
+in progress, so the second deleted nothing and inserted every row again: each
+card twice with the same id, and the partial assistant text twice.
+
+`finalizeTurnRows` is now the single terminal write. It latches on
+`runner.finalizedTurnEpoch === runner.turnEpoch`, and `resetRunnerTurnState`
+bumps the epoch, so the latch re-arms for each turn. Once a turn's rows are
+final, `persistTurnInProgress` writes nothing, `emitChatCard` appends the card
+(as it does after the turn), and `persistCardTransition` patches the database
+row. Every terminal site uses it: the listener's `agent_result` and `error`
+paths, the auth handler, the executor's retry and fallback finalizes,
+`onInterruptedTurn`, and turn adoption. The tool-result boundary goes through
+`persistTurnInProgress`, so a late tool result cannot rebuild a final turn
+either. The worker-loss rescue and the abandoned-turn handler keep their own
+finalize (the abandoned turn's permission denial patched only the database row,
+so a rebuild would restore it as pending) and set the latch with
+`markTurnRowsFinalized`.
+
+A failed sign-in heal settles the turn, and can start a queued turn, before the
+auth handler writes its error. So the executor makes the failing turn's rows
+final before it settles, and the auth handler only appends its error row when
+a newer turn owns the runner.
+
+Late assistant text after a result, in the same turn (Codex), is not saved on a
+plain exit, and was not saved before this change either. Only an error after it
+used to save it, as a second copy of the whole turn.
+
 ## Key files
 
 - `chat-card-persistence.ts` — `emitChatCard` (now persists), `recordChatCard`,
-  `buildTurnMessages`, `persistTurnInProgress`, `emitNoticeInTurn`,
+  `buildTurnMessages`, `persistTurnInProgress`, `finalizeTurnRows`, `emitNoticeInTurn`,
   `emitNoticePostTurn`, the `CardPersistCtx` / `InProgressPersister` types.
 - `ws-handlers/agent-listeners.ts` — re-exports the turn-rebuild helpers; the
   compaction card and in-turn notices pass the persist context; the manual
@@ -83,6 +115,9 @@ place by `cardId`.
 - `voice-note-router.test.ts`, `ws-handlers/agent-listeners.test.ts`,
   `user-bug-filing.test.ts` updated for the new `emitChatCard` / `routeVoiceNote`
   contract.
+- `integration_tests/turn-rows-finalized-once.test.ts` and the `finalizeTurnRows`
+  block in `chat-card-persistence.test.ts` — planning#645: a turn that several
+  terminal events end saves each card and each row once.
 
 ## Relation to the persistence rule
 

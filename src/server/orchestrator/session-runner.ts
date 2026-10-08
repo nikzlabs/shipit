@@ -633,6 +633,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly rebindDelivery?: SystemTurnDeps["rebindDelivery"];
   wasInterrupted: boolean;
   turnEpoch: number;
+  /** The turnEpoch whose rows `finalizeTurnRows` has made final (planning#645). */
+  finalizedTurnEpoch?: number;
   guardedUnavailable: boolean;
   readonly awaitingPermissionIds: Set<string>;
   /** Decaying CLI hints, gated on resident process liveness. */

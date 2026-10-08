@@ -788,13 +788,14 @@ describe("createHeadlessSession", () => {
           ...repo({ sshHosts: ["prod"] }),
           prompt: "deploy",
           title: "Nightly · Oct 7, 09:00",
-          scheduleRun: { scheduleId: "schedule-1", runId: "run-1" },
+          scheduleRun: { scheduleId: "schedule-1", runId: "run-1", timeZone: "Europe/Berlin" },
         },
       )).rejects.toMatchObject({ statusCode: 503 });
       expect(order).toEqual([]);
       expect(sessionManager.get("quick-1")).toMatchObject({
         scheduleId: "schedule-1",
         scheduleRunId: "run-1",
+        runTimeZone: "Europe/Berlin",
         title: "Nightly · Oct 7, 09:00",
       });
     });
@@ -814,7 +815,7 @@ describe("createHeadlessSession", () => {
       await createHeadlessSession(deps({ claimService: claim }), {
         ...repo(),
         prompt: "go",
-        scheduleRun: { scheduleId: "schedule-1", runId: "run-1" },
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-1", timeZone: "UTC" },
         onRunLinked,
       });
       expect(claim.claim).toHaveBeenCalledWith(REPO_URL, { skipReuse: true, skipWarm: true });
@@ -825,7 +826,7 @@ describe("createHeadlessSession", () => {
         target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
         params: {},
         prompt: "go",
-        scheduleRun: { scheduleId: "schedule-1", runId: "run-2" },
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-2", timeZone: "UTC" },
         onRunLinked,
       })).rejects.toThrow("stopped before it started");
       // No container starts for a run the callback called off.
@@ -848,7 +849,7 @@ describe("createHeadlessSession", () => {
         target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
         params: {},
         prompt: "go",
-        scheduleRun: { scheduleId: "schedule-1", runId: "run-2" },
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-2", timeZone: "UTC" },
         dispatchGate: async () => { throw new Error("The schedule was paused before the run started."); },
       })).rejects.toThrow("paused");
       expect(sessionManager.sessionIdForScheduleRun("run-2")).toBeDefined();

@@ -2,7 +2,8 @@ import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode }
 import type { AgentCapabilities } from "../../shared/types/agent-types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
-import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import type { AgentListenerDeps } from "./agent-listeners.js";
+import { finalizeTurnRows } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
@@ -57,11 +58,10 @@ type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 function persistInterruptedTurn(
   ctx: FullCtx,
   sessionId: string,
-  partial: ReturnType<typeof buildTurnMessages>,
+  runner: SessionRunnerInterface,
 ): void {
   try {
-    ctx.chatHistoryManager.replaceInProgress(sessionId, partial);
-    ctx.chatHistoryManager.finalizeInProgress(sessionId);
+    finalizeTurnRows(ctx.chatHistoryManager, runner, sessionId);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("database connection is not open")) return;
@@ -745,8 +745,7 @@ async function composeAndRunAgentTurn(
 
   const onInterruptedTurn = (): void => {
     if (!runner || !capturedSessionId) return;
-    const partial = buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages ?? [], runner.recordedCards ?? [], { inProgress: false });
-    persistInterruptedTurn(ctx, capturedSessionId, partial);
+    persistInterruptedTurn(ctx, capturedSessionId, runner);
     // Prevent reconnect replay from duplicating the finalized history.
     runner.clearTurnEventBuffer();
   };

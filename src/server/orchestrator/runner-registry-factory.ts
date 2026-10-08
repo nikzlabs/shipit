@@ -39,7 +39,7 @@ import {
   type ComposeHelperConfig,
   type ServiceSetupDeps,
 } from "./service-manager-setup.js";
-import { emitNoticeInTurn } from "./chat-card-persistence.js";
+import { emitNoticeInTurn, markTurnRowsFinalized } from "./chat-card-persistence.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -269,8 +269,10 @@ export function createRunnerRegistry(
         try {
           denyAbandonedPermissionCards(runner, runner.sessionId, { chatHistoryManager, sseBroadcast });
           // Nothing else finalizes an abandoned turn, and the next turn's replaceInProgress
-          // would delete the denied card with the rest of its rows.
+          // would delete the denied card with the rest of its rows. Not a rebuild: the denial
+          // patched only the database row, so the runner's copy is still pending.
           chatHistoryManager.finalizeInProgress(runner.sessionId);
+          markTurnRowsFinalized(runner);
         } catch (err) {
           console.error(`[permission] denying abandoned cards for ${runner.sessionId} failed:`, err);
         }
