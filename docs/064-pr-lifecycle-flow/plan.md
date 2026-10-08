@@ -516,6 +516,21 @@ the canonical owner itself via `resolveCanonicalApiTarget` (a lightweight
 `repository { nameWithOwner }` probe → `canonicalApiTarget`) before the REST
 probe, falling back to the polled owner when the probe yields nothing.
 
+The service layer has lookups of its own that never go through the poller: the
+merge button (`services/github.ts` `mergePullRequest`), the live PR read,
+quick-create's existing-PR check and the review-comment submit. On a transferred
+repo the card showed the PR (GraphQL) while the merge button answered "No active
+PR for current branch" (REST, stale owner). So the correction also lives where
+the owner-qualified filter is built: `listPullsByHead` in `github-auth-prs.ts`,
+which backs both `findPullRequest` and `findPullRequestAnyState`. When the list
+is answered **through a redirect** (`Response.redirected`), it reads the
+repository's canonical name once; if the owner differs, the first answer was
+filtered on the wrong owner — empty, or a PR from the former owner's fork — and
+the lookup is repeated under the canonical one. A repo that did not move is never
+redirected, so the steady-state cost is unchanged. For these PR lookups the
+`head` filter is the only part that needed this: everything addressed by path or
+PR number, the merge call included, already follows GitHub's redirect.
+
 (If ShipIt ever wants the *repo record itself* to follow a transfer — so the
 sidebar shows the new owner — that is a separate, deliberate migration of all
 three identity layers together: `repos` row, every session `remoteUrl`, and the
