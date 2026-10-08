@@ -15,6 +15,9 @@ import { parseSessionStartSpec } from "../shared/session-start-spec.js";
 import { scheduleSpecProblem, toScheduleView, type ScheduleQueue, type ScheduleSpecDeps } from "./services/schedules.js";
 import { ServiceError } from "./services/types.js";
 import { getErrorMessage } from "./validation.js";
+import type { ScheduleNotes } from "./schedule-notes.js";
+import type { SessionIdentity } from "../shared/session-identity.js";
+import { identityForSession } from "./session-worker-uid.js";
 
 /**
  * docs/324-scheduled-sessions → The scheduler: starts due runs through the headless
@@ -27,6 +30,7 @@ export const SCHEDULE_PASS_INTERVAL_MS = 30_000;
 const RESTARTED_DURING_RUN = "ShipIt restarted during the run.";
 const RESTARTED_WHILE_PREPARING = "ShipIt restarted while this run's session was being prepared.";
 const STOPPED_BEFORE_START = "The run was stopped before it started.";
+const DELETED_BEFORE_START = "The schedule was deleted before the run started.";
 
 export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   store: ScheduleStore;
@@ -49,6 +53,10 @@ export interface ScheduleRunnerDeps extends ScheduleSpecDeps {
   interruptTurn?: (sessionId: string) => void;
   /** `advanced.sessionStatusCard`: a run's manual steps count only while the card is on. */
   statusCardEnabled?: () => boolean;
+  /** The runs' notes folders (req 13); without them a run starts with none. */
+  notes?: Pick<ScheduleNotes, "prepareRun" | "existingRunDir">;
+  /** The identity a run session's folder is handed to; the session's own by default. */
+  sessionIdentity?: (sessionId: string) => SessionIdentity | null;
 }
 
 /** The start was called off by a change the user made: no reason to show as needing them. */
@@ -264,11 +272,30 @@ export class ScheduleRunner implements ScheduleQueue {
         deliveryId: run.id,
         fetchBase: true,
         scheduleRun: { scheduleId: run.scheduleId, runId: run.id },
+        onRunLinked: (sessionId) => this.prepareNotes(run, sessionId),
         // A pause stops due runs; Run now has no restrictions (req 26).
         dispatchGate: this.gate(run, { cancelOnPause: run.slotAt !== null }),
       });
     } catch (err) {
       this.startFailed(run.id, err);
+    }
+  }
+
+  /**
+   * Req 13 — the run's notes folder, before its container starts. A run stopped, or a schedule
+   * deleted, while its session was being made gets none: the check and the folder are one
+   * synchronous step, so no queued change falls between them.
+   */
+  private prepareNotes(run: ScheduleRun, sessionId: string): void {
+    const { store, notes } = this.deps;
+    if (!store.get(run.scheduleId)) throw this.calledOff(sessionId, DELETED_BEFORE_START);
+    if (store.getRun(run.id)?.outcome !== "starting") throw this.calledOff(sessionId, STOPPED_BEFORE_START);
+    if (!notes) return;
+    const identity = (this.deps.sessionIdentity ?? identityForSession)(sessionId);
+    try {
+      notes.prepareRun(run.scheduleId, run.id, identity);
+    } catch (err) {
+      throw new Error(`The run's notes folder could not be created: ${getErrorMessage(err)}`, { cause: err });
     }
   }
 
@@ -290,7 +317,7 @@ export class ScheduleRunner implements ScheduleQueue {
       this.enqueue(run.scheduleId, () => {
         const current = this.deps.store.getRun(run.id);
         const schedule = this.deps.store.get(run.scheduleId);
-        if (!current || !schedule) throw this.calledOff(sessionId, "The schedule was deleted before the run started.");
+        if (!current || !schedule) throw this.calledOff(sessionId, DELETED_BEFORE_START);
         if (current.outcome !== (opts.resend ? "started" : "starting")) throw this.calledOff(sessionId, STOPPED_BEFORE_START);
         // A stopped run takes no turn the user did not start (req 33); a re-sent prompt is one.
         if (opts.resend && this.deps.sessionManager.get(sessionId)?.runStoppedAt) {
@@ -503,12 +530,14 @@ export class ScheduleRunner implements ScheduleQueue {
     return runs.map((run) => {
       const sessionId = run.sessionId ?? sessionManager.sessionIdForScheduleRun(run.id);
       if (!sessionId) return run;
+      // A run gets its folder only once its session exists.
+      const notes = this.deps.notes?.existingRunDir(run.scheduleId, run.id) ? { hasNotes: true as const } : {};
       const session = sessionManager.get(sessionId);
-      if (!session) return { ...run, sessionId, sessionDeleted: true };
+      if (!session) return { ...run, sessionId, sessionDeleted: true, ...notes };
       const result = session.runFinishedAt
         ? run.result
         : runResult(session, statusCardOn, chatHistoryManager.load(sessionId)) ?? run.result;
-      return { ...run, sessionId, session: toListRow(session), ...(result ? { result } : {}) };
+      return { ...run, sessionId, session: toListRow(session), ...(result ? { result } : {}), ...notes };
     });
   }
 

@@ -14,6 +14,7 @@ import type {
   SessionSettingsChangeCard,
   SettingsProposalCard,
   ScheduleProposalCard,
+  ScheduleNotesAccessCard,
   NonTurnFailureCard,
   SshHostKeyCard,
 } from "../domain-types.js";
@@ -266,6 +267,20 @@ export interface WsScheduleProposalUpdate {
   sessionId: string;
   cardId: string;
   card: ScheduleProposalCard;
+}
+
+/** docs/324-scheduled-sessions reqs 28, 30 — an agent asks to read a schedule's notes. */
+export interface WsScheduleNotesAccessCard {
+  type: "schedule_notes_access_card";
+  sessionId: string;
+  card: ScheduleNotesAccessCard;
+}
+
+export interface WsScheduleNotesAccessUpdate {
+  type: "schedule_notes_access_update";
+  sessionId: string;
+  cardId: string;
+  card: ScheduleNotesAccessCard;
 }
 
 export interface WsNonTurnFailureCard {

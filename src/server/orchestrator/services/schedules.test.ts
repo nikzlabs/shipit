@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { DatabaseManager } from "../../shared/database.js";
 import { ScheduleStore } from "../schedule-store.js";
+import { ScheduleNotes } from "../schedule-notes.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ScheduleRun, UnfinishedScheduleRun } from "../../shared/types.js";
 import {
@@ -220,5 +224,37 @@ describe("Delete (req 32)", () => {
     expect(store.listRuns(created.id)).toEqual([]);
     expect(announced).toBe(1);
     await expect(deleteSchedule(deps, created.id)).rejects.toThrow("Schedule not found");
+  });
+
+  it("removes the schedule's notes, but only after the refusal check, and never another schedule's", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "schedule-delete-notes-"));
+    try {
+      const notes = new ScheduleNotes(path.join(tmp, "schedules"));
+      const withNotes = { ...deps, notes };
+      const created = createSchedule(withNotes, input());
+      const kept = createSchedule(withNotes, input({ name: "Another" }));
+      const run = store.insertRun({ scheduleId: created.id, slotAt: null, outcome: "started" })!;
+      notes.prepareRun(created.id, run.id, null);
+      notes.prepareRun(kept.id, "run-of-another", null);
+
+      unfinished = [{ runId: run.id, title: "Security PRs · Oct 7, 09:00" }];
+      await expect(deleteSchedule(withNotes, created.id)).rejects.toBeInstanceOf(ScheduleDeleteRefused);
+      expect(notes.existingRunDir(created.id, run.id)).not.toBeNull();
+
+      unfinished = [];
+      await deleteSchedule(withNotes, created.id);
+      expect(fs.existsSync(notes.scheduleDir(created.id))).toBe(false);
+      expect(notes.existingRunDir(kept.id, "run-of-another")).not.toBeNull();
+
+      // Notes that cannot be removed keep the schedule: it is never reported deleted with its notes left.
+      const failing = { ...deps, notes: { remove: () => { throw new Error("EACCES: permission denied"); } } };
+      await expect(deleteSchedule(failing, kept.id)).rejects.toMatchObject({
+        statusCode: 500,
+        message: "The schedule was not deleted: its notes could not be removed (EACCES: permission denied).",
+      });
+      expect(store.get(kept.id)).not.toBeNull();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

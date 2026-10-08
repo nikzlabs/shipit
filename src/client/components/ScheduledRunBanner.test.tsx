@@ -6,6 +6,7 @@ import { SandboxBanner } from "./SandboxBanner.js";
 import { useScheduleStore } from "../stores/schedule-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useScheduleNotesStore } from "../stores/schedule-notes-store.js";
 import { browserTimeZone, formatRunTime } from "./Settings/schedules/schedule-format.js";
 import type { ScheduleView, SessionListRow } from "../../server/shared/types.js";
 
@@ -89,6 +90,14 @@ describe("ScheduledRunBanner", () => {
     rerender(<ScheduledRunBanner session={runSession()} />);
     expect(banner()).toContain(`· ${formatRunTime(createdAt, zone)} (${zone})`);
     expect(formatRunTime(createdAt, zone)).not.toBe(formatRunTime(createdAt));
+  });
+
+  it("opens the run's notes (req 27)", async () => {
+    const open = vi.fn();
+    useScheduleNotesStore.setState({ open });
+    render(<ScheduledRunBanner session={runSession({ runFinishedAt: "2026-10-06T09:30:00.000Z" })} />);
+    await userEvent.click(screen.getByTestId("scheduled-run-notes"));
+    expect(open).toHaveBeenCalledWith({ scheduleId: "sched-1", runId: "run-1" });
   });
 
   it("says the schedule was deleted, with no links", () => {

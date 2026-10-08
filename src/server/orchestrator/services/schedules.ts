@@ -16,7 +16,9 @@ import { catalogueModelLabels, selectionExists } from "../../shared/catalogue/in
 import { nextRuns, normalizeTimeZone, parseScheduleTiming, timingProblem } from "../../shared/schedule-timing.js";
 import { parseSessionStartSpec } from "../../shared/session-start-spec.js";
 import { resolveUserRole } from "./session-role.js";
+import type { ScheduleNotes } from "../schedule-notes.js";
 import { ServiceError } from "./types.js";
+import { getErrorMessage } from "../validation.js";
 
 /**
  * docs/324-scheduled-sessions — reading and changing schedules (reqs 10, 17, 19, 26). Every
@@ -59,6 +61,8 @@ export class ScheduleDeleteRefused extends ServiceError {
 export interface ScheduleServiceDeps extends ScheduleSpecDeps {
   store: ScheduleStore;
   scheduler: ScheduleQueue;
+  /** The schedule's notes folders, which Delete removes (req 32). */
+  notes?: Pick<ScheduleNotes, "remove">;
 }
 
 /**
@@ -317,14 +321,20 @@ export async function stopScheduleRun(deps: ScheduleServiceDeps, id: string, run
 }
 
 /**
- * Req 32 — removes the schedule and its run history; the run sessions stay and keep the
- * schedule's id, so each can say its schedule was deleted. Refused while a run is not finished.
+ * Req 32 — removes the schedule, its run history and its notes; the run sessions stay and keep
+ * the schedule's id, so each can say its schedule was deleted. Refused while a run is not finished.
  */
 export async function deleteSchedule(deps: ScheduleServiceDeps, id: string): Promise<void> {
   await deps.scheduler.enqueue(id, async () => {
     existing(deps, id);
     const runs = await deps.scheduler.unfinishedRuns(id);
     if (runs.length > 0) throw new ScheduleDeleteRefused(runs);
+    // Notes first: a schedule whose notes are still there is never reported deleted.
+    try {
+      deps.notes?.remove(id);
+    } catch (err) {
+      throw new ServiceError(500, `The schedule was not deleted: its notes could not be removed (${getErrorMessage(err)}).`);
+    }
     deps.store.delete(id);
     deps.scheduler.announceSchedules();
   });

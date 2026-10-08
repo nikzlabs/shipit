@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { ScheduleStore, type NewSchedule } from "./schedule-store.js";
@@ -46,6 +46,7 @@ async function fakeStart(opts: CreateHeadlessSessionOptions, beforeGate?: () => 
   const sessionId = `session-${++counter}`;
   sessions.track(sessionId, opts.title);
   sessions.setScheduleRun(sessionId, opts.scheduleRun!.scheduleId, opts.scheduleRun!.runId);
+  opts.onRunLinked?.(sessionId);
   await beforeGate?.();
   const turn = createTurnSettlement();
   await opts.dispatchGate!(sessionId, () => {
@@ -142,6 +143,7 @@ describe("ScheduleRunner — due runs", () => {
       deliveryId: run!.id,
       fetchBase: true,
       scheduleRun: { scheduleId: s.id, runId: run!.id },
+      onRunLinked: expect.any(Function),
       dispatchGate: expect.any(Function),
     });
     expect(run).toMatchObject({
@@ -812,6 +814,26 @@ describe("ScheduleRunner — the run history's view of each run (req 24)", () =>
 
     expect(runner.viewRuns([kept])[0]!.result).toBe("Should I merge #3060?");
   });
+
+  it("marks the runs that have a notes folder, also when their session is gone (req 27)", () => {
+    const s = schedule();
+    const withFolder = new Set<string>();
+    runner = makeRunner({ notes: { prepareRun: vi.fn(), existingRunDir: (_s, runId) => (withFolder.has(runId) ? `/n/${runId}` : null) } });
+    const link = (sessionId: string): ScheduleRun => {
+      const run = store.insertRun({ scheduleId: s.id, slotAt: null, outcome: "started" })!;
+      sessions.track(sessionId, "Security PRs · Oct 7, 09:00");
+      sessions.setScheduleRun(sessionId, s.id, run.id);
+      return store.updateRun(run.id, { sessionId })!;
+    };
+    const noted = link("noted");
+    const bare = link("bare");
+    const gone = link("gone");
+    sessions.delete("gone");
+    withFolder.add(noted.id).add(gone.id);
+
+    const views = runner.viewRuns([noted, bare, gone]);
+    expect(views.map((v) => v.hasNotes)).toEqual([true, undefined, true]);
+  });
 });
 
 function finishedAtOf(sessionId: string): string | undefined {
@@ -858,3 +880,62 @@ describe("ScheduleRunner — runs that are not finished, from a stale or hidden 
     expect((await runner.unfinishedRuns(scheduleId)).map((r) => r.sessionId)).toEqual(["claimed"]);
   });
 });
+
+describe("ScheduleRunner — the run's notes folder (req 13)", () => {
+  function startLinkingWith(beforeLink: (opts: CreateHeadlessSessionOptions) => Promise<void> | void) {
+    return async (opts: CreateHeadlessSessionOptions): Promise<unknown> => {
+      starts.push(opts);
+      const sessionId = `session-${++counter}`;
+      sessions.track(sessionId, opts.title);
+      sessions.setScheduleRun(sessionId, opts.scheduleRun!.scheduleId, opts.scheduleRun!.runId);
+      await beforeLink(opts);
+      opts.onRunLinked?.(sessionId);
+      return { sessionId };
+    };
+  }
+
+  it("makes the folder for the run's session, with the identity it is handed", async () => {
+    const notes = { prepareRun: vi.fn(), existingRunDir: () => null };
+    runner = makeRunner({ notes, sessionIdentity: (id) => (id === "session-1" ? { uid: 4242, gid: 4242 } : null) });
+    const s = schedule();
+    await runner.runPass(at("2026-10-07T09:00:30Z"));
+    const [run] = runs(s.id);
+    expect(notes.prepareRun).toHaveBeenCalledWith(s.id, run!.id, { uid: 4242, gid: 4242 });
+    expect(run!.outcome).toBe("started");
+  });
+
+  it("makes no folder for a run stopped while its session was being made, and calls the start off", async () => {
+    const notes = { prepareRun: vi.fn(), existingRunDir: () => null };
+    const s = schedule();
+    runner = makeRunner({
+      notes,
+      startSession: startLinkingWith(async (opts) => { await runner.stopRun(s.id, opts.scheduleRun!.runId); }),
+    });
+    await runner.runPass(at("2026-10-07T09:00:30Z"));
+    expect(notes.prepareRun).not.toHaveBeenCalled();
+    expect(runs(s.id)[0]).toMatchObject({ outcome: "failed", reason: "The run was stopped before it started." });
+    expect(sessions.get("session-1")?.runStoppedAt).toBeDefined();
+    expect(store.get(s.id)?.needsUserReason).toBeUndefined();
+  });
+
+  it("makes no folder for a run whose schedule was deleted while its session was being made", async () => {
+    const notes = { prepareRun: vi.fn(), existingRunDir: () => null };
+    const s = schedule();
+    runner = makeRunner({ notes, startSession: startLinkingWith(() => { store.delete(s.id); }) });
+    await runner.runPass(at("2026-10-07T09:00:30Z"));
+    expect(notes.prepareRun).not.toHaveBeenCalled();
+    expect(dispatched).toEqual([]);
+  });
+
+  it("fails the start, and marks the schedule, when the folder cannot be made (req 18)", async () => {
+    const notes = { prepareRun: vi.fn(() => { throw new Error("EACCES: permission denied"); }), existingRunDir: () => null };
+    runner = makeRunner({ notes });
+    const s = schedule();
+    await runner.runPass(at("2026-10-07T09:00:30Z"));
+    const reason = "The run's notes folder could not be created: EACCES: permission denied";
+    expect(runs(s.id)[0]).toMatchObject({ outcome: "failed", reason, sessionId: "session-1" });
+    expect(store.get(s.id)?.needsUserReason).toBe(reason);
+    expect(dispatched).toEqual([]);
+  });
+});
+

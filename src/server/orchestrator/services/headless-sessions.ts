@@ -188,6 +188,8 @@ export interface CreateHeadlessSessionOptions {
    * session exists, so a start that fails later still leaves a session linked to its run.
    */
   scheduleRun?: { scheduleId: string; runId: string };
+  /** Runs once the run's session is linked, before its container starts; a throw fails the start. */
+  onRunLinked?: (sessionId: string) => void;
   /** Runs the first dispatch; a throw cancels it, and the session stays without a turn. */
   dispatchGate?: (sessionId: string, dispatch: () => TurnHandle) => Promise<TurnHandle>;
 }
@@ -344,6 +346,7 @@ export async function createHeadlessSession(
     if (!opts.scheduleRun) return;
     sessionManager.setScheduleRun(sessionId, opts.scheduleRun.scheduleId, opts.scheduleRun.runId);
     if (explicitTitle) sessionManager.rename(sessionId, explicitTitle);
+    opts.onRunLinked?.(sessionId);
   };
 
   let newSessionId: string;
@@ -355,6 +358,8 @@ export async function createHeadlessSession(
     // Never claim a draft the user is composing in another view.
     const claimed = await deps.claimService.claim(repoUrl, {
       skipReuse: true,
+      // A warm standby container started without the run's notes mount.
+      ...(opts.scheduleRun ? { skipWarm: true } : {}),
       ...(opts.fetchBase ? { forceFetch: true } : {}),
     });
     newSessionId = claimed.sessionId;

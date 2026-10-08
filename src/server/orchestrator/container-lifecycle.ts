@@ -85,6 +85,7 @@ import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from ".
 import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
+import { RUN_NOTES_CONTAINER_DIR } from "./schedule-notes.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 
@@ -255,6 +256,19 @@ export function buildMounts(
     } else {
       binds.push(`${config.scratchDir}:/persist:rw`);
     }
+  }
+
+  // Only this run's folder: earlier runs' notes are read through `shipit schedule notes`.
+  if (config.scheduleNotesDir) {
+    mounts.push(workspaceVolume
+      ? {
+          Type: "volume",
+          Source: workspaceVolume,
+          Target: RUN_NOTES_CONTAINER_DIR,
+          VolumeOptions: { Subpath: config.scheduleNotesDir.replace(/^\/workspace\//, "") },
+        }
+      // A bind mount, not `binds`: a folder Delete removed must fail the mount, not come back root-owned.
+      : { Type: "bind", Source: config.scheduleNotesDir, Target: RUN_NOTES_CONTAINER_DIR });
   }
 
   if (workspaceVolume) {
@@ -1207,6 +1221,7 @@ export function buildContainerConfig(
     opsSession?: boolean;
     hostMounts?: HostMount[];
     overlaySpecs?: DepDirOverlaySpec[];
+    scheduleNotesDir?: string;
   },
 ): ContainerConfig {
   return {
@@ -1229,5 +1244,6 @@ export function buildContainerConfig(
     opsSession: opts.opsSession,
     hostMounts: opts.opsSession ? opts.hostMounts : undefined,
     overlaySpecs: opts.overlaySpecs,
+    ...(opts.scheduleNotesDir ? { scheduleNotesDir: opts.scheduleNotesDir } : {}),
   };
 }

@@ -95,6 +95,24 @@ describe("buildMounts", () => {
     expect(result.mounts.every((m) => m.Target !== "/plugin-store-rw")).toBe(true);
   });
 
+  it("docs/324: mounts only the run's own notes folder at /schedule/notes, writable", () => {
+    const scheduleNotesDir = "/workspace/schedules/sched-1/runs/run-1";
+    const volume = buildMounts(baseConfig({ scheduleNotesDir }), "shipit-state", undefined);
+    expect(volume.mounts.filter((m) => m.Target === "/schedule/notes")).toEqual([{
+      Type: "volume",
+      Source: "shipit-state",
+      Target: "/schedule/notes",
+      VolumeOptions: { Subpath: "schedules/sched-1/runs/run-1" },
+    }]);
+    // A bind through `mounts`, which fails on a missing folder instead of creating it root-owned.
+    const bind = buildMounts(baseConfig({ scheduleNotesDir }), undefined, undefined);
+    expect(bind.mounts).toEqual([{ Type: "bind", Source: scheduleNotesDir, Target: "/schedule/notes" }]);
+    expect(bind.binds.some((b) => b.includes("/schedules/"))).toBe(false);
+
+    const none = buildMounts(baseConfig(), "shipit-state", undefined);
+    expect(none.mounts.some((m) => m.Target === "/schedule/notes")).toBe(false);
+  });
+
   it("docs/138: mounts the per-session credentials subpath when credentialsVolume is set", () => {
     const result = buildMounts(baseConfig(), undefined, "shipit-credentials");
     const credMount = result.mounts.find((m) => m.Target === "/credentials");

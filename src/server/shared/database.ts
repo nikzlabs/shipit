@@ -1125,6 +1125,27 @@ const MIGRATIONS: Migration[] = [
       );
     `);
   },
+  // docs/324-scheduled-sessions reqs 28, 30 — the notes access card, and its private record of
+  // which schedule Allow grants.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "schedule_notes_access")) {
+      db.exec("ALTER TABLE messages ADD COLUMN schedule_notes_access TEXT");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_notes_requests (
+        card_id        TEXT PRIMARY KEY,
+        session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        schedule_id    TEXT NOT NULL,
+        phase          TEXT NOT NULL,
+        created_at     TEXT NOT NULL,
+        resolved_at    TEXT,
+        agent_notified INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_schedule_notes_requests_session
+        ON schedule_notes_requests(session_id, schedule_id);
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1152,6 +1173,8 @@ export const DATA_RETENTION_MIGRATION = 105;
 export const SCHEDULES_MIGRATION = 106;
 
 export const SCHEDULE_PROPOSALS_MIGRATION = 108;
+
+export const SCHEDULE_NOTES_ACCESS_MIGRATION = 109;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

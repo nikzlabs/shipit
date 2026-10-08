@@ -63,4 +63,43 @@ describe("createClaimSessionService", () => {
     expect(lastSessionList).toBeDefined();
     expect(lastSessionList!.map((s) => s.id)).not.toContain("claimed");
   });
+
+  it("never takes the warm session when told to skip it, whose standby lacks a run's notes mount", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claim-session-"));
+    dbManager = new DatabaseManager(path.join(tmpDir, "test.db"));
+    const sessionManager = new SessionManager(dbManager);
+    const repoStore = new RepoStore(dbManager);
+    const url = "https://github.com/example/app.git";
+    repoStore.add(url);
+    repoStore.setReady(url);
+    const warmWorkspace = path.join(tmpDir, "sessions", "warm-1", "workspace");
+    fs.mkdirSync(warmWorkspace, { recursive: true });
+    sessionManager.track("warm-1", "Warm session", warmWorkspace);
+    repoStore.setWarmSessionId(url, "warm-1");
+
+    let slowClones = 0;
+    const service = createClaimSessionService({
+      sessionManager,
+      repoStore,
+      // The warm path's refresh fails soft, so a claim of the warm session still succeeds.
+      createGitManager: () => { throw new Error("no git here"); },
+      createRepoGit: () => ({ cloneBare: () => Promise.reject(new Error("no clone here")) }) as unknown as RepoGit,
+      githubAuthManager: { authenticated: false } as unknown as GitHubAuthManager,
+      getSharedRepoDir: () => path.join(tmpDir, "repo-cache", "app"),
+      createSessionDirFull: (title) => {
+        slowClones += 1;
+        const workspaceDir = path.join(tmpDir, "sessions", "fresh", "workspace");
+        sessionManager.track("fresh", title, workspaceDir);
+        return Promise.resolve({ appSessionId: "fresh", sessionDir: path.dirname(workspaceDir), workspaceDir });
+      },
+      sseBroadcast: () => {},
+    });
+
+    await expect(service.claim(url, { skipReuse: true, skipWarm: true })).rejects.toThrow("no clone here");
+    expect(slowClones).toBe(1);
+    expect(repoStore.get(url)!.warmSessionId).toBe("warm-1");
+
+    const warm = await service.claim(url, { skipReuse: true });
+    expect([warm.sessionId, warm.claimPath, slowClones]).toEqual(["warm-1", "warm", 1]);
+  });
 });

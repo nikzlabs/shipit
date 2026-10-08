@@ -799,6 +799,39 @@ describe("createHeadlessSession", () => {
       });
     });
 
+    it("starts a run without the warm session, and calls back once it is linked, before its container (docs/324 req 13)", async () => {
+      const order: string[] = [];
+      const getOrCreate = registry.getOrCreate.bind(registry);
+      registry.getOrCreate = (sessionId, workspaceDir, agentId) => {
+        order.push("container");
+        return getOrCreate(sessionId, workspaceDir, agentId);
+      };
+      const onRunLinked = vi.fn((sessionId: string) => {
+        order.push(`linked:${sessionId}:${sessionManager.get(sessionId)?.scheduleRunId}`);
+      });
+      const claim = claimService();
+
+      await createHeadlessSession(deps({ claimService: claim }), {
+        ...repo(),
+        prompt: "go",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-1" },
+        onRunLinked,
+      });
+      expect(claim.claim).toHaveBeenCalledWith(REPO_URL, { skipReuse: true, skipWarm: true });
+      expect(order).toEqual(["linked:quick-1:run-1", "container"]);
+
+      onRunLinked.mockImplementation(() => { throw new Error("The run was stopped before it started."); });
+      await expect(createHeadlessSession(deps(), {
+        target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
+        params: {},
+        prompt: "go",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-2" },
+        onRunLinked,
+      })).rejects.toThrow("stopped before it started");
+      // No container starts for a run the callback called off.
+      expect(order).toEqual(["linked:quick-1:run-1", "container"]);
+    });
+
     it("dispatches through the gate, which can cancel the dispatch", async () => {
       const runner = { running: true, dispatch: vi.fn(() => handle) };
       const gate = vi.fn(async (_sessionId: string, dispatch: () => TurnHandle) => dispatch());

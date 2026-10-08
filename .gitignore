@@ -21,6 +21,8 @@ dist/
 .claude/scheduled_tasks.lock
 
 sessions/
+# The dogfood instance's scheduled-run notes (docs/324-scheduled-sessions); it uses this repo as its workspace root.
+/schedules/
 .inner-shipit/
 
 .shipit-worker-uid

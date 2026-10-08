@@ -65,6 +65,8 @@ import {
 } from "./restart-turn-reattach.js";
 import { ScheduleStore } from "./schedule-store.js";
 import { ScheduleRunner } from "./schedule-runner.js";
+import { mountableRunDir, ScheduleNotes } from "./schedule-notes.js";
+import { ScheduleNotesRequestStore } from "./schedule-notes-request-store.js";
 import { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { TurnEnd } from "./turn-settlement.js";
 import { createClaimSessionService } from "./services/claim-session.js";
@@ -225,11 +227,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         })
       : null);
 
+  // docs/324-scheduled-sessions — inside the workspace volume, outside the session tree.
+  const scheduleNotes = new ScheduleNotes(path.join(workspaceDir, "schedules"));
+  const scheduleStore = new ScheduleStore(databaseManager);
+
   const effectiveRunnerFactory = buildRunnerFactory({
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
     oomBreaker, presentStore, chatHistoryManager, credentialStore,
     ...(localAgentFactory ? { localAgentFactory } : {}),
     providerAccountManager,
+    runNotesDir: (run) => mountableRunDir({ store: scheduleStore, notes: scheduleNotes }, run),
   });
 
   const serviceManagers = new Map<string, ServiceManager>();
@@ -643,6 +650,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // database and no state, and a turn needs it before the route layer exists.
   const settingsProposals = new SettingsProposalStore(databaseManager);
   const scheduleProposals = new ScheduleProposalStore(databaseManager);
+  const scheduleNotesRequests = new ScheduleNotesRequestStore(databaseManager);
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
   const restoreWorkspace = (sessionId: string) =>
@@ -696,6 +704,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     resolvePluginServices,
     settingsProposals,
     scheduleProposals,
+    scheduleNotesRequests,
+    scheduledRuns: { store: scheduleStore, notes: scheduleNotes },
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
@@ -1047,7 +1057,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
 
   // docs/324-scheduled-sessions — runs start through the same headless start as Quick Capture.
-  const scheduleStore = new ScheduleStore(databaseManager);
   const scheduledRunStart = headlessSessionDeps({
     sessionManager,
     runnerRegistry,
@@ -1111,6 +1120,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       }, runnerRegistry.get(sessionId) ?? null);
     },
     statusCardEnabled: () => credentialStore.getSessionStatusCard(),
+    notes: scheduleNotes,
   });
   scheduleRunnerRef.ref = scheduleRunner;
   prStatusPoller.setPrStateListener((sessionId) => scheduleRunner.decideRunFinished(sessionId));
@@ -1228,6 +1238,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     scheduleStore,
     scheduleRunner,
     scheduleProposals,
+    scheduleNotes,
+    scheduleNotesRequests,
   };
 }
 

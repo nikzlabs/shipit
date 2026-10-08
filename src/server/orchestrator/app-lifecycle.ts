@@ -324,6 +324,8 @@ export interface RunnerFactoryDeps {
   localAgentFactory?: LocalAgentFactory;
   providerAccountManager?: ProviderAccountManager;
   credentialStore?: LocalAgentMcpDeps["credentialStore"];
+  /** A scheduled run's notes folder to mount, while it and its schedule exist (docs/324). */
+  runNotesDir?: (run: { scheduleId: string; runId: string }) => string | undefined;
 }
 
 interface CreateContainerForRunnerOpts {
@@ -337,7 +339,8 @@ interface CreateContainerForRunnerOpts {
   depCacheDir?: string;
   destroyExisting: boolean;
   opsSession?: boolean;
-  session?: Pick<SessionInfo, "remoteUrl" | "kind" | "capabilities">;
+  session?: Pick<SessionInfo, "remoteUrl" | "kind" | "capabilities" | "scheduleId" | "scheduleRunId">;
+  runNotesDir?: RunnerFactoryDeps["runNotesDir"];
   failureContext?: string;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   oomBreaker?: SessionOomCircuitBreaker;
@@ -444,6 +447,11 @@ async function attemptContainerCreate(
     const sandboxDockerAccess = opts.session?.kind === "sandbox"
       ? !!opts.session.capabilities?.docker
       : undefined;
+    // Read at every create: a run whose schedule was deleted has lost its folder (req 32).
+    const { scheduleId, scheduleRunId } = opts.session ?? {};
+    const scheduleNotesDir = scheduleId && scheduleRunId
+      ? opts.runNotesDir?.({ scheduleId, runId: scheduleRunId })
+      : undefined;
     const config = mgr.buildConfigForWorkspace({
       sessionId,
       sessionDir: opts.sessionDir,
@@ -454,6 +462,7 @@ async function attemptContainerCreate(
       opsSession: opts.opsSession,
       ...(sandboxDockerAccess !== undefined ? { dockerAccess: sandboxDockerAccess } : {}),
       overlaySpecs,
+      ...(scheduleNotesDir ? { scheduleNotesDir } : {}),
     });
     const createStart = Date.now();
     const sc = await mgr.create(config, { intentEpoch });
@@ -490,7 +499,7 @@ export function buildRunnerFactory(
   const {
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
     oomBreaker, presentStore, chatHistoryManager, localAgentFactory, providerAccountManager,
-    credentialStore,
+    credentialStore, runNotesDir,
   } = factoryDeps;
 
   if (deps.runnerFactory) return deps.runnerFactory;
@@ -611,6 +620,7 @@ export function buildRunnerFactory(
           destroyExisting: false,
           opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
           session: sessionManager?.get(o.sessionId),
+          runNotesDir,
           failureContext: "from standby fallback",
           broadcastLog,
           oomBreaker,
@@ -643,6 +653,7 @@ export function buildRunnerFactory(
       destroyExisting: !!existing,
       opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
       session: sessionManager?.get(o.sessionId),
+      runNotesDir,
       broadcastLog,
       oomBreaker,
     });

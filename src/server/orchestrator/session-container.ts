@@ -132,6 +132,8 @@ export interface ContainerConfig {
   scratchDir?: string;
   /** Mounted at /session-state; generated platform files must stay outside the clone. */
   sessionStateDir: string;
+  /** A scheduled run's own notes folder, mounted at /schedule/notes (docs/324-scheduled-sessions req 13). */
+  scheduleNotesDir?: string;
   credentialsDir: string;
   imageName: string;
   /** Bytes. */
@@ -1474,6 +1476,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     opsSession?: boolean;
     hostMounts?: HostMount[];
     overlaySpecs?: DepDirOverlaySpec[];
+    scheduleNotesDir?: string;
   }): ContainerConfig {
     return buildContainerConfig({
       imageName: this.imageName,
@@ -1494,6 +1497,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     opsSession?: boolean;
     dockerAccess?: boolean;
     overlaySpecs?: DepDirOverlaySpec[];
+    scheduleNotesDir?: string;
   }): ContainerConfig {
     const cfg = readAgentConfig(opts.workspaceDir);
     const limits = resolveAgentDockerLimits(opts.workspaceDir);
@@ -1513,6 +1517,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       opsSession: opts.opsSession,
       hostMounts: opts.opsSession ? cfg.hostMounts : undefined,
       overlaySpecs: opts.overlaySpecs,
+      ...(opts.scheduleNotesDir ? { scheduleNotesDir: opts.scheduleNotesDir } : {}),
     });
   }
 

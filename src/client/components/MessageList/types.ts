@@ -14,6 +14,7 @@ import type {
   SshHostKeyCard as SshHostKeyCardData,
   SettingsProposalCard as SettingsProposalCardData,
   ScheduleProposalCard as ScheduleProposalCardData,
+  ScheduleNotesAccessCard as ScheduleNotesAccessCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
@@ -327,6 +328,9 @@ export interface ChatMessage {
    * It is saved only when the user confirms; like the settings card, every phase rides here.
    */
   scheduleProposal?: ScheduleProposalCardData;
+
+  /** docs/324-scheduled-sessions reqs 28, 30 — an agent asks to read a schedule's notes; every phase rides here. */
+  scheduleNotesAccess?: ScheduleNotesAccessCardData;
 }
 
 export interface TextSegment {

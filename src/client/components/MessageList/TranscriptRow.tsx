@@ -176,6 +176,7 @@ function TranscriptRowInner({
     onEgressDecision: handlers.onEgressDecision,
     onSettingsProposalDecision: handlers.onSettingsProposalDecision,
     onScheduleProposalDecision: handlers.onScheduleProposalDecision,
+    onScheduleNotesAccessDecision: handlers.onScheduleNotesAccessDecision,
     onResolvePermission: handlers.onResolvePermission,
     onUndoIssueWrite: handlers.onUndoIssueWrite,
     onStartRepoSession: handlers.onStartRepoSession,
