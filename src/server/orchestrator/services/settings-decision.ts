@@ -157,6 +157,9 @@ async function sideChangeMismatch(
   for (const side of card.alsoChanges ?? []) {
     const declaration = findSetting(side.key);
     if (!declaration) continue;
+    // The read shows only whether such a field is set, or a part of it, while a
+    // create card shows what the agent wrote: the two are not comparable.
+    if (declaration.emits.kind === "configured_only" || declaration.emits.kind === "derived") continue;
     const entry = await getSettingForAgent(deps.read, sessionId, side.key);
     if (!entry.readable) continue;
     const stored = row.target.item
@@ -321,7 +324,7 @@ async function runApply(
     return {
       phase,
       outcome: outcome.status === "applied"
-        ? appliedOutcome(operation, row.target, card, declaration)
+        ? appliedOutcome(operation, row.target, card, declaration, row.proposed)
         : undefined,
       ...(outcome.detail ? { outcomeDetail: outcome.detail } : {}),
       ...(verified.effect ? { effect: verified.effect } : {}),

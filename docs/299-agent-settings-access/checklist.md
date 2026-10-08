@@ -927,3 +927,43 @@ Two findings, both the same class one layer down, both reproduced at the code.
       the same length resolve `partial` (proven red against a check that accepts
       everything), a derived harness uninstalled before the click is refused,
       and a bidi character in the instructions is refused
+
+### Deleting a role, and creating or deleting an MCP server (req 11, req 12)
+
+- [x] req 11, req 12 — `requirements.md` carries both requirements and dated
+      receipts; the open question on how much of an MCP server a card may write
+      was asked and answered before any code
+- [x] Membership for a collection that reads as a list of names (`roles`,
+      `mcp.servers`) is the address being in that list; a remove that finds
+      nothing names the entries that exist
+- [x] `roles::remove`: the dialog's delete, every field shown going to "not
+      set", `reviewer` refused
+- [x] `mcp.servers::add`: the writer's own validation and the ten-enabled limit
+      before the card; command, arguments, npm package and URL shown as written;
+      `env` / `headers` are names stored as `$secret:` placeholders, no secret
+      submitted, and the applied card says which values to type and where
+- [x] A stored-secret reference (`$secret:`, `$platform:`) in a card-written
+      field is refused, so a new server cannot be handed another's credential
+- [x] `mcp.servers::remove`: the panel's delete, fields shown through the read's
+      own projections, a server a connected provider owns refused
+- [x] The `mcp.servers` baseline with an item is that one server, and an absent
+      one has the empty revision
+- [x] Read-back skips a side whose declaration emits only `configured` or a
+      derived part, since a create card shows the value as written
+- [x] Guards proven red alone: a list-wide MCP baseline stales the second card,
+      and comparing as-written sides resolves a create `partial`
+- [x] `settings.md` and the wiki document both, names-only secrets included
+
+#### The independent review of deletion and MCP creation
+
+- [x] A placeholder key steps aside from any value already stored, so a secret
+      left by an earlier server of that name cannot fill it unasked
+- [x] An argument with whitespace, or an empty one, is refused: the panel's form
+      would split or drop it when the user saves the server to type its values
+- [x] `lastProposal` reports a list operation as membership, so a new server's
+      URL or arguments do not reach every session's `get`
+- [x] An MCP server's create/delete baseline hashes its stored secret values, so
+      a delete card written before a rotation goes `stale`
+- [x] The unused change to the `mcp.servers[]` baseline is reverted
+- [x] Recorded, not changed: an npm package installs in the container's whole
+      environment, as the panel's do (plan.md → known gap)
