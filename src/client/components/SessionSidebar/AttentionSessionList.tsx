@@ -59,9 +59,10 @@ const scheduleKey = (scheduleId: string) => `schedule:${scheduleId}`;
  * the amber one, because `SessionItem` derives that itself, and dims like an
  * archived row, which is req 8's "marked as no longer needing attention".
  *
- * A session that leaves the sidebar entirely (archived, hidden, removed) is
- * dropped immediately — stickiness is about a session that stopped *needing*
- * you, not about outliving the session itself. A deleted schedule is dropped the same way.
+ * A session that leaves the sidebar entirely (archived, removed) is dropped
+ * immediately — stickiness is about a session that stopped *needing* you, not
+ * about outliving the session itself. A deleted schedule is dropped the same way.
+ * Hiding a repository is not such an exit: its sessions stay listed (req 18).
  */
 export function AttentionSessionList({
   sessions,

@@ -1593,6 +1593,51 @@ describe("SessionSidebar needs-attention view", () => {
     expect(screen.queryByRole("button", { name: /need you/ })).toBeNull();
   });
 
+  describe("a hidden repository (req 18)", () => {
+    const hiddenB: RepoInfo = { ...repoB, hidden: true };
+
+    it("lists its session and counts it, while the first view still leaves it out", () => {
+      render(<SessionSidebar {...defaultProps} repos={[repoA, hiddenB]} sessions={waiting()} />);
+      expect(screen.queryByText("Also needs me")).toBeNull();
+      expect(findSwitch().textContent).toContain("2");
+
+      fireEvent.click(findSwitch());
+
+      expect(screen.getByText("Needs me")).toBeTruthy();
+      expect(screen.getByText("Also needs me")).toBeTruthy();
+      expect(screen.getByText("thing")).toBeTruthy();
+      expect(findSwitch().textContent).toContain("2");
+    });
+
+    it("keeps the row when the repository is hidden while the view is open", () => {
+      const { rerender } = render(
+        <SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={waiting()} />,
+      );
+      fireEvent.click(findSwitch());
+
+      rerender(<SessionSidebar {...defaultProps} repos={[repoA, hiddenB]} sessions={waiting()} />);
+
+      expect(screen.getByText("Also needs me").closest(".opacity-60")).toBeNull();
+      expect(findSwitch().textContent).toContain("2");
+    });
+
+    it("adds its session when that starts to wait, and keeps the row settled when it stops", () => {
+      useSessionStore.setState({ activeRunnerSessions: new Set(["s2"]) });
+      render(<SessionSidebar {...defaultProps} repos={[repoA, hiddenB]} sessions={waiting()} />);
+      fireEvent.click(findSwitch());
+      expect(screen.queryByText("Also needs me")).toBeNull();
+      expect(findSwitch().textContent).toContain("1");
+
+      act(() => useSessionStore.setState({ activeRunnerSessions: new Set<string>() }));
+      expect(screen.getByText("Also needs me").closest(".opacity-60")).toBeNull();
+      expect(findSwitch().textContent).toContain("2");
+
+      act(() => useSessionStore.setState({ activeRunnerSessions: new Set(["s2"]) }));
+      expect(screen.getByText("Also needs me").closest(".opacity-60")).toBeTruthy();
+      expect(findSwitch().textContent).toContain("1");
+    });
+  });
+
   describe("the collapse control", () => {
     it("leaves the view on the first press and collapses on the next", () => {
       const onToggleCollapse = vi.fn();

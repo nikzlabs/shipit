@@ -131,8 +131,9 @@ export function SessionSidebar({
   const setSidebarView = useUiStore((s) => s.setSidebarView);
   // With no schedule and no run left the Scheduled switch is gone, so its view must not stay stuck open.
   const sidebarView = savedSidebarView === "scheduled" && !hasScheduledView ? "all" : savedSidebarView;
-  // The attention view keeps every session as its input, runs included (req 21).
-  const attentionIds = useAttentionSessions(visibleSessions);
+  // The attention view keeps every session as its input: runs (docs/324-scheduled-sessions
+  // req 21) and a hidden repository's sessions (docs/260-attention-sidebar-view req 18) included.
+  const attentionIds = useAttentionSessions(sessions);
   const attentionView = sidebarView === "attention";
   const scheduledView = sidebarView === "scheduled";
 
@@ -545,7 +546,7 @@ export function SessionSidebar({
       >
         {attentionView ? (
           <AttentionSessionList
-            sessions={visibleSessions}
+            sessions={sessions}
             attentionIds={attentionIds}
             schedules={schedules}
             onOpenSchedule={handleOpenSchedule}

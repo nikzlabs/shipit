@@ -127,9 +127,9 @@ the same failure one step worse: it re-orders on every reason change.
 otherwise vanish from under the pointer, so the order list keeps it until the
 view is left and entered again — the list is component state and the component
 unmounts on the way out, which is what makes "entered again" the reset (req 8). A
-session that leaves the sidebar altogether (archived, hidden, removed) is dropped
-at once: stickiness covers a session that stopped *needing* you, not one that
-stopped existing.
+session that leaves the sidebar altogether (archived, removed) is dropped at
+once: stickiness covers a session that stopped *needing* you, not one that
+stopped existing. Hiding a repository is not such an exit (req 18).
 
 The order list is **state adjusted during render**, not a ref mutated inside a
 memo. React's documented "adjust state while rendering" path is concurrent-safe —
@@ -144,19 +144,22 @@ row — req 8's "marked as no longer needing attention" in the human's own words
 Empty state is an inbox-zero line inside the list. This is not the chrome req 10
 excludes — that is about a band *above* the list.
 
-Sessions from **hidden repos** (docs/222) are excluded, as is anything archived
-or warm, so the view can never show a row the first view has hidden.
+Anything archived or warm is excluded, so the view never shows a row that carries
+no marker in the first view.
+
+**A hidden repository's sessions are in the view and in the count** (req 18).
+Hiding (docs/222-hide-repository) removes a repository's group from the first
+view; it does not mean its sessions stopped needing the user. So
+`SessionSidebar` gives the view and the count the whole session list, not the
+list it filters for the repository tree. The view, the count and notifications
+now cover the same sessions — verified at `useAttentionNotifications.ts`, which
+iterates the store's full session list with no hidden-repository filter.
 
 ## Design choices the requirements do not settle
 
 Recorded here rather than promoted into `requirements.md`, which is human-owned.
 Each is reversible and worth a glance:
 
-- **Hidden-repo sessions are out of the view and out of the count.** docs/222
-  removes a hidden repo's sessions from the sidebar entirely; a second sidebar
-  view that showed them would undo that. Note this leaves the view and
-  *notifications* observably different — notifications look at every session.
-  That divergence is notifications' existing behaviour, unchanged here.
 - **The rows are flat, so a spawned child loses its indentation and a parent its
   caret.** Parent/child nesting is grouping, and req 3 drops grouping;
   `AllSessionsDialog`'s flat list drops it for the same reason.
