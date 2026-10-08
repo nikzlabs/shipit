@@ -478,6 +478,25 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/settings/propose", request.body ?? {}, reply),
   );
 
+  app.get("/agent-ops/schedules", async (_request, reply) => relay("GET", "/schedules", undefined, reply));
+
+  app.get<{ Querystring: { schedule?: string; run?: string; file?: string } }>(
+    "/agent-ops/schedules/notes",
+    async (request, reply) => {
+      const { schedule, run, file } = request.query;
+      const params = new URLSearchParams();
+      if (schedule) params.set("schedule", schedule);
+      if (run) params.set("run", run);
+      if (file) params.set("file", file);
+      return relay("GET", `/schedule-notes?${params.toString()}`, undefined, reply);
+    },
+  );
+
+  app.post<{ Body: { id?: string; text?: string } }>(
+    "/agent-ops/schedules/propose",
+    async (request, reply) => relay("POST", "/schedules/propose", request.body ?? {}, reply),
+  );
+
   app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
 
   app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));
@@ -645,6 +664,11 @@ export function registerAgentOpsRoutes(
   app.post<{ Body: { note?: string } }>(
     "/agent-ops/session/restart",
     async (request, reply) => relay("POST", "/restart-after-turn", request.body ?? {}, reply),
+  );
+
+  app.post<{ Body: { instructions?: string; note?: string } }>(
+    "/agent-ops/compact",
+    async (request, reply) => relay("POST", "/compact-after-turn", request.body ?? {}, reply),
   );
 
   app.post<{ Body: { title?: string } }>(

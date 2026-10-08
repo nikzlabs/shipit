@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -167,6 +167,18 @@ describe("resolveSettingsProposal — apply", () => {
     expect(resolved.outcome).toContain("registry.npmjs.org");
     expect(fx.egressAllowlistStore.listHosts("global")).toContain("registry.npmjs.org");
   });
+
+  it("applies two pending host cards one after the other", async () => {
+    const addHost = (item: string) =>
+      post({ key: "network.egress.hosts[].host", operation: "add", item, valueText: undefined });
+    const first = await addHost("api.example.com");
+    const second = await addHost("cdn.example.com");
+
+    expect((await decide(first.cardId)).card.phase).toBe("applied");
+    expect((await decide(second.cardId)).card.phase).toBe("applied");
+    expect(fx.egressAllowlistStore.listHosts("global"))
+      .toEqual(expect.arrayContaining(["api.example.com", "cdn.example.com"]));
+  });
 });
 
 describe("resolveSettingsProposal — stale", () => {
@@ -211,6 +223,18 @@ describe("resolveSettingsProposal — stale", () => {
 
     expect(resolved.phase).toBe("stale");
     expect(fx.credentialStore.getMcpServer("notion")?.enabled).toBe(true);
+  });
+
+  it("is stale when the card's own host moved", async () => {
+    const card = await post({
+      key: "network.egress.hosts[].host",
+      operation: "add",
+      item: "api.example.com",
+      valueText: undefined,
+    });
+    fx.egressAllowlistStore.addHost("global", "api.example.com");
+
+    expect((await decide(card.cardId)).card.phase).toBe("stale");
   });
 });
 
@@ -340,6 +364,28 @@ describe("a decision that names another session's card", () => {
       /not in this session/,
     );
     expect(fx.proposals.get(card.cardId)?.phase).toBe("pending");
+  });
+});
+
+describe("a decision on a card that has left the transcript (docs/324-scheduled-sessions plan.md → Cards)", () => {
+  it("is refused before anything is written, whatever the action", async () => {
+    const card = await post();
+    fx.dbManager.db.prepare("DELETE FROM messages WHERE session_id = ?").run(fx.sessionId);
+    fx.emitted.length = 0;
+    // A claim that runs and then rolls back ends in the same state; the refusal
+    // must come before any write is tried.
+    const claimPhase = vi.spyOn(fx.proposals, "claimPhase");
+    const setPhase = vi.spyOn(fx.proposals, "setPhase");
+
+    for (const action of ["apply", "dismiss"] as const) {
+      await expect(decide(card.cardId, action)).rejects.toThrow(/not in this session/);
+    }
+    expect(claimPhase).not.toHaveBeenCalled();
+    expect(setPhase).not.toHaveBeenCalled();
+    expect(fx.proposals.get(card.cardId)?.phase).toBe("pending");
+    expect(fx.credentialStore.getEnableSubAgents()).toBe(true);
+    expect(settingsBroadcasts()).toHaveLength(0);
+    expect(fx.emitted).toEqual([]);
   });
 });
 

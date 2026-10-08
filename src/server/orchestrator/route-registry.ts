@@ -185,6 +185,16 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
   });
 }
 
+/** The composer's saved choices, seeded on the session WebSocket's URL. */
+export interface SessionSeedQuery {
+  agent?: string;
+  model?: string;
+  reasoning?: string;
+  service?: string;
+  billingMode?: string;
+  role?: string;
+}
+
 const REBASE_BANNER_OPENERS: ReadonlySet<WsServerMessage["type"]> = new Set([
   "auto_resolve_started",
   "rebase_started",
@@ -215,11 +225,15 @@ export async function registerRoutes(
     refreshPluginReposForSession, runPluginCommandForSession, projectComposeAccess,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     runRequestedRestartForTurn,
+    runRequestedCompactionForTurn,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId, version,
   } = rt;
   const { kickDiskEscalation } = monitors;
-  const { agentMergeClaims, agentMergeExecutor } = rt;
+  const {
+    agentMergeClaims, agentMergeExecutor, claimSessionService, scheduleStore, scheduleRunner, scheduleProposals,
+    scheduleNotes, scheduleNotesRequests,
+  } = rt;
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
   const settingsProposals = new SettingsProposalStore(databaseManager);
@@ -279,6 +293,12 @@ export async function registerRoutes(
     waitForWarmSession: (repoUrl: string) => waitForWarmSession(repoUrl),
     ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
     createSessionDirFull: createSessionDir,
+    claimSessionService,
+    scheduleStore,
+    scheduleRunner,
+    scheduleProposals,
+    scheduleNotes,
+    scheduleNotesRequests,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
     releaseStatusPoller,
@@ -428,7 +448,7 @@ export async function registerRoutes(
 
   await serveStaticClient(app, clientDir, shouldServeStatic);
 
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string; service?: string; billingMode?: string; role?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: SessionSeedQuery }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {
@@ -1029,12 +1049,14 @@ export async function registerRoutes(
         ...(deps.trackerFetchImpl !== undefined ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
         repoStore, warmSessionForRepo, generateText,
         egressAllowlistStore,
-        settingsProposals, secretStore, serviceManagers, agentMergeClaims,
+        settingsProposals, scheduleProposals, scheduleNotesRequests, secretStore, serviceManagers, agentMergeClaims,
+        ...(scheduleRunner ? { scheduledRuns: scheduleRunner } : {}),
         ...(containerManager ? { containerManager } : {}),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         releaseStatusPoller,
         runRequestedRestart: runRequestedRestartForTurn,
+        runRequestedCompaction: runRequestedCompactionForTurn,
         recordAgentRateLimits,
         markSessionAccountExhausted,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},

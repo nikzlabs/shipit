@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
 import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS, ROW_GAP_CLASS, groupBandFill } from "./SessionSidebar/SessionGroup.js";
@@ -9,7 +9,8 @@ import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
-import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
+import { useScheduleStore } from "../stores/schedule-store.js";
+import type { ScheduleView, SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 function mockMatchMedia({ isTouch = false }: { isTouch?: boolean } = {}) {
   Object.defineProperty(window, "matchMedia", {
@@ -1661,5 +1662,173 @@ describe("SessionSidebar needs-attention view", () => {
 
       expect(onToggleCollapse).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe("SessionSidebar Scheduled view (docs/324-scheduled-sessions req 20)", () => {
+  afterEach(() => {
+    useUiStore.getState().setSidebarView("all");
+    useScheduleStore.getState().reset();
+    useUiStore.setState({ settingsOpen: false, settingsTab: undefined, settingsScheduleId: null });
+  });
+
+  const schedule = (overrides: Partial<ScheduleView> = {}): ScheduleView => ({
+    id: "sched-1",
+    name: "Nightly audit",
+    enabled: true,
+    timing: { kind: "daily", hour: 9, minute: 0 },
+    timeZone: "UTC",
+    spec: null,
+    activeSince: now,
+    createdAt: now,
+    updatedAt: now,
+    nextRuns: [],
+    ...overrides,
+  });
+  const failed = (overrides: Partial<ScheduleView> = {}) =>
+    schedule({ needsUserReason: "The repository is no longer added.", ...overrides });
+
+  const run = (overrides: Partial<SessionInfo> = {}) =>
+    baseSession({ id: "run-1", title: "Audit · Oct 7", remoteUrl: repoA.url, scheduleId: "sched-1", ...overrides });
+  const mine = baseSession({ id: "mine", title: "My own work", remoteUrl: repoA.url });
+  const scheduledSwitch = () => screen.getByRole("button", { name: "Show scheduled runs" });
+
+  it("shows the switch only when a scheduled run exists, beside the needs-you switch", () => {
+    const { rerender } = render(<SessionSidebar {...defaultProps} sessions={[mine]} />);
+    expect(screen.queryByRole("button", { name: "Show scheduled runs" })).toBeNull();
+
+    rerender(<SessionSidebar {...defaultProps} sessions={[mine, run()]} />);
+    const attention = screen.getByRole("button", { name: /need you/ });
+    expect(attention.nextElementSibling).toBe(scheduledSwitch());
+  });
+
+  it("keeps runs and their spawned sessions out of the regular list", () => {
+    const child = baseSession({ id: "kid", title: "Spawned by the run", remoteUrl: repoA.url, parentSessionId: "run-1", rootSessionId: "run-1" });
+    render(<SessionSidebar {...defaultProps} sessions={[mine, run(), child]} />);
+    expect(screen.getByText("My own work")).toBeTruthy();
+    expect(screen.queryByText("Audit · Oct 7")).toBeNull();
+    expect(screen.queryByText("Spawned by the run")).toBeNull();
+
+    fireEvent.click(scheduledSwitch());
+    expect(useUiStore.getState().sidebarView).toBe("scheduled");
+    expect(screen.getByText("Audit · Oct 7")).toBeTruthy();
+    expect(screen.getByText("Spawned by the run")).toBeTruthy();
+    expect(screen.queryByText("My own work")).toBeNull();
+  });
+
+  it("groups runs by repository as the regular list does, with finished ones under Recently resolved", () => {
+    const finished = run({ id: "run-0", title: "Audit · Oct 6", runFinishedAt: new Date().toISOString() });
+    render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={[mine, run(), finished]} />);
+    fireEvent.click(scheduledSwitch());
+
+    expect(screen.getByText("repo").closest(".sticky")).toBeTruthy();
+    // Only repositories with runs, and no way to start a regular session here.
+    expect(screen.queryByText("thing")).toBeNull();
+    expect(screen.queryByText("New session")).toBeNull();
+    const header = screen.getByText("Recently resolved");
+    const active = screen.getByText("Audit · Oct 7");
+    const done = screen.getByText("Audit · Oct 6");
+    expect(active.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(header.compareDocumentPosition(done) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("splits the Sandbox group into active runs and Recently resolved", () => {
+    const sandboxRun = (id: string, title: string, extra: Partial<SessionInfo> = {}) =>
+      baseSession({ id, title, kind: "sandbox", scheduleId: "sched-2", ...extra });
+    render(
+      <SessionSidebar
+        {...defaultProps}
+        sessions={[sandboxRun("sb-live", "Sweep · Oct 7"), sandboxRun("sb-done", "Sweep · Oct 6", { runFinishedAt: new Date().toISOString() })]}
+      />,
+    );
+    fireEvent.click(scheduledSwitch());
+    const group = screen.getByTestId("sandbox-group");
+    expect(within(group).getByText("Sweep · Oct 7")).toBeTruthy();
+    expect(within(group).getByText("Sweep · Oct 6")).toBeTruthy();
+
+    fireEvent.click(within(group).getByRole("button", { name: "Collapse recently resolved" }));
+    expect(within(group).queryByText("Sweep · Oct 6")).toBeNull();
+    expect(within(group).getByText("Sweep · Oct 7")).toBeTruthy();
+  });
+
+  it("leaves a run that needs the user in the needs-you view (req 21)", () => {
+    const asking = run({ mergedAt: new Date().toISOString(), awaitingAnswer: true });
+    render(<SessionSidebar {...defaultProps} sessions={[asking]} />);
+    fireEvent.click(screen.getByRole("button", { name: /need you/ }));
+    expect(screen.getByText("Audit · Oct 7")).toBeTruthy();
+  });
+
+  it("falls back to the regular list when the remembered view has no run left to show", () => {
+    useUiStore.getState().setSidebarView("scheduled");
+    render(<SessionSidebar {...defaultProps} sessions={[mine]} />);
+    expect(screen.getByText("My own work")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeTruthy();
+  });
+
+  it("leaves the view from the collapse control before it collapses", () => {
+    const onToggleCollapse = vi.fn();
+    render(<SessionSidebar {...defaultProps} sessions={[mine, run()]} onToggleCollapse={onToggleCollapse} />);
+    fireEvent.click(scheduledSwitch());
+    fireEvent.click(screen.getByRole("button", { name: "Back to all sessions" }));
+    expect(onToggleCollapse).not.toHaveBeenCalled();
+    expect(useUiStore.getState().sidebarView).toBe("all");
+  });
+
+  it("shows the switch for a schedule that has no run yet, and keeps its view open", () => {
+    useScheduleStore.setState({ schedules: [schedule()], loaded: true });
+    render(<SessionSidebar {...defaultProps} sessions={[mine]} />);
+    fireEvent.click(scheduledSwitch());
+    expect(useUiStore.getState().sidebarView).toBe("scheduled");
+    expect(screen.getByText("No scheduled runs to show.")).toBeTruthy();
+    expect(screen.queryByText("My own work")).toBeNull();
+  });
+
+  it("puts a schedule that could not start into needs-you, counted, and opens Settings at it (req 31)", () => {
+    useScheduleStore.setState({ schedules: [failed(), schedule({ id: "sched-2", name: "Calm one" })], loaded: true });
+    render(<SessionSidebar {...defaultProps} sessions={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show sessions that need you (1)" }));
+
+    const row = screen.getByTestId("schedule-attention-item");
+    expect(row.textContent).toContain("Nightly audit");
+    expect(row.textContent).toContain("The repository is no longer added.");
+    expect(screen.queryByText("Calm one")).toBeNull();
+
+    fireEvent.click(row);
+    expect(useUiStore.getState()).toMatchObject({ settingsOpen: true, settingsTab: "schedules", settingsScheduleId: "sched-1" });
+  });
+
+  it("counts sessions and schedules together, and keeps a schedule's row in place once its reason clears", () => {
+    useScheduleStore.setState({ schedules: [failed()], loaded: true });
+    render(<SessionSidebar {...defaultProps} sessions={[mine]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show sessions that need you (2)" }));
+    expect(screen.getByText("My own work")).toBeTruthy();
+    expect(screen.getByTestId("schedule-attention-item")).toBeTruthy();
+
+    act(() => useScheduleStore.setState({ schedules: [schedule()] }));
+    expect(screen.getByRole("button", { name: "Show all sessions (1 need you)" })).toBeTruthy();
+    expect(screen.getByTestId("schedule-attention-item").closest(".opacity-60")).toBeTruthy();
+  });
+
+  it("opens the Scheduled view with each schedule's reason, and marks its switch (req 18)", () => {
+    useScheduleStore.setState({ schedules: [failed()], loaded: true });
+    render(<SessionSidebar {...defaultProps} sessions={[mine, run()]} />);
+    const control = screen.getByRole("button", { name: "Show scheduled runs (a schedule could not start)" });
+    expect(within(control).getByTestId("scheduled-view-warning")).toBeTruthy();
+
+    fireEvent.click(control);
+    const reason = screen.getByTestId("scheduled-view-reason-sched-1");
+    expect(reason.textContent).toBe("Nightly audit could not start: The repository is no longer added.");
+    expect(reason.compareDocumentPosition(screen.getByText("Audit · Oct 7")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(reason);
+    expect(useUiStore.getState()).toMatchObject({ settingsOpen: true, settingsTab: "schedules", settingsScheduleId: "sched-1" });
+  });
+
+  it("has no reason and no mark once the schedule's reason clears", () => {
+    useScheduleStore.setState({ schedules: [schedule()], loaded: true });
+    render(<SessionSidebar {...defaultProps} sessions={[mine, run()]} />);
+    fireEvent.click(scheduledSwitch());
+    expect(screen.queryByTestId("scheduled-view-reason-sched-1")).toBeNull();
+    expect(screen.queryByTestId("scheduled-view-warning")).toBeNull();
   });
 });

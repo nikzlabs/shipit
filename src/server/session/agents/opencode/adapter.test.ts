@@ -440,22 +440,36 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     expect(spawned[0]).not.toContain("run");
   });
 
+  // The one-shot executor settles the turn only on done (planning#644).
+  function recordTerminals(adapter: OpencodeAdapter): string[] {
+    const order: string[] = [];
+    adapter.on("event", (e) => {
+      if (e.type === "agent_result") order.push(`result:${e.status}`);
+    });
+    adapter.on("done", (code) => order.push(`done:${code}`));
+    return order;
+  }
+
   it("settles the turn with an error when there is no session to compact", () => {
     const { adapter, events } = makeAdapter();
+    const order = recordTerminals(adapter);
     adapter.run({ ...COMPACT_PARAMS, sessionId: undefined });
     const result = events.filter((e) => e.type === "agent_result");
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ status: "error" });
     expect((result[0] as { error: string }).error).toMatch(/has not run a turn yet/);
+    expect(order).toEqual(["result:error", "done:1"]);
   });
 
   it("settles the turn with an error when no model is selected", () => {
     const { adapter, events } = makeAdapter();
+    const order = recordTerminals(adapter);
     adapter.run({ ...COMPACT_PARAMS, model: undefined });
     const result = events.filter((e) => e.type === "agent_result");
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ status: "error" });
     expect((result[0] as { error: string }).error).toMatch(/no model is selected/);
+    expect(order).toEqual(["result:error", "done:1"]);
   });
 
   it("emits started -> compacted -> success result on the happy path", async () => {
@@ -470,6 +484,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
       events: [] as AgentEvent[],
     };
     adapter.on("event", (e) => events.push(e));
+    const order = recordTerminals(adapter);
     adapter.run(COMPACT_PARAMS);
     child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
     await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
@@ -481,6 +496,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     ]);
     expect(events[1]).toEqual({ type: "agent_compacted", trigger: "manual" });
     expect(events[2]).toMatchObject({ status: "success", sessionId: SESSION });
+    expect(order).toEqual(["result:success", "done:0"]);
   });
 
   it("reports a failed compaction as a failed RESULT, never a compacted card", async () => {
@@ -493,6 +509,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     const events: AgentEvent[] = [];
     const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
     adapter.on("event", (e) => events.push(e));
+    const order = recordTerminals(adapter);
     adapter.run(COMPACT_PARAMS);
     child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
     await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
@@ -501,6 +518,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     const result = events.find((e) => e.type === "agent_result");
     expect(result).toMatchObject({ status: "error" });
     expect((result as { error: string }).error).toMatch(/Compaction failed.*503/s);
+    expect(order).toEqual(["result:error", "done:1"]);
   });
 
   it("kill() stops the transient server, which settles the turn exactly once", async () => {
@@ -511,6 +529,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     const events: AgentEvent[] = [];
     const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
     adapter.on("event", (e) => events.push(e));
+    const order = recordTerminals(adapter);
     adapter.run(COMPACT_PARAMS);
     child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
     await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -522,6 +541,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
     expect(events.filter((e) => e.type === "agent_result")).toHaveLength(1);
     expect(events.some((e) => e.type === "agent_compacted")).toBe(false);
+    expect(order).toEqual(["result:error", "done:1"]);
   });
 
   it("interrupt() stops the transient server too", async () => {

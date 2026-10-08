@@ -68,7 +68,11 @@ import { GitHistory } from "./components/GitHistory.js";
 import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
 import { ProjectSettings } from "./components/ProjectSettings.js";
-import type { TrackerId } from "../server/shared/types.js";
+import type {
+  ScheduleNotesAccessCard as ScheduleNotesAccessCardData,
+  ScheduleProposalCard as ScheduleProposalCardData,
+  TrackerId,
+} from "../server/shared/types.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { IssuesPanel } from "./components/IssuesPanel.js";
@@ -100,6 +104,7 @@ import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { SandboxDialog } from "./components/SandboxDialog.js";
 import { SessionSettingsDialog } from "./components/SessionSidebar/SessionSettingsDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
+import { ScheduleNotesViewer } from "./components/ScheduleNotesViewer.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
 import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
@@ -117,6 +122,7 @@ const DiffPanel = lazy(() => {
 });
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { SandboxBanner } from "./components/SandboxBanner.js";
+import { ScheduledRunBanner, useAnyListSessionRow } from "./components/ScheduledRunBanner.js";
 import { NewSessionRepoBar } from "./components/NewSessionRepoBar.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
@@ -138,6 +144,8 @@ import type {
 
 import { useSessionStore } from "./stores/session-store.js";
 import { applySessionMessageProposalUpdate } from "./hooks/message-handlers/session-message-proposal.js";
+import { applyScheduleProposalUpdate } from "./hooks/message-handlers/schedule-proposal-card.js";
+import { applyScheduleNotesAccessUpdate } from "./hooks/message-handlers/schedule-notes-access-card.js";
 import { applyRepoSessionProposalUpdate } from "./hooks/message-handlers/repo-session-proposal.js";
 import { useGitStore } from "./stores/git-store.js";
 import { useFileStore, markUploadDeleted, noteUploadDismissed } from "./stores/file-store.js";
@@ -239,6 +247,7 @@ export default function App() {
   const wsSession = useSessionStore((s) =>
     wsSessionId ? s.sessions.find((x) => x.id === wsSessionId) : undefined,
   );
+  const fallbackSessionRow = useAnyListSessionRow(urlSessionId);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
   const historyLoaded = useSessionStore((s) => s.historyLoaded);
   const turnUsageForActiveSession = useSessionStore((s) =>
@@ -309,6 +318,8 @@ export default function App() {
   const isLocalMode = runtimeMode === "local";
   const isOpsSession = wsSession?.kind === "ops";
   const isSandboxSession = wsSession?.kind === "sandbox";
+  // The banners' session, also when it is past the sidebar's cap or archived.
+  const bannerSession = wsSession ?? fallbackSessionRow;
   const pluginSnapshot = usePluginReposStore((s) => snapshotForSession(s, sessionId));
   const showPluginsTab = pluginsTabVisible(pluginSnapshot);
   const rightTab = (() => {
@@ -1564,19 +1575,22 @@ export default function App() {
       {!showHomeScreen &&
         !showNewSessionView &&
         wsSessionId &&
-        (isSandboxSession ? (
-          <SandboxBanner capabilities={wsSession?.capabilities} />
+        (bannerSession?.kind === "sandbox" ? (
+          <SandboxBanner capabilities={bannerSession.capabilities} run={bannerSession} />
         ) : (
-          <PrLifecycleCard
-            sessionId={wsSessionId}
-            onOpenDetails={() => {
-              handleTabChange("pr");
-              useUiStore.getState().setMobilePanel("preview");
-            }}
-            onCreatePr={handleCreatePr}
-            canAutoMerge={!!currentSession?.remoteUrl}
-            onSearch={openSearch}
-          />
+          <>
+            {bannerSession?.scheduleId && <ScheduledRunBanner session={bannerSession} />}
+            <PrLifecycleCard
+              sessionId={wsSessionId}
+              onOpenDetails={() => {
+                handleTabChange("pr");
+                useUiStore.getState().setMobilePanel("preview");
+              }}
+              onCreatePr={handleCreatePr}
+              canAutoMerge={!!currentSession?.remoteUrl}
+              onSearch={openSearch}
+            />
+          </>
         ))}
       {isMobile && (
         <TopPanelBanner
@@ -1634,6 +1648,26 @@ export default function App() {
             onSettingsProposalDecision={(cardId, action) =>
               send({ type: "settings_proposal_decision", cardId, action })
             }
+            onScheduleProposalDecision={async (cardId, action, timeZone) => {
+              if (!sessionId) return;
+              const res = await apiPost<{ card: ScheduleProposalCardData }>(
+                `/api/sessions/${sessionId}/schedule-proposals/${cardId}/${action}`,
+                timeZone ? { timeZone } : undefined,
+              );
+              // With no runner on this session the route emits no WS update, so apply the
+              // response itself — scoped, in case the user switched.
+              if (useSessionStore.getState().sessionId !== sessionId) return;
+              applyScheduleProposalUpdate(cardId, res.card);
+            }}
+            onScheduleNotesAccessDecision={async (cardId, action) => {
+              if (!sessionId) return;
+              const res = await apiPost<{ card: ScheduleNotesAccessCardData }>(
+                `/api/sessions/${sessionId}/schedule-notes-access/${cardId}/${action}`,
+              );
+              // As for the proposal above: no runner, no WS update.
+              if (useSessionStore.getState().sessionId !== sessionId) return;
+              applyScheduleNotesAccessUpdate(cardId, res.card);
+            }}
             onUndoIssueWrite={(cardId) =>
               send({ type: "undo_issue_write", cardId })
             }
@@ -1862,7 +1896,9 @@ export default function App() {
             onClose={() => {
               useUiStore.getState().setSettingsOpen(false);
               useUiStore.getState().setSettingsTab(undefined);
+              useUiStore.getState().setSettingsScheduleId(null);
             }}
+            onOpenSession={(sid) => handleSessionResume(sid, navigate)}
           />
         )}
         {projectSettingsRepoUrl && (
@@ -1873,6 +1909,7 @@ export default function App() {
             }}
           />
         )}
+        <ScheduleNotesViewer />
         {showUsageModal && (
           <UsageModal
             currentSessionUsage={currentSessionUsage}

@@ -2,8 +2,7 @@ import { useMemo } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
-import { computeAttentionReason } from "./useAttentionInfo.js";
+import { computeAttentionReason, rowAttentionInputs } from "./useAttentionInfo.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
 /**
@@ -28,6 +27,7 @@ export function useAttentionSessions(sessions: SessionInfo[]): Set<string> {
   const statusBySession = usePrStore((s) => s.statusBySession);
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
+  const statusCardOn = useSettingsStore((s) => s.sessionStatusCard);
 
   return useMemo(() => {
     const ids = new Set<string>();
@@ -41,12 +41,10 @@ export function useAttentionSessions(sessions: SessionInfo[]): Set<string> {
         hasBackgroundTasks: backgroundTaskSessions.has(session.id),
         autoFixEnabled,
         autoResolveEnabled,
-        resolved: isTerminalPrResolved(session),
-        muted: !!session.mutedAt,
-        workspaceBlockKind: session.workspaceBlock,
+        ...rowAttentionInputs(session, statusCardOn),
       });
       if (reason !== null) ids.add(session.id);
     }
     return ids;
-  }, [sessions, activeRunnerSessions, awaitingPermissionSessions, backgroundTaskSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled]);
+  }, [sessions, activeRunnerSessions, awaitingPermissionSessions, backgroundTaskSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled, statusCardOn]);
 }

@@ -409,7 +409,8 @@ export class OpencodeAdapter
     });
   }
 
-  // Every path must emit one result; no turn CLI exit handler will settle compaction.
+  // Every path must emit one result, then done; no turn CLI exit handler does it for compaction.
+  // The one-shot executor settles the turn and releases its holds on done (planning#644).
   private runCompaction(params: AgentRunParams, spawnEnv: Record<string, string>): void {
     const sessionId = params.sessionId;
     let settled = false;
@@ -419,12 +420,16 @@ export class OpencodeAdapter
       this.cleanupTurnFiles();
       this.finishSubscriptionLimits(() => {
         this.compactionProc = null;
-        this.emit("event", {
-          type: "agent_result",
-          status: error ? "error" : "success",
-          sessionId: sessionId ?? "",
-          ...(error ? { error } : {}),
-        });
+        try {
+          this.emit("event", {
+            type: "agent_result",
+            status: error ? "error" : "success",
+            sessionId: sessionId ?? "",
+            ...(error ? { error } : {}),
+          });
+        } finally {
+          this.emit("done", error ? 1 : 0);
+        }
       });
     };
 

@@ -144,6 +144,29 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     outcomeDetail: "Applies to sessions started from now on.",
     effect: { state: "restart-dependent", detail: "Running containers are unchanged." },
   },
+  scheduleProposal: {
+    cardId: "sch-1",
+    kind: "update",
+    scheduleId: "schedule-1",
+    name: "Security PRs",
+    values: [{ label: "When", before: "Every day at 09:00", after: "Weekdays at 10:00" }],
+    prompt: { before: "Check the PRs.", after: "Check current security PRs and merge them." },
+    timing: { kind: "weekdays", hour: 10, minute: 0 },
+    timeZone: "Europe/Berlin",
+    enabled: true,
+    phase: "refused",
+    createdAt: "2026-10-07T00:00:00.000Z",
+    resolvedAt: "2026-10-07T00:01:00.000Z",
+    outcome: "There is no role named \"reviewer\".",
+  },
+  scheduleNotesAccess: {
+    cardId: "snr-1",
+    scheduleId: "schedule-1",
+    scheduleName: "Security PRs",
+    phase: "allowed",
+    createdAt: "2026-10-07T00:00:00.000Z",
+    resolvedAt: "2026-10-07T00:01:00.000Z",
+  },
   issueWrite: {
     cardId: "iw1",
     tracker: "linear",
@@ -1126,6 +1149,16 @@ describe("ChatHistoryManager", () => {
         .run("sess-1", "{not json");
       mgr.append("sess-1", proposal("set-a"));
       expect(mgr.getSettingsProposalCard("sess-1", "set-a")?.cardId).toBe("set-a");
+    });
+
+    it("updates a card past an unparseable row beside it", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      dbManager.db
+        .prepare("INSERT INTO messages (session_id, role, content, settings_proposal) VALUES (?, 'assistant', '', ?)")
+        .run("sess-1", "{not json");
+      mgr.append("sess-1", proposal("set-a"));
+      expect(mgr.updateSettingsProposalCard("sess-1", "set-a", { phase: "dismissed" })?.phase).toBe("dismissed");
+      expect(mgr.getSettingsProposalCard("sess-1", "set-a")?.phase).toBe("dismissed");
     });
   });
 

@@ -16,7 +16,7 @@ import {
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
-import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
+import { prepareCardOutcomeNotices } from "../services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
@@ -481,16 +481,20 @@ async function composeAndRunAgentTurn(
   // only caller that reaches here with `systemTurn` is `runCompactionAhead`,
   // which sets `compact` as well. It changes with the other call site so a
   // future system turn on this path is not silently excluded.
-  const settingsOutcome =
-    capturedSessionId && ctx.settingsProposals
-      && !opts.compact && !ridesTurnAsCommand
-      ? prepareSettingsOutcomeNotice(
-          { proposals: ctx.settingsProposals, chatHistoryManager: ctx.chatHistoryManager },
+  const cardOutcomes =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? prepareCardOutcomeNotices(
+          {
+            chatHistoryManager: ctx.chatHistoryManager,
+            settingsProposals: ctx.settingsProposals,
+            scheduleProposals: ctx.scheduleProposals,
+            scheduleNotesRequests: ctx.scheduleNotesRequests,
+          },
           capturedSessionId,
         )
-      : null;
+      : [];
   // docs/303-cross-repo-session-proposal req 11 — at-least-once, with the same
-  // exclusions as the settings outcome above.
+  // exclusions as the card outcomes above.
   const repoSessionOutcome =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareRepoSessionOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
@@ -500,7 +504,7 @@ async function composeAndRunAgentTurn(
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareSessionMessageOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
       : null;
-  const noticeDeliveries = [settingsOutcome, repoSessionOutcome, sessionMessageOutcome]
+  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome]
     .filter((d) => d !== null);
 
   const activeDir = ctx.getActiveDir();
@@ -520,7 +524,7 @@ async function composeAndRunAgentTurn(
   const agentPrefix = [
     pendingAgentNotice,
     bugOutcomeNotice,
-    settingsOutcome?.notice,
+    ...cardOutcomes.map((o) => o.notice),
     repoSessionOutcome?.notice,
     sessionMessageOutcome?.notice,
     resetAgentPrefix,
@@ -732,6 +736,7 @@ async function composeAndRunAgentTurn(
       }
     },
     ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
+    ...(ctx.runRequestedCompaction ? { runRequestedCompaction: ctx.runRequestedCompaction } : {}),
     postTurnReleaseFlow: buildPostTurnReleaseFlow({
       getReleaseStatusPoller: () => ctx.releaseStatusPoller,
       sessionManager: ctx.sessionManager,

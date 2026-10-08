@@ -1,4 +1,4 @@
-import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
+import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin, LastTurnOutcome } from "../shared/types.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
@@ -38,7 +38,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
-import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup } from "./turn-stop-request.js";
+import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup, stoppedByUser, turnInSetup } from "./turn-stop-request.js";
 import path from "node:path";
 import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import type { ReplaySpillTarget } from "./services/replay.js";
@@ -246,6 +246,29 @@ export async function executeAgentTurn(
       sessions: deps.listenerDeps.sessionManager.list(),
     });
   }
+  // docs/324-scheduled-sessions — a run's list row carries the mark for "needs you" (req 21).
+  // Never throws, like `writeAnswerHold`: the clear is in the turn start, the set in its settlement.
+  const writeAnswerHoldAndList = (awaiting: boolean): void => {
+    if (!writeAnswerHold(deps, sessionId, awaiting)) return;
+    try {
+      const sessions = deps.listenerDeps.sessionManager;
+      if (sessions.get(sessionId)?.scheduleId) deps.listenerDeps.sseBroadcast("session_list", { sessions: sessions.list() });
+    } catch (err) {
+      console.error(`[turn] listing the answer hold for ${sessionId} failed:`, err);
+    }
+  };
+  // docs/324-scheduled-sessions req 33 — a user turn makes a stopped or finished run active
+  // again, and its end decides again. Before the restore below, since the drain reads the hold.
+  const reopenStoppedOrFinishedRun = (): void => {
+    try {
+      const sessions = deps.listenerDeps.sessionManager;
+      const run = sessions.get(sessionId);
+      if (!run?.runFinishedAt && !run?.runStoppedAt) return;
+      if (sessions.reopenRun(sessionId)) deps.listenerDeps.sseBroadcast("session_list", { sessions: sessions.list() });
+    } catch (err) {
+      console.error(`[turn] reopening the run ${sessionId} failed:`, err);
+    }
+  };
   const useStreaming = input.useStreaming ?? false;
   // Streaming alone is insufficient: some adapters emit final text after ending their process.
   const adoptsCliStartedTurns = useStreaming && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false);
@@ -407,6 +430,38 @@ export async function executeAgentTurn(
     }
     input.onTurnComplete?.(outcome);
   };
+
+  // docs/324-scheduled-sessions req 31 — how this turn ended, persisted. The first terminal
+  // reading wins; a retry that takes the turn over is a new executor and records its own.
+  // Unlike the settlement, this also runs for a resident streaming turn, which never settles.
+  let turnEndRecorded = false;
+  const recordTurnEnd = (outcome: LastTurnOutcome, detail?: string): void => {
+    if (turnEndRecorded) return;
+    turnEndRecorded = true;
+    try {
+      const { sessionManager } = deps.listenerDeps;
+      const first = sessionManager.get(sessionId)?.lastTurnOutcome === undefined;
+      sessionManager.setLastTurnOutcome(sessionId, outcome);
+      deps.onTurnEnd?.({
+        sessionId,
+        outcome,
+        // An adopted turn was running before the restart; it records no submission of its own.
+        submitted: input.adopt === true || ownTurn !== "unsubmitted",
+        first,
+        ...(detail ? { detail } : {}),
+      });
+    } catch (err) {
+      console.error(`[turn] recording how the turn for ${sessionId} ended failed:`, err);
+    }
+  };
+  let lastAgentError: Error | undefined;
+  const isQuotaRefusal = (err: Error | undefined): boolean =>
+    err !== undefined && (
+      detectHardExhaustion(err.message) !== null
+      || (err instanceof ProviderRouteUnavailableError
+        && (input.attemptLedger ?? []).some((entry) => entry.failureKind === "quota"))
+    );
+
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
     // Hold identity, not the turn epoch (docs/304): the release below must only run when
@@ -443,7 +498,9 @@ export async function executeAgentTurn(
   // what holds it.
   forgetHeldTurn(deps.answerHold, input);
   if (input.automatic !== true && !input.adopt) {
-    writeAnswerHold(deps, sessionId, false);
+    writeAnswerHoldAndList(false);
+    // A Stop pressed while this turn set up is the user's last word; a retry of it counts too.
+    if (!(runner && stoppedByUser(runner))) reopenStoppedOrFinishedRun();
     // req 4 — what the hold kept runs after this turn, from the queue it waits in now.
     if (runner && restoreHeldTurns(runner) > 0) {
       runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
@@ -583,6 +640,7 @@ export async function executeAgentTurn(
         );
         return true;
       }
+      recordTurnEnd("errored", "The agent's account could not authenticate.");
       await settleTurnWithoutRedispatch();
       return false;
     }
@@ -839,6 +897,7 @@ export async function executeAgentTurn(
     quotaRetryInProgress = true;
     void retryOnNextAccount(refusedEntry).catch(async (retryErr: unknown) => {
       console.error("[turn] quota retry from the error path failed:", retryErr);
+      recordTurnEnd("errored", retryErr instanceof Error ? retryErr.message : String(retryErr));
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -905,7 +964,7 @@ export async function executeAgentTurn(
     };
     // docs/322 — before the drain reads it. Only set here: a turn that did not ask leaves
     // the hold to whatever the user does next.
-    if (facts.awaitingAnswer) writeAnswerHold(deps, sessionId, true);
+    if (facts.awaitingAnswer) writeAnswerHoldAndList(true);
     try {
       // Nothing to read while the feature is off, and nothing will be decided from it.
       if (cardOn) facts.writeSeq = storedStatus()?.writeSeq ?? 0;
@@ -931,6 +990,9 @@ export async function executeAgentTurn(
 
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
 
+  // Before the listeners below, so `onError` can read the error that ended the turn.
+  agent.on("error", (err: Error) => { lastAgentError = err; });
+
   wireAgentListeners(agent, runner, deps.listenerDeps, {
     isNewSession: input.isNewSession,
     persistUserMessage: persistUserMessageOnce,
@@ -949,6 +1011,12 @@ export async function executeAgentTurn(
     onError: async () => {
       agentErrored = true;
       await settleHandovers();
+      // After the handover, so the record belongs to the turn the error ended. A pending
+      // docs/306 continuation is a new turn, which records how it ends.
+      const quota = isQuotaRefusal(lastAgentError);
+      if (!(quota && quotaContinuationPending)) {
+        recordTurnEnd(quota ? "quota-refused" : "errored", lastAgentError?.message);
+      }
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -1180,6 +1248,13 @@ export async function executeAgentTurn(
       await postTurnStep("requested-restart", () =>
         runRequestedRestart({ sessionId, runner, turnIsCurrent, ownsSystemHold, settle: finishTurn }));
     }
+    // docs/324-agent-requested-compaction — before idle too: the compaction turn it starts
+    // keeps idle's remediation behind it.
+    const runRequestedCompaction = deps.runRequestedCompaction;
+    if (runner && runRequestedCompaction) {
+      await postTurnStep("requested-compaction", () =>
+        runRequestedCompaction({ sessionId, runner, turnIsCurrent, ownsSystemHold, settle: finishTurn }));
+    }
   };
 
   const runPostTurnFlows = async (): Promise<void> => {
@@ -1258,6 +1333,7 @@ export async function executeAgentTurn(
     resultTurnText = null;
     // The adopted turn is a turn of its own: it settles its own facts and is decided afresh.
     turnFacts = null;
+    turnEndRecorded = false;
     sawOwnResult = false;
     harnessCommandTurn = false;
     thisTurnEpoch = runner?.turnEpoch;
@@ -1368,9 +1444,14 @@ export async function executeAgentTurn(
         );
         return;
       }
+      // Read before the stand-down, which clears a summary that is only the refusal.
+      const refusal = (event.error ?? runner?.turnSummary ?? "").slice(0, 400);
       await postTurnStep("quota-stand-down", () => {
         retireOnSpentAccount({ summaryIsTheNotice: !event.error });
       });
+      if (!quotaContinuationPending) recordTurnEnd("quota-refused", refusal);
+    } else {
+      recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error);
     }
     // Anything riding this prompt is delivered here, and must not be delivered
     // in `settleTurn`: a resident streaming turn settles no turn at all, and its
@@ -1507,6 +1588,15 @@ export async function executeAgentTurn(
         if (handled) return;
       }
 
+      // `sawOwnResult`, not `receivedResult`: an adopted CLI turn keeps its predecessor's result.
+      if (!sawOwnResult && !agentErrored && !wasSuperseded) {
+        // A stopped turn ended as the user asked; any other exit without a result is an error.
+        recordTurnEnd(
+          (runner?.wasInterrupted ?? false) ? "ok" : "errored",
+          code !== 0 ? `The agent process exited with code ${code}.` : "The agent process ended without a response.",
+        );
+      }
+
       // Before the drain below, not at settlement with it (planning#609): a drained
       // successor is a DIFFERENT turn and composes its own prompt, so a take still spent
       // here is one that turn does not get — and the queued message is exactly the one
@@ -1555,8 +1645,9 @@ export async function executeAgentTurn(
         return;
       }
 
-      // A late task notification can leave a one-shot process marked running after exit.
-      const unlatched = runner?.getAgent() === null && runner.running;
+      // A late task notification can leave a one-shot process marked running after exit. A
+      // successor this turn's drain started holds `running` too while in setup (planning#644).
+      const unlatched = runner?.getAgent() === null && runner.running && !turnInSetup(runner);
       if (unlatched) runner.running = false;
 
       await postTurnStep("drain", tryDrain);

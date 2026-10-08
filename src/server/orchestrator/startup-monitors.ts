@@ -47,8 +47,12 @@ export async function startStartupMonitors(
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
     mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
-    cleanupContainer, version, agentRegistry, providerAccountManager,
+    cleanupContainer, version, agentRegistry, providerAccountManager, scheduleRunner,
   } = rt;
+
+  // docs/324-scheduled-sessions — a pass now, which also finishes what a restart cut off,
+  // then every 30 seconds. Tests drive their passes themselves.
+  scheduleRunner.start({ interval: !isTestMode });
 
   // Held for the process: the first dictation after a quiet period must not pay
   // a container start (docs/299 req 8). Creation is off the boot critical path.
@@ -396,6 +400,7 @@ export async function startStartupMonitors(
   app.addHook("onClose", async () => {
     // Stop timers before shutdown closes the database they query.
     agentMergeExecutor.stop();
+    scheduleRunner.stop();
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);

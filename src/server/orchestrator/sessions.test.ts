@@ -633,6 +633,44 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/324-agent-requested-compaction: pending compaction request", () => {
+    it("round-trips, a later request replaces it, and null clears it", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.getPendingCompaction("sess-1")).toBeUndefined();
+
+      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API", note: "start B" });
+      mgr.setPendingCompaction("sess-1", {});
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({});
+      mgr.setPendingCompaction("sess-1", null);
+      expect(mgr.getPendingCompaction("sess-1")).toBeUndefined();
+    });
+
+    it("a compaction notice survives a branch notice's overwrite and is delivered with it once (req 9)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.appendPendingCompactionNotice("sess-1", "[System] keep the API");
+      mgr.setPendingAgentNotice("sess-1", "[System] your branch moved");
+      const delivered = mgr.consumePendingAgentNotice("sess-1");
+      expect(delivered).toBe("[System] your branch moved\n\n[System] keep the API");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBeUndefined();
+
+      mgr.appendPendingCompactionNotice("sess-1", "only");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBe("only");
+    });
+
+    it("Stop drops only the note (req 10)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
+      mgr.dropPendingCompactionNote("sess-1");
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API" });
+      mgr.dropPendingCompactionNote("sess-2");
+      expect(mgr.getPendingCompaction("sess-2")).toBeUndefined();
+    });
+  });
+
   describe("docs/221: pending agent notice (out-of-band branch move)", () => {
     it("round-trips through persistence and is consumed exactly once", () => {
       const mgr = new SessionManager(dbManager);
@@ -1707,5 +1745,122 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
     mgr.track("s1");
     dbManager.db.prepare("UPDATE sessions SET last_turn_outcome = 'exploded' WHERE id = 's1'").run();
     expect(mgr.get("s1")).not.toHaveProperty("lastTurnOutcome");
+  });
+
+  const card = (needsYou?: string[]) => ({
+    status: "Sweeping PRs", actions: [], fresh: true, writeSeq: 1, turnSeq: 1, ...(needsYou ? { needsYou } : {}),
+  });
+
+  it("list a run's question and manual steps for its \"needs you\" (reqs 21, 31)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("run");
+    mgr.setScheduleRun("run", "sched-1", "run-1");
+    expect(mgr.list()[0]).not.toHaveProperty("awaitingAnswer");
+    expect(mgr.list()[0]).not.toHaveProperty("manualStepCount");
+
+    mgr.setAwaitingAnswer("run", true);
+    mgr.setSessionStatus("run", card(["Rotate the token", "Approve the deploy"]));
+    expect(mgr.list()[0]).toMatchObject({ awaitingAnswer: true, manualStepCount: 2 });
+
+    mgr.setSessionStatus("run", card());
+    expect(mgr.list()[0]).not.toHaveProperty("manualStepCount");
+  });
+
+  it("leave both off a session that is not a run (docs/322 keeps the mark ShipIt's own)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("plain");
+    mgr.setAwaitingAnswer("plain", true);
+    mgr.setSessionStatus("plain", card(["Rotate the token"]));
+    expect(mgr.get("plain")).not.toHaveProperty("awaitingAnswer");
+    expect(mgr.get("plain")).not.toHaveProperty("manualStepCount");
+  });
+
+  it("report whether the question mark changed, so a change can be published", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("run");
+    expect(mgr.setAwaitingAnswer("run", true)).toBe(true);
+    expect(mgr.setAwaitingAnswer("run", true)).toBe(false);
+    expect(mgr.setAwaitingAnswer("run", false)).toBe(true);
+    expect(mgr.setAwaitingAnswer("missing", true)).toBe(false);
+  });
+
+  it("do not touch a finished run, as for a merged session (docs/316 req 5)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("run");
+    mgr.setScheduleRun("run", "sched-1", "run-1");
+    dbManager.db.prepare("UPDATE sessions SET last_used_at = '2020-01-01T00:00:00.000Z' WHERE id = 'run'").run();
+    mgr.setRunFinishedAt("run", "2020-01-01T00:00:05.000Z");
+    mgr.touchUnlessResolved("run");
+    expect(mgr.get("run")!.lastUsedAt).toBe("2020-01-01T00:00:00.000Z");
+
+    mgr.setRunFinishedAt("run", null);
+    mgr.touchUnlessResolved("run");
+    expect(mgr.get("run")!.lastUsedAt > "2020-01-02").toBe(true);
+  });
+
+  describe("the sidebar cap (req 20)", () => {
+    const repo = "https://github.com/o/r.git";
+    const run = (id: string, finishedAt: string, extra: Partial<SessionInfo> = {}): SessionInfo => ({
+      id, title: id, createdAt: "2024-01-01T00:00:00.000Z", lastUsedAt: "2024-01-01T00:00:00.000Z",
+      remoteUrl: repo, scheduleId: "sched-1", runFinishedAt: finishedAt, ...extra,
+    });
+    const merged = (id: string, mergedAt: string): SessionInfo => ({
+      id, title: id, createdAt: "2024-01-01T00:00:00.000Z", lastUsedAt: mergedAt, remoteUrl: repo, mergedAt,
+    });
+
+    it("counts runs and regular sessions separately, so runs never push the user's own out", () => {
+      const sessions = [
+        merged("m1", "2024-01-01 09:00:00"),
+        run("r1", "2024-01-02T09:00:00.000Z"),
+        run("r2", "2024-01-03T09:00:00.000Z"),
+        run("r3", "2024-01-04T09:00:00.000Z"),
+      ];
+      expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort()).toEqual(["m1", "r3"]);
+    });
+
+    it("ranks runs by when they finished, not by their PR", () => {
+      const sessions = [
+        run("old-finish", "2024-01-02T09:00:00.000Z", { mergedAt: "2024-01-09 09:00:00" }),
+        run("new-finish", "2024-01-05T09:00:00.000Z"),
+      ];
+      expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id)).toEqual(["new-finish"]);
+    });
+
+    it("keeps a run that is not finished, whatever its PR says", () => {
+      const sessions = [
+        run("waiting", "", { runFinishedAt: undefined, mergedAt: "2024-01-01 09:00:00" }),
+        run("r2", "2024-01-03T09:00:00.000Z"),
+      ];
+      expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort()).toEqual(["r2", "waiting"]);
+    });
+
+    it("counts a run's spawned session in the Scheduled view's cap", () => {
+      const child = { ...merged("kid", "2024-01-06 09:00:00"), parentSessionId: "r2", rootSessionId: "r2" };
+      const sessions = [
+        merged("m1", "2024-01-01 09:00:00"),
+        merged("m2", "2024-01-02 09:00:00"),
+        run("r2", "2024-01-03T09:00:00.000Z"),
+        child,
+      ];
+      expect(filterVisibleInSidebar(sessions, 2).map((s) => s.id).sort()).toEqual(["kid", "m1", "m2", "r2"]);
+    });
+
+    // The browser tells a run's spawned session by its run, so it must never get one without the other.
+    it("hides a run's done spawned session along with its run", () => {
+      const child = { ...merged("kid", "2024-01-09 09:00:00"), parentSessionId: "r0", rootSessionId: "r0" };
+      const sessions = [
+        run("r0", "2024-01-01T09:00:00.000Z"),
+        child,
+        ...[2, 3, 4, 5].map((d) => run(`r${d}`, `2024-01-0${d}T09:00:00.000Z`)),
+      ];
+      const visible = filterVisibleInSidebar(sessions, 5).map((s) => s.id);
+      expect(visible).not.toContain("r0");
+      expect(visible).not.toContain("kid");
+      expect(visible.sort()).toEqual(["r2", "r3", "r4", "r5"]);
+
+      const working = { ...child, mergedAt: undefined };
+      expect(filterVisibleInSidebar([...sessions.filter((s) => s.id !== "kid"), working], 5).map((s) => s.id))
+        .toEqual(expect.arrayContaining(["r0", "kid"]));
+    });
   });
 });

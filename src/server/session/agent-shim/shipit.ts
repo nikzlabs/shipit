@@ -56,6 +56,7 @@ import {
   handleSettingsList,
   handleSettingsPropose,
 } from "./shipit-settings.js";
+import { handleScheduleList, handleScheduleNotes, handleSchedulePropose } from "./shipit-schedule.js";
 import { settingsDeps, type SettingsDeps } from "./settings-out.js";
 import { renderLine } from "../../shared/settings-catalogue/rendered.js";
 import {
@@ -71,6 +72,7 @@ import {
 export { parseFlags, type ShimIO };
 
 import { handleBranchResetToBase, RESET_USAGE } from "./shipit-branch.js";
+import { handleCompact } from "./shipit-compact.js";
 import { runPlugin } from "./shipit-plugin.js";
 
 const SHIM_NAME = "shipit (ShipIt)";
@@ -129,6 +131,19 @@ Supported subcommands:
                           [--severity fyi|warn|blocker] [--subject T]
                           [--to parent] [--json]
   shipit session help
+
+Context (docs/324-agent-requested-compaction):
+  shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
+                          Compact YOUR context after this turn ends — at a point
+                          you choose, such as between two features. INSTRUCTIONS
+                          say what the compaction must keep; your next turn
+                          starts with them, word for word. With --note, ShipIt
+                          gives you a new turn after the compaction with the note,
+                          so you continue on your own; without one, the session
+                          waits for the user. Needs the user's setting
+                          'advanced.agentCompaction' (off by default) — read it
+                          with 'shipit settings get advanced.agentCompaction'.
+                          'shipit compact --help' has more.
 
 Branch (docs/239):
   shipit branch reset-to-base [--json]
@@ -354,6 +369,24 @@ ShipIt's own settings (docs/299 — read what the user configured, propose a cha
 
   Post the card INSTEAD of telling the user which control to go and find. Keep
   the prose to what the card does not say.
+
+Scheduled sessions (docs/324 — sessions ShipIt starts by itself on a schedule):
+  shipit schedule list    [--json]
+  shipit schedule propose [--id ID] --file FILE [--json]   (YAML; --file - reads stdin)
+  shipit schedule notes   SCHEDULE-ID [RUN-ID [FILE]] [--json]
+
+  When the user asks for something to happen regularly ("every weekday at 9,
+  check the security PRs"), propose a schedule. 'list' shows the schedules with
+  their ids. 'propose' posts a card with the schedule — or, with --id, a change
+  to one, where only the fields your YAML gives change. Nothing is saved until
+  the user clicks Confirm on the card; there is no way to save a schedule
+  yourself. It returns immediately: never wait for the card, and never post the
+  same one twice. /shipit-docs/schedules.md has the YAML.
+
+  'notes' reads the notes folders of a schedule's runs: the runs that have
+  notes, one run's files, or one file. A run of the schedule may always read
+  them. In any other session the first call posts a card asking the user, and
+  returns at once; the next turn tells you what they decided.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -602,6 +635,7 @@ const ISSUE_HANDLERS: Record<
 
 const COMMAND_DOCS: Record<string, string> = {
   settings: "/shipit-docs/settings.md",
+  schedule: "/shipit-docs/schedules.md",
   session: "/shipit-docs/sessions.md",
   source: "/shipit-docs/ops-session.md",
   issue: "/shipit-docs/issues.md",
@@ -673,6 +707,16 @@ const SETTINGS_HANDLERS: Record<
   propose: handleSettingsPropose,
 };
 
+/** Printed through the settings printer, which takes rendered lines only (`settings-out.ts`). */
+const SCHEDULE_HANDLERS: Record<
+  string,
+  (args: string[], deps: SettingsDeps) => Promise<void>
+> = {
+  list: handleScheduleList,
+  propose: handleSchedulePropose,
+  notes: handleScheduleNotes,
+};
+
 const SOURCE_HANDLERS: Record<
   string,
   (args: string[], deps: RunDeps) => Promise<void>
@@ -739,6 +783,11 @@ export async function runShim(
     return;
   }
 
+  if (command === "schedule" || command === "schedules") {
+    await dispatchSchedule(args.slice(1), deps, io);
+    return;
+  }
+
   if (command === "service" || command === "services") {
     await dispatchService(args.slice(1), deps, io);
     return;
@@ -751,6 +800,11 @@ export async function runShim(
 
   if (command === "plugin" || command === "plugins") {
     await runPlugin(args.slice(1), { ...deps, io });
+    return;
+  }
+
+  if (command === "compact") {
+    await handleCompact(args.slice(1), deps);
     return;
   }
 
@@ -934,6 +988,44 @@ async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Prom
   }
   if (requestsHelp(args.slice(1))) {
     success(io, commandHelp("settings", sub));
+    return;
+  }
+  await handler(args.slice(1), settingsDeps(deps));
+}
+
+const REJECTED_SCHEDULE_SUBCOMMANDS = new Set([
+  "create",
+  "add",
+  "update",
+  "edit",
+  "set",
+  "delete",
+  "remove",
+  "pause",
+  "resume",
+  "run",
+]);
+
+async function dispatchSchedule(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_SCHEDULE_SUBCOMMANDS.has(sub)) {
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit schedule ${sub}\` — a schedule takes effect only when the user confirms it.\n`
+        + "Post a card with `shipit schedule propose [--id ID] --file -`; the user's Confirm saves it.\n"
+        + "See /shipit-docs/schedules.md.",
+    );
+  }
+  const handler = handlerFor(SCHEDULE_HANDLERS, sub);
+  if (!handler) {
+    fail(io, `${renderLine(`Unsupported shipit schedule subcommand: ${sub}`)}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("schedule", sub));
     return;
   }
   await handler(args.slice(1), settingsDeps(deps));

@@ -53,6 +53,14 @@ export interface NewScheduleRun {
   reason?: string;
 }
 
+export interface SlotClaim {
+  scheduleId: string;
+  slotAt: Date;
+  spec: unknown;
+  /** Req 15 — the earlier due slots, kept as one skipped row at the last of them. */
+  missed?: { slotAt: Date; reason: string };
+}
+
 export interface ScheduleRunChanges {
   outcome?: ScheduleRunOutcome;
   /** Null clears it. */
@@ -137,9 +145,17 @@ export class ScheduleStore {
     return rows.map(fromRow);
   }
 
+  /**
+   * `updated_at` moves strictly forward, also for two edits in one millisecond: a proposal card
+   * compares it to tell whether the schedule changed since the card was written.
+   */
   update(id: string, changes: ScheduleChanges, now = new Date().toISOString()): Schedule | null {
+    const previous = this.get(id);
+    if (!previous) return null;
+    const last = Date.parse(previous.updatedAt);
+    const updatedAt = Number.isNaN(last) || Date.parse(now) > last ? now : new Date(last + 1).toISOString();
     const sets: string[] = ["updated_at = ?"];
-    const params: unknown[] = [now];
+    const params: unknown[] = [updatedAt];
     const set = (column: string, value: unknown) => {
       sets.push(`${column} = ?`);
       params.push(value);
@@ -184,6 +200,56 @@ export class ScheduleStore {
       now,
     );
     return res.changes > 0 ? this.getRun(id) : null;
+  }
+
+  /**
+   * Records the missed slots and claims the latest in one transaction, so a restart
+   * between the two cannot leave either alone. Null when the slot is already claimed.
+   */
+  claimSlot(claim: SlotClaim, now = new Date().toISOString()): ScheduleRun | null {
+    const alreadyClaimed = new Error("slot already claimed");
+    try {
+      return this.db.transaction(() => {
+        if (claim.missed) {
+          this.insertRun({
+            scheduleId: claim.scheduleId,
+            slotAt: claim.missed.slotAt,
+            outcome: "skipped",
+            reason: claim.missed.reason,
+          }, now);
+        }
+        const run = this.insertRun({ scheduleId: claim.scheduleId, slotAt: claim.slotAt, spec: claim.spec }, now);
+        if (!run) throw alreadyClaimed;
+        return run;
+      })();
+    } catch (err) {
+      if (err === alreadyClaimed) return null;
+      throw err;
+    }
+  }
+
+  /** Req 14 — a run still being started counts as still going. */
+  hasStartingRun(scheduleId: string, exceptRunId: string): boolean {
+    return this.db.prepare(
+      "SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND outcome = 'starting' AND id != ? LIMIT 1",
+    ).get(scheduleId, exceptRunId) !== undefined;
+  }
+
+  /** Every schedule's `starting` rows, oldest first: what a restart left unfinished. */
+  startingRuns(): ScheduleRun[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM schedule_runs WHERE outcome = 'starting' ORDER BY created_at, rowid",
+    ).all() as RunRow[];
+    return rows.map(runFromRow);
+  }
+
+  /** Started runs whose session has not finished a turn yet: the first turn is still going. */
+  startedRunsBeforeFirstTurnEnd(): ScheduleRun[] {
+    const rows = this.db.prepare(
+      `SELECT r.* FROM sessions s JOIN schedule_runs r ON r.id = s.schedule_run_id
+       WHERE s.last_turn_outcome IS NULL AND r.outcome = 'started'`,
+    ).all() as RunRow[];
+    return rows.map(runFromRow);
   }
 
   getRun(id: string): ScheduleRun | null {

@@ -54,6 +54,18 @@ describe("computeRepoGroups — sandbox group", () => {
     const groups = computeRepoGroups([], [session({ id: "x", remoteUrl: "" })]);
     expect(groups.some((g) => g.kind === "sandbox")).toBe(false);
   });
+
+  it("docs/324: sinks finished runs to the bottom, newest finish first, and keeps the rest in order", () => {
+    const run = (id: string, runFinishedAt?: string) =>
+      session({ id, kind: "sandbox", scheduleId: "sched-1", ...(runFinishedAt ? { runFinishedAt } : {}) });
+    const groups = computeRepoGroups([], [
+      run("old-done", "2026-01-02T00:00:00.000Z"),
+      run("live-b"),
+      run("new-done", "2026-01-05T00:00:00.000Z"),
+      run("live-a"),
+    ]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["live-b", "live-a", "new-done", "old-done"]);
+  });
 });
 
 describe("computeRepoGroups — resolved demotion", () => {
@@ -73,6 +85,22 @@ describe("computeRepoGroups — resolved demotion", () => {
       session({ id: "active", remoteUrl: REPO, createdAt: "2025-12-01T00:00:00.000Z" }),
     ]);
     expect(groups[0].sessions.map((s) => s.id)).toEqual(["active", "resolved"]);
+  });
+
+  it("docs/324: orders finished runs by their finish, not by their PR", () => {
+    const groups = computeRepoGroups(repos, [
+      merged({ id: "merged-late", scheduleId: "s", mergedAt: "2026-01-09T00:00:00.000Z", runFinishedAt: "2026-01-03T00:00:00.000Z" }),
+      merged({ id: "finished-late", scheduleId: "s", runFinishedAt: "2026-01-04T00:00:00.000Z" }),
+    ]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["finished-late", "merged-late"]);
+  });
+
+  it("docs/324: orders a run's finish and a spawned session's SQLite-format merge by time, not by text", () => {
+    const groups = computeRepoGroups(repos, [
+      merged({ id: "run", scheduleId: "s", runFinishedAt: "2026-10-07T10:00:00.000Z" }),
+      merged({ id: "kid", mergedAt: "2026-10-07 16:00:00", lastUsedAt: "2026-10-07 15:00:00" }),
+    ]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["kid", "run"]);
   });
 
   it("keeps a merged session with a blocked workspace above an older active one (docs/298)", () => {

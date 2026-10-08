@@ -15,6 +15,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { SettingsProposalStore } from "./settings-proposal-store.js";
+import type { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
@@ -27,7 +28,7 @@ import type { UsageManager } from "./usage.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import type { TurnEnd, TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import type { QuotaContinuationManager } from "./services/quota-continuation.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
@@ -57,7 +58,11 @@ import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
-import { prepareSettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import { scheduledRunContext } from "./scheduled-run-context.js";
+import type { ScheduleStore } from "./schedule-store.js";
+import type { ScheduleNotes } from "./schedule-notes.js";
+import type { ScheduleNotesRequestStore } from "./schedule-notes-request-store.js";
+import { prepareCardOutcomeNotices } from "./services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
@@ -114,6 +119,9 @@ export interface RunnerRegistryDeps {
   getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
   /** Rebind a worker's adopted turn to its original delivery after restart. */
   rebindDelivery?: (deliveryId: string) => ((outcome: TurnOutcome) => void) | undefined;
+  onTurnEnd?: (end: TurnEnd) => void;
+  /** docs/324-scheduled-sessions — a hold on a runner came off, or its background work changed. */
+  onRunnerSettled?: (sessionId: string) => void;
   usageManager: UsageManager;
   recordAgentRateLimits?: (
     agentId: AgentId,
@@ -126,6 +134,8 @@ export interface RunnerRegistryDeps {
   getQuotaContinuation?: () => QuotaContinuationManager | undefined;
   /** docs/321 — resolves the registry lazily for the same reason. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/324-agent-requested-compaction — likewise. */
+  runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
@@ -146,6 +156,10 @@ export interface RunnerRegistryDeps {
   resolvePluginServices?: ServiceSetupDeps["resolvePluginServices"];
   /** Absent in minimal setups; without it a turn simply carries no settings notice. */
   settingsProposals?: SettingsProposalStore;
+  scheduleProposals?: ScheduleProposalStore;
+  scheduleNotesRequests?: ScheduleNotesRequestStore;
+  /** Absent in minimal setups; a run's first turn then carries no `<scheduled_run>` block. */
+  scheduledRuns?: { store: ScheduleStore; notes: ScheduleNotes };
 }
 
 export function assertSessionCanDispatch(
@@ -170,12 +184,15 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, composeHelperConfig, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, getReleaseStatusPoller, rebindDelivery,
+    onTurnEnd,
+    onRunnerSettled,
     reconcileAgentMergeClaimsFor,
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
     getQuotaContinuation,
     runRequestedRestart,
+    runRequestedCompaction,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -183,6 +200,9 @@ export function createRunnerRegistry(
     activatePluginRepos,
     resolvePluginServices,
     settingsProposals,
+    scheduleProposals,
+    scheduleNotesRequests,
+    scheduledRuns,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -239,7 +259,9 @@ export function createRunnerRegistry(
         // The release re-enters dispatch, preserving the entry's settlement callback, and
         // leaves it queued in order if another gate (a system hold) still holds.
         if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
+        onRunnerSettled?.(runner.sessionId);
       });
+      if (onRunnerSettled) runner.on("work_released", () => onRunnerSettled(runner.sessionId));
       // The worker reports no agent, so nothing can answer a request the lost one raised.
       // A throw here would stop verifyRunningState before it releases the queue.
       runner.on("turn_abandoned", () => {
@@ -314,6 +336,7 @@ export function createRunnerRegistry(
         },
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
         ...(rebindDelivery ? { rebindDelivery } : {}),
+        ...(onTurnEnd ? { onTurnEnd } : {}),
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();
@@ -419,6 +442,7 @@ export function createRunnerRegistry(
           },
         } : {}),
         ...(runRequestedRestart ? { runRequestedRestart } : {}),
+        ...(runRequestedCompaction ? { runRequestedCompaction } : {}),
         commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {
@@ -488,10 +512,15 @@ export function createRunnerRegistry(
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
-        ...(settingsProposals
+        cardOutcomeNotices: (sessionId) =>
+          prepareCardOutcomeNotices(
+            { chatHistoryManager, settingsProposals, scheduleProposals, scheduleNotesRequests },
+            sessionId,
+          ),
+        ...(scheduledRuns
           ? {
-              settingsOutcomeNotice: (sessionId: string) =>
-                prepareSettingsOutcomeNotice({ proposals: settingsProposals, chatHistoryManager }, sessionId),
+              scheduledRunContext: (sessionId: string, deliveryId: string | undefined) =>
+                scheduledRunContext({ sessionManager, ...scheduledRuns, runtimeMode }, sessionId, deliveryId),
             }
           : {}),
         repoSessionOutcomeNotice: (sessionId) =>

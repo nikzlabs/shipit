@@ -908,6 +908,10 @@ export class CredentialStore {
     return this.getDeclaredSetting("advanced.sessionStatusCard");
   }
 
+  getAgentCompaction(): boolean {
+    return this.getDeclaredSetting("advanced.agentCompaction");
+  }
+
   setSessionStatusCard(enabled: boolean): void {
     this.setDeclaredSetting("advanced.sessionStatusCard", enabled);
   }

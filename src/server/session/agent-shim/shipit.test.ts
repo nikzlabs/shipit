@@ -1693,6 +1693,64 @@ describe("shipit session restart (docs/321)", () => {
   });
 });
 
+describe("shipit compact (docs/324-agent-requested-compaction)", () => {
+  const REQUESTED = { status: 200, body: { requested: true, continues: true } };
+
+  it("posts the instructions and the note, and says the compaction waits for the turn's end", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["compact", "keep the API contract", "--note", "start feature B"],
+      { "POST /agent-ops/compact": REQUESTED },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/compact",
+      body: { instructions: "keep the API contract", note: "start feature B" },
+    });
+    expect(out.stdout).toContain("requested");
+  });
+
+  it("joins unquoted words into the instructions, and sends neither part when both are absent", async () => {
+    const { run } = makeRunner();
+    let out = await run(["compact", "keep", "the", "API"], { "POST /agent-ops/compact": REQUESTED });
+    expect(out.calls[0]?.body).toEqual({ instructions: "keep the API" });
+    out = await run(["compact"], { "POST /agent-ops/compact": REQUESTED });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]?.body).toEqual({});
+  });
+
+  it("refuses an empty --note rather than silently not continuing", async () => {
+    const { run } = makeRunner();
+    const out = await run(["compact", "--note", "  "]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("surfaces the refusal of a harness that cannot compact (req 7)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["compact", "keep A"], {
+      "POST /agent-ops/compact": {
+        status: 409,
+        body: { error: "This session's agent (antigravity) cannot compact its context" },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("cannot compact");
+  });
+
+  it("rejects unsupported flags and prints its own help", async () => {
+    const { run } = makeRunner();
+    let out = await run(["compact", "--all"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported flag for shipit compact");
+    out = await run(["compact", "--help"]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("shipit compact [INSTRUCTIONS]");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
 describe("shipit session report", () => {
   const DELIVERED = {
     status: 200,

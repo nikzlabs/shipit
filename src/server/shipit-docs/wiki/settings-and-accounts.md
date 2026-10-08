@@ -41,7 +41,7 @@ both: `/shipit-docs/settings.md`.
 
 | Dialog | Opened from | Covers |
 |---|---|---|
-| **Settings** | The gear button in the app header, top right | The whole install — ten tabs, below |
+| **Settings** | The gear button in the app header, top right | The whole install — eleven tabs, below |
 | **Project Settings** | A repository group's menu in the sidebar | One repository — Secrets, Deployments, Appearance |
 
 `shipit settings list` reads both. When the user says "settings" they may mean
@@ -51,7 +51,7 @@ Two controls that look like settings and live in the **app header** instead:
 the palette button (themes) and the question-mark button (the keyboard-shortcut
 list). Neither is in the Settings dialog.
 
-## The ten tabs
+## The eleven tabs
 
 These are the words the tab strip shows. The first one is **Model providers**,
 not "Services" — that is only its internal id.
@@ -60,6 +60,7 @@ not "Services" — that is only its internal id.
 |---|---|
 | **Model providers** | Credentials — the subscriptions and API keys ShipIt bills models to. Also the installed-harness read-out, and the background-work model |
 | **Roles** | Named roles the user creates, and the two reviewer candidate slots |
+| **Schedules** | Sessions ShipIt starts by itself at set times: each schedule, its runs, and Run now, Pause, Edit and Delete — see [sessions.md](sessions.md#scheduled-sessions). Schedules are not settings: you propose one with `shipit schedule propose` |
 | **Integrations** | GitHub, Linear, SSH hosts, and MCP servers |
 | **Git** | The name and email on ShipIt's automatic commits |
 | **Instructions** | Custom instructions sent with every message, a separate set for Ops sessions, and a switch for ShipIt's own built-in agent context |
@@ -67,7 +68,7 @@ not "Services" — that is only its internal id.
 | **Keyboard** | Rebind shortcuts |
 | **Voice** | Dictation and spoken voice notes — providers, keys, language, voice, speed, delivery |
 | **Network** | The workspace default for outbound network access, and the host allowlist |
-| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, compacted turns, notifications, the memory budget, and a full reset |
+| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacted turns, notifications, the memory budget, and a full reset |
 
 Several of those are covered in depth elsewhere: Skills and MCP servers in
 `/shipit-docs/skills.md` and `/shipit-docs/plugins.md`, Voice in

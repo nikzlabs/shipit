@@ -70,6 +70,8 @@ export const CARD_MESSAGE_FIELDS = [
   "sessionSettingsChange",
   "sshHostKey",
   "settingsProposal",
+  "scheduleProposal",
+  "scheduleNotesAccess",
   "releaseCard",
   "spawnedSession",
   "spawnFailed",

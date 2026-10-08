@@ -25,6 +25,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
+import type { ScheduleRunner } from "./schedule-runner.js";
 
 import type { AppDeps } from "./app-di.js";
 import { initializeManagers } from "./app-di.js";
@@ -163,6 +164,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   app.decorate("chatHistoryManager", rt.chatHistoryManager);
   app.decorate("usageManager", rt.usageManager);
   app.decorate("agentMergeClaims", rt.agentMergeClaims);
+  app.decorate("scheduleRunner", rt.scheduleRunner);
 
   return app;
 }
@@ -176,6 +178,7 @@ declare module "fastify" {
     sessionManager: SessionManager;
     chatHistoryManager: ChatHistoryManager;
     usageManager: UsageManager;
+    scheduleRunner: ScheduleRunner;
   }
 }
 

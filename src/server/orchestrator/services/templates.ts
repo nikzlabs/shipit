@@ -147,9 +147,10 @@ export async function createSandboxSession(
   sessionManager: SessionManager,
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>,
   capabilities?: Partial<SessionCapabilities>,
+  title = "Sandbox session",
 ): Promise<{ session: SessionInfo; sessionDir: string; capabilities: SessionCapabilities }> {
   const normalized = normalizeCapabilities(capabilities);
-  const created = await createSessionDir("Sandbox session");
+  const created = await createSessionDir(title);
   sessionManager.setKind(created.appSessionId, "sandbox");
   sessionManager.setCapabilities(created.appSessionId, normalized);
   const session = sessionManager.get(created.appSessionId);

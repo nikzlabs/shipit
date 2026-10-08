@@ -1,8 +1,9 @@
 import path from "node:path";
 import type { LastTurnOutcome, PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
-import { doneSessionTest, isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
+import { doneSessionTest, isWorkResolved, scheduledViewTest, workResolvedAt } from "../shared/session-resolution.js";
 import { dataDeletionTimeMs, type DataRetentionConfig } from "../shared/session-retention.js";
+import { parseTimestampMs } from "../shared/utils.js";
 import { dataRetentionConfigFromEnv } from "./data-retention-config.js";
 
 export { holdsActiveReservation } from "../shared/session-resolution.js";
@@ -86,6 +87,7 @@ interface SessionRow {
   pr_number: number | null;
   agent_goal: string | null;
   session_status: string | null;
+  awaiting_answer: number;
   schedule_id: string | null;
   schedule_run_id: string | null;
   run_finished_at: string | null;
@@ -175,6 +177,12 @@ function safeParseCapabilities(json: string): unknown {
   }
 }
 
+/** docs/324-agent-requested-compaction — what `shipit compact` asked for. */
+export interface PendingCompaction {
+  instructions?: string;
+  note?: string;
+}
+
 export interface DiskLadderThresholds {
   lightAfterMs: number;
   evictMergedAfterMs: number;
@@ -215,10 +223,13 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
 ): T[] {
   // Archived rows keep their rank so archiving does not promote an older session.
+  // docs/324-scheduled-sessions — each view has its own cap, so daily runs never
+  // push the user's own resolved sessions out of the regular list.
+  const isScheduled = scheduledViewTest(sessions);
   const resolvedByRepo = new Map<string, T[]>();
   for (const s of sessions) {
-    if (!isTerminalPrResolved(s)) continue;
-    const key = s.remoteUrl ?? "";
+    if (!isWorkResolved(s)) continue;
+    const key = `${isScheduled(s) ? "scheduled" : "regular"}\n${s.remoteUrl ?? ""}`;
     let group = resolvedByRepo.get(key);
     if (!group) {
       group = [];
@@ -228,7 +239,9 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   }
   const topResolvedIds = new Set<string>();
   for (const group of resolvedByRepo.values()) {
-    group.sort((a, b) => (Date.parse(resolvedAt(b) ?? "") || 0) - (Date.parse(resolvedAt(a) ?? "") || 0));
+    // The sidebar orders by the same parse, so the rows the cap keeps are the ones listed first.
+    const resolvedMs = (s: T) => parseTimestampMs(workResolvedAt(s) ?? "") || 0;
+    group.sort((a, b) => resolvedMs(b) - resolvedMs(a));
     for (const s of group.slice(0, maxMerged)) topResolvedIds.add(s.id);
   }
   // docs/316-done-sessions-return-memory req 2 — the cap hides only done
@@ -239,14 +252,14 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const shownOnItsOwn = (s: T | undefined): boolean =>
     !!s && !s.userArchived && (!isDone(s) || topResolvedIds.has(s.id));
-  return sessions.filter(
-    (s) =>
-      shownOnItsOwn(s)
-      || (!s.userArchived
-        && s.rootSessionId !== undefined
-        && s.rootSessionId !== s.id
-        && shownOnItsOwn(byId.get(s.rootSessionId))),
-  );
+  return sessions.filter((s) => {
+    if (s.userArchived) return false;
+    const root = s.rootSessionId !== undefined && s.rootSessionId !== s.id ? byId.get(s.rootSessionId) : undefined;
+    // docs/324-scheduled-sessions — the browser tells a run's spawned session by
+    // its run, so a done one is never listed without it.
+    if (root?.scheduleId && isDone(s)) return shownOnItsOwn(root);
+    return shownOnItsOwn(s) || shownOnItsOwn(root);
+  });
 }
 
 export class SessionManager {
@@ -389,7 +402,12 @@ export class SessionManager {
       info.prNumber = row.pr_number;
       info.prRepoId = row.pr_repo_id;
     }
-    if (row.schedule_id) info.scheduleId = row.schedule_id;
+    if (row.schedule_id) {
+      info.scheduleId = row.schedule_id;
+      if (row.awaiting_answer) info.awaitingAnswer = true;
+      const steps = row.session_status ? parseSessionStatus(row.session_status)?.needsYou?.length ?? 0 : 0;
+      if (steps > 0) info.manualStepCount = steps;
+    }
     if (row.schedule_run_id) info.scheduleRunId = row.schedule_run_id;
     if (row.run_finished_at) info.runFinishedAt = row.run_finished_at;
     if (row.run_stopped_at) info.runStoppedAt = row.run_stopped_at;
@@ -444,7 +462,7 @@ export class SessionManager {
   // the merge reopens a session, so work inside an earlier turn must not.
   touchUnlessResolved(id: string): void {
     const session = this.get(id);
-    if (!session || isTerminalPrResolved(session)) return;
+    if (!session || isWorkResolved(session)) return;
     this.db.prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?").run(new Date().toISOString(), id);
   }
 
@@ -595,16 +613,63 @@ export class SessionManager {
     ).run(id);
   }
 
+  // docs/324-agent-requested-compaction — one compaction per request: a later one replaces it.
+  setPendingCompaction(id: string, request: PendingCompaction | null): void {
+    this.db.prepare("UPDATE sessions SET pending_compaction = ? WHERE id = ?")
+      .run(request ? JSON.stringify(request) : null, id);
+  }
+
+  getPendingCompaction(id: string): PendingCompaction | undefined {
+    const row = this.db.prepare(
+      "SELECT pending_compaction FROM sessions WHERE id = ?",
+    ).get(id) as { pending_compaction: string | null } | undefined;
+    if (!row?.pending_compaction) return undefined;
+    try {
+      const parsed = JSON.parse(row.pending_compaction) as Record<string, unknown>;
+      return {
+        ...(typeof parsed.instructions === "string" ? { instructions: parsed.instructions } : {}),
+        ...(typeof parsed.note === "string" ? { note: parsed.note } : {}),
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  /** docs/324-agent-requested-compaction req 10 — Stop keeps the compaction, drops the continuation. */
+  dropPendingCompactionNote(id: string): void {
+    const request = this.getPendingCompaction(id);
+    if (request?.note === undefined) return;
+    this.setPendingCompaction(id, request.instructions !== undefined ? { instructions: request.instructions } : {});
+  }
+
+  /**
+   * docs/324-agent-requested-compaction req 9 — kept apart from the agent notice, which a branch move overwrites
+   * whole; delivered with it by `consumePendingAgentNotice`.
+   */
+  appendPendingCompactionNotice(id: string, notice: string): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT pending_compaction_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_compaction_notice: string | null } | undefined;
+      const existing = row?.pending_compaction_notice ?? "";
+      if (existing.includes(notice)) return;
+      const combined = existing ? `${existing}\n\n${notice}` : notice;
+      this.db.prepare("UPDATE sessions SET pending_compaction_notice = ? WHERE id = ?").run(combined, id);
+    })();
+  }
+
   // Read-and-clear prevents repeats; a crash before delivery can lose the notice.
   consumePendingAgentNotice(id: string): string | undefined {
     let notice: string | undefined;
     this.db.transaction(() => {
       const row = this.db.prepare(
-        "SELECT pending_agent_notice FROM sessions WHERE id = ?",
-      ).get(id) as { pending_agent_notice: string | null } | undefined;
-      if (row?.pending_agent_notice) {
-        this.db.prepare("UPDATE sessions SET pending_agent_notice = NULL WHERE id = ?").run(id);
-        notice = row.pending_agent_notice;
+        "SELECT pending_agent_notice, pending_compaction_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_agent_notice: string | null; pending_compaction_notice: string | null } | undefined;
+      if (row?.pending_agent_notice || row?.pending_compaction_notice) {
+        this.db.prepare(
+          "UPDATE sessions SET pending_agent_notice = NULL, pending_compaction_notice = NULL WHERE id = ?",
+        ).run(id);
+        notice = [row.pending_agent_notice, row.pending_compaction_notice].filter(Boolean).join("\n\n");
       }
     })();
     return notice;
@@ -966,8 +1031,11 @@ export class SessionManager {
     return row?.awaiting_answer === 1;
   }
 
-  setAwaitingAnswer(id: string, awaiting: boolean): void {
-    this.db.prepare("UPDATE sessions SET awaiting_answer = ? WHERE id = ?").run(awaiting ? 1 : 0, id);
+  /** Returns whether the mark changed. */
+  setAwaitingAnswer(id: string, awaiting: boolean): boolean {
+    const value = awaiting ? 1 : 0;
+    return this.db.prepare("UPDATE sessions SET awaiting_answer = ? WHERE id = ? AND awaiting_answer != ?")
+      .run(value, id, value).changes > 0;
   }
 
   /** docs/324-scheduled-sessions — stamped when a run's session is created. */
@@ -976,8 +1044,43 @@ export class SessionManager {
       .run(scheduleId, scheduleRunId, id);
   }
 
+  /** The session a schedule run started, if it got that far. */
+  sessionIdForScheduleRun(scheduleRunId: string): string | undefined {
+    const row = this.db.prepare("SELECT id FROM sessions WHERE schedule_run_id = ? LIMIT 1")
+      .get(scheduleRunId) as { id: string } | undefined;
+    return row?.id;
+  }
+
+  /**
+   * Req 32 — archived runs too: Delete waits for every run. Warm ones too: a repository
+   * run's claimed session stays warm until its first dispatch.
+   */
+  runSessionsOfSchedule(scheduleId: string): SessionInfo[] {
+    const rows = this.db.prepare("SELECT * FROM sessions WHERE schedule_id = ? ORDER BY created_at, rowid")
+      .all(scheduleId) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
   setRunFinishedAt(id: string, at: string | null): void {
     this.db.prepare("UPDATE sessions SET run_finished_at = ? WHERE id = ?").run(at, id);
+  }
+
+  /**
+   * docs/324-scheduled-sessions — a user turn makes a finished or stopped run active again
+   * (req 33). Returns whether anything changed.
+   */
+  reopenRun(id: string): boolean {
+    return this.db.prepare(
+      `UPDATE sessions SET run_finished_at = NULL, run_stopped_at = NULL
+       WHERE id = ? AND (run_finished_at IS NOT NULL OR run_stopped_at IS NOT NULL)`,
+    ).run(id).changes > 0;
+  }
+
+  /** docs/322 and docs/324 req 33 — a question that waits for the user, or a stopped run, holds every automatic turn. */
+  automaticTurnsHeld(id: string): boolean {
+    const row = this.db.prepare("SELECT awaiting_answer, run_stopped_at FROM sessions WHERE id = ?").get(id) as
+      { awaiting_answer: number; run_stopped_at: string | null } | undefined;
+    return row?.awaiting_answer === 1 || !!row?.run_stopped_at;
   }
 
   setRunStoppedAt(id: string, at: string | null): void {

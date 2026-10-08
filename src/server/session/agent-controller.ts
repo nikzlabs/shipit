@@ -118,23 +118,22 @@ export class AgentController {
         this.beginTurn();
         this.turnDeliveryId = deliveryId;
         this.residentSpawn = { runToken, streaming: params.useStreaming === true };
-        this.agent = this.deps.agentFactory(agentId);
-        this.wireAgentEvents(this.agent, runToken);
-        this.agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
-        const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(this.agent, params);
+        const agent = this.deps.agentFactory(agentId);
+        this.agent = agent;
+        this.wireAgentEvents(agent, runToken);
+        agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
+        const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(agent, params);
+        // Before run: an adapter can end its turn inside run(), and done vacates the slot.
+        if (mcpWrite.cleanup) agent.on("done", mcpWrite.cleanup);
 
         this.withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, () => {
-          this.agent?.run({
+          agent.run({
             ...params,
             ...(nodeNotice ? { prompt: prefixPromptWithNotice(params.prompt, nodeNotice) } : {}),
             cwd: this.deps.workspaceDir,
             mcpConfigPath: mcpWrite.mcpConfigPath,
           });
         });
-
-        if (mcpWrite.cleanup) {
-          this.agent.on("done", mcpWrite.cleanup);
-        }
 
         return { started: true };
       } catch (err) {

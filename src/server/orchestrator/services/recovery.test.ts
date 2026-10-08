@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
-import { restartAgent, restartContainer } from "./recovery.js";
+import { killAgent, restartAgent, restartContainer } from "./recovery.js";
 import { createOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionManager } from "../sessions.js";
@@ -9,6 +9,7 @@ import { SessionRunnerRegistry, type SessionRunnerInterface } from "../session-r
 import type { ServiceManager } from "../service-manager.js";
 import type { PostInterruptCommitDeps } from "./post-interrupt-commit.js";
 import type { WsServerMessage, WsContainerRestarting } from "../../shared/types.js";
+import { beginTurnSetup } from "../turn-stop-request.js";
 
 type StubRunner = SessionRunnerInterface & {
   killAgentOnWorker?: (opts?: { timeoutMs?: number }) => Promise<void>;
@@ -716,5 +717,48 @@ describe("restartAgent carryQueue — queued messages survive an agent-requested
     expect(registry.get("rescue-1")!.queueLength).toBe(0);
     expect(registry.get("rescue-1")!.systemTurnInProgress).toBe(false);
     expect(result.held).toBeUndefined();
+  });
+});
+
+describe("killAgent — Stop, and a turn that started while it waited (docs/324-agent-requested-compaction)", () => {
+  function setupKill(onKill?: (runner: StubRunner) => void) {
+    const runner = Object.assign(makeStubRunner("rescue-1", false), {
+      running: true,
+      turnEpoch: 3,
+      messageQueue: [],
+      getQueueSnapshot: () => [],
+    }) as StubRunner;
+    runner.killAgentOnWorker = async () => { onKill?.(runner); };
+    const dropped: string[] = [];
+    const deps = {
+      sessionManager: {
+        get: sessionManager.get,
+        dropPendingCompactionNote: (sid: string) => { dropped.push(sid); },
+      } as unknown as SessionManager,
+      containerManager: null,
+      runnerRegistry: makeStubRegistry({ "rescue-1": runner }),
+      defaultAgentId: "claude" as const,
+    };
+    return { runner, deps, dropped };
+  }
+
+  it("marks the killed turn idle, and drops the note of a requested compaction (req 10)", async () => {
+    const { runner, deps, dropped } = setupKill();
+    await expect(killAgent(deps, "rescue-1")).resolves.toEqual({ killed: true, noop: false });
+    expect(runner.running).toBe(false);
+    expect(dropped).toEqual(["rescue-1"]);
+  });
+
+  it("leaves a turn that started while the kill was awaited running", async () => {
+    // The killed turn ended meanwhile and its post-turn step started the requested compaction.
+    const { runner, deps } = setupKill((r) => { r.turnEpoch += 1; r.running = true; });
+    await killAgent(deps, "rescue-1");
+    expect(runner.running).toBe(true);
+  });
+
+  it("leaves a successor still in setup running — its epoch has not moved yet", async () => {
+    const { runner, deps } = setupKill((r) => { beginTurnSetup(r); r.running = true; });
+    await killAgent(deps, "rescue-1");
+    expect(runner.running).toBe(true);
   });
 });

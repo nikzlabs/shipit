@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CaretRightIcon, CubeIcon, EyeIcon, EyeSlashIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WarningIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
 import { Button } from "../ui/button.js";
@@ -11,15 +11,20 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useRepoStore } from "../../stores/repo-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { openScheduleSettings, scheduleNeedsYou, useScheduleStore } from "../../stores/schedule-store.js";
 import { useMediaQuery } from "../../hooks/useMediaQuery.js";
 import { useAttentionSessions } from "../../hooks/useAttentionSessions.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { useSidebarResize } from "./useSidebarResize.js";
 import { computeRepoGroups } from "./useSessionGrouping.js";
-import { doneSessionTest } from "../../../server/shared/session-resolution.js";
+import { doneSessionTest, scheduledViewTest } from "../../../server/shared/session-resolution.js";
 import { OpsSessionGroup, OrphanSessionGroup, RepoGroup, SandboxSessionGroup } from "./SessionGroup.js";
 import { AttentionSessionList } from "./AttentionSessionList.js";
 import { AttentionViewToggle } from "./AttentionViewToggle.js";
+import { ScheduledViewToggle } from "./ScheduledViewToggle.js";
+
+// The Sandbox group's "Recently resolved" state, beside the per-repo ones.
+const SANDBOX_RESOLVED_KEY = "sandbox";
 
 interface SessionSidebarProps {
   sessions: SessionInfo[];
@@ -103,20 +108,36 @@ export function SessionSidebar({
     [sessions, hiddenUrls],
   );
   const isDone = useMemo(() => doneSessionTest(sessions), [sessions]);
+  // docs/324-scheduled-sessions req 20 — runs have their own view and are not in the regular list.
+  const [regularSessions, scheduledSessions] = useMemo(() => {
+    const isScheduled = scheduledViewTest(sessions);
+    return [visibleSessions.filter((s) => !isScheduled(s)), visibleSessions.filter(isScheduled)];
+  }, [sessions, visibleSessions]);
+  const hasScheduledRuns = useMemo(() => sessions.some((s) => s.scheduleId), [sessions]);
+  const schedules = useScheduleStore((s) => s.schedules);
+  const failedSchedules = useMemo(() => schedules.filter(scheduleNeedsYou), [schedules]);
+  const hasScheduledView = hasScheduledRuns || schedules.length > 0;
   const repoGroups = useMemo(
-    () => computeRepoGroups(visibleRepos, visibleSessions, isDone),
-    [visibleRepos, visibleSessions, isDone],
+    () => computeRepoGroups(visibleRepos, regularSessions, isDone),
+    [visibleRepos, regularSessions, isDone],
   );
+  const scheduledGroups = useMemo(() => {
+    const runRepos = new Set(scheduledSessions.map((s) => s.remoteUrl));
+    return computeRepoGroups(visibleRepos.filter((r) => runRepos.has(r.url)), scheduledSessions, isDone);
+  }, [visibleRepos, scheduledSessions, isDone]);
 
-  // never appear in the other.
-  const sidebarView = useUiStore((s) => s.sidebarView);
+  const savedSidebarView = useUiStore((s) => s.sidebarView);
   const toggleSidebarView = useUiStore((s) => s.toggleSidebarView);
   const setSidebarView = useUiStore((s) => s.setSidebarView);
+  // With no schedule and no run left the Scheduled switch is gone, so its view must not stay stuck open.
+  const sidebarView = savedSidebarView === "scheduled" && !hasScheduledView ? "all" : savedSidebarView;
+  // The attention view keeps every session as its input, runs included (req 21).
   const attentionIds = useAttentionSessions(visibleSessions);
   const attentionView = sidebarView === "attention";
+  const scheduledView = sidebarView === "scheduled";
 
-  const collapseLabel = attentionView ? "Back to all sessions" : "Collapse sidebar";
-  const onCollapsePress = attentionView ? () => setSidebarView("all") : onToggleCollapse;
+  const collapseLabel = sidebarView !== "all" ? "Back to all sessions" : "Collapse sidebar";
+  const onCollapsePress = sidebarView !== "all" ? () => setSidebarView("all") : onToggleCollapse;
 
   const handleViewAll = useCallback((repoUrl: string) => {
 
@@ -124,6 +145,11 @@ export function SessionSidebar({
 
     useSessionStore.getState().setAllSessionsDialogOpen(true, repoUrl);
 
+    if (mobile) onClose?.();
+  }, [mobile, onClose]);
+
+  const handleOpenSchedule = useCallback((scheduleId: string) => {
+    openScheduleSettings(scheduleId);
     if (mobile) onClose?.();
   }, [mobile, onClose]);
 
@@ -154,7 +180,8 @@ export function SessionSidebar({
 
   const reorderEnabled = visibleRepos.length > 1;
 
-  const separated = repoGroups.length > 1;
+  const shownGroups = scheduledView ? scheduledGroups : repoGroups;
+  const separated = shownGroups.length > 1;
 
   const handleDragStart = useCallback(
     (repoUrl: string) => (e: React.DragEvent) => {
@@ -308,6 +335,84 @@ export function SessionSidebar({
     </>
   );
 
+  // The Scheduled view is the regular grouping over runs only (req 20), with no New session rows.
+  const renderGroup = (group: ReturnType<typeof computeRepoGroups>[number]) => group.kind === "sandbox" ? (
+    <SandboxSessionGroup
+      key="sandbox"
+      sessions={group.sessions}
+      isDone={isDone}
+      currentSessionId={currentSessionId}
+      isCollapsed={sandboxCollapsed}
+      onToggleCollapse={toggleSandboxCollapsed}
+      isResolvedCollapsed={collapsedResolved.has(SANDBOX_RESOLVED_KEY)}
+      onToggleResolvedCollapsed={() => toggleResolvedCollapsed(SANDBOX_RESOLVED_KEY)}
+      onResume={onResume}
+      onSelectCurrent={handleSelectCurrent}
+      onArchive={onArchive}
+      isTouch={isTouch}
+      separated={separated}
+    />
+  ) : group.kind === "ops" ? (
+    <OpsSessionGroup
+      key="ops"
+      sessions={group.sessions}
+      currentSessionId={currentSessionId}
+      isCollapsed={opsCollapsed}
+      onToggleCollapse={toggleOpsCollapsed}
+      onResume={onResume}
+      onSelectCurrent={handleSelectCurrent}
+      onArchive={onArchive}
+      isTouch={isTouch}
+      separated={separated}
+    />
+  ) : group.kind === "repo" ? (
+    <RepoGroup
+      key={group.repo.url}
+      repo={group.repo}
+      sessions={group.sessions}
+      isDone={isDone}
+      currentSessionId={currentSessionId}
+      isNewSessionSelected={activeNewSessionRepoUrl === group.repo.url}
+      isCollapsed={!isSingleRepo && collapsedRepos.has(group.repo.url)}
+      onToggleCollapse={() => toggleRepoCollapsed(group.repo.url)}
+      isResolvedCollapsed={collapsedResolved.has(group.repo.url)}
+      onToggleResolvedCollapsed={() => toggleResolvedCollapsed(group.repo.url)}
+      collapsedParents={collapsedParents}
+      onToggleParentCollapsed={toggleParentCollapsed}
+      expandedResolvedChildren={expandedResolvedChildren}
+      onToggleResolvedChildren={toggleResolvedChildrenExpanded}
+      onResume={onResume}
+      onSelectCurrent={handleSelectCurrent}
+      onArchive={onArchive}
+      onNewSession={scheduledView ? undefined : () => onNewSessionForRepo(group.repo.url)}
+      onViewAll={() => handleViewAll(group.repo.url)}
+      onProjectSettings={() => handleProjectSettings(group.repo.url)}
+      onHideRepo={() => handleHideRepo(group.repo.url)}
+      onRemoveRepo={() => handleRemoveRepo(group.repo.url)}
+      isTouch={isTouch}
+      draggable={reorderEnabled}
+      isBeingDragged={draggedRepoUrl === group.repo.url}
+      dropIndicator={dropTarget?.url === group.repo.url ? dropTarget.position : null}
+      onDragStart={handleDragStart(group.repo.url)}
+      onDragOver={handleDragOver(group.repo.url)}
+      onDragLeave={handleDragLeave(group.repo.url)}
+      onDrop={handleDrop(group.repo.url)}
+      onDragEnd={handleDragEnd}
+      separated={separated}
+    />
+  ) : (
+    <OrphanSessionGroup
+      key={`orphan:${group.url}`}
+      label={group.label}
+      sessions={group.sessions}
+      currentSessionId={currentSessionId}
+      onResume={onResume}
+      onSelectCurrent={handleSelectCurrent}
+      onArchive={onArchive}
+      isTouch={isTouch}
+    />
+  );
+
   if (collapsed && !mobile) {
     return (
       <div className="flex flex-col w-10 h-full shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) items-center py-2 gap-2">
@@ -398,9 +503,16 @@ export function SessionSidebar({
             slot is free and the switch is simply first (req 15). */}
         <AttentionViewToggle
           active={attentionView}
-          count={attentionIds.size}
+          count={attentionIds.size + failedSchedules.length}
           onToggle={toggleSidebarView}
         />
+        {hasScheduledView && (
+          <ScheduledViewToggle
+            active={scheduledView}
+            failedCount={failedSchedules.length}
+            onToggle={() => setSidebarView(scheduledView ? "all" : "scheduled")}
+          />
+        )}
         <span className="flex-1" />
         {renderAdvancedSessionMenu()}
         {!mobile && renderQuickSessionControls()}
@@ -422,9 +534,11 @@ export function SessionSidebar({
         </RepoSwitcher>
       </div>
 
-      {/* The list body: the grouped repo tree, or docs/260's flat
-          needs-attention list. Both scroll in this same container — the second
-          view adds no chrome of its own above the list (req 10). */}
+      {/* The list body: the grouped repo tree, docs/260's flat
+          needs-attention list, or the grouped tree of scheduled runs. All scroll
+          in this same container. The needs-attention view adds no chrome of its
+          own above the list (req 10); the Scheduled view opens with the reason
+          of each schedule that could not start (docs/324-scheduled-sessions req 18). */}
       <div
 
         className={`flex-1 overflow-y-auto min-h-0 flex flex-col pb-1 ${!attentionView && separated ? "" : "pt-1"}`}
@@ -433,12 +547,43 @@ export function SessionSidebar({
           <AttentionSessionList
             sessions={visibleSessions}
             attentionIds={attentionIds}
+            schedules={schedules}
+            onOpenSchedule={handleOpenSchedule}
             currentSessionId={currentSessionId}
             onResume={onResume}
             onSelectCurrent={handleSelectCurrent}
             onArchive={onArchive}
             isTouch={isTouch}
           />
+        ) : scheduledView ? (
+          <>
+            {failedSchedules.length > 0 && (
+              <div className="flex flex-col gap-1 px-2 py-1.5">
+                {failedSchedules.map((schedule) => (
+                  <button
+                    key={schedule.id}
+                    type="button"
+                    onClick={() => handleOpenSchedule(schedule.id)}
+                    className="flex items-start gap-1.5 rounded-md border border-(--color-border-secondary) bg-(--color-warning-subtle) px-2.5 py-1.5 text-left text-xs text-(--color-text-secondary) hover:text-(--color-text-primary)"
+                    data-testid={`scheduled-view-reason-${schedule.id}`}
+                  >
+                    <WarningIcon size={ICON_SIZE.XS} weight="fill" className="mt-0.5 shrink-0 text-(--color-warning)" />
+                    <span className="min-w-0">
+                      <span className="font-semibold text-(--color-text-primary)">{schedule.name}</span> could not start:{" "}
+                      {schedule.needsUserReason}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {scheduledGroups.length === 0 ? (
+              <p className="px-4 py-8 text-xs text-(--color-text-tertiary) text-center">
+                No scheduled runs to show.
+              </p>
+            ) : (
+              scheduledGroups.map(renderGroup)
+            )}
+          </>
         ) : (
           <>
         {repoGroups.length === 0 && hiddenRepos.length === 0 ? (
@@ -450,79 +595,7 @@ export function SessionSidebar({
             </Button>
           </div>
         ) : (
-          repoGroups.map((group) => group.kind === "sandbox" ? (
-            <SandboxSessionGroup
-              key="sandbox"
-              sessions={group.sessions}
-              currentSessionId={currentSessionId}
-              isCollapsed={sandboxCollapsed}
-              onToggleCollapse={toggleSandboxCollapsed}
-              onResume={onResume}
-              onSelectCurrent={handleSelectCurrent}
-              onArchive={onArchive}
-              isTouch={isTouch}
-              separated={separated}
-            />
-          ) : group.kind === "ops" ? (
-            <OpsSessionGroup
-              key="ops"
-              sessions={group.sessions}
-              currentSessionId={currentSessionId}
-              isCollapsed={opsCollapsed}
-              onToggleCollapse={toggleOpsCollapsed}
-              onResume={onResume}
-              onSelectCurrent={handleSelectCurrent}
-              onArchive={onArchive}
-              isTouch={isTouch}
-              separated={separated}
-            />
-          ) : group.kind === "repo" ? (
-            <RepoGroup
-              key={group.repo.url}
-              repo={group.repo}
-              sessions={group.sessions}
-              isDone={isDone}
-              currentSessionId={currentSessionId}
-              isNewSessionSelected={activeNewSessionRepoUrl === group.repo.url}
-              isCollapsed={!isSingleRepo && collapsedRepos.has(group.repo.url)}
-              onToggleCollapse={() => toggleRepoCollapsed(group.repo.url)}
-              isResolvedCollapsed={collapsedResolved.has(group.repo.url)}
-              onToggleResolvedCollapsed={() => toggleResolvedCollapsed(group.repo.url)}
-              collapsedParents={collapsedParents}
-              onToggleParentCollapsed={toggleParentCollapsed}
-              expandedResolvedChildren={expandedResolvedChildren}
-              onToggleResolvedChildren={toggleResolvedChildrenExpanded}
-              onResume={onResume}
-              onSelectCurrent={handleSelectCurrent}
-              onArchive={onArchive}
-              onNewSession={() => onNewSessionForRepo(group.repo.url)}
-              onViewAll={() => handleViewAll(group.repo.url)}
-              onProjectSettings={() => handleProjectSettings(group.repo.url)}
-              onHideRepo={() => handleHideRepo(group.repo.url)}
-              onRemoveRepo={() => handleRemoveRepo(group.repo.url)}
-              isTouch={isTouch}
-              draggable={reorderEnabled}
-              isBeingDragged={draggedRepoUrl === group.repo.url}
-              dropIndicator={dropTarget?.url === group.repo.url ? dropTarget.position : null}
-              onDragStart={handleDragStart(group.repo.url)}
-              onDragOver={handleDragOver(group.repo.url)}
-              onDragLeave={handleDragLeave(group.repo.url)}
-              onDrop={handleDrop(group.repo.url)}
-              onDragEnd={handleDragEnd}
-              separated={separated}
-            />
-          ) : (
-            <OrphanSessionGroup
-              key={`orphan:${group.url}`}
-              label={group.label}
-              sessions={group.sessions}
-              currentSessionId={currentSessionId}
-              onResume={onResume}
-              onSelectCurrent={handleSelectCurrent}
-              onArchive={onArchive}
-              isTouch={isTouch}
-            />
-          ))
+          repoGroups.map(renderGroup)
         )}
 
         {/* docs/222 — "Hidden" section: repos the user hid to declutter. A

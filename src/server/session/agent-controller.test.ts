@@ -900,3 +900,58 @@ describe("AgentController — the orchestrator's model list (docs/318)", () => {
     expect(getModel(opus6)?.label).toBe("Opus 6");
   });
 });
+
+// planning#644 — an OpenCode compaction refused before it reaches the server ends its turn
+// inside run(), and its done vacates the slot before /agent/start returns.
+describe("AgentController — a turn that ends inside run()", () => {
+  class EndsInRunAgent extends FakeAgent {
+    cleanups = 0;
+    override run(params: AgentRunParams): void {
+      super.run(params);
+      this.emit("event", { type: "agent_result", status: "error", sessionId: "", error: "refused" });
+      this.emit("done", 1);
+    }
+    override writeMcpConfig(): Record<string, never> {
+      return { cleanup: () => { this.cleanups += 1; } } as never;
+    }
+  }
+
+  let app: FastifyInstance;
+  let workspace: string;
+  let agent: EndsInRunAgent;
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-ends-in-run-"));
+    resetNodeRuntimeForTests();
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        agent = new EndsInRunAgent();
+        return agent as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("starts cleanly, runs the MCP cleanup and frees the slot", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "/compact", cwd: workspace } },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(agent.cleanups).toBe(1);
+    expect((await app.inject({ method: "GET", url: "/agent/status" })).json().running).toBe(false);
+  });
+});

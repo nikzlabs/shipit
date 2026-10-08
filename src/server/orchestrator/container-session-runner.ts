@@ -295,7 +295,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
-  endPostTurnWork(): void { this._postTurnHold.end(); }
+  endPostTurnWork(): void {
+    this._postTurnHold.end();
+    if (!this._postTurnHold.active) this.emit("work_released");
+  }
   get turnCommitPending(): boolean { return this._turnCommitHold.active; }
   beginTurnCommit(): void { this._turnCommitHold.begin(); }
   endTurnCommit(): void { this._turnCommitHold.end(); }
@@ -1408,7 +1411,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   private signalInstallComplete(ok = true, opts: { unverified?: boolean } = {}): void {
+    const wasInFlight = this._installInFlight;
     this._installInFlight = false;
+    if (wasInFlight) this.emit("work_released");
     if (this._resolveInstallComplete) {
       const r = this._resolveInstallComplete;
       this._resolveInstallComplete = null;
