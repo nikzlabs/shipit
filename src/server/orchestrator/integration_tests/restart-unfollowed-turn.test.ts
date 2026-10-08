@@ -68,9 +68,7 @@ async function waitFor(fn: () => boolean, timeoutMs = 3000, label = "condition")
 
 const SESSION_ID = "message-turn-session";
 const SESSION_DIR = "/tmp/message-turn-session";
-const STATUS_RETRY_DELAYS_MS = ContainerSessionRunner.statusRetryDelaysMs;
-// A runner's first connect reads the status, tries three more times, and reads it once after.
-const UNREADABLE_AT_CONNECT = ["fail", "fail", "fail", "fail", "fail"] as const;
+const FIRST_CONNECT_RETRY_DELAYS_MS = ContainerSessionRunner.firstConnectRetryDelaysMs;
 
 describe("Integration: a sent turn that continues across an orchestrator restart (planning#665)", () => {
   let worker: SessionWorker;
@@ -78,7 +76,10 @@ describe("Integration: a sent turn that continues across an orchestrator restart
   // The orchestrator reaches the worker through this, so a test can make a status read fail.
   let proxy: http.Server;
   let proxyUrl: string;
+  // Read in order first; when it is empty, `statusUnreadable` decides.
   let statusReads: ("ok" | "fail")[];
+  let statusUnreadable: boolean;
+  let statusDelayMs: number;
   let agents: FakeWorkerAgent[];
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
@@ -97,9 +98,11 @@ describe("Integration: a sent turn that continues across an orchestrator restart
     commits = [];
     destroyed = [];
     statusReads = [];
+    statusUnreadable = false;
+    statusDelayMs = 0;
     stream = null;
     unprobedAfterRestart.clear();
-    ContainerSessionRunner.statusRetryDelaysMs = [20, 20, 20];
+    ContainerSessionRunner.firstConnectRetryDelaysMs = [20, 20, 40];
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
     worker = new SessionWorker({
@@ -118,10 +121,18 @@ describe("Integration: a sent turn that continues across an orchestrator restart
     workerUrl = `http://127.0.0.1:${Number(/:(\d+)$/.exec(address)?.[1] ?? 0)}`;
     const target = new URL(workerUrl);
     proxy = http.createServer((req, res) => {
-      if (req.url?.startsWith("/agent/status") && statusReads.shift() === "fail") {
+      if (!req.url?.startsWith("/agent/status")) {
+        forward(req, res);
+        return;
+      }
+      const fails = statusReads.length > 0 ? statusReads.shift() === "fail" : statusUnreadable;
+      if (fails) {
         res.writeHead(503).end();
         return;
       }
+      setTimeout(() => forward(req, res), statusDelayMs);
+    });
+    const forward = (req: http.IncomingMessage, res: http.ServerResponse): void => {
       const upstream = http.request(
         { host: target.hostname, port: target.port, path: req.url, method: req.method, headers: req.headers },
         (up) => {
@@ -132,7 +143,7 @@ describe("Integration: a sent turn that continues across an orchestrator restart
       upstream.on("error", () => res.destroy());
       res.on("close", () => upstream.destroy());
       req.pipe(upstream);
-    });
+    };
     await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
     proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
 
@@ -165,7 +176,7 @@ describe("Integration: a sent turn that continues across an orchestrator restart
     dbManager.close();
     vi.restoreAllMocks();
     unprobedAfterRestart.clear();
-    ContainerSessionRunner.statusRetryDelaysMs = STATUS_RETRY_DELAYS_MS;
+    ContainerSessionRunner.firstConnectRetryDelaysMs = FIRST_CONNECT_RETRY_DELAYS_MS;
     await new Promise((r) => setTimeout(r, 50));
   });
 
@@ -366,15 +377,15 @@ describe("Integration: a sent turn that continues across an orchestrator restart
     });
   });
 
-  describe("a runner is made, and is later disposed while the turn still runs", () => {
-    it("a runner whose first connect cannot read the worker's status at once adopts the turn from its start", async () => {
+  describe("a runner's first connect cannot read the worker's status", () => {
+    it("it reads again before the stream opens, and adopts the turn from its first event", async () => {
       await sentTurnOfThePreviousOrchestrator();
       await previousOrchestratorStops();
       say("WHILE_DOWN");
       // The sweep's probe answers; the first read of the runner it makes does not.
       statusReads = ["ok", "fail"];
 
-      expect(await restartSweep()).toBe(1);
+      await restartSweep();
       await expectFollowed();
       // The idle reclaim must not take the runner of a live turn.
       registry.dispose(SESSION_ID);
@@ -383,57 +394,93 @@ describe("Integration: a sent turn that continues across an orchestrator restart
       await expectSavedOnceAndCommitted("BEFORE_RESTART", "WHILE_DOWN", "AFTER_RESTART");
     });
 
-    it("a runner whose first connect could not read the status at all follows the turn from the sweep's next try", async () => {
+    it("a second restart inside the adopted turn still saves the turn once", async () => {
       await sentTurnOfThePreviousOrchestrator();
       await previousOrchestratorStops();
-      say("LOST_IN_THE_GAP");
-      statusReads = ["ok", ...UNREADABLE_AT_CONNECT];
-
-      expect(await restartSweep()).toBe(0);
+      statusReads = ["ok", "fail"];
+      await restartSweep();
       await expectFollowed();
-      registry.dispose(SESSION_ID);
-      expect(runner()?.disposed).toBe(false);
-      say("AFTER_RESTART");
-      // Only the rows the previous orchestrator saved survive the events that connect dropped.
-      await expectSavedOnceAndCommitted("BEFORE_RESTART", "AFTER_RESTART");
+      say("BETWEEN_RESTARTS");
+      agent().emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] });
+      await waitFor(() => history().some((m) => m.inProgress && m.text?.includes("BETWEEN_RESTARTS")), 3000, "partial rows saved");
+
+      registry.disposeAll({ preserveAgent: true });
+      chatHistoryManager = new ChatHistoryManager(dbManager);
+      expect(await restartSweep()).toBe(1);
+      say("AFTER_SECOND_RESTART");
+      await expectSavedOnceAndCommitted("BEFORE_RESTART", "BETWEEN_RESTARTS", "AFTER_SECOND_RESTART");
     });
 
-    it("a viewer's runner that could not read the status follows the turn from the sweep's next try", async () => {
+    it("a viewer's runner that waits for the status gives a call its runner, and follows the turn once the status reads", async () => {
       await sentTurnOfThePreviousOrchestrator();
       await previousOrchestratorStops();
-      statusReads = ["fail", ...UNREADABLE_AT_CONNECT];
-      expect(await restartSweep()).toBe(0);
+      statusUnreadable = true;
+      expect(await restartSweep("current-build", [])).toBe(0);
 
       const viewed = registry.getOrCreate(SESSION_ID, SESSION_DIR, "claude");
       viewed.attachViewer();
       viewed.detachViewer();
       expect(await agentRunFindsItsSession()).toBe(true);
+      expect(runner()?.running).toBe(false);
+      // The orphan-runner check reports a worker that stays unreachable.
+      await waitFor(() => (viewed.workerStreamDownSince ?? 0) > 0, 3000, "the stream reads as down");
+
+      statusUnreadable = false;
       await expectFollowed();
+      expect(viewed.workerStreamDownSince).toBe(0);
+      say("AFTER_RESTART");
+      await expectSavedOnceAndCommitted("BEFORE_RESTART", "AFTER_RESTART");
     });
 
-    it("the worker's report of the turn gets an answer of following from a runner that missed it", async () => {
+    it("the worker's report reaches a runner that waits for the status, and gets the answer following", async () => {
+      ContainerSessionRunner.firstConnectRetryDelaysMs = [60_000];
       await sentTurnOfThePreviousOrchestrator();
       await previousOrchestratorStops();
-      statusReads = ["ok", ...UNREADABLE_AT_CONNECT];
+      statusReads = ["ok"];
+      statusUnreadable = true;
       await restartSweep("current-build", []);
       expect(runner()?.running).toBe(false);
 
+      statusUnreadable = false;
       expect(await ownTurnRoute()).toBe(true);
       await expectFollowed();
     });
 
-    it("when the idle reclaim took a runner that missed the turn, the next call from the turn gets one that follows it", async () => {
+    it("when the idle reclaim takes a waiting runner, the next call from the turn gets one that follows it", async () => {
       await sentTurnOfThePreviousOrchestrator();
       await previousOrchestratorStops();
-      statusReads = ["ok", ...UNREADABLE_AT_CONNECT];
+      say("WHILE_DOWN");
+      statusReads = ["ok"];
+      statusUnreadable = true;
       await restartSweep("current-build", []);
       registry.dispose(SESSION_ID);
       expect(runner()).toBeUndefined();
 
+      statusUnreadable = false;
       expect(await agentRunFindsItsSession()).toBe(true);
       await expectFollowed();
       say("AFTER_RESTART");
-      await expectSavedOnceAndCommitted("BEFORE_RESTART", "AFTER_RESTART");
+      await expectSavedOnceAndCommitted("BEFORE_RESTART", "WHILE_DOWN", "AFTER_RESTART");
+    });
+
+    it("a runner disposed while it reads the status again adopts nothing, and leaves the worker's turn alone", async () => {
+      await sentTurnOfThePreviousOrchestrator();
+      await previousOrchestratorStops();
+      statusReads = ["ok"];
+      statusUnreadable = true;
+      await restartSweep("current-build", []);
+      const disposed = runner()!;
+      // The runner's next try reads a live turn, but only after it is disposed.
+      statusUnreadable = false;
+      statusDelayMs = 300;
+      await new Promise((r) => setTimeout(r, 100));
+      registry.dispose(SESSION_ID);
+
+      await new Promise((r) => setTimeout(r, 500));
+      expect(disposed.disposed).toBe(true);
+      expect(disposed.running).toBe(false);
+      expect(await disposed.resumeInFlightTurn()).toBe(false);
+      expect(agent().killed).toBe(false);
     });
 
     it("a call from a session whose worker has no turn in flight still gets no runner", async () => {

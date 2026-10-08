@@ -132,7 +132,7 @@ export async function followReportedTurn(deps: FollowDeps, sessionId: string): P
   const runner = deps.runnerRegistry.get(sessionId);
   if (runner) {
     const following = (await runner.resumeInFlightTurn?.()) ?? false;
-    if (!following) console.warn(`[turn-reattach] not following ${sessionId}: its runner has no turn in flight`);
+    if (!following) console.warn(`[turn-reattach] not following ${sessionId}: its runner follows no turn`);
     return following;
   }
   const container = deps.containerManager?.get(sessionId);
@@ -171,7 +171,7 @@ export async function runnerForContainerCall(
 
 const FOLLOW_RETRY_DELAYS_MS = [2_000, 10_000, 30_000, 90_000];
 
-// After the sweep, nothing else asks this worker about a turn the sweep could not follow.
+// Nothing else asks a worker the sweep could not probe about a turn in flight: it has no runner.
 async function followLater(deps: ReattachDeps, sessionId: string): Promise<void> {
   for (const delayMs of deps.followRetryDelaysMs ?? FOLLOW_RETRY_DELAYS_MS) {
     await new Promise((r) => { setTimeout(r, delayMs).unref(); });
@@ -215,13 +215,12 @@ async function reattach(deps: ReattachDeps, ended: Set<string>): Promise<number>
   const adoptTurn = async (sessionId: string): Promise<boolean> => {
     if (runnerRegistry.get(sessionId)) return false;
     try {
-      if (await followWorkerTurn(deps, sessionId)) return true;
+      return await followWorkerTurn(deps, sessionId);
     } catch (err) {
       liveWorkAfterRestart.add(sessionId);
       console.error(`[turn-reattach] failed to reattach ${sessionId}: ${getErrorMessage(err)}`);
+      return false;
     }
-    void followLater(deps, sessionId);
-    return false;
   };
 
   const results = await Promise.all(
