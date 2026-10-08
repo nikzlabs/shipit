@@ -324,9 +324,10 @@ stopped.
 
 In **Contained** mode a session reaches only an allowlist — the model API, the
 git host, package registries, connected MCP servers, and hosts the user added.
-When something else is wanted, an **Egress blocked** card appears in the
-conversation naming the exact host, with **Allow once**, **Add to allowlist**
-and **Deny**. That decision is theirs and takes one click; say which host and
+When a connection to another host gets as far as ShipIt's egress proxy — its
+name resolved, but the host is off the list — an **Egress blocked** card appears
+in the conversation naming the exact host, with **Allow once**, **Add to
+allowlist** and **Deny**. That decision is theirs and takes one click; say which host and
 why you need it, and stop.
 
 The per-session choice is **Session settings** on the session's menu; the
@@ -352,12 +353,13 @@ host you know is allowlisted**. If the allowlisted one resolves and the other
 does not, that is the allowlist — Docker's DNS forwards everything, so it cannot
 produce that split. If both fail, it is a real DNS problem.
 
-A DNS failure raises no **Egress blocked** card, so propose the host yourself:
-`shipit settings propose "network.egress.hosts[].host" --add <host> --reason "…"`
-posts a card the user applies with one click (`/shipit-docs/settings.md`). Do not
-write it up as a step for the user to do in Settings. The allowlist applies from
-the next container start, so once the card is applied, restart your own container
-with `shipit session restart --note "…"`.
+A DNS failure raises no **Egress blocked** card. When `shipit settings get
+network.egress.hosts` shows the allowlist reaches this session, propose the host
+yourself: `shipit settings propose "network.egress.hosts[].host" --add <host>
+--reason "…"` posts a card the user applies with one click
+(`/shipit-docs/settings.md`). Do not write it up as a step for the user to do in
+Settings. The allowlist applies from the next container start, so once the card
+is applied, restart your own container with `shipit session restart --note "…"`.
 
 One warning worth knowing, because it means two opposite things: **Contained —
 NOT enforced on this deployment**, in Settings → Network. The containment policy

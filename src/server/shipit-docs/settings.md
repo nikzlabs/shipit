@@ -131,7 +131,7 @@ rather than promising that a restart will fix things:
 | State | What to tell the user |
 |---|---|
 | `live` | The stored value is what ShipIt uses next. |
-| `restart-dependent` | Saved, but something already running keeps the old behaviour until it restarts. |
+| `restart-dependent` | Saved, but something already running keeps the old behaviour until it restarts. When that is this session's container, restart it yourself rather than asking the user to — see [environment.md → Restarting your agent container](environment.md#restarting-your-agent-container). |
 | `excluded` | It will not take effect for *this* session, and the read says why. |
 | `uncertain` | ShipIt cannot confirm the effect. Say that, rather than guessing. |
 

@@ -5,7 +5,7 @@ import {
   AGENT_SYSTEM_INSTRUCTIONS,
   type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
-import { findSetting } from "../shared/settings-catalogue/registry.js";
+import { operationsFor } from "./services/settings-operations.js";
 
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
@@ -201,25 +201,23 @@ describe("buildAgentSystemInstructions", () => {
     expect(on).not.toBe(buildAgentSystemInstructions({ agentId: "claude" }));
   });
 
-  it("names the settings write path in every variant, and only keys a card can change", () => {
-    const variants: AgentSystemInstructionOptions[] = [
-      {},
-      { agentId: "codex" },
-      { isOps: true },
-      { isSandbox: true },
-      { sessionStatusCard: true },
-    ];
-    for (const opts of variants) {
-      const out = buildAgentSystemInstructions(opts);
-      expect(out).toContain("## ShipIt's own settings");
-      expect(out).toContain("shipit settings propose");
-    }
+  // Structural guard only: it cannot tell whether the surrounding prose still agrees.
+  it("names the settings write path in every variant, and only proposals a card can make", () => {
+    const kindOf = { "=": "set", " --add": "add", " --remove": "remove" } as const;
+    for (const agentId of [undefined, "claude", "codex"] as const) {
+      for (const mode of [{}, { isOps: true }, { isSandbox: true }]) {
+        for (const sessionStatusCard of [false, true]) {
+          const out = buildAgentSystemInstructions({ agentId, ...mode, sessionStatusCard });
+          expect(out).toContain("## ShipIt's own settings");
+          expect(out).toContain("shipit settings propose");
 
-    const keys = [...AGENT_SYSTEM_INSTRUCTIONS.matchAll(/shipit settings propose "?([\w.[\]]+)/g)]
-      .map((match) => match[1]);
-    expect(keys.length).toBeGreaterThan(0);
-    for (const key of keys) {
-      expect(findSetting(key)?.propose, key).toEqual({ kind: "yes" });
+          const named = [...out.matchAll(/shipit settings propose "?([\w.[\]]+)"?(=| --add| --remove)/g)];
+          expect(named.length).toBeGreaterThan(0);
+          for (const [, key, op] of named) {
+            expect(operationsFor(key), key).toContain(kindOf[op as keyof typeof kindOf]);
+          }
+        }
+      }
     }
   });
 
