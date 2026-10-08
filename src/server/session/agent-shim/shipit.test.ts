@@ -2816,7 +2816,9 @@ describe("shipit issue", () => {
       },
     });
     expect(out.exitCode).toBe(0);
-    const rows = JSON.parse(out.stdout) as { identifier: string; title: string; description?: string }[];
+    const { issues: rows } = JSON.parse(out.stdout) as {
+      issues: { identifier: string; title: string; description?: string }[];
+    };
     expect(rows[0].identifier).toBe("octocat/hello#1");
     expect(rows[0].title).toBe("do the thing");
     expect(rows[0].description).toBeUndefined();
@@ -2832,8 +2834,99 @@ describe("shipit issue", () => {
       },
     });
     expect(out.exitCode).toBe(0);
-    const rows = JSON.parse(out.stdout) as { description?: string }[];
+    const { issues: rows } = JSON.parse(out.stdout) as { issues: { description?: string }[] };
     expect(rows[0].description).toBe("the full body");
+  });
+
+  it("list sends --search, every --label and --limit to the tracker", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "list", "--search", "page list", "--label", "bug,cli", "-l", "docs", "--limit", "20", "--state", "all"],
+      { "GET /agent-ops/issue/list": { status: 200, body: { issues: [], total: 0 } } },
+    );
+    expect(out.exitCode).toBe(0);
+    const params = new URL(`http://x${out.calls[0].path}`).searchParams;
+    expect(params.get("search")).toBe("page list");
+    expect(params.getAll("label")).toEqual(["bug", "cli", "docs"]);
+    expect(params.get("limit")).toBe("20");
+    expect(params.get("state")).toBe("all");
+  });
+
+  it("list rejects a --limit that is not a positive whole number", async () => {
+    const { run } = makeRunner();
+    for (const limit of ["0", "ten", "-1"]) {
+      const out = await run(["issue", "list", "--limit", limit]);
+      expect(out.exitCode).not.toBe(0);
+      expect(out.stderr).toContain("--limit must be a positive whole number");
+      expect(out.calls).toHaveLength(0);
+    }
+  });
+
+  it("list --json says when the limit cut the list, and how to get the rest", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--json"], {
+      "GET /agent-ops/issue/list": {
+        status: 200,
+        body: { issues: [{ identifier: "octocat/hello#1", title: "t" }], total: 412 },
+      },
+    });
+    const parsed = JSON.parse(out.stdout) as { total: number; truncated: boolean; note: string };
+    expect(parsed.total).toBe(412);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.note).toContain("Showing 1 of 412 matching issues");
+    expect(parsed.note).toContain("--search");
+    expect(parsed.note).toContain("--limit");
+  });
+
+  it("list --json says nothing was cut when every match is shown", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--json"], {
+      "GET /agent-ops/issue/list": { status: 200, body: { issues: [{ identifier: "octocat/hello#1", title: "t" }], total: 1 } },
+    });
+    const parsed = JSON.parse(out.stdout) as Record<string, unknown>;
+    expect(parsed).toMatchObject({ total: 1, truncated: false });
+    expect(parsed).not.toHaveProperty("note");
+  });
+
+  it("list says when the tracker holds more than one list reads, in text and --json", async () => {
+    const body = { issues: [{ identifier: "octocat/hello#1", title: "t" }], total: 1, incomplete: true };
+    const { run } = makeRunner();
+    const json = JSON.parse(
+      (await run(["issue", "list", "--json"], { "GET /agent-ops/issue/list": { status: 200, body } })).stdout,
+    ) as { truncated: boolean; incomplete: boolean; note: string };
+    expect(json).toMatchObject({ truncated: true, incomplete: true });
+    expect(json.note).toContain("issues and pull requests than one list reads, so the oldest were not read.");
+    expect(json.note).toContain("--search TEXT or --label NAME read further back");
+
+    const text = await run(["issue", "list"], { "GET /agent-ops/issue/list": { status: 200, body } });
+    expect(text.stdout).toContain("the oldest were not read.");
+    expect(text.stdout).toContain("shipit issue view <reference>");
+
+    const searched = await run(["issue", "list", "--search", "t"], { "GET /agent-ops/issue/list": { status: 200, body } });
+    expect(searched.stdout).toContain("than one search reads, so the oldest were not searched.");
+  });
+
+  it("list text mode puts the cut note after the untrusted envelope", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list"], {
+      "GET /agent-ops/issue/list": {
+        status: 200,
+        body: { issues: [{ identifier: "octocat/hello#1", title: "t" }], total: 9 },
+      },
+    });
+    const close = out.stdout.lastIndexOf(UNTRUSTED_CLOSE_MARKER);
+    expect(close).toBeGreaterThan(-1);
+    expect(out.stdout.indexOf("Showing 1 of 9 matching issues")).toBeGreaterThan(close);
+  });
+
+  it("list with a filter and no match points at --state all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--search", "nothing"], {
+      "GET /agent-ops/issue/list": { status: 200, body: { issues: [], total: 0 } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("No issues in github match.");
+    expect(out.stdout).toContain("--state all");
   });
 
   it("labels lists the tracker's pickable label names (one per line)", async () => {

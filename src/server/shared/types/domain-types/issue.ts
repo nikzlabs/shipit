@@ -140,6 +140,10 @@ export interface TrackerInfo {
 export interface ListIssuesResult {
   tracker: TrackerInfo;
   issues: TrackerIssue[];
+  /** Matches before a limit cut `issues` short. */
+  total?: number;
+  /** The tracker held more than one list reads, so the oldest issues are absent. */
+  incomplete?: boolean;
   availableStatuses?: { name: string; type?: string; color?: string }[];
 }
 

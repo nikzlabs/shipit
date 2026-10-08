@@ -288,12 +288,20 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  app.get<{ Querystring: { tracker?: string; state?: string } }>(
+  app.get<{
+    Querystring: { tracker?: string; state?: string; search?: string; label?: string | string[]; limit?: string };
+  }>(
     "/agent-ops/issue/list",
     async (request, reply) => {
+      const { tracker, state, search, label, limit } = request.query;
       const params = new URLSearchParams();
-      if (request.query.tracker) params.set("tracker", request.query.tracker);
-      if (request.query.state) params.set("state", request.query.state);
+      if (tracker) params.set("tracker", tracker);
+      if (state) params.set("state", state);
+      if (search) params.set("search", search);
+      for (const name of label === undefined ? [] : Array.isArray(label) ? label : [label]) {
+        params.append("label", name);
+      }
+      if (limit) params.set("limit", limit);
       const qs = params.toString() ? `?${params.toString()}` : "";
       return relay("GET", `/issue/list${qs}`, undefined, reply);
     },

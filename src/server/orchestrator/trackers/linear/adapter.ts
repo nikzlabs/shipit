@@ -11,8 +11,12 @@ import { formatIssueReference } from "../../../shared/issue-ref.js";
 import { linearTrackerId } from "../../../shared/tracker-id.js";
 import { parseRetryAfterSeconds, waitPhrase } from "../throttle.js";
 import {
+  LIST_ISSUES_CEILING,
+  PAGED_READ_CEILING,
   TrackerPermissionError,
   TrackerResolutionError,
+  requireWholeRead,
+  type IssueListing,
   type ListIssuesOptions,
   type SetAssigneeOptions,
   type Tracker,
@@ -125,6 +129,13 @@ function toTrackerIssue(node: LinearIssueNode, formatRef: (key: string) => strin
     ...(node.assignee?.id ? { assigneeId: node.assignee.id } : {}),
     ...(states && states.length > 0 ? { availableStatuses: states } : {}),
   };
+}
+
+interface LinearUserNode {
+  id: string;
+  name: string;
+  displayName: string;
+  email?: string | null;
 }
 
 interface LinearCommentNode {
@@ -248,6 +259,30 @@ async function linearGraphql<T>(
   return body.data;
 }
 
+interface LinearConnection<T> {
+  nodes: T[];
+  pageInfo?: { hasNextPage?: boolean | null; endCursor?: string | null } | null;
+}
+
+const PAGE_INFO = "pageInfo { hasNextPage endCursor }";
+
+async function collectLinearPages<T>(
+  fetchPage: (after: string | null) => Promise<LinearConnection<T> | null>,
+  maxItems: number,
+): Promise<{ items: T[]; complete: boolean }> {
+  const items: T[] = [];
+  let after: string | null = null;
+  for (;;) {
+    const page = await fetchPage(after);
+    if (!page) return { items, complete: true };
+    items.push(...page.nodes);
+    const next = page.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
+    if (!next) return { items, complete: true };
+    if (items.length >= maxItems) return { items, complete: false };
+    after = next;
+  }
+}
+
 export async function listLinearTeams(
   token: string,
   fetchImpl: FetchImpl = fetch,
@@ -324,32 +359,36 @@ export class LinearTracker implements Tracker {
     return match.id;
   }
 
-  async listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]> {
+  async listIssues(options?: ListIssuesOptions): Promise<IssueListing> {
     if (!this.token || !this.teamKey) {
       throw new Error("Linear is not configured (missing token or declared team)");
     }
     const teamId = await this.resolveTeamId();
     const excludedTypes = options?.includeDone ? ["canceled"] : ["completed", "canceled"];
-    const data = await linearGraphql<{ team: { issues: { nodes: LinearIssueNode[] } } | null }>(
-      this.token,
-      `query TeamIssues($teamId: String!, $excludedTypes: [String!]!) {
-        team(id: $teamId) {
-          issues(
-            first: 100
-            orderBy: updatedAt
-            filter: { state: { type: { nin: $excludedTypes } } }
-          ) {
-            nodes { ${ISSUE_FIELDS} }
+    const { items, complete } = await collectLinearPages<LinearIssueNode>(async (after) => {
+      const data = await this.gql<{ team: { issues: LinearConnection<LinearIssueNode> } | null }>(
+        `query TeamIssues($teamId: String!, $excludedTypes: [String!]!, $after: String) {
+          team(id: $teamId) {
+            issues(
+              first: 100
+              after: $after
+              orderBy: updatedAt
+              filter: { state: { type: { nin: $excludedTypes } } }
+            ) {
+              nodes { ${ISSUE_FIELDS} }
+              ${PAGE_INFO}
+            }
           }
-        }
-      }`,
-      { teamId, excludedTypes },
-      this.fetchImpl,
-    );
-    const nodes = data.team?.issues.nodes ?? [];
-    return nodes
+        }`,
+        { teamId, excludedTypes, after },
+      );
+      return data.team?.issues ?? null;
+    }, options?.maxItems ?? LIST_ISSUES_CEILING);
+    const issues = items
       .map((n) => toTrackerIssue(n, this.formatRef))
-      .sort((a, b) => a.priority.sortOrder - b.priority.sortOrder || a.identifier.localeCompare(b.identifier));
+      // Stable sort: most recently updated first within a priority, so a limit keeps the active issues.
+      .sort((a, b) => a.priority.sortOrder - b.priority.sortOrder);
+    return { issues, complete };
   }
 
   async getIssue(id: string): Promise<TrackerIssue | null> {
@@ -388,11 +427,8 @@ export class LinearTracker implements Tracker {
     if (!this.token) {
       throw new Error("Linear is not configured (missing token)");
     }
-    const data = await this.gql<{ issueLabels: { nodes: { name: string; color?: string | null }[] } }>(
-      `query IssueLabels { issueLabels(first: 250) { nodes { name color } } }`,
-      {},
-    );
-    return data.issueLabels.nodes
+    const nodes = await this.pagedLabels<{ name: string; color?: string | null }>("IssueLabels", "name color");
+    return nodes
       .filter((l) => Boolean(l.name))
       .map((l) => ({ name: l.name, ...(l.color ? { color: l.color } : {}) }));
   }
@@ -401,20 +437,35 @@ export class LinearTracker implements Tracker {
     if (!this.token) {
       throw new Error("Linear is not configured (missing token)");
     }
-    const data = await this.gql<{
-      issue: { team?: { key?: string | null } | null; comments: { nodes: LinearCommentNode[] } } | null;
-    }>(
-      `query IssueComments($id: String!) {
-        issue(id: $id) {
-          team { key }
-          comments(first: 100) { nodes { ${COMMENT_FIELDS} } }
-        }
-      }`,
-      { id },
-    );
-    if (!data.issue) return [];
-    this.assertOwnTeam(id, data.issue.team?.key ?? null);
-    return data.issue.comments.nodes.map(toTrackerComment);
+    const read = await collectLinearPages<LinearCommentNode>(async (after) => {
+      const data = await this.gql<{
+        issue: { team?: { key?: string | null } | null; comments: LinearConnection<LinearCommentNode> } | null;
+      }>(
+        `query IssueComments($id: String!, $after: String) {
+          issue(id: $id) {
+            team { key }
+            comments(first: 100, after: $after) { nodes { ${COMMENT_FIELDS} } ${PAGE_INFO} }
+          }
+        }`,
+        { id, after },
+      );
+      if (!data.issue) return null;
+      this.assertOwnTeam(id, data.issue.team?.key ?? null);
+      return data.issue.comments;
+    }, PAGED_READ_CEILING);
+    return requireWholeRead(read, `The comment thread of ${id}`).map(toTrackerComment);
+  }
+
+  // Labels are workspace-wide, so a large workspace holds more than one page.
+  private async pagedLabels<T>(queryName: string, fields: string): Promise<T[]> {
+    const read = await collectLinearPages<T>(async (after) => {
+      const data = await this.gql<{ issueLabels: LinearConnection<T> }>(
+        `query ${queryName}($after: String) { issueLabels(first: 250, after: $after) { nodes { ${fields} } ${PAGE_INFO} } }`,
+        { after },
+      );
+      return data.issueLabels;
+    }, PAGED_READ_CEILING);
+    return requireWholeRead(read, "The workspace's label list");
   }
 
   // Linear resolves ids across teams; enforce the declared team before mutation.
@@ -503,13 +554,15 @@ export class LinearTracker implements Tracker {
     if (!this.token) {
       throw new Error("Linear is not configured (missing token)");
     }
-    const data = await this.gql<{
-      issueLabels: {
-        nodes: { id: string; name: string; color?: string | null; description?: string | null; team?: { key?: string | null } | null }[];
-      };
-    }>(`query FindIssueLabels { issueLabels(first: 250) { nodes { id name color description team { key } } } }`, {});
+    const nodes = await this.pagedLabels<{
+      id: string;
+      name: string;
+      color?: string | null;
+      description?: string | null;
+      team?: { key?: string | null } | null;
+    }>("FindIssueLabels", "id name color description team { key }");
     const needle = name.trim().toLowerCase();
-    const matches = data.issueLabels.nodes.filter((l) => l.name?.toLowerCase() === needle);
+    const matches = nodes.filter((l) => l.name?.toLowerCase() === needle);
     if (matches.length === 0) return null;
     const found =
       matches.find((l) => l.team?.key?.toUpperCase() === this.teamKey) ??
@@ -747,11 +800,7 @@ export class LinearTracker implements Tracker {
   }
 
   private async resolveLabelIds(names: string[]): Promise<string[]> {
-    const data = await this.gql<{ issueLabels: { nodes: { id: string; name: string }[] } }>(
-      `query IssueLabels { issueLabels(first: 250) { nodes { id name } } }`,
-      {},
-    );
-    const available = data.issueLabels.nodes;
+    const available = await this.pagedLabels<{ id: string; name: string }>("IssueLabels", "id name");
     const ids: string[] = [];
     for (const raw of names) {
       const needle = raw.trim().toLowerCase();
@@ -781,12 +830,16 @@ export class LinearTracker implements Tracker {
       const data = await this.gql<{ viewer: { id: string } }>(`query Viewer { viewer { id } }`, {});
       return data.viewer.id;
     }
-    const data = await this.gql<{ users: { nodes: { id: string; name: string; displayName: string; email?: string | null }[] } }>(
-      `query Users { users(first: 250) { nodes { id name displayName email } } }`,
-      {},
-    );
+    const read = await collectLinearPages<LinearUserNode>(async (after) => {
+      const data = await this.gql<{ users: LinearConnection<LinearUserNode> }>(
+        `query Users($after: String) { users(first: 250, after: $after) { nodes { id name displayName email } ${PAGE_INFO} } }`,
+        { after },
+      );
+      return data.users;
+    }, PAGED_READ_CEILING);
+    const users = requireWholeRead(read, "The workspace's user list");
     const needle = handle.toLowerCase();
-    const matches = data.users.nodes.filter(
+    const matches = users.filter(
       (u) =>
         u.displayName?.toLowerCase() === needle ||
         u.name?.toLowerCase() === needle ||
@@ -797,7 +850,7 @@ export class LinearTracker implements Tracker {
       throw new TrackerResolutionError(
         `No Linear user matches "${assignee}".`,
         "assignee",
-        data.users.nodes.map((u) => u.displayName || u.name).slice(0, 25),
+        users.map((u) => u.displayName || u.name).slice(0, 25),
       );
     }
     throw new TrackerResolutionError(

@@ -18,14 +18,41 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 const TEAM_LOOKUP = { match: "TeamByKey", data: { teams: { nodes: [{ id: "team-123", key: "SHI" }] } } };
 
+// `data` may be a function of the request's variables and query, for paged answers.
 function routerFetch(routes: { match: string; data: unknown }[]) {
   const all = [TEAM_LOOKUP, ...routes];
   return vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-    const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+    const body = JSON.parse((init?.body as string) ?? "{}") as { query?: string; variables?: Record<string, unknown> };
+    const query = body.query ?? "";
     const route = all.find((r) => query.includes(r.match));
     if (!route) throw new Error(`routerFetch: no route for query starting "${query.trim().slice(0, 30)}"`);
-    return jsonResponse({ data: route.data });
+    const data =
+      typeof route.data === "function"
+        ? (route.data as (variables: Record<string, unknown>, query: string) => unknown)(body.variables ?? {}, query)
+        : route.data;
+    return jsonResponse({ data });
   });
+}
+
+// Answers a paged connection like Linear does: the request whose `after` is `c<i>` gets page i.
+// A query that does not bind `after` always gets the first page, and one that does not select
+// pageInfo gets none, so a test fails if the adapter stops asking for either.
+function cursorPages(pageCount: number, nodesOf: (page: number) => unknown[], wrap: (connection: unknown) => unknown) {
+  return (variables: Record<string, unknown>, query: string) => {
+    const bindsAfter =
+      query.includes("$after: String") && /\( ?first: \d+,? after: \$after/.test(query.replace(/\s+/g, " "));
+    const page = bindsAfter && variables.after ? Number((variables.after as string).slice(1)) : 0;
+    const hasNextPage = page < pageCount - 1;
+    const pageInfo = { hasNextPage, endCursor: hasNextPage ? `c${page + 1}` : null };
+    return wrap({ nodes: nodesOf(page), ...(query.includes("pageInfo { hasNextPage endCursor }") ? { pageInfo } : {}) });
+  };
+}
+
+function callsMatching(fetchImpl: { mock: { calls: readonly (readonly unknown[])[] } }, match: string): Record<string, unknown>[] {
+  return fetchImpl.mock.calls
+    .map((c) => JSON.parse(((c[1] as RequestInit | undefined)?.body as string) ?? "{}") as { query?: string; variables: Record<string, unknown> })
+    .filter((b) => (b.query ?? "").includes(match))
+    .map((b) => b.variables);
 }
 
 function varsFor(fetchImpl: { mock: { calls: readonly (readonly unknown[])[] } }, match: string): Record<string, unknown> {
@@ -125,8 +152,9 @@ describe("LinearTracker", () => {
     );
 
     const tracker = new LinearTracker({ token: "lin_api_x", teamKey: "SHI", fetchImpl });
-    const issues = await tracker.listIssues();
+    const { issues, complete } = await tracker.listIssues();
 
+    expect(complete).toBe(true);
     expect(issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
     expect(issues[0].priority).toEqual({ level: "urgent", sortOrder: 0, label: "Urgent" });
     expect(issues[0].status).toEqual({ name: "In Progress", type: "started", color: "#f2c94c" });
@@ -239,6 +267,92 @@ describe("LinearTracker", () => {
     fetchImpl.mockClear();
     await tracker.listIssues({ includeDone: true });
     expect(varsFor(fetchImpl, "TeamIssues").excludedTypes).toEqual(["canceled"]);
+  });
+
+  describe("paging (a list is not one page)", () => {
+    const hundred = (page: number, make: (n: number) => unknown) =>
+      Array.from({ length: 100 }, (_, i) => make(page * 100 + i + 1));
+
+    it("follows pageInfo, so issues past the first hundred are listed", async () => {
+      const fetchImpl = routerFetch([
+        {
+          match: "TeamIssues",
+          data: cursorPages(
+            3,
+            (page) => (page < 2 ? hundred(page, (n) => issueNode({ id: `i${n}`, identifier: `SHI-${n}` })) : [issueNode({ id: "i201", identifier: "SHI-201" })]),
+            (issues) => ({ team: { issues } }),
+          ),
+        },
+      ]);
+      const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+
+      const { issues, complete } = await tracker.listIssues();
+
+      expect(complete).toBe(true);
+      expect(issues).toHaveLength(201);
+      expect(issues.map((i) => i.identifier)).toContain("SHI-201");
+      expect(callsMatching(fetchImpl, "TeamIssues").map((v) => v.after)).toEqual([null, "c1", "c2"]);
+    });
+
+    it("stops at the ceiling and reports the listing incomplete", async () => {
+      const fetchImpl = routerFetch([
+        {
+          match: "TeamIssues",
+          data: cursorPages(1000, (page) => hundred(page, (n) => issueNode({ id: `i${n}`, identifier: `SHI-${n}` })), (issues) => ({
+            team: { issues },
+          })),
+        },
+      ]);
+      const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+
+      const { issues, complete } = await tracker.listIssues();
+
+      expect(complete).toBe(false);
+      expect(issues).toHaveLength(2000);
+      expect(callsMatching(fetchImpl, "TeamIssues")).toHaveLength(20);
+    });
+
+    it("reads a comment thread longer than one page", async () => {
+      const fetchImpl = routerFetch([
+        {
+          match: "IssueComments",
+          data: cursorPages(2, (page) => (page === 0 ? hundred(0, (n) => ({ id: `c${n}`, body: `c${n}` })) : [{ id: "c101", body: "last" }]), (comments) => ({
+            issue: { team: { key: "SHI" }, comments },
+          })),
+        },
+      ]);
+      const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+
+      const comments = await tracker.listComments("SHI-1");
+
+      expect(comments).toHaveLength(101);
+      expect(comments[100].body).toBe("last");
+    });
+
+    it("resolves a label and a user that sit on the second page", async () => {
+      const labelPages = (fields: (n: number) => unknown) =>
+        cursorPages(2, (page) => (page === 0 ? hundred(0, fields) : [{ id: "lab-zeta", name: "zeta" }]), (issueLabels) => ({ issueLabels }));
+      const fetchImpl = routerFetch([
+        { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
+        { match: "FindIssueLabels", data: labelPages((n) => ({ id: `lab-${n}`, name: `label-${n}` })) },
+        { match: "IssueLabels", data: labelPages((n) => ({ id: `lab-${n}`, name: `label-${n}` })) },
+        {
+          match: "Users",
+          data: cursorPages(2, (page) => (page === 0 ? hundred(0, (n) => ({ id: `u${n}`, name: `user${n}`, displayName: `User ${n}` })) : [{ id: "u-late", name: "late", displayName: "Late Joiner" }]), (users) => ({ users })),
+        },
+        { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
+      ]);
+      const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+
+      expect((await tracker.listLabels()).map((l) => l.name)).toContain("zeta");
+      expect(await tracker.findLabel("Zeta")).toMatchObject({ id: "lab-zeta" });
+      await tracker.updateIssue("SHI-1", { labels: ["zeta"] });
+      expect(inputFor(fetchImpl, "IssueUpdate")).toEqual({ labelIds: ["lab-zeta"] });
+
+      await tracker.setAssignee("SHI-1", "Late Joiner");
+      const updates = callsMatching(fetchImpl, "IssueUpdate");
+      expect(updates[updates.length - 1].input).toEqual({ assigneeId: "u-late" });
+    });
   });
 
   it("resolves the declared team key to a team id once, then reuses it", async () => {

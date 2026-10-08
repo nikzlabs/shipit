@@ -93,13 +93,17 @@ grouping into sections by priority, status or assignee. The default is
 priority then status, ungrouped. The choice is remembered between visits, as
 is **Show done**.
 
-**The list is a window, not the whole tracker.** Each refresh fetches about a
-hundred issues, and the search box and the facets filter **within what was
-fetched** — on identifier, title and description only, never the comment
-thread. That is the answer to "why can't I find my issue?": widen with **Show
-done** if it is finished, and otherwise look it up by reference rather than by
-scrolling — `shipit issue view <reference>` reaches it whether or not it is in
-the window, and posts a card so the user can open it.
+**The list holds the whole tracker, up to 2,000 items.** Each refresh reads
+every page, and the search box and the facets filter **within what was
+read** — on identifier, title and description only, never the comment thread.
+So "why can't I find my issue?" usually means it is finished: widen with
+**Show done**. A tracker larger than one read (on GitHub, pull requests count
+toward the 2,000) shows the count as `N+ issues`, and hovering it explains that
+the oldest are not loaded. For those, look the issue up by reference —
+`shipit issue view <reference>` reaches any issue and posts a card so the user
+can open it. To find one by words or labels further back, use
+`shipit issue list --search … --label … --state all`, which reads up to
+10,000 items.
 
 **Sub-issues nest under their parent**, and are sorted within it rather than
 being lifted into the top-level order. That is **Linear only** — GitHub issues
@@ -112,8 +116,7 @@ expanded in a wide panel and collapsed in a narrow one.
 
 Clicking a row opens it in place: status, priority, title, assignee, labels,
 the description, and the comment thread, with a box to add a comment. The
-thread is **one batch of 100 comments, not paginated** — on a long-running
-issue the oldest discussion is the part that is missing.
+whole thread loads, not only its first page.
 
 **What the user changes here**, directly:
 

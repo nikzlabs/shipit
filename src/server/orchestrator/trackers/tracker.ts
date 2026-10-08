@@ -9,6 +9,32 @@ import type {
 export interface ListIssuesOptions {
   // Canceled issues remain excluded.
   includeDone?: boolean;
+  /** Defaults to LIST_ISSUES_CEILING. */
+  maxItems?: number;
+}
+
+// A list reads at most this many tracker items (GitHub counts pull requests too).
+export const LIST_ISSUES_CEILING = 2000;
+
+// A search prints few rows, so it reads further back; the agent's HTTP call times out at 300 s.
+export const SEARCH_READ_CEILING = 10_000;
+
+// Comment, label and user reads fail past this rather than act on part of the set.
+export const PAGED_READ_CEILING = 10_000;
+
+export function requireWholeRead<T>(read: { items: T[]; complete: boolean }, what: string): T[] {
+  if (!read.complete) {
+    throw new Error(
+      `${what} has more than ${PAGED_READ_CEILING} entries, so ShipIt stopped rather than use part of it.`,
+    );
+  }
+  return read.items;
+}
+
+export interface IssueListing {
+  issues: TrackerIssue[];
+  // False when LIST_ISSUES_CEILING stopped the read before the tracker ran out.
+  complete: boolean;
 }
 
 export interface SetAssigneeOptions {
@@ -42,7 +68,7 @@ export interface Tracker {
 
   info(): TrackerInfo;
 
-  listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]>;
+  listIssues(options?: ListIssuesOptions): Promise<IssueListing>;
 
   getIssue(id: string): Promise<TrackerIssue | null>;
 

@@ -1,7 +1,10 @@
 export {
   TrackerPermissionError,
   TrackerResolutionError,
+  LIST_ISSUES_CEILING,
+  SEARCH_READ_CEILING,
   type Tracker,
+  type IssueListing,
   type ListIssuesOptions,
   type SetAssigneeOptions,
 } from "./tracker.js";

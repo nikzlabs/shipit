@@ -285,7 +285,8 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
 
 export async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker", "--state": "state" },
+    values: { "--tracker": "tracker", "--state": "state", "--search": "search", "--limit": "limit", "-L": "limit" },
+    arrays: { "--label": "label", "-l": "label" },
     booleans: { "--json": "json", "--full": "full" },
   });
   if (parsed.unsupported.length > 0) {
@@ -297,18 +298,38 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
   if (state && !["open", "closed", "all"].includes(state)) {
     fail(deps.io, `shipit issue list: --state must be 'open', 'closed', or 'all' (got '${parsed.values.state}').`);
   }
+  const limit = parsed.values.limit;
+  if (limit !== undefined && !/^[1-9]\d*$/.test(limit.trim())) {
+    fail(deps.io, `shipit issue list: --limit must be a positive whole number (got '${limit}').`);
+  }
+  const search = parsed.values.search?.trim();
+  const labels = normalizeLabels(parsed.arrays.label);
 
   const params = new URLSearchParams({ tracker });
   if (state) params.set("state", state);
+  if (search) params.set("search", search);
+  for (const label of labels) params.append("label", label);
+  if (limit !== undefined) params.set("limit", limit.trim());
   const res = await deps.call("GET", `/agent-ops/issue/list?${params.toString()}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list issues"), 1);
   }
 
   const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
+  const total = typeof res.body.total === "number" ? res.body.total : issues.length;
+  const incomplete = res.body.incomplete === true;
+  const filtered = Boolean(search) || labels.length > 0;
+  const note = listShortfallNote(issues.length, total, incomplete, isGitHubTracker(tracker), filtered);
   if (parsed.booleans.has("json")) {
     const rows = parsed.booleans.has("full") ? issues : issues.map(leanListRow);
-    deps.io.stdout(`${JSON.stringify(rows)}\n`);
+    const payload = {
+      issues: rows,
+      total,
+      truncated: note !== null,
+      ...(incomplete ? { incomplete: true } : {}),
+      ...(note ? { note } : {}),
+    };
+    deps.io.stdout(`${JSON.stringify(payload)}\n`);
     deps.io.exit(0);
     return;
   }
@@ -318,22 +339,53 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
       success(deps.io, `${tracker} is not configured in ShipIt — no issues to list.`);
       return;
     }
-    success(deps.io, `No issues for ${tracker}.`);
+    const empty = filtered ? `No issues in ${tracker} match.` : `No issues for ${tracker}.`;
+    const doneHint = filtered && !state ? " Done issues are not searched by default — add --state all." : "";
+    success(deps.io, [`${empty}${doneHint}`, ...(note ? [note] : [])].join("\n"));
     return;
   }
   const lines = issues.map((i) =>
     [asString(i.identifier), priorityLabel(i), asString(i.title)].join("\t"),
   );
   const { text: capped, truncated } = capText(lines.join("\n"), MAX_ISSUE_FREETEXT_CHARS);
-  success(
-    deps.io,
-    wrapUntrustedContent({
-      source: "issue",
-      content: capped,
-      provenance: `${tracker} issue list`,
-      truncated,
-    }),
-  );
+  const envelope = wrapUntrustedContent({
+    source: "issue",
+    content: capped,
+    provenance: `${tracker} issue list`,
+    truncated,
+  });
+  const cutNote = truncated
+    ? `The text listing was cut at ${MAX_ISSUE_FREETEXT_CHARS} characters; use --json, or narrow with --search or --label.`
+    : null;
+  const trailer = [note, cutNote].filter(Boolean).join(" ");
+  success(deps.io, trailer ? `${envelope}\n${trailer}` : envelope);
+}
+
+function listShortfallNote(
+  shown: number,
+  total: number,
+  incomplete: boolean,
+  github: boolean,
+  filtered: boolean,
+): string | null {
+  const parts: string[] = [];
+  if (shown < total) {
+    parts.push(
+      `Showing ${shown} of ${incomplete ? "at least " : ""}${total} matching issues. ` +
+        `Narrow with --search TEXT or --label NAME, or raise --limit.`,
+    );
+  }
+  if (incomplete) {
+    const items = github ? "issues and pull requests" : "issues";
+    parts.push(
+      filtered
+        ? `This tracker holds more ${items} than one search reads, so the oldest were not searched. ` +
+            "Open a known issue with `shipit issue view <reference>`."
+        : `This tracker holds more ${items} than one list reads, so the oldest were not read. ` +
+            "--search TEXT or --label NAME read further back, and `shipit issue view <reference>` opens any issue.",
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 function leanListRow(issue: Record<string, unknown>): Record<string, unknown> {
