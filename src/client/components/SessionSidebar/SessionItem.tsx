@@ -11,6 +11,13 @@ import { useAttentionInfo } from "../../hooks/useAttentionInfo.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 import { SessionStatusDot, AutoMergeBadge, DataDeletionBadge, DiskTierBadge } from "./SessionStatusIndicators.js";
 
+/** The docs/187 marker on a row that needs the user; schedule rows in "needs you" wear it too. */
+export const ATTENTION_MARKER_STYLE = {
+  boxShadow: "inset -3px 0 0 var(--color-attention)",
+  backgroundImage:
+    "linear-gradient(90deg, transparent 62%, color-mix(in srgb, var(--color-attention) 20%, transparent))",
+};
+
 function rowPrState(session: SessionInfo): "open" | "merged" | "closed" | undefined {
   if (session.mergedAt) return "merged";
   if (session.closedAt) return "closed";
@@ -127,13 +134,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const canInvestigateInOps = session.kind !== "ops";
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
-  const attentionMarker = needsAttention
-    ? {
-        boxShadow: "inset -3px 0 0 var(--color-attention)",
-        backgroundImage:
-          "linear-gradient(90deg, transparent 62%, color-mix(in srgb, var(--color-attention) 20%, transparent))",
-      }
-    : undefined;
+  const attentionMarker = needsAttention ? ATTENTION_MARKER_STYLE : undefined;
 
   return (
     <div

@@ -417,15 +417,18 @@ schedule:
   It is refused while a run is not finished, and the refusal lists those runs,
   each with **Stop**.
 
-Opening a schedule there shows its runs, newest first: the time, a state —
+Opening a schedule there shows its runs, newest first: the time (in the
+schedule's time zone, as in each run's title, and named when it is not the
+user's own), a state —
 *Starting*, *Running*, *Needs you*, *Finished*, *Stopping*, *Stopped*,
 *Skipped*, *Failed* or *Session deleted* — a one-line result, **Stop** on a run
 that is not finished, and **Open**.
 
 **Where the runs are.** Runs are not in the regular session list. The clock
-button beside the "Needs you" button in the sidebar header opens the
-**Scheduled** view: the same grouped list, for runs only, with finished runs
-under **Recently resolved**. A run that needs the user is in "Needs you" too. A
+button beside the "Needs you" button in the sidebar header, there while the
+user has a schedule or a run, opens the **Scheduled** view: the same grouped
+list, for runs only, with finished runs under **Recently resolved**. A run that
+needs the user is in "Needs you" too. A
 run is *finished* when nothing is left for the user: no question waiting, no
 manual step, no open pull request, and no error at its end. So in a run,
 anything the user must decide has to be asked as a question; a request written
@@ -444,7 +447,10 @@ that waits for the user's answer does not count as going. After ShipIt was
 down, one catch-up run starts, however many were missed. A start that fails — a
 missing credential, no quota, an untrusted or removed repository, a deleted
 role — is in the history with its reason, and the schedule shows that reason
-until the next start that works, an edit, or a resume.
+until the next start that works, an edit, or a resume. Until then the schedule
+is also a row of its own in "Needs you", counted in that button's number, and
+its reason is at the top of the Scheduled view, whose clock button carries a
+warning mark. Each of these opens Settings → Schedules at the schedule.
 
 ## Kinds of session
 
