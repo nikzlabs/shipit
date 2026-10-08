@@ -35,6 +35,12 @@ describe("scheduledRunContext — the run's first-turn block (docs/324 req 13)",
     expect(block).toContain("/shipit-docs/untrusted-input.md");
   });
 
+  it("gives the time in the run's own zone once the schedule's zone has changed, as its title does", () => {
+    const run = { ...RUN, timeZone: "Asia/Tokyo" };
+    const block = scheduledRunContext(deps({ store: { get: () => SCHEDULE, getRun: () => run } }), "s1", "run-1");
+    expect(block).toContain("2026-10-07 16:00 (Asia/Tokyo)");
+  });
+
   it("gives the container path, or the host path in local mode, where there is no container", () => {
     expect(scheduledRunContext(deps(), "s1", "run-1")).toContain(RUN_NOTES_CONTAINER_DIR);
     const local = scheduledRunContext(deps({ runtimeMode: "local" }), "s1", "run-1");

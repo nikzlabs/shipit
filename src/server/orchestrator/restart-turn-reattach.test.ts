@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { followReportedTurn, followWorkerTurn, reattachInFlightTurns } from "./restart-turn-reattach.js";
+import {
+  followReportedTurn,
+  followWorkerTurn,
+  reattachInFlightTurns,
+  stopWorkerAgent,
+  workerHasLiveWork,
+} from "./restart-turn-reattach.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -176,6 +182,58 @@ describe("followReportedTurn", () => {
     expect(await followReportedTurn(h.deps, "s1")).toBe(false);
     expect(await followReportedTurn(h.deps, "other")).toBe(false);
     expect(h.created).toEqual([]);
+  });
+});
+
+describe("stopWorkerAgent", () => {
+  let server: http.Server | undefined;
+  afterEach(async () => {
+    await new Promise<void>((resolve) => { if (server) server.close(() => resolve()); else resolve(); });
+    server = undefined;
+  });
+
+  /** A worker whose resident agent keeps background tasks until it is killed, as the worker's own slot does. */
+  async function workerWithResident(status: Partial<WorkerAgentStatus>) {
+    let current: Partial<WorkerAgentStatus> = { running: true, latestSseSeq: 0, ...status };
+    const kills: unknown[] = [];
+    server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (req.url?.startsWith("/agent/kill")) {
+          kills.push(body ? JSON.parse(body) : null);
+          current = { running: false, latestSseSeq: 0, turnActive: false, backgroundTaskCount: 0 };
+          res.end(JSON.stringify({ killed: true }));
+          return;
+        }
+        res.end(JSON.stringify(current));
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const containerManager = {
+      get: (id: string) => (id === "s1" ? { sessionId: "s1", workerUrl: `http://127.0.0.1:${port}`, status: "running" } : undefined),
+    } as unknown as SessionContainerManager;
+    return { containerManager, kills };
+  }
+
+  it("kills the resident agent a session without a runner still works in, and only that one", async () => {
+    const { containerManager, kills } = await workerWithResident({ turnActive: false, backgroundTaskCount: 2, runToken: "tok-1" });
+    expect(await workerHasLiveWork(containerManager, "s1")).toBe(true);
+
+    expect(await stopWorkerAgent(containerManager, "s1")).toBe(true);
+    expect(kills).toEqual([{ runToken: "tok-1" }]);
+    expect(await workerHasLiveWork(containerManager, "s1")).toBe(false);
+  });
+
+  it("does nothing for a worker with no resident agent, or a session with no running container", async () => {
+    const { containerManager, kills } = await workerWithResident({ running: false, turnActive: false, terminalActive: true });
+    // The user's shell keeps no run going, and Stop cannot end it.
+    expect(await workerHasLiveWork(containerManager, "s1")).toBe(false);
+    expect(await stopWorkerAgent(containerManager, "s1")).toBe(false);
+    expect(await stopWorkerAgent(containerManager, "other")).toBe(false);
+    expect(kills).toEqual([]);
   });
 });
 

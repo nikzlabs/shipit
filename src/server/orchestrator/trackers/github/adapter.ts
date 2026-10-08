@@ -11,12 +11,19 @@ import { githubHeaders, parseGitHubError } from "../../github-api.js";
 import { formatIssueReference } from "../../../shared/issue-ref.js";
 import { parseRetryAfterSeconds, secondsUntilEpoch, waitPhrase } from "../throttle.js";
 import {
+  LIST_ISSUES_CEILING,
+  LIST_READ_DEADLINE_MS,
+  PAGED_READ_CEILING,
   TrackerPermissionError,
   TrackerResolutionError,
+  requireWholeRead,
+  type IssueListing,
   type ListIssuesOptions,
   type SetAssigneeOptions,
   type Tracker,
 } from "../tracker.js";
+
+const GITHUB_PAGE_SIZE = 100;
 
 const GITHUB_AVAILABLE_STATUSES: { name: string; type?: string; color?: string }[] = [
   { name: "Open", type: "started", color: "#3fb950" },
@@ -284,18 +291,20 @@ export class GitHubTracker implements Tracker {
       issueId: issueNumber,
     });
 
-  async listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]> {
-    if (!this.token || !this.repo) {
-      throw new Error("GitHub is not configured (missing token or repo binding)");
-    }
-    const ref = this.repo;
+  async listIssues(options?: ListIssuesOptions): Promise<IssueListing> {
+    const ref = this.requireRepo();
     const state = options?.includeDone ? "all" : "open";
-    const url = `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues?state=${state}&per_page=100&sort=created&direction=desc`;
-    const nodes = await this.fetchIssues(url);
-    return nodes
+    const { items, complete } = await this.fetchPages(
+      `issues?state=${state}&sort=created&direction=desc`,
+      options?.maxItems ?? LIST_ISSUES_CEILING,
+      Date.now() + LIST_READ_DEADLINE_MS,
+    );
+    const issues = (items as GitHubIssueNode[])
       .filter((n) => !n.pull_request)
       .map((n) => toTrackerIssue(n, ref, this.formatRef))
-      .sort((a, b) => a.priority.sortOrder - b.priority.sortOrder || a.identifier.localeCompare(b.identifier));
+      // Stable sort: newest first within a priority, so a limit keeps the recent issues.
+      .sort((a, b) => a.priority.sortOrder - b.priority.sortOrder);
+    return { issues, complete };
   }
 
   async getIssue(id: string): Promise<TrackerIssue | null> {
@@ -325,19 +334,8 @@ export class GitHubTracker implements Tracker {
   }
 
   async listComments(id: string): Promise<TrackerComment[]> {
-    const ref = this.requireRepo();
-    let res: Response;
-    try {
-      res = await this.fetchImpl(
-        `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues/${encodeURIComponent(id)}/comments?per_page=100`,
-        { headers: githubHeaders(this.token!) },
-      );
-    } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-    }
-    await this.assertOk(res);
-    const nodes = (await res.json()) as GitHubCommentNode[];
-    return nodes.map(toTrackerComment);
+    const read = await this.fetchPages(`issues/${encodeURIComponent(id)}/comments`, PAGED_READ_CEILING);
+    return (requireWholeRead(read, `The comment thread of #${id}`) as GitHubCommentNode[]).map(toTrackerComment);
   }
 
   async createIssue(input: {
@@ -543,18 +541,8 @@ export class GitHubTracker implements Tracker {
   }
 
   private async fetchRepoLabelNodes(): Promise<{ name: string; color?: string; description?: string }[]> {
-    const ref = this.requireRepo();
-    let res: Response;
-    try {
-      res = await this.fetchImpl(
-        `https://api.github.com/repos/${ref.owner}/${ref.repo}/labels?per_page=100`,
-        { headers: githubHeaders(this.token!) },
-      );
-    } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-    }
-    await this.assertOk(res);
-    const nodes = (await res.json()) as {
+    const read = await this.fetchPages("labels", PAGED_READ_CEILING);
+    const nodes = requireWholeRead(read, "The repository's label list") as {
       name?: string | null;
       color?: string | null;
       description?: string | null;
@@ -642,15 +630,34 @@ export class GitHubTracker implements Tracker {
     return (await res.json()) as T;
   }
 
-  private async fetchIssues(url: string): Promise<GitHubIssueNode[]> {
-    let res: Response;
-    try {
-      res = await this.fetchImpl(url, { headers: githubHeaders(this.token!) });
-    } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  // A short page ends the read. A full page ends it only when a Link header lacks rel="next",
+  // because GitHub omits the header entirely when the whole set fits on one page.
+  private async fetchPages(
+    path: string,
+    maxItems: number,
+    deadline = Infinity,
+  ): Promise<{ items: unknown[]; complete: boolean }> {
+    const ref = this.requireRepo();
+    const sep = path.includes("?") ? "&" : "?";
+    const items: unknown[] = [];
+    for (let page = 1; ; page++) {
+      const url =
+        `https://api.github.com/repos/${ref.owner}/${ref.repo}/${path}${sep}` +
+        `per_page=${GITHUB_PAGE_SIZE}&page=${page}`;
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, { headers: githubHeaders(this.token!) });
+      } catch (err) {
+        throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      }
+      await this.assertOk(res);
+      const nodes = (await res.json()) as unknown[];
+      items.push(...nodes);
+      const link = res.headers.get("link");
+      const lastPage = nodes.length < GITHUB_PAGE_SIZE || (link !== null && !link.includes('rel="next"'));
+      if (lastPage) return { items, complete: true };
+      if (items.length >= maxItems || Date.now() >= deadline) return { items, complete: false };
     }
-    await this.assertOk(res);
-    return (await res.json()) as GitHubIssueNode[];
   }
 
   private async assertOk(res: Response): Promise<void> {

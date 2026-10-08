@@ -8,7 +8,7 @@ import { openScheduleNotes } from "../../../stores/schedule-notes-store.js";
 import { useAttentionInfo } from "../../../hooks/useAttentionInfo.js";
 import { formatRunTime, otherZone } from "./schedule-format.js";
 import { runState, type RunState, type RunStateKind } from "./run-state.js";
-import type { ScheduleRunView, SessionListRow } from "../../../../server/shared/types.js";
+import type { ScheduleRun, ScheduleRunView, SessionListRow } from "../../../../server/shared/types.js";
 
 const STATE_VARIANT: Record<RunStateKind, "default" | "success" | "error" | "warning" | "info"> = {
   starting: "info",
@@ -66,7 +66,7 @@ export function ScheduleRuns({
       )}
       <ul className="divide-y divide-(--color-border-secondary)" data-testid={`schedule-runs-${scheduleId}`}>
         {runs.map((run) => (
-          <RunRow key={run.id} run={run} zone={zone} onOpenSession={onOpenSession} />
+          <RunRow key={run.id} run={run} when={runTime(run, timeZone, zone)} onOpenSession={onOpenSession} />
         ))}
       </ul>
       {runs.length >= limit && (
@@ -102,27 +102,45 @@ export function useRunSessionChanges(scheduleId: string): string {
   );
 }
 
+interface RunTime {
+  text: string;
+  /** Named on the row when it is not the zone the note above the list names. */
+  zone: string | null;
+}
+
+/**
+ * The run's time in the zone its title names, which is the schedule's current zone only for a
+ * row from before runs kept their own. `listZone` is the zone the note above the list names.
+ */
+function runTime(run: ScheduleRun, scheduleTimeZone: string | undefined, listZone: string | null): RunTime {
+  const runZone = run.timeZone ?? scheduleTimeZone;
+  const shown = runZone ? otherZone(runZone) : null;
+  return {
+    text: formatRunTime(run.slotAt ?? run.createdAt, shown ?? undefined),
+    zone: shown === listZone ? null : shown ?? "your time",
+  };
+}
+
 interface RunRowProps {
   run: ScheduleRunView;
-  /** The schedule's zone when it is not the browser's. */
-  zone: string | null;
+  when: RunTime;
   onOpenSession?: (sessionId: string) => void;
 }
 
-function RunRow({ run, zone, onOpenSession }: RunRowProps) {
+function RunRow({ run, when, onOpenSession }: RunRowProps) {
   const live = useSessionStore((s) => (run.sessionId ? s.sessions.find((x) => x.id === run.sessionId) : undefined));
   const session = live ?? run.session;
   return session
-    ? <RunRowWithSession run={run} zone={zone} session={session} onOpenSession={onOpenSession} />
-    : <RunRowBody run={run} zone={zone} state={runState(run, undefined, null)} onOpenSession={onOpenSession} />;
+    ? <RunRowWithSession run={run} when={when} session={session} onOpenSession={onOpenSession} />
+    : <RunRowBody run={run} when={when} state={runState(run, undefined, null)} onOpenSession={onOpenSession} />;
 }
 
-function RunRowWithSession({ run, zone, session, onOpenSession }: RunRowProps & { session: SessionListRow }) {
+function RunRowWithSession({ run, when, session, onOpenSession }: RunRowProps & { session: SessionListRow }) {
   const attention = useAttentionInfo(session);
   return (
     <RunRowBody
       run={run}
-      zone={zone}
+      when={when}
       state={runState(run, session, attention)}
       attention={attention}
       archived={!!(session.userArchived || session.archived)}
@@ -133,7 +151,7 @@ function RunRowWithSession({ run, zone, session, onOpenSession }: RunRowProps & 
 
 function RunRowBody({
   run,
-  zone,
+  when,
   state,
   attention,
   archived,
@@ -163,7 +181,18 @@ function RunRowBody({
       className="grid grid-cols-[8.5rem_6.5rem_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1.5 text-xs"
       data-testid={`schedule-run-${run.id}`}
     >
-      <span className="text-(--color-text-secondary)">{formatRunTime(run.slotAt ?? run.createdAt, zone ?? undefined)}</span>
+      <span className="min-w-0 text-(--color-text-secondary)">
+        {when.text}
+        {when.zone && (
+          <span
+            className="block truncate text-[10px] text-(--color-text-tertiary)"
+            title={when.zone}
+            data-testid={`schedule-run-zone-${run.id}`}
+          >
+            {when.zone}
+          </span>
+        )}
+      </span>
       <span className="flex items-center gap-1">
         <Badge
           variant={STATE_VARIANT[state.kind]}

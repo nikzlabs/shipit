@@ -23,8 +23,9 @@ export function browserTimeZone(): string {
 }
 
 /**
- * The schedule's zone when it is not the browser's, else null. A run's title names its time in
- * the schedule's zone, so the banner and the history show run times there too and name it.
+ * The zone when it is not the browser's, else null. A run's title names its time in the zone the
+ * run kept (`ScheduleRun.timeZone`), so the banner and the history show run times there too and
+ * name it.
  */
 export function otherZone(timeZone: string): string | null {
   if (timeZone === browserTimeZone()) return null;
@@ -50,7 +51,7 @@ export function formatRunTime(at: string | Date, timeZone?: string): string {
   });
 }
 
-/** A run time in the schedule's zone, with the zone named when it is not the browser's. */
+/** A run time in the run's zone, with the zone named when it is not the browser's. */
 export function formatScheduleRunTime(at: string | Date, timeZone: string): string {
   const zone = otherZone(timeZone);
   return zone ? `${formatRunTime(at, zone)} (${zone})` : formatRunTime(at);

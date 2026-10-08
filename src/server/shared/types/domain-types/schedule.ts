@@ -41,12 +41,20 @@ export interface ScheduleView extends Omit<Schedule, "spec"> {
 
 export type ScheduleRunOutcome = "starting" | "started" | "skipped" | "failed";
 
+/** The most runs one read of a run history returns; older ones are read after the oldest returned. */
+export const MAX_RUNS_PER_READ = 1000;
+
 /** One entry of a schedule's run history (req 24), and the claim of its slot. */
 export interface ScheduleRun {
   id: string;
   scheduleId: string;
   /** The slot this run claimed; null for Run now. */
   slotAt: string | null;
+  /**
+   * The schedule's zone when the row was made, which the run's title names its time in. Absent
+   * on rows from before it was stored, which use the schedule's current zone.
+   */
+  timeZone?: string;
   /** The copy of the schedule's spec this run starts with (req 19). */
   spec?: unknown;
   outcome: ScheduleRunOutcome;

@@ -187,7 +187,7 @@ export interface CreateHeadlessSessionOptions {
    * docs/324-scheduled-sessions — the schedule run this session is. Stamped as soon as the
    * session exists, so a start that fails later still leaves a session linked to its run.
    */
-  scheduleRun?: { scheduleId: string; runId: string };
+  scheduleRun?: { scheduleId: string; runId: string; timeZone: string };
   /** Runs once the run's session is linked, before its container starts; a throw fails the start. */
   onRunLinked?: (sessionId: string) => void;
   /** Runs the first dispatch; a throw cancels it, and the session stays without a turn. */
@@ -344,8 +344,11 @@ export async function createHeadlessSession(
 
   const linkScheduleRun = (sessionId: string): void => {
     if (!opts.scheduleRun) return;
-    sessionManager.setScheduleRun(sessionId, opts.scheduleRun.scheduleId, opts.scheduleRun.runId);
+    const { scheduleId, runId, timeZone } = opts.scheduleRun;
+    sessionManager.setScheduleRun(sessionId, scheduleId, runId, timeZone);
     if (explicitTitle) sessionManager.rename(sessionId, explicitTitle);
+    // The first turn saves the agent only once its container runs; recovery re-sends on this one.
+    sessionManager.setAgentId(sessionId, agentId);
     opts.onRunLinked?.(sessionId);
   };
 
@@ -432,31 +435,34 @@ export async function createHeadlessSession(
     }
   }
 
-  const dispatch = (): TurnHandle => runner.dispatch(firstDispatch({
-    text: trimmedPrompt,
-    params: opts.params,
-    uploads: uploadRefs,
-    deliveryId: opts.deliveryId,
-    dictated: opts.dictated,
-  }));
+  // Graduation shares the dispatch's synchronous step, which a scheduled run's gate records as
+  // started: a restart never finds a started run's session warm, which startup would delete.
+  const dispatch = (): TurnHandle => {
+    if (target.kind === "repo") {
+      const { model, serviceId, billingMode, reasoning } = selection;
+      graduateSession(graduationDeps, {
+        sessionId: newSessionId,
+        userText: trimmedPrompt,
+        agentId,
+        ...(explicitTitle ? { explicitTitle } : {}),
+        ...(explicitBranch ? { explicitBranch } : {}),
+        ...(model ? { model } : {}),
+        ...(serviceId ? { serviceId } : {}),
+        ...(billingMode ? { billingMode } : {}),
+        ...(reasoning ? { reasoning } : {}),
+      });
+    } else {
+      graduationDeps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+    }
+    return runner.dispatch(firstDispatch({
+      text: trimmedPrompt,
+      params: opts.params,
+      uploads: uploadRefs,
+      deliveryId: opts.deliveryId,
+      dictated: opts.dictated,
+    }));
+  };
   const turn = opts.dispatchGate ? await opts.dispatchGate(newSessionId, dispatch) : dispatch();
-
-  if (target.kind === "repo") {
-    const { model, serviceId, billingMode, reasoning } = selection;
-    graduateSession(graduationDeps, {
-      sessionId: newSessionId,
-      userText: trimmedPrompt,
-      agentId,
-      ...(explicitTitle ? { explicitTitle } : {}),
-      ...(explicitBranch ? { explicitBranch } : {}),
-      ...(model ? { model } : {}),
-      ...(serviceId ? { serviceId } : {}),
-      ...(billingMode ? { billingMode } : {}),
-      ...(reasoning ? { reasoning } : {}),
-    });
-  } else {
-    graduationDeps.sseBroadcast("session_list", { sessions: sessionManager.list() });
-  }
 
   await applyStartParams("started", opts.params, paramCtx);
 
@@ -513,8 +519,8 @@ export interface RedispatchOptions {
 
 /**
  * Sends a started session's first prompt again, when a restart came between its dispatch
- * and its delivery (docs/324-scheduled-sessions → recovery). Every parameter applied
- * before the dispatch is already stored on the session; only the `started` ones remain.
+ * and its delivery (docs/324-scheduled-sessions → recovery). The start stores the agent, the
+ * model and the graduation by the time of the dispatch; only the `started` parameters remain.
  */
 export async function redispatchHeadlessPrompt(
   deps: HeadlessSessionDeps,

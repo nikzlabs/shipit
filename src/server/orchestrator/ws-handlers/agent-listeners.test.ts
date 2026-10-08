@@ -858,9 +858,9 @@ describe("wireAgentListeners", () => {
       agent.emit("auth_required");
       await tick();
 
-      expect(runner.recordedCards).toHaveLength(1);
       expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
-      expect(runner.recordedCards[0]!.message).toEqual(
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith(
+        "session-1",
         expect.objectContaining({ isError: true, text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}` }),
       );
       runner.dispose({ force: true });

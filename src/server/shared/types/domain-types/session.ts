@@ -142,6 +142,11 @@ export interface SessionInfo {
    */
   scheduleId?: string;
   scheduleRunId?: string;
+  /**
+   * The zone the run's title names its time in, copied from the run row when the session is
+   * linked to it, so the banner keeps it after the schedule and its run rows are deleted.
+   */
+  runTimeZone?: string;
   /** Set while the run counts as finished (req 22). */
   runFinishedAt?: string;
   /** Req 33 — when the user stopped the run. */

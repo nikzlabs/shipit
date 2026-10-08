@@ -90,6 +90,7 @@ interface SessionRow {
   awaiting_answer: number;
   schedule_id: string | null;
   schedule_run_id: string | null;
+  run_time_zone: string | null;
   run_finished_at: string | null;
   run_stopped_at: string | null;
   last_turn_outcome: string | null;
@@ -409,6 +410,7 @@ export class SessionManager {
       if (steps > 0) info.manualStepCount = steps;
     }
     if (row.schedule_run_id) info.scheduleRunId = row.schedule_run_id;
+    if (row.run_time_zone) info.runTimeZone = row.run_time_zone;
     if (row.run_finished_at) info.runFinishedAt = row.run_finished_at;
     if (row.run_stopped_at) info.runStoppedAt = row.run_stopped_at;
     const outcome = LAST_TURN_OUTCOMES.find((o) => o === row.last_turn_outcome);
@@ -1039,9 +1041,9 @@ export class SessionManager {
   }
 
   /** docs/324-scheduled-sessions — stamped when a run's session is created. */
-  setScheduleRun(id: string, scheduleId: string, scheduleRunId: string): void {
-    this.db.prepare("UPDATE sessions SET schedule_id = ?, schedule_run_id = ? WHERE id = ?")
-      .run(scheduleId, scheduleRunId, id);
+  setScheduleRun(id: string, scheduleId: string, scheduleRunId: string, runTimeZone?: string): void {
+    this.db.prepare("UPDATE sessions SET schedule_id = ?, schedule_run_id = ?, run_time_zone = ? WHERE id = ?")
+      .run(scheduleId, scheduleRunId, runTimeZone ?? null, id);
   }
 
   /** The session a schedule run started, if it got that far. */
@@ -1059,6 +1061,18 @@ export class SessionManager {
     const rows = this.db.prepare("SELECT * FROM sessions WHERE schedule_id = ? ORDER BY created_at, rowid")
       .all(scheduleId) as SessionRow[];
     return rows.map((r) => this.fromRow(r));
+  }
+
+  /**
+   * Runs whose last turn ended, or that the user stopped, with no "finished" saved: the two
+   * are separate writes, and a restart can come between them.
+   */
+  undecidedRunSessionIds(): string[] {
+    const rows = this.db.prepare(
+      `SELECT id FROM sessions WHERE schedule_id IS NOT NULL AND run_finished_at IS NULL
+       AND (last_turn_outcome IS NOT NULL OR run_stopped_at IS NOT NULL)`,
+    ).all() as { id: string }[];
+    return rows.map((row) => row.id);
   }
 
   setRunFinishedAt(id: string, at: string | null): void {

@@ -1,6 +1,6 @@
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin, LastTurnOutcome } from "../shared/types.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
-import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
+import { wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import {
   detectHardExhaustion,
@@ -61,7 +61,7 @@ import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
-import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows } from "./chat-card-persistence.js";
 import { denyAbandonedPermissionCards } from "./permission-cards.js";
 import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -439,9 +439,15 @@ export async function executeAgentTurn(
     if (turnEndRecorded) return;
     turnEndRecorded = true;
     try {
-      const { sessionManager } = deps.listenerDeps;
-      const first = sessionManager.get(sessionId)?.lastTurnOutcome === undefined;
+      const { sessionManager, sseBroadcast } = deps.listenerDeps;
+      const before = sessionManager.get(sessionId);
+      const first = before?.lastTurnOutcome === undefined;
       sessionManager.setLastTurnOutcome(sessionId, outcome);
+      // "Needs you" reads a run's outcome from its list row (req 31), and the run's finish,
+      // which lists it too, need not change: an open PR already kept it unfinished.
+      if (before?.scheduleId && before.lastTurnOutcome !== outcome) {
+        sseBroadcast("session_list", { sessions: sessionManager.list() });
+      }
       deps.onTurnEnd?.({
         sessionId,
         outcome,
@@ -562,15 +568,7 @@ export async function executeAgentTurn(
   };
   const finalizeAttemptOutput = (): void => {
     if (!runner) return;
-    const messages = buildTurnMessages(
-      runner.chatMessageGroups,
-      runner.steeredMessages ?? [],
-      runner.recordedCards ?? [],
-      { inProgress: false },
-    );
-    if (messages.length === 0) return;
-    deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, messages);
-    deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+    finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
   };
   // Recovery owns teardown after done stands down. Adoption must finish handing over its guards.
   const settleTurnWithoutRedispatch = async (): Promise<void> => {
@@ -641,6 +639,8 @@ export async function executeAgentTurn(
         return true;
       }
       recordTurnEnd("errored", "The agent's account could not authenticate.");
+      // The settle can start a queued turn, which would take over these rows (planning#645).
+      finalizeAttemptOutput();
       await settleTurnWithoutRedispatch();
       return false;
     }
@@ -695,16 +695,7 @@ export async function executeAgentTurn(
     automaticRecoveryInProgress = true;
     clearConversationThread(deps.listenerDeps, sessionId);
     if (runner) {
-      const partial = buildTurnMessages(
-        runner.chatMessageGroups,
-        runner.steeredMessages ?? [],
-        runner.recordedCards ?? [],
-        { inProgress: false },
-      );
-      if (partial.length > 0) {
-        deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, partial);
-        deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
-      }
+      finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
     }
     agent.kill();
     if (runner?.getAgent() === agent) runner.setAgent(null);
@@ -879,16 +870,7 @@ export async function executeAgentTurn(
       );
       // The error listener has not persisted this output yet; save it before retry resets it.
       if (runner) {
-        const firstAttemptMessages = buildTurnMessages(
-          runner.chatMessageGroups,
-          runner.steeredMessages ?? [],
-          runner.recordedCards ?? [],
-          { inProgress: false },
-        );
-        if (firstAttemptMessages.length > 0) {
-          deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, firstAttemptMessages);
-          deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
-        }
+        finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
       }
     } catch (prepErr) {
       console.error("[turn] quota-retry preparation failed; leaving the turn to the error path:", prepErr);
@@ -1615,14 +1597,7 @@ export async function executeAgentTurn(
         && runner.getAgent() === null
       ) {
         await postTurnStep("finalize-partial-turn-fallback", () => {
-          const partial = buildTurnMessages(
-            runner.chatMessageGroups,
-            runner.steeredMessages ?? [],
-            runner.recordedCards ?? [],
-            { inProgress: false },
-          );
-          deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, partial);
-          deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+          finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId);
           runner.clearTurnEventBuffer();
         });
       }

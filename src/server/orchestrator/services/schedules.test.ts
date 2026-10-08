@@ -6,7 +6,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { ScheduleStore } from "../schedule-store.js";
 import { ScheduleNotes } from "../schedule-notes.js";
 import type { CredentialStore } from "../credential-store.js";
-import type { ScheduleRun, UnfinishedScheduleRun } from "../../shared/types.js";
+import { MAX_RUNS_PER_READ, type ScheduleRun, type UnfinishedScheduleRun } from "../../shared/types.js";
 import {
   createSchedule,
   deleteSchedule,
@@ -38,6 +38,7 @@ let announced: number;
 let trusted: boolean;
 let roles: string[];
 let unfinished: UnfinishedScheduleRun[];
+let unfinishedNow: UnfinishedScheduleRun[] | null;
 
 function input(over: Record<string, unknown> = {}): Record<string, unknown> {
   return { name: "Security PRs", timing: DAILY, timeZone: "Europe/Berlin", spec: SPEC, ...over };
@@ -51,6 +52,7 @@ beforeEach(() => {
   trusted = true;
   roles = ["reviewer"];
   unfinished = [];
+  unfinishedNow = null;
   deps = {
     store,
     repoStore: { get: (url: string) => (url === REPO ? ({ url } as never) : undefined), isTrusted: () => trusted },
@@ -67,6 +69,7 @@ beforeEach(() => {
       runNow: async (id: string) => ({ id: "run-1", scheduleId: id, slotAt: null, outcome: "starting" }) as ScheduleRun,
       stopRun: async () => null,
       unfinishedRuns: async () => unfinished,
+      unfinishedRunsNow: () => unfinishedNow ?? unfinished,
       announceSchedules: () => { announced += 1; },
       viewRuns: (runs) => runs,
     },
@@ -188,6 +191,21 @@ describe("Run now and the run history", () => {
     expect(() => listScheduleRuns(deps, "missing")).toThrow("Schedule not found");
   });
 
+  it("reads past the cap of one read: the runs older than a given run (reqs 24, 27)", () => {
+    const created = createSchedule(deps, input());
+    for (let i = 0; i < MAX_RUNS_PER_READ + 1; i++) {
+      store.insertRun({ scheduleId: created.id, slotAt: null }, new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString());
+    }
+    const page = listScheduleRuns(deps, created.id, MAX_RUNS_PER_READ + 50);
+    expect(page).toHaveLength(MAX_RUNS_PER_READ);
+    expect(listScheduleRuns(deps, created.id, 50, page.at(-1)!.id).map((r) => r.createdAt)).toEqual([
+      "2026-01-01T00:00:00.000Z",
+    ]);
+    const other = createSchedule(deps, input({ name: "Other" }));
+    expect(() => listScheduleRuns(deps, other.id, 50, page[0]!.id)).toThrow("Run not found");
+    expect(() => listScheduleRuns(deps, created.id, 50, "missing")).toThrow("Run not found");
+  });
+
   it("returns the scheduler's view of the runs", () => {
     const created = createSchedule(deps, input());
     store.insertRun({ scheduleId: created.id, slotAt: null, outcome: "started" });
@@ -213,6 +231,16 @@ describe("Delete (req 32)", () => {
     });
     expect(queued).toEqual([created.id]);
     expect(getSchedule(deps, created.id).id).toBe(created.id);
+  });
+
+  it("checks again, without waiting, just before it removes anything: a run resumed during the check keeps it", async () => {
+    const removed: string[] = [];
+    const withNotes = { ...deps, notes: { remove: (id: string) => { removed.push(id); } } };
+    const created = createSchedule(withNotes, input());
+    unfinishedNow = [{ runId: "run-1", sessionId: "s-1", title: "Security PRs · Oct 7, 09:00" }];
+    await expect(deleteSchedule(withNotes, created.id)).rejects.toMatchObject({ runs: unfinishedNow });
+    expect(removed).toEqual([]);
+    expect(store.get(created.id)).not.toBeNull();
   });
 
   it("removes the schedule and its run history once every run is finished", async () => {
