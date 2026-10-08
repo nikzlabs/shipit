@@ -292,6 +292,7 @@ export class PrStatusPoller {
 
   /** Use REST because the OPEN GraphQL view can lag a merge.
    * Pre-turn checks must disable armAbsentDebounce so later merges are still probed.
+   * The stored owner is sufficient: the lookup corrects a moved repository itself.
    */
   async forceVerifySessionPrState(
     sessionId: string,
@@ -308,9 +309,8 @@ export class PrStatusPoller {
     this.supervisor.ensure();
     this.tracker.verifiedAbsent.delete(sessionId);
 
-    const polledOwner = repoKey.slice(0, slash);
-    const polledRepo = repoKey.slice(slash + 1);
-    const { owner, repo } = await this.resolveCanonicalApiTarget(repoKey, polledOwner, polledRepo);
+    const owner = repoKey.slice(0, slash);
+    const repo = repoKey.slice(slash + 1);
     const outcome = await this.verifyMissingPr(sessionId, owner, repo, session.branch);
     if (outcome !== "suppressed" && (opts.armAbsentDebounce ?? true)) {
       this.tracker.verifiedAbsent.add(sessionId);
@@ -628,21 +628,6 @@ export class PrStatusPoller {
     return { owner, repo };
   }
 
-  private async resolveCanonicalApiTarget(
-    repoKey: string,
-    owner: string,
-    repo: string,
-  ): Promise<{ owner: string; repo: string }> {
-    const result = await this.githubAuth.graphqlQuery<{
-      data?: { repository?: { nameWithOwner?: string } };
-    }>(
-      `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }`,
-      { owner, name: repo },
-    );
-    const nameWithOwner = result?.data?.repository?.nameWithOwner;
-    return this.canonicalApiTarget(repoKey, owner, repo, nameWithOwner);
-  }
-
   private async pollRepo(
     repoKey: string,
     owner: string,
@@ -881,7 +866,8 @@ export class PrStatusPoller {
 
       const forcePending = this.graceTracker.shouldForcePending({
         sessionId,
-        repoKey: `${owner}/${repo}`,
+        // Grace state is keyed by the tracked repo; a poll can pass a different API target.
+        repoKey: this.tracker.sessionRepos.get(sessionId) ?? `${owner}/${repo}`,
         repoUrl: this.sessionManager.get(sessionId)?.remoteUrl,
         headSha: "",
         headBranch: branch,
