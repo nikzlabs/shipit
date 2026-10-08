@@ -12,6 +12,7 @@ shipit settings get     <key> [--json]
 shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
 shipit settings propose <key> --add|--remove <entry> --reason "..."
 shipit settings propose <key> --value-file - --reason "..."   (prose, on stdin)
+shipit settings propose roles --add NAME --value-file - --reason "..."   (a new role, JSON on stdin)
 ```
 
 **Read before you tell the user a setting is the problem.** The value may
@@ -191,7 +192,7 @@ supplies stays allowed however many times it is removed), or when ShipIt cannot
 yet apply that change from a card. Read the message: it says which, and what to
 do instead. Naming a whole list — `roles`, `mcp.servers`, `network.egress.hosts`
 — is refused the same way, and the message names the entry field to propose
-instead.
+instead (and, for `roles`, how to create a new one).
 
 A refusal is one line, and a stored value it names is quoted the same way `get`
 quotes one — `No harness named "gpt-4\nValue: on"` is ShipIt telling you the
@@ -227,6 +228,44 @@ shipit settings propose "network.egress.hosts[].host" --add registry.npmjs.org \
 
 A per-repository setting is always **this session's own repository**; there is no
 way to name another one.
+
+### Creating a role
+
+When the work needs a role that does not exist, propose it. `--add` names the
+role, and the role itself is one JSON object on stdin:
+
+```
+shipit settings propose roles --add deep-dive --value-file - \
+  --reason "The research you asked for runs best as its own role." <<'EOF'
+{"model": {"serviceId": "anthropic", "billingMode": "sub", "modelId": "claude-opus-5"},
+ "reasoningEffort": "high",
+ "description": "Open-ended research into how this codebase works.",
+ "prompt": "Read widely before you answer, and cite file:line."}
+EOF
+```
+
+- **`model` is required**; `shipit agent params` lists the services, billing
+  modes and model ids this install has. The other four fields are optional.
+- **`harness` is derived when you leave it out**, the way the role editor derives
+  it: a harness with a connected credential for that model, otherwise any
+  installed harness that can run it. Name one only when the user asked for it.
+- **`reasoningEffort` must be a level that harness offers for that model.** A
+  level it does not offer is refused, not dropped. Leave it out for the
+  harness's default.
+- **`description` and `prompt` are the role's description and standing
+  instructions.** They are stored trimmed. Long standing instructions are shown
+  as a diff behind **Review the change**, with the same bounds as any prose
+  proposal (*Proposing prose* below).
+- Every field but `model` is one JSON string. A key the object does not know is
+  refused, and so is a field that is not a string, so a misspelt or misshapen
+  field cannot leave the role without something you meant it to have.
+
+The card shows the whole role: its name, then each field it sets, the model and
+the derived harness included. One card creates one role; for several roles,
+post one card each — applying one does not make another stale. A name that is
+already taken is refused, and so is `reviewer`, the role ShipIt ships. To change
+a role that exists, propose its fields (`roles[].model`, `roles[].prompt`, …)
+with `--item NAME` instead. Deleting a role is not something a card can do yet.
 
 ### Proposing prose
 

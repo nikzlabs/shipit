@@ -217,11 +217,16 @@ A role is a complete, named unit the user configured once: a harness, a model, a
 reasoning level, a description and standing instructions. Starting one costs a
 name and nothing else.
 
-**Settings → Roles is the only place a role is created** — *New role* opens an
-editor with the name, the description, the standing instructions and the model.
-Picking the model re-derives the harness and the level, because a level only
-exists on a harness that honours it there. A row in the list is a summary, never
-a control: name, what it is for, and what it resolves to.
+A role is created in one of two ways. The user can create one in **Settings →
+Roles** — *New role* opens an editor with the name, the description, the
+standing instructions and the model. Picking the model re-derives the harness
+and the level, because a level only exists on a harness that honours it there.
+A row in the list is a summary, never a control: name, what it is for, and what
+it resolves to. **Or you propose one**: when the work needs a role that does not
+exist, `shipit settings propose roles --add NAME --value-file - --reason "..."` posts a card
+that shows the whole role, and the user's click creates it. Do that rather than
+sending the user to the editor; the syntax is in `/shipit-docs/settings.md` →
+*Creating a role*.
 
 Two ways a role is used, and you own the second:
 
@@ -471,7 +476,7 @@ restarts — telling that user "saved, it will work" would be a false promise.
 |---|---|
 | Signs in to a provider, or pastes a key | Say which service and mode the work needs, and why |
 | Orders credentials, sets the selection mode and the cutoffs | Read them and explain what a choice means |
-| Creates roles and configures the reviewer slots | Run `--role NAME`; read a role's description before writing its prompt |
+| Creates roles and configures the reviewer slots, or applies the card you post | Propose a role the work needs; run `--role NAME`; read a role's description before writing its prompt |
 | Picks the harness, model, level or role for a session | Say what the work needs; mention the harness locks at the first message |
 | Picks a theme and rebinds shortcuts | Name the control — the palette button, Settings → Keyboard — and stop |
 | Adds an SSH destination and installs its public line on the server | Say the destination is needed and what it is for; use it once granted |

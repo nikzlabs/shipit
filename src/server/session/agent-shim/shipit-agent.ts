@@ -194,7 +194,8 @@ export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<v
     return;
   }
   if (roles.length === 0) {
-    success(deps.io, "No roles are configured. Roles are created in ShipIt's Settings.");
+    success(deps.io, "No roles are configured. Propose one with `shipit settings propose roles --add NAME "
+      + "--value-file - --reason \"...\"` (/shipit-docs/settings.md → Creating a role).");
     return;
   }
   const lines = roles.map((role) => {
