@@ -352,6 +352,13 @@ host you know is allowlisted**. If the allowlisted one resolves and the other
 does not, that is the allowlist — Docker's DNS forwards everything, so it cannot
 produce that split. If both fail, it is a real DNS problem.
 
+A DNS failure raises no **Egress blocked** card, so propose the host yourself:
+`shipit settings propose "network.egress.hosts[].host" --add <host> --reason "…"`
+posts a card the user applies with one click (`/shipit-docs/settings.md`). Do not
+write it up as a step for the user to do in Settings. The allowlist applies from
+the next container start, so once the card is applied, restart your own container
+with `shipit session restart --note "…"`.
+
 One warning worth knowing, because it means two opposite things: **Contained —
 NOT enforced on this deployment**, in Settings → Network. The containment policy
 is on and the install cannot apply it — and which way that falls depends on how

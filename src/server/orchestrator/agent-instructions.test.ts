@@ -5,6 +5,7 @@ import {
   AGENT_SYSTEM_INSTRUCTIONS,
   type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
+import { findSetting } from "../shared/settings-catalogue/registry.js";
 
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
@@ -198,6 +199,28 @@ describe("buildAgentSystemInstructions", () => {
     const on = buildAgentSystemInstructions({ agentId: "claude", sessionStatusCard: true });
     expect(buildAgentSystemInstructions({ agentId: "claude", sessionStatusCard: true })).toBe(on);
     expect(on).not.toBe(buildAgentSystemInstructions({ agentId: "claude" }));
+  });
+
+  it("names the settings write path in every variant, and only keys a card can change", () => {
+    const variants: AgentSystemInstructionOptions[] = [
+      {},
+      { agentId: "codex" },
+      { isOps: true },
+      { isSandbox: true },
+      { sessionStatusCard: true },
+    ];
+    for (const opts of variants) {
+      const out = buildAgentSystemInstructions(opts);
+      expect(out).toContain("## ShipIt's own settings");
+      expect(out).toContain("shipit settings propose");
+    }
+
+    const keys = [...AGENT_SYSTEM_INSTRUCTIONS.matchAll(/shipit settings propose "?([\w.[\]]+)/g)]
+      .map((match) => match[1]);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      expect(findSetting(key)?.propose, key).toEqual({ kind: "yes" });
+    }
   });
 
   it("composes each overlay with the per-agent axis into a distinct variant", () => {
