@@ -12,6 +12,7 @@ import { linearTrackerId } from "../../../shared/tracker-id.js";
 import { parseRetryAfterSeconds, waitPhrase } from "../throttle.js";
 import {
   LIST_ISSUES_CEILING,
+  LIST_READ_DEADLINE_MS,
   PAGED_READ_CEILING,
   TrackerPermissionError,
   TrackerResolutionError,
@@ -269,6 +270,7 @@ const PAGE_INFO = "pageInfo { hasNextPage endCursor }";
 async function collectLinearPages<T>(
   fetchPage: (after: string | null) => Promise<LinearConnection<T> | null>,
   maxItems: number,
+  deadline = Infinity,
 ): Promise<{ items: T[]; complete: boolean }> {
   const items: T[] = [];
   let after: string | null = null;
@@ -278,7 +280,7 @@ async function collectLinearPages<T>(
     items.push(...page.nodes);
     const next = page.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
     if (!next) return { items, complete: true };
-    if (items.length >= maxItems) return { items, complete: false };
+    if (items.length >= maxItems || Date.now() >= deadline) return { items, complete: false };
     after = next;
   }
 }
@@ -383,7 +385,7 @@ export class LinearTracker implements Tracker {
         { teamId, excludedTypes, after },
       );
       return data.team?.issues ?? null;
-    }, options?.maxItems ?? LIST_ISSUES_CEILING);
+    }, options?.maxItems ?? LIST_ISSUES_CEILING, Date.now() + LIST_READ_DEADLINE_MS);
     const issues = items
       .map((n) => toTrackerIssue(n, this.formatRef))
       // Stable sort: most recently updated first within a priority, so a limit keeps the active issues.

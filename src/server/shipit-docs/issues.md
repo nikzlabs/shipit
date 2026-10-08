@@ -174,9 +174,10 @@ not all of them, and `note` then says how to get the rest. Read rows with
 One list reads at most **2,000** items from the tracker; a list with
 `--search` or `--label` reads up to **10,000**, because it prints only the
 matches. On GitHub, pull requests count toward both numbers, because GitHub's
-issue list includes them. The read starts at the newest (GitHub: by creation;
-Linear: by last update), so in a larger tracker the oldest are not read, and
-the output says so: `incomplete: true` in `--json`, plus a note in both modes.
+issue list includes them. A read also stops after **two minutes**, so a slow
+tracker cannot outlast the command. The read starts at the newest (GitHub: by
+creation; Linear: by last update), so when either limit stops it the oldest
+are not read, and the output says so: `incomplete: true` in `--json`, plus a note in both modes.
 Then search instead of listing, or open a known issue directly with
 `shipit issue view <reference>`, which reaches any issue.
 

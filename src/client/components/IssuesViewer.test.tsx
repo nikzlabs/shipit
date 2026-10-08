@@ -383,7 +383,7 @@ describe("IssuesViewer", () => {
     rerender(<IssuesViewer {...defaultProps({ issues, incomplete: true })} />);
     const count = screen.getByTestId("issue-count");
     expect(count.textContent).toBe("2+ issues");
-    expect(count.getAttribute("title")).toContain("the oldest are not shown");
+    expect(count.getAttribute("title")).toContain("stopped reading before this tracker's oldest issues");
   });
 
   it("shows the empty-filtered state with a Clear filters button", () => {

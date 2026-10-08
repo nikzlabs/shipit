@@ -16,8 +16,11 @@ export interface ListIssuesOptions {
 // A list reads at most this many tracker items (GitHub counts pull requests too).
 export const LIST_ISSUES_CEILING = 2000;
 
-// A search prints few rows, so it reads further back; the agent's HTTP call times out at 300 s.
+// A search prints few rows, so it reads further back.
 export const SEARCH_READ_CEILING = 10_000;
+
+// The agent's HTTP call times out at 300 s, so a slow tracker ends the list early instead.
+export const LIST_READ_DEADLINE_MS = 120_000;
 
 // Comment, label and user reads fail past this rather than act on part of the set.
 export const PAGED_READ_CEILING = 10_000;
@@ -33,7 +36,7 @@ export function requireWholeRead<T>(read: { items: T[]; complete: boolean }, wha
 
 export interface IssueListing {
   issues: TrackerIssue[];
-  // False when LIST_ISSUES_CEILING stopped the read before the tracker ran out.
+  // False when the item ceiling or LIST_READ_DEADLINE_MS stopped the read before the tracker ran out.
   complete: boolean;
 }
 

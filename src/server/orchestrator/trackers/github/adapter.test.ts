@@ -178,6 +178,26 @@ describe("GitHubTracker", () => {
       expect(fetchImpl).toHaveBeenCalledTimes(20);
     });
 
+    it("stops at the read deadline and reports the listing incomplete", async () => {
+      let now = 1_000_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const pages = pagedFetch(Array.from({ length: 20 }, () => 100), (n) => issueNode(n));
+      const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        now += 50_000;
+        return pages(url, init);
+      });
+      const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+
+      try {
+        const { issues, complete } = await tracker.listIssues();
+        expect(complete).toBe(false);
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+        expect(issues).toHaveLength(300);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
     it("reads past the list ceiling when the caller asks for a deeper read", async () => {
       const fetchImpl = pagedFetch([...Array.from({ length: 30 }, () => 100), 1], (n) => issueNode(n));
       const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });

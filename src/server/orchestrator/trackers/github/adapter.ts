@@ -12,6 +12,7 @@ import { formatIssueReference } from "../../../shared/issue-ref.js";
 import { parseRetryAfterSeconds, secondsUntilEpoch, waitPhrase } from "../throttle.js";
 import {
   LIST_ISSUES_CEILING,
+  LIST_READ_DEADLINE_MS,
   PAGED_READ_CEILING,
   TrackerPermissionError,
   TrackerResolutionError,
@@ -296,6 +297,7 @@ export class GitHubTracker implements Tracker {
     const { items, complete } = await this.fetchPages(
       `issues?state=${state}&sort=created&direction=desc`,
       options?.maxItems ?? LIST_ISSUES_CEILING,
+      Date.now() + LIST_READ_DEADLINE_MS,
     );
     const issues = (items as GitHubIssueNode[])
       .filter((n) => !n.pull_request)
@@ -630,7 +632,11 @@ export class GitHubTracker implements Tracker {
 
   // A short page ends the read. A full page ends it only when a Link header lacks rel="next",
   // because GitHub omits the header entirely when the whole set fits on one page.
-  private async fetchPages(path: string, maxItems: number): Promise<{ items: unknown[]; complete: boolean }> {
+  private async fetchPages(
+    path: string,
+    maxItems: number,
+    deadline = Infinity,
+  ): Promise<{ items: unknown[]; complete: boolean }> {
     const ref = this.requireRepo();
     const sep = path.includes("?") ? "&" : "?";
     const items: unknown[] = [];
@@ -650,7 +656,7 @@ export class GitHubTracker implements Tracker {
       const link = res.headers.get("link");
       const lastPage = nodes.length < GITHUB_PAGE_SIZE || (link !== null && !link.includes('rel="next"'));
       if (lastPage) return { items, complete: true };
-      if (items.length >= maxItems) return { items, complete: false };
+      if (items.length >= maxItems || Date.now() >= deadline) return { items, complete: false };
     }
   }
 

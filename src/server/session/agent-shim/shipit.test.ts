@@ -2895,15 +2895,15 @@ describe("shipit issue", () => {
       (await run(["issue", "list", "--json"], { "GET /agent-ops/issue/list": { status: 200, body } })).stdout,
     ) as { truncated: boolean; incomplete: boolean; note: string };
     expect(json).toMatchObject({ truncated: true, incomplete: true });
-    expect(json.note).toContain("issues and pull requests than one list reads, so the oldest were not read.");
+    expect(json.note).toContain("This list stopped before the tracker's oldest issues and pull requests, so those were not read.");
     expect(json.note).toContain("--search TEXT or --label NAME read further back");
 
     const text = await run(["issue", "list"], { "GET /agent-ops/issue/list": { status: 200, body } });
-    expect(text.stdout).toContain("the oldest were not read.");
+    expect(text.stdout).toContain("so those were not read.");
     expect(text.stdout).toContain("shipit issue view <reference>");
 
     const searched = await run(["issue", "list", "--search", "t"], { "GET /agent-ops/issue/list": { status: 200, body } });
-    expect(searched.stdout).toContain("than one search reads, so the oldest were not searched.");
+    expect(searched.stdout).toContain("This search stopped before the tracker's oldest issues and pull requests, so those were not searched.");
   });
 
   it("list text mode puts the cut note after the untrusted envelope", async () => {

@@ -83,8 +83,8 @@ export interface IssuesViewerProps {
 }
 
 const INCOMPLETE_LIST_TITLE =
-  "This tracker holds more issues than ShipIt reads in one list, so the oldest are not shown, " +
-  "searched or counted. Open an older one by its reference.";
+  "ShipIt stopped reading before this tracker's oldest issues, so they are not shown, searched " +
+  "or counted. Open an older one by its reference.";
 
 function shortIdentifier(identifier: string): string {
   const hash = identifier.indexOf("#");

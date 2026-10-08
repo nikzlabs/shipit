@@ -379,9 +379,9 @@ function listShortfallNote(
     const items = github ? "issues and pull requests" : "issues";
     parts.push(
       filtered
-        ? `This tracker holds more ${items} than one search reads, so the oldest were not searched. ` +
+        ? `This search stopped before the tracker's oldest ${items}, so those were not searched. ` +
             "Open a known issue with `shipit issue view <reference>`."
-        : `This tracker holds more ${items} than one list reads, so the oldest were not read. ` +
+        : `This list stopped before the tracker's oldest ${items}, so those were not read. ` +
             "--search TEXT or --label NAME read further back, and `shipit issue view <reference>` opens any issue.",
     );
   }

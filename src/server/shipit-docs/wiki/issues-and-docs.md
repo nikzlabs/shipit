@@ -94,12 +94,12 @@ priority then status, ungrouped. The choice is remembered between visits, as
 is **Show done**.
 
 **The list holds the whole tracker, up to 2,000 items.** Each refresh reads
-every page, and the search box and the facets filter **within what was
+page after page, and the search box and the facets filter **within what was
 read** — on identifier, title and description only, never the comment thread.
 So "why can't I find my issue?" usually means it is finished: widen with
-**Show done**. A tracker larger than one read (on GitHub, pull requests count
-toward the 2,000) shows the count as `N+ issues`, and hovering it explains that
-the oldest are not loaded. For those, look the issue up by reference —
+**Show done**. When the read stops early — past 2,000 items (on GitHub, pull
+requests count) or after two minutes — the count shows `N+ issues`, and
+hovering it explains that the oldest are not loaded. For those, look the issue up by reference —
 `shipit issue view <reference>` reaches any issue and posts a card so the user
 can open it. To find one by words or labels further back, use
 `shipit issue list --search … --label … --state all`, which reads up to

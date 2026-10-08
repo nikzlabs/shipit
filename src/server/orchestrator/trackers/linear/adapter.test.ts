@@ -312,6 +312,32 @@ describe("LinearTracker", () => {
       expect(callsMatching(fetchImpl, "TeamIssues")).toHaveLength(20);
     });
 
+    it("stops at the read deadline and reports the listing incomplete", async () => {
+      let now = 1_000_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const pages = cursorPages(1000, (page) => hundred(page, (n) => issueNode({ id: `i${n}`, identifier: `SHI-${n}` })), (issues) => ({
+        team: { issues },
+      }));
+      const fetchImpl = routerFetch([
+        {
+          match: "TeamIssues",
+          data: (variables: Record<string, unknown>, query: string) => {
+            now += 50_000;
+            return pages(variables, query);
+          },
+        },
+      ]);
+      const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+
+      try {
+        const { issues, complete } = await tracker.listIssues();
+        expect(complete).toBe(false);
+        expect(issues).toHaveLength(300);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
     it("reads a comment thread longer than one page", async () => {
       const fetchImpl = routerFetch([
         {

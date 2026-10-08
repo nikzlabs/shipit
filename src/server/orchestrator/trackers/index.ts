@@ -3,6 +3,7 @@ export {
   TrackerResolutionError,
   LIST_ISSUES_CEILING,
   SEARCH_READ_CEILING,
+  LIST_READ_DEADLINE_MS,
   type Tracker,
   type IssueListing,
   type ListIssuesOptions,
