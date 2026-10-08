@@ -25,6 +25,8 @@ export type SessionGpu =
 
 export const GPU_ENV = "SHIPIT_GPU";
 export const GPU_REASON_ENV = "SHIPIT_GPU_REASON";
+/** Set on a granted container that could not start with `gpuGraphicsBinds`, with Docker's error. */
+export const GPU_GRAPHICS_REASON_ENV = "SHIPIT_GPU_GRAPHICS_REASON";
 
 const MAX_REASON_LENGTH = 500;
 

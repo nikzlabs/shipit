@@ -118,8 +118,9 @@ starts; if Docker cannot give it, the session starts without it and its transcri
 (docs/325-session-gpu-access).
 
 On WSL2 the agent's container also gets the host's DirectX libraries and GPU driver files, read-only
-(`/usr/lib/wsl/lib`, `/usr/lib/wsl/drivers`), so a Chrome that the agent starts can draw WebGL on the
-GPU. Nothing more is needed on the host.
+(`/usr/lib/wsl/lib`, `/usr/lib/wsl/drivers`). A Chrome that the agent starts needs them to draw WebGL
+on the GPU. If Docker cannot start a container with those two mounts, the session keeps the GPU and
+starts without them.
 
 ### Reaching a local install from another device (Tailscale)
 
