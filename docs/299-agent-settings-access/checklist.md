@@ -882,3 +882,32 @@ Two findings, both the same class one layer down, both reproduced at the code.
       Fixing the helper fixes both callers rather than either call site
 - [x] Proven red alone with a `BEFORE DELETE` trigger that refuses the second
       row: without the transaction the first row stays deleted
+
+### Creating a role from a card (req 10)
+
+- [x] req 10 — `requirements.md` carries the requirement and the dated receipt
+      for the user's answer, before the design and the code
+- [x] `roles::add` in `settings-operations.ts`: `--add NAME` addresses the new
+      role, and its body (`model`, plus optional `harness`, `reasoningEffort`,
+      `description`, `prompt`) arrives as JSON through `--value-file`. Each
+      field is validated by its own `roles[].*` declaration; an unknown key is
+      refused rather than dropped
+- [x] The card shows the whole role: membership as the main change, and every
+      field the write sets as an `alsoChanges` entry, so the click-time
+      re-derivation of the harness and the read-back after the write cover a
+      new role as they cover a model change
+- [x] A prose side change carries its own `textChange` past `CARD_VALUE_MAX`,
+      under the main change's bounds and display-integrity refusal; the read-back
+      compares its approved text, not its summary
+- [x] The `roles` baseline with an item is that one role, and an absent role has
+      the empty revision — two create cards apply in either order, and a name
+      taken before the click goes `stale`
+- [x] Preflight: a name the read shows back, not `reviewer`, not taken; params
+      through the role validator with purpose `"save"`; the write is the
+      dialog's own create
+- [x] The CLI accepts `--value-file` beside `--add`; the card renders a prose
+      side change behind *Review the change*
+- [x] The five system prompts, `agent.md`, `settings.md` and the wiki propose a
+      missing role instead of sending the user to Settings
+- [x] Guards proven red alone: a list-wide baseline stales the second card, and
+      a summary comparison of the instructions resolves the create `partial`

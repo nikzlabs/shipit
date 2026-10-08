@@ -1148,11 +1148,17 @@ comes to a couple of hundred.
 is useless advice about the value the user already has, so a `current` side past
 the bound says instead that this setting has to be edited by hand.
 
-**`alsoChanges` sides keep the 200-character cap.** A side change is a supporting
-line under the main one and has no diff of its own; the three operations that
-have them (`roles[].model`, `roles[].harness`, `reviewers[].model`) write a
-harness id and a reasoning level. Long text arriving there is a declaration that
-has outgrown the card, not something to render.
+**A prose side change gets the same third shape.** A side change was a supporting
+line with no diff of its own, because the operations that re-derive a neighbour
+(`roles[].model`, `roles[].harness`, `reviewers[].model`) write a harness id and
+a reasoning level. Creating a role (req 10, *Creating a role* below) writes a
+description and standing instructions as side changes too, and those are prose.
+So the rule that picks between a chip and a diff is one rule, applied to every
+`text` declaration on the card, main change or side: past `CARD_VALUE_MAX`
+rendered, the side carries its own `textChange` and its `from`/`to` become
+ShipIt's one-line summary. The card bounds and the display-integrity refusal
+apply to a side's text as they do to the main change's. A side that is not prose
+keeps the 200-character cap.
 
 **The agent is told where the line is before it writes a value — BOTH lines.**
 `get` on a proposable text setting reports `proposeMaxLength` where the declared
@@ -1395,10 +1401,67 @@ MCP server's `enabled` flag, a role's name, description, standing instructions,
 model, harness and level, both reviewer slots, the credential and
 provider-account labels, and the per-mode routing settings.
 
-The rest is declared, readable and **refused at propose time by name**: creating
-or deleting a role, an MCP server or a credential. That refusal is deliberately
-not one of the catalogue's four reasons — those describe settings nobody can
-propose at all, and this one says the read works and the write has not been built.
+Creating a role is the one entry a card can add to a bespoke collection (req 10,
+*Creating a role* below). The rest is declared, readable and **refused at
+propose time by name**: deleting a role, and creating or deleting an MCP server
+or a credential. That refusal is deliberately not one of the catalogue's four
+reasons — those describe settings nobody can propose at all, and this one says
+the read works and the write has not been built.
+
+#### Creating a role
+
+```
+shipit settings propose roles --add deep-dive --value-file - --reason "…" <<'EOF'
+{"model": {"serviceId": "anthropic", "billingMode": "sub", "modelId": "claude-opus-5"},
+ "reasoningEffort": "high",
+ "description": "Open-ended research into how this codebase works.",
+ "prompt": "Read widely before you answer, and cite file:line."}
+EOF
+```
+
+**It is the list operation the CLI already has, on the collection itself.** A
+role joins `roles` the way a host joins the allowlist: `--add` names the entry,
+which is the role's name, and the target is `{ key: "roles", item: <name> }`.
+What a host does not have is a body. A role is a name plus a model, a level and
+two pieces of prose, so the operation declares `entry`, which reads the body the
+`add` carries — JSON, through `--value-file`, which the CLI now accepts beside
+`--add` — and validates it before the lock, as a `set` validates its value.
+Each field goes through its own declaration's type (`roles[].description`,
+`roles[].prompt`, `roles[].reasoningEffort`, `roles[].harness`), so a card can
+create only what the dialog's own box would accept. A key the body does not
+know is refused rather than dropped, because a role the agent believes has
+standing instructions and does not is worse than a refusal.
+
+A separate `create` kind was the alternative, and it would have bought a word.
+`add` already means "an entry joins a list" everywhere the proposal type, the
+store, the notice and the CLI switch on it.
+
+**The card shows the whole role, as side changes.** The main change is
+membership — `no such role → created` — and every field the write sets is an
+`alsoChanges` entry under its own declaration: *Runs on*, *Harness*, *Reasoning
+level*, *Description*, *Standing instructions*, each from "not set". That is the
+machinery that already keeps a card honest about what one write touches, and
+reusing it is what makes the rest free. The harness, when the body names none, is
+derived the way the role editor derives it — the one a connected credential can
+run, else any installed one that speaks the model — and that derivation reads
+live state, so it is re-derived at the click and compared with the card, exactly
+as a model change's is. After the write, each field is read back at the new
+role's address and compared with what the card showed. Prose sides carry their
+own diff (see *A prose side change gets the same third shape* above).
+
+**The baseline is the entry, not the list.** `roles` with an item baselines that
+one role, and an absent role has a revision: the empty one. The restore that
+prompted req 10 is nine cards; a baseline over the whole list would have made
+the first click stale the other eight. The same baseline is what makes a role
+the dialog creates under that name, between the card and the click, resolve the
+card `stale` rather than overwrite it.
+
+**The preflight is the dialog's.** The name must be a name the read would show
+back (`userNameProjection`), not the reserved `reviewer`, and not taken; the
+params go through the role validator with purpose `"save"`. The write itself is
+`applyGlobalSettings` with a `roles` entry carrying no `previousName` — the
+dialog's own create — so the role is validated once more, under the lock, by the
+code every role save runs.
 
 **A declaration may not advertise a proposal with nowhere to go.**
 `propose.allowed: true` reaches the agent from the read surface, so a declaration
@@ -1413,10 +1476,11 @@ strength of credential MATERIAL and a label is a string in a list — and a
 unreachable, since `requireBaseline` refuses a proposal whose stored value it
 cannot revision. And a
 **collection aggregate** — `roles`, `mcp.servers`, `network.egress.hosts` — keeps
-its promise through its entry fields rather than an operation of its own, since a
-card never replaces a whole list; propose names them (`proposableFieldsOf`) and
-refuses by pointing at them. `settings-operations.test.ts` fails the build for any
-declaration that has neither.
+its promise through its entry fields, since a card never replaces a whole list;
+propose names them (`proposableFieldsOf`) and refuses by pointing at them. `roles`
+also has `add`, which creates one entry and replaces nothing, and the refusal for
+any other change to the list names that too. `settings-operations.test.ts` fails
+the build for any declaration that has neither.
 
 Two vocabularies meet at a provider account and are **not** the same: the read
 addresses one by the SERVICE it belongs to (`anthropic:acct_…`) and

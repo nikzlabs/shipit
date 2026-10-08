@@ -113,14 +113,16 @@ describe("proposeSettingChange", () => {
   });
 
   it("sends a proposal about a whole list to the entry field that carries it", async () => {
-    // The aggregate declaration advertises `propose.allowed: true` and carries no
-    // operation, because a card changes one entry and never replaces the list.
-    // The refusal has to say where the proposal goes, or the only way to find out
-    // is to attempt it (docs/299-agent-settings-access req 4).
+    // The aggregate declaration advertises `propose.allowed: true`, and a card
+    // changes one entry and never replaces the list. The refusal has to say
+    // where the proposal goes, or the only way to find out is to attempt it
+    // (docs/299-agent-settings-access req 4) — including, for roles, that a new
+    // one is created with --add (req 10).
     const message = await refusal({ key: "roles", valueText: "anything", reason: "why" });
     expect(message).toContain("roles is the whole list");
     expect(message).toContain("roles[].description");
     expect(message).toContain("--item");
+    expect(message).toContain("--add");
     expect(fx.emitted).toHaveLength(0);
   });
 
@@ -737,6 +739,116 @@ describe("a card shows every field its one operation writes", () => {
       from: '"max"',
     });
     expect(card.alsoChanges?.[0]?.to).not.toBe("max");
+  });
+});
+
+/**
+ * docs/299-agent-settings-access req 10 — a card can create a role. It shows
+ * the whole of it, because the user approves what the card displays.
+ */
+describe("creating a role", () => {
+  const OPUS = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" };
+  let report: { restore: () => void };
+
+  beforeEach(() => {
+    report = installReport(["claude"]);
+  });
+
+  afterEach(() => {
+    report.restore();
+  });
+
+  function create(name: string, body: unknown) {
+    return { key: "roles", operation: "add" as const, item: name, valueText: JSON.stringify(body), reason: "why" };
+  }
+
+  it("posts one card naming the role and every field it would have", async () => {
+    const card = await propose(create("deep-dive", {
+      model: OPUS,
+      reasoningEffort: "high",
+      description: "  Open-ended research into how this codebase works.  ",
+      prompt: "Cite file:line.",
+    }));
+
+    expect(card).toMatchObject({
+      target: { key: "roles", item: "deep-dive" },
+      label: findSetting("roles")!.label,
+      from: "no such role",
+      to: "created",
+    });
+    expect(card.alsoChanges?.map((side) => [side.key, side.from, side.to])).toEqual([
+      ["roles[].model", "not set", JSON.stringify(OPUS)],
+      // Derived from the model, as the role editor derives it.
+      ["roles[].harness", "not set", '"claude"'],
+      ["roles[].reasoningEffort", "not set", '"high"'],
+      // Trimmed, because the write trims and the card shows what is stored.
+      ["roles[].description", "not set", '"Open-ended research into how this codebase works."'],
+      ["roles[].prompt", "not set", '"Cite file:line."'],
+    ]);
+    // Nothing is written until the click.
+    expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
+    expect(fx.proposals.get(card.cardId)).toMatchObject({ operation: "add", phase: "pending" });
+  });
+
+  it("shows long standing instructions as a diff, not as a chip it would refuse", async () => {
+    const prompt = Array.from({ length: 30 }, (_, i) => `Rule ${i}: read the code before answering.`).join("\n");
+
+    const card = await propose(create("deep-dive", { model: OPUS, prompt }));
+
+    const side = card.alsoChanges?.find((change) => change.key === "roles[].prompt");
+    expect(side?.textChange?.added).toBe(30);
+    expect(side?.to).toBe(`${prompt.length.toLocaleString("en-US")} characters`);
+    expect(JSON.stringify(card.alsoChanges)).toContain("Rule 29");
+  });
+
+  it("refuses standing instructions past what a card carries", async () => {
+    const message = await refusal(create("deep-dive", { model: OPUS, prompt: "x".repeat(CARD_TEXT_MAX + 1) }));
+    expect(message).toContain(`at most ${CARD_TEXT_MAX.toLocaleString("en-US")}`);
+    expect(fx.emitted).toHaveLength(0);
+  });
+
+  it("refuses a name that is taken, naming the field operations instead", async () => {
+    fx.credentialStore.setRole("deep-dive", { name: "deep-dive", params: { kind: "pinned", harnessId: "claude", ...OPUS } as never });
+    const message = await refusal(create("deep-dive", { model: OPUS }));
+    expect(message).toContain("already exists");
+    expect(message).toContain("--item deep-dive");
+  });
+
+  it("refuses the reserved reviewer's name", async () => {
+    expect(await refusal(create("reviewer", { model: OPUS }))).toContain("the role ShipIt ships");
+  });
+
+  it("refuses a name ShipIt would not read back, without repeating it", async () => {
+    const name = "https://user:token@example.com/";
+    const message = await refusal(create(name, { model: OPUS }));
+    expect(message).toContain("would not read that name back");
+    expect(message).not.toContain("token");
+  });
+
+  it("refuses a body with no model, and a field it does not know", async () => {
+    expect(await refusal(create("deep-dive", { description: "x" }))).toContain("needs the model");
+    // Dropped silently, this would create a role without the instructions the
+    // agent believes it gave it.
+    expect(await refusal(create("deep-dive", { model: OPUS, instructions: "x" })))
+      .toContain('no field "instructions"');
+  });
+
+  it("refuses a body that is not JSON, and an add with no body at all", async () => {
+    expect(await refusal({ key: "roles", operation: "add", item: "deep-dive", valueText: "{model", reason: "why" }))
+      .toContain("not JSON");
+    expect(await refusal({ key: "roles", operation: "add", item: "deep-dive", reason: "why" }))
+      .toContain("A new role is one JSON object");
+  });
+
+  it("refuses a level the model does not offer, rather than dropping it", async () => {
+    const message = await refusal(create("deep-dive", { model: OPUS, reasoningEffort: "banana" }));
+    expect(message).toContain("is not a reasoning level");
+  });
+
+  it("refuses a model no installed harness can run", async () => {
+    report.restore();
+    report = installReport([]);
+    expect(await refusal(create("deep-dive", { model: OPUS }))).toContain("No harness on this install");
   });
 });
 

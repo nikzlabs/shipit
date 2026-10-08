@@ -14,6 +14,7 @@ import type { SettingsOperation, SettingsOperationDeps } from "./settings-operat
 import { getSettingForAgent } from "./settings-read.js";
 import type { SettingDetailEntry, SettingsReadDeps } from "./settings-read.js";
 import { baselineTargetOf } from "./settings-propose.js";
+import { textChangeSides } from "./settings-text-change.js";
 import {
   claimSettingsProposal,
   loadSettingsProposal,
@@ -161,7 +162,15 @@ async function sideChangeMismatch(
     const stored = row.target.item
       ? entry.items?.find((candidate) => candidate.address === row.target.item)
       : entry;
-    if (!stored || stored.display === side.to) continue;
+    if (!stored) continue;
+    if (side.textChange) {
+      // `to` is a summary, so the approved TEXT is what is compared — and, like
+      // the main change's prose, never quoted back (req 9).
+      const approved = textChangeSides(side.textChange).after;
+      if (stored.value === approved) continue;
+      return `${side.label} does not now hold the text this card showed.`;
+    }
+    if (stored.display === side.to) continue;
     return `The card showed ${side.label} becoming ${side.to}, and it now reads ${stored.display}.`;
   }
   return null;
@@ -260,6 +269,15 @@ async function runApply(
     return { phase: "stale" };
   }
 
+  // An entry's body first: the preflight reads its fields.
+  if (row.operation === "add" && operation.entry) {
+    try {
+      operation.entry(row.proposed);
+    } catch (err) {
+      if (err instanceof ServiceError) return { phase: "refused", outcome: err.message };
+      throw err;
+    }
+  }
   const refusal = operation.preflight?.(deps.operations, row.target, row.proposed);
   if (refusal) return { phase: "refused", outcome: refusal };
   if (row.operation === "set") {

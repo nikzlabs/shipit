@@ -77,6 +77,7 @@ import {
   repositoryDomain,
 } from "./settings-conflict-domain.js";
 import type { ConflictDomain } from "./settings-conflict-domain.js";
+import { buildTextChange, CARD_VALUE_MAX, summarizeText } from "./settings-text-change.js";
 import { ServiceError } from "./types.js";
 
 /**
@@ -193,6 +194,11 @@ export interface SettingsOperation {
    * the write will actually make rather than the spelling it arrived in.
    */
   normalizeItem?(item: string): string;
+  /**
+   * The validated body of an `add` whose entry is more than its address.
+   * Throws a `ServiceError` naming what is wrong; absent, an `add` carries none.
+   */
+  entry?(raw: unknown): unknown;
   /** ShipIt's own account of what the click did, for the resolved card. */
   applied(target: SettingsOperationTarget, display: string, declaration: AnySettingDeclaration): string;
 }
@@ -239,6 +245,9 @@ export interface RenderedSideChange extends SettingsProposalSideChange {
  * One neighbouring field, through the same door `from` and `to` go through. A
  * field whose declaration has gone throws rather than being dropped: showing
  * less than the operation writes is what this exists to prevent.
+ *
+ * Prose past a chip is shown as a diff, by the rule the main change follows
+ * (req 9); the bounds on that diff are checked where the card is written.
  */
 function sideChange(key: string, from: unknown, to: unknown): RenderedSideChange | null {
   const declaration = findSetting(key);
@@ -253,9 +262,19 @@ function sideChange(key: string, from: unknown, to: unknown): RenderedSideChange
     formatSetting(declaration, projectSetting(declaration, raw ?? null));
   const before = show(from);
   const after = show(to);
-  return before === after
-    ? null
-    : { key: declaration.key, label: declaration.label, from: before, to: after };
+  if (before === after) return null;
+  const change = { key: declaration.key, label: declaration.label, from: before, to: after };
+  if (declaration.type.kind !== "text"
+    || (before.length <= CARD_VALUE_MAX && after.length <= CARD_VALUE_MAX)) {
+    return change;
+  }
+  const text = (raw: unknown): string => (typeof raw === "string" ? raw : "");
+  return {
+    ...change,
+    from: renderOwn(summarizeText(text(from))),
+    to: renderOwn(summarizeText(text(to))),
+    textChange: buildTextChange(text(from), text(to)),
+  };
 }
 
 function sideChanges(changes: (RenderedSideChange | null)[]): RenderedSideChange[] {
@@ -524,16 +543,25 @@ function harnessForSelection(
   selection: ModelSelection,
   current: AgentId,
 ): AgentId {
+  return eligibleHarness(deps, selection, current) ?? current;
+}
+
+/** The same choice for a role that has no harness yet; nothing when no harness speaks the model. */
+function eligibleHarness(
+  deps: SettingsOperationDeps,
+  selection: ModelSelection,
+  current?: AgentId,
+): AgentId | undefined {
   const validator = roleValidatorDeps(deps);
   const speaks = (harnessId: AgentId): boolean =>
     checkRolePinnedParams(pinned(harnessId, selection, undefined), validator, "save").ok;
-  if (speaks(current)) return current;
+  if (current && speaks(current)) return current;
   const connected = harnessesForSelection(
     selection,
     listConfiguredCredentials(requireCredentialStore(deps)),
   ).find((h) => speaks(h.harnessId));
   if (connected) return connected.harnessId;
-  return allHarnesses().map((h) => h.id).find(speaks) ?? current;
+  return allHarnesses().map((h) => h.id).find(speaks);
 }
 
 function requireSelection(value: unknown): ModelSelection {
@@ -604,6 +632,153 @@ const roleHarnessOperation: SettingsOperation = {
       ),
     ]);
   },
+};
+
+// Creating a role -----------------------------------------------------------
+
+/**
+ * A new role as a card proposes it (docs/299-agent-settings-access req 10). The
+ * name is the `--add` address, so it is not here; the harness is optional
+ * because the editor derives one from the model, and so does this.
+ */
+interface RoleEntry {
+  model: ModelSelection;
+  harness?: string;
+  reasoningEffort?: string;
+  description?: string;
+  prompt?: string;
+}
+
+/** Each optional field, validated by the declaration that describes it on an existing role. */
+const ROLE_ENTRY_FIELDS = {
+  harness: "roles[].harness",
+  reasoningEffort: "roles[].reasoningEffort",
+  description: "roles[].description",
+  prompt: "roles[].prompt",
+} as const satisfies Record<Exclude<keyof RoleEntry, "model">, string>;
+
+const ROLE_ENTRY_SHAPE = 'A new role is one JSON object: {"model": {"serviceId": …, "billingMode": "sub" or '
+  + '"key", "modelId": …}}, plus any of "harness", "reasoningEffort", "description" and "prompt". '
+  + "`shipit agent params` lists the models this install has.";
+
+/**
+ * A key the body does not know is refused rather than dropped: an agent that
+ * believes it gave the role standing instructions under the wrong key would
+ * otherwise create a role without them, on a card that shows none.
+ */
+function readRoleEntry(raw: unknown): RoleEntry {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ServiceError(400, ROLE_ENTRY_SHAPE);
+  }
+  const body = raw as Record<string, unknown>;
+  const stray = Object.keys(body).find((key) => key !== "model" && !(key in ROLE_ENTRY_FIELDS));
+  if (stray !== undefined) {
+    throw new ServiceError(400, `A new role has no field "${echoSupplied(stray)}". ${ROLE_ENTRY_SHAPE}`);
+  }
+  if (body.model === undefined || body.model === null) {
+    throw new ServiceError(400, `A new role needs the model it runs on. ${ROLE_ENTRY_SHAPE}`);
+  }
+  const entry: RoleEntry = { model: requireSelection(body.model) };
+  for (const [field, key] of Object.entries(ROLE_ENTRY_FIELDS) as [keyof typeof ROLE_ENTRY_FIELDS, string][]) {
+    if (body[field] === undefined || body[field] === null) continue;
+    const declaration = findSetting(key)!;
+    const checked = declaration.type.validate(body[field], declaration.label);
+    if (!checked.ok) throw new ServiceError(400, checked.message);
+    if (typeof checked.value === "string" && checked.value !== "") entry[field] = checked.value;
+  }
+  return entry;
+}
+
+/** One function, so the card, the preflight and the write cannot derive the role differently. */
+function newRoleParams(deps: SettingsOperationDeps, entry: RoleEntry): RolePinnedParams {
+  const harnessId = (entry.harness as AgentId | undefined) ?? eligibleHarness(deps, entry.model);
+  if (!harnessId) {
+    throw new ServiceError(
+      400,
+      "No harness on this install can run that model, so a role on it could never run. "
+        + "`shipit agent params` lists the models this install has.",
+    );
+  }
+  return pinned(harnessId, entry.model, entry.reasoningEffort);
+}
+
+/**
+ * The name is checked here rather than by `roles[].name`'s own validation,
+ * because on an `add` it arrives as the address: the same type, the same shape
+ * gate the read applies, the reserved name, and a name that is free. The params
+ * then go through the role validator with purpose `"save"`, as the dialog's
+ * create does.
+ */
+function roleCreatePreflight(
+  deps: SettingsOperationDeps,
+  target: SettingsOperationTarget,
+  value: unknown,
+): Rendered | null {
+  const name = target.item ?? "";
+  const declaration = findSetting("roles[].name")!;
+  const checked = declaration.type.validate(name, declaration.label);
+  if (!checked.ok) return checked.message;
+  const shown = projectSetting(declaration, name);
+  if (shown.readable && shown.value === null) {
+    // Not quoted back: a name ShipIt will not repeat can carry a credential.
+    return renderOwn("ShipIt would not read that name back, so the card could not show which role it "
+      + "creates. A name is letters, digits, spaces and . _ + ( ) [ ] -.");
+  }
+  if (name === RESERVED_ROLE_NAME) {
+    return renderOwn(`"${RESERVED_ROLE_NAME}" is the name of the role ShipIt ships, so another role cannot take it.`);
+  }
+  if (storedRole(deps, name)) {
+    return renderLine(`A role called "${echoSupplied(name)}" already exists. Propose a change to one of `
+      + `its fields instead, with --item ${echoSupplied(name)}.`);
+  }
+  let params: RolePinnedParams;
+  try {
+    params = newRoleParams(deps, value as RoleEntry);
+  } catch (err) {
+    if (err instanceof ServiceError) return renderLine(err.message);
+    throw err;
+  }
+  const valid = checkRolePinnedParams(params, roleValidatorDeps(deps), "save");
+  return valid.ok ? null : valid.message;
+}
+
+/**
+ * Creating a role (req 10): the dialog's own create — a `roles` entry with no
+ * `previousName` — and a card that shows every field it sets.
+ */
+const roleCreateOperation: SettingsOperation = {
+  ...savingOperation(
+    (deps, target, value) => {
+      const entry = value as RoleEntry;
+      return {
+        roles: {
+          [target.item ?? ""]: {
+            description: entry.description ?? "",
+            prompt: entry.prompt ?? "",
+            params: newRoleParams(deps, entry),
+          },
+        },
+      };
+    },
+    (target) => domainsOfSave({ roles: { [target.item ?? ""]: {} } }),
+    { preflight: roleCreatePreflight },
+  ),
+  entry: readRoleEntry,
+  wording: { from: "no such role", to: "created" },
+  // The harness is derived from live state when the body names none, so this is
+  // re-derived at the click and compared with the card like a model change's.
+  alsoChanges: (deps, _target, value) => {
+    const entry = value as RoleEntry;
+    const params = newRoleParams(deps, entry);
+    return sideChanges([
+      sideChange("roles[].model", null, entry.model),
+      sideChange("roles[].harness", null, params.harnessId),
+      sideChange("roles[].reasoningEffort", null, params.reasoningEffort),
+      sideChange("roles[].description", null, entry.description),
+      sideChange("roles[].prompt", null, entry.prompt),
+    ]);
+  },
+  applied: (target) => `created the ${echoSupplied(target.item ?? "")} role`,
 };
 
 // Reviewer slots ------------------------------------------------------------
@@ -904,6 +1079,7 @@ const roleNameOperation: SettingsOperation = savingOperation(
 const OPERATIONS: Record<string, SettingsOperation> = {
   // Roles. A field is merged into the stored role; the role's own params ride
   // through untouched, which is what keeps the reserved role automatic.
+  "roles::add": roleCreateOperation,
   "roles[].description::set": rolePatchOperation((_role, value) => ({ description: asText(value) })),
   "roles[].prompt::set": rolePatchOperation((_role, value) => ({ prompt: asText(value) })),
   "roles[].model::set": roleModelOperation,

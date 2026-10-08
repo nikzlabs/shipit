@@ -10,6 +10,7 @@ import { proposeSettingChange } from "./settings-propose.js";
 import { settingsPayloadDomain, withConflictDomains } from "./settings-conflict-domain.js";
 import { ServiceError } from "./types.js";
 import { claimSettingsProposal } from "./settings-proposal.js";
+import { listRolesForAgent } from "./spawn-inventory.js";
 import { proposalFixture, type ProposalFixture } from "./settings-proposal-test-helpers.js";
 
 /**
@@ -418,22 +419,22 @@ describe("recoverInterruptedProposals", () => {
  * from live state the baseline does not cover — which harnesses are installed,
  * which levels a selection offers (docs/299-agent-settings-access req 4).
  */
-describe("the click applies what the card showed, and nothing more", () => {
-  function installReport(harnesses: string[]): { restore: () => void } {
-    const previous = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-installed-"));
-    const file = path.join(dir, "installed.json");
-    fs.writeFileSync(file, JSON.stringify({ harnesses }));
-    process.env.SHIPIT_AGENTS_INSTALL_REPORT = file;
-    return {
-      restore: () => {
-        if (previous === undefined) delete process.env.SHIPIT_AGENTS_INSTALL_REPORT;
-        else process.env.SHIPIT_AGENTS_INSTALL_REPORT = previous;
-        fs.rmSync(dir, { recursive: true, force: true });
-      },
-    };
-  }
+function installReport(harnesses: string[]): { restore: () => void } {
+  const previous = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-installed-"));
+  const file = path.join(dir, "installed.json");
+  fs.writeFileSync(file, JSON.stringify({ harnesses }));
+  process.env.SHIPIT_AGENTS_INSTALL_REPORT = file;
+  return {
+    restore: () => {
+      if (previous === undefined) delete process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+      else process.env.SHIPIT_AGENTS_INSTALL_REPORT = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
 
+describe("the click applies what the card showed, and nothing more", () => {
   /**
    * The registry guard says an operation is registered; only propose-then-click
    * says it can be reached. A rename with no baseline reader posts no card at
@@ -558,5 +559,84 @@ describe("the click applies what the card showed, and nothing more", () => {
     } finally {
       report.restore();
     }
+  });
+});
+
+/**
+ * docs/299-agent-settings-access req 10 — the click creates the role the card
+ * showed, through the dialog's own create.
+ */
+describe("creating a role from a card", () => {
+  const OPUS = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" } as const;
+  let report: { restore: () => void };
+
+  beforeEach(() => {
+    report = installReport(["claude"]);
+  });
+
+  afterEach(() => {
+    report.restore();
+  });
+
+  function proposeRole(name: string, body: Record<string, unknown> = { model: OPUS }) {
+    return post({ key: "roles", operation: "add", item: name, valueText: JSON.stringify(body) });
+  }
+
+  it("creates the role, and `shipit agent roles` lists it", async () => {
+    const prompt = Array.from({ length: 30 }, (_, i) => `Rule ${i}: read the code before answering.`).join("\n");
+    const card = await proposeRole("deep-dive", {
+      model: OPUS,
+      reasoningEffort: "high",
+      description: "Open-ended research into how this codebase works.",
+      prompt,
+    });
+
+    const { card: resolved } = await decide(card.cardId);
+
+    // `applied`, not `partial`: every field the card showed is read back at the
+    // new role's address, the long instructions against the approved text.
+    expect(resolved.phase).toBe("applied");
+    expect(resolved.outcome).toBe("created the deep-dive role");
+    expect(fx.credentialStore.getRole("deep-dive")).toEqual({
+      name: "deep-dive",
+      description: "Open-ended research into how this codebase works.",
+      prompt,
+      params: { kind: "pinned", harnessId: "claude", ...OPUS, reasoningEffort: "high" },
+    });
+    expect(listRolesForAgent({ credentialStore: fx.credentialStore }).map((role) => role.name))
+      .toContain("deep-dive");
+    expect(settingsBroadcasts()).toHaveLength(1);
+  });
+
+  it("applies two creations in either order: each card is about its own role", async () => {
+    // The restore that asked for this is nine cards. A baseline over the whole
+    // list would make the first click stale every other one.
+    const first = await proposeRole("researcher");
+    const second = await proposeRole("auditor");
+
+    expect((await decide(second.cardId)).card.phase).toBe("applied");
+    expect((await decide(first.cardId)).card.phase).toBe("applied");
+    expect(fx.credentialStore.getRole("researcher")).toBeDefined();
+    expect(fx.credentialStore.getRole("auditor")).toBeDefined();
+  });
+
+  it("goes stale, and overwrites nothing, when the name is taken before the click", async () => {
+    const card = await proposeRole("deep-dive");
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      description: "made in the dialog",
+      params: { kind: "pinned", harnessId: "claude", ...OPUS },
+    });
+
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("stale");
+    expect(fx.credentialStore.getRole("deep-dive")?.description).toBe("made in the dialog");
+  });
+
+  it("writes nothing when the card is dismissed", async () => {
+    const card = await proposeRole("deep-dive");
+    await decide(card.cardId, "dismiss");
+    expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
   });
 });

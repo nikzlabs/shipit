@@ -92,6 +92,8 @@ agent is the actor.
    user can read it in full before they click. A value too
    long for anyone to check that way is still refused rather than shown in part,
    and the agent is told where that line is before it writes a value, not after.
+10. A proposal card can create a role that does not exist yet. The agent proposes
+    the new role, and the user's click on the card creates it.
 
 ## Open questions
 
@@ -137,6 +139,17 @@ agent is the actor.
 
 ## Resolved questions
 
+- 2026-10-08 — *Can a proposal card create a role?* It could not: creating a role
+  was refused at propose time as a write nobody had built, so an agent whose task
+  needed a role had to send the user to Settings › Roles. The question came up in
+  a restore — an export of this install's settings, to be applied on a new
+  machine, where every setting could be proposed except the nine roles in it. On
+  being told "a proposal card cannot create a role", the user: **"ok this doesn't
+  make sense, spawn a dev session to fix it"**. → requirement 10.
+
+  The ask named roles. Creating an MCP server or a credential, and deleting
+  anything, keep the refusal they had; nobody raised them, and a credential needs
+  a secret the user types (requirement 2), which no card can carry.
 - 2026-09-15 — *Where does a long change get read — inline on the card, or
   somewhere the card opens?* The first build put the whole diff in the transcript,
   in a height-capped scroll region. The user: **"let's make the card just say that

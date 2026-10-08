@@ -131,6 +131,45 @@ describe("SettingsProposalCard — pending", () => {
     expect(screen.queryByTestId("settings-proposal-to")).not.toBeInTheDocument();
   });
 
+  // docs/299-agent-settings-access req 10: a new role's standing instructions
+  // are a side change, and prose there gets the same shape as prose anywhere.
+  it("opens a prose side change in a dialog named for that field", () => {
+    render(<SettingsProposalCard card={card({
+      target: { key: "roles", item: "deep-dive" },
+      label: "Roles",
+      from: "no such role",
+      to: "created",
+      alsoChanges: [
+        { key: "roles[].harness", label: "Harness", from: "not set", to: "\"claude\"" },
+        {
+          key: "roles[].prompt",
+          label: "Standing instructions",
+          from: "empty",
+          to: "38 characters",
+          textChange: {
+            lines: [
+              { kind: "added", text: "Read widely before you answer." },
+              { kind: "added", text: "Cite." },
+            ],
+            before: { chars: 0, lines: 0 },
+            after: { chars: 36, lines: 2 },
+            added: 2,
+            removed: 0,
+          },
+        },
+      ],
+    })} />);
+
+    const also = screen.getByTestId("settings-proposal-also");
+    expect(also).toHaveTextContent("\"claude\"");
+    expect(screen.queryByText("Read widely before you answer.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review the change/ }));
+
+    expect(screen.getByLabelText("Proposed text, as a diff")).toHaveTextContent("Read widely before you answer.");
+    expect(screen.getByRole("heading", { name: "Standing instructions" })).toBeInTheDocument();
+  });
+
   it("opens the whole change in a dialog, both versions in full", () => {
     render(<SettingsProposalCard card={prose()} />);
 

@@ -19,8 +19,10 @@ you supply is the name:
   --model X`. The role supplies everything you did not name. **Relay** an
   override the user asked for; never **decide** one yourself.
 
-If the role you need does not exist, say so — the user creates it under
-Settings → Roles. `shipit agent roles` is what tells you which roles exist;
+If the role you need does not exist, propose it: `shipit settings propose roles
+--add NAME --value-file -` posts a card that shows the whole role, and the
+user's click creates it (`/shipit-docs/settings.md` → *Creating a role*).
+`shipit agent roles` is what tells you which roles exist;
 `shipit settings list` indexes the settings around them, so you can say what is
 configured today rather than sending the user to go and look
 (`/shipit-docs/settings.md`).
