@@ -1547,6 +1547,7 @@ script can read credentials already delivered there. That is how the panel
 installs one too, and req 12 puts the package on the card in full for the user
 to approve, so this feature does not change it. Closing it means a
 credential-free install environment, which is a change to session setup.
+Tracked as planning#667.
 
 **Reading back a side shown as written.** After the write, a side whose
 declaration emits something other than the value — `configured_only`, or a
