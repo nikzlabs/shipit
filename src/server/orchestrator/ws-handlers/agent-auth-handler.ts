@@ -1,7 +1,7 @@
 import type { WsServerMessage } from "../../shared/types.js";
 import type { AgentProcess } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
-import { emitChatCard, persistTurnInProgress } from "../chat-card-persistence.js";
+import { emitChatCard, finalizeTurnRows } from "../chat-card-persistence.js";
 import {
   credentialFailurePolicyFor,
   credentialFailureStopMessage,
@@ -59,14 +59,14 @@ export function wireAuthRequiredHandler(
         return;
       }
       // Flush partial output before the error; the executor skips auth-path finalization.
-      persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
+      // The turn's rows are final after this, so the error row is appended after them.
+      finalizeTurnRows(deps.chatHistoryManager, runner, turnSessionId);
       emitChatCard(
         runner,
         { type: "error", message, sessionId: turnSessionId },
         { role: "assistant", text: `Error: ${message}`, isError: true },
         { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
       );
-      deps.chatHistoryManager.finalizeInProgress(turnSessionId);
     };
 
     const surfaceReauth = (): void => {
