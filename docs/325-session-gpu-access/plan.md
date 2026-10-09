@@ -95,6 +95,7 @@ So a container needs the DirectX runtime in `/usr/lib/wsl/lib` and the whole dri
 1. **Two read-only binds** — `gpuGraphicsBinds()` (`session-gpu.ts`) gives those two directories at their own paths, where D3D12 looks for them. No setting and no GPU state is new (req 5): the binds follow the request.
 2. **Two links in the worker images** — `libd3d12.so` and `libd3d12core.so`, from `/usr/lib/wsl/lib` into `/usr/lib`. Mesa and DirectX open them by bare name. `/usr/lib` is in the loader's built-in path, and it is not the multiarch directory the hook mounts into, so a later hook that mounts one of them cannot meet a link there. Off WSL2 the links dangle and Mesa falls back to `llvmpipe`, as before.
 3. **Xvfb and xauth, installed by name** — they were in the image only as dependencies of Playwright, and the documented way to start Chrome now depends on them.
+4. **A pointer in the agent's prompt** — `prompts/skeleton.md`, in "Browser access": the built-in browser draws in software, and the steps for a Chrome on the GPU are in `environment.md`. Before it, the prompt named only the built-in browser, and it listed `environment.md` with no word about the GPU. The text is the same in every session, so no prompt variant is new; the agent reads `$SHIPIT_GPU` when it needs to know. A notice at each start of a granted container was rejected: most tasks do not use the GPU.
 
 **The binds are an attempt of their own** (`startWithGpu`, `container-lifecycle.ts`). A container that has the GPU must not lose it to two mounts, and they are measured on one kind of host only ([Measured on the host](#measured-on-the-host)). So the order is: the request with the binds; if that create or start fails, the request alone; if that fails too, no request — the fallback of req 6, unchanged, and with the second failure as its reason. A container that started on the middle step is `granted`, and `SHIPIT_GPU_GRAPHICS_REASON` in its environment holds Docker's error for the first, so the agent can say why Chrome is on the CPU. The cost is one more failed attempt at each container start on a WSL2 host whose GPU does not work at all.
 
@@ -153,6 +154,7 @@ For req 7, two cases are not checked. Docker Engine + the toolkit in WSL2 can tr
 - `src/server/orchestrator/container-discovery.ts` — state on adoption.
 - `src/server/orchestrator/app-lifecycle.ts` — standby mismatch; proxy `SessionInfo.gpu`.
 - `src/server/orchestrator/gpu-container-start.ts` — user and agent notices.
+- `src/server/orchestrator/prompts/skeleton.md` — the pointer from "Browser access" to the Chrome steps.
 - `src/server/orchestrator/compose-generator.ts`, `service-manager.ts`, `service-manager-setup.ts` — Compose check, strip, log line.
 - `src/server/orchestrator/docker-proxy-sanitize.ts`, `docker-proxy-field-casing.ts`, `docker-proxy-helpers.ts` — proxy.
 - Docs: `src/server/shipit-docs/environment.md`, `compose.md`, `wiki/settings-and-accounts.md`, `wiki/installing-and-updating.md`, `deployment/README.md`.
