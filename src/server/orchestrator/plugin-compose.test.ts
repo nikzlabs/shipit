@@ -10,7 +10,7 @@ import {
   toComposeService,
   type PluginFragmentService,
 } from "./plugin-compose.js";
-import { generateComposeOverride } from "./compose-generator.js";
+import { generateComposeOverride, SERVICE_HOME } from "./compose-generator.js";
 import { parsePluginRepos, parsePluginExports } from "../shared/plugin-repos.js";
 import type { PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
 import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
@@ -966,6 +966,40 @@ describe("override emission", () => {
     expect(probe.cap_drop).toEqual(["NET_RAW"]);
     expect(probe.user).toBe("1000:1000");
     expect(probe.ports).toBeUndefined();
+  });
+
+  describe("a fragment that leaves `user:` to ShipIt, in a session with its own UID (planning#638)", () => {
+    const orig = process.env.SHIPIT_SESSION_WORKER_UID;
+    afterEach(() => {
+      if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = orig;
+    });
+
+    function environmentOf(fragmentEnvironment: string): Record<string, string> {
+      process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
+      writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+    environment:
+${fragmentEnvironment}
+`);
+      const yaml = generateComposeOverride([toComposeService(build(collect(SELF_USE).services).services[0])], {
+        sessionId: "session-1",
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      });
+      const doc = parseYaml(yaml) as { services: Record<string, { user: string; environment: Record<string, string> }> };
+      expect(doc.services.probe.user).toBe("2000006:2000006");
+      return doc.services.probe.environment;
+    }
+
+    it("gets a HOME beside its own environment", () => {
+      expect(environmentOf('      PROBE_PORT: "4820"')).toMatchObject({ PROBE_PORT: "4820", HOME: SERVICE_HOME });
+    });
+
+    it("keeps the HOME it declares", () => {
+      expect(environmentOf("      HOME: /plugin-state/home").HOME).toBe("/plugin-state/home");
+    });
   });
 
   it("nests the session's overlay dep dirs under a `repo: self` plugin's tree", () => {

@@ -254,6 +254,44 @@ grace. It is reached through one new poller method,
 because the tracker is private to the poller and its decision depends on state
 the poll loop preloads with `ensureWorkflowsLoaded()`.
 
+**A repository with no workflow file skips the grace**
+(nikzlabs/shipit#3073). "Unknown history" and "known to have no workflow files"
+were one state — the loader returned `null` for both — so a repository with no
+CI at all refused every first merge and needed a scripted retry. The loader now
+answers `[]` for a commit read with no workflow files (`ls-tree -z`, so a
+quoted non-ASCII name is not dropped), and `CiGraceTracker.noWorkflowFiles()`
+returns true only when both trees a pull request's workflows come from were read
+and are empty:
+
+- the default branch (the bare cache, re-read on every decision rather than
+  cached, since a repository can add CI at any time); and
+- the pull request's head commit, read from the session checkout by its pinned
+  SHA — `pull_request` runs the workflows the pull request itself adds.
+
+Either one unreadable keeps the grace. A `--repo` merge (sandbox only) passes no
+checkout, because the tracker reads the session's repository and not the target.
+The skip applies to the plain command only; `--auto` keeps the grace, because
+the executor ends a request on any GitHub refusal.
+
+**Checks from outside the repository are not looked for.** An external CI app
+can report without any workflow file, and the bare cache can be up to one
+refresh behind GitHub. Both are the same limit the grace already has — checks
+register gradually, so a merge can see a "1/1" rollup before the rest of the set
+starts. The authority for "this repository requires a check" is GitHub's branch
+protection, which refuses the merge until the required check passes
+(requirements.md, resolved 2026-10-05). An earlier draft read check
+history from GitHub to infer external CI; it was removed as a heuristic for what
+branch protection already enforces.
+
+**Refusals that clear by themselves exit `8`** in the `gh` shim (the real `gh`'s
+"checks pending" code): no checks yet, checks running, a rollup for an earlier
+commit, the post-push hold, and GitHub's own refusal when a required check is
+expected or in progress. GitHub gives that last one no code, so it is matched on
+its text, and a wording change only degrades it to `1`. The route marks these
+`retryable`; every other refusal exits `1`. A retry loop that matched the words
+"Not merged" once re-ran a merge eight times against a permanent refusal, so the
+distinction is the exit code and not the text.
+
 **The local-HEAD row** is the half `guardMergeSync()` cannot cover: that guard
 compares local HEAD with the remote-*tracking* ref and, by design, proceeds
 whenever it cannot tell. Comparing the live `headRefOid` with the local HEAD this
@@ -463,9 +501,11 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge; typed three-way merge and create outcomes |
 | `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion, with the caller's `guard` asked between the read and the first write; `readPrByNumber()` for the promote-nothing case |
 | `src/server/orchestrator/services/agent-merge-settlement.ts` | settlement, the three reconciliation triggers, and `captureTurn()` — the in-memory turn token (runner identity + epoch) a witnessed settlement is checked against |
-| `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
+| `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits); `noWorkflowFiles()` skips it when neither the default branch nor the head has a workflow file |
+| `src/server/orchestrator/workflow-loader.ts` | `listWorkflowFiles()` at a pinned commit; `[]` (no workflow files) is distinct from `null` (unreadable) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
-| `src/server/orchestrator/services/merge-gate.ts` | the merge-only read, the observation, and the decision table |
+| `src/server/orchestrator/services/merge-gate.ts` | the merge-only read, the observation, the decision table, `RETRYABLE_REFUSALS`, and `githubRefusalClearsByItself()` |
+| `src/server/session/agent-shim/gh.ts` | `gh pr merge` exits `8` on a `retryable` refusal |
 | `src/server/orchestrator/services/pr-provenance.ts` | the one provenance path: witnessed creates only, repository matched by identity |
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `services/git.ts`, `sessions.ts` | provenance writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |

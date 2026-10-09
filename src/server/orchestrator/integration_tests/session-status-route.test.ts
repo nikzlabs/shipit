@@ -14,7 +14,10 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
   createTestSession,
+  recordSse,
+  waitFor,
 } from "./test-helpers.js";
+import type { SessionInfo } from "../../shared/types.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
 import {
@@ -414,5 +417,45 @@ describe("Integration: session-status route", () => {
     const off = await get();
     expect(off.statusCode).toBe(409);
     expect((off.json() as { error: string }).error).toContain("propose_actions");
+  });
+
+  it("docs/324-scheduled-sessions req 22: a manual step posted after the run finished makes it unfinished", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    sessionManager.setScheduleRun(sessionId, "sched-1", "run-1");
+    sessionManager.setRunFinishedAt(sessionId, "2026-10-07T10:00:00.000Z");
+    try {
+      const res = await post({ status: "Swept.", needsYou: ["Approve the deploy."] });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(sessionManager.get(sessionId)).not.toHaveProperty("runFinishedAt");
+    } finally {
+      client.close();
+    }
+  });
+
+  it("docs/324-scheduled-sessions req 21: lists a run again when its manual steps change", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    sessionManager.setScheduleRun(sessionId, "sched-1", "run-1");
+    const sse = await recordSse(port);
+    const listed = () => sse.events
+      .filter((e) => e.event === "session_list")
+      .map((e) => (e.data as { sessions: SessionInfo[] }).sessions.find((s) => s.id === sessionId)?.manualStepCount);
+    try {
+      await waitFor(() => listed().length > 0, "the snapshot on connect");
+      expect(listed()).toEqual([undefined]);
+
+      await post({ status: "Sweeping.", needsYou: ["Approve the deploy."] });
+      await waitFor(() => listed().length > 1, "a session list");
+      expect(listed()).toEqual([undefined, 1]);
+
+      // The steps carry over unchanged, so nothing is listed again.
+      await post({ status: "Still sweeping." });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(listed()).toEqual([undefined, 1]);
+    } finally {
+      sse.close();
+      client.close();
+    }
   });
 });

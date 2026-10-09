@@ -141,6 +141,31 @@ That reservation is why declaring nothing is the right answer rather than merely
 the convenient one: the UID your service wants is the session's own, and naming
 it is exactly what the range refuses. Leave `user:` out and ShipIt supplies it.
 
+**The home directory of such a service is `/tmp`.** No image has an account for
+a UID in that reserved range, and Docker's home for a UID with no account is `/`,
+which it cannot write — so every tool that keeps a cache or a config file below
+`$HOME` (npm and `npx`, pip, Astro's telemetry store, a tool's first-run setup)
+would fail with `EACCES` or run without its cache. ShipIt therefore sets
+`HOME=/tmp` on a service it runs as a per-session UID. That is the image's own
+`/tmp` unless the service mounts something there: on the container's filesystem,
+and gone when the container is recreated. Use it for caches, not for data — data
+a service must keep goes in the
+[`persist` volume](#data-a-service-must-keep-the-persist-volume). A service with
+`read_only: true` can write its home only if it gives `/tmp` a `tmpfs:`.
+
+ShipIt never sets it over a value the service declares, and there is one value
+it cannot see:
+
+- A service that sets `HOME` itself — in `environment:` or through `env_file:` —
+  keeps its value.
+- A service that declares its own `user:` gets no `HOME` from ShipIt. Its home is
+  whatever its image gives that user.
+- **An image that sets `HOME` with `ENV` in its Dockerfile loses that value**:
+  ShipIt cannot read an image's environment when it writes the service's, so
+  `HOME=/tmp` replaces it, and the service no longer reads or writes the home
+  its image prepared. If the image needs its own, repeat the value in the
+  service's `environment:`.
+
 **If your compose file declares a `user:` only because a contained session used to
 refuse it, delete that line.** That rule is gone. A `user:` kept out of habit is
 now actively harmful, in two ways that look nothing alike:
@@ -165,27 +190,30 @@ can edit and `rm -rf` (docs/271 §3). Accept the two costs above in exchange, an
 keep such a service away from git and from the workspace's dependency
 directories, which are deliberately outside that guarantee.
 
-## Hot reload (HMR) needs polling
+## Hot reload (HMR) needs no polling
 
-Dev servers in a preview service run in their **own container**, watching the
-workspace through the shared named volume. The agent edits files from a
-**different** container (`/workspace`). inotify events do not cross the
-mount-namespace boundary between the two containers, so a native file watcher
-never hears the agent's edits and hot reload silently no-ops.
+Dev servers in a preview service run in their **own container**, and the agent
+edits files from a **different** one (`/workspace`). Both mount the same
+directory of the same volume, and Linux delivers a file's inotify events to
+every watcher of that file, whichever container made the change. So the dev
+server's native file watcher hears the agent's edits within milliseconds, and
+the framework's default watcher is enough. What is measured: event delivery
+between the two containers on Linux, WSL2 and macOS hosts, and a rebuild after
+an edit by the Vite and Next.js (webpack) dev servers on a Linux host.
 
-The fix is **polling-based watching**, which is namespace-independent. Enable it
-in the dev server's config, not the compose file:
+Do **not** add polling — `server.watch.usePolling` for Vite or Astro,
+`WATCHPACK_POLLING` or `watchOptions.poll` for Next.js / webpack. A polling
+watcher stats every source file several times a second for as long as the
+service runs, in every session. A project that still carries one of those
+settings can drop it.
 
-- **Vite** — `server.watch: { usePolling: true, interval: 200 }`
-- **Astro** (Vite under the hood) — `vite.server.watch: { usePolling: true, interval: 200 }`
-- **Next.js / webpack** — set `WATCHPACK_POLLING=true` in the service's
-  `environment:`, or `config.watchOptions = { poll: 800, aggregateTimeout: 300 }`.
+Polling stays the fallback for two cases: a dev server that fails with
+`ENOSPC: System limit for number of file watchers reached` (the tree it watches
+exceeds the host's inotify limit — narrow what it watches first), and a host
+where a correctly configured dev server still misses edits.
 
 Do **not** pin `hmr.clientPort` — ShipIt's preview proxy rewrites the HMR
 WebSocket URL to the page origin, and a hardcoded port fights that rewrite.
-
-ShipIt's built-in project templates already include the polling config. Add it
-yourself only when scaffolding a dev server by hand.
 
 ## `x-shipit-preview`
 
@@ -615,6 +643,40 @@ services:
 - The agent reaches adb over the session network by service name
   (`adb connect emulator:5555`); host ports aren't published.
 
+## GPU services
+
+A service asks for the NVIDIA GPU in standard Compose syntax — the short form:
+
+```yaml
+services:
+  llm:
+    image: ollama/ollama
+    gpus: all
+```
+
+or a device reservation:
+
+```yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+- **Only an NVIDIA GPU request is accepted.** `driver` must be `nvidia` or
+  unset, a reservation's `capabilities` must include `gpu` and may add only
+  NVIDIA's own (`compute`, `utility`, `graphics`, `video`, `display`,
+  `compat32`), and `options` are refused. Any other device reservation fails
+  validation.
+- **The service gets the GPU only when this session has it** (`$SHIPIT_GPU` is
+  `granted`; see [environment.md](environment.md)). Otherwise ShipIt removes the
+  request and starts the service on the CPU, and writes a `[shipit]` line to the
+  service's log saying why — so the same file works on a machine without a GPU.
+- A plugin's services cannot ask for a GPU.
+
 ## What not to do
 
 - **Don't mount the Docker socket** (`/var/run/docker.sock`) unless the user
@@ -631,7 +693,8 @@ services:
 - **Don't use `network_mode: host`** — use explicit port mappings.
 - **Don't set `privileged: true`** — not allowed for security.
 - **Don't request arbitrary `devices:`** — only `/dev/kvm:/dev/kvm` is permitted
-  (Android emulator; see above). Every other device is rejected.
+  (Android emulator; see above). Every other device is rejected. A GPU is not a
+  `devices:` entry: use `gpus:` or a reservation (see "GPU services" above).
 - **Don't use `build:`** — use pre-built public images. If you need custom
   setup, run commands in the `command` field or use multi-step entrypoints.
 - **Don't use absolute or `~` volume paths** — a bind source must be relative to
@@ -685,8 +748,9 @@ These rules apply in Open and contained sessions alike:
 - **Top-level `secrets:` and `configs:`** use `file:` inside the workspace;
   `external:` and `name:` are refused, as for volumes and networks.
 - **`logging`** may use only the `json-file` or `local` driver, or none.
-- **`deploy.resources.reservations.devices`** is refused, and a `post_start`
-  or `pre_stop` hook may not set `privileged`.
+- **`deploy.resources.reservations.devices`** and **`gpus`** may only request
+  an NVIDIA GPU (see "GPU services" above), and a `post_start` or `pre_stop`
+  hook may not set `privileged`.
 - **`label_file`** must be inside the workspace.
 - **Ops sessions** trust `docker-socket-proxy` only as the ops template
   defines it. ShipIt always runs the proxy image at its pinned digest, and no

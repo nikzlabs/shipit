@@ -58,6 +58,11 @@ export interface ClaimSessionOptions {
   excludeSessionIds?: string[];
   /** Required for background claims: warm drafts may still have an attached user. */
   skipReuse?: boolean;
+  /**
+   * Never take the warm session: its standby container started without a mount this session
+   * needs (a scheduled run's notes folder, docs/324-scheduled-sessions).
+   */
+  skipWarm?: boolean;
   /** The claiming browser tab; only the draft this tab was last given is ever reused. */
   tabId?: string;
 }
@@ -170,10 +175,15 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       if (!repo) throw new ServiceError(404, "Repository not found");
       if (repo.status !== "ready") throw new ServiceError(400, "Repository is still cloning");
 
+      // Opening a workspace counts as use. Stamp it first: the claim may re-clone a cache the disk
+      // janitor reclaimed, and a stale row lets the janitor delete that clone mid-write.
+      deps.repoStore.touch(url);
+
       const claimStart = Date.now();
       let claimPath: ClaimSessionResult["claimPath"] = "slow-clone";
       const forceFetch = opts?.forceFetch === true;
       const skipReuse = opts?.skipReuse === true;
+      const skipWarm = opts?.skipWarm === true;
       const excluded = new Set(opts?.excludeSessionIds ?? []);
       const tabKey = opts?.tabId && !skipReuse ? `${opts.tabId}\n${url}` : undefined;
 
@@ -207,7 +217,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         }
 
         const currentRepo = deps.repoStore.get(url);
-        if (currentRepo?.warmSessionId && !excluded.has(currentRepo.warmSessionId)) {
+        if (!skipWarm && currentRepo?.warmSessionId && !excluded.has(currentRepo.warmSessionId)) {
           const warmSession = deps.sessionManager.get(currentRepo.warmSessionId);
           if (warmSession?.workspaceDir) {
             claimPath = "warm";
@@ -219,7 +229,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           }
         }
 
-        const warmingPromise = deps.waitForWarmSession?.(url);
+        const warmingPromise = skipWarm ? undefined : deps.waitForWarmSession?.(url);
         if (warmingPromise) {
           await warmingPromise;
           const freshRepo = deps.repoStore.get(url);
@@ -243,61 +253,68 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const created = await deps.createSessionDirFull("Warm session");
         const { appSessionId, workspaceDir } = created;
 
-        await rm(workspaceDir, { recursive: true, force: true });
-
-        const { git: cacheGit } = await ensureBareCache(cacheDir, url, deps.createRepoGit);
-
-        if (deps.githubAuthManager.authenticated) {
-          await cacheGit.setRemoteUrl(url);
-        }
-
         try {
-          await cacheGit.fetchCache();
+          await rm(workspaceDir, { recursive: true, force: true });
+
+          const { git: cacheGit } = await ensureBareCache(cacheDir, url, deps.createRepoGit);
+
+          if (deps.githubAuthManager.authenticated) {
+            await cacheGit.setRemoteUrl(url);
+          }
+
+          try {
+            await cacheGit.fetchCache();
+          } catch (err) {
+            // The workspace fetch below can still refresh a stale cache clone.
+            console.error(`[claim-session] Fetch cache failed for ${url}:`, getErrorMessage(err));
+            deps.sseBroadcast("error", {
+              message: `Repository cache for ${url} could not be refreshed: ${getErrorMessage(err)}`,
+            });
+          }
+
+          await cacheGit.cloneFromCache(workspaceDir, url);
+
+          if (deps.githubAuthManager.authenticated) {
+            deps.githubAuthManager.configureGitCredentials(workspaceDir);
+          }
+
+          const skipFetch = !forceFetch && (deps.shouldSkipClaimFetch?.(url) ?? false);
+          const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
+            workspaceDir,
+            (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
+            { skipFetch, resolveRemoteCredential: gitRemoteCredentialResolver(deps.githubAuthManager) },
+          );
+          if (!skipFetch && !fetched && !authError) {
+            console.warn(`[claim-session] Workspace fetch failed for ${url} — branching from the bare-cache snapshot, which may be stale`);
+            deps.sseBroadcast("error", {
+              message: `Claimed session for ${url} may be based on stale code — could not fetch the latest commits.`,
+            });
+          }
+          const branchArgs = ["checkout", "-b", branchPrefix];
+          if (resetTarget) branchArgs.push(resetTarget);
+          await safeSimpleGit(workspaceDir).raw(branchArgs);
+
+          await syncLocalDefaultBranchToOrigin(workspaceDir);
+          // Before the pull: a declared LFS host's secret is looked up by this record.
+          deps.sessionManager.setRemoteUrl(appSessionId, url);
+          // Materialize after checkout, which writes LFS pointer stubs.
+          await materializeLfsWithWarning(workspaceDir, url, (message) =>
+            deps.sseBroadcast("error", { message }),
+          );
+          handWorkspaceBackToWorker(workspaceDir);
+
+          deps.sessionManager.setBranch(appSessionId, branchPrefix);
+          deps.sessionManager.setWarm(appSessionId, true);
+
+          rewarmPool(url);
+
+          return { sessionId: appSessionId, workspaceDir, fetchDurationMs };
         } catch (err) {
-          // The workspace fetch below can still refresh a stale cache clone.
-          console.error(`[claim-session] Fetch cache failed for ${url}:`, getErrorMessage(err));
-          deps.sseBroadcast("error", {
-            message: `Repository cache for ${url} could not be refreshed: ${getErrorMessage(err)}`,
-          });
+          // The row is visible from creation; left behind, it opens as a session with no workspace.
+          deps.sessionManager.delete(appSessionId);
+          deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+          throw err;
         }
-
-        await cacheGit.cloneFromCache(workspaceDir, url);
-
-        if (deps.githubAuthManager.authenticated) {
-          deps.githubAuthManager.configureGitCredentials(workspaceDir);
-        }
-
-        const skipFetch = !forceFetch && (deps.shouldSkipClaimFetch?.(url) ?? false);
-        const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
-          workspaceDir,
-          (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
-          { skipFetch, resolveRemoteCredential: gitRemoteCredentialResolver(deps.githubAuthManager) },
-        );
-        if (!skipFetch && !fetched && !authError) {
-          console.warn(`[claim-session] Workspace fetch failed for ${url} — branching from the bare-cache snapshot, which may be stale`);
-          deps.sseBroadcast("error", {
-            message: `Claimed session for ${url} may be based on stale code — could not fetch the latest commits.`,
-          });
-        }
-        const branchArgs = ["checkout", "-b", branchPrefix];
-        if (resetTarget) branchArgs.push(resetTarget);
-        await safeSimpleGit(workspaceDir).raw(branchArgs);
-
-        await syncLocalDefaultBranchToOrigin(workspaceDir);
-        // Before the pull: a declared LFS host's secret is looked up by this record.
-        deps.sessionManager.setRemoteUrl(appSessionId, url);
-        // Materialize after checkout, which writes LFS pointer stubs.
-        await materializeLfsWithWarning(workspaceDir, url, (message) =>
-          deps.sseBroadcast("error", { message }),
-        );
-        handWorkspaceBackToWorker(workspaceDir);
-
-        deps.sessionManager.setBranch(appSessionId, branchPrefix);
-        deps.sessionManager.setWarm(appSessionId, true);
-
-        rewarmPool(url);
-
-        return { sessionId: appSessionId, workspaceDir, fetchDurationMs };
       };
 
       const result = await serializeClaim(url, async () => {
@@ -313,9 +330,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
       // Exclude clone-time file writes from the docs viewer's session-modified group.
       deps.sessionManager.markStarted(result.sessionId);
-
-      // Opening a workspace counts as use even if it never receives a first turn.
-      deps.repoStore.touch(url);
 
       // Inspect Docker: a warm-pool pointer can survive a missed container die event.
       const standbyRunning = await deps.containerManager?.isTrackedContainerRunning(result.sessionId);

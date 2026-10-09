@@ -628,6 +628,25 @@ describe("shipit settings propose", () => {
     }
   });
 
+  // docs/299-agent-settings-access req 10 — a role is more than its name.
+  it("reads a new entry's body from a file beside --add", async () => {
+    const { run } = makeRunner();
+    const file = path.join(os.tmpdir(), `shipit-settings-role-${process.pid}.json`);
+    const body = JSON.stringify({ model: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" } });
+    fs.writeFileSync(file, body);
+    try {
+      const res = await run(
+        ["settings", "propose", "roles", "--add", "deep-dive", "--value-file", file, "--reason", "why"],
+        { "POST /agent-ops/settings/propose": PROPOSED },
+      );
+
+      expect(res.exitCode).toBe(0);
+      expect(res.bodies[0]).toMatchObject({ key: "roles", operation: "add", item: "deep-dive", valueText: body });
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
   it("takes the value from --value-file or from key=value, never both", async () => {
     const { run } = makeRunner();
     const res = await run([

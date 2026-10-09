@@ -5,6 +5,7 @@ import { resolveSessionDir } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import type { ActionChecklistCard } from "../shared/types.js";
 import { validateProposeActions } from "../shared/propose-actions-validation.js";
+import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 export async function registerProposeActionsRoutes(
   app: FastifyInstance,
@@ -40,7 +41,7 @@ export async function registerProposeActionsRoutes(
       const sessionDir = resolveSessionDir(deps.sessionManager, sessionId, reply);
       if (!sessionDir) return;
 
-      const runner = deps.runnerRegistry.get(sessionId);
+      const runner = await runnerForContainerCall(deps, sessionId);
       if (!runner) {
         reply.code(409).send({ error: "Session is not active — open it to propose actions." });
         return;

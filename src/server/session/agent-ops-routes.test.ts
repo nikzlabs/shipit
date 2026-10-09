@@ -101,6 +101,23 @@ describe("agent-ops routes", () => {
     });
   });
 
+  it("POST /agent-ops/compact forwards the request to /compact-after-turn (docs/324-agent-requested-compaction)", async () => {
+    client.setResponse("POST", "/compact-after-turn", {
+      ok: true, status: 200, body: { requested: true, continues: true },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/compact",
+      payload: { instructions: "keep the API", note: "start B" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0]).toMatchObject({
+      method: "POST", path: "/compact-after-turn", body: { instructions: "keep the API", note: "start B" },
+    });
+  });
+
   it("POST /agent-ops/session-status forwards the delta to /session-status", async () => {
     client.setResponse("POST", "/session-status", {
       ok: true, status: 200,
@@ -613,6 +630,16 @@ describe("agent-ops routes", () => {
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/list?tracker=linear&state=all" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/issue/list?tracker=linear&state=all");
+  });
+
+  it("GET /agent-ops/issue/list forwards search, every label and the limit", async () => {
+    client.setResponse("GET", "/issue/list", { ok: true, status: 200, body: { tracker: { id: "linear" }, issues: [] } });
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent-ops/issue/list?tracker=linear&search=page%20list&label=bug&label=cli&limit=20",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/list?tracker=linear&search=page+list&label=bug&label=cli&limit=20");
   });
 
   it("GET /agent-ops/issue/labels forwards the tracker (planning#201)", async () => {

@@ -253,6 +253,7 @@ async function unarchiveSessionImpl(
 
     const cacheDir = getBareCacheDir(session.remoteUrl);
 
+    restartDiskIdleClockBeforeCacheUse(sessionManager, sessionId);
     const { git: cacheGit, recovered } = await ensureBareCache(
       cacheDir,
       session.remoteUrl,
@@ -327,6 +328,12 @@ async function unarchiveSessionImpl(
   return { session: updated, sessions: sessionManager.list() };
 }
 
+// The disk janitor keeps a repo's caches only while the repo or one of its sessions was used recently;
+// a restore of a long-idle session would otherwise clone from a cache the janitor is free to delete.
+function restartDiskIdleClockBeforeCacheUse(sessionManager: SessionManager, sessionId: string): void {
+  sessionManager.setLastViewedAt(sessionId);
+}
+
 // Concurrent activations must share a restore so one cannot remove the other's clone.
 const inFlightRestores = new Map<string, Promise<boolean>>();
 
@@ -389,6 +396,7 @@ async function restoreSessionWorkspaceImpl(
   }
 
   const cacheDir = getBareCacheDir(session.remoteUrl);
+  restartDiskIdleClockBeforeCacheUse(sessionManager, sessionId);
   const { git: cacheGit, recovered } = await ensureBareCache(cacheDir, session.remoteUrl, createRepoGit);
   if (recovered) {
     repoStore.add(session.remoteUrl);

@@ -218,7 +218,7 @@ export const BROWSER_SETTINGS = {
     tab: "advanced",
     section: "Conversation",
     scope: "browser",
-    label: "Compact completed turns",
+    label: "Collapse completed turns",
     description:
       "Collapse every turn but the newest to your message and the last agent reply. Tool calls, "
       + "progress messages and cards are hidden; errors stay, and so does a card that still needs "

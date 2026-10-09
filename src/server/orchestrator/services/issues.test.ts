@@ -22,9 +22,11 @@ import {
   setIssueStatusForTracker,
   setIssueAssigneeForTracker,
   undoIssueWrite,
+  selectIssues,
 } from "./issues.js";
 import { ServiceError } from "./types.js";
-import type { GitHubTrackerContext } from "../trackers/index.js";
+import { LIST_ISSUES_CEILING, type GitHubTrackerContext } from "../trackers/index.js";
+import type { TrackerIssue } from "../../shared/types.js";
 
 const LINEAR_TEAM = "SHI";
 const LINEAR_TRACKER = "linear:SHI";
@@ -280,6 +282,115 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
     const out = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
     expect(out.issues).toEqual([]);
     expect(out.availableStatuses).toBeUndefined();
+  });
+});
+
+describe("listIssuesForTracker search, labels and limit", () => {
+  const issue = (n: number, over: Partial<TrackerIssue> = {}): TrackerIssue => ({
+    id: String(n),
+    identifier: `planning#${n}`,
+    title: `Issue ${n}`,
+    url: `https://github.com/acme/planning/issues/${n}`,
+    priority: { level: "none", sortOrder: 4, label: "No priority" },
+    status: { name: "Open", type: "started" },
+    ...over,
+  });
+
+  it("selectIssues needs every search word in the title or body, ignoring case", () => {
+    const issues = [
+      issue(1, { title: "Issue list truncates", description: "only 100 rows" }),
+      issue(2, { title: "Truncated LIST output" }),
+      issue(3, { title: "Unrelated" }),
+    ];
+    expect(selectIssues(issues, { search: "list TRUNCAT" }).issues.map((i) => i.id)).toEqual(["1", "2"]);
+    expect(selectIssues(issues, { search: "truncat 100" }).issues.map((i) => i.id)).toEqual(["1"]);
+    // The identifier carries the tracker name, so matching it would match every row.
+    expect(selectIssues(issues, { search: "planning" }).total).toBe(0);
+  });
+
+  it("selectIssues needs every named label, and doneOnly keeps finished issues", () => {
+    const issues = [
+      issue(1, { labels: [{ name: "Bug" }, { name: "cli" }] }),
+      issue(2, { labels: [{ name: "bug" }], status: { name: "Closed", type: "completed" } }),
+      issue(3),
+    ];
+    expect(selectIssues(issues, { labels: ["bug"] }).issues.map((i) => i.id)).toEqual(["1", "2"]);
+    expect(selectIssues(issues, { labels: ["bug", "CLI"] }).issues.map((i) => i.id)).toEqual(["1"]);
+    expect(selectIssues(issues, { doneOnly: true }).issues.map((i) => i.id)).toEqual(["2"]);
+  });
+
+  it("selectIssues reports the total that matched before the limit", () => {
+    const out = selectIssues([issue(1), issue(2), issue(3)], { limit: 2 });
+    expect(out.issues.map((i) => i.id)).toEqual(["1", "2"]);
+    expect(out.total).toBe(3);
+  });
+
+  // One GitHub page per `sizes` entry; issue numbers count down from `top`, newest first.
+  function ghPages(
+    sizes: number[],
+    top: number,
+    titleOf: (n: number) => string = (n) => `Issue ${n}`,
+    isPr: (n: number) => boolean = () => false,
+  ) {
+    return vi.fn(async (url: RequestInfo | URL) => {
+      const u = new URL(url as string);
+      if (!u.pathname.endsWith("/issues")) throw new Error(`unexpected ${url as string}`);
+      const page = Number(u.searchParams.get("page"));
+      const before = sizes.slice(0, page - 1).reduce((a, b) => a + b, 0);
+      return ghResponse(
+        Array.from({ length: sizes[page - 1] ?? 0 }, (_, i) => {
+          const n = top - before - i;
+          return {
+            id: n, number: n, title: titleOf(n), html_url: `https://x/${n}`, state: "open", labels: [],
+            ...(isPr(n) ? { pull_request: { url: "…" } } : {}),
+          };
+        }),
+      );
+    }) as unknown as typeof fetch;
+  }
+
+  it("finds an old issue that the first page never held", async () => {
+    const fetchImpl = ghPages([100, 100, 50], 250, (n) => (n === 3 ? "Paginate the issue list" : `Issue ${n}`));
+
+    const found = await listIssuesForTracker(tmpStore(), "github", fetchImpl, GH, { search: "paginate", limit: 100 });
+
+    expect(found.issues.map((i) => i.id)).toEqual(["3"]);
+    expect(found.total).toBe(1);
+    expect(found.incomplete).toBeUndefined();
+  });
+
+  it("keeps the limit's rows and the full total, so the caller can say what it cut", async () => {
+    const out = await listIssuesForTracker(tmpStore(), "github", ghPages([100, 100, 50], 250), GH, { limit: 100 });
+    expect(out.issues).toHaveLength(100);
+    expect(out.total).toBe(250);
+  });
+
+  it("a search reads past the list ceiling, even when pull requests fill the newest 2,000", async () => {
+    const fetchImpl = ghPages(
+      [...Array.from({ length: 20 }, () => 100), 1],
+      2001,
+      (n) => (n === 1 ? "The only issue" : `PR ${n}`),
+      (n) => n > 1,
+    );
+
+    const plain = await listIssuesForTracker(tmpStore(), "github", fetchImpl, GH, { includeDone: true });
+    expect(plain.issues).toEqual([]);
+    expect(plain.incomplete).toBe(true);
+
+    const searched = await listIssuesForTracker(tmpStore(), "github", fetchImpl, GH, { includeDone: true, search: "only" });
+    expect(searched.issues.map((i) => i.id)).toEqual(["1"]);
+    expect(searched.incomplete).toBeUndefined();
+  });
+
+  it("marks the result incomplete when the read stopped at the ceiling", async () => {
+    const out = await listIssuesForTracker(
+      tmpStore(),
+      "github",
+      ghPages(Array.from({ length: 30 }, () => 100), 3000),
+      GH,
+    );
+    expect(out.incomplete).toBe(true);
+    expect(out.total).toBe(LIST_ISSUES_CEILING);
   });
 });
 

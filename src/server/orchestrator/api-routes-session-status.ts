@@ -8,6 +8,7 @@ import {
   recordSessionStatus,
   turnsAgoCount,
 } from "./services/session-status.js";
+import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 const CARD_OFF =
   "The session status card is off, so there is no card to read: "
@@ -126,7 +127,7 @@ export async function registerSessionStatusRoutes(
         return;
       }
 
-      const runner = deps.runnerRegistry.get(sessionId);
+      const runner = await runnerForContainerCall(deps, sessionId);
       if (!runner) {
         reply.code(409).send({ error: "Session is not active — open it to write the status card." });
         return;
@@ -156,6 +157,15 @@ export async function registerSessionStatusRoutes(
       if (!card) {
         reply.code(404).send({ error: "Session not found." });
         return;
+      }
+      // docs/324-scheduled-sessions req 21 — a run's list row carries its manual-step count.
+      if (
+        (card.needsYou?.length ?? 0) !== (stored?.needsYou?.length ?? 0)
+        && deps.sessionManager.get(sessionId)?.scheduleId
+      ) {
+        deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+        // A manual step is an input of "finished" (req 22); during a turn its end decides.
+        deps.scheduleRunner?.decideRunFinished(sessionId);
       }
 
       // req 12 — the turn asked for the card, so the settlement step must not

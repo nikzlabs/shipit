@@ -119,6 +119,18 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
     ]);
   });
 
+  it("saves the wake of a scheduled run the user stopped — a quota continuation's too (docs/324 req 33)", async () => {
+    const { deps, sessionManager, getOrCreate } = setup(false);
+    sessionManager.setScheduleRun("parent", "schedule-1", "run-1");
+    sessionManager.setRunStoppedAt("parent", "2026-10-07T09:30:00.000Z");
+
+    const handle = await wakeSessionWithTurn(deps, sessionManager.get("parent")!, { text: "Continue where you stopped." });
+
+    expect(handle.admitted).toBe("queued");
+    expect(getOrCreate).not.toHaveBeenCalled();
+    expect(sessionManager.heldTurns("parent").map((m) => m.text)).toEqual(["Continue where you stopped."]);
+  });
+
   it("goes on to the runner when nothing is held", async () => {
     const { deps, sessionManager, getOrCreate } = setup(false);
 

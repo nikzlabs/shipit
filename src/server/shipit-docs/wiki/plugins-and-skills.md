@@ -277,6 +277,15 @@ name/value pairs and **stored as secrets** — write-only, shown as `(unchanged)
 when editing. This is a place a user genuinely has to type: it is their
 credential, and it must not pass through the chat.
 
+**You can propose the server instead of describing the form.**
+`shipit settings propose mcp.servers --add NAME --value-file -` posts a card with
+the whole configuration — command, arguments and npm package, or the URL — and
+the **names** of the environment variables or headers. A card never carries a
+value. After Apply the user types those values with **Edit** on the server's row,
+and the server cannot work until they do. `--remove NAME` proposes deleting a
+server. Syntax and limits: `/shipit-docs/settings.md` → *Creating or deleting an
+MCP server*.
+
 **Where the controls are depends on who owns the server.** A hand-added server
 gets its own row, offering **Enable / Disable**, **Test**, **Edit** and
 **Delete**. A server a *connected* OAuth provider owns is **not** in that list
@@ -315,4 +324,4 @@ before its command exists at all.
 | Trusts the repository, once | Say that plugins stay inactive until they do |
 | Sets a plugin's key, allows a plugin's host | Read the card, name which plugin needs what, and stop guessing at the cause |
 | Presses Refresh on a plugin card | `shipit plugin refresh`, and `shipit plugin status` before concluding anything |
-| Connects an MCP provider, types its credentials | Everything after that — using the tools, and reading the badge when they are missing |
+| Connects an MCP provider, types its credentials, applies the card you post | Propose a server the work needs, then everything after that — using the tools, and reading the badge when they are missing |

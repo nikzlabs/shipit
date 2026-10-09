@@ -9,6 +9,7 @@ import { asQuotedData } from "./services/repo-session-outcome-notice.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 /**
  * docs/314 — the agent proposes a message for a session it cannot address; the
@@ -137,7 +138,7 @@ export async function registerProposeSessionMessageRoutes(
         return;
       }
 
-      const runner = deps.runnerRegistry.get(sessionId);
+      const runner = await runnerForContainerCall(deps, sessionId);
       if (!runner) {
         reply.code(409).send({ error: "Session is not active — open it to propose a message." });
         return;

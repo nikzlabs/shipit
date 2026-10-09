@@ -16,7 +16,9 @@ import type {
 } from "../../shared/types.js";
 import {
   buildTrackerRegistry,
+  LIST_ISSUES_CEILING,
   listLinearTeams,
+  SEARCH_READ_CEILING,
   TrackerPermissionError,
   TrackerResolutionError,
   type Tracker,
@@ -62,13 +64,49 @@ export function listTrackers(
   return buildTrackerRegistry(credentialStore, fetchImpl, github).list();
 }
 
+export interface IssueListQuery {
+  includeDone?: boolean;
+  doneOnly?: boolean;
+  /** Every word must appear in the title or the body, ignoring case. */
+  search?: string;
+  /** An issue must carry every named label, ignoring case. */
+  labels?: string[];
+  limit?: number;
+}
+
+function isDoneStatus(type?: string): boolean {
+  return type === "completed" || type === "canceled";
+}
+
+export function selectIssues(
+  issues: TrackerIssue[],
+  query: IssueListQuery,
+): { issues: TrackerIssue[]; total: number } {
+  const words = (query.search ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const wanted = (query.labels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean);
+  const matched = issues.filter((issue) => {
+    if (query.doneOnly && !isDoneStatus(issue.status?.type)) return false;
+    if (wanted.length > 0) {
+      const carried = new Set((issue.labels ?? []).map((l) => l.name.toLowerCase()));
+      if (!wanted.every((l) => carried.has(l))) return false;
+    }
+    if (words.length > 0) {
+      const text = `${issue.title}\n${issue.description ?? ""}`.toLowerCase();
+      if (!words.every((w) => text.includes(w))) return false;
+    }
+    return true;
+  });
+  const limited = query.limit !== undefined ? matched.slice(0, query.limit) : matched;
+  return { issues: limited, total: matched.length };
+}
+
 /** An unconfigured tracker returns the UI's Connect empty state. */
 export async function listIssuesForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
-  options?: { includeDone?: boolean },
+  options: IssueListQuery = {},
 ): Promise<ListIssuesResult> {
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
   const tracker = registry.get(trackerId as TrackerId);
@@ -76,20 +114,27 @@ export async function listIssuesForTracker(
     throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   }
   if (!tracker.isConfigured()) {
-    return { tracker: tracker.info(), issues: [] };
+    return { tracker: tracker.info(), issues: [], total: 0 };
   }
   try {
+    const filtered = Boolean(options.search?.trim()) || (options.labels ?? []).some((l) => l.trim());
     // Status lookup failure disables the editor without hiding the issue list.
-    const [issues, availableStatuses] = await Promise.all([
-      tracker.listIssues(options),
+    const [listing, availableStatuses] = await Promise.all([
+      tracker.listIssues({
+        includeDone: options.includeDone,
+        maxItems: filtered ? SEARCH_READ_CEILING : LIST_ISSUES_CEILING,
+      }),
       tracker.listStatuses().catch(() => [] as { name: string; type?: string; color?: string }[]),
     ]);
-    const visible = options?.includeDone
-      ? issues
-      : issues.filter((i) => !isDuplicateStatus(i.status?.name));
+    const visible = options.includeDone
+      ? listing.issues
+      : listing.issues.filter((i) => !isDuplicateStatus(i.status?.name));
+    const { issues, total } = selectIssues(visible, options);
     return {
       tracker: tracker.info(),
-      issues: visible,
+      issues,
+      total,
+      ...(listing.complete ? {} : { incomplete: true }),
       ...(availableStatuses.length > 0 ? { availableStatuses } : {}),
     };
   } catch (err) {

@@ -23,6 +23,7 @@ import {
   prStatusEqual,
 } from "./pr-status-parser.js";
 import { AutoFixManager, MAX_AUTO_FIX_ATTEMPTS, type FetchAndFixCb } from "./auto-fix-manager.js";
+import { withdrawWaitingTurns } from "./queue-drain.js";
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import { CiGraceTracker } from "./ci-grace-tracker.js";
 import { AutoConflictResolveManager, MAX_AUTO_RESOLVE_ATTEMPTS, type RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
@@ -75,6 +76,7 @@ export class PrStatusPoller {
   private createGitManager?: (dir: string) => GitManager;
   private scheduleAutoPush?: (git: GitManager, sessionId: string) => void;
   private readonly branchHealer: BranchAheadHealer;
+  private prStateListener?: (sessionId: string) => void;
 
   /**
    * A session's checkout as a GitManager, or `undefined` when it is not on
@@ -154,7 +156,7 @@ export class PrStatusPoller {
     });
 
     const onSessionChange = (sessionId: string) => this.broadcastSessionStatus(sessionId);
-    const isAwaitingAnswer = (sessionId: string) => this.sessionManager.isAwaitingAnswer(sessionId);
+    const automaticTurnsHeld = (sessionId: string) => this.sessionManager.automaticTurnsHeld(sessionId);
     this.autoFix = new AutoFixManager(
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
@@ -164,7 +166,7 @@ export class PrStatusPoller {
       this.remediationArbiter,
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
       opts.ensureRunner,
-      isAwaitingAnswer,
+      automaticTurnsHeld,
     );
     this.autoMerge = new AutoMergeManager(
       this.githubAuth,
@@ -189,7 +191,7 @@ export class PrStatusPoller {
         undefined,
         this.remediationArbiter,
         opts.ensureRunner,
-        isAwaitingAnswer,
+        automaticTurnsHeld,
       );
     }
 
@@ -263,7 +265,11 @@ export class PrStatusPoller {
     });
   }
 
-  /** Awaits workflow loading, not the grace window. */
+  /**
+   * Awaits workflow loading, not the grace window. `headTreeDir` is a checkout
+   * holding the head commit; without it the head's workflows are unknown and the
+   * grace applies.
+   */
   async awaitCiGraceDecision(args: {
     repoUrl: string | undefined;
     repoKey: string;
@@ -271,8 +277,10 @@ export class PrStatusPoller {
     headSha: string;
     headBranch?: string;
     baseBranch?: string;
+    headTreeDir?: string;
   }): Promise<boolean> {
     await this.graceTracker.ensureWorkflowsLoaded(args.repoKey, args.repoUrl).catch(() => {});
+    if (await this.graceTracker.noWorkflowFiles(args)) return false;
     return this.graceTracker.shouldWaitForMergeChecks({
       repoKey: args.repoKey,
       prNumber: args.prNumber,
@@ -284,6 +292,7 @@ export class PrStatusPoller {
 
   /** Use REST because the OPEN GraphQL view can lag a merge.
    * Pre-turn checks must disable armAbsentDebounce so later merges are still probed.
+   * The stored owner is sufficient: the lookup corrects a moved repository itself.
    */
   async forceVerifySessionPrState(
     sessionId: string,
@@ -300,9 +309,8 @@ export class PrStatusPoller {
     this.supervisor.ensure();
     this.tracker.verifiedAbsent.delete(sessionId);
 
-    const polledOwner = repoKey.slice(0, slash);
-    const polledRepo = repoKey.slice(slash + 1);
-    const { owner, repo } = await this.resolveCanonicalApiTarget(repoKey, polledOwner, polledRepo);
+    const owner = repoKey.slice(0, slash);
+    const repo = repoKey.slice(slash + 1);
     const outcome = await this.verifyMissingPr(sessionId, owner, repo, session.branch);
     if (outcome !== "suppressed" && (opts.armAbsentDebounce ?? true)) {
       this.tracker.verifiedAbsent.add(sessionId);
@@ -419,10 +427,21 @@ export class PrStatusPoller {
     }
   }
 
+  /** docs/324-scheduled-sessions — told when a session's PR opens, merges, closes or is cleared. */
+  setPrStateListener(listener: (sessionId: string) => void): void {
+    this.prStateListener = listener;
+  }
+
+  private writePrStatus(sessionId: string, summary: PrStatusSummary | null): void {
+    const before = this.sessionManager.getPrStatus(sessionId)?.prState;
+    this.sessionManager.setPrStatus(sessionId, summary);
+    if (before !== summary?.prState) this.prStateListener?.(sessionId);
+  }
+
   clearPersisted(sessionId: string): void {
     this.tracker.lastKnown.delete(sessionId);
     this.tracker.mergedSessions.delete(sessionId);
-    this.sessionManager.setPrStatus(sessionId, null);
+    this.writePrStatus(sessionId, null);
     this.sseBroadcast("pr_status", { updates: [], removals: [sessionId] });
   }
 
@@ -436,7 +455,7 @@ export class PrStatusPoller {
     this.tracker.lastPrNodes.delete(sessionId);
     this.tracker.mergedSessions.delete(sessionId);
     this.tracker.verifiedAbsent.delete(sessionId);
-    this.sessionManager.setPrStatus(sessionId, null);
+    this.writePrStatus(sessionId, null);
     if (typeof supersededPrNumber === "number") {
       this.tracker.supersededPrNumbers.set(sessionId, supersededPrNumber);
     }
@@ -464,6 +483,23 @@ export class PrStatusPoller {
 
   getAutoFixState(sessionId: string): AutoFixState | undefined {
     return this.autoFix.get(sessionId);
+  }
+
+  /** docs/186 — a pause removes the fix turn that still waits; one that already runs finishes. */
+  withdrawAutoFix(sessionId: string, reason = "auto-fix paused"): void {
+    const count = withdrawWaitingTurns(
+      sessionId,
+      this.runnerRegistry?.get(sessionId),
+      this.sessionManager,
+      (entry) => entry.ciAutoFix === true,
+      reason,
+    );
+    if (count > 0) console.log(`[auto-fix] ${sessionId} — ${reason}; removed ${count} waiting fix turn(s)`);
+  }
+
+  /** The workspace setting went off: the same, for every session — archived ones keep held turns too. */
+  withdrawAllAutoFix(): void {
+    for (const id of this.sessionManager.allIds()) this.withdrawAutoFix(id, "auto-fix turned off");
   }
 
   notifyRunnerIdle(sessionId: string): void {
@@ -590,21 +626,6 @@ export class PrStatusPoller {
     const repo = nameWithOwner.slice(slash + 1);
     if (`${owner}/${repo}` === polledKey) return unchanged;
     return { owner, repo };
-  }
-
-  private async resolveCanonicalApiTarget(
-    repoKey: string,
-    owner: string,
-    repo: string,
-  ): Promise<{ owner: string; repo: string }> {
-    const result = await this.githubAuth.graphqlQuery<{
-      data?: { repository?: { nameWithOwner?: string } };
-    }>(
-      `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }`,
-      { owner, name: repo },
-    );
-    const nameWithOwner = result?.data?.repository?.nameWithOwner;
-    return this.canonicalApiTarget(repoKey, owner, repo, nameWithOwner);
   }
 
   private async pollRepo(
@@ -785,7 +806,7 @@ export class PrStatusPoller {
 
         if (!prev || !prStatusEqual(prev, summary)) {
           this.tracker.lastKnown.set(session.id, summary);
-          this.sessionManager.setPrStatus(session.id, summary);
+          this.writePrStatus(session.id, summary);
           updates.push(withAutomation);
         }
       } else {
@@ -845,7 +866,8 @@ export class PrStatusPoller {
 
       const forcePending = this.graceTracker.shouldForcePending({
         sessionId,
-        repoKey: `${owner}/${repo}`,
+        // Grace state is keyed by the tracked repo; a poll can pass a different API target.
+        repoKey: this.tracker.sessionRepos.get(sessionId) ?? `${owner}/${repo}`,
         repoUrl: this.sessionManager.get(sessionId)?.remoteUrl,
         headSha: "",
         headBranch: branch,
@@ -878,7 +900,7 @@ export class PrStatusPoller {
         autoMergeEnabled: false,
       };
       this.tracker.lastKnown.set(sessionId, summary);
-      this.sessionManager.setPrStatus(sessionId, summary);
+      this.writePrStatus(sessionId, summary);
       this.sseBroadcast("pr_status", { updates: [this.attachAutomationState(summary)] });
       return "open";
     }
@@ -936,7 +958,7 @@ export class PrStatusPoller {
     };
 
     this.tracker.lastKnown.set(sessionId, summary);
-    this.sessionManager.setPrStatus(sessionId, summary);
+    this.writePrStatus(sessionId, summary);
     // pr_status updates the card; session_list updates the sidebar's closed state.
     if (prState === "closed" && this.sessionManager.markClosed(sessionId)) {
       this.sseBroadcast("session_list", { sessions: this.sessionManager.list() });

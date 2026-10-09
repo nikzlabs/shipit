@@ -26,6 +26,8 @@ export const FULLSTACK_TEMPLATES: ProjectTemplate[] = [
             "react-dom": "^19.0.0",
           },
           devDependencies: {
+            // Without it `next dev` runs `npm install` in the service, a second writer of node_modules.
+            "@types/node": "^24.0.0",
             "@types/react": "^19.0.0",
             "@types/react-dom": "^19.0.0",
             typescript: "^5.6.0",
@@ -53,7 +55,7 @@ export const FULLSTACK_TEMPLATES: ProjectTemplate[] = [
             plugins: [{ name: "next" }],
             paths: { "@/*": ["./src/*"] },
           },
-          include: ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+          include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
           exclude: ["node_modules"],
         },
         null,
@@ -98,11 +100,6 @@ compose: docker-compose.yml
     image: node:24-slim
     working_dir: /app
     command: npm run dev
-    # The agent edits files from a different container; native inotify events
-    # don't cross the mount-namespace boundary, so webpack's watcher misses
-    # them and Fast Refresh no-ops. Polling is the namespace-independent fix.
-    environment:
-      WATCHPACK_POLLING: "true"
     ports:
       - "3001:3001"
     volumes:
@@ -146,16 +143,6 @@ compose: docker-compose.yml
 
 export default defineConfig({
   server: { port: 5173, host: "0.0.0.0" },
-  // Astro builds on Vite. ShipIt runs this dev server in its own container,
-  // watching the workspace through a shared named volume. The agent edits
-  // files from a *different* container, so inotify events don't cross the
-  // mount-namespace boundary to the watcher and HMR silently no-ops. Polling
-  // is namespace-independent, so it's the reliable fix for hot reload here.
-  vite: {
-    server: {
-      watch: { usePolling: true, interval: 200 },
-    },
-  },
 });
 `,
       "src/pages/index.astro": `---

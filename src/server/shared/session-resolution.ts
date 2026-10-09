@@ -15,6 +15,23 @@ export function isTerminalPrResolved(session: SessionInfo): boolean {
   return lastUsedMs <= terminalMs;
 }
 
+// docs/324-scheduled-sessions — a run's "finished" (req 22) is ShipIt's saved
+// decision; any other session's is its PR's.
+export function isWorkResolved(session: SessionInfo): boolean {
+  return session.scheduleId ? !!session.runFinishedAt : isTerminalPrResolved(session);
+}
+
+export function workResolvedAt(session: SessionInfo): string | undefined {
+  return session.scheduleId ? session.runFinishedAt : resolvedAt(session);
+}
+
+// docs/324-scheduled-sessions req 20 — a run, and the sessions its spawn tree
+// holds, belong to the Scheduled view and not to the regular list.
+export function scheduledViewTest(sessions: readonly SessionInfo[]): (session: SessionInfo) => boolean {
+  const runIds = new Set(sessions.filter((s) => s.scheduleId).map((s) => s.id));
+  return (session) => !!session.scheduleId || (!!session.rootSessionId && runIds.has(session.rootSessionId));
+}
+
 // Legacy archived rows can retain the flag without owning a reservation.
 export function holdsActiveReservation(session: SessionInfo | undefined | null): boolean {
   return !!session?.keepPreviewRunning && !session.userArchived && !session.archived && !session.warm;
@@ -22,7 +39,7 @@ export function holdsActiveReservation(session: SessionInfo | undefined | null):
 
 // docs/298 — a broken checkout is not finished work, exactly as a pin is not.
 function isOwnWorkFinished(session: SessionInfo): boolean {
-  return isTerminalPrResolved(session)
+  return isWorkResolved(session)
     && !session.pinnedAt
     && !session.workspaceBlock
     && !holdsActiveReservation(session);

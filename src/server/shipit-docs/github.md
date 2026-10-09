@@ -344,8 +344,13 @@ Three consequences, all normal:
   merge then refuses with *"reports no checks yet"* and waits out a short window
   (about twenty seconds) before it will accept an empty check set, because an
   empty set moments after a push means "not registered yet", not "nothing gates
-  this". Call again in a few seconds. A repository whose workflows demonstrably
-  cannot fire for this pull request skips the wait.
+  this". Call again in a few seconds. The wait is skipped, and the first call
+  merges, when the repository's workflows demonstrably cannot fire for this pull
+  request — including a repository with **no workflow files at all**, neither on
+  the default branch nor in the pull request's own commit. Checks that come from
+  outside the repository (an external CI app) are enforced by GitHub's branch
+  protection where the owner made them required: GitHub then refuses the merge
+  until they pass, and ShipIt passes that refusal on as "not yet" (exit `8`).
 - **If the commit is blocked, the merge is refused outright.** A likely secret in
   the diff, a path ShipIt could not read, or an unresolved conflict means your
   work is *not* on the branch — merging would ship the previous state while
@@ -353,6 +358,31 @@ Three consequences, all normal:
 
 In a **Sandbox** session none of this applies: you own git there, so ShipIt
 commits and pushes nothing for you. Push your own work before you merge.
+
+#### The exit code says whether calling again can help
+
+Branch on the exit code, never on the message text — a refusal that will never
+clear starts with the same "Not merged" as one that clears in seconds.
+
+| Exit | Meaning |
+|---|---|
+| `0` | Merged, already merged, or (`--auto`) the request is recorded. |
+| `8` | **Not yet.** The checks have not registered, are still running, or describe an earlier commit (including the commit the command just pushed), or GitHub reports a required check as expected or in progress. The same command can succeed later with no change from you. |
+| `1` | Refused. Read the message: it says what has to change, and calling again unchanged is not expected to help. This includes a pull request ShipIt has no record of opening, and the session's previous pull request after it merged. |
+| `2` | Bad invocation (unknown flag, two merge methods). |
+
+Retry only on `8`, and cap the loop:
+
+```sh
+for i in 1 2 3 4 5 6; do
+  gh pr merge 42 --squash; code=$?
+  [ "$code" -eq 8 ] || break
+  sleep 10
+done
+```
+
+For checks that are still running, `--auto` (below) is usually the better
+answer — unless the turn needs the merge done before it goes on.
 
 #### `--auto` — merge it once the checks pass
 
@@ -372,6 +402,13 @@ what restarted CI.
 - **The user turning the repository's permission off cancels it too**, with a
   notice. So does the pull request being closed, becoming a draft, needing a
   review, or its checks failing — each says which.
+- **GitHub saying a required check is "expected" or "in progress" does not end
+  it.** Checks register gradually, so ShipIt can try the merge before a check
+  that branch protection requires has started. The request goes back to waiting
+  and ShipIt tries again. If GitHub keeps refusing this way, the transcript says
+  so, with GitHub's text, and the request keeps waiting — a required check
+  that never starts usually means branch protection names a check that no
+  workflow reports. Tell the user; do not re-arm.
 - **The result always appears in this session's transcript**, whether it merged
   or the request ended. Do not poll for it and do not call `--auto` repeatedly to
   check; a second call only re-arms the same request.

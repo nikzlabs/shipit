@@ -23,7 +23,6 @@ import { Spinner } from "../Spinner.js";
 import { usePrStore, useActiveAutoMerge } from "../../stores/pr-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { useSettingsStore } from "../../stores/settings-store.js";
 import { useGitStore } from "../../stores/git-store.js";
 import { useCommentStore } from "../../stores/comment-store.js";
 import { useCiDisplay } from "../../hooks/useCiDisplay.js";
@@ -33,6 +32,7 @@ import {
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
+  useAutoFixHalt,
 } from "../PrStatusControls.js";
 import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
@@ -179,7 +179,7 @@ export function PrStatusActions({
   const reviewDecision = usePrStore((s) => s.statusBySession[sessionId]?.reviewDecision);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
-  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const autoFixHalt = useAutoFixHalt(sessionId);
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   const ciDisplay = useCiDisplay(card.checks);
   if (!pr) return null;
@@ -190,7 +190,7 @@ export function PrStatusActions({
   const isCiFailed = ciDisplay.kind === "failure";
   const isConflicting = mergeable === "conflicting";
 
-  const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
+  const showFixButton = isCiFailed && !isAutoFixRunning && (autoFixHalt !== undefined || isAutoFixExhausted);
 
   const showConflictUi = isConflicting && rebaseStatus === "idle";
 

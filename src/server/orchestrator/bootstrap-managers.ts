@@ -9,7 +9,7 @@ import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
 import path from "node:path";
 import { createDockerClient } from "./docker-client.js";
-import type { AgentId, DockerMemoryStats } from "../shared/types.js";
+import type { AgentId, DockerMemoryStats, HostCpuStats } from "../shared/types.js";
 import type { SessionInfo } from "../shared/types.js";
 import { globalSystemPromptForTurn, type SystemPromptScope } from "./global-system-prompt.js";
 import { LogStore } from "./log-store.js";
@@ -57,13 +57,33 @@ import {
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
 import { repoMemoryDir } from "./repo-memory-manager.js";
 import { restoreSessionWorkspace } from "./services/session.js";
-import { reattachInFlightTurns } from "./restart-turn-reattach.js";
+import {
+  liveWorkAfterRestart,
+  reattachInFlightTurns,
+  stopWorkerAgent,
+  unprobedAfterRestart,
+  workerHasLiveWork,
+} from "./restart-turn-reattach.js";
+import { ScheduleStore } from "./schedule-store.js";
+import { ScheduleRunner } from "./schedule-runner.js";
+import { mountableRunDir, ScheduleNotes } from "./schedule-notes.js";
+import { ScheduleNotesRequestStore } from "./schedule-notes-request-store.js";
+import { ScheduleProposalStore } from "./schedule-proposal-store.js";
+import type { TurnEnd } from "./turn-settlement.js";
+import { createClaimSessionService } from "./services/claim-session.js";
+import {
+  createHeadlessSession,
+  headlessSessionDeps,
+  redispatchHeadlessPrompt,
+} from "./services/headless-sessions.js";
+import { interruptAgentTurn } from "./services/agent-interrupt.js";
 import { reportAbandonedRebases } from "./abandoned-rebase-sweep.js";
 import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
+import { runRequestedCompaction } from "./services/agent-compaction-request.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -73,6 +93,7 @@ import {
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { announceEgressOnContainerStart } from "./egress-container-start.js";
+import { announceGpuOnContainerStart } from "./gpu-container-start.js";
 import { isOverlayEligible, isOverlayEnabled } from "./overlay-session.js";
 import {
   publishDepDirOverlayBases,
@@ -151,6 +172,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   const { containerManager, dockerProxyServer } = await setupContainerManager({
     deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, resolveEgressConfig,
+    gpuAccess: () => credentialStore.getDeclaredSetting("advanced.sessionGpu"),
   });
 
   // Restore untrusted network identities before requests can mistake plugin callers for browsers.
@@ -208,11 +230,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         })
       : null);
 
+  // docs/324-scheduled-sessions — inside the workspace volume, outside the session tree.
+  const scheduleNotes = new ScheduleNotes(path.join(workspaceDir, "schedules"));
+  const scheduleStore = new ScheduleStore(databaseManager);
+
   const effectiveRunnerFactory = buildRunnerFactory({
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
     oomBreaker, presentStore, chatHistoryManager, credentialStore,
     ...(localAgentFactory ? { localAgentFactory } : {}),
     providerAccountManager,
+    runNotesDir: (run) => mountableRunDir({ store: scheduleStore, notes: scheduleNotes }, run),
   });
 
   const serviceManagers = new Map<string, ServiceManager>();
@@ -230,8 +257,17 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   if (containerManager) announceEgressOnContainerStart(containerManager, sseBroadcast);
 
   const latestMemoryStats: { value: DockerMemoryStats | null } = { value: null };
+  const latestHostCpu: { value: HostCpuStats | null } = { value: null };
 
   const registryHolder: { ref: SessionRunnerRegistry | null } = { ref: null };
+  if (containerManager) {
+    announceGpuOnContainerStart({
+      containerManager,
+      getRunner: (sessionId) => registryHolder.ref?.get(sessionId),
+      chatHistory: chatHistoryManager,
+      sessionManager,
+    });
+  }
   // Reuse the enforcer: its state prevents repeated reclaim against a stale memory reading.
   let idleEnforcer: (() => void) | null = null;
   const enforceIdleContainerLimit = () => {
@@ -300,6 +336,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   ));
 
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
+  const releaseStatusPollerRef: { ref: ReleaseStatusPoller | null } = { ref: null };
 
   // Pushes must survive runner disposal, so the scheduler belongs to the process.
   const autoPushScheduler = createAutoPushScheduler({
@@ -313,6 +350,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
 
   const mergeWatchManagerRef: { ref: MergeWatchManager | null } = { ref: null };
+  // Set before the restart reattach below, which rebinds a scheduled run's first turn.
+  const scheduleRunnerRef: { ref: ScheduleRunner | null } = { ref: null };
 
   const claudeOAuthRefresherRef: { ref: ClaudeOAuthRefresher | null } = { ref: null };
   const codexOAuthRefresherRef: { ref: CodexOAuthRefresher | null } = { ref: null };
@@ -621,6 +660,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // A second handle over the same table as the routes' own: the store holds a
   // database and no state, and a turn needs it before the route layer exists.
   const settingsProposals = new SettingsProposalStore(databaseManager);
+  const scheduleProposals = new ScheduleProposalStore(databaseManager);
+  const scheduleNotesRequests = new ScheduleNotesRequestStore(databaseManager);
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
   const restoreWorkspace = (sessionId: string) =>
@@ -642,6 +683,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       restoreWorkspace,
     }, turn);
   };
+  const runRequestedCompactionForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
+    const registry = registryHolder.ref;
+    if (!registry) return;
+    await runRequestedCompaction({
+      sessionManager,
+      runnerRegistry: registry,
+      chatHistoryManager,
+      isEnabled: () => credentialStore.getAgentCompaction(),
+    }, turn);
+  };
 
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
@@ -653,6 +704,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     markSessionAccountExhausted,
     getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
     runRequestedRestart: runRequestedRestartForTurn,
+    runRequestedCompaction: runRequestedCompactionForTurn,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -662,6 +714,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     activatePluginRepos,
     resolvePluginServices,
     settingsProposals,
+    scheduleProposals,
+    scheduleNotesRequests,
+    scheduledRuns: { store: scheduleStore, notes: scheduleNotes },
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
@@ -671,7 +726,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     readSystemPrompt: readSystemPromptApp,
     generateText: effectiveGenerateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
-    rebindDelivery: (deliveryId: string) => mergeWatchManagerRef.ref?.rebindDelivery(deliveryId),
+    getReleaseStatusPoller: () => releaseStatusPollerRef.ref ?? undefined,
+    rebindDelivery: (deliveryId: string) =>
+      mergeWatchManagerRef.ref?.rebindDelivery(deliveryId) ?? scheduleRunnerRef.ref?.rebindDelivery(deliveryId),
+    onTurnEnd: (end: TurnEnd) => scheduleRunnerRef.ref?.noteTurnEnd(end),
+    onRunnerSettled: (sessionId: string) => scheduleRunnerRef.ref?.decideRunFinished(sessionId),
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
     isAgentMergeInFlight: (sessionId: string) => agentMergeClaims.isMergeInFlight(sessionId),
     reconcileAgentMergeClaimsFor: (sessionId: string) => {
@@ -757,6 +816,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     },
     runnerRegistry,
   });
+  releaseStatusPollerRef.ref = releaseStatusPoller;
 
   let limitsRegistry: LimitsRegistry | null = null;
 
@@ -990,6 +1050,91 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
 
+  // Shared with the routes: its per-repo lock lives in the instance's closure.
+  const claimSessionService = createClaimSessionService({
+    sessionManager,
+    repoStore,
+    createGitManager,
+    createRepoGit,
+    githubAuthManager,
+    getSharedRepoDir: getBareCacheDir,
+    createSessionDirFull: createSessionDir,
+    sseBroadcast,
+    warmSessionForRepo,
+    waitForWarmSession,
+    ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
+    ...(containerManager ? { containerManager } : {}),
+    egressAllowlistStore,
+  });
+
+  // docs/324-scheduled-sessions — runs start through the same headless start as Quick Capture.
+  const scheduledRunStart = headlessSessionDeps({
+    sessionManager,
+    runnerRegistry,
+    claimService: claimSessionService,
+    createSessionDir,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    graduationDeps: {
+      sessionManager,
+      runnerRegistry,
+      repoStore,
+      createGitManager,
+      prStatusPoller,
+      sseBroadcast,
+      ensureAgentTokenFresh,
+      providerAccountManager,
+      credentialsDir,
+      credentialStore,
+      chatHistoryManager,
+      usageManager,
+    },
+    githubAuthManager,
+    prStatusPoller,
+    egressAllowlistStore,
+    containerManager,
+    oomBreaker,
+    loopDetector,
+    sseBroadcast,
+  });
+  const scheduleRunner = new ScheduleRunner({
+    store: scheduleStore,
+    sessionManager,
+    runnerRegistry,
+    chatHistoryManager,
+    repoStore,
+    credentialStore,
+    runtimeMode,
+    sseBroadcast,
+    startSession: (opts) => createHeadlessSession(scheduledRunStart, opts),
+    redispatch: (sessionId, opts) => redispatchHeadlessPrompt(scheduledRunStart, sessionId, opts),
+    unprobedSessions: unprobedAfterRestart,
+    liveWorkSessions: liveWorkAfterRestart,
+    probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
+    stopLiveWork: (sessionId) => stopWorkerAgent(containerManager, sessionId),
+    interruptTurn: (sessionId) => interruptAgentTurn({
+      sessionManager,
+      broadcastLog: (source, text) => broadcastLog(sessionId, source, text),
+      postInterruptCommitDeps: {
+        sessionManager,
+        chatHistoryManager,
+        prStatusPoller,
+        githubAuthManager,
+        credentialStore,
+        generateText: effectiveGenerateText,
+        createGitManager,
+        scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
+        sseBroadcast,
+      },
+    }, runnerRegistry.get(sessionId) ?? null),
+    statusCardEnabled: () => credentialStore.getSessionStatusCard(),
+    notes: scheduleNotes,
+  });
+  scheduleRunnerRef.ref = scheduleRunner;
+  prStatusPoller.setPrStateListener((sessionId) => scheduleRunner.decideRunFinished(sessionId));
+
   // Finish consult cards before adopted turns replace their in-progress history rows.
   reconcileOrphanedConsultCards(chatHistoryManager);
 
@@ -1065,7 +1210,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     cleanupContainer, backgroundHarnessRunner,
     effectiveRunnerFactory,
     serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured,
-    latestMemoryStats,
+    latestMemoryStats, latestHostCpu,
     registryHolder, enforceIdleContainerLimit,
     autoPushScheduler,
     dockerSecretsConfig, serviceEnvDir,
@@ -1087,6 +1232,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     mergeWatchManager,
     quotaContinuationManager,
     runRequestedRestartForTurn,
+    runRequestedCompactionForTurn,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,
@@ -1098,6 +1244,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     startupTimer,
     agentMergeClaims,
     agentMergeExecutor,
+    claimSessionService,
+    scheduleStore,
+    scheduleRunner,
+    scheduleProposals,
+    scheduleNotes,
+    scheduleNotesRequests,
   };
 }
 

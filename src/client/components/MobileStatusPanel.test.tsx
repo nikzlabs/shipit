@@ -55,12 +55,28 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={Date.parse("2026-05-19T12:00:00Z")}
       />,
     );
     expect(screen.getByText("Uptime")).toBeInTheDocument();
     expect(screen.queryByText("Subscription")).toBeNull();
     expect(screen.queryByText("Docker memory")).toBeNull();
+    expect(screen.queryByText("Machine CPU")).toBeNull();
+  });
+
+  it("shows the machine CPU load above Docker memory", () => {
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{}}
+        dockerMemory={{ usedBytes: 2 * 1024 ** 3, totalBytes: 8 * 1024 ** 3 }}
+        hostCpu={{ usedPercent: 15, cores: 16 }}
+        processStartedAt={null}
+      />,
+    );
+    const labels = screen.getAllByText(/^(Machine CPU|Docker memory)$/).map((el) => el.textContent);
+    expect(labels).toEqual(["Machine CPU", "Docker memory"]);
+    expect(screen.getByText("CPU 15% / 16 cores")).toBeInTheDocument();
   });
 
   it("refreshes subscription usage as soon as the dropdown opens", async () => {
@@ -69,6 +85,7 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{ "anthropic:sub": routed(makeSnap()) }}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={null}
       />,
     );
@@ -85,6 +102,7 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={Date.now()}
       />,
     );
@@ -102,6 +120,7 @@ describe("MobileStatusPanel", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={null}
       />,
     );
@@ -109,6 +128,41 @@ describe("MobileStatusPanel", () => {
     expect(screen.getByText("Subscription")).toBeInTheDocument();
     expect(screen.getByText("Quiet account")).toBeInTheDocument();
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+  });
+});
+
+describe("MobileStatusPanel above 90%", () => {
+  beforeEach(() => {
+    resetAutoRefreshThrottle();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } })));
+  });
+
+  // A touch screen has no tooltip, so here the reset time has nowhere else to be read.
+  it("renders an account's name as the element before its pill, not inside it", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{
+          "anthropic:sub": routed(makeSnap({
+            routeId: "acct-work",
+            session: { usedPct: 96, resetAt: FUTURE_SESSION_RESET },
+            weekly: { usedPct: 94, resetAt: FUTURE_WEEKLY_RESET },
+          })),
+        }}
+        dockerMemory={null}
+        hostCpu={null}
+        processStartedAt={null}
+      />,
+    );
+
+    const name = screen.getByText("nicolas.zherebtsov@gmail.com");
+    const pill = screen.getByText(/5h 96%/).closest("[data-meter-pct]")!.parentElement!;
+    expect(name.nextElementSibling).toBe(pill);
+    expect(name.parentElement).toHaveClass("flex-col");
+    expect(pill).toHaveTextContent(/5h 96%\s*resets in .*7d 94%\s*resets in /);
   });
 });
 
@@ -123,6 +177,7 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
       <MobileStatusPanel
         subscriptionLimits={{}}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={Date.parse("2026-05-19T12:00:00Z")}
       />,
     );
@@ -140,6 +195,7 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
       <MobileStatusPanel
         subscriptionLimits={{ "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) }}
         dockerMemory={null}
+        hostCpu={null}
         processStartedAt={null}
       />,
     );

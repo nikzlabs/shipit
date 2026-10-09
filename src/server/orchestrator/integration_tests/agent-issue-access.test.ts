@@ -146,6 +146,21 @@ describe("Integration: agent issue access (docs/175)", () => {
           assignee: { login: "octocat" },
         });
       }
+      if (url.includes("/repos/acme/planning/issues?")) {
+        // 250 issues, newest first, three pages; only the oldest matches "pagination".
+        const page = Number(new URL(url).searchParams.get("page"));
+        const size = [100, 100, 50][page - 1] ?? 0;
+        return jsonResponse(
+          Array.from({ length: size }, (_, i) => {
+            const n = 250 - (page - 1) * 100 - i;
+            return {
+              id: n, number: n, title: n === 1 ? "Follow pagination in issue list" : `Planning ${n}`,
+              html_url: `https://github.com/acme/planning/issues/${n}`, state: "open",
+              labels: n % 2 === 0 ? ["even"] : [], assignee: null,
+            };
+          }),
+        );
+      }
       const state = new URL(url).searchParams.get("state");
       const open = {
         id: 1, number: 1, title: "Open GH", html_url: "https://github.com/octocat/hello-world/issues/1",
@@ -317,7 +332,7 @@ describe("Integration: agent issue access (docs/175)", () => {
       "issue", "list", "--tracker", "roadmap", "--state", "closed", "--json",
     ]);
     expect(exitCode).toBe(0);
-    const issues = JSON.parse(stdout) as { identifier: string }[];
+    const { issues } = JSON.parse(stdout) as { issues: { identifier: string }[] };
     expect(issues.map((i) => i.identifier)).toEqual(["roadmap#TRACKER-2"]);
   });
 
@@ -327,7 +342,7 @@ describe("Integration: agent issue access (docs/175)", () => {
       "issue", "list", "--tracker", "roadmap", "--state", "all", "--json",
     ]);
     expect(exitCode).toBe(0);
-    const issues = JSON.parse(stdout) as { identifier: string }[];
+    const { issues } = JSON.parse(stdout) as { issues: { identifier: string }[] };
     expect(issues.map((i) => i.identifier).sort()).toEqual(["roadmap#TRACKER-1", "roadmap#TRACKER-2"]);
   });
 
@@ -336,7 +351,7 @@ describe("Integration: agent issue access (docs/175)", () => {
       "issue", "list", "--state", "open", "--json",
     ]);
     expect(exitCode).toBe(0);
-    const issues = JSON.parse(stdout) as { identifier: string }[];
+    const { issues } = JSON.parse(stdout) as { issues: { identifier: string }[] };
     expect(issues.map((i) => i.identifier)).toEqual(["octocat/hello-world#1"]);
   });
 
@@ -345,7 +360,7 @@ describe("Integration: agent issue access (docs/175)", () => {
       "issue", "list", "--state", "closed", "--json",
     ]);
     expect(exitCode).toBe(0);
-    const issues = JSON.parse(stdout) as { identifier: string }[];
+    const { issues } = JSON.parse(stdout) as { issues: { identifier: string }[] };
     expect(issues.map((i) => i.identifier)).toEqual(["octocat/hello-world#2"]);
   });
 
@@ -354,11 +369,48 @@ describe("Integration: agent issue access (docs/175)", () => {
       "issue", "list", "--state", "all", "--json",
     ]);
     expect(exitCode).toBe(0);
-    const issues = JSON.parse(stdout) as { identifier: string }[];
+    const { issues } = JSON.parse(stdout) as { issues: { identifier: string }[] };
     expect(issues.map((i) => i.identifier).sort()).toEqual([
       "octocat/hello-world#1",
       "octocat/hello-world#2",
     ]);
+  });
+
+  describe("a tracker longer than one page", () => {
+    it("search finds the oldest issue, which the first page never held", async () => {
+      const { stdout, exitCode } = await runIssueShim([
+        "issue", "list", "--tracker", "planning", "--state", "all", "--search", "PAGINATION", "--json",
+      ]);
+      expect(exitCode).toBe(0);
+      const out = JSON.parse(stdout) as { issues: { identifier: string }[]; total: number; truncated: boolean };
+      expect(out.issues.map((i) => i.identifier)).toEqual(["planning#1"]);
+      expect(out).toMatchObject({ total: 1, truncated: false });
+    });
+
+    it("--json says what the default limit cut and how to get the rest", async () => {
+      const { stdout, exitCode } = await runIssueShim(["issue", "list", "--tracker", "planning", "--json"]);
+      expect(exitCode).toBe(0);
+      const out = JSON.parse(stdout) as { issues: { identifier: string }[]; total: number; truncated: boolean; note: string };
+      expect(out.issues).toHaveLength(100);
+      // Equal priority keeps the read order, so the limit keeps the newest 100.
+      expect(out.issues[0].identifier).toBe("planning#250");
+      expect(out.issues[99].identifier).toBe("planning#151");
+      expect(out).toMatchObject({ total: 250, truncated: true });
+      expect(out.note).toContain("Showing 100 of 250");
+      expect(out.note).toContain("--limit");
+    });
+
+    it("text mode says what was cut, and --label with --limit narrows the rows", async () => {
+      const cut = await runIssueShim(["issue", "list", "--tracker", "planning"]);
+      expect(cut.stdout).toContain("Showing 100 of 250 matching issues");
+
+      const narrowed = await runIssueShim([
+        "issue", "list", "--tracker", "planning", "--label", "even", "--limit", "200",
+      ]);
+      expect(narrowed.exitCode).toBe(0);
+      expect(narrowed.stdout.match(/planning#\d+/g)).toHaveLength(125);
+      expect(narrowed.stdout).not.toContain("Showing");
+    });
   });
 
   it("accepts `issue create` and brokers it to the create route (docs/187 — no longer human-gated)", async () => {

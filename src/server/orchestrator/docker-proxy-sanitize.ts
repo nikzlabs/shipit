@@ -1,6 +1,8 @@
 import path from "node:path";
+import type Docker from "dockerode";
 
 import type { SessionInfo } from "./docker-proxy-helpers.js";
+import { gpuRequestRefusal, noGpuWhy, type SessionGpu } from "./session-gpu.js";
 import { PARENT_SESSION_LABEL, forwardToDocker } from "./docker-proxy-helpers.js";
 import {
   resolveUnderWorkspace,
@@ -169,6 +171,50 @@ export function sanitizeExecCreate(body: Record<string, unknown>): { error?: str
   return {};
 }
 
+/**
+ * A GPU request widens the device cgroup to the GPU's own devices, which is the access the GPU
+ * switch grants, so it is the one device field a child may carry (docs/325-session-gpu-access).
+ * Each entry is rebuilt from the fields checked: Docker matches keys case-insensitively, so a
+ * nested `driver` alias forwarded as received would be honoured unread.
+ */
+export function sanitizeDeviceRequests(
+  value: unknown,
+  gpu: SessionGpu | undefined,
+): { error?: string; requests?: Docker.DeviceRequest[] } {
+  if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) return {};
+  if (!Array.isArray(value)) return { error: "DeviceRequests must be a list" };
+  if (gpu?.state !== "granted") {
+    return { error: `GPU requests are not allowed in this session, because ${noGpuWhy(gpu)}` };
+  }
+  const requests: Docker.DeviceRequest[] = [];
+  for (const entry of value as unknown[]) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { error: "A device request must be an object" };
+    }
+    const { Driver, Count, DeviceIDs, Capabilities, Options, ...rest } = entry as Record<string, unknown>;
+    const extra = Object.keys(rest)[0];
+    if (extra !== undefined) return { error: `Device request field "${extra}" is not allowed` };
+    const refusal = gpuRequestRefusal({
+      driver: Driver, capabilities: Capabilities, options: Options, capabilitiesRequired: true,
+    });
+    if (refusal) return { error: `Only NVIDIA GPU device requests are allowed: ${refusal}` };
+    if (Count !== undefined && Count !== null && !Number.isInteger(Count)) {
+      return { error: "Device request Count must be an integer" };
+    }
+    if (DeviceIDs !== undefined && DeviceIDs !== null
+      && !(Array.isArray(DeviceIDs) && DeviceIDs.every((id) => typeof id === "string"))) {
+      return { error: "Device request DeviceIDs must be a list of strings" };
+    }
+    requests.push({
+      Driver: typeof Driver === "string" ? Driver : "",
+      ...(typeof Count === "number" ? { Count } : {}),
+      ...(Array.isArray(DeviceIDs) ? { DeviceIDs: [...DeviceIDs] } : {}),
+      Capabilities: (Capabilities as string[][]).map((set) => [...set]),
+    });
+  }
+  return { requests };
+}
+
 export async function sanitizeContainerCreate(
   body: Record<string, unknown>,
   session: SessionInfo,
@@ -243,12 +289,16 @@ export async function sanitizeContainerCreate(
 
   // A child keeps Docker's default capability set, which includes CAP_MKNOD, so widening the
   // device cgroup is a device mapping the container makes for itself.
-  for (const field of ["Devices", "DeviceCgroupRules", "DeviceRequests"]) {
+  for (const field of ["Devices", "DeviceCgroupRules"]) {
     const value = hostConfig[field];
     if (Array.isArray(value) && value.length > 0) {
       return { error: "Device mappings are not allowed" };
     }
   }
+  const deviceRequests = sanitizeDeviceRequests(hostConfig.DeviceRequests, session.gpu);
+  if (deviceRequests.error) return { error: deviceRequests.error };
+  if (deviceRequests.requests) hostConfig.DeviceRequests = deviceRequests.requests;
+  else delete hostConfig.DeviceRequests;
 
   const pinned = await pinMountPaths(hostConfig, session.hostWorkspaceDir);
   if (pinned.error) return { error: pinned.error };

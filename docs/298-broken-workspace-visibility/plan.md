@@ -156,6 +156,24 @@ That keeps req 2's "one mechanism" intact — this is a second *caller* of one
 evaluator, not a second evaluator. Cost is three git reads, off the critical
 path of showing the session, beside the activation reads that already run there.
 
+**Read-only was not lock-free.** `git status` holds `.git/index.lock` for its
+whole scan, so that it can write back a refreshed index, and a `git reset` or
+`git add` that starts in that window fails at once instead of waiting. A rewind
+sent just after connect failed that way (planning#635). The orchestrator now
+runs all of its own git with `GIT_OPTIONAL_LOCKS=0` (`disableGitOptionalLocks`
+in `git-config.ts`, let through simple-git's environment guard by
+`git-hooks-guard.ts`), so none of its `git status` reads takes that lock.
+Guards: `shared/git-optional-locks.test.ts`,
+`integration_tests/workspace-block-activation.test.ts`.
+
+Two limits, both measured on git 2.39. The variable does not cover a
+working-tree `git diff`, which still refreshes the index under the lock; the
+orchestrator has no such caller — its diffs compare commits or use `--cached` —
+and one added later would bring the collision back. And a status that cannot
+save its refresh repeats it: files whose mtime or ctime changed while their
+content did not are read again by every orchestrator status, until a `git add`
+or a git command in the session container rewrites the index.
+
 **Activation owns exactly one kind: `conflict`.** It cannot decide `secret` (that
 needs `autoCommit`'s scan) or either `blocked-by-push` cause (that needs a push
 attempt). `unreadable` it decides only *partly*, which is the subtle one: `git

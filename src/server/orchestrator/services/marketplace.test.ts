@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitManager } from "../../shared/git.js";
 import { AgentRegistry } from "../../shared/agent-registry.js";

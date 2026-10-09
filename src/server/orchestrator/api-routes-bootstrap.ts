@@ -158,6 +158,9 @@ export async function registerBootstrapRoutes(
           onAutoFixCiEnabled: () => {
             deps.prStatusPoller?.broadcastAllSnapshots();
           },
+          onAutoFixCiDisabled: () => {
+            deps.prStatusPoller?.withdrawAllAutoFix();
+          },
           onSessionStatusCardEnabled: () => {
             void markAllSessionStatusesStale({ sessionManager: deps.sessionManager });
           },

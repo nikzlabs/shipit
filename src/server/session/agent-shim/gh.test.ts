@@ -764,8 +764,49 @@ describe("gh pr merge", () => {
         },
       },
     );
-    expect(out.exitCode).not.toBe(0);
+    expect(out.exitCode).toBe(1);
     expect(out.stderr).toContain("required check(s) failing");
+  });
+
+  it("exits 8 for a refusal that clears by itself, so a retry loop can tell it apart", async () => {
+    const { run } = makeRunner();
+    const refused = await run(
+      ["pr", "merge", "24"],
+      {
+        "POST /agent-ops/pr/24/merge": {
+          status: 200,
+          body: { success: false, message: "Not merged — PR #24 reports no checks yet.", retryable: true },
+        },
+      },
+    );
+    expect(refused.exitCode).toBe(8);
+    expect(refused.stderr).toContain("no checks yet");
+
+    const held = await run(
+      ["pr", "merge", "24"],
+      {
+        "POST /agent-ops/pr/24/merge": {
+          status: 409,
+          body: { error: "Pushed 1 commit that had not reached GitHub yet.", retryable: true },
+        },
+      },
+    );
+    expect(held.exitCode).toBe(8);
+    expect(held.stderr).toContain("Pushed 1 commit");
+  });
+
+  it("exits 1 for a refusal that waiting cannot clear", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "merge", "24"],
+      {
+        "POST /agent-ops/pr/24/merge": {
+          status: 403,
+          body: { error: "Not merged — ShipIt has no record of opening a pull request for this session." },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(1);
   });
 
   it("surfaces a 403 gate (not enabled for this sandbox) as an error", async () => {

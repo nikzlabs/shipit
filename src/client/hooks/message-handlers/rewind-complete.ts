@@ -3,7 +3,19 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useFileStore, noteUploadsChanged } from "../../stores/file-store.js";
 import { useGitStore } from "../../stores/git-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import type { ToastData } from "../../components/Toast.js";
 import type { Handler } from "./types.js";
+
+let undoToast: { sessionId: string; toast: ToastData } | null = null;
+
+// planning#637 — a later turn is not in the rewind's snapshot, so the server stops honouring the undo.
+export function retireRewindUndo(sessionId: string): void {
+  useSessionStore.getState().dropRewindRecovery(sessionId);
+  if (undoToast?.sessionId !== sessionId) return;
+  const ui = useUiStore.getState();
+  if (ui.toast === undoToast.toast) ui.setToast(null);
+  undoToast = null;
+}
 
 export const handleRewindComplete: Handler<WsRewindComplete> = (_ctx, data) => {
   const session = useSessionStore.getState();
@@ -44,13 +56,15 @@ export const handleRewindComplete: Handler<WsRewindComplete> = (_ctx, data) => {
       expiresAt: data.snapshotExpiresAt,
     };
     session.setRewindRecovery(recovery);
-    useUiStore.getState().setToast({
+    const toast: ToastData = {
       message: "Rewound.",
       duration: 10000,
       action: {
         label: "Undo",
         onClick: () => window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: recovery.sessionId } })),
       },
-    });
+    };
+    undoToast = { sessionId: recovery.sessionId, toast };
+    useUiStore.getState().setToast(toast);
   }
 };

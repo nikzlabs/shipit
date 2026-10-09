@@ -238,7 +238,7 @@ async function runDispatchedTurnInner(
     ? ""
     : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
-  // A settings outcome is NOT consumed here (docs/299 req 8): the receipt rides
+  // A card outcome is NOT consumed here (docs/299 req 8): the receipt rides
   // the turn and is settled by it, so a turn that never reaches the agent leaves
   // the outcome for the next one.
   //
@@ -248,9 +248,9 @@ async function runDispatchedTurnInner(
   // at all (the pending notice, the bug outcome and the dependency gap are all
   // excluded above), because its prompt is an instruction to summarise and its
   // result replaces the context a notice would have been read in.
-  const settingsOutcome = isCompactRequest
-    ? null
-    : deps.settingsOutcomeNotice?.(runner.sessionId) ?? null;
+  const cardOutcomes = isCompactRequest
+    ? []
+    : deps.cardOutcomeNotices?.(runner.sessionId) ?? [];
   // docs/303-cross-repo-session-proposal req 11 — the same delivery rule as above.
   const repoSessionOutcome = isCompactRequest
     ? null
@@ -259,7 +259,7 @@ async function runDispatchedTurnInner(
   const sessionMessageOutcome = isCompactRequest
     ? null
     : deps.sessionMessageOutcomeNotice?.(runner.sessionId) ?? null;
-  const noticeDeliveries = [settingsOutcome, repoSessionOutcome, sessionMessageOutcome]
+  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome]
     .filter((d) => d !== null);
 
   // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
@@ -273,7 +273,7 @@ async function runDispatchedTurnInner(
   const agentPrefix = [
     pendingNotice,
     bugOutcomeNotice,
-    settingsOutcome?.notice,
+    ...cardOutcomes.map((o) => o.notice),
     repoSessionOutcome?.notice,
     sessionMessageOutcome?.notice,
     reset?.agentPrefix,
@@ -286,7 +286,9 @@ async function runDispatchedTurnInner(
   // heads the prompt, so its offset is the prompt's.
   const insertedStatusContext = locateStatusContext(agentPrefix, statusContext);
   const role = deps.takeRoleInstructions?.(runner.sessionId) ?? { instructions: "" };
-  const roleContext = role.instructions;
+  // Keyed by the dispatch's delivery id rather than taken, so a re-sent first prompt carries it again.
+  const scheduledRun = deps.scheduledRunContext?.(runner.sessionId, opts.deliveryId) ?? "";
+  const roleContext = [role.instructions, scheduledRun].filter(Boolean).join("\n\n");
   takes.add(role.repark);
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +

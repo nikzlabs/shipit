@@ -313,7 +313,7 @@ describe("SessionRunner", () => {
     const deps = steerDeps({ liveSteering: false });
     const saved: QueuedMessage[] = [];
     deps.answerHold = {
-      isAwaitingAnswer: () => true,
+      automaticTurnsHeld: () => true,
       setAwaitingAnswer: vi.fn(),
       holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry); return saved.length; },
       heldTurns: () => [],
@@ -350,7 +350,7 @@ describe("SessionRunner", () => {
     const deps = steerDeps({ liveSteering: true });
     const saved: string[] = [];
     deps.answerHold = {
-      isAwaitingAnswer: () => true,
+      automaticTurnsHeld: () => true,
       setAwaitingAnswer: vi.fn(),
       holdTurn: (_id: string, entry: QueuedMessage) => { saved.push(entry.text); return saved.length; },
       heldTurns: () => [],

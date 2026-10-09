@@ -15,12 +15,15 @@ import {
   classifyComposeFailure,
   composeBuildModel,
   ComposeValidationError,
+  declaresHome,
   extractContainerPort,
   generateComposeOverride,
+  mountProjectFileCopies,
   normalizedUser,
   parseComposeContent,
   pluginStubModel,
   resolvedPersistUse,
+  requestsGpu,
   rewriteResolvedModel,
   serializeComposeModel,
   unescapeComposeDollars,
@@ -35,9 +38,11 @@ import {
   type DockerSocketGrant,
   type OverlayDepDirVolume,
   type PersistVolume,
+  type ProjectFileCopy,
   type SnapshotRewrite,
 } from "./compose-generator.js";
 import { preparePersistDir } from "./compose-persist.js";
+import { noGpuWhy, type SessionGpu } from "./session-gpu.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
 import {
@@ -207,6 +212,11 @@ export interface ServiceManagerOptions {
   opsSession?: boolean;
   /** Read at each parse (docs/318 req 8); absent means not granted. */
   dockerSocketGrant?: () => DockerSocketGrant;
+  /**
+   * The agent container's GPU state, awaited at a start whose services ask for a GPU, since Compose
+   * can start before the container decides it (docs/325-session-gpu-access req 3).
+   */
+  sessionGpu?: () => Promise<SessionGpu | undefined>;
   networkJoinFn?: (networkName: string) => Promise<void>;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
@@ -232,8 +242,6 @@ export interface ServiceManagerOptions {
    * (docs/318-compose-remaining-escapes, Mechanism 1).
    */
   confinedCompose?: ConfinedComposeApi;
-  /** Docker-host path of a file in the session's state directory; identity when absent. */
-  composeFileDaemonPath?: (orchestratorPath: string) => Promise<string>;
 }
 
 export interface ServiceManagerEvents {
@@ -277,6 +285,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly dockerSocketGrant: () => DockerSocketGrant;
+  private readonly sessionGpu: () => Promise<SessionGpu | undefined>;
+  // The services the last snapshot started without the GPU they asked for, with why.
+  private gpuRemovals = new Map<string, string>();
   private noProjectCompose: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
@@ -292,10 +303,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly secretsInternalDir?: string;
   private readonly persistDevicePath: (hostPath: string) => Promise<string>;
   private readonly confined: ConfinedComposeApi;
-  private readonly composeFileDaemonPath: (orchestratorPath: string) => Promise<string>;
   private readonly startRecord: ComposeStartRecord;
-  // Starts between their resolve and their end; their files are not pruned.
-  private readonly startsInFlight = new Set<string>();
   private legacyOverrideRemoved = false;
 
   private readonly secrets: ServiceSecretsResolver;
@@ -361,7 +369,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       daemonPath: (p) => Promise.resolve(p),
       ...(opts.stackName ? { stackName: opts.stackName } : {}),
     });
-    this.composeFileDaemonPath = opts.composeFileDaemonPath ?? ((p) => Promise.resolve(p));
     this.startRecord = new ComposeStartRecord(this.composeStateDir);
     this.compose = new ComposeCli({
       sessionId: opts.sessionId,
@@ -380,6 +387,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
     this.dockerSocketGrant = opts.dockerSocketGrant ?? (() => "not_granted");
+    this.sessionGpu = opts.sessionGpu ?? (() => Promise.resolve(undefined));
     this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
@@ -841,6 +849,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     for (const { service, message } of pending) this.reportPortConflict(service, message);
   }
 
+  private reportGpuRemovals(started: string[]): void {
+    for (const name of started) {
+      const message = this.gpuRemovals.get(name);
+      if (message) this.appendShipitLog(name, message);
+    }
+  }
+
   private reportPortConflict(service: string, message: string): void {
     console.warn(`[compose:${this.sessionId}] ${message}`);
     this.appendShipitLog(service, message);
@@ -976,6 +991,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
       // Persist refusals after followers decide whether to replay the container backlog.
       this.reportPortRefusals();
+      this.reportGpuRemovals(autoNames);
       this.warnOnAmbiguousPreviewPorts();
 
       this.emit("stack_ready");
@@ -1013,6 +1029,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       if (this.stoppedByUser.has(name)) return;
       // Attach before the poll can consume the replay anchor with a follower we would replace.
       this.streamLogs(name);
+      this.reportGpuRemovals([name]);
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
     } catch (err) {
@@ -1041,6 +1058,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       });
       if (this.stoppedByUser.has(name)) return;
       this.streamLogs(name);
+      this.reportGpuRemovals([name]);
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
     } catch (err) {
@@ -1215,7 +1233,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     await this.stopRunningServices();
     try {
       await this.compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
-      this.startRecord.clear(this.startsInFlight);
+      this.startRecord.clear();
     } catch {
       // Best-effort cleanup
     }
@@ -1274,6 +1292,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       await this.poller.pollOnce();
       for (const name of autoNames) this.ensureLogFollower(name);
       this.disarmLogFollowerSince(autoNames);
+      this.reportGpuRemovals(autoNames);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
     }
@@ -1381,7 +1400,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const pluginNames = new Set(admitted.map((svc) => svc.name));
     const projectNames = names.filter((name) => !pluginNames.has(name));
     const files = this.startRecord.allocate();
-    this.startsInFlight.add(files.id);
     try {
       this.removeLegacyOverride();
       if (this.noProjectCompose || projectNames.length === 0) {
@@ -1436,6 +1454,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         persist = { device: await this.persistDevicePath(scratchDir) };
       }
       const workspaceDevice = await this.workspaceDevice();
+      const gpu = Object.values(services).some(requestsGpu) ? await this.sessionGpu() : undefined;
       const rewrite = rewriteResolvedModel(model, {
         sessionId: this.sessionId,
         workspaceDir: this.workspaceDir,
@@ -1444,7 +1463,12 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         ...(workspaceDevice ? { workspaceDevice } : {}),
         ...(persist ? { persist } : {}),
         ...(this.stackName ? { stackName: this.stackName } : {}),
+        gpuGranted: gpu?.state === "granted",
       });
+      this.gpuRemovals = new Map(rewrite.gpuRemoved.map((name) => [
+        name,
+        `${name} asks for a GPU. ShipIt started it without one, because ${noGpuWhy(gpu)}.`,
+      ]));
       const buildModel = serializeComposeModel(composeBuildModel(rewrite.model, rewrite.projectFiles, stubs));
       await this.copyProjectFiles(rewrite);
       writeRootOnlyFile(files.snapshotFile, serializeComposeModel(rewrite.model));
@@ -1461,6 +1485,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         return {
           ...rest,
           user: normalizedUser(services[name]?.user),
+          declaresHome: declaresHome(services[name]?.environment),
           trustedOpsProxy: check.trustedOpsProxies.has(name),
           ...(mounts ? { workspaceMounts: mounts } : {}),
         };
@@ -1481,7 +1506,6 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         ...this.serviceEnvMount(),
       };
     } catch (err) {
-      this.startsInFlight.delete(files.id);
       this.startRecord.discard(files.id);
       throw err;
     }
@@ -1508,9 +1532,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   }
 
   // The daemon would bind a project secret or config from the workspace on the Docker host, where
-  // it follows symlinks; it binds ShipIt's copy instead, read through the confined helper.
+  // it follows symlinks; it mounts ShipIt's copy instead, read through the confined helper. The
+  // copy is in the workspace volume, so a service gets it from the volume and not by a host path.
   private async copyProjectFiles(rewrite: SnapshotRewrite): Promise<void> {
     if (rewrite.projectFiles.length === 0) return;
+    const copies: ProjectFileCopy[] = [];
     const dir = this.projectFileCopiesDir();
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
@@ -1528,8 +1554,23 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       fs.writeFileSync(tmp, bytes, { mode: 0o644 });
       fs.renameSync(tmp, copy);
       const block = rewrite.model[ref.kind] as Record<string, Record<string, unknown>>;
-      block[ref.name].file = await this.composeFileDaemonPath(copy);
+      block[ref.name].file = copy;
+      if (this.workspaceVolume) copies.push({ kind: ref.kind, name: ref.name, subpath: this.volumeSubpathOf(copy) });
     }
+    if (this.workspaceVolume) mountProjectFileCopies(rewrite.model, copies, this.workspaceVolume);
+  }
+
+  // Never fall back to a host path: Docker mounts an empty directory for one it cannot find.
+  private volumeSubpathOf(file: string): string {
+    const subpath = this.workspaceSubpath
+      ? path.posix.join(this.workspaceSubpath, path.posix.relative(this.workspaceDir, file))
+      : "..";
+    if (subpath.startsWith("..")) {
+      throw this.recordComposeFailure(new ComposeValidationError(
+        `ShipIt could not locate ${file} inside the workspace volume, so it cannot mount it into a service.`,
+      ));
+    }
+    return subpath;
   }
 
   // The override lived in the state directory before each start wrote its own; it holds credentials.
@@ -1597,8 +1638,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
       settle();
       if (start) {
-        this.startsInFlight.delete(start.id);
-        this.startRecord.prune(this.startsInFlight);
+        this.startRecord.release(start.id);
+        this.startRecord.prune();
       }
       // Give the network join and first poll a full window after up settles.
       for (const name of counted) {
@@ -1705,6 +1746,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
       this.disarmLogFollowerSince([name]);
+      this.reportGpuRemovals([name]);
     } catch (err) {
       const msg = (err as Error).message;
       if (this._installRunning) {
@@ -1829,6 +1871,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
       this.disarmLogFollowerSince(names);
+      this.reportGpuRemovals(names);
     } catch (err) {
       const msg = (err as Error).message;
       for (const name of names) {

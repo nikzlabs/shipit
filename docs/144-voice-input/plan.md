@@ -156,10 +156,30 @@ split into single tokens, since nova-2 keyword boosting is per-word). The
 two layers reinforce the same `CODING_VOCABULARY` — bias recognition
 toward the right tokens, then clean up whatever still slips through.
 
+**Layout is worked out from the content.** Speech-to-text returns one
+unbroken block, so several dictated points used to reach the composer as
+a wall of text. Cleanup therefore also lays the message out: parallel
+points become a Markdown bullet list, counted or ordered steps a
+numbered list, and separate topics get a blank line between them. Words
+that only marked where one item ends and the next begins ("first", "and
+then") become the list markers and every other word stays, so this is
+layout, not rephrasing. A short message or a single request stays one
+paragraph. Lists and paragraphs are the whole vocabulary — no headings,
+emphasis, tables or code fences — because the composer and the user's
+own bubble (`TranscriptRow.tsx`, `whitespace-pre-wrap`) both show the
+text as plain text, so it has to read cleanly with the markers visible.
+The rules live in `cleanup-prompt.md`. One client consequence: a
+transcript that opens with a list (two items or more, so a sentence that
+merely starts "1." is left alone) is spliced onto its own lines, clear of
+the text before and after the cursor (`spliceTranscript` in
+`insert-transcript.ts`), because a marker glued to a half-typed line is
+not a list.
+
 **Failure mode — fall through, don't block.** If the cleanup provider
 errors, times out (>3 s), or returns something obviously wrong (empty
 string, dramatically longer than input, contains telltale "Here is
-the cleaned version:" preamble), the raw transcript is inserted
+the cleaned version:" preamble — unless the speaker said those opening
+words themselves, as in "Here's what I want:"), the raw transcript is inserted
 instead and a small non-fatal warning appears next to the mic button
 ("Cleanup unavailable — inserted raw transcript"). The user is never
 blocked on a flaky cleanup call. The warning is transient: it clears

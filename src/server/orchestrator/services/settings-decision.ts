@@ -14,8 +14,15 @@ import type { SettingsOperation, SettingsOperationDeps } from "./settings-operat
 import { getSettingForAgent } from "./settings-read.js";
 import type { SettingDetailEntry, SettingsReadDeps } from "./settings-read.js";
 import { baselineTargetOf } from "./settings-propose.js";
-import { claimSettingsProposal, transitionSettingsProposal } from "./settings-proposal.js";
-import type { SettingsProposalDeps, SettingsProposalPersister } from "./settings-proposal.js";
+import { textChangeSides } from "./settings-text-change.js";
+import {
+  claimSettingsProposal,
+  loadSettingsProposal,
+  SETTINGS_PROPOSAL_CARD,
+  transitionSettingsProposal,
+} from "./settings-proposal.js";
+import type { SettingsProposalDeps } from "./settings-proposal.js";
+import { currentDecisionCard } from "./card-claim.js";
 import { getErrorMessage } from "../validation.js";
 import { ServiceError } from "./types.js";
 
@@ -56,9 +63,6 @@ export type SettingsDecisionAction = "apply" | "dismiss";
 
 export interface SettingsDecisionDeps extends SettingsProposalDeps {
   proposals: SettingsProposalStore;
-  chatHistoryManager: SettingsProposalPersister & {
-    getSettingsProposalCard(sessionId: string, cardId: string): SettingsProposalCard | undefined;
-  };
   read: SettingsReadDeps;
   baseline: SettingBaselineDeps;
   operations: SettingsOperationDeps;
@@ -68,20 +72,6 @@ export interface SettingsDecisionResult {
   card: SettingsProposalCard;
   /** False when the click found nothing to do: already resolved, or already claimed. */
   acted: boolean;
-}
-
-function loadRow(
-  deps: SettingsDecisionDeps,
-  sessionId: string,
-  cardId: string,
-): SettingsProposalRow {
-  const row = deps.proposals.get(cardId);
-  // Session-scoped: a card id names a row in one session's transcript, so a
-  // decision arriving under another session must not reach it.
-  if (row?.sessionId !== sessionId) {
-    throw new ServiceError(404, "That settings proposal is not in this session.");
-  }
-  return row;
 }
 
 function declarationOf(row: SettingsProposalRow): AnySettingDeclaration {
@@ -167,12 +157,23 @@ async function sideChangeMismatch(
   for (const side of card.alsoChanges ?? []) {
     const declaration = findSetting(side.key);
     if (!declaration) continue;
+    // The read shows only whether such a field is set, or a part of it, while a
+    // create card shows what the agent wrote: the two are not comparable.
+    if (declaration.emits.kind === "configured_only" || declaration.emits.kind === "derived") continue;
     const entry = await getSettingForAgent(deps.read, sessionId, side.key);
     if (!entry.readable) continue;
     const stored = row.target.item
       ? entry.items?.find((candidate) => candidate.address === row.target.item)
       : entry;
-    if (!stored || stored.display === side.to) continue;
+    if (!stored) continue;
+    if (side.textChange) {
+      // `to` is a summary, so the approved TEXT is what is compared — and, like
+      // the main change's prose, never quoted back (req 9).
+      const approved = textChangeSides(side.textChange).after;
+      if (stored.value === approved) continue;
+      return `${side.label} does not now hold the text this card showed.`;
+    }
+    if (stored.display === side.to) continue;
     return `The card showed ${side.label} becoming ${side.to}, and it now reads ${stored.display}.`;
   }
   return null;
@@ -271,6 +272,15 @@ async function runApply(
     return { phase: "stale" };
   }
 
+  // An entry's body first: the preflight reads its fields.
+  if (row.operation === "add" && operation.entry) {
+    try {
+      operation.entry(row.proposed);
+    } catch (err) {
+      if (err instanceof ServiceError) return { phase: "refused", outcome: err.message };
+      throw err;
+    }
+  }
   const refusal = operation.preflight?.(deps.operations, row.target, row.proposed);
   if (refusal) return { phase: "refused", outcome: refusal };
   if (row.operation === "set") {
@@ -314,7 +324,7 @@ async function runApply(
     return {
       phase,
       outcome: outcome.status === "applied"
-        ? appliedOutcome(operation, row.target, card, declaration)
+        ? appliedOutcome(operation, row.target, card, declaration, row.proposed)
         : undefined,
       ...(outcome.detail ? { outcomeDetail: outcome.detail } : {}),
       ...(verified.effect ? { effect: verified.effect } : {}),
@@ -336,7 +346,8 @@ export async function resolveSettingsProposal(
   cardId: string,
   action: SettingsDecisionAction,
 ): Promise<SettingsDecisionResult> {
-  const row = loadRow(deps, sessionId, cardId);
+  // Refused before anything is written when the private row or the card has gone.
+  const row = loadSettingsProposal(deps, sessionId, cardId);
   const now = () => new Date().toISOString();
 
   if (action === "dismiss") {
@@ -389,9 +400,7 @@ function currentCard(
   sessionId: string,
   cardId: string,
 ): SettingsProposalCard {
-  const card = deps.chatHistoryManager.getSettingsProposalCard(sessionId, cardId);
-  if (!card) throw new ServiceError(404, "That settings proposal is not in this session.");
-  return card;
+  return currentDecisionCard(SETTINGS_PROPOSAL_CARD, deps, sessionId, cardId);
 }
 
 /**

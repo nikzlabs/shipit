@@ -11,7 +11,8 @@ import {
   scheduleInterruptCommit,
   type PostInterruptCommitDeps,
 } from "./post-interrupt-commit.js";
-import { noteUserStop } from "../turn-stop-request.js";
+import { currentTurnPhase, noteUserStop } from "../turn-stop-request.js";
+import { stopCompactionContinuation } from "./agent-compaction-stop.js";
 
 const RECOVERY_WORKER_TIMEOUT_MS = 3000;
 const RESTART_READY_TIMEOUT_MS = 8000;
@@ -71,6 +72,9 @@ export async function killAgent(
 
   runner.wasInterrupted = true;
   noteUserStop(runner);
+  stopCompactionContinuation(deps.sessionManager, runner);
+  const killedEpoch = runner.turnEpoch;
+  const killedPhase = currentTurnPhase(runner);
 
   if (runner.killAgentOnWorker) {
     try {
@@ -90,8 +94,10 @@ export async function killAgent(
 
   runner.emitMessage({ type: "agent_interrupted" });
 
-  // Worker acknowledgement does not guarantee a later agent_done event.
-  runner.running = false;
+  // Worker acknowledgement does not guarantee a later agent_done event. A turn that started
+  // while the kill was awaited — a drained message, a requested compaction, even one still in
+  // setup — is not the one killed.
+  if (runner.turnEpoch === killedEpoch && currentTurnPhase(runner) === killedPhase) runner.running = false;
 
   if (deps.postInterruptCommitDeps) {
     scheduleInterruptCommit({ deps: deps.postInterruptCommitDeps, runner });

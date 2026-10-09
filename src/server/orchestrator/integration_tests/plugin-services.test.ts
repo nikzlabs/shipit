@@ -13,6 +13,7 @@ import { resolveSessionPluginServices } from "../services/plugin-services.js";
 import { clearActivationState } from "../services/plugin-activation.js";
 import type { ServiceManager, ComposeQuery, ComposeRunner } from "../service-manager.js";
 import { localProjectComposeAccess, recordedOverride, testServiceManager } from "../compose-test-helpers.js";
+import { SERVICE_HOME } from "../compose-generator.js";
 import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 import { GitManager } from "../../shared/git.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
@@ -165,7 +166,8 @@ describe("plugin services in a session's stack (docs/262)", () => {
     });
     const targets = (override.probe.volumes as { target: string }[]).map((m) => m.target).sort();
     expect(targets).toEqual(["/app", "/plugin", "/plugin-state", "/project"]);
-    expect(override.web.environment).toBeUndefined();
+    // Nothing of the plugin's; a session container's ambient worker UID is a session UID, which gets a HOME.
+    expect([undefined, { HOME: SERVICE_HOME }]).toContainEqual(override.web.environment);
     await stack.mgr.stop();
   });
 

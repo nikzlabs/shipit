@@ -5,6 +5,7 @@ import {
   AGENT_SYSTEM_INSTRUCTIONS,
   type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
+import { operationsFor } from "./services/settings-operations.js";
 
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
@@ -198,6 +199,26 @@ describe("buildAgentSystemInstructions", () => {
     const on = buildAgentSystemInstructions({ agentId: "claude", sessionStatusCard: true });
     expect(buildAgentSystemInstructions({ agentId: "claude", sessionStatusCard: true })).toBe(on);
     expect(on).not.toBe(buildAgentSystemInstructions({ agentId: "claude" }));
+  });
+
+  // Structural guard only: it cannot tell whether the surrounding prose still agrees.
+  it("names the settings write path in every variant, and only proposals a card can make", () => {
+    const kindOf = { "=": "set", " --add": "add", " --remove": "remove" } as const;
+    for (const agentId of [undefined, "claude", "codex"] as const) {
+      for (const mode of [{}, { isOps: true }, { isSandbox: true }]) {
+        for (const sessionStatusCard of [false, true]) {
+          const out = buildAgentSystemInstructions({ agentId, ...mode, sessionStatusCard });
+          expect(out).toContain("## ShipIt's own settings");
+          expect(out).toContain("shipit settings propose");
+
+          const named = [...out.matchAll(/shipit settings propose "?([\w.[\]]+)"?(=| --add| --remove)/g)];
+          expect(named.length).toBeGreaterThan(0);
+          for (const [, key, op] of named) {
+            expect(operationsFor(key), key).toContain(kindOf[op as keyof typeof kindOf]);
+          }
+        }
+      }
+    }
   });
 
   it("composes each overlay with the per-agent axis into a distinct variant", () => {

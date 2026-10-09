@@ -47,6 +47,12 @@ export interface SessionMemoryUsage {
   serviceBytes: number;
 }
 
+export interface HostCpuStats {
+  /** 0–100 across all cores together: 100 means every core is busy. */
+  usedPercent: number;
+  cores: number;
+}
+
 export type ReleaseChannel = "stable" | "edge";
 
 export interface VersionInfo {

@@ -149,6 +149,28 @@ describe("getTemplate", () => {
       expect(Object.keys(full!.files).length).toBeGreaterThan(0);
     }
   });
+
+  // Native watching works across the session and service containers (planning#634).
+  it("ships no polling file watcher in any template", () => {
+    const polling = listTemplates().flatMap((meta) =>
+      Object.entries(getTemplate(meta.id)!.files)
+        .filter(([, content]) => /usePolling|WATCHPACK_POLLING|CHOKIDAR_USEPOLLING/.test(content))
+        .map(([file]) => `${meta.id}/${file}`),
+    );
+
+    expect(polling).toEqual([]);
+  });
+
+  it("gives the Next.js template what `next dev` would otherwise install or rewrite on its first start (planning#638)", () => {
+    const files = getTemplate("nextjs")!.files;
+    const pkg = JSON.parse(files["package.json"]!) as { devDependencies: Record<string, string> };
+    const tsconfig = JSON.parse(files["tsconfig.json"]!) as { include: string[] };
+
+    expect(Object.keys(pkg.devDependencies)).toEqual(
+      expect.arrayContaining(["typescript", "@types/react", "@types/node"]),
+    );
+    expect(tsconfig.include).toContain(".next/types/**/*.ts");
+  });
 });
 
 describe("applyTemplate", () => {

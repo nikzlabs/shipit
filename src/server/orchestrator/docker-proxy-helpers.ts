@@ -1,5 +1,6 @@
 import http from "node:http";
 import { stackLabel } from "./stack-label.js";
+import type { SessionGpu } from "./session-gpu.js";
 
 export interface SessionInfo {
   sessionId: string;
@@ -13,6 +14,8 @@ export interface SessionInfo {
     cpuQuota: number;
     pidsLimit: number;
   };
+  /** What the agent container started with (docs/325-session-gpu-access). */
+  gpu?: SessionGpu;
 }
 
 export interface DockerProxyDeps {

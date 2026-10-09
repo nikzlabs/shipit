@@ -9,6 +9,8 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements, type VisualElement } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
+import type { ScheduleProposalAction } from "../ScheduleProposalCard.js";
+import type { ScheduleNotesAccessAction } from "../ScheduleNotesAccessCard.js";
 import type { WsRewindPreview, ReleaseMechanism } from "../../../server/shared/types.js";
 import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-policy.js";
 
@@ -102,6 +104,8 @@ export function MessageList({
   onResolvePermission,
   onEgressDecision,
   onSettingsProposalDecision,
+  onScheduleProposalDecision,
+  onScheduleNotesAccessDecision,
   onUndoIssueWrite,
   onStartRepoSession,
   onDeclineRepoSession,
@@ -135,6 +139,8 @@ export function MessageList({
 
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
+  onScheduleProposalDecision?: (cardId: string, action: ScheduleProposalAction, timeZone?: string) => Promise<void>;
+  onScheduleNotesAccessDecision?: (cardId: string, action: ScheduleNotesAccessAction) => Promise<void>;
 
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
@@ -352,6 +358,8 @@ export function MessageList({
     onResolvePermission,
     onEgressDecision,
     onSettingsProposalDecision,
+    onScheduleProposalDecision,
+    onScheduleNotesAccessDecision,
     onUndoIssueWrite,
     onStartRepoSession,
     onDeclineRepoSession,
@@ -419,10 +427,10 @@ export function MessageList({
                   pointer-coarse:before:-left-2 pointer-coarse:before:h-11 pointer-coarse:before:w-11`}
                 aria-expanded={closes.open}
                 aria-controls={closes.controls}
-                aria-label={`${closes.open ? "Show compact turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}
+                aria-label={`${closes.open ? "Collapse turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}
                 aria-disabled={closes.search || undefined}
                 title={closes.search ? "Revealed by the active search"
-                  : `${closes.open ? "Show compact turn" : "Show full turn"}${closes.holds ? ` — ${closes.holds}` : ""}`}
+                  : `${closes.open ? "Collapse turn" : "Show full turn"}${closes.holds ? ` — ${closes.holds}` : ""}`}
                 onClick={() => { if (!closes.search) compact.toggle(closes.run, closes.open); }}>
                 {closes.open
                   ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />

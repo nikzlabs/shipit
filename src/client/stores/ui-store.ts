@@ -4,7 +4,7 @@ import type { AgentOption } from "../agent-types.js";
 import type { SessionUsage, UsageStats } from "../../server/shared/types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import type { ToastData } from "../components/Toast.js";
-import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode, UpdateNotice, VersionInfo } from "../../server/shared/types.js";
+import type { AgentId, DockerMemoryStats, HostCpuStats, SubscriptionLimitsMap, RuntimeMode, UpdateNotice, VersionInfo } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   getSavedSidebarCollapsed,
@@ -37,6 +37,7 @@ type SettingsTab =
   // docs/261 — the two configured reviewers. Directly after Services because it
 
   | "roles"
+  | "schedules"
   | "integrations"
   | "git"
   | "instructions"
@@ -77,6 +78,8 @@ interface UiState {
 
   quickCaptureAutoMic: boolean;
   settingsTab: SettingsTab;
+  /** docs/324-scheduled-sessions — the schedule Settings → Schedules opens at (`openScheduleSettings`). */
+  settingsScheduleId: string | null;
 
   projectSettingsRepoUrl: string | null;
 
@@ -88,6 +91,7 @@ interface UiState {
   toast: ToastData | null;
   bootstrapLoaded: boolean;
   dockerMemory: DockerMemoryStats | null;
+  hostCpu: HostCpuStats | null;
 
   processStartedAt: number | null;
 
@@ -120,6 +124,7 @@ interface UiState {
   setQuickCaptureOpen: (open: boolean, autoMic?: boolean) => void;
   setQuickCaptureAutoMic: (active: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  setSettingsScheduleId: (id: string | null) => void;
 
   setProjectSettingsRepoUrl: (url: string | null, tab?: ProjectSettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -129,6 +134,7 @@ interface UiState {
   setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
+  setHostCpu: (stats: HostCpuStats | null) => void;
   setProcessStartedAt: (epochMs: number | null) => void;
   setVersion: (version: VersionInfo | null) => void;
   setUpdateMode: (updateMode: "managed" | "manual") => void;
@@ -162,6 +168,7 @@ const initialState = {
   quickCaptureOpen: false,
   quickCaptureAutoMic: false,
   settingsTab: undefined as SettingsTab,
+  settingsScheduleId: null as string | null,
   projectSettingsRepoUrl: null as string | null,
   projectSettingsTab: "secrets" as ProjectSettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
@@ -170,6 +177,7 @@ const initialState = {
   toast: null as ToastData | null,
   bootstrapLoaded: false,
   dockerMemory: null as DockerMemoryStats | null,
+  hostCpu: null as HostCpuStats | null,
   processStartedAt: null as number | null,
   version: null as VersionInfo | null,
   updateMode: "manual" as "managed" | "manual",
@@ -222,6 +230,7 @@ export const useUiStore = create<UiState>((set) => ({
   setQuickCaptureAutoMic: (quickCaptureAutoMic) => set({ quickCaptureAutoMic }),
 
   setSettingsTab: (settingsTab) => set({ settingsTab }),
+  setSettingsScheduleId: (settingsScheduleId) => set({ settingsScheduleId }),
 
   setProjectSettingsRepoUrl: (projectSettingsRepoUrl, tab = "secrets") =>
     set({ projectSettingsRepoUrl, projectSettingsTab: tab }),
@@ -248,6 +257,7 @@ export const useUiStore = create<UiState>((set) => ({
   setToast: (toast) => set({ toast }),
 
   setDockerMemory: (dockerMemory) => set({ dockerMemory }),
+  setHostCpu: (hostCpu) => set({ hostCpu }),
 
   setProcessStartedAt: (processStartedAt) => set({ processStartedAt }),
   setVersion: (version) => set({ version }),
@@ -264,6 +274,7 @@ export const useUiStore = create<UiState>((set) => ({
   reset: () =>
     set((s) => ({
       settingsOpen: false,
+      settingsScheduleId: null,
       quickCaptureOpen: false,
       quickCaptureAutoMic: false,
       projectSettingsRepoUrl: null,

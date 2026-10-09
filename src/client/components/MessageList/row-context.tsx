@@ -2,6 +2,8 @@ import { createContext, useContext, useMemo, useRef, type ReactNode } from "reac
 import type { ChatMessage } from "./types.js";
 import type { AnswerQuestionFn } from "../AskUserQuestion.js";
 import type { RewindGapAction } from "../RewindPoint.js";
+import type { ScheduleProposalAction } from "../ScheduleProposalCard.js";
+import type { ScheduleNotesAccessAction } from "../ScheduleNotesAccessCard.js";
 import type { TrackerId, ReleaseMechanism } from "../../../server/shared/types.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
 
@@ -31,6 +33,8 @@ export interface RowHandlers {
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
+  onScheduleProposalDecision?: (cardId: string, action: ScheduleProposalAction, timeZone?: string) => Promise<void>;
+  onScheduleNotesAccessDecision?: (cardId: string, action: ScheduleNotesAccessAction) => Promise<void>;
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
   onDeclineRepoSession?: (cardId: string) => Promise<void>;
@@ -66,6 +70,8 @@ const CALLBACK_KEY_SET: Record<CallbackKey, true> = {
   onResolvePermission: true,
   onEgressDecision: true,
   onSettingsProposalDecision: true,
+  onScheduleProposalDecision: true,
+  onScheduleNotesAccessDecision: true,
   onUndoIssueWrite: true,
   onStartRepoSession: true,
   onDeclineRepoSession: true,

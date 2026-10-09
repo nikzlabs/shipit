@@ -1,5 +1,5 @@
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
-import { safeSimpleGit } from "./git-hooks-guard.js";
+import { isEnvBlockedFromGit, safeSimpleGit } from "./git-hooks-guard.js";
 
 export interface GitRemoteCredential {
   origin: string;
@@ -38,26 +38,18 @@ const LFS_CREDENTIAL_ENV_USERNAME = "SHIPIT_LFS_CRED_USERNAME";
 const LFS_CREDENTIAL_ENV_PASSWORD = "SHIPIT_LFS_CRED_PASSWORD";
 const SAFE_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/;
 
-// Keep intentional GIT_CONFIG_GLOBAL and GIT_EDITOR; scrub other executable overrides.
-const UNSAFE_GIT_ENV = [
-  "PAGER", "GIT_PAGER",
-  "GIT_ASKPASS", "SSH_ASKPASS",
-  "GIT_SSH", "GIT_SSH_COMMAND",
-  "GIT_PROXY_COMMAND",
-  "GIT_EXTERNAL_DIFF",
-  "GIT_TEMPLATE_DIR",
-  "GIT_SEQUENCE_EDITOR",
-  "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-];
-
+// Keeps only the git variables safeSimpleGit allows, so the result is valid for .env().
+// That drops inherited GIT_CONFIG_COUNT/KEY_n too, which would merge with the credential's.
 export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
-  for (const key of UNSAFE_GIT_ENV) Reflect.deleteProperty(out, key);
   for (const key of Object.keys(out)) {
-    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) Reflect.deleteProperty(out, key);
+    if (isEnvBlockedFromGit(key)) Reflect.deleteProperty(out, key);
   }
   return out;
 }
+
+// gitCredentialEnv's header; allowed only on the instances that also set allowUnsafeConfigEnvCount.
+export const CREDENTIAL_GIT_ENVIRONMENT = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"];
 
 // Both config builders validate independently: origin becomes part of a config key.
 function assertSafeOrigin(origin: string): void {
@@ -290,6 +282,7 @@ export function credentialledGit(
   return safeSimpleGit(dir, {
     ...options,
     config: [...(options?.config ?? []), ...gitCredentialConfig(credential)],
+    allowEnvironment: [...(options?.allowEnvironment ?? []), ...CREDENTIAL_GIT_ENVIRONMENT],
     unsafe: {
       ...options?.unsafe,
       allowUnsafeConfigPaths: true,

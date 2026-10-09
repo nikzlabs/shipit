@@ -244,17 +244,19 @@ export async function handleSettingsPropose(args: string[], deps: SettingsDeps):
       renderLine("  shipit settings propose advanced.enableSubAgents=true --reason \"why this unblocks the work\""),
       renderLine("  shipit settings propose network.egress.hosts[].host --add registry.npmjs.org --reason \"…\""),
       renderLine("  shipit settings propose instructions.userInstructions --value-file - --reason \"…\" <<'EOF'"),
+      renderLine("  shipit settings propose roles --add NAME --value-file - --reason \"…\" <<'EOF'"),
       renderLine("`shipit settings get <key>` is where the values it accepts are."),
     ]);
   }
   const list = add ?? remove;
   // Prose does not fit in one shell word, so a long value arrives the way every
   // other body in this CLI does — on stdin or from a file
-  // (docs/299-agent-settings-access req 9).
-  if (valueFile !== undefined && (eq !== -1 || list !== undefined)) {
+  // (docs/299-agent-settings-access req 9). Beside --add it is the new entry's
+  // body: a role is more than its name (req 10).
+  if (valueFile !== undefined && (eq !== -1 || remove !== undefined)) {
     deps.out.fail([
       renderLine("shipit settings propose: --value-file is the value, so pass the key on its own and no "
-        + "--add/--remove."),
+        + "--remove."),
     ]);
   }
   if (eq === -1 && list === undefined && valueFile === undefined) {
@@ -277,7 +279,11 @@ export async function handleSettingsPropose(args: string[], deps: SettingsDeps):
     key,
     reason: parsed.values.reason,
     ...(list !== undefined
-      ? { operation: add !== undefined ? "add" : "remove", item: list }
+      ? {
+          operation: add !== undefined ? "add" : "remove",
+          item: list,
+          ...(fromFile !== undefined ? { valueText: fromFile } : {}),
+        }
       : {
           valueText: fromFile ?? first.slice(eq + 1),
           ...(parsed.values.item ? { item: parsed.values.item } : {}),

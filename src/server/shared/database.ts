@@ -1051,6 +1051,110 @@ const MIGRATIONS: Migration[] = [
       UPDATE sessions SET archived_at = retention_floor_at WHERE user_archived = 1;
     `);
   },
+
+  // docs/324-scheduled-sessions — a run row is the claim of its slot, so the unique
+  // (schedule_id, slot_at) stops a second start of one slot; Run now rows have a NULL
+  // slot, which SQLite never counts as a duplicate. A run's session_id and a session's
+  // schedule ids carry no foreign key: the history outlives a deleted session, and a run
+  // session outlives its deleted schedule (req 32).
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedules (
+        id                TEXT PRIMARY KEY,
+        name              TEXT NOT NULL,
+        enabled           INTEGER NOT NULL DEFAULT 1,
+        timing            TEXT NOT NULL,
+        time_zone         TEXT NOT NULL,
+        spec              TEXT NOT NULL,
+        active_since      TEXT NOT NULL,
+        needs_user_reason TEXT,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS schedule_runs (
+        id          TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+        slot_at     TEXT,
+        spec        TEXT,
+        outcome     TEXT NOT NULL,
+        reason      TEXT,
+        session_id  TEXT,
+        result      TEXT,
+        started_at  TEXT,
+        created_at  TEXT NOT NULL,
+        UNIQUE (schedule_id, slot_at)
+      );
+      CREATE INDEX IF NOT EXISTS idx_schedule_runs_history ON schedule_runs(schedule_id, created_at);
+    `);
+    for (const column of [
+      "schedule_id",
+      "schedule_run_id",
+      "run_finished_at",
+      "run_stopped_at",
+      "last_turn_outcome",
+      "schedule_notes_grants",
+    ]) {
+      addSessionColumnIfMissing(db, column);
+    }
+  },
+
+  // docs/324-agent-requested-compaction — the request, and what it hands back to the agent's next
+  // turn. Persisted so an orchestrator restart keeps both.
+  (db) => {
+    addSessionColumnIfMissing(db, "pending_compaction");
+    addSessionColumnIfMissing(db, "pending_compaction_notice");
+  },
+  // docs/324-scheduled-sessions req 9 — the schedule proposal card, and its private record: what
+  // Confirm writes is loaded from here, never taken from the browser.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "schedule_proposal")) {
+      db.exec("ALTER TABLE messages ADD COLUMN schedule_proposal TEXT");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_proposals (
+        card_id         TEXT PRIMARY KEY,
+        session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        schedule_id     TEXT,
+        base_updated_at TEXT,
+        proposal        TEXT NOT NULL,
+        phase           TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        resolved_at     TEXT,
+        agent_notified  INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  },
+  // docs/324-scheduled-sessions reqs 28, 30 — the notes access card, and its private record of
+  // which schedule Allow grants.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "schedule_notes_access")) {
+      db.exec("ALTER TABLE messages ADD COLUMN schedule_notes_access TEXT");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_notes_requests (
+        card_id        TEXT PRIMARY KEY,
+        session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        schedule_id    TEXT NOT NULL,
+        phase          TEXT NOT NULL,
+        created_at     TEXT NOT NULL,
+        resolved_at    TEXT,
+        agent_notified INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_schedule_notes_requests_session
+        ON schedule_notes_requests(session_id, schedule_id);
+    `);
+  },
+  // docs/324-scheduled-sessions — the zone a run's title names its time in, so its banner and its
+  // history time keep that zone after the schedule's zone changes. Older rows stay NULL.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(schedule_runs)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "time_zone")) {
+      db.exec("ALTER TABLE schedule_runs ADD COLUMN time_zone TEXT");
+    }
+    addSessionColumnIfMissing(db, "run_time_zone");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1074,6 +1178,14 @@ export const INSTALL_LEVEL_USAGE_MIGRATION = 91;
 export const STALE_PERMISSION_CARD_MIGRATION = 101;
 
 export const DATA_RETENTION_MIGRATION = 105;
+
+export const SCHEDULES_MIGRATION = 106;
+
+export const SCHEDULE_PROPOSALS_MIGRATION = 108;
+
+export const SCHEDULE_NOTES_ACCESS_MIGRATION = 109;
+
+export const SCHEDULE_RUN_TIME_ZONE_MIGRATION = 110;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
@@ -1121,6 +1233,8 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM egress_settings").run();
       this.db.prepare("DELETE FROM presentations").run();
       this.db.prepare("DELETE FROM agent_merge_claims").run();
+      this.db.prepare("DELETE FROM schedule_runs").run();
+      this.db.prepare("DELETE FROM schedules").run();
     })();
   }
 

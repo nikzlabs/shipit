@@ -18,6 +18,9 @@ export interface SpliceResult {
   cursor: number;
 }
 
+// Two items, so "1. It has the fix." continuing a sentence is not taken for a list.
+const LIST_START = /^(?:- .+\n- |1\. .+\n2\. )/;
+
 export function spliceTranscript(input: SpliceInput): SpliceResult {
   const { value, transcript } = input;
   const len = value.length;
@@ -32,10 +35,14 @@ export function spliceTranscript(input: SpliceInput): SpliceResult {
 
   const prevChar = before.slice(-1);
   const needsLeadingSpace = prevChar !== "" && prevChar !== " " && prevChar !== "\n" && prevChar !== "\t";
-  const insert = (needsLeadingSpace ? " " : "") + transcript;
+  // A list item glued to the text on either side of it is not a list item.
+  const isList = LIST_START.test(transcript);
+  const needsOwnLine = isList && prevChar !== "" && prevChar !== "\n";
+  const insert = (needsOwnLine ? "\n" : needsLeadingSpace ? " " : "") + transcript;
+  const needsLineAfter = isList && after !== "" && !after.startsWith("\n");
 
   return {
-    value: before + insert + after,
+    value: before + insert + (needsLineAfter ? "\n" : "") + after,
     cursor: before.length + insert.length,
   };
 }

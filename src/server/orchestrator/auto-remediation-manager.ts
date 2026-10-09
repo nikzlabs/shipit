@@ -32,8 +32,8 @@ export interface RemediationManagerConfig {
   ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   isGlobalEnabled: () => boolean;
   isSessionEnabled?: (sessionId: string) => boolean;
-  /** docs/322 — the agent waits for the user's answer, and automatic work waits with it. */
-  isAwaitingAnswer?: (sessionId: string) => boolean;
+  /** docs/322 — a question or a stopped run (docs/324 req 33) holds automatic work. */
+  automaticTurnsHeld?: (sessionId: string) => boolean;
   now: () => number;
   arbiter?: RemediationArbiter;
 }
@@ -88,9 +88,9 @@ export abstract class AutoRemediationManager<TSignal> {
 
   /** A failed read counts as not held, as the dispatch gate reads it. */
   protected heldForAnswer(sessionId: string): boolean {
-    if (!this.cfg.isAwaitingAnswer) return false;
+    if (!this.cfg.automaticTurnsHeld) return false;
     try {
-      return this.cfg.isAwaitingAnswer(sessionId);
+      return this.cfg.automaticTurnsHeld(sessionId);
     } catch (err) {
       console.error(`[${this.cfg.name}] reading the answer hold for ${sessionId} failed:`, err);
       return false;

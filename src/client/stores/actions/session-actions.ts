@@ -9,6 +9,7 @@ import { usePresentStore } from "../present-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
+import { useScheduleStore } from "../schedule-store.js";
 import { useIssuesStore } from "../issues-store.js";
 import { usePluginReposStore } from "../plugin-repos-store.js";
 import { dropPredictedQueueEntry } from "../../utils/predicted-queue.js";
@@ -160,6 +161,7 @@ export function fullResetAllStores() {
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();
+  useScheduleStore.getState().reset();
 
   useIssuesStore.setState({ repoScope: null, trackers: [], infoByTracker: {} });
   useIssuesStore.getState().reset();

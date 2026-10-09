@@ -102,6 +102,38 @@ previews.
 Inside ShipIt, the memory budget that decides that reclaim is a setting the
 user owns. Do not guess its value — `shipit settings list` prints it.
 
+## Using the machine's GPU
+
+A local install on WSL2 or Linux can give the machine's **NVIDIA** GPU to its
+sessions: the agent's container, Compose services that declare a GPU, and
+containers the agent starts through Docker. AMD and Intel GPUs are not
+supported.
+
+It takes two things, and the first is the user's to do outside ShipIt:
+
+1. **Docker on the host must support GPUs.** On Windows, an NVIDIA driver on
+   Windows itself (WSL2 uses it; install nothing GPU-related inside the
+   distro), and either Docker Desktop with the WSL 2 backend or Docker Engine
+   with the NVIDIA Container Toolkit inside WSL2. On Linux, the NVIDIA driver
+   and the NVIDIA Container Toolkit. `docker run --rm --gpus all ubuntu
+   nvidia-smi`, run on the host, is the check.
+2. **GPU access** in Settings → Advanced, off by default. Propose it with
+   `shipit settings propose advanced.sessionGpu=true --reason "..."`; the
+   user accepts the card.
+
+A session gets the GPU when its container next starts. If the switch is on but
+Docker cannot give the GPU, the session starts without it and the transcript
+says why — that is a host problem from step 1. Inside a session,
+`$SHIPIT_GPU` says what the container got (`/shipit-docs/environment.md`).
+
+On WSL2, your container is also set up so that a Chrome you start yourself can
+draw WebGL on the GPU — for a rendering test or a benchmark. When the user asks
+for that, do it: `/shipit-docs/environment.md` has the display and the flags
+Chrome needs. Chrome falls back to software drawing without a message, so run
+the check it gives and tell the user which renderer Chrome reported. It does
+not reach the built-in browser behind your browser tools, which draws in
+software, nor WebGPU, Compose services, or a native Linux host.
+
 ## Updating
 
 **Which path applies depends on how ShipIt was installed, so establish that

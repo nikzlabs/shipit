@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 
 import {
   buildOverlaySpecs,

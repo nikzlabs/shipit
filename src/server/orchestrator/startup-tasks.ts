@@ -16,7 +16,7 @@ import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { isShipItOwnSession } from "./shipit-own-sessions.js";
 import { agentLogAppend } from "./log-emit.js";
-import { persistTurnInProgress, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { persistTurnInProgress, markTurnRowsFinalized, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { deleteSession } from "./services/session.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
@@ -406,6 +406,8 @@ export function preservePartialTurnOnWorkerLoss(
     }
     // A reattached idle runner may still have in-progress rows left in the database.
     chatHistoryManager.finalizeInProgress(sessionId);
+    // A late error from the lost worker's agent must not rebuild these rows (planning#645).
+    markTurnRowsFinalized(runner);
     emitNoticePostTurn(
       (m) => runner.emitMessage(m),
       chatHistoryManager,

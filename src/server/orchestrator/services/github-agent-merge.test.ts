@@ -85,7 +85,21 @@ describe("agentMergePullRequest", () => {
     });
     expect(res.success).toBe(false);
     expect(res.message).toContain("no checks yet");
+    expect(res.retryable).toBe(true);
     expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
+  });
+
+  it("marks only the refusals that clear by themselves as retryable", async () => {
+    const answer = async (g: ReturnType<typeof gate>) =>
+      (await agentMergePullRequest(makeGit(), makeGitHub({}, g), {
+        number: 5, sessionId: "s1", remoteUrl: REMOTE,
+      })).retryable;
+    expect(await answer(gate({ rollupState: "PENDING" }))).toBe(true);
+    expect(await answer(gate({ rollupCommitOid: "sha-older" }))).toBe(true);
+    expect(await answer(gate({ rollupState: "FAILURE" }))).toBeUndefined();
+    expect(await answer(gate({ isDraft: true }))).toBeUndefined();
+    expect(await answer(gate({ reviewDecision: "CHANGES_REQUESTED" }))).toBeUndefined();
+    expect(await answer(gate({ state: "CLOSED" }))).toBeUndefined();
   });
 
   it("refuses when the read itself fails, instead of reading it as no checks", async () => {
@@ -145,6 +159,19 @@ describe("agentMergePullRequest", () => {
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
     expect(res.message).toBe("At least 1 approving review is required.");
+    expect(res.retryable).toBeUndefined();
+  });
+
+  it("marks GitHub's refusal for a required check that has not reported yet as retryable", async () => {
+    const github = makeGitHub({
+      mergePullRequestAttempt: vi.fn(async () => ({
+        outcome: "refused" as const, message: 'Required status check "ci" is expected.',
+      })),
+    });
+    const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
+    expect(res.success).toBe(false);
+    expect(res.message).toBe('Required status check "ci" is expected.');
+    expect(res.retryable).toBe(true);
   });
 
   describe("the durable claim", () => {

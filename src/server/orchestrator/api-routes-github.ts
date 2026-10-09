@@ -57,6 +57,7 @@ import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { resolveLfsHost } from "../shared/git-remote-credential.js";
 import { assessMergeAutoPublish } from "./release-autopublish-check.js";
 import { onWorkspaceRewritten } from "./workspace-rewrite.js";
+import { restorePluginSkills } from "./services/plugin-skill-clearing.js";
 
 function readStringProp(obj: unknown, key: string): string | undefined {
   if (obj && typeof obj === "object" && key in obj) {
@@ -397,6 +398,10 @@ export async function registerGitHubRoutes(
             runnerRegistry: deps.runnerRegistry,
             ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
             chatHistory: deps.chatHistoryManager,
+            // The worker prepares copies in the session's own workspace only, never in another clone.
+            ...(gitDir === dir
+              ? { restorePluginSkills: () => restorePluginSkills(deps.runnerRegistry.get(request.params.id)) }
+              : {}),
           });
         } finally {
           if (gitDir === dir && treeRewritten) {
@@ -1214,11 +1219,12 @@ export async function registerGitHubRoutes(
           if (verdict.pushed) deps.cancelAutoPush?.(request.params.id);
           const armPastPush = request.body?.auto === true && verdict.pushed;
           if (!armPastPush) {
-            reply.code(409).send({
-              error: verdict.pushed
-                ? `${verdict.message} (Merge again once the checks on the new head report.)`
-                : verdict.message,
-            });
+            reply.code(409).send(verdict.pushed
+              ? {
+                error: `${verdict.message} (Merge again once the checks on the new head report.)`,
+                retryable: true,
+              }
+              : { error: verdict.message });
             return;
           }
         }
@@ -1253,6 +1259,8 @@ export async function registerGitHubRoutes(
                   prNumber: num,
                   headSha,
                   ...(session.branch ? { headBranch: session.branch } : {}),
+                  // The grace reads the session's repository; a --repo target's evidence is not there.
+                  ...(remoteUrl === session.remoteUrl ? { headTreeDir: gitDir } : {}),
                 }),
             }
             : {}),
@@ -1396,6 +1404,7 @@ export async function registerGitHubRoutes(
         return;
       }
       sessionManager.setAutoFixCiPaused(request.params.id, request.body.paused);
+      if (request.body.paused) deps.prStatusPoller?.withdrawAutoFix(request.params.id);
       deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
       return { paused: request.body.paused };
     },

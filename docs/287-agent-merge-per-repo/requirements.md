@@ -116,3 +116,12 @@ None.
   half had been stable for many rounds. **Answer: ship the direct merge first.**
   Requirements 18–21 moved to `docs/288-agent-merge-arming` with their own plan
   and pull request. (req 17, and the removal of 18–21)
+- 2026-10-05 — A repository with no workflow files refused every first merge
+  while ShipIt waited for checks that could not come (nikzlabs/shipit#3073). A
+  review then asked whether the merge must also infer checks from outside the
+  repository, such as a newly connected external CI app, before it skips that
+  wait. **Answer: no.** A repository owner who wants a check to gate merging
+  makes it required in GitHub's branch protection, and GitHub then refuses the
+  merge; ShipIt must handle that refusal correctly. The early-registration wait
+  is best effort already: checks register gradually, so a merge can see "1/1"
+  before the full set has started. (req 7)

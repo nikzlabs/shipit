@@ -12,6 +12,7 @@ import { toolResultIds, type PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
+import { getAgentCapabilities } from "../shared/agent-registry.js";
 import { adoptModelList } from "../shared/catalogue/model-list.js";
 import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
 import { reclaimStillRenderingBrowsers } from "./agents/browser-reclaim.js";
@@ -45,6 +46,9 @@ export interface AgentControllerDeps {
   oldestSseSeq?: () => number;
   /** Include other work in the status snapshot used for container reclamation. */
   otherWorkerLiveness?: () => { terminalActive: boolean; installRunning: boolean };
+  /** Orchestrator streams open now; none means nothing sees a turn the CLI starts. */
+  sseClientCount?: () => number;
+  onUnheardTurn?: () => void;
   messageStartWaitMs?: number;
 }
 
@@ -69,6 +73,8 @@ export class AgentController {
 
   private turnActive = false;
   private turnStartSseSeq = 0;
+  // Set while the active turn is one the CLI started on its own (planning#639).
+  private ownTurn: "heard" | "unheard" | undefined;
 
   private backgroundTaskCount = 0;
   private selfWakeActive = false;
@@ -112,23 +118,22 @@ export class AgentController {
         this.beginTurn();
         this.turnDeliveryId = deliveryId;
         this.residentSpawn = { runToken, streaming: params.useStreaming === true };
-        this.agent = this.deps.agentFactory(agentId);
-        this.wireAgentEvents(this.agent, runToken);
-        this.agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
-        const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(this.agent, params);
+        const agent = this.deps.agentFactory(agentId);
+        this.agent = agent;
+        this.wireAgentEvents(agent, runToken);
+        agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
+        const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(agent, params);
+        // Before run: an adapter can end its turn inside run(), and done vacates the slot.
+        if (mcpWrite.cleanup) agent.on("done", mcpWrite.cleanup);
 
         this.withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, () => {
-          this.agent?.run({
+          agent.run({
             ...params,
             ...(nodeNotice ? { prompt: prefixPromptWithNotice(params.prompt, nodeNotice) } : {}),
             cwd: this.deps.workspaceDir,
             mcpConfigPath: mcpWrite.mcpConfigPath,
           });
         });
-
-        if (mcpWrite.cleanup) {
-          this.agent.on("done", mcpWrite.cleanup);
-        }
 
         return { started: true };
       } catch (err) {
@@ -364,6 +369,7 @@ export class AgentController {
       turnStartSseSeq: this.turnStartSseSeq,
       backgroundTaskCount: this.backgroundTaskCount,
       selfWakeActive: this.selfWakeActive,
+      ...(this.ownTurn !== undefined ? { ownTurn: this.ownTurn } : {}),
       terminalActive: this.deps.otherWorkerLiveness?.().terminalActive ?? false,
       installRunning: this.deps.otherWorkerLiveness?.().installRunning ?? false,
       pendingPermissionIds: this.deps.permissionBroker.unansweredIds,
@@ -395,6 +401,29 @@ export class AgentController {
     this.turnStartSseSeq = this.deps.latestSseSeq();
   }
 
+  private beginOwnTurn(): void {
+    this.beginTurn();
+    const heard = (this.deps.sseClientCount?.() ?? 1) > 0;
+    this.ownTurn = heard ? "heard" : "unheard";
+    if (!heard) this.deps.onUnheardTurn?.();
+  }
+
+  // From here an orchestrator can have saved rows of this turn, so a later one must replace them.
+  noteOrchestratorStream(): void {
+    if (this.ownTurn === "unheard") this.ownTurn = "heard";
+  }
+
+  // The two events with which a resident CLI starts a turn nobody sent it: a task
+  // notification, and the answer to a late steer (docs/140-live-steering Phase 6.11).
+  // The second is the executor's `adoptsCliStartedTurns` test, so the two layers agree.
+  private startsOwnTurn(agent: AgentProcess, event: AgentEvent): boolean {
+    // A one-shot process exits at its turn's end, so it has no turn of its own to start.
+    if (this.residentSpawn?.streaming !== true && !agent.isStreaming) return false;
+    if (event.type === "agent_self_wake") return true;
+    if (event.type !== "agent_assistant" || event.parentToolUseId) return false;
+    return getAgentCapabilities(agent.agentId)?.startsOwnTurns ?? false;
+  }
+
   // Clear process state here: late done events fail the identity guard after a kill.
   private vacateSlot(): void {
     this.agent = null;
@@ -405,6 +434,7 @@ export class AgentController {
 
   private endTurn(): void {
     this.turnActive = false;
+    this.ownTurn = undefined;
     // Background tasks can outlive a turn; retain their count until the process ends.
     this.selfWakeActive = false;
     this.turnDeliveryId = undefined;
@@ -485,6 +515,8 @@ export class AgentController {
   // Capture instance and token so late events cannot clear a replacement locally or across SSE.
   private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
+      // Before the broadcast, so a restarted orchestrator's replay starts at this event.
+      if (this.agent === agent && !this.turnActive && this.startsOwnTurn(agent, event)) this.beginOwnTurn();
       const forWire = restoreFullResolutionScreenshots(event);
       this.deps.broadcast({ type: "agent_event", data: { ...forWire, runToken } });
       if (event.type === "agent_tool_result") {

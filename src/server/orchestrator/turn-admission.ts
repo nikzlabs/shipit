@@ -2,31 +2,38 @@ import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js
 
 export const ANSWER_HOLD_REASON = "the agent is waiting for the user's answer";
 
-/** A failed read counts as not held: a closed database must not freeze the queue. */
+/**
+ * A stopped scheduled run holds automatic turns too (docs/324-scheduled-sessions req 33).
+ * A failed read counts as not held: a closed database must not freeze the queue.
+ */
 export function readAnswerHold(
   deps: Pick<SystemTurnDeps, "answerHold"> | null,
   sessionId: string,
 ): boolean {
   if (!deps?.answerHold) return false;
   try {
-    return deps.answerHold.isAwaitingAnswer(sessionId);
+    return deps.answerHold.automaticTurnsHeld(sessionId);
   } catch (err) {
     console.error(`[admission] reading the answer hold for ${sessionId} failed:`, err);
     return false;
   }
 }
 
-/** Never throws: its callers sit where a throw would abandon a turn's start or its commit. */
+/**
+ * Never throws: its callers sit where a throw would abandon a turn's start or its commit.
+ * Returns whether the mark changed.
+ */
 export function writeAnswerHold(
   deps: Pick<SystemTurnDeps, "answerHold">,
   sessionId: string,
   awaiting: boolean,
-): void {
-  if (!deps.answerHold) return;
+): boolean {
+  if (!deps.answerHold) return false;
   try {
-    deps.answerHold.setAwaitingAnswer(sessionId, awaiting);
+    return deps.answerHold.setAwaitingAnswer(sessionId, awaiting);
   } catch (err) {
     console.error(`[admission] writing the answer hold for ${sessionId} failed:`, err);
+    return false;
   }
 }
 

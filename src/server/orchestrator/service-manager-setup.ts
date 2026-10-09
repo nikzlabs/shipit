@@ -353,7 +353,7 @@ export interface ComposeHelperConfig {
 
 export type ConfinedComposeDeps = Pick<ServiceSetupDeps, "containerManager" | "serviceEnvDir" | "composeHelperConfig">;
 
-/** The confined runner for one session's Compose commands, and its Docker-host path translation. */
+/** The confined runner for one session's Compose commands, and the Docker-host path of its files outside the workspace volume. */
 export function buildConfinedCompose(
   sessionId: string,
   workspaceDir: string,
@@ -362,7 +362,6 @@ export function buildConfinedCompose(
   const workspaceVolume = process.env.WORKSPACE_VOLUME;
   const { serviceEnvHostDir, registryLoginDir } = deps.composeHelperConfig ?? {};
   const daemonPath = composeHelperDaemonPath({
-    ...(deps.containerManager ? { docker: deps.containerManager.getDockerClient() } : {}),
     ...(workspaceVolume ? { workspaceVolume } : {}),
     serviceEnvDir: deps.serviceEnvDir,
     ...(serviceEnvHostDir ? { serviceEnvHostDir } : {}),
@@ -490,13 +489,13 @@ export function buildServiceManager(args: {
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
     dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
+    ...(containerManager ? { sessionGpu: () => containerManager.gpuDecision(sessionId) } : {}),
     secretsLoader: createSecretsLoader(sessionId, deps),
     accountAgentEnvLoader,
     pluginCredentialsLoader: () => collectPluginCredentialDeclarations(workspaceDir),
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     confinedCompose: helper.confined,
-    composeFileDaemonPath: helper.daemonPath,
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? (networkName: string) => joinSessionNetworkEndpoints(containerManager, sessionId, networkName)

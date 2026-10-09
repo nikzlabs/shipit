@@ -15,7 +15,9 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { SettingsProposalStore } from "./settings-proposal-store.js";
+import type { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
+import type { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { AgentId, AgentProcess, LogSource, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
@@ -26,7 +28,7 @@ import type { UsageManager } from "./usage.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import type { TurnEnd, TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import type { QuotaContinuationManager } from "./services/quota-continuation.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
@@ -37,7 +39,7 @@ import {
   type ComposeHelperConfig,
   type ServiceSetupDeps,
 } from "./service-manager-setup.js";
-import { emitNoticeInTurn } from "./chat-card-persistence.js";
+import { emitNoticeInTurn, markTurnRowsFinalized } from "./chat-card-persistence.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -48,6 +50,7 @@ import {
   repushSessionAgentToken,
 } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
+import { buildPostTurnReleaseFlow } from "./services/release-flow.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
 import { shouldCompactBeforeTurn } from "./compact-before-turn.js";
@@ -55,7 +58,11 @@ import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
-import { prepareSettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import { scheduledRunContext } from "./scheduled-run-context.js";
+import type { ScheduleStore } from "./schedule-store.js";
+import type { ScheduleNotes } from "./schedule-notes.js";
+import type { ScheduleNotesRequestStore } from "./schedule-notes-request-store.js";
+import { prepareCardOutcomeNotices } from "./services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
@@ -105,11 +112,16 @@ export interface RunnerRegistryDeps {
   generateText?: GenerateText;
   /** Lazy because the poller depends on this registry and is constructed later. */
   getPrStatusPoller?: () => PrStatusPoller | undefined;
+  /** Lazy for the same reason as `getPrStatusPoller`. */
+  getReleaseStatusPoller?: () => ReleaseStatusPoller | undefined;
   reconcileAgentMergeClaimsFor?: (sessionId: string) => void;
   isAgentMergeInFlight?: (sessionId: string) => boolean;
   getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
   /** Rebind a worker's adopted turn to its original delivery after restart. */
   rebindDelivery?: (deliveryId: string) => ((outcome: TurnOutcome) => void) | undefined;
+  onTurnEnd?: (end: TurnEnd) => void;
+  /** docs/324-scheduled-sessions — a hold on a runner came off, or its background work changed. */
+  onRunnerSettled?: (sessionId: string) => void;
   usageManager: UsageManager;
   recordAgentRateLimits?: (
     agentId: AgentId,
@@ -122,6 +134,8 @@ export interface RunnerRegistryDeps {
   getQuotaContinuation?: () => QuotaContinuationManager | undefined;
   /** docs/321 — resolves the registry lazily for the same reason. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/324-agent-requested-compaction — likewise. */
+  runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
@@ -142,6 +156,10 @@ export interface RunnerRegistryDeps {
   resolvePluginServices?: ServiceSetupDeps["resolvePluginServices"];
   /** Absent in minimal setups; without it a turn simply carries no settings notice. */
   settingsProposals?: SettingsProposalStore;
+  scheduleProposals?: ScheduleProposalStore;
+  scheduleNotesRequests?: ScheduleNotesRequestStore;
+  /** Absent in minimal setups; a run's first turn then carries no `<scheduled_run>` block. */
+  scheduledRuns?: { store: ScheduleStore; notes: ScheduleNotes };
 }
 
 export function assertSessionCanDispatch(
@@ -165,13 +183,16 @@ export function createRunnerRegistry(
     autoPushScheduler, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, composeHelperConfig, logStore, runtimeMode, broadcastLog,
-    credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
+    credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, getReleaseStatusPoller, rebindDelivery,
+    onTurnEnd,
+    onRunnerSettled,
     reconcileAgentMergeClaimsFor,
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
     getQuotaContinuation,
     runRequestedRestart,
+    runRequestedCompaction,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -179,6 +200,9 @@ export function createRunnerRegistry(
     activatePluginRepos,
     resolvePluginServices,
     settingsProposals,
+    scheduleProposals,
+    scheduleNotesRequests,
+    scheduledRuns,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -235,7 +259,9 @@ export function createRunnerRegistry(
         // The release re-enters dispatch, preserving the entry's settlement callback, and
         // leaves it queued in order if another gate (a system hold) still holds.
         if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
+        onRunnerSettled?.(runner.sessionId);
       });
+      if (onRunnerSettled) runner.on("work_released", () => onRunnerSettled(runner.sessionId));
       // The worker reports no agent, so nothing can answer a request the lost one raised.
       // A throw here would stop verifyRunningState before it releases the queue.
       runner.on("turn_abandoned", () => {
@@ -243,8 +269,10 @@ export function createRunnerRegistry(
         try {
           denyAbandonedPermissionCards(runner, runner.sessionId, { chatHistoryManager, sseBroadcast });
           // Nothing else finalizes an abandoned turn, and the next turn's replaceInProgress
-          // would delete the denied card with the rest of its rows.
+          // would delete the denied card with the rest of its rows. Not a rebuild: the denial
+          // patched only the database row, so the runner's copy is still pending.
           chatHistoryManager.finalizeInProgress(runner.sessionId);
+          markTurnRowsFinalized(runner);
         } catch (err) {
           console.error(`[permission] denying abandoned cards for ${runner.sessionId} failed:`, err);
         }
@@ -310,6 +338,7 @@ export function createRunnerRegistry(
         },
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
         ...(rebindDelivery ? { rebindDelivery } : {}),
+        ...(onTurnEnd ? { onTurnEnd } : {}),
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();
@@ -415,6 +444,7 @@ export function createRunnerRegistry(
           },
         } : {}),
         ...(runRequestedRestart ? { runRequestedRestart } : {}),
+        ...(runRequestedCompaction ? { runRequestedCompaction } : {}),
         commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {
@@ -484,10 +514,15 @@ export function createRunnerRegistry(
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
-        ...(settingsProposals
+        cardOutcomeNotices: (sessionId) =>
+          prepareCardOutcomeNotices(
+            { chatHistoryManager, settingsProposals, scheduleProposals, scheduleNotesRequests },
+            sessionId,
+          ),
+        ...(scheduledRuns
           ? {
-              settingsOutcomeNotice: (sessionId: string) =>
-                prepareSettingsOutcomeNotice({ proposals: settingsProposals, chatHistoryManager }, sessionId),
+              scheduledRunContext: (sessionId: string, deliveryId: string | undefined) =>
+                scheduledRunContext({ sessionManager, ...scheduledRuns, runtimeMode }, sessionId, deliveryId),
             }
           : {}),
         repoSessionOutcomeNotice: (sessionId) =>
@@ -501,6 +536,10 @@ export function createRunnerRegistry(
         // Appended, not set: a notice recorded while the failed turn ran describes a LATER
         // branch move, and this one must not overwrite it (planning#609).
         restorePendingAgentNotice: (sessionId, notice) => sessionManager.appendPendingAgentNotice(sessionId, notice),
+        postTurnReleaseFlow: buildPostTurnReleaseFlow({
+          getReleaseStatusPoller: () => getReleaseStatusPoller?.(),
+          sessionManager,
+        }),
         ...(generateText ? {
           postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
             const prStatusPoller = getPrStatusPoller?.();

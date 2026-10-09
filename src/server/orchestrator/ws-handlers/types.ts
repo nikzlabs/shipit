@@ -16,9 +16,12 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
+import type { ScheduleProposalStore } from "../schedule-proposal-store.js";
+import type { ScheduleNotesRequestStore } from "../schedule-notes-request-store.js";
 import type { SecretStore } from "../secret-store.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
+import type { ScheduleRunner } from "../schedule-runner.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
@@ -106,9 +109,14 @@ export interface AppCtx {
   // is the whole act each settings route does — so the stores those writes
   // reach have to be here too (docs/299-agent-settings-access req 4).
   settingsProposals?: SettingsProposalStore;
+  /** So a turn carries the outcome notice of a schedule proposal (docs/324-scheduled-sessions req 9). */
+  scheduleProposals?: ScheduleProposalStore;
+  scheduleNotesRequests?: ScheduleNotesRequestStore;
   secretStore?: SecretStore;
   serviceManagers?: Map<string, ServiceManager>;
   agentMergeClaims?: AgentMergeClaimStore;
+  /** docs/324-scheduled-sessions req 33 — the chat's stop control stops a scheduled run. */
+  scheduledRuns?: Pick<ScheduleRunner, "markRunStopped">;
 
   generateText: GenerateText;
   getSharedRepoDir: (repoUrl: string) => string;
@@ -116,6 +124,8 @@ export interface AppCtx {
   releaseStatusPoller: ReleaseStatusPoller;
   /** docs/321 — the same post-turn step dispatched turns get. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/324-agent-requested-compaction — likewise. */
+  runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
 
   recordAgentRateLimits?: (
     agentId: AgentId,

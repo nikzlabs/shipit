@@ -44,3 +44,6 @@
       existing session. The workspace now has its own stat-gated branch above
       the probe, with the sentinel written through `gosu` after the walk.
       (Independent review finding.)
+- [x] Give a service that runs as a session UID a writable `HOME` (plan.md §4c,
+      planning#638): `HOME=/tmp` in the override, never over a `HOME` the
+      project, an `env_file`, a plugin fragment or a service secret sets.

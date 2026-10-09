@@ -8,6 +8,7 @@ import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 import {
   type GitRemoteCredential,
   type GitRemoteCredentialResolver,
+  CREDENTIAL_GIT_ENVIRONMENT,
   gitCredentialConfig,
   gitCredentialEnv,
   resolveTreeRemoteCredential,
@@ -86,6 +87,7 @@ export class RepoGit {
     if (!credential) return safeSimpleGit(this.repoDir);
     return safeSimpleGit(this.repoDir, {
       config: gitCredentialConfig(credential),
+      allowEnvironment: CREDENTIAL_GIT_ENVIRONMENT,
       // These overrides enable ShipIt's helper and config; inherited GIT_CONFIG_* is sanitized.
       unsafe: {
         allowUnsafeConfigPaths: true,

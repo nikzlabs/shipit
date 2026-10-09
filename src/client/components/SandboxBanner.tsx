@@ -1,7 +1,8 @@
 import { InfoIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useUiStore } from "../stores/ui-store.js";
-import type { SessionCapabilities } from "../../server/shared/types.js";
+import { ScheduledRunLine, useScheduledRunLineShown } from "./ScheduledRunBanner.js";
+import type { SessionCapabilities, SessionListRow } from "../../server/shared/types.js";
 
 /**
  * docs/211 — the Sandbox orientation banner. It occupies the chat panel's
@@ -25,7 +26,15 @@ import type { SessionCapabilities } from "../../server/shared/types.js";
  * state is the source of truth) lives in the system prompt, not here — this
  * banner is human-facing orientation only.
  */
-export function SandboxBanner({ capabilities }: { capabilities?: SessionCapabilities }) {
+export function SandboxBanner({
+  capabilities,
+  run,
+}: {
+  capabilities?: SessionCapabilities;
+  /** docs/324-scheduled-sessions — a scheduled run's line, which shares this bar (`ScheduledRunLine`). */
+  run?: SessionListRow;
+}) {
+  const runShown = useScheduledRunLineShown(run);
   const granted: string[] = [];
   if (capabilities?.git) granted.push("GitHub");
   if (capabilities?.docker) granted.push("Docker");
@@ -33,25 +42,32 @@ export function SandboxBanner({ capabilities }: { capabilities?: SessionCapabili
 
   return (
     <div className="px-3 pt-1.5 pb-1">
-      <div className="flex items-start gap-2.5 rounded-lg border border-(--color-sandbox-border) bg-(--color-sandbox-subtle) px-3.5 py-2.5 text-[12.5px]">
-        <InfoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 mt-0.5 text-(--color-sandbox)" />
-        <div className="min-w-0 flex-1 text-(--color-text-secondary)">
-          <span className="font-semibold text-(--color-sandbox)">Sandbox session — no repository bound.</span>{" "}
-          The agent clones and pushes repos itself, so there&apos;s no live preview or PR card here.
-          {" "}Granted:{" "}
-          <span className="font-semibold text-(--color-text-primary)">
-            {granted.length > 0 ? granted.join(" · ") : "nothing"}
-          </span>.
+      <div className="rounded-lg border border-(--color-sandbox-border) bg-(--color-sandbox-subtle) px-3.5 py-2.5">
+        {runShown && run && (
+          <div className="mb-2 border-b border-(--color-sandbox-border) pb-2">
+            <ScheduledRunLine session={run} />
+          </div>
+        )}
+        <div className="flex items-start gap-2.5 text-[12.5px]">
+          <InfoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 mt-0.5 text-(--color-sandbox)" />
+          <div className="min-w-0 flex-1 text-(--color-text-secondary)">
+            <span className="font-semibold text-(--color-sandbox)">Sandbox session — no repository bound.</span>{" "}
+            The agent clones and pushes repos itself, so there&apos;s no live preview or PR card here.
+            {" "}Granted:{" "}
+            <span className="font-semibold text-(--color-text-primary)">
+              {granted.length > 0 ? granted.join(" · ") : "nothing"}
+            </span>.
+          </div>
+          <button
+            type="button"
+            onClick={() => useUiStore.getState().setSessionSettingsDialogOpen(true)}
+            data-testid="sandbox-banner-edit-capabilities"
+            className="shrink-0 flex items-center gap-1 rounded-md border border-(--color-sandbox-border) px-1.5 py-0.5 text-[11px] font-medium text-(--color-sandbox) hover:bg-(--color-bg-hover)"
+          >
+            <SlidersHorizontalIcon size={ICON_SIZE.XS} />
+            Change
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => useUiStore.getState().setSessionSettingsDialogOpen(true)}
-          data-testid="sandbox-banner-edit-capabilities"
-          className="shrink-0 flex items-center gap-1 rounded-md border border-(--color-sandbox-border) px-1.5 py-0.5 text-[11px] font-medium text-(--color-sandbox) hover:bg-(--color-bg-hover)"
-        >
-          <SlidersHorizontalIcon size={ICON_SIZE.XS} />
-          Change
-        </button>
       </div>
     </div>
   );

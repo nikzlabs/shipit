@@ -960,7 +960,9 @@ describe("Settings - Advanced tab", () => {
   it("shows manual local update instructions instead of update/restart buttons", async () => {
     useUiStore.getState().setUpdateMode("manual");
     await renderOnAdvancedTab();
-    expect(screen.getByTestId("settings-manual-update-note")).toHaveTextContent("docker/local/prod.sh");
+    const note = screen.getByTestId("settings-manual-update-note");
+    expect(note).toHaveTextContent("~/.shipit/deployment/local/update.sh");
+    expect(note).not.toHaveTextContent("docker/local/prod.sh");
     expect(screen.queryByTestId("settings-apply-update")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-restart")).not.toBeInTheDocument();
   });

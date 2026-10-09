@@ -243,6 +243,8 @@ interface SessionState {
   ) => void;
   setRewindPreview: (preview: WsRewindPreview) => void;
   setRewindRecovery: (recovery: RewindRecovery | null) => void;
+  /** A turn started in that session: its in-place rewind can no longer be undone. */
+  dropRewindRecovery: (sessionId: string) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
 
   setPrefillText: (text: string | undefined) => void;
@@ -617,6 +619,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [recovery.sessionId]: recovery,
         },
       };
+    }),
+
+  dropRewindRecovery: (sessionId) =>
+    set((state) => {
+      const recovery = state.rewindRecoveries[sessionId] as RewindRecovery | undefined;
+      // The server keeps a fork's undo through the parent's later turns.
+      if (!recovery || recovery.action === "fork") return state;
+      const { [sessionId]: _omit, ...rest } = state.rewindRecoveries;
+      return { rewindRecoveries: rest };
     }),
 
   setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),

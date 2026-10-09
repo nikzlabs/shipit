@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { findSetting } from "../../shared/settings-catalogue/index.js";
+import { MAX_ROLE_DESCRIPTION_LENGTH, MAX_ROLE_PROMPT_LENGTH } from "../credential-store.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { addMcpServer, MAX_ENABLED_MCP_SERVERS } from "./mcp.js";
 import { settingsPayloadDomain, withConflictDomains } from "./settings-conflict-domain.js";
@@ -113,14 +114,16 @@ describe("proposeSettingChange", () => {
   });
 
   it("sends a proposal about a whole list to the entry field that carries it", async () => {
-    // The aggregate declaration advertises `propose.allowed: true` and carries no
-    // operation, because a card changes one entry and never replaces the list.
-    // The refusal has to say where the proposal goes, or the only way to find out
-    // is to attempt it (docs/299-agent-settings-access req 4).
+    // The aggregate declaration advertises `propose.allowed: true`, and a card
+    // changes one entry and never replaces the list. The refusal has to say
+    // where the proposal goes, or the only way to find out is to attempt it
+    // (docs/299-agent-settings-access req 4) — including, for roles, that a new
+    // one is created with --add (req 10).
     const message = await refusal({ key: "roles", valueText: "anything", reason: "why" });
     expect(message).toContain("roles is the whole list");
     expect(message).toContain("roles[].description");
     expect(message).toContain("--item");
+    expect(message).toContain("--add");
     expect(fx.emitted).toHaveLength(0);
   });
 
@@ -737,6 +740,336 @@ describe("a card shows every field its one operation writes", () => {
       from: '"max"',
     });
     expect(card.alsoChanges?.[0]?.to).not.toBe("max");
+  });
+});
+
+/**
+ * docs/299-agent-settings-access req 10 — a card can create a role. It shows
+ * the whole of it, because the user approves what the card displays.
+ */
+describe("creating a role", () => {
+  const OPUS = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" };
+  let report: { restore: () => void };
+
+  beforeEach(() => {
+    report = installReport(["claude"]);
+  });
+
+  afterEach(() => {
+    report.restore();
+  });
+
+  function create(name: string, body: unknown) {
+    return { key: "roles", operation: "add" as const, item: name, valueText: JSON.stringify(body), reason: "why" };
+  }
+
+  it("posts one card naming the role and every field it would have", async () => {
+    const card = await propose(create("deep-dive", {
+      model: OPUS,
+      reasoningEffort: "high",
+      description: "  Open-ended research into how this codebase works.  ",
+      prompt: "Cite file:line.",
+    }));
+
+    expect(card).toMatchObject({
+      target: { key: "roles", item: "deep-dive" },
+      label: findSetting("roles")!.label,
+      from: "no such role",
+      to: "created",
+    });
+    expect(card.alsoChanges?.map((side) => [side.key, side.from, side.to])).toEqual([
+      ["roles[].model", "not set", JSON.stringify(OPUS)],
+      // Derived from the model, as the role editor derives it.
+      ["roles[].harness", "not set", '"claude"'],
+      ["roles[].reasoningEffort", "not set", '"high"'],
+      // Trimmed, because the write trims and the card shows what is stored.
+      ["roles[].description", "not set", '"Open-ended research into how this codebase works."'],
+      ["roles[].prompt", "not set", '"Cite file:line."'],
+    ]);
+    // Nothing is written until the click.
+    expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
+    expect(fx.proposals.get(card.cardId)).toMatchObject({ operation: "add", phase: "pending" });
+  });
+
+  it("shows long standing instructions as a diff, not as a chip it would refuse", async () => {
+    const prompt = Array.from({ length: 30 }, (_, i) => `Rule ${i}: read the code before answering.`).join("\n");
+
+    const card = await propose(create("deep-dive", { model: OPUS, prompt }));
+
+    const side = card.alsoChanges?.find((change) => change.key === "roles[].prompt");
+    expect(side?.textChange?.added).toBe(30);
+    expect(side?.to).toBe(`${prompt.length.toLocaleString("en-US")} characters`);
+    expect(JSON.stringify(card.alsoChanges)).toContain("Rule 29");
+  });
+
+  it("refuses standing instructions past what a card carries", async () => {
+    const message = await refusal(create("deep-dive", { model: OPUS, prompt: "x".repeat(CARD_TEXT_MAX + 1) }));
+    expect(message).toContain(`at most ${CARD_TEXT_MAX.toLocaleString("en-US")}`);
+    expect(fx.emitted).toHaveLength(0);
+  });
+
+  it("refuses a name that is taken", async () => {
+    fx.credentialStore.setRole("deep-dive", { name: "deep-dive", params: { kind: "pinned", harnessId: "claude", ...OPUS } as never });
+    const message = await refusal(create("deep-dive", { model: OPUS }));
+    expect(message).toContain('"deep-dive" is already created');
+  });
+
+  it("refuses the reserved reviewer's name", async () => {
+    // It exists on every install, so it is a taken name like any other.
+    expect(await refusal(create("reviewer", { model: OPUS }))).toContain('"reviewer" is already created');
+  });
+
+  it("refuses a name ShipIt would not read back, without repeating it", async () => {
+    const name = "https://user:token@example.com/";
+    const message = await refusal(create(name, { model: OPUS }));
+    expect(message).toContain("would not read that name back");
+    expect(message).not.toContain("token");
+  });
+
+  it("refuses a body with no model, and a field it does not know", async () => {
+    expect(await refusal(create("deep-dive", { description: "x" }))).toContain("needs the model");
+    // Dropped silently, this would create a role without the instructions the
+    // agent believes it gave it.
+    expect(await refusal(create("deep-dive", { model: OPUS, instructions: "x" })))
+      .toContain('no field "instructions"');
+  });
+
+  it("refuses a body that is not JSON, and an add with no body at all", async () => {
+    expect(await refusal({ key: "roles", operation: "add", item: "deep-dive", valueText: "{model", reason: "why" }))
+      .toContain("not JSON");
+    expect(await refusal({ key: "roles", operation: "add", item: "deep-dive", reason: "why" }))
+      .toContain("A new role is one JSON object");
+  });
+
+  it("refuses a field that is not text, rather than creating the role without it", async () => {
+    for (const prompt of [["Read widely", "Cite"], { text: "x" }, 7, true]) {
+      expect(await refusal(create("deep-dive", { model: OPUS, prompt }))).toContain('"prompt" is text');
+    }
+  });
+
+  it("refuses what the role writer would refuse, so no card is posted that the click cannot apply", async () => {
+    const message = await refusal(create("deep-dive", { model: OPUS, description: "x".repeat(MAX_ROLE_DESCRIPTION_LENGTH + 1) }));
+    expect(message).toContain("too long");
+    // The declarations an existing role's fields are proposed through carry the
+    // same bounds, so the field cards cannot drift from the writer either.
+    expect(findSetting("roles[].description")!.type.shape.maxLength).toBe(MAX_ROLE_DESCRIPTION_LENGTH);
+    expect(findSetting("roles[].prompt")!.type.shape.maxLength).toBe(MAX_ROLE_PROMPT_LENGTH);
+  });
+
+  it("refuses standing instructions the card would display as something else", async () => {
+    const prompt = `Never push to main.‮${"x".repeat(CARD_VALUE_MAX)}`;
+    expect(await refusal(create("deep-dive", { model: OPUS, prompt }))).toContain("bidirectional override");
+  });
+
+  it("refuses a level the model does not offer, rather than dropping it", async () => {
+    const message = await refusal(create("deep-dive", { model: OPUS, reasoningEffort: "banana" }));
+    expect(message).toContain("is not a reasoning level");
+  });
+
+  it("refuses a model no installed harness can run", async () => {
+    report.restore();
+    report = installReport([]);
+    expect(await refusal(create("deep-dive", { model: OPUS }))).toContain("No harness on this install");
+  });
+});
+
+/**
+ * docs/299-agent-settings-access req 11 — a card can delete a role. It shows
+ * everything the click removes.
+ */
+describe("deleting a role", () => {
+  const OPUS = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" };
+
+  function remove(name: string) {
+    return { key: "roles", operation: "remove" as const, item: name, reason: "why" };
+  }
+
+  it("posts a card showing every field of the role going", async () => {
+    const prompt = Array.from({ length: 30 }, (_, i) => `Rule ${i}: read the code before answering.`).join("\n");
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      description: "Open-ended research.",
+      prompt,
+      params: { kind: "pinned", harnessId: "claude", ...OPUS, reasoningEffort: "high" } as never,
+    });
+
+    const card = await propose(remove("deep-dive"));
+
+    expect(card).toMatchObject({ target: { key: "roles", item: "deep-dive" }, from: "a role", to: "deleted" });
+    expect(card.alsoChanges?.map((side) => [side.key, side.to])).toEqual([
+      ["roles[].model", "not set"],
+      ["roles[].harness", "not set"],
+      ["roles[].reasoningEffort", "not set"],
+      ["roles[].description", "not set"],
+      ["roles[].prompt", "empty"],
+    ]);
+    // The instructions being deleted are prose, so they are read as a diff.
+    expect(card.alsoChanges?.find((side) => side.key === "roles[].prompt")?.textChange?.removed).toBe(30);
+    expect(fx.credentialStore.getRole("deep-dive")).toBeDefined();
+  });
+
+  it("refuses a role that does not exist, naming the ones that do", async () => {
+    fx.credentialStore.setRole("auditor", { name: "auditor", params: { kind: "pinned", harnessId: "claude", ...OPUS } as never });
+    const message = await refusal(remove("deep-dive"));
+    expect(message).toContain('"deep-dive" is already deleted');
+    expect(message).toContain("auditor");
+  });
+
+  it("refuses the reserved reviewer", async () => {
+    expect(await refusal(remove("reviewer"))).toContain("cannot be deleted");
+  });
+});
+
+/**
+ * docs/299-agent-settings-access req 11 and req 12 — a card can create an MCP
+ * server, with its whole configuration except secret values.
+ */
+describe("creating an MCP server", () => {
+  function create(name: string, body: unknown) {
+    return { key: "mcp.servers", operation: "add" as const, item: name, valueText: JSON.stringify(body), reason: "why" };
+  }
+
+  it("shows the configuration as written, and the secrets by name only", async () => {
+    const card = await propose(create("github", {
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    }));
+
+    expect(card).toMatchObject({ target: { key: "mcp.servers", item: "github" }, from: "no such server", to: "created" });
+    expect(card.alsoChanges?.map((side) => [side.key, side.to])).toEqual([
+      ["mcp.servers[].type", '"stdio"'],
+      // The read would say only "configured"; the card says what the agent wrote.
+      ["mcp.servers[].command", '"npx"'],
+      ["mcp.servers[].args", '["-y","@modelcontextprotocol/server-github"]'],
+      ["mcp.servers[].env", '"GITHUB_PERSONAL_ACCESS_TOKEN" (you type the value after Apply)'],
+      ["mcp.servers[].enabled", "on"],
+    ]);
+    expect(fx.credentialStore.getMcpServer("github")).toBeUndefined();
+  });
+
+  it("shows an HTTP server's whole URL, which the read would cut to its host", async () => {
+    const card = await propose(create("linear", {
+      type: "http",
+      url: "https://mcp.linear.app/mcp",
+      headers: ["Authorization"],
+    }));
+    expect(card.alsoChanges?.find((side) => side.key === "mcp.servers[].url")?.to)
+      .toBe('"https://mcp.linear.app/mcp"');
+  });
+
+  it("refuses a secret value: env and headers are names", async () => {
+    const message = await refusal(create("github", {
+      type: "stdio",
+      command: "npx",
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_secret" },
+    }));
+    expect(message).toContain('"env" is a list of strings');
+    expect(message).not.toContain("ghp_secret");
+  });
+
+  it("refuses a name that is not a variable or header name, and a field the transport does not have", async () => {
+    expect(await refusal(create("github", { type: "stdio", command: "npx", env: ["TOKEN=abc"] })))
+      .toContain("is not an environment variable name");
+    expect(await refusal(create("github", { type: "stdio", command: "npx", url: "https://x.example" })))
+      .toContain('has no field "url"');
+  });
+
+  it("refuses an argument the panel's form would split or drop", async () => {
+    for (const args of [["--label", "hello world"], ["server.js", ""]]) {
+      expect(await refusal(create("github", { type: "stdio", command: "node", args })))
+        .toContain("not one the MCP panel can keep");
+    }
+  });
+
+  it("reports the last create as membership, so a URL the read would shorten is not repeated", async () => {
+    await propose(create("linear", { type: "http", url: "https://mcp.linear.app/mcp?token=SECRET" }));
+    const entry = await getSettingForAgent(fx.deps.read, fx.sessionId, "mcp.servers");
+    expect(entry.lastProposal).toMatchObject({ operation: "add", proposed: "on" });
+    expect(JSON.stringify(entry)).not.toContain("SECRET");
+  });
+
+  it("refuses a reference to a stored secret, which the card would show only as text", async () => {
+    // It would hand this server another server's credential.
+    const message = await refusal(create("leak", {
+      type: "stdio",
+      command: "npx",
+      args: ["--token", "$secret:mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN"],
+    }));
+    expect(message).toContain("does not write a reference to a stored secret");
+  });
+
+  it("refuses what the writer would refuse, before any card exists", async () => {
+    expect(await refusal(create("my-server", { type: "stdio", command: "npx" }))).toContain("lowercase alphanumeric");
+    expect(await refusal(create("playwright", { type: "stdio", command: "npx" }))).toContain("reserved");
+    expect(await refusal(create("github", { type: "stdio", command: "npx; rm -rf /" }))).toContain("metacharacters");
+    expect(await refusal(create("linear", { type: "http", url: "ftp://x.example" }))).toContain("http(s) URL");
+    expect(fx.emitted).toHaveLength(0);
+  });
+
+  it("refuses a name that is taken", async () => {
+    addMcpServer(fx.credentialStore, { name: "github", type: "stdio", command: "npx" }, {});
+    expect(await refusal(create("github", { type: "stdio", command: "npx" }))).toContain("is already created");
+  });
+
+  it("refuses an eleventh enabled server, and takes it switched off", async () => {
+    for (let i = 0; i < MAX_ENABLED_MCP_SERVERS; i++) {
+      addMcpServer(fx.credentialStore, { name: `server${i}`, type: "stdio", command: "npx" }, {});
+    }
+    expect(await refusal(create("github", { type: "stdio", command: "npx" }))).toContain("already enabled");
+    const card = await propose(create("github", { type: "stdio", command: "npx", enabled: false }));
+    expect(card.alsoChanges?.find((side) => side.key === "mcp.servers[].enabled")?.to).toBe("off");
+  });
+});
+
+/**
+ * docs/299-agent-settings-access req 11 — a card can delete an MCP server. It
+ * says the stored secrets go, through the read's own projection, never their
+ * values.
+ */
+describe("deleting an MCP server", () => {
+  it("shows each field going, the secret-bearing ones only as configured", async () => {
+    addMcpServer(
+      fx.credentialStore,
+      {
+        name: "github",
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-github"],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "$secret:mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN" },
+      },
+      { mcp__github__GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_secret" },
+    );
+
+    const card = await propose({ key: "mcp.servers", operation: "remove", item: "github", reason: "why" });
+
+    expect(card).toMatchObject({ from: "a server", to: "deleted" });
+    expect(card.alsoChanges?.map((side) => [side.key, side.from, side.to])).toEqual([
+      ["mcp.servers[].type", '"stdio"', "not set"],
+      ["mcp.servers[].command", "configured", "not configured"],
+      ["mcp.servers[].args", "configured", "not configured"],
+      ["mcp.servers[].env", "configured", "not configured"],
+      ["mcp.servers[].enabled", "on", "not set"],
+    ]);
+    expect(JSON.stringify(card)).not.toContain("ghp_secret");
+    expect(JSON.stringify(card)).not.toContain("server-github");
+  });
+
+  it("refuses a server that does not exist", async () => {
+    expect(await refusal({ key: "mcp.servers", operation: "remove", item: "github", reason: "why" }))
+      .toContain("is already deleted");
+  });
+
+  it("refuses a server a connected provider owns, as the panel offers no Delete for it", async () => {
+    addMcpServer(
+      fx.credentialStore,
+      { name: "notion", type: "http", url: "https://mcp.notion.com/mcp", headers: { Authorization: "Bearer $platform:notion" } },
+      {},
+    );
+    fx.credentialStore.setMcpOAuthTokens("notion", { accessToken: "token" });
+    const message = await refusal({ key: "mcp.servers", operation: "remove", item: "notion", reason: "why" });
+    expect(message).toContain("belongs to a connected provider");
   });
 });
 

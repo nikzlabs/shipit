@@ -1,4 +1,5 @@
 import {
+  listWorkflowFiles,
   loadAndParseWorkflows,
   workflowAppliesToPr,
   type ParsedWorkflow,
@@ -8,6 +9,8 @@ export const NO_CHECKS_GRACE_MS = 20_000;
 
 export class CiGraceTracker {
   private parsedWorkflows = new Map<string, ParsedWorkflow[]>();
+  // Not cached like parsedWorkflows: a repository can add CI at any time.
+  private reposWithoutWorkflows = new Set<string>();
   private loadingPromises = new Map<string, Promise<void>>();
   private repoHasObservedChecks = new Map<string, boolean>();
   private firstObservedNoChecks = new Map<string, { headSha: string; observedAt: number }>();
@@ -34,11 +37,15 @@ export class CiGraceTracker {
       try {
         const repoDir = this.getSharedRepoDir!(repoUrl);
         const parsed = await loadAndParseWorkflows(repoDir);
-        if (parsed && parsed.length > 0) {
-          this.parsedWorkflows.set(repoKey, parsed);
+        if (parsed?.length === 0) {
+          this.reposWithoutWorkflows.add(repoKey);
+        } else {
+          this.reposWithoutWorkflows.delete(repoKey);
+          if (parsed) this.parsedWorkflows.set(repoKey, parsed);
         }
       } catch {
         // Leave uncached so the next poll retries.
+        this.reposWithoutWorkflows.delete(repoKey);
       } finally {
         this.loadingPromises.delete(repoKey);
       }
@@ -90,6 +97,23 @@ export class CiGraceTracker {
 
   // Different PRs can share a head SHA and must have separate merge windows.
   private firstMergeNoChecks = new Map<string, number>();
+
+  /**
+   * True only when both trees a pull request's workflows come from were read and
+   * hold no workflow file: the default branch, and the head commit, which can add
+   * one. Checks from outside the repository are GitHub's branch protection to
+   * enforce, as they already are when a partial set has reported.
+   */
+  async noWorkflowFiles(args: {
+    repoKey: string;
+    headSha: string;
+    headTreeDir?: string;
+  }): Promise<boolean> {
+    if (!this.reposWithoutWorkflows.has(args.repoKey)) return false;
+    if (!args.headTreeDir || !/^[0-9a-f]{40,64}$/i.test(args.headSha)) return false;
+    const headFiles = await listWorkflowFiles(args.headTreeDir, args.headSha);
+    return headFiles?.length === 0;
+  }
 
   /** Merges wait even with unknown CI history; polling can revise its answer later. */
   shouldWaitForMergeChecks(args: {

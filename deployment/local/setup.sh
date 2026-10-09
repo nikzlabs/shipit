@@ -459,9 +459,13 @@ if ! command -v docker >/dev/null 2>&1; then
     *)      echo "  Install Docker Engine + the compose plugin: https://docs.docker.com/engine/install/" >&2 ;;
   esac
   missing=1
-elif ! docker compose version >/dev/null 2>&1; then
-  echo "Error: the Docker Compose v2 plugin ('docker compose') is not available." >&2
-  echo "  See https://docs.docker.com/compose/install/" >&2
+elif ! compose_output="$(docker compose version 2>&1)"; then
+  echo "Error: 'docker compose version' failed, so the Docker Compose v2 plugin is not usable." >&2
+  if [ -n "$compose_output" ]; then
+    echo "  Docker said:" >&2
+    printf '%s\n' "$compose_output" | sed 's/^/    /' >&2
+  fi
+  echo "  If Docker itself works, install the plugin: https://docs.docker.com/compose/install/" >&2
   missing=1
 else
   docker_api_version="$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)"

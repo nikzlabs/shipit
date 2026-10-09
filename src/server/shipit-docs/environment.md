@@ -642,6 +642,99 @@ they do **not** draw on the session's CPU budget — they get their own. ShipIt
 gives them a low scheduling weight so they yield to the platform under
 contention; set your own `deploy.resources` limits if a service needs a cap.
 
+## GPU
+
+ShipIt gives the machine's NVIDIA GPU to a session only when the user has turned
+on **GPU access** (`advanced.sessionGpu`, Settings → Advanced, off by default).
+The switch is read when a container is created, so a change reaches this session
+when its container next starts. `$SHIPIT_GPU` says what this container got:
+
+| `$SHIPIT_GPU` | Meaning |
+|---|---|
+| `granted` | This container has the GPU. `nvidia-smi` lists it, and the driver's CUDA libraries are mounted in, so a framework that brings its own CUDA runtime (PyTorch's pip wheels, for example) uses it. Compose services that declare a GPU get it ([compose.md](compose.md)), and so do containers you start with `docker run --gpus all` in a session with Docker access. |
+| `unavailable` | The switch is on, but Docker could not give the GPU, so the session started without it. `$SHIPIT_GPU_REASON` holds Docker's error, and the user has a notice about it in the transcript. The fix is on the host (the NVIDIA driver, Docker Desktop's WSL 2 backend, or the NVIDIA Container Toolkit), not in this container. |
+| `off` | The switch is off. |
+
+When a task needs the GPU and `$SHIPIT_GPU` is `off`, propose the switch rather
+than working around it: `shipit settings propose advanced.sessionGpu=true
+--reason "..."` (see [settings.md](settings.md)). The session gets the GPU when
+its container next starts.
+
+### Chrome on the GPU (WSL2)
+
+On a WSL2 host, ShipIt also mounts the host's DirectX libraries
+(`/usr/lib/wsl/lib`) and Windows GPU driver files (`/usr/lib/wsl/drivers`) into
+a `granted` container, read-only. Mesa's OpenGL needs both to draw on the GPU,
+through its Direct3D 12 driver. Without them it draws on the CPU (`llvmpipe`).
+
+A Chrome **you start yourself** — a Playwright or Puppeteer script, a test run,
+a benchmark — must start with both of these. When one is missing, WebGL can
+run on SwiftShader, Chrome's own software renderer, and Chrome says nothing. So
+read the renderer in the page before you call a result GPU-drawn:
+
+- **An X display.** Chrome reaches Mesa through GLX and this container has no
+  display, so start the command under `xvfb-run -a`. Full Chrome, headless or
+  headed, and the headless shell all work there.
+- **The flags `--use-angle=gl --ignore-gpu-blocklist`.** The first selects
+  Mesa; headless Chrome stays on SwiftShader without it, and headed Chrome
+  selects Mesa by itself. The second matters when Mesa is on the CPU: without
+  it Chrome then gives no WebGL context, or goes back to SwiftShader, and you
+  cannot read why. Give both each time.
+
+```bash
+# In the script: chromium.launch({ args: ["--use-angle=gl", "--ignore-gpu-blocklist"] })
+xvfb-run -a node render-check.mjs
+```
+
+Read the renderer in the page:
+
+```js
+const gl = document.createElement("canvas").getContext("webgl2");
+gl.getParameter(gl.getExtension("WEBGL_debug_renderer_info").UNMASKED_RENDERER_WEBGL);
+```
+
+| The renderer names | Meaning |
+|---|---|
+| `D3D12 (…)` with the card's name | Chrome draws on the GPU. If it names another adapter of the machine, an integrated one for example, set `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`. |
+| `llvmpipe` | Chrome uses Mesa, but Mesa draws on the CPU. See the causes below. |
+| `SwiftShader` | Chrome does not use Mesa. The usual cause is that the display or a flag is missing. |
+| nothing — `getContext` returns `null` | Chrome gave no WebGL. If nothing in the script turns WebGL off, the usual cause is that Mesa draws on the CPU and `--ignore-gpu-blocklist` is missing. Add the flag, then follow the `llvmpipe` row. |
+
+When the renderer is `llvmpipe`, find which part is missing, in this order:
+
+1. **`$LIBGL_ALWAYS_SOFTWARE` is set.** Then the CPU is what was asked for.
+2. **`/usr/lib/libd3d12.so` is not a link.** The image is older than this
+   feature.
+3. **`/usr/lib/wsl/lib/libd3d12.so` does not exist.** This container did not get
+   the mounts, for one of these reasons:
+   - `$SHIPIT_GPU` is not `granted`, or the host is not WSL2.
+   - `$SHIPIT_GPU_GRAPHICS_REASON` is set. ShipIt could not start this
+     container with the mounts, so it started it with the GPU alone. The
+     variable holds Docker's error; tell the user.
+   - The container was created before ShipIt had this feature. A restart of the
+     container gets the mounts (see "Restarting your agent container" above).
+   - The host directory is empty.
+4. **All of these are in place.** Mesa could not start the card's driver. Run a
+   Mesa program with `LD_DEBUG=files` to see which file it could not open.
+
+What this does not cover:
+
+- **WebGPU.** It needs Vulkan, and this image has no Vulkan driver for the card.
+- **The browser tools.** `browser_navigate` and the screenshots use ShipIt's
+  built-in browser, which draws in software. To look at a page on the GPU, start
+  your own Chrome as above and take the screenshot from that script.
+- **Other containers.** Compose services and containers you start through Docker
+  get the GPU for CUDA, but not these two directories.
+- **A native Linux host.** There the GPU is for CUDA only.
+
+With the mounts in place, every OpenGL program that uses Mesa in this container
+draws on the GPU, not only Chrome. Set `LIBGL_ALWAYS_SOFTWARE=1` for a run that
+must draw on the CPU — a pixel comparison against software-rendered snapshots,
+for example: the GPU and the CPU do not give identical pixels.
+
+This was measured on Docker Desktop with the WSL 2 backend. Docker Engine with
+the NVIDIA Container Toolkit in WSL2 is not yet measured.
+
 ## Network
 
 In both Network modes, no container in this session — this one, its Compose

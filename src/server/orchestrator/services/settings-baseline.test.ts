@@ -120,6 +120,25 @@ describe("settingBaseline", () => {
     expect(baselineMatches(added, suppressed)).toBe(false);
   });
 
+  it("holds one allowlist entry's revision over that entry alone", async () => {
+    const db = new DatabaseManager(":memory:");
+    const egressAllowlistStore = new EgressAllowlistStore(db);
+    const d = { ...deps(), egressAllowlistStore };
+    const entry = { key: "network.egress.hosts[].host", item: "api.example.com" };
+
+    const before = await settingBaseline(d, entry);
+    egressAllowlistStore.addHost(EGRESS_GLOBAL_SCOPE, "other.example.com");
+    expect(baselineMatches(before, await settingBaseline(d, entry))).toBe(true);
+
+    egressAllowlistStore.addHost(EGRESS_GLOBAL_SCOPE, "api.example.com");
+    expect(baselineMatches(before, await settingBaseline(d, entry))).toBe(false);
+
+    const defaultEntry = { key: "network.egress.hosts[].host", item: "registry.npmjs.org" };
+    const unsuppressed = await settingBaseline(d, defaultEntry);
+    egressAllowlistStore.suppressDefault("registry.npmjs.org");
+    expect(baselineMatches(unsuppressed, await settingBaseline(d, defaultEntry))).toBe(false);
+  });
+
   it("says `unknown` rather than inventing one, and an unknown never matches itself", async () => {
     const d = deps();
     const noStore = await settingBaseline(d, { key: "mcp.servers[].enabled", item: "notion" });

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import Database from "better-sqlite3";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";

@@ -26,28 +26,34 @@ export interface PrTriggerContext {
   changedFiles?: string[];
 }
 
-/** Null means unavailable or no workflow files; retry after the cache is fetched. */
-export async function loadAndParseWorkflows(
-  bareRepoDir: string,
-): Promise<ParsedWorkflow[] | null> {
-  const git = safeSimpleGit(bareRepoDir);
+/** Null means the commit could not be read, which is not evidence that it has no workflows. */
+export async function listWorkflowFiles(repoDir: string, ref = "HEAD"): Promise<string[] | null> {
   let lsTreeOutput: string;
   try {
-    lsTreeOutput = await git.raw([
+    // -z: without it git quotes a non-ASCII name, and the quoted name fails the extension test.
+    lsTreeOutput = await safeSimpleGit(repoDir).raw([
       "ls-tree",
       "-r",
+      "-z",
       "--name-only",
-      "HEAD",
+      ref,
       ".github/workflows/",
     ]);
   } catch {
     return null;
   }
-  const files = lsTreeOutput
-    .split("\n")
-    .map((s) => s.trim())
+  return lsTreeOutput
+    .split("\0")
     .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
-  if (files.length === 0) return null;
+}
+
+/** Null means unavailable (retry after the cache is fetched); an empty list means no workflow files. */
+export async function loadAndParseWorkflows(
+  bareRepoDir: string,
+): Promise<ParsedWorkflow[] | null> {
+  const files = await listWorkflowFiles(bareRepoDir);
+  if (files === null) return null;
+  const git = safeSimpleGit(bareRepoDir);
 
   const parsed: ParsedWorkflow[] = [];
   for (const file of files) {

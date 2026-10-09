@@ -50,10 +50,19 @@ export function acceptableCleanupLength(raw: string): number {
   return Math.max(40, raw.length * MAX_LENGTH_RATIO);
 }
 
+/** An opening the speaker said themselves ("Here's what I want:") is their wording, not a preamble. */
+function hasPreamble(raw: string, cleaned: string): boolean {
+  const spoken = raw.toLowerCase();
+  return PREAMBLE_PATTERNS.some((p) => {
+    const opening = p.exec(cleaned)?.[0].replace(/[,!]$/, "").toLowerCase();
+    return opening !== undefined && !spoken.includes(opening);
+  });
+}
+
 function isSane(raw: string, cleaned: string): CleanupErrorCode | null {
   if (!cleaned) return "empty-output";
   if (cleaned.length > acceptableCleanupLength(raw)) return "too-long";
-  if (PREAMBLE_PATTERNS.some((p) => p.test(cleaned))) return "preamble";
+  if (hasPreamble(raw, cleaned)) return "preamble";
   return null;
 }
 

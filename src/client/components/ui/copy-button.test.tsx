@@ -75,7 +75,7 @@ describe("CopyButton", () => {
     expect(screen.queryByText("Copied")).not.toBeInTheDocument();
   });
 
-  it("swallows a clipboard rejection without crashing", async () => {
+  it("keeps the idle label when no copy path works", async () => {
     stubClipboard(() => Promise.reject(new Error("denied")));
     render(<CopyButton text="hello" />);
 
@@ -83,5 +83,29 @@ describe("CopyButton", () => {
     await flush();
 
     expect(screen.getByText("Copy")).toBeInTheDocument();
+    expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+  });
+
+  it("copies on a plain-HTTP origin, where the Clipboard API does not exist", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    const selectedAtCopy: string[] = [];
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: () => {
+        selectedAtCopy.push(document.getSelection()?.toString() ?? "");
+        return true;
+      },
+    });
+
+    try {
+      render(<CopyButton text={"npm run dev\n"} />);
+      fireEvent.click(screen.getByRole("button"));
+      await flush();
+
+      expect(selectedAtCopy).toEqual(["npm run dev\n"]);
+      expect(screen.getByText("Copied")).toBeInTheDocument();
+    } finally {
+      Reflect.deleteProperty(document, "execCommand");
+    }
   });
 });

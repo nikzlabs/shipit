@@ -29,6 +29,14 @@ describe("cleanTranscript", () => {
     expect(seen).toContain("um hello");
   });
 
+  it("returns a formatted answer with its line structure intact", async () => {
+    const raw = "two changes fix the footer and rename the file then tell me";
+    const formatted = "Two changes:\n\n- Fix the footer.\n- Rename the file.\n\nThen tell me.";
+    const r = await cleanTranscript(raw, fakeRunner(() => `${formatted}\n`));
+    expect(r.text).toBe(formatted);
+    expect(r.cleanupErrorCode).toBeUndefined();
+  });
+
   it("falls through to raw on empty output", async () => {
     const r = await cleanTranscript("hello", fakeRunner(() => ""));
     expect(r.text).toBe("hello");
@@ -58,6 +66,19 @@ describe("cleanTranscript", () => {
     const r = await cleanTranscript("hello", fakeRunner(() => "Here is the cleaned message: hello"));
     expect(r.text).toBe("hello");
     expect(r.cleanupErrorCode).toBe("preamble");
+  });
+
+  it("keeps an answer that opens with the speaker's own lead-in", async () => {
+    const cleaned = "Here's what I want:\n- Fix the footer.\n- Rename the file.";
+    const r = await cleanTranscript(
+      "um here's what i want fix the footer and rename the file",
+      fakeRunner(() => cleaned),
+    );
+    expect(r.text).toBe(cleaned);
+    expect(r.cleanupErrorCode).toBeUndefined();
+
+    const sure = await cleanTranscript("sure go ahead and merge it", fakeRunner(() => "Sure, go ahead and merge it."));
+    expect(sure.cleanupErrorCode).toBeUndefined();
   });
 
   it("falls through to raw with provider-error on other failures", async () => {

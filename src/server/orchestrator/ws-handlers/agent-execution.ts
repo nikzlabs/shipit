@@ -2,7 +2,8 @@ import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode }
 import type { AgentCapabilities } from "../../shared/types/agent-types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
-import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import type { AgentListenerDeps } from "./agent-listeners.js";
+import { finalizeTurnRows } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
@@ -16,7 +17,7 @@ import {
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
-import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
+import { prepareCardOutcomeNotices } from "../services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
@@ -33,7 +34,7 @@ import {
 import { buildAgentRunParams } from "../session-agent-run-params.js";
 import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
-import { reactToReleaseMarkers } from "../services/release-flow.js";
+import { buildPostTurnReleaseFlow } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { createPromptRepark, createPromptTakeLedger, type PromptTakeLedger } from "../turn-settlement.js";
 import {
@@ -57,11 +58,10 @@ type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 function persistInterruptedTurn(
   ctx: FullCtx,
   sessionId: string,
-  partial: ReturnType<typeof buildTurnMessages>,
+  runner: SessionRunnerInterface,
 ): void {
   try {
-    ctx.chatHistoryManager.replaceInProgress(sessionId, partial);
-    ctx.chatHistoryManager.finalizeInProgress(sessionId);
+    finalizeTurnRows(ctx.chatHistoryManager, runner, sessionId);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("database connection is not open")) return;
@@ -481,16 +481,20 @@ async function composeAndRunAgentTurn(
   // only caller that reaches here with `systemTurn` is `runCompactionAhead`,
   // which sets `compact` as well. It changes with the other call site so a
   // future system turn on this path is not silently excluded.
-  const settingsOutcome =
-    capturedSessionId && ctx.settingsProposals
-      && !opts.compact && !ridesTurnAsCommand
-      ? prepareSettingsOutcomeNotice(
-          { proposals: ctx.settingsProposals, chatHistoryManager: ctx.chatHistoryManager },
+  const cardOutcomes =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? prepareCardOutcomeNotices(
+          {
+            chatHistoryManager: ctx.chatHistoryManager,
+            settingsProposals: ctx.settingsProposals,
+            scheduleProposals: ctx.scheduleProposals,
+            scheduleNotesRequests: ctx.scheduleNotesRequests,
+          },
           capturedSessionId,
         )
-      : null;
+      : [];
   // docs/303-cross-repo-session-proposal req 11 — at-least-once, with the same
-  // exclusions as the settings outcome above.
+  // exclusions as the card outcomes above.
   const repoSessionOutcome =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareRepoSessionOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
@@ -500,7 +504,7 @@ async function composeAndRunAgentTurn(
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareSessionMessageOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
       : null;
-  const noticeDeliveries = [settingsOutcome, repoSessionOutcome, sessionMessageOutcome]
+  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome]
     .filter((d) => d !== null);
 
   const activeDir = ctx.getActiveDir();
@@ -520,7 +524,7 @@ async function composeAndRunAgentTurn(
   const agentPrefix = [
     pendingAgentNotice,
     bugOutcomeNotice,
-    settingsOutcome?.notice,
+    ...cardOutcomes.map((o) => o.notice),
     repoSessionOutcome?.notice,
     sessionMessageOutcome?.notice,
     resetAgentPrefix,
@@ -732,23 +736,16 @@ async function composeAndRunAgentTurn(
       }
     },
     ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
-    postTurnReleaseFlow: async (sessionId, sessionDir, turnText) => {
-      await reactToReleaseMarkers({
-        deps: {
-          releaseStatusPoller: ctx.releaseStatusPoller,
-          sessionManager: ctx.sessionManager,
-        },
-        sessionId,
-        sessionDir,
-        turnText,
-      });
-    },
+    ...(ctx.runRequestedCompaction ? { runRequestedCompaction: ctx.runRequestedCompaction } : {}),
+    postTurnReleaseFlow: buildPostTurnReleaseFlow({
+      getReleaseStatusPoller: () => ctx.releaseStatusPoller,
+      sessionManager: ctx.sessionManager,
+    }),
   };
 
   const onInterruptedTurn = (): void => {
     if (!runner || !capturedSessionId) return;
-    const partial = buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages ?? [], runner.recordedCards ?? [], { inProgress: false });
-    persistInterruptedTurn(ctx, capturedSessionId, partial);
+    persistInterruptedTurn(ctx, capturedSessionId, runner);
     // Prevent reconnect replay from duplicating the finalized history.
     runner.clearTurnEventBuffer();
   };

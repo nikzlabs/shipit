@@ -77,6 +77,7 @@ import { listEgressAllowedHosts } from "./egress-policy.js";
 import type { PluginEgressPolicy } from "./plugin-egress.js";
 import { STACK_LABEL } from "./stack-label.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
+import type { SessionGpu } from "./session-gpu.js";
 import type { SessionCapabilities, SessionInfo } from "../shared/types.js";
 
 export {
@@ -132,6 +133,8 @@ export interface ContainerConfig {
   scratchDir?: string;
   /** Mounted at /session-state; generated platform files must stay outside the clone. */
   sessionStateDir: string;
+  /** A scheduled run's own notes folder, mounted at /schedule/notes (docs/324-scheduled-sessions req 13). */
+  scheduleNotesDir?: string;
   credentialsDir: string;
   imageName: string;
   /** Bytes. */
@@ -185,6 +188,13 @@ export interface SessionContainer {
   egressUserHostsExcluded?: boolean;
   /** Separate from containment: both network-on and network-off sandboxes are contained. */
   capabilitiesAtStart?: SessionCapabilities;
+  /** docs/325-session-gpu-access; undefined until the create decides it. */
+  gpu?: SessionGpu;
+  /**
+   * Created as a standby and not claimed yet. Set at creation, so it holds in the window before
+   * `createStandby` registers the standby, which a claim can fall into.
+   */
+  standbyUnclaimed?: boolean;
   /** Subnet rules must wait until installation finishes flushing OUTPUT. */
   egressFirewallReady?: Promise<void>;
   /**
@@ -243,6 +253,8 @@ export interface SessionContainerManagerOpts {
   dockerProxyHost?: string;
   dockerProxyPort?: number;
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  /** The GPU switch, read at each container create (docs/325-session-gpu-access req 5). */
+  gpuAccess?: () => boolean;
   readOwnContainerId?: () => Promise<string>;
 }
 
@@ -252,6 +264,8 @@ const DEFAULT_MEMORY_LIMIT = 1536 * 1024 * 1024;
 const DEFAULT_CPU_QUOTA = 50_000;
 const DEFAULT_PIDS_LIMIT = 4096;
 const DEFAULT_WORKER_PORT = 9100;
+/** A cold container start, with room for a first image pull. */
+const GPU_DECISION_TIMEOUT_MS = 120_000;
 
 export const CONTAINER_LABEL_KEY = "shipit-session";
 export const CONTAINER_LABEL_VALUE = "true";
@@ -327,6 +341,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
   private resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  private gpuAccess?: () => boolean;
   private workerImageId?: string;
   private workerBaseDigest?: string;
   private workerNodeVersion?: string;
@@ -363,7 +378,34 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.dockerProxyHost = opts.dockerProxyHost;
     this.dockerProxyPort = opts.dockerProxyPort;
     this.resolveEgressConfig = opts.resolveEgressConfig;
+    this.gpuAccess = opts.gpuAccess;
     if (opts.readOwnContainerId) this.readOwnContainerId = opts.readOwnContainerId;
+  }
+
+  /** An unclaimed standby that asked for the GPU under the other switch value; a new session must not take it. */
+  standbyGpuOutOfDate(sessionId: string): boolean {
+    const sc = this.containers.get(sessionId);
+    if (!sc?.standbyUnclaimed || !sc.gpu) return false;
+    return (sc.gpu.state !== "off") !== (this.gpuAccess?.() ?? false);
+  }
+
+  /** The GPU state of this session's container once its create has decided it; undefined if none starts in time. */
+  async gpuDecision(sessionId: string, timeoutMs = GPU_DECISION_TIMEOUT_MS): Promise<SessionGpu | undefined> {
+    const known = this.containers.get(sessionId)?.gpu;
+    if (known) return known;
+    return new Promise((resolve) => {
+      const settle = (): void => {
+        clearTimeout(timer);
+        this.off("container_started", onStarted);
+        resolve(this.containers.get(sessionId)?.gpu);
+      };
+      const onStarted = (startedId: string): void => {
+        if (startedId === sessionId) settle();
+      };
+      const timer = setTimeout(settle, timeoutMs);
+      timer.unref();
+      this.on("container_started", onStarted);
+    });
   }
 
   get dockerClient(): Docker {
@@ -854,6 +896,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       kernelRuntime: kernelRuntime(),
       seccompSecurityOpt: resolveSeccompSecurityOpt(),
       readonlyRootfs: readonlyRootfsEnabled(),
+      ...(this.gpuAccess ? { gpuAccess: this.gpuAccess } : {}),
       stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),
@@ -1385,6 +1428,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   claimStandby(sessionId: string): SessionContainer | undefined {
+    const sc = this.containers.get(sessionId);
+    if (sc) sc.standbyUnclaimed = false;
     if (!this.standbySessionIds.has(sessionId)) return undefined;
     this.standbySessionIds.delete(sessionId);
     return this.containers.get(sessionId);
@@ -1474,6 +1519,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     opsSession?: boolean;
     hostMounts?: HostMount[];
     overlaySpecs?: DepDirOverlaySpec[];
+    scheduleNotesDir?: string;
   }): ContainerConfig {
     return buildContainerConfig({
       imageName: this.imageName,
@@ -1494,6 +1540,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     opsSession?: boolean;
     dockerAccess?: boolean;
     overlaySpecs?: DepDirOverlaySpec[];
+    scheduleNotesDir?: string;
   }): ContainerConfig {
     const cfg = readAgentConfig(opts.workspaceDir);
     const limits = resolveAgentDockerLimits(opts.workspaceDir);
@@ -1513,6 +1560,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       opsSession: opts.opsSession,
       hostMounts: opts.opsSession ? cfg.hostMounts : undefined,
       overlaySpecs: opts.overlaySpecs,
+      ...(opts.scheduleNotesDir ? { scheduleNotesDir: opts.scheduleNotesDir } : {}),
     });
   }
 

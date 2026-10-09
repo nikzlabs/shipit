@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Scheduled sessions — UI sketch</title>
+<style>
+  :root{
+    --bg:#030712; --bg2:#111827; --bg3:#1f2937; --hover:rgba(255,255,255,.05); --active:rgba(255,255,255,.1);
+    --tp:#f3f4f6; --ts:#9ca3af; --tt:#6b7280;
+    --bd:#212c3b; --bd2:#374151;
+    --accent:#3b82f6; --accent-subtle:rgba(59,130,246,.15);
+    --ok:#22c55e; --err:#ef4444; --warn:#f59e0b; --pr:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#02040a;color:var(--tp);
+    font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:32px}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:var(--ts);margin:0 0 28px;max-width:900px}
+  .row{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin-bottom:36px}
+  .panel{display:flex;flex-direction:column;gap:10px}
+  .cap{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--tt);font-weight:600}
+  .note{color:var(--ts);font-size:12px;max-width:520px}
+  .note b{color:var(--tp);font-weight:600}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
+  .btn{display:inline-flex;align-items:center;border-radius:7px;padding:4px 11px;border:1px solid var(--bd2);color:var(--tp);font-size:12.5px}
+  .btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn.ghost{border-color:transparent;color:var(--ts)}
+  .field{border:1px solid var(--bd2);border-radius:6px;padding:3px 8px;color:var(--tp);background:var(--bg)}
+  .lbl{color:var(--tt);font-size:12px}
+
+  /* chat + proposal card */
+  .chat{width:600px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:12px}
+  .user{align-self:flex-end;background:var(--bg3);border-radius:10px;padding:8px 12px;max-width:440px}
+  .agent{color:var(--ts)}
+  .card{border:1px solid var(--bd2);border-radius:10px;background:var(--bg2);overflow:hidden}
+  .card-h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--bd)}
+  .card-h b{font-weight:600}
+  .card-h .tag{margin-left:auto;color:var(--tt);font-size:11.5px}
+  .kv{display:grid;grid-template-columns:110px 1fr;gap:5px 12px;padding:10px 12px}
+  .kv .k{color:var(--tt)}
+  .kv .v{color:var(--tp)}
+  .prompt{background:var(--bg);border:1px solid var(--bd);border-radius:7px;padding:7px 9px;color:var(--tp)}
+  .card-f{display:flex;gap:8px;padding:9px 12px;border-top:1px solid var(--bd)}
+  .chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;border:1px solid var(--bd2);color:var(--ts);font-size:11.5px;margin-right:4px}
+
+  /* sidebar */
+  .sb{width:300px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+  .sbh{display:flex;align-items:center;gap:6px;padding:0 10px;height:41px;border-bottom:1px solid var(--bd);color:var(--tt)}
+  .tg{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 6px;border-radius:6px;color:var(--tt)}
+  .tg.on{background:var(--bg3);color:#60a5fa}
+  .tg .n{font-size:11.5px}
+  .tg .w{color:var(--warn);font-size:11px}
+  .sp{flex:1}
+  .grp{padding:6px}
+  .gh{display:flex;align-items:center;gap:6px;padding:5px 6px;color:var(--ts);font-size:12px;font-weight:600}
+  .item{display:flex;align-items:center;gap:7px;padding:5px 8px 5px 14px;border-radius:6px;color:var(--tp);font-size:12.5px;border-left:2px solid transparent}
+  .item:hover{background:var(--hover)}
+  .item.att{border-left-color:var(--warn)}
+  .item .when{margin-left:auto;color:var(--tt);font-size:11.5px}
+  .item .clk{color:var(--tt)}
+  .rr{display:flex;align-items:center;gap:6px;padding:4px 8px 4px 14px;color:var(--tt);font-size:11.5px}
+  .item.res{color:var(--ts)}
+  .warnrow{margin:6px;border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:7px;padding:7px 9px;font-size:12px;color:var(--ts)}
+  .warnrow b{color:var(--tp)}
+  .warnrow a{color:#60a5fa;text-decoration:none}
+
+  /* settings */
+  .set{width:860px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;display:flex;overflow:hidden}
+  .nav{width:170px;border-right:1px solid var(--bd);padding:10px 6px;display:flex;flex-direction:column;gap:2px;color:var(--ts)}
+  .nav div{padding:5px 9px;border-radius:6px}
+  .nav .on{background:var(--active);color:var(--tp)}
+  .main{flex:1;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+  .sl{border:1px solid var(--bd);border-radius:8px;overflow:hidden}
+  .sr{display:grid;grid-template-columns:1.3fr 1fr 1fr auto;gap:10px;align-items:center;padding:8px 11px;border-bottom:1px solid var(--bd)}
+  .sr:last-child{border-bottom:none}
+  .sr.sel{background:var(--hover)}
+  .sr .nm{font-weight:600}
+  .sr .mt{color:var(--tt);font-size:11.5px}
+  .ed{border:1px solid var(--bd2);border-radius:8px;padding:12px;display:grid;grid-template-columns:110px 1fr;gap:9px 12px;align-items:center}
+  .ed .k{color:var(--tt)}
+  .ed .inline{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .sw{width:26px;height:15px;border-radius:999px;background:var(--bd2);position:relative;display:inline-block;vertical-align:middle}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;background:#cbd5e1}
+  .sw.on{background:var(--accent)} .sw.on::after{left:13px;background:#fff}
+  .runs{border:1px solid var(--bd);border-radius:8px}
+  .run{display:grid;grid-template-columns:120px 110px 1fr auto;gap:10px;padding:6px 11px;border-bottom:1px solid var(--bd);align-items:center;font-size:12.5px}
+  .run:last-child{border-bottom:none}
+  .run .res{color:var(--ts);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .run a{color:#60a5fa;text-decoration:none}
+
+  /* banner */
+  .hdr{width:600px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+  .banner{display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(59,130,246,.07);border-bottom:1px solid var(--bd);color:var(--ts)}
+  .banner b{color:var(--tp);font-weight:600}
+  .banner .lnk{margin-left:auto;color:#60a5fa}
+</style>
+</head>
+<body>
+<h1>Scheduled sessions — UI sketch</h1>
+<p class="sub">For discussion, not final visuals. The user sets up a schedule by asking the agent in chat and confirms it on a card
+(reqs 8, 9). All schedules are listed and edited in Settings → Schedules (reqs 10, 11, 24). Runs have their own sidebar view next to
+"needs you" (reqs 20–22). Nothing is added to the message input panel (req 12).</p>
+
+<div class="row">
+  <div class="panel">
+    <div class="cap">1 · Set up by chat; the user confirms on a card</div>
+    <div class="chat">
+      <div class="user">Every weekday at 9, check the security PRs in shipit and website and merge the ones that only bump a version and pass CI.</div>
+      <div class="agent">That needs a sandbox with GitHub access and merging allowed. Here is the schedule:</div>
+      <div class="card">
+        <div class="card-h">◷ <b>New schedule: Security PR sweep</b><span class="tag">not active until you confirm</span></div>
+        <div class="kv">
+          <span class="k">When</span><span class="v">Every weekday at 09:00 · Europe/Berlin</span>
+          <span class="k">Next runs</span><span class="v">Thu 8 Oct 09:00 · Fri 9 Oct 09:00 · Mon 12 Oct 09:00</span>
+          <span class="k">Target</span><span class="v">Sandbox <span class="chip">GitHub</span><span class="chip">Merge PRs</span><span class="chip">Network</span></span>
+          <span class="k">Runs as</span><span class="v">Claude · Opus 5.5 · high · Auto</span>
+          <span class="k">Prompt</span><span class="v"><div class="prompt">Check the open security PRs (Dependabot, Renovate) in nikzlabs/shipit and nikzlabs/website. Merge each one whose checks pass and whose diff only bumps a version. For the rest, say why you did not merge.</div></span>
+        </div>
+        <div class="card-f"><span class="btn pri">Confirm</span><span class="btn ghost">Cancel</span></div>
+      </div>
+    </div>
+    <p class="note">A change the agent proposes uses the same card and shows <b>before → after</b>. Only <b>Confirm</b> writes the
+      schedule, so the agent cannot give a run access the user did not see (req 9).</p>
+  </div>
+
+  <div class="panel">
+    <div class="cap">2 · Sidebar: the Scheduled view</div>
+    <div class="sb">
+      <div class="sbh">
+        <span>▤</span>
+        <span class="tg"><span>💬</span><span class="n">3</span></span>
+        <span class="tg on"><span>◷</span><span class="w">▲</span></span>
+        <span class="sp"></span><span>＋</span><span>⌥</span>
+      </div>
+      <div class="warnrow">◷ <b>Weekly dependency audit</b> could not start: the repository is not trusted. <a href="#">Open schedule</a></div>
+      <div class="grp">
+        <div class="gh">▾ nikzlabs/shipit</div>
+        <div class="item att"><span class="clk">◷</span>Dependency audit · Oct 5<span class="when">2d</span></div>
+        <div class="rr">▾ Recently resolved</div>
+        <div class="item res"><span class="clk">◷</span>Dependency audit · Sep 28<span class="when">9d</span></div>
+      </div>
+      <div class="grp" style="border-top:1px solid var(--bd)">
+        <div class="gh">▾ Sandbox</div>
+        <div class="item"><span class="dot" style="background:var(--accent)"></span>Security PR sweep · Oct 7<span class="when">now</span></div>
+        <div class="item att"><span class="clk">◷</span>Security PR sweep · Oct 6<span class="when">1d</span></div>
+        <div class="rr">▾ Recently resolved</div>
+        <div class="item res"><span class="clk">◷</span>Security PR sweep · Oct 5<span class="when">2d</span></div>
+        <div class="item res"><span class="clk">◷</span>Security PR sweep · Oct 1<span class="when">6d</span></div>
+      </div>
+    </div>
+    <p class="note" style="max-width:300px">The same grouped list as the regular view, for runs only (req 20). A run that ended with no
+      question, no manual step and no open PR is finished and moves under <b>Recently resolved</b> (req 22). Runs that need the user
+      (amber) also appear in the <b>💬 needs you</b> view (req 21). The ◷ control shows once the user has a schedule or a scheduled run; ▲ marks a
+      schedule that could not start (req 18), which also shows in "needs you" (req 31).</p>
+  </div>
+</div>
+
+<div class="row">
+  <div class="panel">
+    <div class="cap">3 · Settings → Schedules: list, editor, runs</div>
+    <div class="set">
+      <div class="nav">
+        <div>General</div><div>Accounts</div><div>Roles</div><div class="on">Schedules</div><div>Voice</div><div>Advanced</div>
+      </div>
+      <div class="main">
+        <div class="sl">
+          <div class="sr sel"><span><span class="nm">Security PR sweep</span><br><span class="mt">Sandbox · GitHub, Merge PRs</span></span>
+            <span>Weekdays 09:00<br><span class="mt">next Thu 8 Oct 09:00</span></span><span class="mt">Active</span>
+            <span><span class="btn ghost">Run now</span><span class="btn ghost">Pause</span><span class="btn ghost">⋯</span></span></div>
+          <div class="sr"><span><span class="nm">Weekly dependency audit</span><br><span class="mt">nikzlabs/shipit · role: Auditor</span></span>
+            <span>Mondays 08:00<br><span class="mt">next Mon 12 Oct 08:00</span></span><span style="color:var(--warn)">▲ Could not start: repository not trusted</span>
+            <span><span class="btn ghost">Run now</span><span class="btn ghost">Pause</span><span class="btn ghost">⋯</span></span></div>
+        </div>
+        <div class="ed">
+          <span class="k">Name</span><span><span class="field">Security PR sweep</span></span>
+          <span class="k">When</span><span class="inline"><span class="field">Every weekday ▾</span><span class="lbl">at</span><span class="field mono">09:00</span><span class="field">Europe/Berlin ▾</span><span class="lbl">or</span><span class="field mono" style="color:var(--tt)">cron…</span></span>
+          <span class="k">Target</span><span class="inline"><span class="field">▣ Sandbox ▾</span>
+            <span class="sw on"></span> GitHub <span class="sw on"></span> Merge PRs <span class="sw"></span> Docker <span class="sw on"></span> Network
+            <span class="field">SSH: none ▾</span></span>
+          <span class="k">Runs as</span><span class="inline"><span class="field">🧢 No role ▾</span><span class="field">Claude ▾</span><span class="field">Opus 5.5 ▾</span><span class="field">high ▾</span><span class="field">⏩ Auto ▾</span></span>
+          <span class="k">Prompt</span><span><div class="prompt" style="background:var(--bg2)">Check the open security PRs (Dependabot, Renovate) in nikzlabs/shipit and nikzlabs/website. Merge each one whose …</div></span>
+          <span class="k">Next runs</span><span class="lbl">Thu 8 Oct 09:00 · Fri 9 Oct 09:00 · Mon 12 Oct 09:00</span>
+          <span></span><span class="inline"><span class="btn pri">Save</span><span class="btn ghost">Delete schedule</span></span>
+        </div>
+        <div class="runs">
+          <div class="run"><span>Wed 7 Oct 09:00</span><span style="color:#60a5fa">● Running</span><span class="res">—</span><span><a href="#">Stop</a> · <a href="#">Notes</a> · <a href="#">Open</a></span></div>
+          <div class="run"><span>Tue 6 Oct 09:00</span><span style="color:var(--warn)">● Needs you</span><span class="res">Merged #3051 and #3055. #3060 changes an API; asked before merging.</span><span><a href="#">Stop</a> · <a href="#">Notes</a> · <a href="#">Open</a></span></div>
+          <div class="run"><span>Mon 5 Oct 09:00</span><span style="color:var(--ok)">✓ Finished</span><span class="res">Merged 2 security PRs; none left open.</span><span><a href="#">Notes</a> · <a href="#">Open</a></span></div>
+          <div class="run"><span>Fri 2 Oct 09:00</span><span class="lbl">Skipped</span><span class="res">The previous run was still going.</span><span></span></div>
+        </div>
+      </div>
+    </div>
+    <p class="note">The parameter controls are the composer's own components, so a parameter ShipIt adds to session start appears here
+      too (req 5). The one-line result is the run's status-card summary, or the first line of its last agent message. Skipped runs and failed starts are listed with their reason (req 24).</p>
+  </div>
+</div>
+
+<div class="row">
+  <div class="panel">
+    <div class="cap">4 · A run is an ordinary session that says where it came from</div>
+    <div class="hdr">
+      <div class="banner">◷ Started by schedule <b>Security PR sweep</b> · Tue 6 Oct 09:00 <span class="lnk">Open schedule · Notes · Stop run</span></div>
+      <div style="padding:12px 14px;color:var(--ts)">The first message is the schedule's prompt. The agent also gets its own notes folder and read access to
+        the notes of earlier runs (req 13). The user can reply here like in any session (req 7).</div>
+    </div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="panel">
+    <div class="cap">5 · Notes: the viewer, and an agent in another session asking to read them</div>
+    <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">
+      <div class="card" style="width:520px">
+        <div class="card-h">📄 <b>Notes · Security PR sweep · Tue 6 Oct 09:00</b><span class="tag">read-only</span></div>
+        <div style="display:flex">
+          <div style="width:150px;border-right:1px solid var(--bd);padding:8px;display:flex;flex-direction:column;gap:3px;font-size:12px">
+            <span style="background:var(--active);border-radius:5px;padding:3px 6px">summary.md</span>
+            <span style="padding:3px 6px;color:var(--ts)">skipped-prs.json</span>
+          </div>
+          <div style="padding:10px 12px;font-size:12.5px;color:var(--ts)">
+            <div style="color:var(--tp);font-weight:600;margin-bottom:4px">Run 2026-10-06</div>
+            Merged #3051, #3055 (lockfile-only bumps, CI green).<br>
+            Not merged: #3060 — changes a public API. Asked the user.<br>
+            Next run: re-check #3060 if the user answered.
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="chat" style="width:440px">
+          <div class="user">What did the security sweep find this week?</div>
+          <div class="card" style="border-color:rgba(245,158,11,.5);background:rgba(245,158,11,.08)">
+            <div class="card-h" style="border-bottom-color:rgba(245,158,11,.3)">🛡 <b>Read schedule notes?</b></div>
+            <div style="padding:9px 12px;color:var(--ts);font-size:12.5px">This session's agent asks to read the notes of schedule
+              <b style="color:var(--tp)">Security PR sweep</b> (12 runs). The approval holds for this session only.</div>
+            <div class="card-f" style="border-top-color:rgba(245,158,11,.3)"><span class="btn pri">Allow for this session</span><span class="btn ghost">Deny</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note">The user opens notes from <b>Notes</b> on a run in Settings → Schedules or in the run's banner (req 27). The schedule's own
+      runs read them without asking (req 13); an agent in any other session reads them through <span class="mono">shipit schedule notes</span>
+      only after the user allows it for that session (req 28).</p>
+  </div>
+</div>
+</body>
+</html>

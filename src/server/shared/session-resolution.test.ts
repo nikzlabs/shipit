@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "./types.js";
-import { doneSessionTest, isSessionDone, isTerminalPrResolved, resolvedAt } from "./session-resolution.js";
+import {
+  doneSessionTest,
+  isSessionDone,
+  isTerminalPrResolved,
+  isWorkResolved,
+  resolvedAt,
+  scheduledViewTest,
+  workResolvedAt,
+} from "./session-resolution.js";
 
 function make(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return { id: "child", title: "Child", createdAt: "2026-08-14T09:00:00.000Z", lastUsedAt: "2026-08-14T10:00:00.000Z", remoteUrl: "", ...overrides };
@@ -65,5 +73,41 @@ describe("session resolution", () => {
     expect(browser(parent)).toBe(false);
     expect(server(underArchived)).toBe(browser(underArchived));
     expect(doneSessionTest([parent, mergedChild])(parent)).toBe(doneSessionTest([parent])(parent));
+  });
+});
+
+describe("docs/324-scheduled-sessions: a run's resolution", () => {
+  const run = (overrides: Partial<SessionInfo> = {}) => make({ id: "run", scheduleId: "sched-1", ...overrides });
+
+  it("is the saved finish, not the PR", () => {
+    expect(isWorkResolved(run({ runFinishedAt: "2026-08-14T12:00:00.000Z" }))).toBe(true);
+    expect(isWorkResolved(run({ mergedAt: "2026-08-14 11:00:00" }))).toBe(false);
+    expect(workResolvedAt(run({ mergedAt: "2026-08-14 11:00:00" }))).toBeUndefined();
+    expect(workResolvedAt(run({ runFinishedAt: "2026-08-14T12:00:00.000Z", mergedAt: "2026-08-14 11:00:00" })))
+      .toBe("2026-08-14T12:00:00.000Z");
+  });
+
+  it("leaves any other session to its PR", () => {
+    const merged = make({ mergedAt: "2026-08-14 11:00:00" });
+    expect(isWorkResolved(merged)).toBe(true);
+    expect(workResolvedAt(merged)).toBe("2026-08-14 11:00:00");
+  });
+
+  it("decides done the same way as for any other session", () => {
+    const finished = run({ runFinishedAt: "2026-08-14T12:00:00.000Z" });
+    expect(doneSessionTest([finished])(finished)).toBe(true);
+    const pinned = { ...finished, pinnedAt: "2026-08-14T13:00:00Z" };
+    expect(doneSessionTest([pinned])(pinned)).toBe(false);
+    const child = make({ id: "kid", parentSessionId: "run", rootSessionId: "run" });
+    expect(doneSessionTest([finished, child])(finished)).toBe(false);
+  });
+
+  it("puts a run and its spawn tree in the Scheduled view, and nothing else", () => {
+    const parent = run();
+    const grandchild = make({ id: "grand", parentSessionId: "kid", rootSessionId: "run" });
+    const other = make({ id: "other" });
+    const otherChild = make({ id: "other-kid", parentSessionId: "other", rootSessionId: "other" });
+    const isScheduled = scheduledViewTest([parent, grandchild, other, otherChild]);
+    expect([parent, grandchild, other, otherChild].map(isScheduled)).toEqual([true, true, false, false]);
   });
 });

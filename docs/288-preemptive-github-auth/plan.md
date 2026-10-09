@@ -91,7 +91,10 @@ each is about an environment ShipIt does **not** control:
   checks for the same reason (`credentialledGit`, `RepoGit`'s credentialled
   constructor). Those instances' environments contain no inherited `GIT_CONFIG_*`
   by construction, so the flag switches off a check that has nothing left to
-  find. `process.env` is not touched.
+  find. `process.env` is not touched. Since simple-git 4, the same two instances
+  must also name the variables in `allowEnvironment`
+  (`CREDENTIAL_GIT_ENVIRONMENT`). Every other instance strips an inherited
+  `GIT_CONFIG_COUNT` before git starts.
 
 ### Coverage: where a credential gets resolved
 
@@ -169,11 +172,13 @@ Two narrower rules the fallback needs, both from review:
 - **`GIT_TRACE_REDACT` is pinned on** in the credentialled environment. git
   redacts `Authorization` in a curl trace by default and `GIT_TRACE_REDACT=0`
   turns that off — measured on git 2.39.5 — while `GIT_TRACE_CURL` can point the
-  trace at a file, and `sanitizeGitEnv` strips neither. Pinned rather than
-  stripped: an operator keeps the diagnostic and loses only the leak. The
-  diff-viewer smudge (`git-lfs-blob.ts`) also stopped spreading a raw
-  `process.env` into its credentialled child, which was the one credentialled
-  site not sanitizing.
+  trace at a file. The diff-viewer smudge (`git-lfs-blob.ts`) also stopped
+  spreading a raw `process.env` into its credentialled child, which was the one
+  credentialled site not sanitizing. Since simple-git 4, git launched by ShipIt
+  receives only the guarded variables `safeSimpleGit` allowlists
+  (`git-hooks-guard.ts`), and `sanitizeGitEnv` drops every other one. So an
+  inherited `GIT_TRACE*` no longer reaches git at all, and the pin stays as
+  defence in depth.
 
 ### Scope questions the brief raised, answered
 

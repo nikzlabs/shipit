@@ -28,7 +28,7 @@ build_deploy() {
   fi
 }
 
-# Poll because Docker bind mounts can drop inotify events.
+# A find-based poll needs no inotify tool in the image.
 sig() {
   find app/src build.gradle.kts app/build.gradle.kts settings.gradle.kts gradle.properties \
     -type f 2>/dev/null -printf '%T@ %p\n' | sort | md5sum

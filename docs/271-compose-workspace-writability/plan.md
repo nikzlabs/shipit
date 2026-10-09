@@ -368,13 +368,73 @@ failed in CI, and demonstrated nothing in either place. A test for behaviour tha
 is gated on an environment variable has to own that variable, or the environment
 decides what the test means.
 
+## 4c. A session UID has no home directory (2026-10-06, planning#638)
+
+A third way to have broken services, found when the project templates were
+started for planning#634: a service ShipIt runs as the session identity started
+with `HOME=/`. Docker takes `HOME` from the image's `/etc/passwd` when the
+environment does not carry one, no image has an account for a UID in
+2000000–2999999, and the fallback is `/` — which that UID cannot write. Anything
+that keeps a file below `$HOME` then fails or loses its cache. Measured in
+`node:24-slim`: `npm config get cache` gives `/.npm`, and the Astro template
+exits with `EACCES: permission denied, mkdir '/.config/astro'`.
+
+**The fix.** `generateComposeOverride` adds `environment: { HOME: /tmp }` to a
+service it gives a session UID. `/tmp` is the value ShipIt already gives its own
+containers that run as that UID inside a foreign image (`pluginContainerEnv`,
+the Compose helper). Those mount a tmpfs there; a service gets no mount and uses
+its image's own `/tmp`, so a service with `read_only: true` has a writable home
+only if it declares a `tmpfs:` for it. ShipIt adds none: such a service had no
+writable home before either, and a tmpfs is charged to the container's memory.
+
+Three conditions, each one a way the unconditional version is wrong:
+
+- **Only a session UID** (`isSessionUid`). A deployment's shared worker UID can
+  be an account the image *has* — `node` is 1000 in every `node` image — and
+  then its home is real, writable, and may hold what the image put there. Only
+  the reserved range is certain to have no account.
+- **Never over a declared `HOME`.** Compose merges `environment` by variable
+  name and the later file wins — measured on the pinned 5.5.1, the override's
+  value replaced a project's `HOME: /data` — so the override must stay silent
+  where the project speaks. The raw file cannot answer that, because a value
+  from `env_file:` is not in it. The resolved model can: `config` inlines
+  `env_file` into `environment` (verified at `validateResolvedServiceFiles`,
+  which refuses a model where it did not), so `prepareStart` reads `HOME` there,
+  beside the resolved `user:`. A plugin service has no resolved model — its
+  whole definition is in the override — so the check reads its `environment`
+  directly (an entry with no value declares nothing: `normalizeEnvironment`
+  has already dropped it, so that it cannot inherit the orchestrator's). A service secret named `HOME` counts as declared too, because one
+  delivery path is an `env_file` in the override, which `environment` outranks.
+- **Only where ShipIt supplies the user.** A declared `user:`, and the two
+  services that keep their image's startup user, get nothing.
+
+**What it cannot see is an image's own `ENV HOME`.** A Compose `environment`
+value outranks the image, and the image need not exist when the override is
+written — a `build:` runs after it, and `up` pulls — so reading it would take an
+image-inspection step the start sequence does not have. Accepted instead: that
+image's `HOME` becomes `/tmp`, and the service no longer reads or writes the
+home its image prepared. That can break a service that works — an image that
+made its home writable for any UID, or one that keeps its home on a volume —
+until the project repeats the value in `environment:`, which `compose.md` tells
+it to do.
+
+**What the tests pin.** The override in each case above; that a value from
+`env_file:` reaches the check through the resolved model; and the merge itself —
+one test runs real Compose over ShipIt's own override and a project file, which
+is where "per variable, later file wins" stops being an assumption. That test is
+skipped where no Compose binary exists. No test starts a container, so the
+writability of `/tmp` in an image is measured, not pinned (planning#638).
+
 ## 5. Key files
 
 - `src/server/orchestrator/session-worker-uid.ts` — `addGroupWrite`, called from
   the worktree handoff and from the cross-session group share; and
   `applyDefaultGroupAcl`, the §3 pass over the same directories.
 - `src/server/orchestrator/compose-generator.ts` — the relaxed contained-`user:`
-  rule and the `group_add` injection.
+  rule, the `group_add` injection, and the `HOME` that goes with a session UID
+  (§4c: `SERVICE_HOME`, `declaresHome`).
+- `src/server/orchestrator/service-manager.ts` — `prepareStart` reads a declared
+  `HOME` from the resolved model (§4c).
 - `docker/session-worker/entrypoint.sh` — `chown_workspace`'s mode passes and
   its default-ACL pass, plus the `HANDOFF_SCHEME` that reaches already-claimed
   trees.
