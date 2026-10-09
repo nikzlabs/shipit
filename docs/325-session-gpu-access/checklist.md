@@ -11,7 +11,7 @@
 - [x] Worker images: DirectX links in the loader path, Xvfb by name
 - [x] Docs for req 7: environment.md, wiki, deployment README
 - [x] Verify the GPU request on Docker Desktop/WSL2
-- [ ] Verify on the WSL2 host, after the update: the container starts with the two mounts, CUDA still works, and Chrome under Xvfb reports `D3D12 (…)` as its WebGL renderer (req 7)
-- [ ] After that check: remove "not yet confirmed" from `environment.md` and the wiki, or correct the steps
+- [x] Verify on the WSL2 host, after the update: the container starts with the two mounts, CUDA still works, and Chrome under Xvfb reports `D3D12 (…)` as its WebGL renderer (req 7)
+- [x] After that check: remove "not yet confirmed" from `environment.md` and the wiki, or correct the steps
 - [ ] Verify on Docker Engine + toolkit in WSL2 and on native Linux, and with `SESSION_READONLY_ROOTFS=1` / `SESSION_SECCOMP=1`
 - [ ] Verify what `docker compose config` writes for `gpus: all`
