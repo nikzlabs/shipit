@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { CheckIcon, CopyIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { ADDRESS_MEASURE_ATTR } from "../../hooks/usePreviewToolbarCollapse.js";
+import { copyText } from "../../utils/copy-text.js";
 
 interface PreviewPathProps {
 
@@ -40,13 +41,7 @@ export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
   const isRoot = route === "/" && !query;
 
   const copy = async () => {
-    if (!fullUrl || !navigator.clipboard) return;
-    try {
-      await navigator.clipboard.writeText(fullUrl);
-    } catch {
-
-      return;
-    }
+    if (!fullUrl || !(await copyText(fullUrl))) return;
     setCopied(true);
     if (copyTimer.current) clearTimeout(copyTimer.current);
     copyTimer.current = setTimeout(() => setCopied(false), 1200);

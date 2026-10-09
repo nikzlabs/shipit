@@ -37,7 +37,9 @@ import {
   buildTextChange,
   CARD_TEXT_LINES_MAX,
   CARD_TEXT_MAX,
+  CARD_VALUE_MAX,
   summarizeText,
+  textChangeSides,
   unshowableCharacter,
 } from "./settings-text-change.js";
 import { postSettingsProposal } from "./settings-proposal.js";
@@ -106,20 +108,7 @@ export interface SettingsProposeDeps {
   getRunnerRegistry: () => SessionRunnerRegistry | undefined;
 }
 
-/**
- * How much of a value one chip can show.
- *
- * A change nobody can check by looking is not a change the user can approve, so
- * a value too long for the card is refused rather than shown truncated — the
- * same test as an operation whose full effect the card cannot display
- * (plan.md → Collections are patched, never replaced).
- *
- * Past it a PROSE setting is not refused but shown differently, as a
- * full-context diff up to {@link CARD_TEXT_MAX} (req 9): the chip is what cannot
- * carry the change, and the refusal was never meant to say that the user's own
- * instructions are unproposable.
- */
-export const CARD_VALUE_MAX = 200;
+export { CARD_VALUE_MAX };
 
 /**
  * The agent supplies text; the declaration says what that text means. Reading it
@@ -193,11 +182,14 @@ function resolveTarget(
     // of it — so the refusal names the entry fields rather than reading as a
     // capability ShipIt has not built (plan.md → Collections are patched, never
     // replaced).
-    const fields = available.length === 0 ? proposableFieldsOf(declaration.key) : [];
+    const fields = kind === "set" || available.length === 0 ? proposableFieldsOf(declaration.key) : [];
     if (fields.length > 0) {
+      const create = available.includes("add")
+        ? " To create a new one, pass --add with its name and its body as JSON through --value-file -."
+        : "";
       refuse(renderOwn(
         `${declaration.key} is the whole list, and a proposal changes one entry of it. Propose `
-          + `${fields.join(" or ")} instead, naming the entry with --item.`,
+          + `${fields.join(" or ")} instead, naming the entry with --item.${create}`,
       ));
     }
     const alternatives = available.length > 0 ? `; it can ${available.join(" and ")} this setting` : "";
@@ -359,6 +351,29 @@ function showableChange(
     requireShowable(declaration, "proposed", change.to);
     return { from: change.from, to: change.to };
   }
+  const textChange = requireReviewable(declaration, before, after);
+  // The prose moves into the diff and out of `from`/`to`, which keep ShipIt's
+  // own summary — what the collapsed line, `lastProposal` and the CLI's echo all
+  // want, and what stops the text being persisted three times over. A count is
+  // ShipIt's own words about a value rather than the value, so it is minted as
+  // such and never quoted.
+  return {
+    from: renderOwn(summarizeText(before)),
+    to: renderOwn(summarizeText(after)),
+    textChange,
+  };
+}
+
+/**
+ * The bounds a prose change has to sit inside, on whichever line of the card it
+ * is shown — the main change, or a side change such as a new role's standing
+ * instructions. Returns the diff the card carries.
+ */
+function requireReviewable(
+  declaration: AnySettingDeclaration,
+  before: string,
+  after: string,
+): SettingsProposalTextChange {
   for (const [side, text] of [["current", before], ["proposed", after]] as const) {
     requireDisplayable(declaration, side, text);
     if (text.length > CARD_TEXT_MAX) {
@@ -383,16 +398,7 @@ function showableChange(
         + "tell the user what to change instead.",
     ));
   }
-  // The prose moves into the diff and out of `from`/`to`, which keep ShipIt's
-  // own summary — what the collapsed line, `lastProposal` and the CLI's echo all
-  // want, and what stops the text being persisted three times over. A count is
-  // ShipIt's own words about a value rather than the value, so it is minted as
-  // such and never quoted.
-  return {
-    from: renderOwn(summarizeText(before)),
-    to: renderOwn(summarizeText(after)),
-    textChange,
-  };
+  return textChange;
 }
 
 /**
@@ -439,20 +445,54 @@ function membershipChange(
   kind: SettingsOperationKind,
   current: CurrentValue,
   target: SettingsProposalTarget,
+  proposedValue: unknown,
 ): ProposedChange {
-  const present = current.item !== undefined;
+  // A collection that reads as the list of its names (`roles`, `mcp.servers`)
+  // has no instances, so the name being in that list is what membership is.
+  const names = current.entry.valueType === "collection" && Array.isArray(current.entry.value)
+    ? current.entry.value
+    : [];
+  const present = current.item !== undefined || names.includes(target.item);
   const wording = operation.wording ?? { from: "not set", to: "set" };
   // Both refusals say the same thing — the entry is already in the state this
   // operation would move it to — so both quote `to` and never `from`.
   if (present === (kind === "add")) {
-    refuse(renderLine(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to change.`));
+    const known = kind === "remove" && names.length > 0
+      ? ` The ones that exist: ${joinRendered(names.map((name) => renderLine(String(name))))}.`
+      : "";
+    refuse(renderLine(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to `
+      + `change.${known}`));
   }
   return {
     from: renderOwn(wording.from),
     fromValue: present,
     to: renderOwn(wording.to),
-    proposedValue: kind === "add",
+    proposedValue,
   };
+}
+
+/**
+ * The body an `add` carries, where the entry is more than its address — a role
+ * is a model, a level and two pieces of prose as well as a name. Read and
+ * validated before the lock, as a `set`'s value is; an entry with no body is
+ * the bare `true` a host joining the allowlist has always been.
+ */
+function entryValueOf(operation: SettingsOperation, input: SettingsProposeInput): unknown {
+  if (!operation.entry) return true;
+  let raw = input.value;
+  if (raw === undefined && input.valueText !== undefined) {
+    try {
+      raw = JSON.parse(input.valueText);
+    } catch {
+      refuse(renderOwn("The entry's body is not JSON. Pass it as one JSON object with --value-file -."));
+    }
+  }
+  try {
+    return operation.entry(raw);
+  } catch (err) {
+    if (err instanceof ServiceError) refuse(renderLine(err.message));
+    throw err;
+  }
 }
 
 /**
@@ -531,14 +571,16 @@ export async function proposeSettingChange(
   // between, which gives the card a `from` the baseline never saw: the user
   // approves what the card shows, and the apply compares against something else
   // and overwrites it (plan.md → Proposing: "the server takes the snapshot").
-  const proposedValue = kind === "set" ? proposedValueOf(declaration, input) : kind === "add";
+  const proposedValue = kind === "set"
+    ? proposedValueOf(declaration, input)
+    : kind === "add" ? entryValueOf(operation, input) : false;
   const { change, shown, alsoChanges, baseline } = await withConflictDomains(
     operation.domains(target, deps.operations, proposedValue),
     async () => {
       const current = await readCurrent(deps, sessionId, resolved);
       const computed = kind === "set"
         ? valueChange(declaration, proposedValue, current, target)
-        : membershipChange(operation, kind, current, target);
+        : membershipChange(operation, kind, current, target, proposedValue);
       // After the read, so a setting whose instance does not exist is refused by
       // the read — which can name the instances that DO — rather than by the
       // operation, which only knows the one it was asked about. The apply runs
@@ -552,6 +594,11 @@ export async function proposeSettingChange(
       // approve what it does not display.
       const alsoChanges = operation.alsoChanges?.(deps.operations, target, computed.proposedValue) ?? [];
       for (const side of alsoChanges) {
+        if (side.textChange) {
+          const text = textChangeSides(side.textChange);
+          requireReviewable(findSetting(side.key) ?? declaration, text.before, text.after);
+          continue;
+        }
         requireShowable(declaration, `current ${side.label}`, side.from);
         requireShowable(declaration, `proposed ${side.label}`, side.to);
       }

@@ -21,6 +21,7 @@ import { CredentialStore } from "../credential-store.js";
 import { RepoStore } from "../repo-store.js";
 import { SecretStore } from "../secret-store.js";
 import { AgentMergeClaimStore } from "../agent-merge-claims.js";
+import { createBareCacheDirHelper } from "../session-dir-factory.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
@@ -54,6 +55,7 @@ beforeEach(async () => {
     credentialStore,
     credentialsDir: path.join(tmpDir, "credentials"),
     workspaceDir: tmpDir,
+    stateDir: tmpDir,
     // Use real local Git operations and stub remote operations.
     createGitManager: (dir: string) => {
       const real = new GitManager(dir);
@@ -951,6 +953,48 @@ describe("repo-aware PR brokering (docs/211)", () => {
     },
   );
 
+  describe("no checks reported yet (nikzlabs/shipit#3073)", () => {
+    async function mergeWithNoChecks(opts: { cacheWithoutWorkflows: boolean }) {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const env = { ...process.env, HOME: tmpDir };
+      const head = execSync("git rev-parse HEAD", { cwd: sessionDir, env }).toString().trim();
+      if (opts.cacheWithoutWorkflows) {
+        const cacheDir = createBareCacheDirHelper(tmpDir)(REPO);
+        fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
+        execSync(`git clone --quiet --bare "${sessionDir}" "${cacheDir}"`, { env });
+      }
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: null });
+      githubAuth.setPullRequestByNumber(7, {
+        url: "https://github.com/test-user/test-repo/pull/7",
+        number: 7, base: "main", title: "T", body: "", state: "closed",
+        merged_at: "2026-10-05T12:00:00Z", merge_commit_sha: "merge-sha",
+        head_sha: head, head_ref: "shipit/test-feature", additions: 1, deletions: 0,
+      });
+      return withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      }));
+    }
+
+    it("merges on the first call when no workflow file can fire", { timeout: 15_000 }, async () => {
+      const res = await mergeWithNoChecks({ cacheWithoutWorkflows: true });
+      expect(res.json()).toMatchObject({ success: true });
+    });
+
+    it("waits, retryably, when the default branch's workflows cannot be read", { timeout: 15_000 }, async () => {
+      const before = githubAuth.mergePullRequestCalls.length;
+      const res = await mergeWithNoChecks({ cacheWithoutWorkflows: false });
+      expect(res.json()).toMatchObject({
+        success: false, message: expect.stringContaining("no checks yet"), retryable: true,
+      });
+      expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+    });
+  });
+
   it(
     "the session's own pull request merges, pinned to the commit the gate read",
     { timeout: 15_000 },
@@ -1141,7 +1185,10 @@ describe("repo-aware PR brokering (docs/211)", () => {
         payload: {},
       }));
       expect(res.statusCode).toBe(409);
-      expect(res.json()).toMatchObject({ error: expect.stringContaining("had not reached GitHub") });
+      expect(res.json()).toMatchObject({
+        error: expect.stringContaining("had not reached GitHub"),
+        retryable: true,
+      });
       expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
     },
   );

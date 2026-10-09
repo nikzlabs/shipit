@@ -132,6 +132,10 @@ import type {
   WsSshHostKeyCard,
   WsSettingsProposalCard,
   WsSettingsProposalUpdate,
+  WsScheduleProposalCard,
+  WsScheduleProposalUpdate,
+  WsScheduleNotesAccessCard,
+  WsScheduleNotesAccessUpdate,
   WsNonTurnFailureCard,
   WsNonTurnFailureDismissed,
 } from "./cards.js";
@@ -180,6 +184,10 @@ export type WsServerMessage =
   | WsSshHostKeyCard
   | WsSettingsProposalCard
   | WsSettingsProposalUpdate
+  | WsScheduleProposalCard
+  | WsScheduleProposalUpdate
+  | WsScheduleNotesAccessCard
+  | WsScheduleNotesAccessUpdate
   | WsNonTurnFailureCard
   | WsNonTurnFailureDismissed
   | WsBugReportCard

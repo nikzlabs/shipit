@@ -33,7 +33,15 @@ export interface SteadyStateReclaimDeps {
   sessionIds?: () => Set<string>;
   /** Read per session: an evicted session runs no agent, so its CLI caches can go. */
   isSessionEvicted?: (sessionId: string) => boolean;
+  /** Opening an existing session never stamps its repo row, so its own use keeps the repo live. */
+  sessionRepoUse?: () => Iterable<SessionRepoUse>;
   paceMs?: number;
+}
+
+export interface SessionRepoUse {
+  remoteUrl?: string;
+  lastUsedAt?: string;
+  lastViewedAt?: string;
 }
 
 export interface SteadyStateReclaimResult {
@@ -70,6 +78,8 @@ export async function runSteadyStateReclaim(
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
   const cacheDays = deps.cacheDays ?? DEFAULT_CACHE_DAYS;
+  const cutoffMs = Date.now() - cacheDays * 86_400_000;
+  const liveRepos = (): Set<string> => liveRepoHashes(deps.repoStore, deps.sessionRepoUse, cutoffMs);
 
   let pluginLive: { scopeHashes: Set<string>; cacheHashes: Set<string> } | null = null;
   let pluginLiveFailed = false;
@@ -87,9 +97,13 @@ export async function runSteadyStateReclaim(
     console.warn("[disk-janitor] skipping the cache and overlay-base sweeps this pass");
   } else {
     try {
-      result.cachesRemoved = await sweepOrphanedCaches(
-        deps.stateDir, deps.repoStore, cacheDays, paceMs, pluginLive?.cacheHashes,
-      );
+      const pluginCacheHashes = pluginLive?.cacheHashes ?? new Set<string>();
+      const liveCaches = (): Set<string> => new Set([...liveRepos(), ...pluginCacheHashes]);
+      for (const subdir of ["repo-cache", "dep-cache"]) {
+        result.cachesRemoved += await sweepUnusedRepoDirs(
+          path.join(deps.stateDir, subdir), liveCaches, paceMs, "cache",
+        );
+      }
     } catch (err) {
       console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
     }
@@ -116,8 +130,8 @@ export async function runSteadyStateReclaim(
 
   if (deps.credentialsDir) {
     try {
-      result.repoMemoryDirsRemoved = await sweepOrphanedRepoMemory(
-        deps.credentialsDir, deps.repoStore, cacheDays, paceMs,
+      result.repoMemoryDirsRemoved = await sweepUnusedRepoDirs(
+        path.join(deps.credentialsDir, REPO_MEMORY_SUBDIR), liveRepos, paceMs, "repo-memory",
       );
     } catch (err) {
       console.warn("[disk-janitor] repo-memory sweep failed:", getMessage(err));
@@ -325,22 +339,27 @@ async function pruneLfsObjectTree(
   return { removed, bytesFreed, emptied: survivors === 0 };
 }
 
-async function sweepOrphanedRepoMemory(
-  credentialsDir: string,
+function liveRepoHashes(
   repoStore: RepoStore,
-  days: number,
-  paceMs: number,
-): Promise<number> {
-  const cutoffMs = Date.now() - days * 86_400_000;
-  const liveHashes = new Set<string>();
-  for (const repo of repoStore.list()) {
-    const lastUsedMs = Date.parse(repo.lastUsedAt);
-    if (Number.isFinite(lastUsedMs) && lastUsedMs >= cutoffMs) {
-      liveHashes.add(repoUrlToHash(repo.url));
-    }
-  }
+  sessionRepoUse: SteadyStateReclaimDeps["sessionRepoUse"],
+  cutoffMs: number,
+): Set<string> {
+  const live = new Set<string>();
+  const markIfRecent = (url: string | undefined, ...times: (string | undefined)[]): void => {
+    if (!url) return;
+    if (times.some((t) => t !== undefined && Date.parse(t) >= cutoffMs)) live.add(repoUrlToHash(url));
+  };
+  for (const repo of repoStore.list()) markIfRecent(repo.url, repo.lastUsedAt);
+  for (const s of sessionRepoUse?.() ?? []) markIfRecent(s.remoteUrl, s.lastUsedAt, s.lastViewedAt);
+  return live;
+}
 
-  const dir = path.join(credentialsDir, REPO_MEMORY_SUBDIR);
+async function sweepUnusedRepoDirs(
+  dir: string,
+  readLiveHashes: () => Set<string>,
+  paceMs: number,
+  label: string,
+): Promise<number> {
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
@@ -348,59 +367,21 @@ async function sweepOrphanedRepoMemory(
     return 0;
   }
 
+  let liveHashes = readLiveHashes();
   let removed = 0;
   for (const entry of entries) {
     if (liveHashes.has(entry)) continue;
     const full = path.join(dir, entry);
     try {
       await sleep(paceMs);
+      // A claim or restore marks its repo or session before using the cache, possibly after the first read.
+      liveHashes = readLiveHashes();
+      if (liveHashes.has(entry)) continue;
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
-      console.log(`[disk-janitor] removed orphan repo-memory ${full}`);
+      console.log(`[disk-janitor] removed orphan ${label} ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-    }
-  }
-  return removed;
-}
-
-async function sweepOrphanedCaches(
-  stateDir: string,
-  repoStore: RepoStore,
-  days: number,
-  paceMs: number,
-  extraLiveCacheHashes?: ReadonlySet<string>,
-): Promise<number> {
-  const cutoffMs = Date.now() - days * 86_400_000;
-  const repos = repoStore.list();
-  const liveHashes = new Set<string>(extraLiveCacheHashes ?? []);
-  for (const repo of repos) {
-    const lastUsedMs = Date.parse(repo.lastUsedAt);
-    if (Number.isFinite(lastUsedMs) && lastUsedMs >= cutoffMs) {
-      liveHashes.add(repoUrlToHash(repo.url));
-    }
-  }
-
-  let removed = 0;
-  for (const subdir of ["repo-cache", "dep-cache"]) {
-    const dir = path.join(stateDir, subdir);
-    let entries: string[];
-    try {
-      entries = await fs.readdir(dir);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (liveHashes.has(entry)) continue;
-      const full = path.join(dir, entry);
-      try {
-        await sleep(paceMs);
-        await fs.rm(full, { recursive: true, force: true });
-        removed += 1;
-        console.log(`[disk-janitor] removed orphan cache ${full}`);
-      } catch (err) {
-        console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-      }
     }
   }
   return removed;

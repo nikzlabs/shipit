@@ -21,6 +21,7 @@ import {
   forkReportSinks,
   gitRemoteCredentialResolver,
   createHeadlessSession,
+  headlessSessionDeps,
   ServiceError,
   createClaimSessionService,
 } from "./services/index.js";
@@ -30,7 +31,31 @@ import { getErrorMessage } from "./validation.js";
 import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
 import { toListRow } from "./sessions.js";
 import { dismissNonTurnFailure } from "./services/non-turn-work.js";
-import { reconcileSessionEgress } from "./services/reconcile-session-egress.js";
+
+/** `POST /api/sessions/headless`, as a JSON body or as multipart field names. */
+export interface HeadlessSessionBody {
+  repoUrl?: string;
+  initialPrompt?: string;
+  agent?: AgentId;
+  model?: string;
+  reasoning?: string;
+  issueRef?: IssueRef;
+  armAutoMerge?: boolean;
+  serviceId?: string;
+  billingMode?: BillingMode;
+  role?: string;
+  dictated?: boolean;
+  /** true: contained; false: open; null or absent: inherit. */
+  networkMode?: boolean | null;
+}
+
+export interface SandboxSessionBody {
+  capabilities?: { git?: boolean; docker?: boolean; network?: boolean; dangerousGitHubOps?: boolean };
+}
+
+export interface SessionCapabilitiesBody {
+  capabilities?: unknown;
+}
 
 export async function registerSessionCrudRoutes(
   app: FastifyInstance,
@@ -338,7 +363,7 @@ export async function registerSessionCrudRoutes(
     },
   );
 
-  app.post<{ Body: { capabilities?: { git?: boolean; docker?: boolean; network?: boolean; dangerousGitHubOps?: boolean } } }>(
+  app.post<{ Body: SandboxSessionBody }>(
     "/api/sessions/sandbox",
     async (request, reply) => {
       try {
@@ -383,7 +408,7 @@ export async function registerSessionCrudRoutes(
     },
   );
 
-  app.put<{ Params: { id: string }; Body: { capabilities?: unknown } }>(
+  app.put<{ Params: { id: string }; Body: SessionCapabilitiesBody }>(
     "/api/sessions/:id/capabilities",
     async (request, reply) => {
       try {
@@ -428,23 +453,7 @@ export async function registerSessionCrudRoutes(
     },
   );
 
-  app.post<{
-    Body: {
-      repoUrl?: string;
-      initialPrompt?: string;
-      agent?: AgentId;
-      model?: string;
-      reasoning?: string;
-      issueRef?: IssueRef;
-      armAutoMerge?: boolean;
-      serviceId?: string;
-      billingMode?: BillingMode;
-      role?: string;
-      dictated?: boolean;
-      /** true: contained; false: open; null or absent: inherit. */
-      networkMode?: boolean | null;
-    };
-  }>(
+  app.post<{ Body: HeadlessSessionBody }>(
     "/api/sessions/headless",
     async (request, reply) => {
       let repoUrl = "";
@@ -470,7 +479,8 @@ export async function registerSessionCrudRoutes(
               continue;
             }
             const value = typeof part.value === "string" ? part.value : "";
-            switch (part.fieldname) {
+            // Typed so that a field read here is a field of the body type, which the session-start guard maps.
+            switch (part.fieldname as keyof HeadlessSessionBody) {
               case "repoUrl":
                 repoUrl = value;
                 break;
@@ -547,56 +557,24 @@ export async function registerSessionCrudRoutes(
 
       try {
         const result = await createHeadlessSession(
-          sessionManager,
-          deps.runnerRegistry,
-          claimSessionService,
+          headlessSessionDeps({ ...deps, claimService: claimSessionService, graduationDeps }),
           {
-            repoUrl,
+            target: { kind: "repo", repoUrl },
+            params: {
+              ...(agent !== undefined ? { agent } : {}),
+              ...(model !== undefined ? { model } : {}),
+              ...(serviceId !== undefined ? { serviceId } : {}),
+              ...(billingMode !== undefined ? { billingMode } : {}),
+              ...(reasoning !== undefined ? { reasoning } : {}),
+              ...(role !== undefined && role !== "" ? { role } : {}),
+              armAutoMerge,
+              ...(networkMode !== undefined ? { networkMode } : {}),
+            },
             prompt: initialPrompt,
             ...(issueRef !== undefined ? { issueRef } : {}),
-            ...(agent !== undefined ? { agent } : {}),
-            ...(model !== undefined ? { model } : {}),
-            ...(serviceId !== undefined ? { serviceId } : {}),
-            ...(billingMode !== undefined ? { billingMode } : {}),
-            ...(reasoning !== undefined ? { reasoning } : {}),
-            ...(role !== undefined && role !== "" ? { role } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
-            armAutoMerge,
             ...(dictated ? { dictated: true } : {}),
-            ...(networkMode !== undefined ? { networkMode } : {}),
           },
-          deps.defaultAgentId,
-          deps.credentialsDir,
-          deps.credentialStore,
-          deps.providerAccountManager,
-          graduationDeps,
-          {
-            githubAuthManager: deps.githubAuthManager,
-            prStatusPoller: deps.prStatusPoller,
-          },
-          deps.egressAllowlistStore
-            ? {
-                store: deps.egressAllowlistStore,
-                reconcile: (sid, reconcileOpts) => reconcileSessionEgress(
-                  {
-                    containerManager: deps.containerManager ?? null,
-                    egressAllowlistStore: deps.egressAllowlistStore,
-                    ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
-                    recovery: {
-                      sessionManager,
-                      containerManager: deps.containerManager ?? null,
-                      runnerRegistry: deps.runnerRegistry,
-                      defaultAgentId: deps.defaultAgentId,
-                      ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
-                      ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
-                      sseBroadcast: deps.sseBroadcast,
-                    },
-                  },
-                  sid,
-                  reconcileOpts ?? {},
-                ),
-              }
-            : undefined,
         );
         if (issueRef && deps.credentialStore && deps.chatHistoryManager) {
           const lifecycleDeps = {

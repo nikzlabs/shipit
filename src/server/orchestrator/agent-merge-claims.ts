@@ -151,6 +151,17 @@ export class AgentMergeClaimStore {
     return res.changes > 0;
   }
 
+  /** Only after GitHub definitively refused; an attempt revoked while in flight stays cancelled. */
+  returnToPending(claim: Pick<AgentMergeClaim, "sessionId" | "expectedSha" | "prNumber" | "repoId" | "method">): boolean {
+    if (this.mergeCancelled.has(claim.sessionId)) return false;
+    const res = this.db.prepare(
+      `UPDATE agent_merge_claims SET state = 'pending'
+       WHERE session_id = ? AND expected_sha = ? AND pr_number = ? AND repo_id = ? AND method = ?
+         AND state = 'merging' AND origin = 'auto'`,
+    ).run(claim.sessionId, claim.expectedSha, claim.prNumber, claim.repoId, claim.method);
+    return res.changes > 0;
+  }
+
   cancelPendingForRepo(repoId: string, record?: (claim: AgentMergeClaim) => void): AgentMergeClaim[] {
     let cancelled: AgentMergeClaim[] = [];
     this.db.transaction(() => {

@@ -3,13 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { safeSimpleGit } from "./git-hooks-guard.js";
 import {
   configureLfsHostCredentialResolver,
+  credentialledGit,
   gitCredentialConfig,
   gitCredentialEnv,
   gitCredentialSpawnOverrides,
   parseRemoteOrigin,
   resolveTreeRemoteCredential,
+  sanitizeGitEnv,
   withPreemptiveAuthFallback,
   type GitRemoteCredential,
   type LfsHostResolution,
@@ -377,5 +380,65 @@ describe("gitCredentialSpawnOverrides", () => {
     expect(args.filter((a) => a === "-c")).toHaveLength(2);
     expect(args.join(" ")).not.toContain("ghs_repo_scoped");
     expect(Object.values(env)).toContain("ghs_repo_scoped");
+  });
+});
+
+// simple-git 4 strips guarded variables it was not told to allow, and throws on one passed through .env().
+describe("git environment under simple-git's environment guard", () => {
+  const AMBIENT = {
+    GIT_EDITOR: "true",
+    EDITOR: "vim",
+    VISUAL: "vim",
+    PREFIX: "/usr/local",
+    GIT_AUTHOR_NAME: "ambient",
+    GIT_DIR: "/nonexistent",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "user.name",
+    GIT_CONFIG_VALUE_0: "injected",
+  };
+  let tmpDir: string;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-git-env-"));
+    execFileSync("git", ["init", "-q", tmpDir]);
+    saved = Object.fromEntries(Object.keys(AMBIENT).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, AMBIENT);
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) Reflect.deleteProperty(process.env, k);
+      else process.env[k] = v;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("sanitizeGitEnv keeps only the git variables ShipIt allows", () => {
+    const env = sanitizeGitEnv({
+      ...AMBIENT,
+      PATH: "/usr/bin",
+      GIT_CONFIG_GLOBAL: "/credentials/.gitconfig",
+      GIT_SSH_COMMAND: "evil",
+    });
+    expect(env).toEqual({ PATH: "/usr/bin", GIT_CONFIG_GLOBAL: "/credentials/.gitconfig", GIT_EDITOR: "true" });
+  });
+
+  it("safeSimpleGit passes ShipIt's GIT_EDITOR to git and strips inherited GIT_DIR and GIT_CONFIG_*", async () => {
+    const git = safeSimpleGit(tmpDir);
+    expect((await git.raw(["var", "GIT_EDITOR"])).trim()).toBe("true");
+    expect((await git.revparse(["--git-dir"])).trim()).toBe(".git");
+    const userName = await git.raw(["config", "--get-all", "user.name"]).catch(() => "");
+    expect(userName).not.toContain("injected");
+  });
+
+  it("credentialledGit runs with guarded variables in the ambient env and delivers the credential", async () => {
+    const git = credentialledGit(tmpDir, {
+      origin: "https://github.com",
+      token: { username: "x-access-token", password: "ghs_env_guard" },
+    });
+    expect((await git.raw(["var", "GIT_EDITOR"])).trim()).toBe("true");
+    const header = await git.raw(["config", "--get", "http.https://github.com.extraheader"]);
+    expect(header.trim()).toBe(`Authorization: Basic ${Buffer.from("x-access-token:ghs_env_guard").toString("base64")}`);
   });
 });

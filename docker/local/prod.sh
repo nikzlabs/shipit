@@ -11,4 +11,10 @@ docker network rm $(docker network ls -q --filter "label=shipit-stack=shipit-pro
 SHIPIT_BUILD_ID="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
 export SHIPIT_BUILD_ID
 docker compose build --pull session-worker shipit egress-sidecar compose-helper
+# Only a specific non-loopback bind address does not answer on localhost.
+case "${SHIPIT_BIND_ADDR:-127.0.0.1}" in
+  127.*|0.0.0.0) open_host=localhost ;;
+  *) open_host="$SHIPIT_BIND_ADDR" ;;
+esac
+echo "==> ShipIt starts below. Open it at http://${open_host}:4123"
 exec docker compose up --no-build shipit "$@"

@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useRef, useState } from "react";
 import { CheckIcon, CopyIcon } from "@phosphor-icons/react";
 import { Button, type ButtonProps } from "./button.js";
 import { ICON_SIZE } from "../../design-tokens.js";
+import { copyText } from "../../utils/copy-text.js";
 
 export type CopyButtonProps = Omit<ButtonProps, "onClick" | "children" | "type"> & {
 
@@ -17,15 +18,9 @@ export type CopyButtonProps = Omit<ButtonProps, "onClick" | "children" | "type">
 };
 
 /**
- * Clipboard copy button: encapsulates the `copied` state, the
- * `navigator.clipboard.writeText` call, the timed reset, and the
- * CopyIcon → CheckIcon + label swap that was previously re-implemented inline at
- * every copy site. Built on `Button` so it inherits styling and accepts the full
- * variant/size/className surface (defaults to `ghost`/`sm`).
- *
- * Clipboard writes can reject (insecure context, permission policy); we swallow
- * the error so the surrounding UI never crashes — the user can still
- * select-and-copy manually.
+ * Built on `Button`, so it accepts the full variant/size/className surface
+ * (defaults to `ghost`/`sm`). A copy that fails leaves the idle label: the button
+ * never reports a copy that did not happen.
  */
 export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
   (
@@ -48,15 +43,11 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
 
     const handleCopy = useCallback(async () => {
       const value = typeof text === "function" ? text() : text;
-      try {
-        await navigator.clipboard.writeText(value);
-        setCopied(true);
+      if (!(await copyText(value))) return;
+      setCopied(true);
 
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => setCopied(false), timeout);
-      } catch {
-        // Clipboard access can fail without permission.
-      }
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), timeout);
     }, [text, timeout]);
 
     return (

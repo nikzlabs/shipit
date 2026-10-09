@@ -10,6 +10,7 @@ import type {
 import {
   CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
+  CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import {
   CONTAINER_PLUGIN_STORE_DIR,
@@ -85,6 +86,10 @@ import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from ".
 import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
+import { RUN_NOTES_CONTAINER_DIR } from "./schedule-notes.js";
+import {
+  GPU_DEVICE_REQUEST, GPU_GRAPHICS_REASON_ENV, gpuEnv, gpuGraphicsBinds, gpuReason, type SessionGpu,
+} from "./session-gpu.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 
@@ -136,6 +141,8 @@ export interface LifecycleDeps {
   kernelRuntime?: string;
   seccompSecurityOpt?: string;
   readonlyRootfs?: boolean;
+  /** The GPU switch (docs/325-session-gpu-access req 5); absent means off. */
+  gpuAccess?: () => boolean;
   stateDir?: string;
   emitter: EventEmitter<SessionContainerManagerEvents>;
   baseLabels: () => Record<string, string>;
@@ -255,6 +262,19 @@ export function buildMounts(
     } else {
       binds.push(`${config.scratchDir}:/persist:rw`);
     }
+  }
+
+  // Only this run's folder: earlier runs' notes are read through `shipit schedule notes`.
+  if (config.scheduleNotesDir) {
+    mounts.push(workspaceVolume
+      ? {
+          Type: "volume",
+          Source: workspaceVolume,
+          Target: RUN_NOTES_CONTAINER_DIR,
+          VolumeOptions: { Subpath: config.scheduleNotesDir.replace(/^\/workspace\//, "") },
+        }
+      // A bind mount, not `binds`: a folder Delete removed must fail the mount, not come back root-owned.
+      : { Type: "bind", Source: config.scheduleNotesDir, Target: RUN_NOTES_CONTAINER_DIR });
   }
 
   if (workspaceVolume) {
@@ -726,6 +746,7 @@ export async function createContainer(
       pidsLimit: config.pidsLimit,
     } : undefined,
     overlayVolumeNames: config.overlaySpecs?.map((s) => s.volumeName),
+    ...(config.extraLabels?.[CONTAINER_STANDBY_LABEL] === "true" ? { standbyUnclaimed: true } : {}),
     // Match adoption order to avoid changing Compose override bytes and recreating services.
     overlayDepDirs: config.overlaySpecs
       && sortOverlayDepDirs(config.overlaySpecs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }))),
@@ -735,6 +756,8 @@ export async function createContainer(
   const shortId = config.sessionId.slice(0, 12);
 
   let signalEgressFirewallReady: () => void = () => {};
+  // A GPU attempt's container until it starts or is removed; the cleanup below reads only `sc.id`.
+  let unpublishedId: string | undefined;
 
   try {
     selfHealWorkspaceOwnership(config, deps.workspaceVolume);
@@ -759,57 +782,118 @@ export async function createContainer(
 
     await removeStaleContainer(deps.docker, `agent-${shortId}`);
 
-    abortIfTornDown("before createContainer");
+    const createAndStart = async (
+      gpu: SessionGpu,
+      graphicsBinds: string[] = [],
+      graphicsEnv: string[] = [],
+    ): Promise<Docker.Container> => {
+      abortIfTornDown("before createContainer");
 
-    const container = await deps.docker.createContainer({
-      name: `agent-${shortId}`,
-      Image: imageName,
-      Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
-      Labels: {
-        ...deps.baseLabels(),
-        [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
-        ...config.extraLabels,
-      },
-      HostConfig: {
-        Binds: binds.length > 0 ? binds : undefined,
-        Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
-        Memory: config.memoryLimit,
-        CpuQuota: config.cpuQuota,
-        CpuPeriod: DEFAULT_CPU_PERIOD,
-        // Quota bounds one session; the weight is what keeps the orchestrator scheduled when many run.
-        CpuShares: SESSION_CPU_SHARES,
-        PidsLimit: config.pidsLimit,
-        NetworkMode: deps.networkName,
-        // Node cannot reap orphaned grandchildren; docker-init prevents PID exhaustion.
-        Init: true,
-        // Allow loopback SNI redirects here; the installer sidecar cannot write /proc/sys.
-        Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
-        Runtime: deps.kernelRuntime,
-        SecurityOpt: deps.seccompSecurityOpt
-          ? ["no-new-privileges", deps.seccompSecurityOpt]
-          : ["no-new-privileges"],
-        ReadonlyRootfs: deps.readonlyRootfs ?? false,
-        Tmpfs: deps.readonlyRootfs ? readonlyRootfsTmpfs() : undefined,
-        CapDrop: ["ALL"],
-        // The root entrypoint needs ownership and identity capabilities before dropping privileges.
-        CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
-      },
-      Env: env,
-    });
-
-    // Publish before start so the health monitor can identify an immediate exit.
-    sc.id = container.id;
-
-    // Recheck after container creation: Docker silently replaces a missing overlay volume with a plain volume.
-    if (config.overlaySpecs && config.overlaySpecs.length > 0) {
-      await assertOverlayVolumesMatch(deps.docker, config.overlaySpecs, {
-        sessionId: config.sessionId,
+      const attemptBinds = [...binds, ...graphicsBinds];
+      const created = await deps.docker.createContainer({
+        name: `agent-${shortId}`,
+        Image: imageName,
+        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
+        Labels: {
+          ...deps.baseLabels(),
+          [CONTAINER_SESSION_ID_LABEL]: config.sessionId,
+          ...config.extraLabels,
+        },
+        HostConfig: {
+          Binds: attemptBinds.length > 0 ? attemptBinds : undefined,
+          Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
+          Memory: config.memoryLimit,
+          CpuQuota: config.cpuQuota,
+          CpuPeriod: DEFAULT_CPU_PERIOD,
+          // Quota bounds one session; the weight is what keeps the orchestrator scheduled when many run.
+          CpuShares: SESSION_CPU_SHARES,
+          PidsLimit: config.pidsLimit,
+          NetworkMode: deps.networkName,
+          // Node cannot reap orphaned grandchildren; docker-init prevents PID exhaustion.
+          Init: true,
+          // Allow loopback SNI redirects here; the installer sidecar cannot write /proc/sys.
+          Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
+          Runtime: deps.kernelRuntime,
+          SecurityOpt: deps.seccompSecurityOpt
+            ? ["no-new-privileges", deps.seccompSecurityOpt]
+            : ["no-new-privileges"],
+          ReadonlyRootfs: deps.readonlyRootfs ?? false,
+          Tmpfs: deps.readonlyRootfs ? readonlyRootfsTmpfs() : undefined,
+          CapDrop: ["ALL"],
+          // The root entrypoint needs ownership and identity capabilities before dropping privileges.
+          CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
+          DeviceRequests: gpu.state === "granted" ? [GPU_DEVICE_REQUEST] : undefined,
+        },
+        Env: [...env, ...gpuEnv(gpu), ...graphicsEnv],
       });
+
+      // Publish before start so the health monitor can identify an immediate exit. Not for a GPU
+      // attempt: its failure is retried without the GPU, so it must not read as the session's exit.
+      const gpuAttempt = gpu.state === "granted";
+      if (gpuAttempt) unpublishedId = created.id;
+      else sc.id = created.id;
+
+      try {
+        // Recheck after container creation: Docker silently replaces a missing overlay volume with a plain volume.
+        if (config.overlaySpecs && config.overlaySpecs.length > 0) {
+          await assertOverlayVolumesMatch(deps.docker, config.overlaySpecs, {
+            sessionId: config.sessionId,
+          });
+        }
+
+        abortIfTornDown("before container start");
+
+        await created.start();
+      } catch (err) {
+        if (gpuAttempt) {
+          try {
+            await created.remove({ force: true });
+            unpublishedId = undefined;
+          } catch { /* the cleanup below tries again */ }
+        }
+        throw err;
+      }
+      unpublishedId = undefined;
+      sc.id = created.id;
+      return created;
+    };
+
+    // The graphics binds are tried first and dropped alone, so they cannot cost a session the GPU
+    // that starts without them (docs/325-session-gpu-access req 7).
+    const startWithGpu = async (): Promise<Docker.Container> => {
+      const graphicsBinds = gpuGraphicsBinds();
+      if (graphicsBinds.length === 0) return createAndStart({ state: "granted" });
+      try {
+        return await createAndStart({ state: "granted" }, graphicsBinds);
+      } catch (err) {
+        if (err instanceof ContainerCreateCancelledError) throw err;
+        const reason = gpuReason(err);
+        console.warn(
+          `[containers] ${config.sessionId} could not start with the WSL2 graphics mounts; trying the GPU alone: ${reason}`,
+        );
+        return createAndStart({ state: "granted" }, [], [`${GPU_GRAPHICS_REASON_ENV}=${reason}`]);
+      }
+    };
+
+    let container: Docker.Container;
+    if (deps.gpuAccess?.()) {
+      try {
+        container = await startWithGpu();
+        sc.gpu = { state: "granted" };
+      } catch (err) {
+        if (err instanceof ContainerCreateCancelledError) throw err;
+        // Any failure, not a matched message: an unknown GPU error must not stop the session
+        // (docs/325-session-gpu-access req 6).
+        sc.gpu = { state: "unavailable", reason: gpuReason(err) };
+        console.warn(
+          `[containers] ${config.sessionId} could not start with the GPU; starting without it: ${sc.gpu.reason}`,
+        );
+        container = await createAndStart(sc.gpu);
+      }
+    } else {
+      sc.gpu = { state: "off" };
+      container = await createAndStart(sc.gpu);
     }
-
-    abortIfTornDown("before container start");
-
-    await container.start();
 
     const info = await container.inspect();
     sc.workerBuildId = info.Config?.Labels?.[CONTAINER_BUILD_ID_LABEL] || undefined;
@@ -969,6 +1053,9 @@ export async function createContainer(
       }
     }
     // Remove all requested volume names after the container, including plain volumes Docker substituted.
+    if (unpublishedId) {
+      try { await deps.docker.getContainer(unpublishedId).remove({ force: true }); } catch { /* may already be gone */ }
+    }
     if (sc.overlayVolumeNames && !supersededByNewer) {
       for (const name of sc.overlayVolumeNames) {
         await removeOverlayVolume(deps.docker, name);
@@ -1207,6 +1294,7 @@ export function buildContainerConfig(
     opsSession?: boolean;
     hostMounts?: HostMount[];
     overlaySpecs?: DepDirOverlaySpec[];
+    scheduleNotesDir?: string;
   },
 ): ContainerConfig {
   return {
@@ -1229,5 +1317,6 @@ export function buildContainerConfig(
     opsSession: opts.opsSession,
     hostMounts: opts.opsSession ? opts.hostMounts : undefined,
     overlaySpecs: opts.overlaySpecs,
+    ...(opts.scheduleNotesDir ? { scheduleNotesDir: opts.scheduleNotesDir } : {}),
   };
 }

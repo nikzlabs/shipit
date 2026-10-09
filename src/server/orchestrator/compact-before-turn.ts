@@ -18,6 +18,9 @@ export const POST_MERGE_COMPACTION_INSTRUCTIONS =
 
 export const POST_MERGE_COMPACT_PROMPT = `/compact ${POST_MERGE_COMPACTION_INSTRUCTIONS}`;
 
+export const MISSED_COMPACTION_NOTICE =
+  "The context was not compacted; the agent continues with the context as it was.";
+
 export interface CompactBeforeTurnDeps extends ResetEligibleSignalDeps {
   mergeRecheckDeps?: Pick<PreTurnMergeRecheckDeps, "verifyPrState" | "awaitMergeHandling">;
   getAutoResetMergedBranch: () => boolean;
@@ -79,7 +82,7 @@ export function noteMissedCompaction(
     (m) => runner.emitMessage(m),
     chatHistory,
     sessionId,
-    "The context was not compacted before this message; it runs with the context as it was.",
+    MISSED_COMPACTION_NOTICE,
     "warn",
   );
 }

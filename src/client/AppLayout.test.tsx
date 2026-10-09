@@ -1,19 +1,21 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: a mount counter is what this file asserts on
 import { createRef, useEffect, useRef } from "react";
 import { describe, it, expect, afterEach } from "vitest";
-import { renderHook, render, screen, cleanup } from "@testing-library/react";
+import { renderHook, render, screen, cleanup, act } from "@testing-library/react";
 import { AppLayout, statusGroupBreakpoint } from "./AppLayout.js";
 import { useSubscriptionPillCount } from "./components/SubscriptionLimitsBadge.js";
 import { useSettingsStore } from "./stores/settings-store.js";
+import { useUiStore } from "./stores/ui-store.js";
 import type { SubscriptionLimitsMap } from "../server/shared/types.js";
 
 afterEach(() => {
   cleanup();
   useSettingsStore.getState().setProviderAccounts([]);
+  useUiStore.setState({ hostCpu: null });
 });
 
 describe("statusGroupBreakpoint", () => {
-  it("keeps the one-account header exactly as it was", () => {
+  it("keeps a single pill inline from sm", () => {
     expect(statusGroupBreakpoint(1)).toEqual({
       statusInline: "hidden sm:contents",
       statusCollapsed: "sm:hidden",
@@ -21,23 +23,24 @@ describe("statusGroupBreakpoint", () => {
     expect(statusGroupBreakpoint(0)).toEqual(statusGroupBreakpoint(1));
   });
 
-  it("raises the inline threshold as accounts are added", () => {
+  it("raises the inline threshold as pills are added", () => {
     expect(statusGroupBreakpoint(2)).toEqual({
-      statusInline: "hidden md:contents",
-      statusCollapsed: "md:hidden",
-    });
-    expect(statusGroupBreakpoint(3)).toEqual({
       statusInline: "hidden lg:contents",
       statusCollapsed: "lg:hidden",
     });
+    expect(statusGroupBreakpoint(3)).toEqual(statusGroupBreakpoint(2));
+    expect(statusGroupBreakpoint(4)).toEqual({
+      statusInline: "hidden xl:contents",
+      statusCollapsed: "xl:hidden",
+    });
   });
 
-  it("does not escalate past lg — beyond three pills, truncation carries it", () => {
-    expect(statusGroupBreakpoint(9)).toEqual(statusGroupBreakpoint(3));
+  it("does not escalate past xl — beyond four pills, truncation carries it", () => {
+    expect(statusGroupBreakpoint(9)).toEqual(statusGroupBreakpoint(4));
   });
 
   it("pairs each inline breakpoint with its own collapse breakpoint", () => {
-    for (const count of [0, 1, 2, 3, 4]) {
+    for (const count of [0, 1, 2, 3, 4, 5]) {
       const { statusInline, statusCollapsed } = statusGroupBreakpoint(count);
       expect(statusInline).toBe(`hidden ${statusCollapsed.replace(":hidden", "")}:contents`);
     }
@@ -167,6 +170,49 @@ describe("AppLayout across the mobile breakpoint", () => {
 
     rerender(<AppLayout {...layoutProps({ isMobile: false, chatPanel: <div>chat</div> })} />);
     expect(container.querySelector(drawer)).toBeNull();
+  });
+});
+
+describe("AppLayout host CPU pill", () => {
+  const cpu = { usedPercent: 15, cores: 16 };
+
+  it("sits directly before the Docker memory pill", () => {
+    useUiStore.setState({ hostCpu: cpu });
+    render(
+      <AppLayout {...layoutProps({ dockerMemory: { usedBytes: 2 * 1024 ** 3, totalBytes: 8 * 1024 ** 3 } })} />,
+    );
+
+    expect(screen.getByText("CPU 15% / 16 cores").nextElementSibling).toHaveTextContent("2.0 GB / 8.0 GB");
+  });
+
+  it("is absent until the server has sent a reading", () => {
+    render(<AppLayout {...layoutProps({ processStartedAt: Date.now() })} />);
+
+    expect(screen.queryByText(/^CPU /)).toBeNull();
+  });
+
+  it("offers the collapsed status button when it is the only status there is", () => {
+    render(<AppLayout {...layoutProps({})} />);
+    expect(screen.queryByRole("button", { name: "Status" })).toBeNull();
+
+    act(() => useUiStore.setState({ hostCpu: cpu }));
+    expect(screen.getByRole("button", { name: "Status" })).toBeInTheDocument();
+  });
+
+  it("takes a pill's worth of room, so one account beside it goes inline from lg, not sm", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    const inlineGroupOf = (text: RegExp) => screen.getByText(text).parentElement!.className;
+
+    const { unmount } = render(<AppLayout {...layoutProps({ processStartedAt: now })} />);
+    expect(inlineGroupOf(/^\d+m$/)).toBe(statusGroupBreakpoint(1).statusInline);
+    unmount();
+
+    useUiStore.setState({ hostCpu: cpu });
+    render(<AppLayout {...layoutProps({ processStartedAt: now })} />);
+    expect(inlineGroupOf(/^CPU /)).toBe(statusGroupBreakpoint(2).statusInline);
   });
 });
 

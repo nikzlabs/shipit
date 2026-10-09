@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import { refreshPluginRepos } from "./plugin-refresh.js";
 import { clearActivationState } from "./plugin-activation.js";
 import { writeInstallRecord } from "../plugin-install-record.js";

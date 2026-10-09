@@ -643,6 +643,9 @@ async function handlePrSimple(args: string[], deps: RunDeps, op: "ready" | "clos
   fail(deps.io, formatError(res, `Failed to ${op} PR`), 1);
 }
 
+// Matches the real gh's "checks pending" exit code from `gh pr checks`.
+const MERGE_NOT_YET_EXIT = 8;
+
 async function handlePrMerge(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--repo": "repo", "-R": "repo" },
@@ -679,15 +682,17 @@ async function handlePrMerge(args: string[], deps: RunDeps): Promise<void> {
     ...targetBody(deps, parsed.values.repo),
   };
   const res = await deps.call("POST", `/agent-ops/pr/${num}/merge`, payload, deps.env);
+  // A distinct code lets a retry loop stop on refusals that waiting cannot clear.
+  const refusalCode = res.body.retryable === true ? MERGE_NOT_YET_EXIT : 1;
   if (res.status >= 200 && res.status < 300) {
     // The broker can refuse a merge with HTTP 200 and success:false.
     if (res.body.success === false) {
-      fail(deps.io, asString(res.body.message) || `Failed to merge PR #${num}`, 1);
+      fail(deps.io, asString(res.body.message) || `Failed to merge PR #${num}`, refusalCode);
     }
     success(deps.io, asString(res.body.message) || `Merged PR #${num}`);
     return;
   }
-  fail(deps.io, formatError(res, `Failed to merge PR #${num}`), 1);
+  fail(deps.io, formatError(res, `Failed to merge PR #${num}`), refusalCode);
 }
 
 async function resolveBody(

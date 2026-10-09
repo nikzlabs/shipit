@@ -135,6 +135,9 @@ interface IssuesState {
   activeTracker: TrackerId;
   issuesByTracker: Record<string, TrackerIssue[]>;
 
+  /** The tracker held more than one list reads, so its oldest issues are not loaded. */
+  incompleteByTracker: Record<string, boolean>;
+
   infoByTracker: Record<string, TrackerInfo>;
 
   statusesByTracker: Record<string, IssueStatusRef[]>;
@@ -279,6 +282,7 @@ function clearedRepoState() {
 
     declarationsPending: false,
     issuesByTracker: {},
+    incompleteByTracker: {},
     statusesByTracker: {},
     labelsByTracker: {},
     loading: false,
@@ -355,6 +359,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
 
   activeTracker: "github",
   issuesByTracker: {},
+  incompleteByTracker: {},
   infoByTracker: {},
   statusesByTracker: {},
   labelsByTracker: {},
@@ -436,6 +441,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           activeTracker,
 
           issuesByTracker: pickReachable(state.issuesByTracker, reachable),
+          incompleteByTracker: pickReachable(state.incompleteByTracker, reachable),
           statusesByTracker: pickReachable(state.statusesByTracker, reachable),
           labelsByTracker: pickReachable(state.labelsByTracker, reachable),
 
@@ -482,6 +488,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           error: null,
           filters,
           issuesByTracker: { ...state.issuesByTracker, [id]: issues },
+          incompleteByTracker: { ...state.incompleteByTracker, [id]: body.incomplete === true },
           infoByTracker: body.tracker
             ? { ...state.infoByTracker, [id]: body.tracker }
             : state.infoByTracker,

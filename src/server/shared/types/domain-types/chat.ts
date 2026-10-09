@@ -156,6 +156,11 @@ export interface SettingsProposalSideChange {
   label: string;
   from: string;
   to: string;
+  /**
+   * A prose side that outgrew a chip, as the main change's `textChange` is — a
+   * new role's standing instructions. `from`/`to` are then ShipIt's summary.
+   */
+  textChange?: SettingsProposalTextChange;
 }
 
 /** One line of a proposal's diff, tagged with what the change does to it. */

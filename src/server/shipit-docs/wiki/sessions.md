@@ -61,7 +61,9 @@ There is a second sidebar view, **"Needs you"**, reached from the icon in the
 sidebar header, which carries a count. It is a flat list — no repository
 grouping — of only the sessions waiting on the user. A session that stops
 needing attention while that view is open keeps its place and is marked as no
-longer waiting, rather than vanishing under the cursor.
+longer waiting, rather than vanishing under the cursor. A session of a
+repository the user hid from the sidebar is listed there too, and counted,
+when it waits on the user.
 
 ShipIt can also raise a browser notification when a session starts needing the
 user, where the browser permits it — some mobile browsers refuse notifications
@@ -172,10 +174,22 @@ many files it will change. A rewind can be undone: a toast offers it
 immediately, and **Recover recent rewind** on the session menu offers it after
 that — that recovery is also refused mid-turn.
 
+**The undo ends when the session moves on.** Once a new turn starts, the rewind
+can no longer be undone, because undoing it would remove that turn: the toast
+and **Recover recent rewind** go away, and a late click is refused. Undoing a
+fork is the exception: it stays for its five minutes, since it leaves the
+parent's later work alone.
+
 **While a turn is running, the gaps offer fork and nothing else.** The three
 rewinds are refused outright ("Cannot rewind while a turn is running"), so a
 user who wants to go back interrupts first. Forking is not blocked, which is the
 useful half: they can branch off the current state without stopping the work.
+
+**Right after a turn ends, the rewinds and the recovery are refused too**
+("This session's work is still being saved"). ShipIt is committing that turn's
+work, and a rewind before the commit would throw away edits that nothing could
+bring back. The refusal ends when that commit attempt has finished, so a user
+who reports this error only has to choose the rewind again.
 
 A fork is a real, separate session with its own branch and its own pull request,
 and ShipIt moves the browser to it as soon as it exists — the user does not go
@@ -368,6 +382,87 @@ session's transcript marks the message "From another session, approved by you",
 with the sender's name, and the card stays in the sender's transcript recording
 whether it was delivered or declined. Either way, a `[ShipIt]` line at the start
 of the sender's next turn says what the user did, so the agent never asks.
+
+## Scheduled sessions
+
+A **schedule** makes ShipIt start a session by itself at set times — every
+weekday at 09:00, say. Each start is a **run**: an ordinary session in the
+schedule's repository, or a sandbox with the grants the schedule names, started
+with the schedule's model, role and other session-start choices, and sent the
+schedule's prompt as its first message. The user can open a run and work in it
+like in any other session.
+
+**Setting one up is a request to you.** The message box has no schedule
+control. When the user asks for something to happen regularly, propose the
+schedule with `shipit schedule propose` (`/shipit-docs/schedules.md`); it is
+saved only when the user presses **Confirm** on the card. A change — another
+time, another prompt, a pause — is a proposal too. `shipit schedule list` says
+what each schedule is now.
+
+When a schedule runs is a preset — every hour, every day, weekdays, every week —
+or a cron expression, in a time zone, so a 09:00 run stays at 09:00 local time
+across daylight-saving changes. Its run times must be at least an hour apart.
+
+**Settings → Schedules** lists every schedule with when it runs, what it starts,
+its next run, and its state: *Paused*, or the reason its last start failed.
+There the user edits everything a schedule holds, and has four controls per
+schedule:
+
+- **Run now** — starts a run at once, at any time and also while a run is
+  going. If an earlier run is not finished, ShipIt warns first, and the user
+  chooses **Run anyway** or **Cancel**.
+- **Pause** and **Resume** — a paused schedule starts nothing, and the times
+  that pass while it is paused do not run when it resumes.
+- **Edit** — applies from the next run. A run in progress keeps what it started
+  with.
+- **Delete** — removes the schedule, its run history and its runs' notes; the
+  run sessions stay. It is refused while a run is not finished, and the refusal
+  lists those runs, each with **Stop**.
+
+Opening a schedule there shows its runs, newest first: the time (in the time
+zone the run was made in, as in its title, so an earlier run keeps its zone
+after the schedule's zone changes; named when it is not the user's own), a state — *Starting*, *Running*, *Needs you*, *Finished*,
+*Stopping*, *Stopped*, *Skipped*, *Failed* or *Session deleted* — a one-line
+result, **Stop** on a run that is not finished, **Open**, and **Notes** on a run
+that has notes.
+
+**Where the runs are.** Runs are not in the regular session list. The clock
+button beside the "Needs you" button in the sidebar header, there while the user
+has a schedule or a run, opens the **Scheduled** view: the same grouped list,
+for runs only, with finished runs under **Recently resolved**. A run that needs
+the user is in "Needs you" too. A run is *finished* when nothing is left for the
+user: no question waiting, no manual step, no open pull request, and no error at
+its end. So in a run, anything the user must decide has to be asked as a
+question; a request written only in a message is filed away with the finished
+runs.
+
+**Inside a run**, the top of the chat says *Started by schedule …*, with **Open
+schedule**, which opens Settings → Schedules at that schedule, **Notes**, and
+**Stop run** while the run is not finished. Stopping a run — there, on its row
+in Settings, or with the chat's own stop control — makes it finished and holds
+every automatic turn until the user writes in it again. After the schedule is
+deleted, that line says so and has no controls.
+
+**Notes.** Each run has its own notes folder, where its agent can leave what a
+later run should know. In the run it is `/schedule/notes/`, and the run's first
+message says so. A run reads the earlier runs' notes with `shipit schedule
+notes` (`/shipit-docs/schedules.md`). The user reads any run's notes, read-only,
+from **Notes** on its row in Settings → Schedules or in the run's top line; the
+notes stay when the run's session is archived or deleted. An agent in any other
+session can read a schedule's notes only after the user allows it on a card in
+that session's chat — `shipit schedule notes` posts the card — and one approval
+covers that one schedule.
+
+**When a run does not start.** A run that comes due while the previous run of
+the schedule is still going is skipped, and the skip is in the history; a run
+that waits for the user's answer does not count as going. After ShipIt was
+down, one catch-up run starts, however many were missed. A start that fails — a
+missing credential, no quota, an untrusted or removed repository, a deleted
+role — is in the history with its reason, and the schedule shows that reason
+until the next start that works, an edit, or a resume. Until then the schedule
+is also a row of its own in "Needs you", counted in that button's number, and
+its reason is at the top of the Scheduled view, whose clock button carries a
+warning mark. Each of these opens Settings → Schedules at the schedule.
 
 ## Kinds of session
 

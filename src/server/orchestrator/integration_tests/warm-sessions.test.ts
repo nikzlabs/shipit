@@ -234,6 +234,29 @@ describe("Integration: warm session lifecycle", () => {
       expect(fs.existsSync(path.join(body.workspaceDir, ".git"))).toBe(true);
     }, 20000);
 
+    // Over a real socket: inject() never destroys the request stream, so it cannot see a false cancel.
+    it("claims over a real connection when no warm session is ready", async () => {
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "warm session",
+      );
+      repoStore.setWarmSessionId(REPO_URL, undefined);
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/repos/${encodeURIComponent(REPO_URL)}/claim-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ tabId: "real-socket-tab" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(body).not.toBe("");
+      const { sessionId, workspaceDir } = JSON.parse(body) as { sessionId: string; workspaceDir: string };
+      expect(sessionId).toBeTruthy();
+      expect(fs.existsSync(path.join(workspaceDir, ".git"))).toBe(true);
+    }, 20000);
+
     it("stamps the repo's lastUsedAt on claim, not only on graduation", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,

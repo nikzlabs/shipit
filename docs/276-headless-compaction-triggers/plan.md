@@ -186,12 +186,18 @@ adapter's non-streaming branch, because a best-effort mid-turn compaction must
 not tear down the turn it was asked about.
 
 **The OpenCode compaction spawn settles the turn itself.** It starts no
-long-lived `this.proc` whose `exit` would synthesize `agent_result`, and the
-orchestrator's whole post-turn sequence — the local commit above all (CLAUDE.md
-post-turn invariant 2) — hangs off that event. Every exit path in
-`runCompaction`, including the two refusals that never reach the server (no
-session, no model), emits exactly one `agent_result`; a quiet return would
-strand the session `running` forever. `adapter.test.ts` pins each path.
+long-lived `this.proc` whose `close` would synthesize `agent_result` and then
+emit `done`, and the orchestrator's post-turn sequence hangs off those two
+events: the one-shot executor drains at the result (committing first when a turn
+is queued), and at `done` runs the post-turn commit (CLAUDE.md post-turn
+invariant 2), signals idle, settles the turn and releases its holds. Every exit
+path in `runCompaction`, including the two refusals that
+never reach the server (no session, no model), emits exactly one `agent_result`
+and then one `done` (0 on success, 1 on failure). A quiet return would strand
+the session `running` forever; a result with no `done` left the turn unsettled
+and its holds held to their deadline (planning#644). `adapter.test.ts` pins each
+path, and `integration_tests/opencode-compaction-settles.test.ts` drives the
+real adapter through `executeAgentTurn`.
 
 **And `this.proc` being unset is exactly why the compaction server needs its own
 handle.** `kill()` and `interrupt()` both key off `this.proc`, so a compaction

@@ -58,6 +58,8 @@ export interface IssuesViewerProps {
   repos: RepoInfo[];
   targetRepoUrl?: string;
   includeDone: boolean;
+  /** The tracker held more issues than one list reads, so the oldest are absent. */
+  incomplete?: boolean;
   availableStatuses: IssueStatusRef[];
   canEditPriority: boolean;
   onSelectTracker: (id: TrackerId) => void;
@@ -79,6 +81,10 @@ export interface IssuesViewerProps {
   onToggleLabel: (name: string) => void;
   onClearFilters: () => void;
 }
+
+const INCOMPLETE_LIST_TITLE =
+  "ShipIt stopped reading before this tracker's oldest issues, so they are not shown, searched " +
+  "or counted. Open an older one by its reference.";
 
 function shortIdentifier(identifier: string): string {
   const hash = identifier.indexOf("#");
@@ -383,6 +389,7 @@ export function IssuesViewer({
   repos,
   targetRepoUrl,
   includeDone,
+  incomplete = false,
   availableStatuses,
   canEditPriority,
   onSelectTracker,
@@ -447,20 +454,25 @@ export function IssuesViewer({
         <div className="flex-1" />
 
         <div className="flex items-center gap-2 px-3 text-xs text-(--color-text-secondary)">
-          <span className="font-medium whitespace-nowrap" data-testid="issue-count">
+          <span
+            className="font-medium whitespace-nowrap"
+            data-testid="issue-count"
+            title={configured && incomplete ? INCOMPLETE_LIST_TITLE : undefined}
+          >
             {declarationsPending ? (
               ""
             ) : !configured ? (
               "Not connected"
             ) : filterActive ? (
               <>
-                <b className="text-(--color-text-primary)">{filteredIssues.length}</b> of {issues.length}{" "}
+                <b className="text-(--color-text-primary)">{filteredIssues.length}</b> of {issues.length}
+                {incomplete ? "+" : ""}{" "}
                 <span className="hidden sm:inline">
                   issue{issues.length !== 1 ? "s" : ""}
                 </span>
               </>
             ) : (
-              `${issues.length} issue${issues.length !== 1 ? "s" : ""}`
+              `${issues.length}${incomplete ? "+" : ""} issue${issues.length !== 1 ? "s" : ""}`
             )}
           </span>
           {configured && (

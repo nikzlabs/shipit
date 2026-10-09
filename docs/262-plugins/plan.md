@@ -1527,34 +1527,69 @@ instead of a repeat.
   happens), and `git add -f` / `git clean -x` / `git stash --all` override any
   ignore, as they do for `.gitignore`.
 
-  **Rebasing across a skills root that changes shape.** An ignored copy is
+  **Git steps across a skills root that changes shape.** An ignored copy is
   still an untracked file, and git 2.39 — the orchestrator image's
   (`node:24-slim`, bookworm) — refuses to replace a directory that holds one:
-  when the base turns a real `.claude/skills/` into a symlink, `git rebase`
-  stops at once ("Updating the following directories would lose untracked
-  files in them", then "could not detach HEAD"). Newer git (CI runs 2.55)
-  deletes the ignored files instead and rebases. A user-side `git clean` does
-  not last, because every container start and every `plugin_repos_updated`
-  prepares the copies again. So the rebase flow (`runRebaseFlow`,
-  `services/rebase-driver.ts`) handles it under the same workspace lock as the
-  rebase: on an untracked-files refusal it removes the copies and staging dirs
-  the marker claims, skips any that git tracks or that resolve outside the
-  workspace, and retries — twice at most, because a concurrent prepare pass can
-  put one back in between. It deletes the resolved path and checks containment
-  and the marker again just before each delete, because a symlink retargeted
-  during the `ls-files` await would otherwise redirect a recursive delete. The
-  walk and the ownership rule are shared with the worker's sweep
-  (`shared/plugin-skill-copies.ts`, kept apart from `plugin-skill-marker.ts`
-  because the browser bundle imports that one). The flow records which copies
-  exist just before it rebases; if any is gone when the flow ends — removed by
-  that sweep, or by newer git itself — then, successful or not, and after the
-  workspace is handed back to the worker uid, it awaits the runner's
-  `preparePlugins()` before it releases the session, so the copies
-  come back at the new resolved root with its excludes before a queued turn can
-  spawn; the wait is capped at 45s, because a worker that never became ready
-  would otherwise hold the session for ever. A rebase that keeps the copies
-  neither removes nor re-prepares them. The conflict-resolution turn of such a rebase runs without
-  the plugin skills. A known limit, not introduced here: that prepare pass's
+  when a rebase, checkout, merge or cherry-pick turns a real `.claude/skills/`
+  into a symlink, git refuses that step before it writes a path ("Updating the
+  following directories would lose untracked files in them"; a rebase adds
+  "could not detach HEAD"). In a cherry-pick of several commits, the commits
+  before the refused one are already made, and `GitManager.cherryPick` aborts
+  the sequence to take them back. `git reset --hard` is the exception: it
+  deletes the files and continues. Newer git (CI runs 2.55) deletes the ignored files in every case.
+  A user-side `git clean` does not last, because every container start and
+  every `plugin_repos_updated` prepares the copies again. So the orchestrator
+  flows below share one mechanism (`services/plugin-skill-clearing.ts`): on an
+  untracked-files refusal, and only then, it removes the copies and staging
+  dirs the marker claims, skips any that git tracks or that resolve outside
+  the workspace, and runs the git step again — twice at most, because a
+  concurrent prepare pass can put one back in between. It deletes the resolved
+  path and checks containment and the marker again just before each delete,
+  because a symlink retargeted during the `ls-files` await would otherwise
+  redirect a recursive delete. The walk and the ownership rule are shared with
+  the worker's sweep (`shared/plugin-skill-copies.ts`, kept apart from
+  `plugin-skill-marker.ts` because the browser bundle imports that one). The
+  flow records which copies exist before its git step; if any is gone when the
+  flow ends — removed by that sweep, or by git itself — then, successful or
+  not, it awaits the runner's `preparePlugins()` before it releases the
+  session, so the copies come back at the new resolved root with its excludes;
+  the wait is capped at 45s, because a worker that never became ready would
+  otherwise hold the session for ever. A step that keeps the copies neither
+  removes nor re-prepares them.
+
+  - **Sync with the base** (`runRebaseFlow`, `services/rebase-driver.ts`). The
+    sweep and the retry run under the same workspace lock as the rebase. The
+    restore comes after the workspace is handed back to the worker uid and
+    before the queue drains, so a queued turn cannot spawn without the skills.
+    The conflict-resolution turn of such a rebase runs without them.
+  - **`shipit release prepare`** (`prepareRelease`,
+    `services/release-prepare.ts`). A release branch that still has the old
+    layout is the same change in the other direction: the checkout of
+    `release/<version>` from it turns the root back. The mechanism wraps that
+    checkout, the `--bootstrap` checkout of the release branch, and the
+    `--pick` cherry-pick. It applies only to a release in the session's own
+    workspace, which is when the route passes the restore callback: another
+    clone inside the session (`--repo`) holds no copies that the worker
+    prepares again, so nothing is cleared there. The restore is the last step
+    of the flow, after `--from` has put the incoming tree back, and the
+    command answers only after it: the agent that ran the command is in the
+    middle of a turn. A refusal that stays after the sweep (other untracked
+    files in the root) becomes a 409 that names the directory, tells how to
+    list the files, and says where the session is, read from git at that
+    moment. After a refused checkout that is the branch it started on, with
+    nothing moved. After a refused pick it is `release/<version>`, and the
+    message says "nothing was picked" only when HEAD is level with the release
+    branch, which is what a successful abort leaves and what a cherry-pick
+    conflict leaves too.
+
+  The Pull route (`POST /git/pull`) and the session-merge route
+  (`POST /git/merge`) are refused the same way and do not use the mechanism.
+  Nothing in the product calls either route: the client does not, no agent
+  command does, and the container guard blocks them. So that gap is open only
+  to a direct call of the HTTP API. The `reset --hard` paths (reset to base,
+  rollback) are never refused; the copies they delete come back, not awaited,
+  when the activation round that `onWorkspaceRewritten` starts settles. A
+  known limit, not introduced here: that prepare pass's
   stale sweep, like every container start's, removes a marker-owned copy whose
   name left the plan without asking git whether it is tracked.
 

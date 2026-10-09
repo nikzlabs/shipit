@@ -374,6 +374,18 @@ describe("IssuesViewer", () => {
     expect(count).toContain("of 2");
   });
 
+  it("marks the count with + and explains it when the tracker held more than one list reads", () => {
+    const issues = [makeIssue({ id: "1", identifier: "SHI-1" }), makeIssue({ id: "2", identifier: "SHI-2" })];
+    const { rerender } = render(<IssuesViewer {...defaultProps({ issues })} />);
+    expect(screen.getByTestId("issue-count").textContent).toBe("2 issues");
+    expect(screen.getByTestId("issue-count").getAttribute("title")).toBeNull();
+
+    rerender(<IssuesViewer {...defaultProps({ issues, incomplete: true })} />);
+    const count = screen.getByTestId("issue-count");
+    expect(count.textContent).toBe("2+ issues");
+    expect(count.getAttribute("title")).toContain("stopped reading before this tracker's oldest issues");
+  });
+
   it("shows the empty-filtered state with a Clear filters button", () => {
     const issues = [makeIssue({ priority: { level: "urgent", sortOrder: 0, label: "Urgent" } })];
     const filters = emptyFilters({ query: "no-match-zzz" });

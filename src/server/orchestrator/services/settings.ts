@@ -291,6 +291,7 @@ interface SaveHookContext {
   credentialStore: CredentialStore;
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
+  onAutoFixCiDisabled?: () => void;
   onSessionStatusCardEnabled?: () => void;
   /** docs/303 req 21 — fires in both directions: the tool list is fixed at spawn. */
   onSessionStatusCardToggled?: (enabled: boolean) => void;
@@ -329,10 +330,12 @@ const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
     },
   },
   // Same shape, same reason: unattended CI fixing must not start from a write
-  // the store rolled back.
+  // the store rolled back. Off removes a fix turn that still waits (docs/186);
+  // one removed by a write that did not land is fired again by the next poll.
   "advanced.autoFixCi": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onAutoFixCiEnabled?.();
+      if (value !== true && previous === true) ctx.onAutoFixCiDisabled?.();
     },
   },
   // docs/303 req 23 — the earlier card reappears at once, marked stale, and the
@@ -397,6 +400,7 @@ export interface SaveGlobalSettingsOptions extends GlobalSettingsPatch {
   providerAccountManager?: ProviderAccountManager;
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
+  onAutoFixCiDisabled?: () => void;
   onSessionStatusCardEnabled?: () => void;
   onSessionStatusCardToggled?: (enabled: boolean) => void;
   // Addressed per service or per item; not derived from the catalogue yet.
@@ -494,6 +498,7 @@ export async function saveGlobalSettings(
     ...(opts.onAutoResolveConflictsEnabled
       ? { onAutoResolveConflictsEnabled: opts.onAutoResolveConflictsEnabled } : {}),
     ...(opts.onAutoFixCiEnabled ? { onAutoFixCiEnabled: opts.onAutoFixCiEnabled } : {}),
+    ...(opts.onAutoFixCiDisabled ? { onAutoFixCiDisabled: opts.onAutoFixCiDisabled } : {}),
     ...(opts.onSessionStatusCardEnabled
       ? { onSessionStatusCardEnabled: opts.onSessionStatusCardEnabled } : {}),
     ...(opts.onSessionStatusCardToggled

@@ -36,7 +36,7 @@ import type { MergeWatchManager } from "./merge-watch.js";
 import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js";
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
-import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
+import { fetchCIFailureLogs, buildCIFixPrompt, autoFixDispatch } from "./services/github.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
@@ -71,7 +71,6 @@ import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
-import { prepareDispatch } from "./prepared-dispatch.js";
 import { seedAndBuildAgentListPayload } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 import { setEgressDecisionTokenRecovery } from "./egress-decision-auth.js";
@@ -135,6 +134,7 @@ export interface ContainerSetupDeps {
   sessionManager: SessionManager;
   runtimeMode: RuntimeMode;
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  gpuAccess?: () => boolean;
 }
 
 export interface ContainerSetupResult {
@@ -176,6 +176,7 @@ export async function setupContainerManager(
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
       stackName: process.env.DOCKER_STACK,
       ...(setupDeps.resolveEgressConfig ? { resolveEgressConfig: setupDeps.resolveEgressConfig } : {}),
+      ...(setupDeps.gpuAccess ? { gpuAccess: setupDeps.gpuAccess } : {}),
     });
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
@@ -280,6 +281,7 @@ export async function setupContainerManager(
             dockerAccess: sc.dockerAccess,
             sessionNetworkName: sc.sessionNetworkName,
             resourceLimits: sc.resourceLimits,
+            ...(sc.gpu ? { gpu: sc.gpu } : {}),
           };
         },
         onTopologyChange: () => containerManager.beginContainerTopologyChange(),
@@ -325,6 +327,8 @@ export interface RunnerFactoryDeps {
   localAgentFactory?: LocalAgentFactory;
   providerAccountManager?: ProviderAccountManager;
   credentialStore?: LocalAgentMcpDeps["credentialStore"];
+  /** A scheduled run's notes folder to mount, while it and its schedule exist (docs/324). */
+  runNotesDir?: (run: { scheduleId: string; runId: string }) => string | undefined;
 }
 
 interface CreateContainerForRunnerOpts {
@@ -338,7 +342,8 @@ interface CreateContainerForRunnerOpts {
   depCacheDir?: string;
   destroyExisting: boolean;
   opsSession?: boolean;
-  session?: Pick<SessionInfo, "remoteUrl" | "kind" | "capabilities">;
+  session?: Pick<SessionInfo, "remoteUrl" | "kind" | "capabilities" | "scheduleId" | "scheduleRunId">;
+  runNotesDir?: RunnerFactoryDeps["runNotesDir"];
   failureContext?: string;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   oomBreaker?: SessionOomCircuitBreaker;
@@ -445,6 +450,11 @@ async function attemptContainerCreate(
     const sandboxDockerAccess = opts.session?.kind === "sandbox"
       ? !!opts.session.capabilities?.docker
       : undefined;
+    // Read at every create: a run whose schedule was deleted has lost its folder (req 32).
+    const { scheduleId, scheduleRunId } = opts.session ?? {};
+    const scheduleNotesDir = scheduleId && scheduleRunId
+      ? opts.runNotesDir?.({ scheduleId, runId: scheduleRunId })
+      : undefined;
     const config = mgr.buildConfigForWorkspace({
       sessionId,
       sessionDir: opts.sessionDir,
@@ -455,6 +465,7 @@ async function attemptContainerCreate(
       opsSession: opts.opsSession,
       ...(sandboxDockerAccess !== undefined ? { dockerAccess: sandboxDockerAccess } : {}),
       overlaySpecs,
+      ...(scheduleNotesDir ? { scheduleNotesDir } : {}),
     });
     const createStart = Date.now();
     const sc = await mgr.create(config, { intentEpoch });
@@ -491,7 +502,7 @@ export function buildRunnerFactory(
   const {
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
     oomBreaker, presentStore, chatHistoryManager, localAgentFactory, providerAccountManager,
-    credentialStore,
+    credentialStore, runNotesDir,
   } = factoryDeps;
 
   if (deps.runnerFactory) return deps.runnerFactory;
@@ -549,8 +560,10 @@ export function buildRunnerFactory(
     const acquireStart = Date.now();
 
     const existing = mgr.get(o.sessionId);
+    // Made before the GPU switch moved, so a new session must not inherit it (docs/325-session-gpu-access req 5).
+    const staleStandby = (): boolean => mgr.standbyGpuOutOfDate(o.sessionId);
 
-    if (existing?.status === "running") {
+    if (existing?.status === "running" && !staleStandby()) {
       const standby = mgr.isStandby(o.sessionId);
       mgr.claimStandby(o.sessionId);
       console.log(
@@ -581,8 +594,13 @@ export function buildRunnerFactory(
 
       void (async () => {
         const deadline = Date.now() + 30_000;
+        let stale = false;
         while (Date.now() < deadline) {
           const sc = mgr.get(o.sessionId);
+          if (sc?.status === "running" && staleStandby()) {
+            stale = true;
+            break;
+          }
           if (sc?.status === "running") {
             mgr.claimStandby(o.sessionId);
             console.log(
@@ -609,9 +627,10 @@ export function buildRunnerFactory(
           workspaceDir: o.sessionDir,
           credentialsDir,
           depCacheDir: o.depCacheDir,
-          destroyExisting: false,
+          destroyExisting: stale,
           opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
           session: sessionManager?.get(o.sessionId),
+          runNotesDir,
           failureContext: "from standby fallback",
           broadcastLog,
           oomBreaker,
@@ -644,6 +663,7 @@ export function buildRunnerFactory(
       destroyExisting: !!existing,
       opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
       session: sessionManager?.get(o.sessionId),
+      runNotesDir,
       broadcastLog,
       oomBreaker,
     });
@@ -902,30 +922,14 @@ export function createPrStatusPoller(
 
       const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks, runner.sessionDir);
       if (logs.length === 0) return noop("no_logs");
+      // Turned off during the log fetch; once dispatched, turning it off withdraws it instead.
+      if (sessionManager.get(sessionId)?.autoFixCiPaused) return noop("paused");
+      if (!credentialStore?.getAutoFixCi()) return noop("turned_off");
       const prompt = buildCIFixPrompt(logs);
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — dispatching a fix turn for ${checkLabel}`);
 
       // Settlement also resolves on disposal; onTurnComplete alone can wait forever.
-      const outcome = await runner.dispatch(prepareDispatch({
-        text: prompt,
-        agentInterface: undefined,
-        activity: "Auto-fixing CI...",
-        systemTurn: true,
-        automatic: true,
-        heldId: undefined,
-        onTurnComplete: undefined,
-        execution: undefined,
-        images: undefined,
-        files: undefined,
-        uploads: undefined,
-        permissionMode: undefined,
-        postTurn: undefined,
-        deliveryId: undefined,
-        dictated: undefined,
-        resetMergedBranch: undefined,
-        compactContext: undefined,
-        silent: undefined,
-      })).settled;
+      const outcome = await runner.dispatch(autoFixDispatch(prompt)).settled;
       const detail = outcome.detail ? ` (${outcome.detail})` : "";
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
       return autoFixResultForOutcome(outcome);
@@ -1250,5 +1254,6 @@ export async function autoStart(buildApp: (deps: AppDeps) => Promise<FastifyInst
 
   const port = Number(process.env.PORT) || 3000;
   await app.listen({ port, host: "0.0.0.0" });
-  console.log(`[server] listening on http://0.0.0.0:${port}`);
+  // No URL: 0.0.0.0 is a bind address, and a browser opened on it has no secure context and no previews.
+  console.log(`[server] listening on port ${port}`);
 }

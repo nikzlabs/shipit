@@ -4,8 +4,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
-import { computeAttentionReason } from "./useAttentionInfo.js";
-import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
+import { computeAttentionReason, rowAttentionInputs } from "./useAttentionInfo.js";
 import type { NotifyContext } from "./useNotification.js";
 
 /**
@@ -62,6 +61,7 @@ export function useAttentionNotifications(
   const statusBySession = usePrStore((s) => s.statusBySession);
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
+  const statusCardOn = useSettingsStore((s) => s.sessionStatusCard);
 
   const prevReasonsRef = useRef<Map<string, string | null>>(new Map());
   const pendingRef = useRef<Map<string, PendingNotification>>(new Map());
@@ -87,9 +87,7 @@ export function useAttentionNotifications(
         hasBackgroundTasks: backgroundTaskSessions.has(session.id),
         autoFixEnabled,
         autoResolveEnabled,
-        resolved: isTerminalPrResolved(session),
-        muted: !!session.mutedAt,
-        workspaceBlockKind: session.workspaceBlock,
+        ...rowAttentionInputs(session, statusCardOn),
       });
       next.set(session.id, reason);
 
@@ -136,7 +134,7 @@ export function useAttentionNotifications(
     }
 
     prevReasonsRef.current = next;
-  }, [sessions, activeRunnerSessions, awaitingPermissionSessions, backgroundTaskSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled, notify]);
+  }, [sessions, activeRunnerSessions, awaitingPermissionSessions, backgroundTaskSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled, statusCardOn, notify]);
 
   // eslint-disable-next-line no-restricted-syntax -- lifecycle cleanup
   useEffect(() => {

@@ -1,5 +1,6 @@
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
-import { resolvedAt } from "../../../server/shared/session-resolution.js";
+import { workResolvedAt } from "../../../server/shared/session-resolution.js";
+import { parseTimestampMs } from "../../../server/shared/utils.js";
 
 /**
  * Group sessions by repo URL with a STABLE sort within each group.
@@ -7,7 +8,7 @@ import { resolvedAt } from "../../../server/shared/session-resolution.js";
  * agent event during a turn, which would reshuffle the list under the user's cursor and
  * cause mis-clicks. Instead:
  *   - Non-merged sessions sort by `createdAt` desc (newest first) — never changes.
- *   - Merged sessions sink to the bottom, sorted by `mergedAt` desc (most recently merged first).
+ *   - Done sessions sink to the bottom, most recently resolved first (`workResolvedAt`).
  *   - Archived sessions sink below everything (live > merged), within their parent's brood too.
  * Repo order is whatever the server returns — `display_order` first, then
  * `last_used_at` desc for repos the user has never reordered. We deliberately
@@ -26,7 +27,16 @@ export function computeRepoGroups(
 
   const opsSessions = sessions.filter((s) => s.kind === "ops");
 
+  // Parsed, not compared as text: a run's finish and a spawned session's merge can be in
+  // different formats in one group.
+  const resolvedMs = (s: SessionInfo) => parseTimestampMs(workResolvedAt(s) ?? s.createdAt ?? "") || 0;
+  const byResolvedDesc = (a: SessionInfo, b: SessionInfo) => resolvedMs(b) - resolvedMs(a);
+
+  // Only a scheduled run can be a done sandbox session, so in the regular view
+  // this keeps the server's order.
   const sandboxSessions = sessions.filter((s) => s.kind === "sandbox");
+  const sandboxDone = sandboxSessions.filter(isDone).sort(byResolvedDesc);
+  const sandboxSorted = [...sandboxSessions.filter((s) => !isDone(s)), ...sandboxDone];
 
   for (const repo of repos) {
     grouped.set(repo.url, []);
@@ -51,11 +61,7 @@ export function computeRepoGroups(
       const aResolved = isRecentlyResolvedForGroup(a) ? 1 : 0;
       const bResolved = isRecentlyResolvedForGroup(b) ? 1 : 0;
       if (aResolved !== bResolved) return aResolved - bResolved;
-      if (aResolved === 1) {
-        const aKey = resolvedAt(a) ?? a.createdAt ?? "";
-        const bKey = resolvedAt(b) ?? b.createdAt ?? "";
-        return bKey.localeCompare(aKey);
-      }
+      if (aResolved === 1) return byResolvedDesc(a, b);
       return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
     });
   }
@@ -83,8 +89,8 @@ export function computeRepoGroups(
       return { kind: "orphan" as const, url, label, sessions: group };
     });
 
-  const sandbox = sandboxSessions.length > 0
-    ? [{ kind: "sandbox" as const, sessions: sandboxSessions }]
+  const sandbox = sandboxSorted.length > 0
+    ? [{ kind: "sandbox" as const, sessions: sandboxSorted }]
     : [];
   const ops = opsSessions.length > 0
     ? [{ kind: "ops" as const, sessions: opsSessions }]

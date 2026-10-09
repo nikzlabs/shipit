@@ -17,7 +17,7 @@ the repo back — had no lighter option.
 ## Design
 
 **Hide is a pure visibility flag.** A `hidden` boolean on the repo record. Hiding a
-repo drops it (and its sessions) from the sidebar and touches **nothing else** —
+repo drops it (and its sessions) from the sidebar's repository tree and touches **nothing else** —
 sessions, containers, working copies, and history all survive. Idle containers reap
 on their own normal schedule. Hiding is instant and perfectly reversible, which is
 what keeps it cleanly distinct from Remove.
@@ -25,7 +25,7 @@ what keeps it cleanly distinct from Remove.
 | | Hide (docs/222) | Remove (docs/059) |
 |---|---|---|
 | Leaves the sidebar | ✓ | ✓ |
-| Sessions | untouched, reappear on unhide | archived |
+| Sessions | untouched, back in the tree on unhide | archived |
 | Containers / working copies | untouched | freed |
 | Reversible | instantly | re-add re-clones |
 | Confirmation dialog | no (nothing destroyed) | yes (deleted-vs-kept) |
@@ -51,6 +51,8 @@ what keeps it cleanly distinct from Remove.
 
 A hidden repo's sessions live under its sidebar group, so they leave with it. They
 stay reachable via "All Sessions" (same as Remove) and return in full on unhide.
+The one sidebar place that still lists them is the "Needs you" view, for a
+session that needs the user (docs/260-attention-sidebar-view req 18).
 `SessionSidebar` filters hidden repos' sessions out of the grouping input so they
 don't resurface in the "orphan" bucket (which catches any session whose `remoteUrl`
 isn't a known/visible repo).

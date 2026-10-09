@@ -8,7 +8,7 @@ import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
-import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
+import { prepareCardOutcomeNotices } from "../services/card-kinds.js";
 import { renderOwn } from "../../shared/settings-catalogue/index.js";
 import {
   postSettingsProposal,
@@ -59,8 +59,8 @@ beforeEach(() => {
   }));
   deps.buildRunParams = buildRunParams as unknown as SystemTurnDeps["buildRunParams"];
   // The real read and the real receipt; only the agent process is a fake.
-  deps.settingsOutcomeNotice = (sessionId) =>
-    prepareSettingsOutcomeNotice({ proposals, chatHistoryManager }, sessionId);
+  deps.cardOutcomeNotices = (sessionId) =>
+    prepareCardOutcomeNotices({ settingsProposals: proposals, chatHistoryManager }, sessionId);
 
   runner = new SessionRunner({
     sessionId: SESSION,

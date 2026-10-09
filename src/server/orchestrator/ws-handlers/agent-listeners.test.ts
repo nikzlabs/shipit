@@ -858,9 +858,9 @@ describe("wireAgentListeners", () => {
       agent.emit("auth_required");
       await tick();
 
-      expect(runner.recordedCards).toHaveLength(1);
       expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
-      expect(runner.recordedCards[0]!.message).toEqual(
+      expect(d.chatHistoryManager.append).toHaveBeenCalledWith(
+        "session-1",
         expect.objectContaining({ isError: true, text: `Error: ${AGENT_NOT_AUTHENTICATED_MESSAGE}` }),
       );
       runner.dispose({ force: true });
@@ -1569,7 +1569,7 @@ describe("wireAgentListeners — a CLI-started turn while the agent waits for an
     const runner = new SessionRunner({ sessionId: "session-held", sessionDir: "/tmp/session-held", defaultAgentId: "claude" });
     runner.setSystemTurnDeps({
       answerHold: {
-        isAwaitingAnswer: () => held,
+        automaticTurnsHeld: () => held,
         setAwaitingAnswer: vi.fn(),
         holdTurn: vi.fn(),
         heldTurns: () => [],

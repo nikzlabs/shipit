@@ -191,6 +191,22 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(1);
   });
 
+  it("docs/186 — a fix turn the pause removed ends the attempt without counting it", async () => {
+    let settle!: (r: AutoFixResult) => void;
+    const cb: FetchAndFixCb = () => new Promise((resolve) => { settle = resolve; });
+    fx = makeFixture({ cb: cb as RecordingCb });
+    await fx.fail();
+    await tick();
+    expect(fx.manager.get("s1")?.status).toBe("running");
+
+    fx.setPaused(true);
+    settle(autoFixResultForOutcome(turnDropped("auto-fix paused")));
+    await tick();
+
+    expect(fx.manager.get("s1")?.status).toBe("deferred");
+    expect(fx.manager.get("s1")?.attemptCount).toBe(0);
+  });
+
   it("PENDING / none / SUCCESS never fire", async () => {
     await fx.transition("pending");
     await fx.transition("none");

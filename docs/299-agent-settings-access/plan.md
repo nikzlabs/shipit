@@ -1148,11 +1148,17 @@ comes to a couple of hundred.
 is useless advice about the value the user already has, so a `current` side past
 the bound says instead that this setting has to be edited by hand.
 
-**`alsoChanges` sides keep the 200-character cap.** A side change is a supporting
-line under the main one and has no diff of its own; the three operations that
-have them (`roles[].model`, `roles[].harness`, `reviewers[].model`) write a
-harness id and a reasoning level. Long text arriving there is a declaration that
-has outgrown the card, not something to render.
+**A prose side change gets the same third shape.** A side change was a supporting
+line with no diff of its own, because the operations that re-derive a neighbour
+(`roles[].model`, `roles[].harness`, `reviewers[].model`) write a harness id and
+a reasoning level. Creating a role (req 10, *Creating a role* below) writes a
+description and standing instructions as side changes too, and those are prose.
+So the rule that picks between a chip and a diff is one rule, applied to every
+`text` declaration on the card, main change or side: past `CARD_VALUE_MAX`
+rendered, the side carries its own `textChange` and its `from`/`to` become
+ShipIt's one-line summary. The card bounds and the display-integrity refusal
+apply to a side's text as they do to the main change's. A side that is not prose
+keeps the 200-character cap.
 
 **The agent is told where the line is before it writes a value — BOTH lines.**
 `get` on a proposable text setting reports `proposeMaxLength` where the declared
@@ -1266,7 +1272,9 @@ Apply:
 **The baseline is not the displayed `from`.** Projections drop fields, so two
 stored configurations can share a `from` — a target that changed only in a
 dropped field would compare equal and apply anyway. `baseline(ctx)` is a
-server-only revision over the whole stored value.
+server-only revision over the whole stored value. For one entry of a list, that
+value is the entry's own stored state, never the whole list: two cards that add
+two different hosts must both apply, in either order.
 
 Phases:
 
@@ -1393,10 +1401,159 @@ MCP server's `enabled` flag, a role's name, description, standing instructions,
 model, harness and level, both reviewer slots, the credential and
 provider-account labels, and the per-mode routing settings.
 
-The rest is declared, readable and **refused at propose time by name**: creating
-or deleting a role, an MCP server or a credential. That refusal is deliberately
-not one of the catalogue's four reasons — those describe settings nobody can
-propose at all, and this one says the read works and the write has not been built.
+A card can also create or delete a whole entry of two bespoke collections: a
+role (req 10, req 11) and an MCP server (req 11, req 12) — *Creating a role* and
+*Deleting a role, and creating or deleting an MCP server* below. The rest is
+declared, readable and **refused at propose time by name**: creating or deleting
+a credential. That refusal is deliberately not one of the catalogue's four
+reasons — those describe settings nobody can propose at all, and this one says
+the read works and the write has not been built.
+
+#### Creating a role
+
+```
+shipit settings propose roles --add deep-dive --value-file - --reason "…" <<'EOF'
+{"model": {"serviceId": "anthropic", "billingMode": "sub", "modelId": "claude-opus-5"},
+ "reasoningEffort": "high",
+ "description": "Open-ended research into how this codebase works.",
+ "prompt": "Read widely before you answer, and cite file:line."}
+EOF
+```
+
+**It is the list operation the CLI already has, on the collection itself.** A
+role joins `roles` the way a host joins the allowlist: `--add` names the entry,
+which is the role's name, and the target is `{ key: "roles", item: <name> }`.
+What a host does not have is a body. A role is a name plus a model, a level and
+two pieces of prose, so the operation declares `entry`, which reads the body the
+`add` carries — JSON, through `--value-file`, which the CLI now accepts beside
+`--add` — and validates it before the lock, as a `set` validates its value.
+Each field goes through its own declaration's type (`roles[].description`,
+`roles[].prompt`, `roles[].reasoningEffort`, `roles[].harness`), so a card can
+create only what the dialog's own box would accept. A key the body does not
+know is refused rather than dropped, because a role the agent believes has
+standing instructions and does not is worse than a refusal — and so is a field
+that is not a string, which `text` validation would otherwise read as its empty
+default. The description and standing-instructions declarations carry the role
+writer's own bounds (`MAX_ROLE_DESCRIPTION_LENGTH`, `MAX_ROLE_PROMPT_LENGTH`).
+They were wider, so a 501-character description passed the card and failed the
+click, for a field edit as much as for a create.
+
+A separate `create` kind was the alternative, and it would have bought a word.
+`add` already means "an entry joins a list" everywhere the proposal type, the
+store, the notice and the CLI switch on it.
+
+**The card shows the whole role, as side changes.** The main change is
+membership — `no such role → created` — and every field the write sets is an
+`alsoChanges` entry under its own declaration: *Runs on*, *Harness*, *Reasoning
+level*, *Description*, *Standing instructions*, each from "not set". That is the
+machinery that already keeps a card honest about what one write touches, and
+reusing it is what makes the rest free. The harness, when the body names none, is
+derived the way the role editor derives it — the one a connected credential can
+run, else any installed one that speaks the model — and that derivation reads
+live state, so it is re-derived at the click and compared with the card, exactly
+as a model change's is. After the write, each field is read back at the new
+role's address and compared with what the card showed. Prose sides carry their
+own diff (see *A prose side change gets the same third shape* above).
+
+**The baseline is the entry, not the list.** `roles` with an item baselines that
+one role, and an absent role has a revision: the empty one. The restore that
+prompted req 10 is nine cards; a baseline over the whole list would have made
+the first click stale the other eight. The same baseline is what makes a role
+the dialog creates under that name, between the card and the click, resolve the
+card `stale` rather than overwrite it.
+
+**The preflight is the dialog's.** The name must be a name the read would show
+back (`userNameProjection`), not the reserved `reviewer`, and not taken; the
+params go through the role validator with purpose `"save"`. The write itself is
+`applyGlobalSettings` with a `roles` entry carrying no `previousName` — the
+dialog's own create — so the role is validated once more, under the lock, by the
+code every role save runs.
+
+#### Deleting a role, and creating or deleting an MCP server
+
+```
+shipit settings propose roles --remove deep-dive --reason "…"
+shipit settings propose mcp.servers --remove notion --reason "…"
+shipit settings propose mcp.servers --add github --value-file - --reason "…" <<'EOF'
+{"type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+ "env": ["GITHUB_PERSONAL_ACCESS_TOKEN"]}
+EOF
+```
+
+The same shape as creating a role, three more times: `add` and `remove` on the
+collection, the entry's name as the address, the fields as side changes, the
+baseline on that one entry with the empty revision for an absent one, and the
+write through the shared layer the panel's own route uses — `applyGlobalSettings`
+with the role set to `null`, `applyMcpServerAdd`, `applyMcpServerRemove`. An MCP
+server's baseline also hashes its stored secret values, server-side only:
+deleting the server deletes them, so a card written before one was replaced in
+the panel goes `stale` rather than deleting the replacement.
+
+**Membership is the read's.** A list operation decided "already there" from the
+read's instances, and neither `roles` nor `mcp.servers` has any: each reads as
+the list of its names. So membership is the address being in that list as well,
+which is also what keeps a name the read does not show — URL-shaped, so dropped
+by `userNamesProjection` — from being deleted by a card that could not name it.
+
+**A deletion shows what it deletes.** Each field of the entry is a side change
+to "not set", through its own declaration's projection — the same door the read
+uses. For a role that is the model, the harness, the level and both pieces of
+prose. For an MCP server it is the transport, whether it was enabled, the URL's
+host, and *configured → not configured* for the command, the arguments and the
+environment or headers. That last line is how the card says the server's stored
+secret values go with it, without naming them. The reserved `reviewer` cannot
+be deleted (docs/264-agent-roles req 2).
+
+**A new MCP server is shown as written, except its secret values** (req 12).
+Its arguments, URL, command and npm package are fields the read withholds or
+shortens, because a stored value there can carry a token the agent may not read.
+On a create card the values are the agent's own, and req 12 is the user's
+decision that the card shows them in full. So those sides are rendered from the
+proposed value through `renderValue`, not projected. The transport and the
+enabled flag are projected as usual. The environment variables or headers are
+**names only**. Each becomes a `$secret:mcp__<server>__<NAME>` reference, the
+placeholder the panel's own form writes for a row with no value, with the name
+made into an identifier so the form can fill it later. No secret is submitted.
+Their side reads *"GITHUB_TOKEN" (you type the value after Apply)*, and an
+applied card says which values are still to type and where.
+
+The body is checked by the writer's own `validateMcpServerConfig`, with the name
+from the address, plus the limit of ten enabled servers. A field the body does
+not know is refused, and so is a secret value: `env` and `headers` are lists of
+names, so a map arriving there is refused, not stored. Three more refusals keep
+the card's promise after Apply, where the user's next act is the panel's Edit
+form:
+
+- **A placeholder never points at a stored value.** A secret left in the
+  server's namespace by an earlier server of that name — kept because another
+  server still refers to it — would fill the placeholder the moment the server
+  exists. The key steps aside (`…_2`) instead, as the form's own does.
+- **An argument the form cannot hold is refused.** The form edits arguments as
+  one space-separated line, so an argument containing whitespace, or an empty
+  one, would change the first time the user saves the server to type its values.
+- **A stored-secret reference is refused** anywhere in the body (`$secret:`,
+  `$platform:`): it would hand the new server a credential the card shows only
+  as text.
+
+`lastProposal` reports a list operation as membership — `add: off → on` — the
+way an allowlist card always did. The body a create carries is the card's, and
+the URL and arguments of a new MCP server are fields the read otherwise shortens
+or withholds; repeating them to every session's `get` would be the read giving
+up what req 2 has it keep.
+
+**Known gap, wider than this feature.** An npm package is installed with
+`npm install -g` in the session container's whole environment, so its install
+script can read credentials already delivered there. That is how the panel
+installs one too, and req 12 puts the package on the card in full for the user
+to approve, so this feature does not change it. Closing it means a
+credential-free install environment, which is a change to session setup.
+Tracked as planning#667.
+
+**Reading back a side shown as written.** After the write, a side whose
+declaration emits something other than the value — `configured_only`, or a
+`derived` projection such as the URL's host — cannot be compared with a card that
+showed the value. It is skipped, by the rule that not seeing a value is never
+evidence.
 
 **A declaration may not advertise a proposal with nowhere to go.**
 `propose.allowed: true` reaches the agent from the read surface, so a declaration
@@ -1411,10 +1568,12 @@ strength of credential MATERIAL and a label is a string in a list — and a
 unreachable, since `requireBaseline` refuses a proposal whose stored value it
 cannot revision. And a
 **collection aggregate** — `roles`, `mcp.servers`, `network.egress.hosts` — keeps
-its promise through its entry fields rather than an operation of its own, since a
-card never replaces a whole list; propose names them (`proposableFieldsOf`) and
-refuses by pointing at them. `settings-operations.test.ts` fails the build for any
-declaration that has neither.
+its promise through its entry fields, since a card never replaces a whole list;
+propose names them (`proposableFieldsOf`) and refuses by pointing at them. `roles`
+and `mcp.servers` also have `add` and `remove`, which create or delete one entry
+and replace nothing, and the refusal for a `set` on the list names the create
+too. `settings-operations.test.ts` fails
+the build for any declaration that has neither.
 
 Two vocabularies meet at a provider account and are **not** the same: the read
 addresses one by the SERVICE it belongs to (`anthropic:acct_…`) and
@@ -2082,13 +2241,15 @@ the broadcast), `services/settings-conflict-domain.ts` (the lock) and
 change is shown as, its counts, and the display-integrity check);
 `settings-proposal-store.ts` (the private proposal row: target, operation,
 proposed value, baseline, phase); `services/settings-proposal.ts` (the card as a
-transcript object: post, claim, transition); `services/settings-propose.ts` (the
+transcript object: post, and its kind in the claim and transition every decision
+card shares, `services/card-claim.ts` — docs/324-scheduled-sessions); `services/settings-propose.ts` (the
 propose path and its refusals); `services/settings-operations.ts` (what an Apply
 button runs, per declared operation); `services/settings-decision.ts` (claim,
 lock, baseline, apply, and the boot pass that resolves an interrupted one);
 `services/settings-proposal-deps.ts` (one assembly both callers share);
-`services/settings-outcome-notice.ts` (the next-turn notice and its deferred
-receipt); `ws-handlers/settings-proposal-handlers.ts`;
+`services/settings-outcome-notice.ts` (the next-turn notice, as a kind of the
+shared `services/card-outcome-notice.ts` and its deferred receipt;
+`services/card-kinds.ts` collects every kind's notice for a turn); `ws-handlers/settings-proposal-handlers.ts`;
 `shared/settings-catalogue/tabs.ts` (the tab labels the dialog and a card's
 breadcrumb share);
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;

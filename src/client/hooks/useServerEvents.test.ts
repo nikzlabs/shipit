@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, cleanup, act } from "@testing-library/react";
 import { useServerEvents } from "./useServerEvents.js";
+import { handleRewindComplete } from "./message-handlers/rewind-complete.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -98,6 +99,79 @@ describe("useServerEvents — session_agent_started", () => {
     expect(store.activity).toBeUndefined();
 
     expect(store.activeRunnerSessions.has("other")).toBe(true);
+  });
+
+  // planning#637 — a later turn is not in a rewind's snapshot, so undoing the rewind would remove it.
+  describe("a rewind's undo", () => {
+    const rewound = (sessionId: string): void => {
+      // With no active session the handler skips its refetches, which this test has no server for.
+      const active = useSessionStore.getState().sessionId;
+      useSessionStore.setState({ sessionId: undefined });
+      handleRewindComplete({} as never, {
+        type: "rewind_complete",
+        gapPosition: 0,
+        action: "both",
+        commitHash: "abc1234",
+        droppedMessageCount: 0,
+        snapshotSessionId: sessionId,
+        snapshotExpiresAt: Date.now() + 60_000,
+      } as never);
+      useSessionStore.setState({ sessionId: active });
+    };
+
+    beforeEach(() => {
+      useSessionStore.setState({ rewindRecoveries: {}, messages: [] });
+      useUiStore.getState().setToast(null);
+    });
+
+    it("is withdrawn when a turn starts in that session", () => {
+      renderHook(() => useServerEvents());
+      rewound("s1");
+      expect(useSessionStore.getState().rewindRecoveries.s1).toBeDefined();
+      expect(useUiStore.getState().toast?.action?.label).toBe("Undo");
+
+      act(() => {
+        FakeEventSource.last!.emit("session_agent_started", { sessionId: "s1" });
+      });
+
+      expect(useSessionStore.getState().rewindRecoveries.s1).toBeUndefined();
+      expect(useUiStore.getState().toast).toBeNull();
+    });
+
+    it("stays when the turn starts in a different session", () => {
+      renderHook(() => useServerEvents());
+      rewound("s1");
+
+      act(() => {
+        FakeEventSource.last!.emit("session_agent_started", { sessionId: "other" });
+      });
+
+      expect(useSessionStore.getState().rewindRecoveries.s1).toBeDefined();
+      expect(useUiStore.getState().toast?.action?.label).toBe("Undo");
+    });
+
+    it("leaves a newer toast alone", () => {
+      renderHook(() => useServerEvents());
+      rewound("s1");
+      useUiStore.getState().setToast({ message: "Something else" });
+
+      act(() => {
+        FakeEventSource.last!.emit("session_agent_started", { sessionId: "s1" });
+      });
+
+      expect(useUiStore.getState().toast?.message).toBe("Something else");
+    });
+
+    it("keeps a fork's undo, which the server keeps through the parent's later turns", () => {
+      renderHook(() => useServerEvents());
+      useSessionStore.getState().setRewindRecovery({ sessionId: "s1", action: "fork", expiresAt: Date.now() + 60_000 });
+
+      act(() => {
+        FakeEventSource.last!.emit("session_agent_started", { sessionId: "s1" });
+      });
+
+      expect(useSessionStore.getState().rewindRecoveries.s1?.action).toBe("fork");
+    });
   });
 });
 
@@ -969,6 +1043,30 @@ describe("useServerEvents — update_notice (docs/304)", () => {
     });
 
     expect(useUiStore.getState().updateNotice).toBeNull();
+  });
+});
+
+describe("useServerEvents — host_cpu", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    useUiStore.setState({ hostCpu: null });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the newest reading", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("host_cpu", { usedPercent: 15, cores: 16 });
+      FakeEventSource.last!.emit("host_cpu", { usedPercent: 72.5, cores: 16 });
+    });
+
+    expect(useUiStore.getState().hostCpu).toEqual({ usedPercent: 72.5, cores: 16 });
   });
 });
 

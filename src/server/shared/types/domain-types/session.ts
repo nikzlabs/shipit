@@ -3,6 +3,7 @@ import type { ActionChecklistItem } from "./chat.js";
 import type { ProviderRouteKind } from "./provider.js";
 import type { BillingMode } from "../../catalogue/types.js";
 import type { SecretFinding } from "../../secret-scan.js";
+import type { LastTurnOutcome } from "./schedule.js";
 
 /** Server-authoritative grants; never infer them from agent-writable workspace files. */
 export interface SessionCapabilities {
@@ -135,6 +136,30 @@ export interface SessionInfo {
   agentGoal?: AgentGoal;
   /** docs/303 — the agent-written card shown at the end of the conversation. */
   sessionStatus?: SessionStatus;
+  /**
+   * docs/324-scheduled-sessions — the schedule that started this run. Kept after
+   * the schedule is deleted, so the run can say so.
+   */
+  scheduleId?: string;
+  scheduleRunId?: string;
+  /**
+   * The zone the run's title names its time in, copied from the run row when the session is
+   * linked to it, so the banner keeps it after the schedule and its run rows are deleted.
+   */
+  runTimeZone?: string;
+  /** Set while the run counts as finished (req 22). */
+  runFinishedAt?: string;
+  /** Req 33 — when the user stopped the run. */
+  runStoppedAt?: string;
+  lastTurnOutcome?: LastTurnOutcome;
+  /**
+   * Set on runs only, for the "needs you" view (reqs 21, 31): the last turn
+   * ended on a question (docs/322), and the status card's manual-step count.
+   */
+  awaitingAnswer?: boolean;
+  manualStepCount?: number;
+  /** Req 28, req 30 — the schedules whose notes the user let this session read, by id. */
+  scheduleNotesGrants?: string[];
 }
 
 /**

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, finalizeTurnRows, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
-import type { PersistedMessage } from "./chat-history.js";
+import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
+import { DatabaseManager } from "../shared/database.js";
 import type { WsServerMessage } from "../shared/types.js";
 import { createCommittedBodyIds } from "./transcript-projection.js";
 
@@ -268,6 +269,24 @@ describe("chat-card-persistence", () => {
       expect((runner.recordedCards[0].message as BugMsg).bugReport?.phase).toBe("draft");
     });
 
+    it("uses the DB-row fallback once the turn's rows are final, even while it still reads running (planning#645)", () => {
+      const { runner, chatHistoryManager } = fakeRunner([{ text: "filing a bug", toolUse: [{}] }]);
+      runner.running = true;
+      recordDraft(runner, chatHistoryManager);
+      finalizeTurnRows({ replaceInProgress: () => {}, finalizeInProgress: () => {} }, runner, "s1");
+
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        toFiled,
+        () => { dbPatched = true; },
+      );
+
+      expect(dbPatched).toBe(true);
+    });
+
     it("falls back to the DB patch when the card isn't in this turn's recorded set", () => {
       const { runner, chatHistoryManager } = fakeRunner();
       runner.running = true;
@@ -280,6 +299,62 @@ describe("chat-card-persistence", () => {
         () => { dbPatched = true; },
       );
       expect(dbPatched).toBe(true);
+    });
+  });
+
+  describe("finalizeTurnRows — a turn's rows are made final once (planning#645)", () => {
+    const card: PersistedMessage = {
+      role: "assistant",
+      text: "",
+      voiceNote: { id: "v1", headline: "hi", kind: "authored", createdAt: "t" },
+    };
+    const wsCard = { type: "voice_note", sessionId: "s1", id: "v1", headline: "hi", kind: "authored", createdAt: "t" } as const;
+
+    function turnWithCard() {
+      const history = new ChatHistoryManager(new DatabaseManager(":memory:"));
+      const { runner } = fakeRunner([{ text: "partial output", toolUse: [] }]);
+      runner.turnEpoch = 1;
+      emitChatCard(runner, wsCard, card, { chatHistoryManager: history, sessionId: "s1" });
+      return { history, runner };
+    }
+    const count = (history: ChatHistoryManager, match: (m: PersistedMessage) => boolean) =>
+      history.load("s1").filter(match).length;
+
+    it("a second terminal write in the same turn saves nothing again", () => {
+      const { history, runner } = turnWithCard();
+
+      finalizeTurnRows(history, runner, "s1");
+      finalizeTurnRows(history, runner, "s1");
+      persistTurnInProgress(history, runner, "s1");
+
+      expect(count(history, (m) => m.voiceNote?.id === "v1")).toBe(1);
+      expect(count(history, (m) => m.text === "partial output")).toBe(1);
+      expect(history.load("s1").every((m) => !m.inProgress)).toBe(true);
+    });
+
+    it("a card posted after the rows are final, while the turn still reads running, is appended once", () => {
+      const { history, runner } = turnWithCard();
+      finalizeTurnRows(history, runner, "s1");
+
+      const late: PersistedMessage = { ...card, voiceNote: { ...card.voiceNote!, id: "v2" } };
+      emitChatCard(runner, { ...wsCard, id: "v2" }, late, { chatHistoryManager: history, sessionId: "s1" });
+      finalizeTurnRows(history, runner, "s1");
+
+      expect(runner.recordedCards).toHaveLength(1);
+      expect(history.load("s1").map((m) => m.voiceNote?.id ?? m.text)).toEqual(["partial output", "v1", "v2"]);
+    });
+
+    it("the next turn writes its own rows", () => {
+      const { history, runner } = turnWithCard();
+      finalizeTurnRows(history, runner, "s1");
+
+      runner.turnEpoch = 2;
+      runner.chatMessageGroups = [{ text: "next turn", toolUse: [] }];
+      runner.recordedCards = [];
+      finalizeTurnRows(history, runner, "s1");
+
+      expect(count(history, (m) => m.text === "next turn")).toBe(1);
+      expect(count(history, (m) => m.voiceNote?.id === "v1")).toBe(1);
     });
   });
 

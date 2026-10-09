@@ -64,6 +64,8 @@ describe("the operation registry", () => {
   it("reports what it can do with a setting, for a refusal that says so", () => {
     expect(operationsFor("advanced.enableSubAgents")).toEqual(["set"]);
     expect(operationsFor("network.egress.hosts[].host")).toEqual(["add", "remove"]);
+    expect(operationsFor("roles")).toEqual(["add", "remove"]);
+    expect(operationsFor("mcp.servers")).toEqual(["add", "remove"]);
     expect(operationsFor("nonsense.key")).toEqual([]);
   });
 

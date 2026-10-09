@@ -80,7 +80,7 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "show me the app", "why is the preview blank", "it's just white" | [previews.md](previews.md), then [troubleshooting.md](troubleshooting.md) for the overlay states |
 | "set up a preview for this", "why is there no preview tab" | [previews.md](previews.md) |
 | "it keeps saying connecting to the dev server" | [previews.md](previews.md) |
-| "my changes don't show up", "it's not reloading" | [previews.md](previews.md) — hot reload needs polling across containers |
+| "my changes don't show up", "it's not reloading" | [previews.md](previews.md) — what hot reload needs (a dev server that watches the mounted source; no polling) |
 | "start the database", "my database isn't running", "it says crashed" | [previews.md](previews.md) — services, `shipit service list` for what this project has; [troubleshooting.md](troubleshooting.md) for a service that will not start |
 | "where are the logs for my app" | [previews.md](previews.md) — the Services drawer, and `shipit service logs` |
 | "what does it look like on a phone", "check it at tablet size" | [previews.md](previews.md) — device viewports |

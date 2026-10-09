@@ -16,7 +16,9 @@ export type ExclusionReason =
   /** A button that runs something rather than storing a value. */
   | "action"
   /** A control of a dialog req 5 does not name. */
-  | "other-dialog";
+  | "other-dialog"
+  /** A whole object with routes and an agent command of its own, not a stored value. */
+  | "own-object";
 
 export interface SettingExclusion {
   /** Stable id, so review can name what an entry accounts for. */
@@ -96,6 +98,17 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "derived-status",
     why: "Computed from the credentials a role resolves against (`RoleUnavailableReason`). A "
       + "read of the role carries it as the reason the role is not running.",
+  },
+  {
+    id: "schedules.tab",
+    tab: "schedules",
+    scope: "global",
+    label: "Schedules",
+    reason: "own-object",
+    why: "A schedule is a whole object — target, session-start parameters, prompt and timing — "
+      + "stored by its own routes (`api-routes-schedules.ts`), and the agent proposes one with "
+      + "`shipit schedule propose`, not `shipit settings` (docs/324-scheduled-sessions plan.md → "
+      + "Rejected). The whole tab is this exclusion.",
   },
   {
     id: "integrations.mcpServerState",

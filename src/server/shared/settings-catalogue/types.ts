@@ -14,6 +14,7 @@ export type SettingScope = "global" | "project" | "browser";
 export type SettingTab =
   | "services"
   | "roles"
+  | "schedules"
   | "integrations"
   | "git"
   | "instructions"

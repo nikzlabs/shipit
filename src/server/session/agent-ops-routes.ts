@@ -288,12 +288,20 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  app.get<{ Querystring: { tracker?: string; state?: string } }>(
+  app.get<{
+    Querystring: { tracker?: string; state?: string; search?: string; label?: string | string[]; limit?: string };
+  }>(
     "/agent-ops/issue/list",
     async (request, reply) => {
+      const { tracker, state, search, label, limit } = request.query;
       const params = new URLSearchParams();
-      if (request.query.tracker) params.set("tracker", request.query.tracker);
-      if (request.query.state) params.set("state", request.query.state);
+      if (tracker) params.set("tracker", tracker);
+      if (state) params.set("state", state);
+      if (search) params.set("search", search);
+      for (const name of label === undefined ? [] : Array.isArray(label) ? label : [label]) {
+        params.append("label", name);
+      }
+      if (limit) params.set("limit", limit);
       const qs = params.toString() ? `?${params.toString()}` : "";
       return relay("GET", `/issue/list${qs}`, undefined, reply);
     },
@@ -478,6 +486,25 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/settings/propose", request.body ?? {}, reply),
   );
 
+  app.get("/agent-ops/schedules", async (_request, reply) => relay("GET", "/schedules", undefined, reply));
+
+  app.get<{ Querystring: { schedule?: string; run?: string; file?: string } }>(
+    "/agent-ops/schedules/notes",
+    async (request, reply) => {
+      const { schedule, run, file } = request.query;
+      const params = new URLSearchParams();
+      if (schedule) params.set("schedule", schedule);
+      if (run) params.set("run", run);
+      if (file) params.set("file", file);
+      return relay("GET", `/schedule-notes?${params.toString()}`, undefined, reply);
+    },
+  );
+
+  app.post<{ Body: { id?: string; text?: string } }>(
+    "/agent-ops/schedules/propose",
+    async (request, reply) => relay("POST", "/schedules/propose", request.body ?? {}, reply),
+  );
+
   app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
 
   app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));
@@ -645,6 +672,11 @@ export function registerAgentOpsRoutes(
   app.post<{ Body: { note?: string } }>(
     "/agent-ops/session/restart",
     async (request, reply) => relay("POST", "/restart-after-turn", request.body ?? {}, reply),
+  );
+
+  app.post<{ Body: { instructions?: string; note?: string } }>(
+    "/agent-ops/compact",
+    async (request, reply) => relay("POST", "/compact-after-turn", request.body ?? {}, reply),
   );
 
   app.post<{ Body: { title?: string } }>(

@@ -10,6 +10,10 @@ import {
   INSTALL_LEVEL_USAGE_MIGRATION,
   STALE_PERMISSION_CARD_MIGRATION,
   DATA_RETENTION_MIGRATION,
+  SCHEDULES_MIGRATION,
+  SCHEDULE_NOTES_ACCESS_MIGRATION,
+  SCHEDULE_PROPOSALS_MIGRATION,
+  SCHEDULE_RUN_TIME_ZONE_MIGRATION,
   DatabaseManager,
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
@@ -1253,5 +1257,198 @@ describe("docs/323-archived-session-data-retention — the retention columns (re
     ).run();
     expect(row("new").retention_floor_at).toBeNull();
     migrated.close();
+  });
+});
+
+describe("docs/324-scheduled-sessions — the schedule tables (real migration)", () => {
+  const SESSION_COLUMNS = [
+    "schedule_id",
+    "schedule_run_id",
+    "run_finished_at",
+    "run_stopped_at",
+    "last_turn_outcome",
+    "schedule_notes_grants",
+  ];
+  let file: string;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const sessionColumns = (m: DatabaseManager) =>
+    (m.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
+  const tables = (m: DatabaseManager) =>
+    (m.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'schedule%'").all() as
+      { name: string }[]).map((t) => t.name).sort();
+
+  it("adds the tables and the session columns to an older database", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec("DROP TABLE schedule_runs; DROP TABLE schedules;");
+    for (const column of SESSION_COLUMNS) m.db.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
+    m.db.pragma(`user_version = ${SCHEDULES_MIGRATION}`);
+    m.close();
+
+    const migrated = new DatabaseManager(file);
+    expect(tables(migrated)).toEqual(["schedule_notes_requests", "schedule_proposals", "schedule_runs", "schedules"]);
+    expect(sessionColumns(migrated)).toEqual(expect.arrayContaining(SESSION_COLUMNS));
+    migrated.close();
+  });
+
+  it("replays over a database that already has them, keeping slot claims and session fields", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec(`
+      INSERT INTO schedules (id, name, timing, time_zone, spec, active_since, created_at, updated_at)
+        VALUES ('s1', 'Daily', '{}', 'UTC', '{}', 'x', 'x', 'x');
+      INSERT INTO schedule_runs (id, schedule_id, slot_at, outcome, created_at) VALUES
+        ('r1', 's1', '2026-10-07T09:00:00.000Z', 'started', 'x'),
+        ('r2', 's1', NULL, 'started', 'x');
+      INSERT INTO sessions (id, title, created_at, last_used_at, ${SESSION_COLUMNS.join(", ")})
+        VALUES ('run', 'Run', 'x', 'x', ${SESSION_COLUMNS.map((c) => `'${c}-value'`).join(", ")});
+    `);
+    const runs = () => m.db.prepare("SELECT id, slot_at FROM schedule_runs ORDER BY id").all();
+    const session = (db: DatabaseManager) =>
+      db.db.prepare(`SELECT ${SESSION_COLUMNS.join(", ")} FROM sessions WHERE id = 'run'`).get();
+    const before = { runs: runs(), session: session(m) };
+    m.db.pragma(`user_version = ${SCHEDULES_MIGRATION}`);
+    m.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(replayed.db.prepare("SELECT id FROM schedules").all()).toEqual([{ id: "s1" }]);
+    expect(replayed.db.prepare("SELECT id, slot_at FROM schedule_runs ORDER BY id").all()).toEqual(before.runs);
+    expect(session(replayed)).toEqual(before.session);
+    expect(before.runs).toHaveLength(2);
+    replayed.close();
+  });
+});
+
+describe("docs/324-scheduled-sessions — the schedule proposal card (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const hasProposalColumn = (m: DatabaseManager) =>
+    (m.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).some((c) => c.name === "schedule_proposal");
+
+  it("adds the transcript column and the record table to an older database, and replays over them", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec("DROP TABLE schedule_proposals; ALTER TABLE messages DROP COLUMN schedule_proposal;");
+    m.db.pragma(`user_version = ${SCHEDULE_PROPOSALS_MIGRATION}`);
+    m.close();
+
+    const migrated = new DatabaseManager(file);
+    expect(hasProposalColumn(migrated)).toBe(true);
+    migrated.db.exec(`
+      INSERT INTO sessions (id, title, created_at, last_used_at) VALUES ('s1', 'S', 'x', 'x');
+      INSERT INTO schedule_proposals (card_id, session_id, proposal, phase, created_at)
+        VALUES ('sch-1', 's1', '{}', 'pending', 'x');
+    `);
+    migrated.db.pragma(`user_version = ${SCHEDULE_PROPOSALS_MIGRATION}`);
+    migrated.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(replayed.db.prepare("SELECT card_id, phase FROM schedule_proposals").all())
+      .toEqual([{ card_id: "sch-1", phase: "pending" }]);
+    replayed.close();
+  });
+});
+
+describe("docs/324-scheduled-sessions — the notes access card (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const hasCardColumn = (m: DatabaseManager) =>
+    (m.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).some((c) => c.name === "schedule_notes_access");
+
+  it("adds the transcript column and the record table to an older database, and replays over them", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec("DROP TABLE schedule_notes_requests; ALTER TABLE messages DROP COLUMN schedule_notes_access;");
+    m.db.pragma(`user_version = ${SCHEDULE_NOTES_ACCESS_MIGRATION}`);
+    m.close();
+
+    const migrated = new DatabaseManager(file);
+    expect(hasCardColumn(migrated)).toBe(true);
+    migrated.db.exec(`
+      INSERT INTO sessions (id, title, created_at, last_used_at) VALUES ('s1', 'S', 'x', 'x');
+      INSERT INTO schedule_notes_requests (card_id, session_id, schedule_id, phase, created_at)
+        VALUES ('snr-1', 's1', 'sched-1', 'pending', 'x');
+    `);
+    migrated.db.pragma(`user_version = ${SCHEDULE_NOTES_ACCESS_MIGRATION}`);
+    migrated.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(replayed.db.prepare("SELECT card_id, phase FROM schedule_notes_requests").all())
+      .toEqual([{ card_id: "snr-1", phase: "pending" }]);
+    replayed.close();
+  });
+});
+
+describe("docs/324-scheduled-sessions — a run's own time zone (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const zones = (m: DatabaseManager) => ({
+    run: m.db.prepare("SELECT time_zone FROM schedule_runs WHERE id = 'r1'").get(),
+    session: m.db.prepare("SELECT run_time_zone FROM sessions WHERE id = 'run'").get(),
+  });
+
+  it("adds the columns to an older database, leaves its rows without a zone, and replays over them", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec(`
+      ALTER TABLE schedule_runs DROP COLUMN time_zone;
+      ALTER TABLE sessions DROP COLUMN run_time_zone;
+      INSERT INTO schedules (id, name, timing, time_zone, spec, active_since, created_at, updated_at)
+        VALUES ('s1', 'Daily', '{}', 'UTC', '{}', 'x', 'x', 'x');
+      INSERT INTO schedule_runs (id, schedule_id, slot_at, outcome, created_at)
+        VALUES ('r1', 's1', '2026-10-07T09:00:00.000Z', 'started', 'x');
+      INSERT INTO sessions (id, title, created_at, last_used_at, schedule_id, schedule_run_id)
+        VALUES ('run', 'Daily · Oct 7, 09:00', 'x', 'x', 's1', 'r1');
+    `);
+    m.db.pragma(`user_version = ${SCHEDULE_RUN_TIME_ZONE_MIGRATION}`);
+    m.close();
+
+    const migrated = new DatabaseManager(file);
+    expect(zones(migrated)).toEqual({ run: { time_zone: null }, session: { run_time_zone: null } });
+    migrated.db.exec(`
+      UPDATE schedule_runs SET time_zone = 'Europe/Berlin';
+      UPDATE sessions SET run_time_zone = 'Europe/Berlin';
+    `);
+    migrated.db.pragma(`user_version = ${SCHEDULE_RUN_TIME_ZONE_MIGRATION}`);
+    migrated.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(zones(replayed)).toEqual({ run: { time_zone: "Europe/Berlin" }, session: { run_time_zone: "Europe/Berlin" } });
+    replayed.close();
   });
 });

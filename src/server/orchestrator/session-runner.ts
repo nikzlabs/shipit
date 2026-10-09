@@ -9,7 +9,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
-import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import type { CardOutcomeNotice } from "./services/card-outcome-notice.js";
 import type { RepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import type { SessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
@@ -61,6 +61,7 @@ import {
   turnInterrupted,
   turnRefused,
   TURN_STEERED,
+  type TurnEnd,
   type TurnHandle,
   type TurnOutcome,
 } from "./turn-settlement.js";
@@ -142,6 +143,7 @@ export interface QueuedMessage {
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
   automatic?: boolean;
+  ciAutoFix?: boolean;
   heldId?: number;
   onTurnComplete?: (outcome: TurnOutcome) => void;
   deliveryId?: string;
@@ -170,6 +172,8 @@ export interface AgentDispatchOptions {
    * session. Held while the agent waits for the user's answer; any other turn clears that.
    */
   automatic?: boolean;
+  /** docs/186 — ShipIt's automatic CI fix, which a pause removes while it still waits. */
+  ciAutoFix?: boolean;
   /**
    * docs/322-question-holds-automatic-turns req 8 — the saved row of a held turn; deleted when
    * the turn starts, not before.
@@ -379,6 +383,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
   if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   if (opts.automatic !== undefined) queued.automatic = opts.automatic;
+  if (opts.ciAutoFix !== undefined) queued.ciAutoFix = opts.ciAutoFix;
   if (opts.heldId !== undefined) queued.heldId = opts.heldId;
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;
@@ -392,7 +397,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
 /** docs/322 — the "agent waits for the user's answer" mark, and the turns it holds. */
 export type AnswerHoldStore = Pick<
   SessionManager,
-  "isAwaitingAnswer" | "setAwaitingAnswer" | "holdTurn" | "heldTurns" | "forgetHeldTurn" | "hasHeldDelivery"
+  "automaticTurnsHeld" | "setAwaitingAnswer" | "holdTurn" | "heldTurns" | "forgetHeldTurn" | "hasHeldDelivery"
 >;
 
 export interface SystemTurnDeps {
@@ -438,6 +443,8 @@ export interface SystemTurnDeps {
   ) => Promise<void>;
   /** docs/321 — a restart the agent asked for, run after the push is armed and before idle. */
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/324-agent-requested-compaction — a compaction the agent asked for, run right after the restart step. */
+  runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   /** Runs even without a commit: resetting the branch can leave a clean tree. */
   postTurnReArmReset?: (
     sessionId: string,
@@ -464,20 +471,23 @@ export interface SystemTurnDeps {
   consumeBugOutcomes?: (sessionId: string) => ResolvedBugReport[];
   /**
    * At-LEAST-once, and the difference from the line above is the point
-   * (docs/299-agent-settings-access req 8): this reads the outcomes without
-   * marking them, and the returned receipt is settled by the turn rather than by
-   * prompt assembly. `null` when nothing is owed.
+   * (docs/299-agent-settings-access req 8): this reads the outcomes of every
+   * decision card kind without marking them (`services/card-kinds.ts`), and each
+   * receipt is settled by the turn rather than by prompt assembly. Empty when
+   * nothing is owed.
    */
-  settingsOutcomeNotice?: (sessionId: string) => SettingsOutcomeNotice | null;
-  /** At-least-once, like `settingsOutcomeNotice` (docs/303-cross-repo-session-proposal req 11). */
+  cardOutcomeNotices?: (sessionId: string) => readonly CardOutcomeNotice[];
+  /** At-least-once, like `cardOutcomeNotices` (docs/303-cross-repo-session-proposal req 11). */
   repoSessionOutcomeNotice?: (sessionId: string) => RepoSessionOutcomeNotice | null;
-  /** At-least-once, like `settingsOutcomeNotice` (docs/314-session-message-proposal req 14). */
+  /** At-least-once, like `cardOutcomeNotices` (docs/314-session-message-proposal req 14). */
   sessionMessageOutcomeNotice?: (sessionId: string) => SessionMessageOutcomeNotice | null;
   /**
    * Consumes the role's first-turn instructions; subsequent calls return an empty string.
    * The returned `repark` hands the take back when the turn never reaches an agent.
    */
   takeRoleInstructions?: (sessionId: string) => RoleStandingInstructions;
+  /** docs/324-scheduled-sessions — the `<scheduled_run>` block, for a run's first dispatch only. */
+  scheduledRunContext?: (sessionId: string, deliveryId: string | undefined) => string;
   finalizeAgentEnv?: (
     sessionId: string,
     agentId: AgentId,
@@ -512,6 +522,8 @@ export interface SystemTurnDeps {
   }) => { continues: boolean };
   /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
   continueAfterQuotaStandDown?: (sessionId: string) => Promise<void>;
+  /** Told after `last_turn_outcome` is written; a scheduled run's first turn is watched here. */
+  onTurnEnd?: (end: TurnEnd) => void;
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
   routeLabel?: (routeId: string) => string | undefined;
   routeProfile?: (
@@ -592,6 +604,11 @@ export interface SessionRunnerEvents {
   /** Per-turn signal: each dispatch latches it before queue drain can replace runner state. */
   turn_result: [{ compact: boolean }];
   background_work: [];
+  /**
+   * A hold that keeps `agentBusy` true came off: the post-turn hold, the last thing a turn
+   * does (after its commit, PR flows and push), or an install.
+   */
+  work_released: [];
 }
 
 export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents> {
@@ -616,6 +633,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly rebindDelivery?: SystemTurnDeps["rebindDelivery"];
   wasInterrupted: boolean;
   turnEpoch: number;
+  /** The turnEpoch whose rows `finalizeTurnRows` has made final (planning#645). */
+  finalizedTurnEpoch?: number;
   guardedUnavailable: boolean;
   readonly awaitingPermissionIds: Set<string>;
   /** Decaying CLI hints, gated on resident process liveness. */
@@ -631,6 +650,10 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Pair with endPostTurnWork in finally; also held for an armed auto-push. */
   beginPostTurnWork(): void;
   endPostTurnWork(): void;
+  /** From a turn's end until its local commit settles. Narrower than the lease, which a push can hold for minutes. */
+  readonly turnCommitPending: boolean;
+  beginTurnCommit(): void;
+  endTurnCommit(): void;
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
   clearBackgroundTasks(): void;
   /** Actual resident process mode, distinct from the adapter's static steering capability. */
@@ -696,6 +719,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly awaitingContainer?: boolean;
   readonly lastSseEventAt?: number;
   readonly workerStreamDownSince?: number;
+  /** The first connect could not read the worker's status, so the stream is not open (planning#665). */
+  readonly waitingForWorkerStatus?: boolean;
   createAgent?(agentId: AgentId): AgentProcess;
   getCodexBuiltinSkills?(): Promise<SkillInfo[]>;
 
@@ -781,6 +806,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _subAgentHandles = new Map<SubAgentRunHandle, AgentId>();
   private _lastAnnouncedWork = "[]";
   private _postTurnHold = new PostTurnHold();
+  private _turnCommitHold = new PostTurnHold();
 
   createAgent?: (agentId: AgentId) => AgentProcess;
 
@@ -841,7 +867,13 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
-  endPostTurnWork(): void { this._postTurnHold.end(); }
+  endPostTurnWork(): void {
+    this._postTurnHold.end();
+    if (!this._postTurnHold.active) this.emit("work_released");
+  }
+  get turnCommitPending(): boolean { return this._turnCommitHold.active; }
+  beginTurnCommit(): void { this._turnCommitHold.begin(); }
+  endTurnCommit(): void { this._turnCommitHold.end(); }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
@@ -1070,6 +1102,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     }
     this._disposed = true;
     this._postTurnHold.reset();
+    this._turnCommitHold.reset();
     for (const handle of this._subAgentHandles.keys()) {
       try { handle.cancel(); } catch { /* best-effort */ }
     }

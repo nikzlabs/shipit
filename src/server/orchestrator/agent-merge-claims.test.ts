@@ -291,6 +291,41 @@ describe("AgentMergeClaimStore — merge requests", () => {
     expect(claims.isMergeInFlight(SESSION)).toBe(false);
   });
 
+  it("returns a request's refused attempt to `pending`, and nothing else", () => {
+    const id = { sessionId: SESSION, repoId: REPO, prNumber: 7, method: "squash" as const };
+    armOne();
+    expect(claims.returnToPending({ ...id, expectedSha: "sha-head" })).toBe(false);
+    claims.beginMerging({ ...id, expectedSha: "sha-head" });
+    expect(claims.returnToPending({ ...id, expectedSha: "other-sha" })).toBe(false);
+    expect(claims.returnToPending({ ...id, prNumber: 9, expectedSha: "sha-head" })).toBe(false);
+    expect(claims.returnToPending({ ...id, expectedSha: "sha-head" })).toBe(true);
+    expect(claims.get(SESSION)).toMatchObject({ state: "pending", origin: "auto" });
+    expect(claims.list()).toEqual([]);
+
+    claims.beginMerging({ ...id, expectedSha: "sha-head" });
+    claims.markSettling(SESSION, "sha-head");
+    expect(claims.returnToPending({ ...id, expectedSha: "sha-head" })).toBe(false);
+    expect(claims.get(SESSION)?.state).toBe("settling");
+  });
+
+  it("never turns a direct merge into a request", () => {
+    claimOne();
+    expect(claims.returnToPending({
+      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head", method: "merge",
+    })).toBe(false);
+    expect(claims.get(SESSION)).toMatchObject({ state: "merging", origin: "direct" });
+  });
+
+  it("does not revive an attempt the permission was withdrawn from while it was in flight", () => {
+    const id = { sessionId: SESSION, repoId: REPO, prNumber: 7, method: "squash" as const, expectedSha: "sha-head" };
+    armOne();
+    claims.beginMerging(id);
+    claims.markMergeInFlight(SESSION);
+    claims.cancelPendingForRepo(REPO);
+    expect(claims.returnToPending(id)).toBe(false);
+    expect(claims.get(SESSION)?.state).toBe("merging");
+  });
+
   it("ends a request without touching an attempt", () => {
     armOne();
     const id = { sessionId: SESSION, repoId: REPO, prNumber: 7, method: "squash" as const };

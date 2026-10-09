@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { GitManager } from "../../shared/git.js";
+import { execSync } from "node:child_process";
+import { GitManager } from "../../shared/git.js";
+import { PLUGIN_SKILL_MARKER, PLUGIN_SKILL_MARKER_ID } from "../../shared/plugin-skill-marker.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { planRelease, prepareRelease } from "./release-prepare.js";
 
@@ -678,5 +681,367 @@ describe("prepareRelease — authored release notes (docs/309)", () => {
     await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
 
     expect(fs.readFileSync(published(), "utf-8")).toBe("## Rewritten\n");
+  });
+});
+
+describe("prepareRelease — ShipIt's plugin-skill copies across a skills root the release branch shapes differently", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "release-prepare-plugin-skills-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const COPY = "plugins--probe--probe-0123456789ab";
+  const STAGING = `.${COPY}.staging-1a2b3c4d`;
+  const SESSION_BRANCH = "shipit/abc123";
+
+  function sh(cwd: string, cmd: string): string {
+    return execSync(cmd, { cwd, stdio: "pipe" }).toString().trim();
+  }
+
+  /**
+   * `main` keeps the skills in `.agents/skills` and symlinks `.claude/skills` to it. In the
+   * incident's shape `stable` is the reverse, and a commit on `main` moved the root.
+   */
+  function repo(stable: "reversed" | "same"): { workDir: string; moveCommit: string } {
+    const bareDir = path.join(tmpDir, "bare.git");
+    const workDir = path.join(tmpDir, "work");
+    fs.mkdirSync(bareDir);
+    fs.mkdirSync(workDir);
+    sh(bareDir, "git init --bare -b main");
+    sh(workDir, `git clone ${bareDir} .`);
+    fs.writeFileSync(path.join(workDir, "VERSION"), "0.5.1\n");
+    fs.mkdirSync(path.join(workDir, ".claude/skills/real"), { recursive: true });
+    fs.writeFileSync(path.join(workDir, ".claude/skills/real/SKILL.md"), "# real\n");
+    fs.mkdirSync(path.join(workDir, ".agents"));
+    fs.symlinkSync("../.claude/skills", path.join(workDir, ".agents/skills"));
+    sh(workDir, "git add -A && git commit -m 'Skills in .claude' && git push origin main");
+    if (stable === "reversed") sh(workDir, "git push origin main:stable");
+
+    sh(workDir, "git rm -q .agents/skills && mkdir -p .agents && git mv .claude/skills .agents/skills");
+    fs.symlinkSync("../.agents/skills", path.join(workDir, ".claude/skills"));
+    sh(workDir, "git add -A && git commit -m 'Move the skills root to .agents' && git push origin main");
+    const moveCommit = sh(workDir, "git rev-parse HEAD");
+    if (stable === "same") sh(workDir, "git push origin main:stable");
+
+    fs.writeFileSync(path.join(workDir, "feature.txt"), "work\n");
+    sh(workDir, "git add -A && git commit -m 'Work to release' && git push origin main");
+    return { workDir, moveCommit };
+  }
+
+  function sessionOn(workDir: string, startPoint: string): GitManager {
+    sh(workDir, `git fetch -q origin && git checkout -q -b ${SESSION_BRANCH} ${startPoint}`);
+    return new GitManager(workDir);
+  }
+
+  function writeOwnedDir(dir: string): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, PLUGIN_SKILL_MARKER),
+      JSON.stringify({ marker: PLUGIN_SKILL_MARKER_ID, source: "/checkout/skills/probe", name: path.basename(dir) }),
+    );
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "# copy\n");
+  }
+
+  function writeCopies(workDir: string, root: string): void {
+    writeOwnedDir(path.join(workDir, root, COPY));
+    writeOwnedDir(path.join(workDir, root, STAGING));
+  }
+
+  // What preparePlugins leaves: the copies, a crashed pass's staging dir, and their exclude block.
+  function materializeCopies(workDir: string, root: string): void {
+    writeCopies(workDir, root);
+    fs.appendFileSync(
+      path.join(workDir, ".git/info/exclude"),
+      `/${root}/.plugins--*.staging-*/\n/${root}/${COPY}/\n`,
+    );
+  }
+
+  // What the route passes for the session's own workspace: the worker's prepare pass.
+  function ownWorkspace() {
+    const prepare = vi.fn(() => Promise.resolve());
+    return { prepare, session: { restorePluginSkills: prepare } };
+  }
+
+  // Verbatim from git 2.39.5, the orchestrator image's git (node:24-slim, bookworm).
+  const git239Refusal = (root: string) =>
+    `error: Updating the following directories would lose untracked files in them:\n\t${root}\n\nAborting\n`;
+
+  /**
+   * Newer git deletes ignored files in a directory it replaces, so CI's git would never refuse.
+   * This makes any git refuse the way the orchestrator's does: while the real `root` still
+   * holds anything besides `tracked`.
+   */
+  function blockedLikeGit239(workDir: string, root: string, tracked: readonly string[] = ["real"]): boolean {
+    const dir = path.join(workDir, root);
+    const stat = fs.lstatSync(dir, { throwIfNoEntry: false });
+    return stat?.isDirectory() === true && fs.readdirSync(dir).some((name) => !tracked.includes(name));
+  }
+
+  function checkoutRefusesLikeGit239(git: GitManager, workDir: string, root: string): void {
+    const createBranchFrom = git.createBranchFrom.bind(git);
+    git.createBranchFrom = (branch: string, startPoint: string) =>
+      blockedLikeGit239(workDir, root)
+        ? Promise.reject(new Error(git239Refusal(root)))
+        : createBranchFrom(branch, startPoint);
+  }
+
+  function expectReleasedFromMain(workDir: string): void {
+    expect(sh(workDir, "git rev-parse --abbrev-ref HEAD")).toBe("release/0.5.2");
+    expect(fs.lstatSync(path.join(workDir, ".claude/skills")).isSymbolicLink()).toBe(true);
+    expect(fs.lstatSync(path.join(workDir, ".agents/skills")).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills/real/SKILL.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(workDir, "VERSION"), "utf-8")).toBe("0.5.2\n");
+    expect(sh(workDir, "git ls-remote --heads origin release/0.5.2")).not.toBe("");
+  }
+
+  const releaseFromMain = { bump: "patch", releaseBranch: "stable", mechanism: "release-branch", from: "main" };
+
+  it("with this machine's own git, whichever way it treats the copies, opens the release PR and prepares them again", async () => {
+    const { workDir } = repo("reversed");
+    const git = sessionOn(workDir, "origin/main");
+    materializeCopies(workDir, ".agents/skills");
+    const { prepare, session } = ownWorkspace();
+
+    const res = await prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain, ...session });
+
+    expect(res).toMatchObject({ kind: "pr-opened", version: "0.5.2" });
+    expectReleasedFromMain(workDir);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the copies git 2.39 refuses over, checks out the release branch, and prepares them again", async () => {
+    const { workDir } = repo("reversed");
+    const git = sessionOn(workDir, "origin/main");
+    materializeCopies(workDir, ".agents/skills");
+    checkoutRefusesLikeGit239(git, workDir, ".agents/skills");
+    const { prepare, session } = ownWorkspace();
+    const onTreeRewrite = vi.fn();
+
+    const res = await prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain, ...session, onTreeRewrite });
+
+    expect(res).toMatchObject({ kind: "pr-opened", version: "0.5.2" });
+    expectReleasedFromMain(workDir);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY))).toBe(false);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", STAGING))).toBe(false);
+    expect(onTreeRewrite).toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledTimes(1);
+    // The copies go back into the tree the release ends on, not the one the checkout passes through.
+    expect(prepare.mock.invocationCallOrder[0]).toBeGreaterThan(agentCreatePrMock.mock.invocationCallOrder[0]);
+  });
+
+  it("prepares the copies again when git deleted them itself, as git newer than 2.39 does", async () => {
+    const { workDir } = repo("reversed");
+    const git = sessionOn(workDir, "origin/main");
+    materializeCopies(workDir, ".agents/skills");
+    const createBranchFrom = git.createBranchFrom.bind(git);
+    git.createBranchFrom = (branch: string, startPoint: string) => {
+      for (const name of [COPY, STAGING]) fs.rmSync(path.join(workDir, ".agents/skills", name), { recursive: true });
+      return createBranchFrom(branch, startPoint);
+    };
+    const { prepare, session } = ownWorkspace();
+
+    const res = await prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain, ...session });
+
+    expect(res).toMatchObject({ kind: "pr-opened" });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the copies for the bootstrap checkout too", async () => {
+    const { workDir } = repo("reversed");
+    // A session on the old layout, and a repository whose release branch does not exist yet.
+    const git = sessionOn(workDir, "origin/stable");
+    sh(workDir, "git push -q origin --delete stable && git fetch -q --prune origin");
+    materializeCopies(workDir, ".claude/skills");
+    checkoutRefusesLikeGit239(git, workDir, ".claude/skills");
+    const { prepare, session } = ownWorkspace();
+
+    const res = await prepareRelease(git, githubAuth, {
+      dir: workDir, bump: "patch", releaseBranch: "stable", mechanism: "release-branch", bootstrap: true, ...session,
+    });
+
+    expect(res).toMatchObject({ kind: "pr-opened" });
+    expect(sh(workDir, "git ls-remote --heads origin stable")).not.toBe("");
+    expect(fs.lstatSync(path.join(workDir, ".claude/skills")).isSymbolicLink()).toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A hotfix session on the release branch's layout, whose own commit ignores what is in the
+   * skills root. The release checkout drops that `.gitignore`, so at the pick the files are
+   * plainly untracked and every git version refuses for real, under `GitManager.cherryPick`
+   * and its abort. The checkout itself keeps the root, so it keeps the copies.
+   */
+  function hotfixSession(workDir: string): GitManager {
+    const git = sessionOn(workDir, "origin/stable");
+    fs.writeFileSync(
+      path.join(workDir, ".gitignore"),
+      "/.claude/skills/plugins--*/\n/.claude/skills/.plugins--*/\n/.claude/skills/local-notes/\n",
+    );
+    sh(workDir, "git add .gitignore && git commit -q -m 'Ignore local skill files'");
+    writeCopies(workDir, ".claude/skills");
+    return git;
+  }
+
+  const pickFromMain = (picks: string[]) =>
+    ({ bump: "patch", releaseBranch: "stable", mechanism: "release-branch", pick: picks });
+
+  it("clears the copies for a --pick whose second commit changes the root's shape, and picks each commit once", async () => {
+    const { workDir, moveCommit } = repo("reversed");
+    const git = hotfixSession(workDir);
+    const workCommit = sh(workDir, "git rev-parse origin/main");
+    const { prepare, session } = ownWorkspace();
+
+    const res = await prepareRelease(git, githubAuth, {
+      dir: workDir, ...pickFromMain([workCommit, moveCommit]), ...session,
+    });
+
+    expect(res).toMatchObject({ kind: "pr-opened", version: "0.5.2" });
+    expect(sh(workDir, "git rev-parse --abbrev-ref HEAD")).toBe("release/0.5.2");
+    // Git committed the first pick before it refused the second; a retry on top of it would not apply.
+    expect(sh(workDir, "git rev-list --count origin/stable..HEAD")).toBe("3");
+    expect(fs.existsSync(path.join(workDir, "feature.txt"))).toBe(true);
+    expect(fs.lstatSync(path.join(workDir, ".claude/skills")).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY))).toBe(false);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("a --pick that stays refused is undone: nothing picked, on the release branch, and the message says so", async () => {
+    const { workDir, moveCommit } = repo("reversed");
+    const git = hotfixSession(workDir);
+    const notes = path.join(workDir, ".claude/skills/local-notes");
+    fs.mkdirSync(notes);
+    fs.writeFileSync(path.join(notes, "todo.md"), "mine\n");
+    const workCommit = sh(workDir, "git rev-parse origin/main");
+    const { prepare, session } = ownWorkspace();
+
+    const err = await prepareRelease(git, githubAuth, {
+      dir: workDir, ...pickFromMain([workCommit, moveCommit]), ...session,
+    }).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ statusCode: 409 });
+    const message = (err as Error).message;
+    expect(message).toContain("`.claude/skills`");
+    expect(message).toContain("Nothing was picked: the session is on `release/0.5.2`, level with `stable`.");
+    expect(message).toContain("`release/0.5.2` was not pushed");
+    expect(sh(workDir, "git rev-parse --abbrev-ref HEAD")).toBe("release/0.5.2");
+    expect(sh(workDir, "git rev-parse HEAD")).toBe(sh(workDir, "git rev-parse origin/stable"));
+    expect(fs.existsSync(path.join(workDir, "feature.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(workDir, ".git/sequencer"))).toBe(false);
+    expect(sh(workDir, "git ls-remote --heads origin 'release/*'")).toBe("");
+    expect(agentCreatePrMock).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(notes, "todo.md"), "utf8")).toBe("mine\n");
+    expect(fs.existsSync(path.join(workDir, ".claude/skills", COPY))).toBe(false);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not answer before the copies are back", async () => {
+    const { workDir } = repo("reversed");
+    const git = sessionOn(workDir, "origin/main");
+    materializeCopies(workDir, ".agents/skills");
+    checkoutRefusesLikeGit239(git, workDir, ".agents/skills");
+    let finishPrepare: () => void = () => {};
+    const prepare = vi.fn(() => new Promise<void>((resolve) => { finishPrepare = resolve; }));
+    let answered = false;
+
+    const release = (async () => {
+      const res = await prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain, restorePluginSkills: prepare });
+      answered = true;
+      return res;
+    })();
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalled());
+    await new Promise((r) => setImmediate(r));
+
+    expect(answered).toBe(false);
+    finishPrepare();
+    await expect(release).resolves.toMatchObject({ kind: "pr-opened" });
+  });
+
+  it("clears nothing in a clone that is not the session's workspace, where no prepare pass puts copies back", async () => {
+    const { workDir } = repo("reversed");
+    const git = sessionOn(workDir, "origin/main");
+    materializeCopies(workDir, ".agents/skills");
+    checkoutRefusesLikeGit239(git, workDir, ".agents/skills");
+
+    const err = await prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain }).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ statusCode: 409 });
+    expect((err as Error).message).toContain("`.agents/skills`");
+    expect((err as Error).message).not.toMatch(/plugin skill copies/);
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY, "SKILL.md"))).toBe(true);
+    expect(sh(workDir, "git rev-parse --abbrev-ref HEAD")).toBe(SESSION_BRANCH);
+  });
+
+  it("leaves the copies alone, and prepares nothing, on a release whose checkout keeps them", async () => {
+    const { workDir } = repo("same");
+    const git = sessionOn(workDir, "origin/main");
+    materializeCopies(workDir, ".agents/skills");
+    const { prepare, session } = ownWorkspace();
+
+    const res = await prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain, ...session });
+
+    expect(res).toMatchObject({ kind: "pr-opened" });
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY, "SKILL.md"))).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("a refusal its sweep cannot clear leaves the session on its own branch, restores the copies, and says what to do", async () => {
+    const { workDir } = repo("reversed");
+    const git = sessionOn(workDir, "origin/main");
+    const notes = path.join(workDir, ".agents/skills/local-notes");
+    fs.mkdirSync(notes);
+    fs.writeFileSync(path.join(notes, "todo.md"), "mine\n");
+    fs.appendFileSync(path.join(workDir, ".git/info/exclude"), "/.agents/skills/local-notes/\n");
+    materializeCopies(workDir, ".agents/skills");
+    checkoutRefusesLikeGit239(git, workDir, ".agents/skills");
+    const headBefore = sh(workDir, "git rev-parse HEAD");
+    const { prepare, session } = ownWorkspace();
+    const onTreeRewrite = vi.fn();
+
+    const err = await prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain, ...session, onTreeRewrite })
+      .catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ statusCode: 409 });
+    const message = (err as Error).message;
+    expect(message).toContain("`.agents/skills`");
+    expect(message).toContain(`still on \`${SESSION_BRANCH}\``);
+    expect(message).toMatch(/git status --short --ignored/);
+    expect(message).toMatch(/run the command again/);
+    // Nothing between two branches: the same branch and commit, a clean tree, no release branch anywhere.
+    expect(sh(workDir, "git rev-parse --abbrev-ref HEAD")).toBe(SESSION_BRANCH);
+    expect(sh(workDir, "git rev-parse HEAD")).toBe(headBefore);
+    expect(sh(workDir, "git status --porcelain")).toBe("");
+    expect(sh(workDir, "git for-each-ref refs/heads/release")).toBe("");
+    expect(sh(workDir, "git ls-remote --heads origin 'release/*'")).toBe("");
+    expect(onTreeRewrite).not.toHaveBeenCalled();
+    expect(agentCreatePrMock).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(notes, "todo.md"), "utf8")).toBe("mine\n");
+    // What it cleared comes back even though the release was refused.
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY))).toBe(false);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report another git failure as an untracked-files refusal", async () => {
+    const { workDir } = repo("reversed");
+    const git = sessionOn(workDir, "origin/main");
+    materializeCopies(workDir, ".agents/skills");
+    git.createBranchFrom = () => Promise.reject(new Error("fatal: Unable to create '/w/.git/index.lock': File exists."));
+    const { prepare, session } = ownWorkspace();
+
+    await expect(prepareRelease(git, githubAuth, { dir: workDir, ...releaseFromMain, ...session }))
+      .rejects.toThrow(/index\.lock/);
+
+    expect(fs.existsSync(path.join(workDir, ".agents/skills", COPY, "SKILL.md"))).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();
   });
 });

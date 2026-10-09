@@ -49,7 +49,7 @@ export interface SettingsProposalSource {
   containerManager?: SessionContainerManager | undefined;
   serviceManagers?: Map<string, ServiceManager> | undefined;
   agentMergeClaims?: AgentMergeClaimStore | undefined;
-  prStatusPoller?: { broadcastAllSnapshots(): void } | undefined;
+  prStatusPoller?: { broadcastAllSnapshots(): void; withdrawAllAutoFix(): void } | undefined;
   /** Supplied by the HTTP deps; the WebSocket context reads the environment. */
   egressEnforcementStatus?: EgressEnforcementStatus | undefined;
   egressEnforcementActive?: boolean | undefined;

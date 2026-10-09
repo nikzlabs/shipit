@@ -246,6 +246,27 @@ describe("issues-store status/priority writes (docs/191)", () => {
     ]);
   });
 
+  it("fetchIssues records whether the tracker's list was incomplete, per tracker", async () => {
+    const respond = (incomplete: boolean) =>
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            tracker: { id: "linear", label: "Linear", configured: true },
+            issues: [makeIssue()],
+            ...(incomplete ? { incomplete: true } : {}),
+          }),
+          { status: 200 },
+        ),
+      ) as typeof fetch;
+    globalThis.fetch = respond(true);
+    await useIssuesStore.getState().fetchIssues("linear");
+    expect(useIssuesStore.getState().incompleteByTracker.linear).toBe(true);
+
+    globalThis.fetch = respond(false);
+    await useIssuesStore.getState().fetchIssues("linear");
+    expect(useIssuesStore.getState().incompleteByTracker.linear).toBe(false);
+  });
+
   it("fetchLabels caches the tracker's available label set (planning#94 foundation)", async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(

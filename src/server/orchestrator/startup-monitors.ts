@@ -25,6 +25,7 @@ import { stopWarmPreview } from "./warm-preview.js";
 import { runUpdateCheckIfDue, versionAnchor, UPDATE_CHECK_TICK_MS } from "./services/update-notice.js";
 import type { UpdateNotice } from "../shared/types.js";
 import { startEventLoopLagMonitor } from "./event-loop-lag.js";
+import { createHostCpuSampler, HOST_CPU_SAMPLE_MS } from "./host-cpu.js";
 import { MODEL_LIST_REFRESH_MS, refreshPublishedModelList } from "./services/published-model-list.js";
 import { seedAndBuildAgentListPayload } from "./services/settings.js";
 
@@ -37,7 +38,7 @@ export async function startStartupMonitors(
   rt: OrchestratorRuntime,
 ): Promise<StartupMonitors> {
   const {
-    dockerForStats, latestMemoryStats, sseBroadcast, enforceIdleContainerLimit,
+    dockerForStats, latestMemoryStats, latestHostCpu, sseBroadcast, enforceIdleContainerLimit,
     containerManager, runnerRegistry, broadcastLog, sessionManager,
     credentialStore,
     isTestMode, stateDir, repoStore, credentialsDir, githubAuthManager,
@@ -46,8 +47,12 @@ export async function startStartupMonitors(
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
     mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
-    cleanupContainer, version, agentRegistry, providerAccountManager,
+    cleanupContainer, version, agentRegistry, providerAccountManager, scheduleRunner,
   } = rt;
+
+  // docs/324-scheduled-sessions — a pass now, which also finishes what a restart cut off,
+  // then every 30 seconds. Tests drive their passes themselves.
+  scheduleRunner.start({ interval: !isTestMode });
 
   // Held for the process: the first dictation after a quiet period must not pay
   // a container start (docs/299 req 8). Creation is off the boot critical path.
@@ -244,6 +249,7 @@ export async function startStartupMonitors(
           sessionsRoot: rt.sessionsRoot,
           sessionIds: () => new Set(sessionManager.allIds()),
           isSessionEvicted: (id) => sessionManager.get(id)?.diskTier === "evicted",
+          sessionRepoUse: () => sessionManager.listAllIncludingWarm(),
         });
       } catch (err) {
         console.error("[disk-janitor] steady-state reclaim pass failed:", err);
@@ -328,6 +334,18 @@ export async function startStartupMonitors(
 
   const stopEventLoopLagMonitor = isTestMode ? null : startEventLoopLagMonitor();
 
+  // Not gated on Docker: the machine has a CPU load in local mode too.
+  const sampleHostCpu = isTestMode ? null : createHostCpuSampler();
+  const hostCpuInterval = sampleHostCpu
+    ? setInterval(() => {
+        const stats = sampleHostCpu();
+        if (!stats) return;
+        latestHostCpu.value = stats;
+        sseBroadcast("host_cpu", stats);
+      }, HOST_CPU_SAMPLE_MS)
+    : null;
+  if (hostCpuInterval?.unref) hostCpuInterval.unref();
+
   if (containerManager) {
     const keepPreviewSupervisor = createKeepPreviewRestartSupervisor({
       sessionManager,
@@ -382,12 +400,14 @@ export async function startStartupMonitors(
   app.addHook("onClose", async () => {
     // Stop timers before shutdown closes the database they query.
     agentMergeExecutor.stop();
+    scheduleRunner.stop();
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);
     if (warmSweepInterval) clearInterval(warmSweepInterval);
     if (updateCheckInterval) clearInterval(updateCheckInterval);
     if (modelListInterval) clearInterval(modelListInterval);
+    if (hostCpuInterval) clearInterval(hostCpuInterval);
     stopEventLoopLagMonitor?.();
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();

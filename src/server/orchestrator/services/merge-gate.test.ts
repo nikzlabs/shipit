@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { decideMerge, readMergeObservation, mergeFlushRefusal, type MergeObservation } from "./merge-gate.js";
+import {
+  decideMerge, readMergeObservation, githubRefusalClearsByItself, mergeFlushRefusal, type MergeObservation,
+} from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
 function manager(result: unknown): Pick<GitHubAuthManager, "graphqlQuery"> {
@@ -96,6 +98,34 @@ describe("readMergeObservation", () => {
   it("reads an absent rollup and an explicit null rollup the same way", async () => {
     const explicit = await readMergeObservation(manager(prNode({}, null)), "o", "r", 7);
     expect(explicit).toMatchObject({ rollupState: null });
+  });
+});
+
+describe("githubRefusalClearsByItself", () => {
+  it("recognises a required check that has not reported or finished", () => {
+    expect(githubRefusalClearsByItself('Required status check "ci" is expected.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "ci" is in progress.')).toBe(true);
+    expect(githubRefusalClearsByItself("2 of 3 required status checks are expected.")).toBe(true);
+    expect(githubRefusalClearsByItself(
+      'Repository rule violations found\n\nRequired status check "build" is expected.',
+    )).toBe(true);
+  });
+
+  it("does not treat a failed check, a review, or a conflict as clearing by itself", () => {
+    expect(githubRefusalClearsByItself('Required status check "ci" is failing.')).toBe(false);
+    expect(githubRefusalClearsByItself(
+      "2 of 3 required status checks have not succeeded: 1 expected and 1 failing.",
+    )).toBe(false);
+    expect(githubRefusalClearsByItself("At least 1 approving review is required by reviewers with write access."))
+      .toBe(false);
+    expect(githubRefusalClearsByItself("Pull Request is not mergeable")).toBe(false);
+  });
+
+  it("reads the status, not the words inside a check's name", () => {
+    expect(githubRefusalClearsByItself('Required status check "error-handling" is expected.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "failed-login tests" is in progress.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "cancelled orders" is expected.')).toBe(true);
+    expect(githubRefusalClearsByItself('Required status check "pending-review" is failing.')).toBe(false);
   });
 });
 

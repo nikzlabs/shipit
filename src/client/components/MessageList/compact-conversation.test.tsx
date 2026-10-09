@@ -49,7 +49,7 @@ describe("collapsed turns", () => {
     fireEvent.click(screen.getByRole("button", { name: /Show full turn/ }));
     expect(progress).toBeVisible();
     expect(screen.getByText("Context compacted")).toBe(card);
-    fireEvent.click(screen.getByRole("button", { name: /Show compact turn/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Collapse turn/ }));
     expect(progress).not.toBeVisible();
     expect([...container.querySelectorAll("[data-compact-content]")].map((row) => row.parentElement?.parentElement)).toEqual(parents);
   });
@@ -204,7 +204,7 @@ describe("collapsed turns", () => {
     expect(input).toBeVisible();
 
     // Collapsing it by hand hides the subtree — and does not unmount it.
-    fireEvent.click(screen.getByRole("button", { name: /Show compact turn/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Collapse turn/ }));
     expect(screen.getByTestId("other-input")).toBe(input);
     expect(input).not.toBeVisible();
 
@@ -308,7 +308,7 @@ describe("collapsed turns", () => {
     fireEvent(document, new Event("selectionchange"));
     // One-way protection (planning#540): only the button closes it again.
     expect(progress).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /Show compact turn/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Collapse turn/ }));
     expect(progress).not.toBeVisible();
   });
 
@@ -319,7 +319,7 @@ describe("collapsed turns", () => {
     expect(screen.getByText("Checking files")).not.toBeVisible();
     rerender(<MessageList messages={data} isLoading={false} searchMatches={[{ messageIndex: 1, start: 0, length: 8 }]} />);
     expect(document.querySelector('[data-compact-index="1"]')).toBeVisible();
-    expect(screen.getByRole("button", { name: /Show compact turn/ })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: /Collapse turn/ })).toHaveAttribute("aria-disabled", "true");
     rerender(<MessageList messages={data} isLoading={false} />);
     expect(screen.getByText("Checking files")).not.toBeVisible();
   });
@@ -401,7 +401,7 @@ describe("collapsed turns", () => {
   it("puts the control on the strip that closes the turn, below the reply (req 14)", () => {
     compactOn();
     const { container } = render(<MessageList messages={transcript()} isLoading={false} onRewindAtGap={vi.fn()} />);
-    const control = () => screen.getByRole("button", { name: /Show (full|compact) turn/ });
+    const control = () => screen.getByRole("button", { name: /Show full turn|Collapse turn/ });
     const strip = () => [...control().parentElement!.querySelectorAll('[data-testid="rewind-point"]')];
     // The closing strip's anchor is the one under an agent reply, so left-aligned.
     expect(strip()).toHaveLength(1);
@@ -512,7 +512,7 @@ describe("collapsed turns", () => {
     range.selectNodeContents(screen.getByTestId("outside"));
     window.getSelection()?.addRange(range);
     fireEvent(document, new Event("selectionchange"));
-    fireEvent.click(screen.getByRole("button", { name: /Show compact turn/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Collapse turn/ }));
     expect(window.getSelection()?.toString()).toBe("Selected outside the conversation");
   });
 

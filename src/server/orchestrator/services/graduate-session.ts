@@ -64,6 +64,25 @@ export interface GraduateSessionOpts {
   rootSessionId?: string;
 }
 
+export function applySessionSelection(
+  sessionManager: SessionManager,
+  sessionId: string,
+  agentId: AgentId,
+  selection: { model?: string; serviceId?: string; billingMode?: BillingMode; reasoning?: string },
+): void {
+  const { model, serviceId, billingMode, reasoning } = selection;
+  // Preserve the full selection: one model ID can exist on several services.
+  if (model) {
+    const supplied = serviceId && billingMode ? { serviceId, billingMode, modelId: model } : undefined;
+    if (supplied && selectionExists(supplied)) {
+      sessionManager.setModelSelection(sessionId, supplied);
+    } else {
+      sessionManager.setModel(sessionId, model, nativeServiceForHarness(agentId));
+    }
+  }
+  if (reasoning) sessionManager.setReasoning(sessionId, reasoning);
+}
+
 /** Requires an existing session and workspace. AI naming completes in the background. */
 export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSessionOpts): void {
   const {
@@ -79,16 +98,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   const placeholderTitle = explicitTitle?.trim() || userText.slice(0, 60) || "New session";
   sessionManager.rename(sessionId, placeholderTitle);
 
-  // Preserve the full selection: one model ID can exist on several services.
-  if (model) {
-    const supplied = serviceId && billingMode ? { serviceId, billingMode, modelId: model } : undefined;
-    if (supplied && selectionExists(supplied)) {
-      sessionManager.setModelSelection(sessionId, supplied);
-    } else {
-      sessionManager.setModel(sessionId, model, nativeServiceForHarness(agentId));
-    }
-  }
-  if (reasoning) sessionManager.setReasoning(sessionId, reasoning);
+  applySessionSelection(sessionManager, sessionId, agentId, { model, serviceId, billingMode, reasoning });
   if (originRoleName) sessionManager.setOriginRoleName(sessionId, originRoleName);
   if (parentSessionId) {
     sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);

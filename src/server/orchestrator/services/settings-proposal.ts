@@ -12,21 +12,25 @@ import type { Rendered } from "../../shared/settings-catalogue/index.js";
 import { ServiceError } from "./types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import type { PersistedMessage } from "../chat-history.js";
-import type { SettingsProposalStore } from "../settings-proposal-store.js";
+import type { SettingsProposalRow, SettingsProposalStore } from "../settings-proposal-store.js";
+import { emitChatCard } from "../chat-card-persistence.js";
 import {
-  emitChatCard,
-  persistTurnInProgress,
-  updateRecordedCard,
-  type InProgressPersister,
-} from "../chat-card-persistence.js";
+  claimDecisionCard,
+  loadDecisionCard,
+  transitionDecisionCard,
+  type CardClaimDeps,
+  type DecisionCardKind,
+  type DecisionCardPersister,
+} from "./card-claim.js";
 
 /**
  * The settings proposal card as a transcript object (docs/299-agent-settings-access
- * req 4): how one is written, and the single way its phase ever changes.
+ * req 4): how one is written, and its kind in the shared card claim
+ * (`card-claim.ts`), which is the single way its phase ever changes.
  *
- * What proposes a change, and what resolves one, live elsewhere. This file owns
- * the invariant both of them depend on: **a card's durable row and the copy a
- * viewer is looking at never disagree.**
+ * What proposes a change, and what resolves one, live elsewhere. Both depend on
+ * the invariant the claim owns: **a card's durable row and the copy a viewer is
+ * looking at never disagree.**
  */
 
 /**
@@ -47,13 +51,7 @@ export function flattenProposalReason(reason: string | undefined): string | unde
   return flat.length > 0 ? flat : undefined;
 }
 
-export interface SettingsProposalPersister extends InProgressPersister {
-  updateSettingsProposalCard(
-    sessionId: string,
-    cardId: string,
-    patch: Partial<SettingsProposalCard>,
-  ): SettingsProposalCard | null;
-}
+export type SettingsProposalPersister = DecisionCardPersister;
 
 export interface SettingsProposalDeps {
   chatHistoryManager: SettingsProposalPersister;
@@ -174,9 +172,6 @@ export function postSettingsProposal(
   return card;
 }
 
-/** A claim against a card the transcript no longer holds; rolls the phase back. */
-class CardRowMissing extends Error {}
-
 export interface SettingsProposalTransition {
   phase: SettingsProposalPhase;
   /** Stamped on any phase that ends the card; omitted for the claim. */
@@ -186,38 +181,25 @@ export interface SettingsProposalTransition {
   effect?: SettingsProposalCard["effect"];
 }
 
+/** Settings proposals as the first kind of the shared card claim (`card-claim.ts`). */
+export const SETTINGS_PROPOSAL_CARD: DecisionCardKind<"settingsProposal"> = {
+  field: "settingsProposal",
+  noun: "settings proposal",
+  updated: (sessionId, cardId, card) => ({ type: "settings_proposal_update", sessionId, cardId, card }),
+};
+
+function claimDeps(deps: SettingsProposalDeps): CardClaimDeps<"settingsProposal", SettingsProposalRow> {
+  return {
+    chatHistoryManager: deps.chatHistoryManager,
+    records: deps.proposals,
+    getRunnerRegistry: deps.getRunnerRegistry,
+  };
+}
+
 /**
- * **The one transition contract.** Every phase change a settings proposal ever
- * makes — the claim, a dismissal, a terminal answer — goes through here.
- *
- * It is not `persistCardTransition`. That helper requires a runner and runs its
- * database callback ONLY when it did not patch an in-flight card, so a card
- * resolved through it can end durable-but-unsynchronised, or synchronised but
- * never written down. A settings card is clicked hours after its turn as often
- * as during one, and the post-turn lease is no substitute
- * (`POST_TURN_HOLD_MAX_MS` is 120 s), so neither half may be conditional on the
- * other.
- *
- * So, in order:
- *
- *  1. the durable row and the private row, in ONE transaction and **whether or
- *     not a runner exists** — this is what the next decision, the next read and
- *     the next boot see, and a phase in one but not the other is the split this
- *     contract exists to prevent;
- *  2. only then, and only if a runner exists, the copy the turn is holding plus
- *     the live emit.
- *
- * A database-only write can still be undone by the next turn snapshot rebuilding
- * the in-progress rows from `recordedCards` — which is why step 2 patches them
- * rather than leaving the rebuild to reproduce a stale card. Where there is no
- * runner at all there is nothing to rebuild from, so the durable row stands.
- *
- * The **snapshot** rewrite in step 2 is narrower than the patch, and must be:
- * `recordedCards` is cleared at the start of the NEXT turn, not at the end of
- * this one (`resetRunnerTurnState`), so a card resolved in the gap is still
- * there to patch while its turn is finished and its rows finalized. Rebuilding
- * the snapshot then re-inserts the whole finished turn as in-progress rows
- * beside the finalized ones, and the user sees their last turn twice.
+ * Every phase change a settings proposal makes outside the claim — a terminal
+ * answer, or the boot pass's `unknown` — through the shared transition contract
+ * (`transitionDecisionCard`).
  */
 export function transitionSettingsProposal(
   deps: SettingsProposalDeps,
@@ -225,40 +207,18 @@ export function transitionSettingsProposal(
   cardId: string,
   transition: SettingsProposalTransition,
 ): SettingsProposalCard | null {
-  const patch: Partial<SettingsProposalCard> = {
+  return transitionDecisionCard(SETTINGS_PROPOSAL_CARD, claimDeps(deps), sessionId, cardId, {
     phase: transition.phase,
     ...(transition.resolvedAt ? { resolvedAt: transition.resolvedAt } : {}),
     ...(transition.outcome ? { outcome: transition.outcome } : {}),
     ...(transition.outcomeDetail ? { outcomeDetail: transition.outcomeDetail } : {}),
     ...(transition.effect ? { effect: transition.effect } : {}),
-  };
-
-  const card = deps.proposals.transaction(() => {
-    // Session-scoped, and it gates the private write: a card id names a row in
-    // one session's transcript, so a decision that cannot find it there must not
-    // reach the proposal it happens to share an id with.
-    const updated = deps.chatHistoryManager.updateSettingsProposalCard(sessionId, cardId, patch);
-    if (!updated) return null;
-    deps.proposals.setPhase(sessionId, cardId, transition.phase, transition.resolvedAt);
-    return updated;
   });
-  if (!card) return null;
-  syncRecordedCard(deps, sessionId, cardId, card);
-  return card;
 }
 
 /**
- * **The claim**, and the same contract from the other end: the phase moves only
- * if it is still the one the caller found, and the card the user is looking at
- * moves with it in the same transaction.
- *
- * Both halves are the point. A database-only claim is undone the moment the next
- * turn snapshot rebuilds the in-progress rows from `recordedCards`
- * (`chat-history.ts` → `replaceInProgress`), which puts a `pending` card back in
- * front of the user over a proposal already being applied — so the second click
- * claims it again and the change is applied twice. And the conditional update IS
- * the test: two clicks racing produce one claim, because the loser changes no
- * rows rather than reading a phase that a rival is about to overwrite.
+ * The claim of a settings proposal out of `from`, through the shared claim
+ * (`claimDecisionCard`): two clicks racing produce one claim.
  */
 export function claimSettingsProposal(
   deps: SettingsProposalDeps,
@@ -267,63 +227,21 @@ export function claimSettingsProposal(
   from: SettingsProposalPhase,
   transition: SettingsProposalTransition,
 ): SettingsProposalCard | null {
-  const patch: Partial<SettingsProposalCard> = {
+  return claimDecisionCard(SETTINGS_PROPOSAL_CARD, claimDeps(deps), sessionId, cardId, from, {
     phase: transition.phase,
     ...(transition.resolvedAt ? { resolvedAt: transition.resolvedAt } : {}),
     ...(transition.outcome ? { outcome: transition.outcome } : {}),
-  };
-  let card: SettingsProposalCard | null;
-  try {
-    card = deps.proposals.transaction(() => {
-      if (!deps.proposals.claimPhase(sessionId, cardId, from, transition.phase, transition.resolvedAt)) {
-        return null;
-      }
-      const updated = deps.chatHistoryManager.updateSettingsProposalCard(sessionId, cardId, patch);
-      // No card row means no card to claim. Throwing rolls the phase back with
-      // it, rather than leaving a proposal claimed against a transcript that
-      // never showed it.
-      if (!updated) throw new CardRowMissing();
-      return updated;
-    });
-  } catch (err) {
-    if (err instanceof CardRowMissing) return null;
-    throw err;
-  }
-  if (!card) return null;
-  syncRecordedCard(deps, sessionId, cardId, card);
-  return card;
+  });
 }
 
 /**
- * The runner half of a transition: the copy the turn is holding, and the live
- * emit. Where there is no runner there is nothing to rebuild from, so the
- * durable row stands on its own — which is what lets a card be resolved hours
- * after its turn ended.
+ * The first step of a settings decision: the proposal's private row and its card
+ * in this session, or a refusal before anything is written.
  */
-function syncRecordedCard(
+export function loadSettingsProposal(
   deps: SettingsProposalDeps,
   sessionId: string,
   cardId: string,
-  card: SettingsProposalCard,
-): void {
-  const runner = deps.getRunnerRegistry()?.get(sessionId);
-  if (!runner) return;
-
-  const patched = updateRecordedCard(
-    runner,
-    (m) => m.settingsProposal?.cardId === cardId,
-    (m) => ({ ...m, settingsProposal: card }),
-  );
-  // `running` alone is not enough: it goes true before the previous turn's cards
-  // are cleared, so the snapshot is rewritten only when rows actually exist to
-  // replace.
-  const ownsInProgressRows =
-    runner.running && (deps.chatHistoryManager.hasInProgress?.(sessionId) ?? true);
-  if (patched && ownsInProgressRows) {
-    persistTurnInProgress(deps.chatHistoryManager, runner, sessionId);
-    if (typeof runner.getTurnEventBuffer === "function") {
-      runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
-    }
-  }
-  runner.emitMessage({ type: "settings_proposal_update", sessionId, cardId, card });
+): SettingsProposalRow {
+  return loadDecisionCard(SETTINGS_PROPOSAL_CARD, claimDeps(deps), sessionId, cardId).record;
 }

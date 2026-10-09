@@ -201,9 +201,11 @@ hotkey, rebindable in **Settings → Keyboard**. Click starts and click stops �
 press-and-hold is deliberately not a gesture. On a phone, recording takes over
 the screen with a large Stop and a Cancel. The transcript is spliced in at the
 cursor, so dictation can extend a half-typed message rather than replacing it.
-Optionally an LLM cleans the transcript up first — mis-hearings, fillers, casing
-— and if that step fails the raw transcript lands anyway, with a note. Which
-provider transcribes, and in which language, are settings on the same tab.
+Optionally an LLM cleans the transcript up first — mis-hearings, fillers,
+casing, and layout, so several dictated points arrive as a Markdown list and
+separate topics as paragraphs — and if that step fails the raw transcript lands
+anyway, with a note. Which provider transcribes, and in which language, are
+settings on the same tab.
 
 **When a message was dictated, you are told.** ShipIt adds a `<dictated_input>`
 block to the prompt. Read it as intent rather than literally: expect mis-heard
@@ -225,7 +227,7 @@ whole reply aloud.
 
 ## A long conversation
 
-**Collapsed turns.** *Compact completed turns*, in **Settings → Advanced**,
+**Collapsed turns.** *Collapse completed turns*, in **Settings → Advanced**,
 collapses every turn but the newest down to the user's message and your last
 reply: tool calls, progress and cards are hidden, while errors, action cards and
 any card that still needs them stay — an action card stays whether or not it has
@@ -256,17 +258,24 @@ already covered by a subscription *would* have cost and is not a bill. The
 figures sit beside the ring on a wide composer and inside the popover otherwise,
 so "I can't see a number" usually means a narrow panel.
 
-**Compaction** summarises the conversation so far and frees that context. Three
+**Compaction** summarises the conversation so far and frees that context. Four
 ways it happens:
 
 - The user types **`/compact`**, optionally with instructions after it —
-  `/compact keep the API decisions, drop the debugging`. This one is genuinely
-  theirs: there is no command that lets you compact your own conversation, so
-  when context is the problem, say that and let them type it. The dial's popover
+  `/compact keep the API decisions, drop the debugging`. The dial's popover
   suggests it once the ring is orange or red. Note that supporting compaction
   and honouring those extra instructions are two different things — some
   harnesses take only the instruction to compact and summarise on their own
   terms, so do not promise that a phrasing will be obeyed.
+- **You do it yourself** with `shipit compact [INSTRUCTIONS] [--note "TEXT"]`,
+  at a point you choose — between two features, say — when the user's setting
+  *Let the agent compact its own context* (Settings → Advanced, off by default)
+  allows it; read it with `shipit settings get advanced.agentCompaction`. It runs
+  after your turn ends; your next turn starts with your instructions word for
+  word, and with a note you continue on your own. When the user says context is
+  the problem, do this if the setting is on; if it is off, propose turning it on
+  with `shipit settings propose`, or let them type `/compact`. Details:
+  `/shipit-docs/sessions.md` → *Compacting your own context*.
 - **The harness does it itself** when its context fills.
 - **After a merge.** When a session's pull request has merged and the user's
   next message will reset the branch to the latest base, the composer offers
@@ -364,7 +373,7 @@ to say "this part, specifically".
 | Types, dictates, attaches, and sends | Read the message, including the attachments and the `@` files |
 | Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work |
 | Answers a question, approves or denies a permission, accepts a plan | Ask only when the answer changes what you do |
-| Types `/compact` when context is full | Say that context is the problem — you cannot compact it yourself |
+| Types `/compact` when context is full; turns on *Let the agent compact its own context* | Compact your own context with `shipit compact` at a point you choose, such as between features — only while that setting is on |
 | Sets and clears a goal | Work toward it |
 | Chooses the permission mode | Say what the work needs, and why |
 | Ticks a proposed action | Offer them; then do the work |

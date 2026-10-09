@@ -114,8 +114,13 @@ describe("Integration: activation evaluates the workspace (docs/298)", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-ws-block-"));
     sessionManager = new SessionManager(dbManager);
 
+    const credentialStore = createTestCredentialStore(tmpDir);
+    // The fixture above turned optional locks off. buildApp must do it by itself, because
+    // a deployment with its own GIT_CONFIG_GLOBAL never runs initGlobalGitConfig.
+    process.env.GIT_OPTIONAL_LOCKS = "1";
+
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -174,6 +179,29 @@ describe("Integration: activation evaluates the workspace (docs/298)", () => {
       // Without the broadcast the sidebar would not learn of it until something
       // unrelated pushed a list.
       expect(await sse.waitForBlock(sessionId, "conflict")).toBe("conflict");
+    } finally {
+      client.close();
+    }
+  });
+
+  // planning#635 — this read once held `.git/index.lock`, so a rewind sent just after
+  // connect failed. With a stale index, a read that takes the lock rewrites it.
+  it("reads the checkout without rewriting the index", async () => {
+    const { sessionId, workspaceDir } = await createSession();
+    fs.writeFileSync(path.join(workspaceDir, "a.txt"), "one\n");
+    await new GitManager(workspaceDir).autoCommit("add a");
+    // A new mtime over unchanged content makes a locking read rewrite the index.
+    const later = new Date(Date.now() + 60_000);
+    fs.utimesSync(path.join(workspaceDir, "a.txt"), later, later);
+    const indexPath = path.join(workspaceDir, ".git", "index");
+    const before = fs.readFileSync(indexPath);
+    fs.mkdirSync(path.join(workspaceDir, ".git", "rebase-merge"), { recursive: true });
+
+    const client = await TestClient.connect(port, sessionId);
+    try {
+      // The marker is the signal that the read has finished.
+      expect(await waitForBlock(sessionId, "conflict")).toBe("conflict");
+      expect(fs.readFileSync(indexPath).equals(before)).toBe(true);
     } finally {
       client.close();
     }

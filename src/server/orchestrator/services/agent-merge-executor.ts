@@ -11,7 +11,7 @@ import {
 } from "../chat-card-persistence.js";
 import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
 import { mergeDisposition } from "../pr-target.js";
-import { readMergeObservation } from "./merge-gate.js";
+import { githubRefusalClearsByItself, readMergeObservation } from "./merge-gate.js";
 import { settleAgentMerge, reconcileAgentMergeClaims } from "./agent-merge-settlement.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { unprobedAfterRestart } from "../restart-turn-reattach.js";
@@ -270,6 +270,17 @@ async function performMerge(
       attempt = { outcome: "indeterminate", message: err instanceof Error ? err.message : String(err) };
     }
 
+    // A required check GitHub expects is a check that has not passed yet (req 1).
+    if (
+      attempt.outcome === "refused"
+      && githubRefusalClearsByItself(attempt.message)
+      && deps.claims.returnToPending(claim)
+    ) {
+      noteNotYetRefusal(deps, claim, attempt.message);
+      return { result: "waiting", reason: attempt.message };
+    }
+    notYetRefusals.delete(claim.sessionId);
+
     if (attempt.outcome === "indeterminate") {
       notify(
         deps, claim,
@@ -339,6 +350,7 @@ function end(
   message: string,
 ): RequestOutcome {
   unreadableCounts.delete(unreadableKey(claim));
+  notYetRefusals.delete(claim.sessionId);
   // Delete only pending claims, in the same transaction that persists the notice.
   const notice = splitNotice(deps, claim, message);
   if (!deps.claims.releasePending(claim, notice.persist)) {
@@ -388,6 +400,25 @@ const UNREADABLE_LIMIT = 15;
 
 function unreadableKey(claim: AgentMergeClaim): string {
   return `${claim.sessionId}@${claim.expectedSha}`;
+}
+
+// Keep waiting, but say so once: branch protection can name a check that never runs.
+// Keyed by the row's creation too, so a request armed again at the same commit starts over.
+const notYetRefusals = new Map<string, { request: string; count: number }>();
+
+function noteNotYetRefusal(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim, message: string): void {
+  const request = `${claim.expectedSha}@${claim.createdAt}`;
+  const prev = notYetRefusals.get(claim.sessionId);
+  const count = prev?.request === request ? prev.count + 1 : 1;
+  notYetRefusals.set(claim.sessionId, { request, count });
+  if (count !== UNREADABLE_LIMIT) return;
+  notify(
+    deps, claim,
+    `GitHub still refuses to merge pull request #${claim.prNumber}, after ${count} attempts: ${message} `
+    + "ShipIt keeps the request and merges when GitHub allows it. If that check never starts, the "
+    + "repository's branch protection requires a check that nothing reports.",
+    "warn",
+  );
 }
 
 function notify(

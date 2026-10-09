@@ -1,7 +1,7 @@
 import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { Spinner } from "./Spinner.js";
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot /api/oauth/usage fetch when the mobile status dropdown mounts it (external system sync)
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useApi } from "../hooks/useApi.js";
 import { Badge } from "./ui/badge.js";
@@ -86,31 +86,33 @@ interface SubscriptionLimitsBadgeProps {
   limits: SubscriptionLimitsMap;
 
   autoRefresh?: boolean;
+  /** Each name in full above its pill: for a column, which has room below and little beside. */
+  stacked?: boolean;
 }
 
-export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
+export function SubscriptionLimitsBadge({ limits, autoRefresh, stacked }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const pills = buildPills(limits, accounts, routes);
   if (pills.length === 0) return null;
 
-  return (
-    <>
-      {pills.map(({ key, serviceId, routeId, label, snapshot, attention }) => (
-        <SubscriptionLimitPill
-          key={key}
-          serviceId={serviceId}
-          routeId={routeId}
-          label={label}
-          snapshot={snapshot}
-          {...(attention ? { attention } : {})}
+  const rendered = pills.map(({ key, serviceId, routeId, label, snapshot, attention }) => (
+    <SubscriptionLimitPill
+      key={key}
+      serviceId={serviceId}
+      routeId={routeId}
+      label={label}
+      snapshot={snapshot}
+      {...(attention ? { attention } : {})}
 
-          showRefresh={subQuotaRefreshable(serviceId)}
-          autoRefresh={autoRefresh}
-        />
-      ))}
-    </>
-  );
+      showRefresh={subQuotaRefreshable(serviceId)}
+      autoRefresh={autoRefresh}
+      stacked={stacked}
+    />
+  ));
+  if (stacked) return <>{rendered}</>;
+  // One row for every name and every set of meters, so the names share a shortage among themselves.
+  return <div className="flex min-w-0">{rendered}</div>;
 }
 
 interface SubscriptionPill {
@@ -252,6 +254,9 @@ interface SubscriptionLimitPillProps {
    * compaction was for. The pill is otherwise identical, deliberately: the
    * meters, the elapsed-time marker, the staleness dimming and the refresh
    * button are one implementation, not a second read-out that can disagree.
+   *
+   * A labelled pill is laid out by its container: two flex items for the row
+   * `SubscriptionLimitsBadge` makes, or `stacked` for a column.
    */
   label?: string;
   snapshot?: SubscriptionLimits;
@@ -260,6 +265,8 @@ interface SubscriptionLimitPillProps {
   autoRefresh?: boolean;
 
   attention?: CredentialStatusWord;
+  /** With a `label`: the name goes on a line above the pill, not into the row beside it. */
+  stacked?: boolean;
 }
 
 /**
@@ -298,36 +305,30 @@ export function windowsShown(
   return { session: declared.includes("session"), weekly: declared.includes("weekly") };
 }
 
-export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {
+/** Starts without its countdown and grows into spare room, so no label shrinks while a countdown shows (docs/150 plan, amended 2026-10-05). */
+const GROWS_INTO_SPARE_ROOM = "basis-[min-content] grow max-w-max";
+
+/** In a row a labelled pill is two flex items drawn as one, because one box cannot be cut down to its meters and no further (docs/150 plan, amended 2026-10-05). */
+const NAME_HALF = "rounded-r-none bg-(--color-bg-hover) pt-0 pb-0.5 min-w-0 basis-0 grow-[999999] max-w-max";
+const METERS_HALF = `rounded-l-none pl-0 shrink-0 mr-3 last:mr-0 ${GROWS_INTO_SPARE_ROOM}`;
+
+export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention, stacked }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const resolvedServiceId = snapshot?.serviceId ?? serviceId;
   const resolvedRouteId = routeId ?? snapshot?.routeId;
   const shows = windowsShown(snapshot);
+  const placement =
+    label === undefined ? "pl-2 min-w-0" : stacked ? "pl-2 min-w-0 max-w-full" : METERS_HALF;
 
-  if (attention) {
-    return (
-      <Badge numeric className="gap-2 pl-2 pr-2 pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0">
-        {label !== undefined && (
-          <span className="truncate" title={label}>
-            {label}
-          </span>
-        )}
-        <CredentialAttention attention={attention} />
-      </Badge>
-    );
-  }
-
-  return (
-
+  const meters = attention ? (
+    <Badge numeric className={`gap-2 pr-2 pt-0 pb-0.5 bg-(--color-bg-hover) ${placement}`}>
+      <CredentialAttention attention={attention} />
+    </Badge>
+  ) : (
     <Badge
       numeric
-      className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0`}
+      className={`gap-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) ${placement}`}
     >
-      {label !== undefined && (
-        <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
-          {label}
-        </span>
-      )}
       {shows.session && (
         <Meter
           shortLabel="5h"
@@ -336,6 +337,7 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
           windowMs={SESSION_WINDOW_MS}
           fetchedAt={snapshot?.fetchedAt}
           now={now}
+          countdownYields={label !== undefined}
         />
       )}
       {shows.weekly && (
@@ -346,6 +348,7 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
           windowMs={WEEKLY_WINDOW_MS}
           fetchedAt={snapshot?.fetchedAt}
           now={now}
+          countdownYields={label !== undefined}
         />
       )}
       {showRefresh && resolvedServiceId && (
@@ -357,6 +360,29 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
         />
       )}
     </Badge>
+  );
+  if (label === undefined) return meters;
+
+  const title = !attention && snapshot?.plan ? `${label} — ${snapshot.plan}` : label;
+  if (stacked) {
+    return (
+      <span className="flex flex-col items-start gap-0.5 min-w-0 max-w-full">
+        <span className="wrap-anywhere max-w-full px-2 text-xs font-medium text-(--color-text-secondary)" title={title}>
+          {label}
+        </span>
+        {meters}
+      </span>
+    );
+  }
+  return (
+    <>
+      <Badge className={NAME_HALF}>
+        <span className="truncate" title={title}>
+          {label}
+        </span>
+      </Badge>
+      {meters}
+    </>
   );
 }
 
@@ -399,6 +425,8 @@ interface MeterProps {
   windowMs: number;
   fetchedAt?: number;
   now: number;
+  /** Beside an account label the countdown gives way first; alone it keeps its width. */
+  countdownYields: boolean;
 }
 
 export function timeElapsedPct(
@@ -438,7 +466,15 @@ export function meterDisplay(
   return { kind: "known", pct: window.usedPct, stale: now - fetchedAt > STALE_AFTER_MS };
 }
 
-function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: MeterProps) {
+const METER_WITH_YIELDING_COUNTDOWN = `inline-grid grid-cols-[max-content_minmax(0,auto)] ${GROWS_INTO_SPARE_ROOM}`;
+
+/** Half of `3d 12h` reads as a different time, so with less than a whole pixel past `--countdown-min` the countdown goes whole. */
+const COUNTDOWN_YIELDS =
+  "inline-flex overflow-hidden max-w-[calc(round(down,100%_-_var(--countdown-min),1px)*9999)]";
+/** The width of `… 3d 12h`. */
+const countdownMin = (time: string) => ({ "--countdown-min": `${time.length + 3}ch` }) as CSSProperties;
+
+function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now, countdownYields }: MeterProps) {
   const title = window
     ? `${formatWindowLine(longLabel, window, now)}${fetchedAt === undefined ? "" : `\nUpdated ${formatAge(fetchedAt, now)}`}`
     : `${longLabel}: usage not reported yet${fetchedAt === undefined ? "" : `\nUpdated ${formatAge(fetchedAt, now)}`}`;
@@ -487,9 +523,13 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
   const countdown = pct > 90 ? formatResetCountdown(window.resetAt, now) : null;
   const elapsedPct = timeElapsedPct(window.resetAt, windowMs, now, window.startedAt);
 
+  const yields = countdownYields && countdown !== null;
+
   return (
     <span
-      className={`inline-flex items-center whitespace-nowrap${display.stale ? " opacity-50" : ""}`}
+      className={`${yields ? METER_WITH_YIELDING_COUNTDOWN : "inline-flex"} items-center whitespace-nowrap${
+        display.stale ? " opacity-50" : ""
+      }`}
       data-meter-pct={Math.round(pct)}
       style={{ color }}
       title={title}
@@ -517,7 +557,15 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
           )}
         </span>
       </span>
-      {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
+      {countdown && (
+        <span
+          className={`ml-1 text-(--color-text-secondary)${yields ? ` ${COUNTDOWN_YIELDS}` : ""}`}
+          style={yields ? countdownMin(countdown) : undefined}
+        >
+          <span className={yields ? "truncate" : undefined}>resets in</span>{" "}
+          <span className={yields ? "ml-1 shrink-0" : undefined}>{countdown}</span>
+        </span>
+      )}
     </span>
   );
 }

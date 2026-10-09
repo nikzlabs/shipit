@@ -146,8 +146,9 @@ host directly, so `window.location.host` already carries it and the override wou
 be inert. Adding it would be mechanism with no observable effect.
 
 Access is HTTP over WireGuard: encrypted on the wire, but not a secure context, so
-`crypto.randomUUID` (already handled — `src/client/utils/random-id.ts`), clipboard,
-and PWA install are unavailable. `random-id.ts` documents a real prior outage from
+`crypto.randomUUID`, the Clipboard API, and PWA install are unavailable. The first
+two have fallbacks (`src/client/utils/random-id.ts`, `src/client/utils/copy-text.ts`);
+PWA install has none. `random-id.ts` documents a real prior outage from
 exactly this, so the caveat is field-proven, not theoretical. An owned wildcard
 domain pointed at the tailnet IP is the path to real HTTPS.
 

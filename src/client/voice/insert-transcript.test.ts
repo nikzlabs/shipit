@@ -31,6 +31,42 @@ describe("spliceTranscript", () => {
     expect(spliceTranscript({ value: "foo\t", transcript: "bar" }).value).toBe("foo\tbar");
   });
 
+  it("starts a transcript that opens with a list on its own line", () => {
+    const bullets = "- Fix the footer.\n- Rename the file.";
+    expect(spliceTranscript({ value: "Two changes:", transcript: bullets }).value)
+      .toBe(`Two changes:\n${bullets}`);
+    const numbered = "1. Fix the footer.\n2. Rename the file.";
+    expect(spliceTranscript({ value: "Two changes: ", transcript: numbered }).value)
+      .toBe(`Two changes: \n${numbered}`);
+    expect(spliceTranscript({ value: "Two changes:\n", transcript: bullets }).value)
+      .toBe(`Two changes:\n${bullets}`);
+    expect(spliceTranscript({ value: "", transcript: bullets }).value).toBe(bullets);
+  });
+
+  it("keeps a transcript that only starts like a list on the same line", () => {
+    expect(spliceTranscript({ value: "bump to", transcript: "1.5 of the SDK" }).value)
+      .toBe("bump to 1.5 of the SDK");
+    expect(spliceTranscript({ value: "pass", transcript: "--force to the command" }).value)
+      .toBe("pass --force to the command");
+    expect(spliceTranscript({ value: "Use version ", transcript: "1. It has the fix." }).value)
+      .toBe("Use version 1. It has the fix.");
+  });
+
+  it("keeps the text after the cursor off the last list item", () => {
+    const bullets = "- Fix the footer.\n- Rename the file.";
+    const r = spliceTranscript({
+      value: "Changes:Afterwards, stop.",
+      selectionStart: 8,
+      selectionEnd: 8,
+      transcript: bullets,
+    });
+    expect(r.value).toBe(`Changes:\n${bullets}\nAfterwards, stop.`);
+    expect(r.value.slice(0, r.cursor)).toBe(`Changes:\n${bullets}`);
+
+    expect(spliceTranscript({ value: "Changes:\nDone.", selectionStart: 8, selectionEnd: 8, transcript: bullets }).value)
+      .toBe(`Changes:\n${bullets}\nDone.`);
+  });
+
   it("does not add a leading space at the start of empty text", () => {
     const r = spliceTranscript({ value: "", transcript: "hi" });
     expect(r.value).toBe("hi");

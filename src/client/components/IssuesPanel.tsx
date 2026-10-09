@@ -45,6 +45,7 @@ export function IssuesPanel({
   const trackers = useIssuesStore((s) => s.trackers);
   const activeTracker = useIssuesStore((s) => s.activeTracker);
   const issues = useIssuesStore((s) => s.issuesByTracker[s.activeTracker] ?? EMPTY_ISSUES);
+  const incomplete = useIssuesStore((s) => s.incompleteByTracker[s.activeTracker] ?? false);
   const info = useIssuesStore((s) => s.infoByTracker[s.activeTracker]);
   const availableStatuses = useIssuesStore(
     (s) => s.statusesByTracker[s.activeTracker] ?? EMPTY_STATUS_REFS,
@@ -196,6 +197,7 @@ export function IssuesPanel({
       repos={pickerRepos}
       {...(effectiveRepoUrl ? { targetRepoUrl: effectiveRepoUrl } : {})}
       includeDone={includeDone}
+      incomplete={incomplete}
       availableStatuses={availableStatuses}
       canEditPriority={isLinearTracker(activeTracker)}
       onSelectTracker={handleSelectTracker}

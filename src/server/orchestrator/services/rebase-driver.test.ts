@@ -19,9 +19,9 @@ import {
   buildBranchSyncAgentNotice,
   buildSyncFailureNotice,
   MAX_REBASE_ITERATIONS,
-  PLUGIN_SKILL_RESTORE_WAIT_MS,
   syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
+import { PLUGIN_SKILL_RESTORE_WAIT_MS } from "./plugin-skill-clearing.js";
 import { armFollowupNote, followupWindowOpen } from "./rebase-followup.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -595,8 +595,12 @@ describe("rebase-driver: runRebaseFlow", () => {
     };
     wireSystemTurnDeps(deps, {
       answerHold: {
-        isAwaitingAnswer: () => awaiting,
-        setAwaitingAnswer: (_id, v) => { awaiting = v; },
+        automaticTurnsHeld: () => awaiting,
+        setAwaitingAnswer: (_id, v) => {
+          const changed = awaiting !== v;
+          awaiting = v;
+          return changed;
+        },
         holdTurn: () => 0,
         heldTurns: () => [],
         forgetHeldTurn: () => {},
@@ -3784,7 +3788,8 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
     let settled = false;
 
     const flow = runFlow(flowDeps(git, runner), "main").finally(() => { settled = true; });
-    await vi.waitFor(() => expect(prepare).toHaveBeenCalled());
+    // A real rebase and force push come first; on a loaded CI runner they outlast the 1 s default.
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 10_000 });
     await new Promise((r) => setImmediate(r));
 
     expect(settled).toBe(false);

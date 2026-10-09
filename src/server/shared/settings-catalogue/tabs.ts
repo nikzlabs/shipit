@@ -9,6 +9,7 @@ import type { SettingTab } from "./types.js";
 export const SETTING_TAB_LABELS: Record<SettingTab, string> = {
   services: "Model providers",
   roles: "Roles",
+  schedules: "Schedules",
   integrations: "Integrations",
   git: "Git",
   instructions: "Instructions",

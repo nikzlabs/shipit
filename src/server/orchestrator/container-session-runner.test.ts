@@ -727,6 +727,27 @@ describe("ContainerSessionRunner — background-work marker", () => {
   });
 });
 
+describe("ContainerSessionRunner — work_released (docs/324-scheduled-sessions)", () => {
+  it("is told when the post-turn hold or an install comes off, so a run is decided once nothing holds it", () => {
+    const runner = makeRunner();
+    let released = 0;
+    runner.on("work_released", () => { released += 1; });
+    runner.beginPostTurnWork();
+    runner.beginPostTurnWork();
+    runner.endPostTurnWork();
+    expect(released).toBe(0);
+    runner.endPostTurnWork();
+    expect(released).toBe(1);
+
+    priv(runner)._installInFlight = true;
+    priv(runner).signalInstallComplete(true);
+    expect(released).toBe(2);
+    expect(runner.agentBusy).toBe(false);
+    priv(runner).signalInstallComplete(true);
+    expect(released).toBe(2);
+  });
+});
+
 describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () => {
   async function startRecordingWorker(): Promise<{
     url: string;

@@ -277,6 +277,21 @@ describe("agentMergeOwnership (docs/287 req 5)", () => {
     });
     expect(refusal?.status).toBe(403);
     expect(refusal?.error).toContain("no record");
+    expect(refusal?.error).toContain("gives the same answer");
+  });
+
+  it("names the session's previous, already-merged pull request instead of 'no record'", () => {
+    const previousMergedPr = {
+      number: 7, url: "https://github.com/acme/shipit/pull/7", title: "t", baseBranch: "main",
+    };
+    const session = { ...OK.session, prNumber: undefined, prRepoId: undefined, previousMergedPr };
+
+    const merged = agentMergeOwnership({ ...OK, session });
+    expect(merged?.error).toContain("PR #7 is already merged");
+    expect(merged?.error).not.toContain("no record");
+
+    const other = agentMergeOwnership({ ...OK, session, requestedNumber: 8 });
+    expect(other?.error).toContain("no record");
   });
 
   it("refuses a recorded number whose repository is no longer the session's", () => {

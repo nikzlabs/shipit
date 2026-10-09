@@ -88,6 +88,30 @@ describe("unarchiveSession restore freshness (docs/161)", () => {
     expect(branchTip).toBe(advancedHead);
     expect(originMain).toBe(advancedHead);
   });
+
+  it("restarts the disk-idle clock before it clones from the cache the disk janitor could reclaim", async () => {
+    const id = "sess-dormant";
+    const longAgo = new Date(Date.now() - 46 * 86_400_000).toISOString();
+    sessionManager.track(id, "Dormant", path.join(tmpDir, "workspace-dormant"));
+    sessionManager.setRemoteUrl(id, remoteUrl);
+    sessionManager.setLastViewedAt(id, longAgo);
+    dbManager.db.prepare("UPDATE sessions SET disk_tier = 'evicted', last_used_at = ? WHERE id = ?").run(longAgo, id);
+
+    let viewedAtClone: string | undefined;
+    const recordingRepoGit = (dir: string): RepoGit => {
+      const git = createRepoGit(dir);
+      const cloneFromCache = git.cloneFromCache.bind(git);
+      git.cloneFromCache = (...args) => {
+        viewedAtClone = sessionManager.get(id)?.lastViewedAt;
+        return cloneFromCache(...args);
+      };
+      return git;
+    };
+
+    await unarchiveSession(sessionManager, recordingRepoGit, () => cacheDir, githubAuthManager, repoStore, id);
+
+    expect(Date.parse(viewedAtClone!)).toBeGreaterThan(Date.parse(longAgo));
+  });
 });
 
 describe("unarchiveSession keeps plugin state (docs/262)", () => {

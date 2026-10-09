@@ -41,7 +41,7 @@ both: `/shipit-docs/settings.md`.
 
 | Dialog | Opened from | Covers |
 |---|---|---|
-| **Settings** | The gear button in the app header, top right | The whole install — ten tabs, below |
+| **Settings** | The gear button in the app header, top right | The whole install — eleven tabs, below |
 | **Project Settings** | A repository group's menu in the sidebar | One repository — Secrets, Deployments, Appearance |
 
 `shipit settings list` reads both. When the user says "settings" they may mean
@@ -51,7 +51,7 @@ Two controls that look like settings and live in the **app header** instead:
 the palette button (themes) and the question-mark button (the keyboard-shortcut
 list). Neither is in the Settings dialog.
 
-## The ten tabs
+## The eleven tabs
 
 These are the words the tab strip shows. The first one is **Model providers**,
 not "Services" — that is only its internal id.
@@ -60,6 +60,7 @@ not "Services" — that is only its internal id.
 |---|---|
 | **Model providers** | Credentials — the subscriptions and API keys ShipIt bills models to. Also the installed-harness read-out, and the background-work model |
 | **Roles** | Named roles the user creates, and the two reviewer candidate slots |
+| **Schedules** | Sessions ShipIt starts by itself at set times: each schedule, its runs, and Run now, Pause, Edit and Delete — see [sessions.md](sessions.md#scheduled-sessions). Schedules are not settings: you propose one with `shipit schedule propose` |
 | **Integrations** | GitHub, Linear, SSH hosts, and MCP servers |
 | **Git** | The name and email on ShipIt's automatic commits |
 | **Instructions** | Custom instructions sent with every message, a separate set for Ops sessions, and a switch for ShipIt's own built-in agent context |
@@ -67,7 +68,7 @@ not "Services" — that is only its internal id.
 | **Keyboard** | Rebind shortcuts |
 | **Voice** | Dictation and spoken voice notes — providers, keys, language, voice, speed, delivery |
 | **Network** | The workspace default for outbound network access, and the host allowlist |
-| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, compacted turns, notifications, the memory budget, and a full reset |
+| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacted turns, notifications, GPU access, the memory budget, and a full reset |
 
 Several of those are covered in depth elsewhere: Skills and MCP servers in
 `/shipit-docs/skills.md` and `/shipit-docs/plugins.md`, Voice in
@@ -216,11 +217,17 @@ A role is a complete, named unit the user configured once: a harness, a model, a
 reasoning level, a description and standing instructions. Starting one costs a
 name and nothing else.
 
-**Settings → Roles is the only place a role is created** — *New role* opens an
-editor with the name, the description, the standing instructions and the model.
-Picking the model re-derives the harness and the level, because a level only
-exists on a harness that honours it there. A row in the list is a summary, never
-a control: name, what it is for, and what it resolves to.
+A role is created in one of two ways. The user can create one in **Settings →
+Roles** — *New role* opens an editor with the name, the description, the
+standing instructions and the model. Picking the model re-derives the harness
+and the level, because a level only exists on a harness that honours it there.
+A row in the list is a summary, never a control: name, what it is for, and what
+it resolves to. **Or you propose one**: when the work needs a role that does not
+exist, `shipit settings propose roles --add NAME --value-file - --reason "..."` posts a card
+that shows the whole role, and the user's click creates it. Do that rather than
+sending the user to the editor. `--remove NAME` proposes deleting one the same
+way. The syntax is in `/shipit-docs/settings.md` → *Creating a role* and
+*Deleting a role*.
 
 Two ways a role is used, and you own the second:
 
@@ -367,6 +374,14 @@ What the meters say when they have no figure, and the three are different:
 | `5h · reset` | The window rolled over; the cached number is meaningless |
 | `5h · —` | The provider has not reported one — asking again may fill it |
 
+Above 90% a meter adds when the window resets: `5h 96% resets in 4h`. That text
+is the first thing to give way when the header is short of room — it shortens to
+`r… 4h`, then goes — so no account name is cut to make room for it. Names give
+way next, the longest first: `Work` beside a long e-mail address stays whole
+while the address is cut. The meters and the refresh button never give way. A
+meter with no `resets in` beside it has not lost the information: hovering the
+meter gives the reset time whenever the provider reported one.
+
 **A missing pill is not a broken one.** Three credentials correctly have none: a
 plan whose provider publishes no usage figure at all, a pasted subscription
 token that has not yet produced a reading (a signed-in account gets its pill
@@ -384,7 +399,10 @@ warning word — pressing it opens Settings → Model providers, where *Reconnec
 or *Replace secret* is.
 
 On a narrow window the whole status group collapses into a gauge button that
-opens the same pills in a popover, and opening it refreshes them.
+opens the same pills in a popover, and opening it refreshes them. There each
+account's name is on a line of its own above its pill, so the pill has room for
+its `resets in` text — which matters on a touch screen, where nothing hovers.
+The same meter under Settings → Model providers shows its countdown too.
 
 **Usage Summary** is the other half, opened from the cost line in the composer's
 **context dial**: this session and all sessions, spend split per provider,
@@ -459,7 +477,7 @@ restarts — telling that user "saved, it will work" would be a false promise.
 |---|---|
 | Signs in to a provider, or pastes a key | Say which service and mode the work needs, and why |
 | Orders credentials, sets the selection mode and the cutoffs | Read them and explain what a choice means |
-| Creates roles and configures the reviewer slots | Run `--role NAME`; read a role's description before writing its prompt |
+| Creates roles and configures the reviewer slots, or applies the card you post | Propose a role the work needs; run `--role NAME`; read a role's description before writing its prompt |
 | Picks the harness, model, level or role for a session | Say what the work needs; mention the harness locks at the first message |
 | Picks a theme and rebinds shortcuts | Name the control — the palette button, Settings → Keyboard — and stop |
 | Adds an SSH destination and installs its public line on the server | Say the destination is needed and what it is for; use it once granted |

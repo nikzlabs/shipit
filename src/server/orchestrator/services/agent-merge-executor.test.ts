@@ -342,6 +342,85 @@ describe("runOneRequest — ending the request", () => {
   });
 });
 
+describe("runOneRequest — a required check GitHub still expects (req 1)", () => {
+  const EXPECTED = 'Required status check "ci" is expected.';
+  const notYet = () => github({ attempt: { outcome: "refused", message: EXPECTED } as MergeAttempt });
+
+  it("goes back to waiting, and merges on a later pass", async () => {
+    const runner = fakeRunner();
+    const out = await runOneRequest(
+      deps({ githubAuthManager: notYet(), runnerRegistry: registry(runner) }),
+      armed(),
+    );
+
+    expect(out).toMatchObject({ result: "waiting" });
+    expect(claims.get(SESSION)).toMatchObject({ state: "pending", expectedSha: HEAD });
+    expect(notices()).toEqual([]);
+    expect(runner.mergeHold).toBe(false);
+    expect(runner.leaseDepth).toBe(0);
+    expect(claims.isMergeInFlight(SESSION)).toBe(false);
+
+    const gh = github();
+    const later = await runOneRequest(
+      deps({ githubAuthManager: gh, runnerRegistry: registry(runner) }),
+      claims.get(SESSION)!,
+    );
+    expect(later).toEqual({ result: "merged" });
+    expect(gh.merges).toEqual([{ method: "squash", sha: HEAD }]);
+  });
+
+  it("still ends the request when GitHub says the required check failed", async () => {
+    const gh = github({
+      attempt: { outcome: "refused", message: 'Required status check "ci" is failing.' } as MergeAttempt,
+    });
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), armed());
+
+    expect(out.result).toBe("ended");
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join(" ")).toContain("is failing");
+  });
+
+  it("does not wait on when the permission was withdrawn while GitHub was answering", async () => {
+    const gh = notYet();
+    (gh.mergePullRequestAttempt as unknown as { mockImplementation: (f: () => Promise<MergeAttempt>) => void })
+      .mockImplementation(async () => {
+        claims.cancelPendingForRepo(REPO_ID);
+        return { outcome: "refused", message: EXPECTED };
+      });
+
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), armed());
+
+    expect(out.result).toBe("ended");
+    expect(claims.get(SESSION)).toBeNull();
+  });
+
+  it("says once that GitHub keeps refusing, and keeps waiting", async () => {
+    const d = deps({ githubAuthManager: notYet() });
+    armed();
+    for (let i = 0; i < 20; i++) {
+      expect(await runOneRequest(d, claims.get(SESSION)!)).toMatchObject({ result: "waiting" });
+    }
+
+    const said = notices().filter((t) => t.includes("still refuses"));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain(EXPECTED);
+    expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
+  });
+
+  it("counts again for a request armed again at the same commit", async () => {
+    const d = deps({ githubAuthManager: notYet() });
+    armed();
+    for (let i = 0; i < 20; i++) await runOneRequest(d, claims.get(SESSION)!);
+    claims.cancelPendingForRepo(REPO_ID);
+    // A new row has a new creation time.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    armed();
+    for (let i = 0; i < 20; i++) await runOneRequest(d, claims.get(SESSION)!);
+
+    expect(notices().filter((t) => t.includes("still refuses"))).toHaveLength(2);
+  });
+});
+
 describe("an attempt that can never resolve says so", () => {
   it("reports a stuck attempt once, and keeps the row", async () => {
     armed();

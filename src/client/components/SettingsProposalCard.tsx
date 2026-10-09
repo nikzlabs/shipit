@@ -191,10 +191,18 @@ function DiffLines({ change }: { change: SettingsProposalTextChange }) {
  * with blank lines still reports its bulk here rather than hiding it behind a
  * button that looks cheap to skip.
  */
-function TextChange({ change, label }: { change: SettingsProposalTextChange; label: string }) {
+function TextChange({
+  change,
+  label,
+  className = "mt-2",
+}: {
+  change: SettingsProposalTextChange;
+  label: string;
+  className?: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="settings-proposal-text-change">
+    <div className={`${className} flex flex-wrap items-center gap-2`} data-testid="settings-proposal-text-change">
       <span className="text-xs text-(--color-text-tertiary)">
         {sizeOf(change.before)} <span aria-hidden>→</span> {sizeOf(change.after)}
       </span>
@@ -312,13 +320,21 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
                     className="mt-1 flex flex-wrap items-center gap-2 text-xs"
                   >
                     <span className="text-(--color-text-secondary)">{change.label}</span>
-                    <span className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)">
-                      {change.from}
-                    </span>
-                    <span className="text-(--color-text-tertiary)" aria-hidden>→</span>
-                    <span className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold text-(--color-success)">
-                      {change.to}
-                    </span>
+                    {/* A new role's standing instructions are prose, and get the
+                        main change's third shape rather than a chip (req 9). */}
+                    {change.textChange ? (
+                      <TextChange change={change.textChange} label={change.label} className="" />
+                    ) : (
+                      <>
+                        <span className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono break-all text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)">
+                          {change.from}
+                        </span>
+                        <span className="text-(--color-text-tertiary)" aria-hidden>→</span>
+                        <span className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold break-all text-(--color-success)">
+                          {change.to}
+                        </span>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>

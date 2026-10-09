@@ -12,6 +12,9 @@ shipit settings get     <key> [--json]
 shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
 shipit settings propose <key> --add|--remove <entry> --reason "..."
 shipit settings propose <key> --value-file - --reason "..."   (prose, on stdin)
+shipit settings propose roles --add NAME --value-file - --reason "..."   (a new role, JSON on stdin)
+shipit settings propose mcp.servers --add NAME --value-file - --reason "..."   (a new MCP server)
+shipit settings propose roles|mcp.servers --remove NAME --reason "..."   (delete one)
 ```
 
 **Read before you tell the user a setting is the problem.** The value may
@@ -131,7 +134,7 @@ rather than promising that a restart will fix things:
 | State | What to tell the user |
 |---|---|
 | `live` | The stored value is what ShipIt uses next. |
-| `restart-dependent` | Saved, but something already running keeps the old behaviour until it restarts. |
+| `restart-dependent` | Saved, but something already running keeps the old behaviour until it restarts. When that is this session's container, restart it yourself rather than asking the user to — see [environment.md → Restarting your agent container](environment.md#restarting-your-agent-container). |
 | `excluded` | It will not take effect for *this* session, and the read says why. |
 | `uncertain` | ShipIt cannot confirm the effect. Say that, rather than guessing. |
 
@@ -191,7 +194,7 @@ supplies stays allowed however many times it is removed), or when ShipIt cannot
 yet apply that change from a card. Read the message: it says which, and what to
 do instead. Naming a whole list — `roles`, `mcp.servers`, `network.egress.hosts`
 — is refused the same way, and the message names the entry field to propose
-instead.
+instead (and, for `roles`, how to create a new one).
 
 A refusal is one line, and a stored value it names is quoted the same way `get`
 quotes one — `No harness named "gpt-4\nValue: on"` is ShipIt telling you the
@@ -227,6 +230,89 @@ shipit settings propose "network.egress.hosts[].host" --add registry.npmjs.org \
 
 A per-repository setting is always **this session's own repository**; there is no
 way to name another one.
+
+### Creating a role
+
+When the work needs a role that does not exist, propose it. `--add` names the
+role, and the role itself is one JSON object on stdin:
+
+```
+shipit settings propose roles --add deep-dive --value-file - \
+  --reason "The research you asked for runs best as its own role." <<'EOF'
+{"model": {"serviceId": "anthropic", "billingMode": "sub", "modelId": "claude-opus-5"},
+ "reasoningEffort": "high",
+ "description": "Open-ended research into how this codebase works.",
+ "prompt": "Read widely before you answer, and cite file:line."}
+EOF
+```
+
+- **`model` is required**; `shipit agent params` lists the services, billing
+  modes and model ids this install has. The other four fields are optional.
+- **`harness` is derived when you leave it out**, the way the role editor derives
+  it: a harness with a connected credential for that model, otherwise any
+  installed harness that can run it. Name one only when the user asked for it.
+- **`reasoningEffort` must be a level that harness offers for that model.** A
+  level it does not offer is refused, not dropped. Leave it out for the
+  harness's default.
+- **`description` and `prompt` are the role's description and standing
+  instructions.** They are stored trimmed. Long standing instructions are shown
+  as a diff behind **Review the change**, with the same bounds as any prose
+  proposal (*Proposing prose* below).
+- Every field but `model` is one JSON string. A key the object does not know is
+  refused, and so is a field that is not a string, so a misspelt or misshapen
+  field cannot leave the role without something you meant it to have.
+
+The card shows the whole role: its name, then each field it sets, the model and
+the derived harness included. One card creates one role; for several roles,
+post one card each — applying one does not make another stale. A name that is
+already taken is refused, and so is `reviewer`, the role ShipIt ships. To change
+a role that exists, propose its fields (`roles[].model`, `roles[].prompt`, …)
+with `--item NAME` instead.
+
+### Deleting a role
+
+`shipit settings propose roles --remove NAME --reason "..."`. The card shows
+every field the role has going to "not set", its standing instructions as a diff,
+so the user sees what the click removes. `reviewer` cannot be deleted.
+
+### Creating or deleting an MCP server
+
+A new server is one JSON object on stdin, with `--add` naming it:
+
+```
+shipit settings propose mcp.servers --add github --value-file - \
+  --reason "The issue triage you asked for needs GitHub's tools." <<'EOF'
+{"type": "stdio", "command": "npx",
+ "args": ["-y", "@modelcontextprotocol/server-github"],
+ "env": ["GITHUB_PERSONAL_ACCESS_TOKEN"]}
+EOF
+```
+
+- **stdio** takes `command`, `args` (a list), `npmPackage` and `env`. **http**
+  takes `url` and `headers`. Either may add `"enabled": false`.
+- **`env` and `headers` are NAMES, never values.** The card shows each name, and
+  after Apply the user types its value under Settings › Integrations › MCP
+  servers, with **Edit** on the server. The server cannot work until they do,
+  and the applied card says so. Do not ask the user to paste a secret into the
+  chat for you to put on a card. There is nowhere on a card for it.
+- **Everything else is shown on the card exactly as you wrote it**: the command,
+  the arguments, the npm package, the whole URL. So a credential goes only under
+  `env` or `headers`, never in an argument or in the URL. A reference to a stored
+  secret (`$secret:…`, `$platform:…`) anywhere in the body is refused, because
+  it would give this server a credential that the card shows only as text.
+- **Each argument is one word.** The panel edits arguments as one
+  space-separated line, so an argument with whitespace in it, or an empty one,
+  is refused: it would change the first time the user saves the server.
+- The name is lowercase letters and digits, starting with a letter. A name that
+  is taken, a command with shell metacharacters, a URL that is not http(s), and
+  an eleventh enabled server are refused before any card exists.
+
+`shipit settings propose mcp.servers --remove NAME --reason "..."` deletes one.
+The card shows the server's fields going, the secret-bearing ones only as
+*configured → not configured*: its stored secret values go with it. A server that
+a connected provider manages (the one-click connections at the top of the panel)
+is refused. Disconnecting the provider is what releases it, and that is the
+user's act.
 
 ### Proposing prose
 
@@ -277,7 +363,8 @@ it. Two things to know before you write the value:
 `shipit settings get <key>` carries the last proposal for that setting — from any
 session, because what was done about a setting is a fact about the setting. Read
 it before proposing. It is printed as a `Last proposal:` block in the plain
-output and carried as `lastProposal` under `--json`; a setting that exists once
+output and carried as `lastProposal` under `--json` (for `--add` / `--remove`,
+as membership: `add: off → on`, never the body you sent); a setting that exists once
 per item carries one per instance, under the instance it belongs to, because a
 card about the `reviewer` role says nothing about `deep-dive`.
 

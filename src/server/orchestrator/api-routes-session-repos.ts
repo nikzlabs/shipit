@@ -326,9 +326,12 @@ export async function registerSessionReposRoutes(
     async (request, reply) => {
       const url = decodeURIComponent(request.params.url);
       const tabId = request.body?.tabId;
+      // Not `request.raw.destroyed`: that turns true once the body is read, while the client still waits.
+      let clientGone = false;
+      reply.raw.once("close", () => { clientGone = !reply.raw.writableFinished; });
       try {
         const result = await claimSessionService.claim(url, {
-          isCancelled: () => request.raw.destroyed,
+          isCancelled: () => clientGone,
           ...(typeof tabId === "string" && tabId.length > 0 && tabId.length <= 64 ? { tabId } : {}),
         });
         return {

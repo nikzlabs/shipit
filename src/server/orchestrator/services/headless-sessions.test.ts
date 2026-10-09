@@ -10,14 +10,25 @@ import { ProviderAccountManager } from "../provider-account-manager.js";
 import { readSessionAccountMarker } from "../session-credentials.js";
 import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
-import { createHeadlessSession, seedFromIssueRef, isIssueSeededBranch } from "./headless-sessions.js";
+import {
+  createHeadlessSession,
+  redispatchHeadlessPrompt,
+  seedFromIssueRef,
+  isIssueSeededBranch,
+  type CreateHeadlessSessionOptions,
+  type HeadlessSessionDeps,
+} from "./headless-sessions.js";
 import type { GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import { ContainerSessionRunner } from "../container-session-runner.js";
+import type { TurnHandle } from "../turn-settlement.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import type { AgentId, AutoMergeState } from "../../shared/types.js";
+import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
+import { DEFAULT_SANDBOX_CAPABILITIES } from "../../shared/types.js";
+import type { AgentId, AutoMergeState, SessionInfo, SessionStartParams } from "../../shared/types.js";
 import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 
 type InstalledHarnessesModule = typeof InstalledHarnesses;
@@ -212,6 +223,7 @@ describe("createHeadlessSession", () => {
   }
 
   const authedGitHub = { authenticated: true } as unknown as GitHubAuthManager;
+  const REPO_URL = "https://github.com/acme/app.git";
 
   function claimService(opts: { reusedRunner?: FakeRunner; fail?: Error } = {}): ClaimSessionService {
     return {
@@ -230,24 +242,41 @@ describe("createHeadlessSession", () => {
     };
   }
 
-  it("claims a workspace, starts the runner with the prompt, and returns the session", async () => {
-    const result = await createHeadlessSession(
+  async function createSandboxDir(title: string): Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }> {
+    nextSession += 1;
+    const appSessionId = `sandbox-${nextSession}`;
+    const sessionDir = path.join(tmpDir, appSessionId);
+    const workspaceDir = path.join(sessionDir, "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    sessionManager.track(appSessionId, title, workspaceDir);
+    return { appSessionId, sessionDir, workspaceDir };
+  }
+
+  function deps(overrides: Partial<HeadlessSessionDeps> = {}): HeadlessSessionDeps {
+    return {
       sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "  Fix the failing tests  ",
-        title: "Fix the failing tests",
-        agent: "codex",
-        model: "gpt-5.4",
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
+      runnerRegistry: registry as unknown as SessionRunnerRegistry,
+      claimService: claimService(),
+      createSessionDir: createSandboxDir,
+      defaultAgentId: "claude",
+      credentialsDir: undefined,
+      credentialStore: undefined,
+      providerAccountManager: undefined,
       graduationDeps,
-    );
+      ...overrides,
+    };
+  }
+
+  function repo(params: SessionStartParams = {}): Pick<CreateHeadlessSessionOptions, "target" | "params"> {
+    return { target: { kind: "repo", repoUrl: REPO_URL }, params };
+  }
+
+  it("claims a workspace, starts the runner with the prompt, and returns the session", async () => {
+    const result = await createHeadlessSession(deps(), {
+      ...repo({ agent: "codex", model: "gpt-5.4" }),
+      prompt: "  Fix the failing tests  ",
+      title: "Fix the failing tests",
+    });
 
     expect(result.sessionId).toBe("quick-1");
     expect(result.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
@@ -280,21 +309,10 @@ describe("createHeadlessSession", () => {
     uninstalledHarnesses.add("claude");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "stale selection",
-        agent: "claude",
-      },
-      "codex",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    await createHeadlessSession(deps({ defaultAgentId: "codex" }), {
+      ...repo({ agent: "claude" }),
+      prompt: "stale selection",
+    });
 
     expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
     expect(registry.created).toEqual([expect.objectContaining({ agentId: "codex" })]);
@@ -305,21 +323,7 @@ describe("createHeadlessSession", () => {
   it("still honours a requested agent the deployment does have", async () => {
     uninstalledHarnesses.add("codex");
 
-    await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "deliberate pick",
-        agent: "claude",
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    await createHeadlessSession(deps(), { ...repo({ agent: "claude" }), prompt: "deliberate pick" });
 
     expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude" });
   });
@@ -328,24 +332,10 @@ describe("createHeadlessSession", () => {
     it("refuses when the harness cannot speak the model's API style", async () => {
       const service = claimService();
 
-      await expect(createHeadlessSession(
-        sessionManager,
-        registry as unknown as SessionRunnerRegistry,
-        service,
-        {
-          repoUrl: "https://github.com/acme/app.git",
-          prompt: "Run this on Codex",
-          agent: "codex",
-          model: "claude-opus-5",
-          serviceId: "anthropic",
-          billingMode: "sub",
-        },
-        "claude",
-        undefined,
-        undefined,
-        undefined,
-        graduationDeps,
-      )).rejects.toMatchObject({
+      await expect(createHeadlessSession(deps({ claimService: service }), {
+        ...repo({ agent: "codex", model: "claude-opus-5", serviceId: "anthropic", billingMode: "sub" }),
+        prompt: "Run this on Codex",
+      })).rejects.toMatchObject({
         statusCode: 400,
         message: "Codex cannot run Opus 5 — they share no API style. "
           + "Choose a model Codex can run, or run Opus 5 on Claude Code.",
@@ -357,63 +347,28 @@ describe("createHeadlessSession", () => {
     });
 
     it("still derives the harness from the model when the caller named none (docs/166)", async () => {
-      await createHeadlessSession(
-        sessionManager,
-        registry as unknown as SessionRunnerRegistry,
-        claimService(),
-        {
-          repoUrl: "https://github.com/acme/app.git",
-          prompt: "no harness named",
-          model: "claude-opus-5",
-        },
-        "codex",
-        undefined,
-        undefined,
-        undefined,
-        graduationDeps,
-      );
+      await createHeadlessSession(deps({ defaultAgentId: "codex" }), {
+        ...repo({ model: "claude-opus-5" }),
+        prompt: "no harness named",
+      });
 
       expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude", agentPinned: true });
     });
 
     it("honours a harness that shares the model with the other one (planning#304)", async () => {
-      await createHeadlessSession(
-        sessionManager,
-        registry as unknown as SessionRunnerRegistry,
-        claimService(),
-        {
-          repoUrl: "https://github.com/acme/app.git",
-          prompt: "shared model",
-          agent: "codex",
-          model: "deepseek-flash",
-        },
-        "claude",
-        undefined,
-        undefined,
-        undefined,
-        graduationDeps,
-      );
+      await createHeadlessSession(deps(), {
+        ...repo({ agent: "codex", model: "deepseek-flash" }),
+        prompt: "shared model",
+      });
 
       expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
     });
 
     it("passes through a model id no harness lists, keeping the named harness", async () => {
-      await createHeadlessSession(
-        sessionManager,
-        registry as unknown as SessionRunnerRegistry,
-        claimService(),
-        {
-          repoUrl: "https://github.com/acme/app.git",
-          prompt: "forward compat",
-          agent: "codex",
-          model: "gpt-5.7-not-in-the-catalogue-yet",
-        },
-        "claude",
-        undefined,
-        undefined,
-        undefined,
-        graduationDeps,
-      );
+      await createHeadlessSession(deps(), {
+        ...repo({ agent: "codex", model: "gpt-5.7-not-in-the-catalogue-yet" }),
+        prompt: "forward compat",
+      });
 
       expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
     });
@@ -421,22 +376,10 @@ describe("createHeadlessSession", () => {
     it("refuses an agent id no harness has, rather than silently using the model's", async () => {
       const service = claimService();
 
-      await expect(createHeadlessSession(
-        sessionManager,
-        registry as unknown as SessionRunnerRegistry,
-        service,
-        {
-          repoUrl: "https://github.com/acme/app.git",
-          prompt: "unknown harness",
-          agent: "codexx" as AgentId,
-          model: "claude-opus-5",
-        },
-        "claude",
-        undefined,
-        undefined,
-        undefined,
-        graduationDeps,
-      )).rejects.toMatchObject({
+      await expect(createHeadlessSession(deps({ claimService: service }), {
+        ...repo({ agent: "codexx" as AgentId, model: "claude-opus-5" }),
+        prompt: "unknown harness",
+      })).rejects.toMatchObject({
         statusCode: 400,
         message: "Unknown agent 'codexx'. Valid agents: claude, codex, opencode, grok, antigravity.",
       });
@@ -446,64 +389,27 @@ describe("createHeadlessSession", () => {
     });
 
     it("refuses an unknown agent id with no model too — one rule, not two", async () => {
-      await expect(createHeadlessSession(
-        sessionManager,
-        registry as unknown as SessionRunnerRegistry,
-        claimService(),
-        {
-          repoUrl: "https://github.com/acme/app.git",
-          prompt: "unknown harness, no model",
-          agent: "gemini" as AgentId,
-        },
-        "claude",
-        undefined,
-        undefined,
-        undefined,
-        graduationDeps,
-      )).rejects.toMatchObject({ statusCode: 400, message: /^Unknown agent 'gemini'\./ });
+      await expect(createHeadlessSession(deps(), {
+        ...repo({ agent: "gemini" as AgentId }),
+        prompt: "unknown harness, no model",
+      })).rejects.toMatchObject({ statusCode: 400, message: /^Unknown agent 'gemini'\./ });
     });
   });
 
   it("persists a valid reasoning effort on the session row before the first turn", async () => {
-    await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "reason hard",
-        agent: "claude",
-        reasoning: "high",
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    await createHeadlessSession(deps(), {
+      ...repo({ agent: "claude", reasoning: "high" }),
+      prompt: "reason hard",
+    });
 
     expect(sessionManager.get("quick-1")?.reasoningEffort).toBe("high");
   });
 
   it("drops a harness level that the resolved model does not offer", async () => {
-    await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "reason hard",
-        model: "gpt-6-astra",
-        serviceId: "openai",
-        billingMode: "key",
-        reasoning: "minimal",
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    await createHeadlessSession(deps(), {
+      ...repo({ model: "gpt-6-astra", serviceId: "openai", billingMode: "key", reasoning: "minimal" }),
+      prompt: "reason hard",
+    });
 
     expect(sessionManager.get("quick-1")?.agentId).toBe("codex");
     expect(sessionManager.get("quick-1")?.reasoningEffort).toBeUndefined();
@@ -512,20 +418,10 @@ describe("createHeadlessSession", () => {
   it("uses an existing warm runner when the registry already has one", async () => {
     const reusedRunner = { running: true, dispatch: vi.fn() };
 
-    const result = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService({ reusedRunner }),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "use the warm runner",
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    const result = await createHeadlessSession(deps({ claimService: claimService({ reusedRunner }) }), {
+      ...repo(),
+      prompt: "use the warm runner",
+    });
 
     expect(result.sessionId).toBe("quick-1");
     expect(registry.created).toEqual([]);
@@ -534,50 +430,27 @@ describe("createHeadlessSession", () => {
 
   it("rejects invalid input before claiming a workspace", async () => {
     const claim = claimService();
-    await expect(createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claim,
-      { repoUrl: "", prompt: "do it" },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    )).rejects.toMatchObject({ statusCode: 400, message: "Add a repo first." });
+    await expect(createHeadlessSession(deps({ claimService: claim }), {
+      target: { kind: "repo", repoUrl: "" },
+      params: {},
+      prompt: "do it",
+    })).rejects.toMatchObject({ statusCode: 400, message: "Add a repo first." });
 
-    await expect(createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claim,
-      { repoUrl: "https://github.com/acme/app.git", prompt: "   " },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    )).rejects.toMatchObject({ statusCode: 400, message: "prompt is required" });
+    await expect(createHeadlessSession(deps({ claimService: claim }), {
+      ...repo(),
+      prompt: "   ",
+    })).rejects.toMatchObject({ statusCode: 400, message: "prompt is required" });
 
     expect(claim.claim).not.toHaveBeenCalled();
   });
 
   it("accepts an empty prompt when the message carries attachments (docs/293 req 5)", async () => {
     const claim = claimService();
-    const created = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claim,
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "   ",
-        uploads: [{ filename: "pasted-text.txt", data: Buffer.from("a pasted blob") }],
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    const created = await createHeadlessSession(deps({ claimService: claim }), {
+      ...repo(),
+      prompt: "   ",
+      uploads: [{ filename: "pasted-text.txt", data: Buffer.from("a pasted blob") }],
+    });
     expect(created).toBeTruthy();
     expect(claim.claim).toHaveBeenCalled();
     const arg = registry.get(created.sessionId)?.dispatch.mock.calls[0][0] as {
@@ -604,18 +477,12 @@ describe("createHeadlessSession", () => {
     expect(providerAccountManager.getPrimary("anthropic")?.id).toBe("claude-default");
     expect(providerAccountManager.getPrimary("openai")?.id).toBe("codex-default");
     const markUsed = vi.spyOn(providerAccountManager, "markAccountUsed");
+    const withCredentials = { credentialsDir: tmpDir, credentialStore, providerAccountManager };
 
-    await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      { repoUrl: "https://github.com/acme/app.git", prompt: "do it", agent: "claude" },
-      "claude",
-      tmpDir,
-      credentialStore,
-      providerAccountManager,
-      graduationDeps,
-    );
+    await createHeadlessSession(deps(withCredentials), {
+      ...repo({ agent: "claude" }),
+      prompt: "do it",
+    });
     expect(markUsed).not.toHaveBeenCalled();
     const claudeSession = sessionManager.get("quick-1");
     expect(claudeSession?.providerRouteKind).toBeUndefined();
@@ -625,17 +492,10 @@ describe("createHeadlessSession", () => {
     expect(readSessionAccountMarker(tmpDir, "quick-1")).toEqual({});
     expect(registry.get("quick-1")?.dispatch).toHaveBeenCalledTimes(1);
 
-    await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      { repoUrl: "https://github.com/acme/app.git", prompt: "do it", agent: "codex" },
-      "claude",
-      tmpDir,
-      credentialStore,
-      providerAccountManager,
-      graduationDeps,
-    );
+    await createHeadlessSession(deps(withCredentials), {
+      ...repo({ agent: "codex" }),
+      prompt: "do it",
+    });
     expect(markUsed).not.toHaveBeenCalled();
     const codexSession = sessionManager.get("quick-2");
     expect(codexSession?.providerRouteKind).toBeUndefined();
@@ -646,21 +506,10 @@ describe("createHeadlessSession", () => {
 
   it("defers branchRenamed when no explicit branch/title is pinned", async () => {
     // Do not await the real naming CLI; graduate-session.test.ts covers completion with a mock.
-    const result = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "Fix the flaky test",
-        agent: "claude",
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    const result = await createHeadlessSession(deps(), {
+      ...repo({ agent: "claude" }),
+      prompt: "Fix the flaky test",
+    });
 
     expect(result.session.title).toBe("Fix the flaky test");
     expect(result.session.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
@@ -668,26 +517,16 @@ describe("createHeadlessSession", () => {
   });
 
   it("seeds branch, title, and first prompt from an issueRef (docs/170)", async () => {
-    const result = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        issueRef: {
-          tracker: "linear",
-          identifier: "SHI-67",
-          title: "Inline tracker Issues tab",
-          url: "https://linear.app/acme/issue/SHI-67",
-          description: "Build the Issues tab.",
-        },
+    const result = await createHeadlessSession(deps(), {
+      ...repo(),
+      issueRef: {
+        tracker: "linear",
+        identifier: "SHI-67",
+        title: "Inline tracker Issues tab",
+        url: "https://linear.app/acme/issue/SHI-67",
+        description: "Build the Issues tab.",
       },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    });
 
     expect(result.branch).toMatch(/^shi-67-[a-z0-9_-]{1,6}$/);
     expect(result.branch).not.toContain("inline");
@@ -701,40 +540,20 @@ describe("createHeadlessSession", () => {
 
   it("propagates claim failures as service errors", async () => {
     await expect(createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService({ fail: new ServiceError(500, "clone failed") }),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "start",
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
+      deps({ claimService: claimService({ fail: new ServiceError(500, "clone failed") }) }),
+      { ...repo(), prompt: "start" },
     )).rejects.toMatchObject({ statusCode: 500, message: "clone failed" });
   });
 
   it("saves uploaded files into the new session's uploads dir and dispatches with UploadRefs", async () => {
-    const result = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "take a look",
-        uploads: [
-          { filename: "note.txt", data: Buffer.from("hello") },
-          { filename: "data.csv", data: Buffer.from("a,b\n1,2") },
-        ],
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
+    const result = await createHeadlessSession(deps(), {
+      ...repo(),
+      prompt: "take a look",
+      uploads: [
+        { filename: "note.txt", data: Buffer.from("hello") },
+        { filename: "data.csv", data: Buffer.from("a,b\n1,2") },
+      ],
+    });
 
     const sessionDir = path.dirname(path.join(tmpDir, "quick-1", "workspace"));
     const uploadsDir = path.join(sessionDir, "uploads");
@@ -757,16 +576,8 @@ describe("createHeadlessSession", () => {
     const { poller, states, setEnabled } = fakeAutoMergePoller();
 
     const result = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      { repoUrl: "https://github.com/acme/app.git", prompt: "ship it", armAutoMerge: true },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-      { githubAuthManager: authedGitHub, prStatusPoller: poller },
+      deps({ autoMergeDeps: { githubAuthManager: authedGitHub, prStatusPoller: poller } }),
+      { ...repo({ armAutoMerge: true }), prompt: "ship it" },
     );
 
     expect(setEnabled).toHaveBeenCalledWith(result.sessionId, true);
@@ -782,19 +593,317 @@ describe("createHeadlessSession", () => {
     const { poller, states, setEnabled } = fakeAutoMergePoller();
 
     const result = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      { repoUrl: "https://github.com/acme/app.git", prompt: "no merge please" },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-      { githubAuthManager: authedGitHub, prStatusPoller: poller },
+      deps({ autoMergeDeps: { githubAuthManager: authedGitHub, prStatusPoller: poller } }),
+      { ...repo(), prompt: "no merge please" },
     );
 
     expect(setEnabled).not.toHaveBeenCalled();
     expect(states.get(result.sessionId)).toBeUndefined();
+  });
+
+  describe("docs/324-scheduled-sessions: one start path for every target and parameter", () => {
+    const handle: TurnHandle = {
+      settled: Promise.resolve({ status: "completed", errored: false }),
+      admitted: "started",
+    };
+
+    it("starts a sandbox with its grants and title, without a claim, a branch or automatic naming", async () => {
+      const claim = claimService();
+      const capabilities = { git: true, docker: false, network: true, dangerousGitHubOps: true };
+
+      const result = await createHeadlessSession(deps({ claimService: claim }), {
+        target: { kind: "sandbox", capabilities },
+        params: { model: "gpt-5.4", reasoning: "high" },
+        prompt: "Check current security PRs and merge them.",
+        title: "Security PRs · 2026-10-07",
+      });
+
+      expect(claim.claim).not.toHaveBeenCalled();
+      expect(result.branch).toBeUndefined();
+      expect(result.session).toMatchObject({
+        kind: "sandbox",
+        capabilities,
+        title: "Security PRs · 2026-10-07",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        agentId: "codex",
+      });
+      expect(result.session.branchRenamed).toBeUndefined();
+      expect(registry.get(result.sessionId)?.dispatch).toHaveBeenCalledWith({
+        text: "Check current security PRs and merge them.",
+      });
+      expect(graduationDeps.sseBroadcast).toHaveBeenCalledWith("session_list", expect.anything());
+    });
+
+    it("titles a sandbox with no title the way the Sandbox dialog does", async () => {
+      const result = await createHeadlessSession(deps(), {
+        target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
+        params: {},
+        prompt: "look around",
+      });
+
+      expect(result.session.title).toBe("Sandbox session");
+    });
+
+    it("puts the permission mode and the delivery id on the first dispatch and returns its handle", async () => {
+      const runner = { running: true, dispatch: vi.fn(() => handle) };
+
+      const result = await createHeadlessSession(deps({ claimService: claimService({ reusedRunner: runner }) }), {
+        ...repo({ permissionMode: "plan" }),
+        prompt: "plan it",
+        deliveryId: "run-1",
+      });
+
+      expect(runner.dispatch).toHaveBeenCalledWith({ text: "plan it", permissionMode: "plan", deliveryId: "run-1" });
+      expect(result.turn).toBe(handle);
+    });
+
+    it("sets the network mode before the container starts, and the SSH grant once it runs", async () => {
+      const order: string[] = [];
+      const getOrCreate = registry.getOrCreate.bind(registry);
+      registry.getOrCreate = (sessionId, workspaceDir, agentId) => {
+        order.push("container");
+        return getOrCreate(sessionId, workspaceDir, agentId);
+      };
+      const credentialStore = { listSshHosts: () => [{ id: "prod" }, { id: "staging" }] } as unknown as CredentialStore;
+      const egressStore = { setSessionOverride: vi.fn(() => { order.push("network"); }) };
+      const reconcile = vi.fn(async () => ({ action: "none", reason: "matches" }) as const);
+      const reloadEgress = vi.fn(async () => { order.push("ssh"); });
+
+      const result = await createHeadlessSession(
+        deps({
+          credentialStore,
+          egressDeps: { store: egressStore as unknown as EgressAllowlistStore, reconcile },
+          reloadEgress,
+        }),
+        {
+          target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
+          params: { sshHosts: ["prod"], networkMode: true },
+          prompt: "deploy",
+        },
+      );
+
+      expect(sessionManager.get(result.sessionId)?.sshHosts).toEqual(["prod"]);
+      expect(egressStore.setSessionOverride).toHaveBeenCalledWith(result.sessionId, true);
+      expect(reconcile).toHaveBeenCalledWith(result.sessionId, { agentSeed: "claude" });
+      expect(reloadEgress).toHaveBeenCalledWith(result.sessionId);
+      expect(order).toEqual(["network", "container", "ssh"]);
+    });
+
+    function startingContainerRunner(opts: { disposed?: boolean } = {}): {
+      runner: FakeRunner;
+      markReady: () => void;
+      order: string[];
+    } {
+      let markReady!: () => void;
+      const ready = new Promise<void>((resolve) => { markReady = resolve; });
+      const order: string[] = [];
+      // A prototype-only instance: instanceof holds without starting a real container.
+      const runner = Object.create(ContainerSessionRunner.prototype) as FakeRunner;
+      Object.defineProperties(runner, {
+        disposed: { value: opts.disposed ?? false },
+        running: { value: false, writable: true },
+        whenWorkerReady: { value: () => ready },
+        dispatch: { value: vi.fn(() => { order.push("dispatch"); return handle; }) },
+      });
+      return { runner, markReady, order };
+    }
+
+    it("applies an SSH grant to a claimed standby that is still starting, before the first turn", async () => {
+      const { runner, markReady, order } = startingContainerRunner();
+      const credentialStore = { listSshHosts: () => [{ id: "prod" }] } as unknown as CredentialStore;
+      const reloadEgress = vi.fn(async () => { order.push("ssh"); });
+
+      const started = createHeadlessSession(
+        deps({ claimService: claimService({ reusedRunner: runner }), credentialStore, reloadEgress }),
+        { ...repo({ sshHosts: ["prod"] }), prompt: "deploy" },
+      );
+      await vi.waitFor(() => expect(sessionManager.get("quick-1")?.agentPinned).toBe(true));
+      expect(reloadEgress).not.toHaveBeenCalled();
+
+      markReady();
+      await started;
+      expect(order).toEqual(["ssh", "dispatch"]);
+    });
+
+    it("refuses the start when the SSH grant cannot reach the container's firewall", async () => {
+      const { runner, markReady, order } = startingContainerRunner();
+      markReady();
+      const credentialStore = { listSshHosts: () => [{ id: "prod" }] } as unknown as CredentialStore;
+
+      await expect(createHeadlessSession(
+        deps({
+          claimService: claimService({ reusedRunner: runner }),
+          credentialStore,
+          reloadEgress: vi.fn(async () => { throw new Error("sidecar gone"); }),
+        }),
+        { ...repo({ sshHosts: ["prod"] }), prompt: "deploy" },
+      )).rejects.toMatchObject({ statusCode: 503, message: expect.stringContaining("sidecar gone") });
+      expect(order).toEqual([]);
+    });
+
+    it("refuses the start when the container is gone instead of running", async () => {
+      const { runner, markReady, order } = startingContainerRunner({ disposed: true });
+      markReady();
+      const credentialStore = { listSshHosts: () => [{ id: "prod" }] } as unknown as CredentialStore;
+
+      await expect(createHeadlessSession(
+        deps({ claimService: claimService({ reusedRunner: runner }), credentialStore, reloadEgress: vi.fn() }),
+        { ...repo({ sshHosts: ["prod"] }), prompt: "deploy" },
+      )).rejects.toMatchObject({ statusCode: 503 });
+      expect(order).toEqual([]);
+    });
+
+    it("refuses an SSH destination the registry does not have, before creating anything", async () => {
+      const claim = claimService();
+      const credentialStore = { listSshHosts: () => [{ id: "prod" }] } as unknown as CredentialStore;
+
+      await expect(createHeadlessSession(deps({ claimService: claim, credentialStore }), {
+        ...repo({ sshHosts: ["prod", "gone"] }),
+        prompt: "deploy",
+      })).rejects.toMatchObject({ statusCode: 400, message: "One or more SSH destinations do not exist" });
+
+      expect(claim.claim).not.toHaveBeenCalled();
+      expect(sessionManager.list()).toEqual([]);
+    });
+
+    it("fetches the base before the clone only when asked", async () => {
+      const claim = claimService();
+
+      await createHeadlessSession(deps({ claimService: claim }), { ...repo(), prompt: "quick", fetchBase: true });
+      await createHeadlessSession(deps({ claimService: claim }), { ...repo(), prompt: "quick" });
+
+      expect(claim.claim).toHaveBeenNthCalledWith(1, REPO_URL, { skipReuse: true, forceFetch: true });
+      expect(claim.claim).toHaveBeenNthCalledWith(2, REPO_URL, { skipReuse: true });
+    });
+
+    it("links a run's session as soon as it exists, so a start refused later leaves it linked", async () => {
+      const { runner, markReady, order } = startingContainerRunner({ disposed: true });
+      markReady();
+      const credentialStore = { listSshHosts: () => [{ id: "prod" }] } as unknown as CredentialStore;
+
+      await expect(createHeadlessSession(
+        deps({ claimService: claimService({ reusedRunner: runner }), credentialStore, reloadEgress: vi.fn() }),
+        {
+          ...repo({ sshHosts: ["prod"] }),
+          prompt: "deploy",
+          title: "Nightly · Oct 7, 09:00",
+          scheduleRun: { scheduleId: "schedule-1", runId: "run-1", timeZone: "Europe/Berlin" },
+        },
+      )).rejects.toMatchObject({ statusCode: 503 });
+      expect(order).toEqual([]);
+      expect(sessionManager.get("quick-1")).toMatchObject({
+        scheduleId: "schedule-1",
+        scheduleRunId: "run-1",
+        runTimeZone: "Europe/Berlin",
+        title: "Nightly · Oct 7, 09:00",
+      });
+    });
+
+    it("starts a run without the warm session, and calls back once it is linked, before its container (docs/324 req 13)", async () => {
+      const order: string[] = [];
+      const getOrCreate = registry.getOrCreate.bind(registry);
+      registry.getOrCreate = (sessionId, workspaceDir, agentId) => {
+        order.push("container");
+        return getOrCreate(sessionId, workspaceDir, agentId);
+      };
+      const onRunLinked = vi.fn((sessionId: string) => {
+        order.push(`linked:${sessionId}:${sessionManager.get(sessionId)?.scheduleRunId}`);
+      });
+      const claim = claimService();
+
+      await createHeadlessSession(deps({ claimService: claim }), {
+        ...repo(),
+        prompt: "go",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-1", timeZone: "UTC" },
+        onRunLinked,
+      });
+      expect(claim.claim).toHaveBeenCalledWith(REPO_URL, { skipReuse: true, skipWarm: true });
+      expect(order).toEqual(["linked:quick-1:run-1", "container"]);
+
+      onRunLinked.mockImplementation(() => { throw new Error("The run was stopped before it started."); });
+      await expect(createHeadlessSession(deps(), {
+        target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
+        params: {},
+        prompt: "go",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-2", timeZone: "UTC" },
+        onRunLinked,
+      })).rejects.toThrow("stopped before it started");
+      // No container starts for a run the callback called off.
+      expect(order).toEqual(["linked:quick-1:run-1", "container"]);
+    });
+
+    it("dispatches through the gate, which can cancel the dispatch", async () => {
+      const runner = { running: true, dispatch: vi.fn(() => handle) };
+      const gate = vi.fn(async (_sessionId: string, dispatch: () => TurnHandle) => dispatch());
+      const result = await createHeadlessSession(deps({ claimService: claimService({ reusedRunner: runner }) }), {
+        ...repo(),
+        prompt: "go",
+        dispatchGate: gate,
+      });
+      expect(gate).toHaveBeenCalledWith("quick-1", expect.any(Function));
+      expect(result.turn).toBe(handle);
+
+      const cancelled = { running: true, dispatch: vi.fn(() => handle) };
+      await expect(createHeadlessSession(deps({ claimService: claimService({ reusedRunner: cancelled }) }), {
+        target: { kind: "sandbox", capabilities: DEFAULT_SANDBOX_CAPABILITIES },
+        params: {},
+        prompt: "go",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-2", timeZone: "UTC" },
+        dispatchGate: async () => { throw new Error("The schedule was paused before the run started."); },
+      })).rejects.toThrow("paused");
+      expect(sessionManager.sessionIdForScheduleRun("run-2")).toBeDefined();
+      expect(cancelled.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("sends a session's first prompt again, with its delivery id and permission mode", async () => {
+      const { appSessionId } = await createSandboxDir("Nightly · Oct 7, 09:00");
+      const gate = vi.fn(async (_sessionId: string, dispatch: () => TurnHandle) => dispatch());
+      await redispatchHeadlessPrompt(deps(), appSessionId, {
+        params: { permissionMode: "plan" },
+        prompt: "  Check the PRs  ",
+        deliveryId: "run-1",
+        dispatchGate: gate,
+      });
+      expect(gate).toHaveBeenCalledWith(appSessionId, expect.any(Function));
+      expect(registry.get(appSessionId)?.dispatch).toHaveBeenCalledWith({
+        text: "Check the PRs",
+        permissionMode: "plan",
+        deliveryId: "run-1",
+      });
+      await expect(redispatchHeadlessPrompt(deps(), "missing", { params: {}, prompt: "x" }))
+        .rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it("has a run's agent, model and graduation saved when its gate records it started, so a restart re-sends it as configured (reqs 2, 4, 20)", async () => {
+      // With credentials, as in production, the first turn saves the agent only once its container runs.
+      const withCredentials = { credentialsDir: tmpDir, credentialStore: new CredentialStore(tmpDir) };
+      let atStart: SessionInfo | undefined;
+      await createHeadlessSession(deps(withCredentials), {
+        ...repo({ model: "gpt-6-astra", serviceId: "openai", billingMode: "key", reasoning: "high" }),
+        prompt: "Check the PRs",
+        title: "Nightly · Oct 7, 09:00",
+        scheduleRun: { scheduleId: "schedule-1", runId: "run-1", timeZone: "UTC" },
+        // The scheduler's gate marks the run started right after the dispatch; a restart can come next.
+        dispatchGate: async (sessionId, dispatch) => {
+          const turn = dispatch();
+          atStart = sessionManager.get(sessionId);
+          return turn;
+        },
+      });
+      expect(atStart).toMatchObject({
+        agentId: "codex",
+        model: "gpt-6-astra",
+        serviceId: "openai",
+        billingMode: "key",
+        reasoningEffort: "high",
+        title: "Nightly · Oct 7, 09:00",
+      });
+      expect(atStart?.warm).toBeUndefined();
+
+      registry = new FakeRunnerRegistry();
+      await redispatchHeadlessPrompt(deps(withCredentials), "quick-1", { params: {}, prompt: "Check the PRs" });
+      expect(registry.created).toEqual([expect.objectContaining({ sessionId: "quick-1", agentId: "codex" })]);
+    });
   });
 });

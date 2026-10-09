@@ -882,3 +882,88 @@ Two findings, both the same class one layer down, both reproduced at the code.
       Fixing the helper fixes both callers rather than either call site
 - [x] Proven red alone with a `BEFORE DELETE` trigger that refuses the second
       row: without the transaction the first row stays deleted
+
+### Creating a role from a card (req 10)
+
+- [x] req 10 — `requirements.md` carries the requirement and the dated receipt
+      for the user's answer, before the design and the code
+- [x] `roles::add` in `settings-operations.ts`: `--add NAME` addresses the new
+      role, and its body (`model`, plus optional `harness`, `reasoningEffort`,
+      `description`, `prompt`) arrives as JSON through `--value-file`. Each
+      field is validated by its own `roles[].*` declaration; an unknown key is
+      refused rather than dropped
+- [x] The card shows the whole role: membership as the main change, and every
+      field the write sets as an `alsoChanges` entry, so the click-time
+      re-derivation of the harness and the read-back after the write cover a
+      new role as they cover a model change
+- [x] A prose side change carries its own `textChange` past `CARD_VALUE_MAX`,
+      under the main change's bounds and display-integrity refusal; the read-back
+      compares its approved text, not its summary
+- [x] The `roles` baseline with an item is that one role, and an absent role has
+      the empty revision — two create cards apply in either order, and a name
+      taken before the click goes `stale`
+- [x] Preflight: a name the read shows back, not `reviewer`, not taken; params
+      through the role validator with purpose `"save"`; the write is the
+      dialog's own create
+- [x] The CLI accepts `--value-file` beside `--add`; the card renders a prose
+      side change behind *Review the change*
+- [x] The five system prompts, `agent.md`, `settings.md` and the wiki propose a
+      missing role instead of sending the user to Settings
+- [x] Guards proven red alone: a list-wide baseline stales the second card, and
+      a summary comparison of the instructions resolves the create `partial`
+
+#### The independent review of role creation
+
+- [x] A body field that is not a string is refused. `text` validation read it as
+      the empty default, so `"prompt": ["…"]` created a role with no
+      instructions on a card that showed none
+- [x] `roles[].description` and `roles[].prompt` declare the role writer's
+      bounds (500 and 20,000), not 2,000 and 50,000, so a card is never posted
+      that the click can only refuse. A test keeps them equal to
+      `MAX_ROLE_*_LENGTH`
+- [x] The short `propose roles --add` examples carry `--reason`, which the CLI
+      requires; `shipit agent roles`' empty-list line proposes a role
+- [x] Tests the review found missing: instructions stored differently but with
+      the same length resolve `partial` (proven red against a check that accepts
+      everything), a derived harness uninstalled before the click is refused,
+      and a bidi character in the instructions is refused
+
+### Deleting a role, and creating or deleting an MCP server (req 11, req 12)
+
+- [x] req 11, req 12 — `requirements.md` carries both requirements and dated
+      receipts; the open question on how much of an MCP server a card may write
+      was asked and answered before any code
+- [x] Membership for a collection that reads as a list of names (`roles`,
+      `mcp.servers`) is the address being in that list; a remove that finds
+      nothing names the entries that exist
+- [x] `roles::remove`: the dialog's delete, every field shown going to "not
+      set", `reviewer` refused
+- [x] `mcp.servers::add`: the writer's own validation and the ten-enabled limit
+      before the card; command, arguments, npm package and URL shown as written;
+      `env` / `headers` are names stored as `$secret:` placeholders, no secret
+      submitted, and the applied card says which values to type and where
+- [x] A stored-secret reference (`$secret:`, `$platform:`) in a card-written
+      field is refused, so a new server cannot be handed another's credential
+- [x] `mcp.servers::remove`: the panel's delete, fields shown through the read's
+      own projections, a server a connected provider owns refused
+- [x] The `mcp.servers` baseline with an item is that one server, and an absent
+      one has the empty revision
+- [x] Read-back skips a side whose declaration emits only `configured` or a
+      derived part, since a create card shows the value as written
+- [x] Guards proven red alone: a list-wide MCP baseline stales the second card,
+      and comparing as-written sides resolves a create `partial`
+- [x] `settings.md` and the wiki document both, names-only secrets included
+
+#### The independent review of deletion and MCP creation
+
+- [x] A placeholder key steps aside from any value already stored, so a secret
+      left by an earlier server of that name cannot fill it unasked
+- [x] An argument with whitespace, or an empty one, is refused: the panel's form
+      would split or drop it when the user saves the server to type its values
+- [x] `lastProposal` reports a list operation as membership, so a new server's
+      URL or arguments do not reach every session's `get`
+- [x] An MCP server's create/delete baseline hashes its stored secret values, so
+      a delete card written before a rotation goes `stale`
+- [x] The unused change to the `mcp.servers[]` baseline is reverted
+- [x] Recorded, not changed: an npm package installs in the container's whole
+      environment, as the panel's do (plan.md → known gap)

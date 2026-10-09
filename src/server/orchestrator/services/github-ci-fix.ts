@@ -17,7 +17,7 @@ import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
 import { chownToSessionWorker, chownTreeToSessionWorker } from "../session-worker-uid.js";
-import { prepareDispatch } from "../prepared-dispatch.js";
+import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 
 export async function fetchCIFailureLogs(
   githubAuth: GitHubAuthManager,
@@ -152,6 +152,31 @@ export function extractErrorLines(cleanLog: string, maxLines = 30): string[] {
   }
 
   return errors.slice(0, maxLines);
+}
+
+/** The automatic fix turn. A manual Fix CI is not tagged, so a pause leaves it alone. */
+export function autoFixDispatch(prompt: string): PreparedDispatch {
+  return prepareDispatch({
+    text: prompt,
+    agentInterface: undefined,
+    activity: "Auto-fixing CI...",
+    systemTurn: true,
+    automatic: true,
+    ciAutoFix: true,
+    heldId: undefined,
+    onTurnComplete: undefined,
+    execution: undefined,
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    deliveryId: undefined,
+    dictated: undefined,
+    resetMergedBranch: undefined,
+    compactContext: undefined,
+    silent: undefined,
+  });
 }
 
 export function buildCIFixPrompt(logs: CIFailureLog[]): string {

@@ -1,0 +1,354 @@
+import type { ScheduleChanges, ScheduleStore } from "../schedule-store.js";
+import type { RepoStore } from "../repo-store.js";
+import type { CredentialStore } from "../credential-store.js";
+import {
+  MAX_RUNS_PER_READ,
+  type Schedule,
+  type ScheduleRun,
+  type ScheduleRunView,
+  type ScheduleTiming,
+  type ScheduleView,
+  type SessionStartSpec,
+  type UnfinishedScheduleRun,
+} from "../../shared/types.js";
+import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
+import { KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
+import { catalogueModelLabels, selectionExists } from "../../shared/catalogue/index.js";
+import { nextRuns, normalizeTimeZone, parseScheduleTiming, timingProblem } from "../../shared/schedule-timing.js";
+import { parseSessionStartSpec } from "../../shared/session-start-spec.js";
+import { resolveUserRole } from "./session-role.js";
+import type { ScheduleNotes } from "../schedule-notes.js";
+import { ServiceError } from "./types.js";
+import { getErrorMessage } from "../validation.js";
+
+/**
+ * docs/324-scheduled-sessions — reading and changing schedules (reqs 10, 17, 19, 26). Every
+ * change goes through the schedule's queue, so it never interleaves with a run's start.
+ */
+
+const NEXT_RUNS_SHOWN = 3;
+const MAX_NAME_CHARS = 120;
+
+export interface ScheduleSpecDeps {
+  repoStore: Pick<RepoStore, "get" | "isTrusted">;
+  credentialStore: CredentialStore;
+}
+
+/** The scheduler's side of a change: its queue, Run now, Stop, its runs, and telling the browser. */
+export interface ScheduleQueue {
+  enqueue<T>(scheduleId: string, fn: () => T | Promise<T>): Promise<T>;
+  runNow(scheduleId: string): Promise<ScheduleRun>;
+  stopRun(scheduleId: string, runId: string): Promise<ScheduleRun | null>;
+  unfinishedRuns(scheduleId: string): Promise<UnfinishedScheduleRun[]>;
+  /** The same without waiting on any worker, right after `unfinishedRuns` found none. */
+  unfinishedRunsNow(scheduleId: string): UnfinishedScheduleRun[];
+  announceSchedules(): void;
+  /** The runs with what their sessions say (req 24). */
+  viewRuns(runs: ScheduleRun[]): ScheduleRunView[];
+}
+
+/** Req 32 — the refusal names the runs, so the user can stop each one. */
+export class ScheduleDeleteRefused extends ServiceError {
+  constructor(public readonly runs: UnfinishedScheduleRun[]) {
+    const stopping = runs.filter((run) => run.stopping).length;
+    const toStop = runs.length - stopping;
+    const parts = [
+      ...(toStop > 0 ? [`stop ${toStop === 1 ? "the run that is" : `the ${toStop} runs that are`} not finished`] : []),
+      ...(stopping > 0 ? [`wait for ${stopping === 1 ? "the stopped run" : `the ${stopping} stopped runs`} to wind down`] : []),
+    ];
+    super(409, `This schedule still has runs in progress. To delete it, ${parts.join(", and ")}.`);
+  }
+}
+
+export interface ScheduleServiceDeps extends ScheduleSpecDeps {
+  store: ScheduleStore;
+  scheduler: ScheduleQueue;
+  /** The schedule's notes folders, which Delete removes (req 32). */
+  notes?: Pick<ScheduleNotes, "remove">;
+}
+
+/**
+ * Why a run cannot start from this description, or null. `save` checks what the
+ * description names; `run` adds what can stop being true after it was saved (req 18).
+ */
+export function scheduleSpecProblem(
+  spec: SessionStartSpec,
+  deps: ScheduleSpecDeps,
+  purpose: "save" | "run",
+): string | null {
+  const { target, params } = spec;
+  if (target.kind === "repo") {
+    if (!deps.repoStore.get(target.repoUrl)) return `The repository ${target.repoUrl} is not added to ShipIt.`;
+    if (purpose === "run" && !deps.repoStore.isTrusted(target.repoUrl)) {
+      return `The repository ${target.repoUrl} is not trusted. Trust it in ShipIt so its runs can start.`;
+    }
+  }
+  if (params.role !== undefined) {
+    if (purpose === "run") {
+      try {
+        resolveUserRole(params.role, { credentialStore: deps.credentialStore });
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    } else {
+      const role = deps.credentialStore.getRole(params.role);
+      if (!role || role.name === RESERVED_ROLE_NAME) return `There is no role named "${params.role}".`;
+    }
+  } else {
+    // A role replaces the harness and model, so these are read only without one.
+    if (params.agent !== undefined && !KNOWN_AGENT_IDS.includes(params.agent)) {
+      return `Unknown harness "${params.agent}". Harnesses: ${KNOWN_AGENT_IDS.join(", ")}.`;
+    }
+    if (params.model !== undefined) {
+      const offered = params.serviceId !== undefined && params.billingMode !== undefined
+        ? selectionExists({ serviceId: params.serviceId, billingMode: params.billingMode, modelId: params.model })
+        : params.model in catalogueModelLabels();
+      if (!offered) return `ShipIt does not offer the model ${params.model}.`;
+    }
+  }
+  if (params.sshHosts?.length) {
+    const known = new Set(deps.credentialStore.listSshHosts().map((host) => host.id));
+    const missing = params.sshHosts.filter((id) => !known.has(id));
+    if (missing.length > 0) return `The SSH destination ${missing.join(", ")} does not exist.`;
+  }
+  return null;
+}
+
+export function toScheduleView(schedule: Schedule, now = new Date()): ScheduleView {
+  const parsed = parseSessionStartSpec(schedule.spec);
+  let upcoming: string[] = [];
+  if (schedule.enabled) {
+    try {
+      upcoming = nextRuns(schedule.timing, schedule.timeZone, NEXT_RUNS_SHOWN, now).map((d) => d.toISOString());
+    } catch {
+      // A timing that no longer compiles shows no times; the scheduler reports it.
+    }
+  }
+  return { ...schedule, spec: "spec" in parsed ? parsed.spec : null, nextRuns: upcoming };
+}
+
+function body(input: unknown): Record<string, unknown> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ServiceError(400, "The request body must be an object.");
+  }
+  return input as Record<string, unknown>;
+}
+
+/*
+ * The field checks create and update use. A proposal runs the same ones when it is posted and
+ * again on Confirm (reqs 9, 17).
+ */
+
+export function readScheduleName(value: unknown): string {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name) throw new ServiceError(400, "The schedule needs a name.");
+  if (name.length > MAX_NAME_CHARS || /[\r\n]/.test(name)) {
+    throw new ServiceError(400, `The name must be one line of at most ${MAX_NAME_CHARS} characters.`);
+  }
+  return name;
+}
+
+export function readScheduleTimeZone(value: unknown): string {
+  const zone = typeof value === "string" ? normalizeTimeZone(value.trim()) : null;
+  if (!zone) throw new ServiceError(400, `Unknown time zone ${JSON.stringify(value)}. Use an IANA name such as Europe/Berlin.`);
+  return zone;
+}
+
+function readTiming(value: unknown): ScheduleTiming {
+  const timing = parseScheduleTiming(value);
+  if (!timing) {
+    throw new ServiceError(
+      400,
+      'The timing must be a preset ({ kind: "hourly" | "daily" | "weekdays" | "weekly", … }) '
+        + 'or a cron expression ({ kind: "cron", expression }).',
+    );
+  }
+  return timing;
+}
+
+export function checkScheduleTiming(timing: ScheduleTiming, timeZone: string): void {
+  const problem = timingProblem(timing, timeZone);
+  if (problem) throw new ServiceError(400, problem);
+}
+
+export function readScheduleSpec(value: unknown, deps: ScheduleSpecDeps): SessionStartSpec {
+  const parsed = parseSessionStartSpec(value);
+  if ("problem" in parsed) throw new ServiceError(400, parsed.problem);
+  const problem = scheduleSpecProblem(parsed.spec, deps, "save");
+  if (problem) throw new ServiceError(400, problem);
+  return parsed.spec;
+}
+
+function existing(deps: Pick<ScheduleServiceDeps, "store">, id: string): Schedule {
+  const schedule = deps.store.get(id);
+  if (!schedule) throw new ServiceError(404, "Schedule not found");
+  return schedule;
+}
+
+export function listSchedules(deps: Pick<ScheduleServiceDeps, "store">): ScheduleView[] {
+  const now = new Date();
+  return deps.store.list().map((schedule) => toScheduleView(schedule, now));
+}
+
+export function getSchedule(deps: ScheduleServiceDeps, id: string): ScheduleView {
+  return toScheduleView(existing(deps, id));
+}
+
+/**
+ * Create's checks and write, without telling the browser. Its first slot comes after now
+ * (`active_since`): a schedule never runs for a time before it existed.
+ */
+export function insertSchedule(deps: Pick<ScheduleServiceDeps, "store" | keyof ScheduleSpecDeps>, input: unknown): Schedule {
+  const fields = body(input);
+  const name = readScheduleName(fields.name);
+  const timeZone = readScheduleTimeZone(fields.timeZone);
+  const timing = readTiming(fields.timing);
+  checkScheduleTiming(timing, timeZone);
+  const spec = readScheduleSpec(fields.spec, deps);
+  if (fields.enabled !== undefined && typeof fields.enabled !== "boolean") {
+    throw new ServiceError(400, "enabled must be true or false.");
+  }
+  return deps.store.create({ name, enabled: fields.enabled !== false, timing, timeZone, spec });
+}
+
+export function createSchedule(deps: ScheduleServiceDeps, input: unknown): ScheduleView {
+  const schedule = insertSchedule(deps, input);
+  deps.scheduler.announceSchedules();
+  return toScheduleView(schedule);
+}
+
+const EDITABLE_FIELDS = new Set(["name", "timing", "timeZone", "spec"]);
+
+function editableFields(input: unknown): Record<string, unknown> {
+  const fields = body(input);
+  for (const key of Object.keys(fields)) {
+    if (key === "enabled") throw new ServiceError(400, "Pause or resume the schedule to change whether it runs.");
+    if (!EDITABLE_FIELDS.has(key)) throw new ServiceError(400, `Unknown schedule field "${key}".`);
+  }
+  return fields;
+}
+
+/**
+ * Update's checks and write, without telling the browser; the caller holds the schedule's queue.
+ * Req 19 — applies from the next run; a run holds its own copy of the spec. A changed timing or
+ * zone moves `active_since`, so a slot of the old timing does not run. Any edit clears the reason
+ * a start failed (req 18): the user has acted on it.
+ */
+export function applyScheduleUpdate(
+  deps: Pick<ScheduleServiceDeps, "store" | keyof ScheduleSpecDeps>,
+  id: string,
+  input: unknown,
+): Schedule {
+  const fields = editableFields(input);
+  const current = existing(deps, id);
+  const changes: ScheduleChanges = {};
+  if (fields.name !== undefined) changes.name = readScheduleName(fields.name);
+  if (fields.timeZone !== undefined) changes.timeZone = readScheduleTimeZone(fields.timeZone);
+  if (fields.timing !== undefined) changes.timing = readTiming(fields.timing);
+  const timing = changes.timing ?? current.timing;
+  const timeZone = changes.timeZone ?? current.timeZone;
+  if (JSON.stringify(timing) !== JSON.stringify(current.timing) || timeZone !== current.timeZone) {
+    checkScheduleTiming(timing, timeZone);
+    changes.activeSince = new Date().toISOString();
+  }
+  if (fields.spec !== undefined) changes.spec = readScheduleSpec(fields.spec, deps);
+  deps.store.update(id, changes);
+  deps.store.setNeedsUserReason(id, null);
+  return existing(deps, id);
+}
+
+export async function updateSchedule(deps: ScheduleServiceDeps, id: string, input: unknown): Promise<ScheduleView> {
+  editableFields(input);
+  return deps.scheduler.enqueue(id, () => {
+    const schedule = applyScheduleUpdate(deps, id, input);
+    deps.scheduler.announceSchedules();
+    return toScheduleView(schedule);
+  });
+}
+
+/**
+ * Pause or resume, without telling the browser; the caller holds the schedule's queue. A resume
+ * skips the slots that passed while paused and clears the reason a start failed (req 18). False
+ * when the schedule already was so.
+ */
+export function applyScheduleEnabled(deps: Pick<ScheduleServiceDeps, "store">, id: string, enabled: boolean): boolean {
+  if (existing(deps, id).enabled === enabled) return false;
+  if (enabled) {
+    deps.store.update(id, { enabled: true, activeSince: new Date().toISOString() });
+    deps.store.setNeedsUserReason(id, null);
+  } else {
+    deps.store.update(id, { enabled: false });
+  }
+  return true;
+}
+
+export async function pauseSchedule(deps: ScheduleServiceDeps, id: string): Promise<ScheduleView> {
+  return deps.scheduler.enqueue(id, () => {
+    if (applyScheduleEnabled(deps, id, false)) deps.scheduler.announceSchedules();
+    return toScheduleView(existing(deps, id));
+  });
+}
+
+export async function resumeSchedule(deps: ScheduleServiceDeps, id: string): Promise<ScheduleView> {
+  return deps.scheduler.enqueue(id, () => {
+    if (applyScheduleEnabled(deps, id, true)) deps.scheduler.announceSchedules();
+    return toScheduleView(existing(deps, id));
+  });
+}
+
+/** Req 26 — no overlap or spacing check, and a paused schedule runs too. */
+export async function runScheduleNow(deps: ScheduleServiceDeps, id: string): Promise<ScheduleRun> {
+  existing(deps, id);
+  return deps.scheduler.runNow(id);
+}
+
+/** Req 24 — newest first; with `beforeRunId`, the runs older than that run of the schedule. */
+export function listScheduleRuns(
+  deps: ScheduleServiceDeps,
+  id: string,
+  limit?: number,
+  beforeRunId?: string,
+): ScheduleRunView[] {
+  existing(deps, id);
+  if (beforeRunId !== undefined && deps.store.getRun(beforeRunId)?.scheduleId !== id) {
+    throw new ServiceError(404, "Run not found");
+  }
+  const capped = limit === undefined || !Number.isInteger(limit) || limit <= 0
+    ? MAX_RUNS_PER_READ
+    : Math.min(limit, MAX_RUNS_PER_READ);
+  return deps.scheduler.viewRuns(deps.store.listRuns(id, capped, beforeRunId));
+}
+
+/** Req 26 — what Run now warns about; archived runs count too. */
+export async function listUnfinishedRuns(deps: ScheduleServiceDeps, id: string): Promise<UnfinishedScheduleRun[]> {
+  existing(deps, id);
+  return deps.scheduler.unfinishedRuns(id);
+}
+
+/** Req 33 — also for a run whose schedule was deleted, which its session still names. */
+export async function stopScheduleRun(deps: ScheduleServiceDeps, id: string, runId: string): Promise<ScheduleRun | null> {
+  return deps.scheduler.stopRun(id, runId);
+}
+
+/**
+ * Req 32 — removes the schedule, its run history and its notes; the run sessions stay and keep
+ * the schedule's id, so each can say its schedule was deleted. Refused while a run is not finished.
+ */
+export async function deleteSchedule(deps: ScheduleServiceDeps, id: string): Promise<void> {
+  await deps.scheduler.enqueue(id, async () => {
+    existing(deps, id);
+    const runs = await deps.scheduler.unfinishedRuns(id);
+    if (runs.length > 0) throw new ScheduleDeleteRefused(runs);
+    // A chat turn is not in the schedule's queue: one started while the check waited is seen here.
+    const resumed = deps.scheduler.unfinishedRunsNow(id);
+    if (resumed.length > 0) throw new ScheduleDeleteRefused(resumed);
+    // Notes first: a schedule whose notes are still there is never reported deleted.
+    try {
+      deps.notes?.remove(id);
+    } catch (err) {
+      throw new ServiceError(500, `The schedule was not deleted: its notes could not be removed (${getErrorMessage(err)}).`);
+    }
+    deps.store.delete(id);
+    deps.scheduler.announceSchedules();
+  });
+}

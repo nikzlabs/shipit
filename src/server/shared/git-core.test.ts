@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "./git-hooks-guard.js";
 import { GitManager, ensurePnpmStoreGitExcluded, ensureGitExcluded, ensureGitExcludedBlock } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
@@ -118,7 +118,7 @@ describe("GitManager: init & autoCommit", () => {
     fs.writeFileSync(filePath, "base\n");
     await git.autoCommit("base");
 
-    const sg = simpleGit(tmpDir);
+    const sg = safeSimpleGit(tmpDir);
     await sg.checkoutLocalBranch("feature");
     fs.writeFileSync(filePath, "feature 1\n");
     await git.autoCommit("feature 1");
@@ -154,7 +154,7 @@ describe("GitManager: init & autoCommit", () => {
     fs.writeFileSync(filePath, "base\n");
     await git.autoCommit("base");
 
-    const sg = simpleGit(tmpDir);
+    const sg = safeSimpleGit(tmpDir);
     await sg.checkoutLocalBranch("feature");
     fs.writeFileSync(filePath, "feature\n");
     await git.autoCommit("feature");
@@ -303,7 +303,7 @@ describe("GitManager: init & autoCommit", () => {
     const result = await git.autoCommit("turn with pnpm install");
     expect(result.commitHash).toBeTruthy();
 
-    const tracked = await simpleGit(tmpDir).raw(["ls-files"]);
+    const tracked = await safeSimpleGit(tmpDir).raw(["ls-files"]);
     expect(tracked).toContain("src.txt");
     expect(tracked).not.toContain(".pnpm-store");
   });

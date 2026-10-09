@@ -22,6 +22,8 @@ import { GLOBAL_SETTINGS, settingPath } from "../../shared/settings-catalogue/in
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { accountServiceForHarness } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionContainerManager } from "../session-container.js";
+import { runnerForContainerCall } from "../restart-turn-reattach.js";
 import type { UsageManager } from "../usage.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import {
@@ -86,6 +88,7 @@ export interface RunSubAgentDeps {
   agentRegistry: AgentRegistry;
   providerAccountManager?: ProviderAccountManager;
   runnerRegistry: SessionRunnerRegistry;
+  containerManager: SessionContainerManager | null;
   usageManager: UsageManager;
   chatHistoryManager: ConsultCardPersister;
   recordAgentRateLimits?: (
@@ -178,7 +181,10 @@ export async function runSubAgent(
       "Sub-agents cannot spawn further sub-agents.");
   }
 
-  const runner = deps.runnerRegistry.get(sessionId);
+  const runner = await runnerForContainerCall(
+    { ...deps, defaultAgentId: implementerHarness },
+    sessionId,
+  );
   if (!runner) {
     throw rejectSpawn(sessionId, requested, 409, "session_inactive", "Session is not active.");
   }

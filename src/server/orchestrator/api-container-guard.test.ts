@@ -510,11 +510,22 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/agent/result",
   "GET /api/sessions/:id/agent/roles",
   "GET /api/sessions/:id/agent/params",
+  // The worker's report of a turn nothing follows; it gives the session its runner and no more.
+  "POST /api/sessions/:id/agent/own-turn",
   "GET /api/sessions/:id/settings",
   "GET /api/sessions/:id/settings/detail",
   // The agent's only write path to a setting, and it writes no setting: it posts
   // the card the user clicks (docs/299-agent-settings-access req 4).
   "POST /api/sessions/:id/settings/propose",
+  // docs/324-scheduled-sessions req 9 — the agent reads schedules and posts a card; the matching
+  // `…/schedule-proposals/:cardId/confirm` and `…/cancel` are absent on purpose, so only the
+  // user's click saves a schedule.
+  "GET /api/sessions/:id/schedules",
+  "POST /api/sessions/:id/schedules/propose",
+  // docs/324-scheduled-sessions reqs 13, 28 — the read checks the asking session, and posts the
+  // notes access card when it may not read; `…/schedule-notes-access/:cardId/allow` and `…/deny`
+  // are absent on purpose, so only the user's click grants access.
+  "GET /api/sessions/:id/schedule-notes",
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",
   "GET /api/sessions/:parentId/children/:childId",
@@ -524,6 +535,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/continue-after-rebase",
   // docs/321 — agent container only; Restart all stays a user action.
   "POST /api/sessions/:sessionId/restart-after-turn",
+  // docs/324-agent-requested-compaction — records a compaction of the agent's own context.
+  "POST /api/sessions/:sessionId/compact-after-turn",
   "POST /api/sessions/:id/branch/reset-to-base",
   // docs/305 — the agent may ask for its own session's identities and
   // signatures. Every check is on the orchestrator side of these two, because

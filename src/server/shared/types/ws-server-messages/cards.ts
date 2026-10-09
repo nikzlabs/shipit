@@ -13,6 +13,8 @@ import type {
   SessionRenamedCard,
   SessionSettingsChangeCard,
   SettingsProposalCard,
+  ScheduleProposalCard,
+  ScheduleNotesAccessCard,
   NonTurnFailureCard,
   SshHostKeyCard,
 } from "../domain-types.js";
@@ -250,6 +252,35 @@ export interface WsSettingsProposalUpdate {
   sessionId: string;
   cardId: string;
   card: SettingsProposalCard;
+}
+
+/** docs/324-scheduled-sessions req 9 — a schedule, or a change to one, that the user confirms. */
+export interface WsScheduleProposalCard {
+  type: "schedule_proposal_card";
+  sessionId: string;
+  card: ScheduleProposalCard;
+}
+
+/** The whole card, as for the settings proposal: a viewer that attached later has nothing to patch. */
+export interface WsScheduleProposalUpdate {
+  type: "schedule_proposal_update";
+  sessionId: string;
+  cardId: string;
+  card: ScheduleProposalCard;
+}
+
+/** docs/324-scheduled-sessions reqs 28, 30 — an agent asks to read a schedule's notes. */
+export interface WsScheduleNotesAccessCard {
+  type: "schedule_notes_access_card";
+  sessionId: string;
+  card: ScheduleNotesAccessCard;
+}
+
+export interface WsScheduleNotesAccessUpdate {
+  type: "schedule_notes_access_update";
+  sessionId: string;
+  cardId: string;
+  card: ScheduleNotesAccessCard;
 }
 
 export interface WsNonTurnFailureCard {

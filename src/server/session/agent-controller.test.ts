@@ -17,7 +17,7 @@ import { applyModelList, exportModelList, getModel, serializeModelList } from ".
 import { claudeModelArg } from "../shared/spawn-routing.js";
 
 class FakeAgent extends EventEmitter {
-  readonly agentId = "claude" as const;
+  agentId: "claude" | "codex" = "claude";
   lastParams: AgentRunParams | null = null;
   messages: string[] = [];
   run(params: AgentRunParams): void {
@@ -485,6 +485,10 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
   let app: FastifyInstance;
   let agents: FakeAgent[];
   let workspace: string;
+  let sseSeq: number;
+  let orchestratorStreams: number;
+  let unheardTurns: number;
+  let controller: AgentController;
 
   async function status(): Promise<Record<string, unknown>> {
     const res = await app.inject({ method: "GET", url: "/agent/status" });
@@ -492,33 +496,52 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
     return res.json() as Record<string, unknown>;
   }
 
-  async function startTurn(): Promise<FakeAgent> {
+  async function startTurn(opts: { streaming?: boolean; agentId?: "claude" | "codex" } = {}): Promise<FakeAgent> {
+    const agentId = opts.agentId ?? "claude";
     const res = await app.inject({
       method: "POST",
       url: "/agent/start",
-      payload: { agentId: "claude", params: { prompt: "hi", cwd: workspace } },
+      payload: {
+        agentId,
+        params: { prompt: "hi", cwd: workspace, ...(opts.streaming ? { useStreaming: true } : {}) },
+      },
     });
     expect(res.statusCode, res.body).toBe(200);
     return agents.at(-1)!;
   }
 
+  // A resident streaming CLI whose first turn has ended.
+  async function idleResident(agentId: "claude" | "codex" = "claude"): Promise<FakeAgent> {
+    const agent = await startTurn({ streaming: true, agentId });
+    agent.emit("event", { type: "agent_result" });
+    expect(await status()).toMatchObject({ running: true, turnActive: false });
+    return agent;
+  }
+
   beforeEach(async () => {
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-live-"));
     agents = [];
+    sseSeq = 0;
+    orchestratorStreams = 1;
+    unheardTurns = 0;
     resetNodeRuntimeForTests();
     app = Fastify({ logger: false });
-    new AgentController({
-      agentFactory: () => {
+    controller = new AgentController({
+      agentFactory: (agentId) => {
         const a = new FakeAgent();
+        a.agentId = agentId === "codex" ? "codex" : "claude";
         agents.push(a);
         return a as unknown as AgentProcess;
       },
       workspaceDir: workspace,
-      broadcast: () => {},
+      broadcast: () => { sseSeq += 1; },
       permissionBroker: new PermissionBroker({ broadcast: () => {} }),
       mcpConfig: new McpConfigController({ broadcast: () => {} }),
-      latestSseSeq: () => 0,
-    }).registerRoutes(app);
+      latestSseSeq: () => sseSeq,
+      sseClientCount: () => orchestratorStreams,
+      onUnheardTurn: () => { unheardTurns += 1; },
+    });
+    controller.registerRoutes(app);
     await app.ready();
   });
 
@@ -549,7 +572,7 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
     expect(await status()).toMatchObject({ backgroundTaskCount: 0 });
   });
 
-  it("reports a self-woken turn, and clears it on the turn's result", async () => {
+  it("reports a task notification on a one-shot process, and counts no turn for it", async () => {
     const agent = await startTurn();
     agent.emit("event", { type: "agent_result" });
     expect(await status()).toMatchObject({ turnActive: false, selfWakeActive: false });
@@ -559,6 +582,82 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
 
     agent.emit("event", { type: "agent_result" });
     expect(await status()).toMatchObject({ selfWakeActive: false });
+  });
+
+  it("counts a turn a resident CLI starts on a task notification, from the event that starts it", async () => {
+    const agent = await idleResident();
+    const seqBeforeTheWake = sseSeq;
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "t1", status: "completed" });
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "the tests passed" }] });
+    expect(await status()).toMatchObject({
+      turnActive: true,
+      selfWakeActive: true,
+      turnStartSseSeq: seqBeforeTheWake,
+    });
+
+    agent.emit("event", { type: "agent_result" });
+    expect(await status()).toMatchObject({ turnActive: false, selfWakeActive: false });
+  });
+
+  it("says whether an orchestrator heard such a turn start, and reports one that none did", async () => {
+    const agent = await idleResident();
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "t1" });
+    expect((await status()).ownTurn).toBe("heard");
+    agent.emit("event", { type: "agent_result" });
+    expect(await status()).not.toHaveProperty("ownTurn");
+    expect(unheardTurns).toBe(0);
+
+    orchestratorStreams = 0;
+    agent.emit("event", { type: "agent_self_wake", taskId: "t2" });
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "done" }] });
+    expect((await status()).ownTurn).toBe("unheard");
+    expect(unheardTurns).toBe(1);
+
+    controller.noteOrchestratorStream();
+    expect((await status()).ownTurn).toBe("heard");
+  });
+
+  it("marks no turn that was sent as the CLI's own", async () => {
+    const agent = await idleResident();
+    orchestratorStreams = 0;
+    agent.emit("event", { type: "agent_self_wake", taskId: "t1" });
+    agent.emit("event", { type: "agent_result" });
+
+    const steer = await app.inject({ method: "POST", url: "/agent/message", payload: { text: "next" } });
+    expect(steer.statusCode).toBe(200);
+    agent.emit("event", { type: "agent_self_wake", taskId: "t2" });
+    expect(await status()).toMatchObject({ turnActive: true });
+    expect(await status()).not.toHaveProperty("ownTurn");
+    expect(unheardTurns).toBe(1);
+  });
+
+  it("counts a turn a resident CLI starts by answering a late steer", async () => {
+    const agent = await idleResident();
+
+    agent.emit("event", { type: "agent_assistant", parentToolUseId: "toolu_sub", content: [] });
+    expect(await status()).toMatchObject({ turnActive: false });
+
+    const seqBeforeTheAnswer = sseSeq;
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "on it" }] });
+    expect(await status()).toMatchObject({ turnActive: true, turnStartSseSeq: seqBeforeTheAnswer });
+  });
+
+  it("keeps a running turn's start when a task notifies inside it", async () => {
+    const agent = await startTurn({ streaming: true });
+    const { turnStartSseSeq } = await status();
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "working" }] });
+
+    agent.emit("event", { type: "agent_self_wake", taskId: "t1" });
+    expect(await status()).toMatchObject({ turnActive: true, turnStartSseSeq });
+  });
+
+  it("counts no turn for output after the result of a backend that starts none of its own", async () => {
+    const agent = await idleResident("codex");
+
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "final text" }] });
+    expect(await status()).toMatchObject({ turnActive: false });
   });
 
   it("clears the background-task count when the agent process dies", async () => {
@@ -799,5 +898,60 @@ describe("AgentController — the orchestrator's model list (docs/318)", () => {
     await start();
     expect(agents).toHaveLength(2);
     expect(getModel(opus6)?.label).toBe("Opus 6");
+  });
+});
+
+// planning#644 — an OpenCode compaction refused before it reaches the server ends its turn
+// inside run(), and its done vacates the slot before /agent/start returns.
+describe("AgentController — a turn that ends inside run()", () => {
+  class EndsInRunAgent extends FakeAgent {
+    cleanups = 0;
+    override run(params: AgentRunParams): void {
+      super.run(params);
+      this.emit("event", { type: "agent_result", status: "error", sessionId: "", error: "refused" });
+      this.emit("done", 1);
+    }
+    override writeMcpConfig(): Record<string, never> {
+      return { cleanup: () => { this.cleanups += 1; } } as never;
+    }
+  }
+
+  let app: FastifyInstance;
+  let workspace: string;
+  let agent: EndsInRunAgent;
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-ends-in-run-"));
+    resetNodeRuntimeForTests();
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        agent = new EndsInRunAgent();
+        return agent as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("starts cleanly, runs the MCP cleanup and frees the slot", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "/compact", cwd: workspace } },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(agent.cleanups).toBe(1);
+    expect((await app.inject({ method: "GET", url: "/agent/status" })).json().running).toBe(false);
   });
 });

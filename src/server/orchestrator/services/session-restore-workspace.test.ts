@@ -90,6 +90,35 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     expect(sessionManager.get(id)?.diskTier).toBe("hot");
   });
 
+  it("restarts the disk-idle clock before it clones from the cache the disk janitor could reclaim", async () => {
+    const id = "sess-dormant";
+    const workspaceDir = path.join(tmpDir, "workspace-dormant");
+    const longAgo = new Date(Date.now() - 46 * 86_400_000).toISOString();
+    sessionManager.track(id, "Dormant", workspaceDir);
+    sessionManager.setRemoteUrl(id, remoteUrl);
+    sessionManager.setBranch(id, "main");
+    sessionManager.setLastViewedAt(id, longAgo);
+    dbManager.db.prepare("UPDATE sessions SET disk_tier = 'evicted', last_used_at = ? WHERE id = ?").run(longAgo, id);
+
+    let viewedAtClone: string | undefined;
+    const recordingRepoGit = (dir: string): RepoGit => {
+      const git = createRepoGit(dir);
+      const cloneFromCache = git.cloneFromCache.bind(git);
+      git.cloneFromCache = (...args) => {
+        viewedAtClone = sessionManager.get(id)?.lastViewedAt;
+        return cloneFromCache(...args);
+      };
+      return git;
+    };
+
+    const restored = await restoreSessionWorkspace(
+      sessionManager, recordingRepoGit, () => cacheDir, githubAuthManager, repoStore, id,
+    );
+
+    expect(restored).toBe(true);
+    expect(Date.parse(viewedAtClone!)).toBeGreaterThan(Date.parse(longAgo));
+  });
+
   it("docs/298: withdraws a broken-workspace marker the fresh clone cannot still have", async () => {
     const id = "sess-marked";
     const workspaceDir = path.join(tmpDir, "workspace-marked");

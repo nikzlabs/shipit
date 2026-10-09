@@ -17,6 +17,21 @@ import type { SettingsProposalDiffLine, SettingsProposalTextChange } from "../..
  */
 
 /**
+ * How much of a value one chip can show.
+ *
+ * A change nobody can check by looking is not a change the user can approve, so
+ * a value too long for the card is refused rather than shown truncated — the
+ * same test as an operation whose full effect the card cannot display
+ * (plan.md → Collections are patched, never replaced).
+ *
+ * Past it a PROSE setting is not refused but shown differently, as a
+ * full-context diff up to {@link CARD_TEXT_MAX} (req 9): the chip is what cannot
+ * carry the change, and the refusal was never meant to say that the user's own
+ * instructions are unproposable.
+ */
+export const CARD_VALUE_MAX = 200;
+
+/**
  * How much prose one card may carry per side.
  *
  * Deliberately lower than a declared `maxLength` of 50,000, and that is not an
@@ -194,4 +209,15 @@ export function buildTextChange(before: string, after: string): SettingsProposal
     added: lines.filter((line) => line.kind === "added").length,
     removed: lines.filter((line) => line.kind === "removed").length,
   };
+}
+
+/**
+ * The two texts a diff was built from. Exact, because the diff is full-context
+ * and `splitLines` never yields `[""]`, so joining a side's lines back is the
+ * text and not an approximation of it.
+ */
+export function textChangeSides(change: SettingsProposalTextChange): { before: string; after: string } {
+  const side = (skip: SettingsProposalDiffLine["kind"]) =>
+    change.lines.filter((line) => line.kind !== skip).map((line) => line.text).join("\n");
+  return { before: side("added"), after: side("removed") };
 }

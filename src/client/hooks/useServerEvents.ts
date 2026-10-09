@@ -8,9 +8,10 @@ import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
+import { useScheduleStore } from "../stores/schedule-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { AgentId, SessionListRow, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
+import type { AgentId, SessionListRow, RepoInfo, PrStatusSummary, DockerMemoryStats, HostCpuStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice, ScheduleRun, ScheduleView } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption, GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
@@ -29,6 +30,7 @@ import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-a
 import { useForegroundSignal } from "./useForegroundSignal.js";
 import { notifySessionNetworkModeChanged } from "./useSessionNetworkMode.js";
 import { notifyPreviewsStopped } from "./usePreviewsStopped.js";
+import { retireRewindUndo } from "./message-handlers/rewind-complete.js";
 import { adoptModelList } from "../../server/shared/catalogue/model-list.js";
 
 let reloadingForClientUpdate = false;
@@ -182,6 +184,7 @@ export function useServerEvents(): void {
     es.addEventListener("session_agent_started", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { sessionId: string; activity?: string };
       const store = useSessionStore.getState();
+      retireRewindUndo(data.sessionId);
       store.setActiveRunnerSessions((prev) => {
         const next = new Set(prev);
         next.add(data.sessionId);
@@ -721,6 +724,11 @@ export function useServerEvents(): void {
       useUiStore.getState().setDockerMemory(data);
     });
 
+    es.addEventListener("host_cpu", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as HostCpuStats;
+      useUiStore.getState().setHostCpu(data);
+    });
+
     es.addEventListener("subscription_limits", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { limits: SubscriptionLimitsMap };
       useUiStore.getState().setSubscriptionLimits(data.limits);
@@ -782,6 +790,16 @@ export function useServerEvents(): void {
       }
     });
 
+    es.addEventListener("schedules", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { schedules: ScheduleView[] };
+      useScheduleStore.getState().setSchedules(data.schedules);
+    });
+
+    es.addEventListener("schedule_run", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { run: ScheduleRun };
+      useScheduleStore.getState().applyRun(data.run);
+    });
+
     es.addEventListener("full_reset_complete", () => {
       fullResetAllStores();
 
@@ -801,6 +819,10 @@ export function useServerEvents(): void {
 
     es.onopen = () => {
       reconnectAttemptRef.current = 0;
+      // No snapshot of the schedules comes with the connection, and an earlier one missed events.
+      const schedules = useScheduleStore.getState();
+      void schedules.load();
+      void schedules.reloadRuns();
       /*
         The recovery refetch (docs/299 → Apply goes through a shared layer). A
         broadcast does not reach a viewer that was away, and hanging the catch-up

@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
@@ -111,11 +112,18 @@ export class TestClient {
 
   async receiveType(type: string, timeoutMs = 3000): Promise<WsServerMessage> {
     const deadline = Date.now() + timeoutMs;
+    // A skipped `error` is usually the answer the caller was waiting for (planning#635).
+    const skipped: string[] = [];
     while (true) {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new Error(`receiveType("${type}") timed out`);
-      const msg = await this.receive(remaining);
+      const msg = remaining > 0 ? await this.receive(remaining).catch(() => null) : null;
+      if (!msg) {
+        throw new Error(
+          `receiveType("${type}") timed out after ${timeoutMs}ms; skipped: ${skipped.join(", ") || "nothing"}`,
+        );
+      }
       if (msg.type === type) return msg;
+      skipped.push(msg.type === "error" ? `error(${JSON.stringify(msg.message)})` : msg.type);
     }
   }
 
@@ -922,6 +930,36 @@ export async function createTestSession(
   await git.init();
   sessionManager.track(sessionId, title, sessionDir);
   return { sessionId, sessionDir };
+}
+
+export interface SseEvent { event: string; data: unknown }
+
+/**
+ * Records the global SSE stream in arrival order, as the sidebar receives it. Close it
+ * before `app.close()`, which waits for open streams.
+ */
+export function recordSse(port: number): Promise<{ events: SseEvent[]; close: () => void }> {
+  return new Promise((resolve, reject) => {
+    const events: SseEvent[] = [];
+    let buffer = "";
+    const req = http.get(`http://127.0.0.1:${port}/api/events`, { headers: { Accept: "text/event-stream" } }, (res) => {
+      res.setEncoding("utf-8");
+      res.on("data", (chunk: string) => {
+        buffer += chunk;
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const event = /^event: ?(.*)$/m.exec(raw)?.[1]?.trim();
+          const data = raw.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
+          if (!event || !data) continue;
+          try { events.push({ event, data: JSON.parse(data) as unknown }); } catch { /* not JSON */ }
+        }
+      });
+      setTimeout(() => resolve({ events, close: () => req.destroy() }), 20);
+    });
+    req.on("error", reject);
+  });
 }
 
 export async function waitFor(
