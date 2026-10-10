@@ -20,7 +20,7 @@ dropped unless the session was created as an ops session.
   docker logs --tail 200 <name>
   docker inspect <name>
   docker stats --no-stream
-  docker events --since 10m
+  docker events --since 10m --until 1s   # without --until it never returns
   ```
 - **Read-only systemd journal.** `/var/log/journal` (persistent) and/or
   `/run/log/journal` (volatile) are mounted read-only. Pass the directory
@@ -29,8 +29,25 @@ dropped unless the session was created as an ops session.
   were found"); `-D /var/log/journal` points it at the host's mounted journal:
   ```bash
   journalctl -D /var/log/journal --since "1 hour ago" --no-pager
-  journalctl -D /var/log/journal --since "1 hour ago" --no-pager | grep "LOOP DETECTED"
+  journalctl -D /var/log/journal --since "1 hour ago" --no-pager | grep -Ei "oom|killed"
   ```
+  **The journal is the host's log, not ShipIt's.** What it holds depends on the
+  host: normally the kernel (OOM kills) and the host's systemd units, and the
+  Docker daemon where systemd runs it — not on Docker Desktop, which keeps the
+  daemon's log elsewhere. The orchestrator's own lines — `LOOP DETECTED`,
+  `[containers] …`, anything with a session id — are its container's output. They
+  reach the journal only when that container uses Docker's `journald` logging
+  driver: the VPS stack sets `json-file`, and a local stack takes the daemon's
+  default. So an empty grep of the journal for a ShipIt line shows nothing; read
+  the orchestrator's `docker logs`, which works with each of those drivers. Its
+  container name depends on the install, so find it, and add `2>&1`, because its
+  warnings and errors are on stderr:
+  ```bash
+  docker ps --filter label=com.docker.compose.service=shipit --format '{{.Names}}'
+  docker logs --since 1h <orchestrator> 2>&1 | grep "LOOP DETECTED"
+  ```
+  The pipe also hides a `docker` error such as "No such container". An empty
+  result counts only when the same command without the `grep` prints log lines.
   This host uses **persistent** journal storage, so `/var/log/journal` is the
   populated path; `/run/log/journal` exists but is empty here. If neither path is
   populated (journald is `Storage=volatile` with no `/run` journal, or the host
@@ -106,8 +123,8 @@ dropped unless the session was created as an ops session.
   This replaces the old dead end where the only way from a PR to a session was
   guessing between candidate UUIDs by timestamp. Reach for it first.
 
-- **Read-only session server logs.** `docker logs shipit-shipit-1` is **not the
-  whole story.** A large class of orchestrator events is written per session
+- **Read-only session server logs.** The orchestrator's `docker logs` are **not
+  the whole story.** A large class of orchestrator events is written per session
   through `broadcastLog`, which goes to the durable log store and the in-memory
   ring and makes **no console call at all** — so it never appears in the
   orchestrator container's stdout or the journal. Auto-push outcomes, compose

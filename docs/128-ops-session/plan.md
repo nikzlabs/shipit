@@ -37,8 +37,9 @@ This doc proposes the **middle ground**: a dedicated session inside
 the production ShipIt where the agent has read-only access to the
 Docker socket and the host's systemd journal. The agent stays in its
 container (existing architecture), but it can run the investigation
-prompts we already have ("show all session containers, grep journal
-for `LOOP DETECTED` in the last hour, cross-reference docker events")
+prompts we already have ("show all session containers, grep the
+orchestrator's log for `LOOP DETECTED` in the last hour, cross-reference
+docker events")
 without the operator ever leaving the ShipIt tab.
 
 ## Design
@@ -62,7 +63,7 @@ declares the privileged mounts).
 | Mount / env | Purpose | Risk surface |
 |---|---|---|
 | `DOCKER_HOST=tcp://docker-socket-proxy:2375` | Reach the daemon **only** through the read-only proxy (see below) — `docker ps`, `docker logs`, `docker inspect`, `docker events`, `docker stats` | Read access only — proxy rejects stop/rm/exec |
-| `/var/log/journal` (read-only) | `journalctl --since`, grep for `LOOP DETECTED`, `[container]`, dispose stack traces | Read access only |
+| `/var/log/journal` (read-only) | `journalctl --since` for the host's side: kernel OOM kills, systemd units. Not ShipIt's own lines — see "What the journal carries, and what it does not" | Read access only |
 | `/run/log/journal` (read-only, fallback) | Volatile journal when `/var/log/journal` isn't persistent | Read access only |
 | `/var/run/docker.sock` — **NOT mounted into the agent container** | The real socket is mounted only into the proxy sibling, never the agent | — |
 | `/var/lib/docker` — **NOT mounted** | Avoid leaking container layer data, secrets in env files, etc. | — |
@@ -646,6 +647,38 @@ journal must never fail a container boot, but it must also never fail
 *silently* again — that is what let this regression sit unnoticed.
 `session-worker-entrypoint.test.ts` executes the real script against
 stubbed `stat`/`getent`/`groupadd`/`usermod`/`gosu` to pin both.
+
+## What the journal carries, and what it does not
+
+The journal pillar is the **host's** log, not ShipIt's. What it holds depends on
+the host: normally the kernel (OOM kills) and the host's systemd units, and the
+Docker daemon where systemd runs it (not on Docker Desktop). The orchestrator's
+own lines (`LOOP DETECTED`, `[containers] …`, anything with a session id) are its
+container's output, and they reach the journal only when that container uses
+Docker's `journald` logging driver. No stack arranges that: the VPS compose file
+sets `json-file` for the orchestrator, and the local stacks take the daemon's
+default.
+
+The recipes once grepped the journal for `LOOP DETECTED` and for session ids, and
+said that an empty result was fine — a clean result that the grep could not have
+contradicted. On a Docker Desktop / WSL2 host, 24 hours of a readable journal held
+no ShipIt line at all. So:
+
+- A ShipIt line is read with `docker logs` on the orchestrator container, which
+  works with the `json-file`, `local` and `journald` drivers. The recipes keep the
+  journal grep for the host's side only, and add `2>&1`, because the
+  orchestrator's warnings and errors are on stderr.
+- No recipe or doc names the orchestrator container. Its name comes from the
+  install's Compose project (`shipit-shipit-1`, `shipit-prod-shipit-1`, …); the
+  recipes find it by the Compose service label.
+
+Two checks of the verify recipe could not do their job, and are corrected: the
+`docker events` window had equal bounds and so was empty, and the
+leaked-host-directory check matched its pattern anywhere on a `mount` line, where
+overlay options name host paths on every container. It now matches the mount
+point. `templates.test.ts` holds these: no hard-coded container name, no journal
+grep for a ShipIt line, no `docker events` call that is empty or never returns,
+and the leak check run against real `mount` lines.
 
 ## Risks / open questions
 

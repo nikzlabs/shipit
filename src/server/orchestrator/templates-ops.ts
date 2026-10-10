@@ -143,12 +143,22 @@ const PROMPT_INVESTIGATE_LOOP = `# Investigate a container restart loop
 A session container looks like it's stuck in a SIGTERM → recreate loop. Find it
 and explain why.
 
-1. Grep the journal for the loop detector and recent container churn. Use
+1. Grep the orchestrator's own log for the loop detector and recent container
+   churn. The orchestrator is a container whose name depends on the install, and
+   its warnings are on stderr, hence \`2>&1\`:
+   \`\`\`
+   docker ps --filter label=com.docker.compose.service=shipit --format '{{.Names}}'
+   docker logs --since 1h <orchestrator> 2>&1 | grep -E "LOOP DETECTED|SIGTERM|recreat"
+   \`\`\`
+   Then grep the journal for the host's side: the kernel's OOM kills, and the
+   Docker daemon where systemd runs it (not on Docker Desktop). Use
    \`-D /var/log/journal\` — a bare \`journalctl\` reads the agent container's own
    (empty) journal, not the host's mounted one:
    \`\`\`
-   journalctl -D /var/log/journal --since "1 hour ago" --no-pager | grep -E "LOOP DETECTED|SIGTERM|recreat|OOM|Killed"
+   journalctl -D /var/log/journal --since "1 hour ago" --no-pager | grep -Ei "SIGTERM|OOM|Killed"
    \`\`\`
+   ShipIt's own lines are normally not in the journal, so an empty result there
+   clears nothing.
 2. List containers and spot any with a high restart count or short uptime:
    \`\`\`
    docker ps -a --format 'table {{.Names}}\\t{{.Status}}\\t{{.RunningFor}}'
@@ -157,7 +167,7 @@ and explain why.
    \`\`\`
    docker inspect <name> --format '{{.RestartCount}} {{.State.ExitCode}} {{.State.Error}} {{.State.OOMKilled}}'
    \`\`\`
-4. Tail its logs and the orchestrator journal around the restart timestamps.
+4. Tail its logs and the orchestrator's log around the restart timestamps.
 
 Report: which container, the loop cause (OOM? failed healthcheck? crash on
 boot?), and whether it's still looping now.
@@ -178,13 +188,16 @@ behaving oddly. Figure out what's wrong — read-only.
    docker stats --no-stream <name>
    \`\`\`
 3. Recent logs — the session's own server-source lines FIRST, then the container
-   and the orchestrator's journal. The first command is the one that shows what
+   and the orchestrator's own log. The first command is the one that shows what
    ShipIt itself did for this session; those lines are written per session and
-   never reach the orchestrator's stdout, so \`docker logs\` alone will miss them:
+   never reach the orchestrator's stdout, so \`docker logs\` alone will miss them.
+   The orchestrator is a container whose name depends on the install; the host
+   journal normally does not carry its lines:
    \`\`\`
    shipit session logs <session-id> --since 2h
    docker logs --tail 200 <name>
-   journalctl -D /var/log/journal --since "30 min ago" --no-pager | grep <session-id>
+   docker ps --filter label=com.docker.compose.service=shipit --format '{{.Names}}'
+   docker logs --since 30m <orchestrator> 2>&1 | grep <session-id>
    \`\`\`
 4. Check its compose siblings (if any) on the same network are healthy.
 
@@ -246,7 +259,11 @@ beyond the explicitly-labeled "should be rejected" probes below.
 5. \`docker ps -a --format 'table {{.Names}}\\t{{.Status}}'\` — list containers.
 6. Pick any running container and run \`docker inspect <name> --format '{{.State.Status}}'\`
    and \`docker logs --tail 5 <name>\`.
-7. \`docker events --since 1m --until 1m\` (bounded so it returns) — events readable.
+7. \`docker events --since 1h --until 1s | tail -5\` — events readable. An
+   \`--until\` in the past makes it return; the two bounds must differ, or the
+   window is empty. Expect event lines. No output and no error means that the
+   daemon holds no event in that window: report the call as permitted, not the
+   events as read.
 8. \`docker stats --no-stream --format 'table {{.Name}}\\t{{.MemUsage}}'\` — stats readable.
 
 ## C. Mutations through the proxy (these must be REJECTED)
@@ -270,14 +287,23 @@ was a true no-op, not a real stop).
     \`journalctl -D /var/log/journal --since "1 hour ago" --no-pager | tail -20\`
     (use \`-D /run/log/journal\` if that's the populated path). Confirm you get
     real host log lines.
-15. Run one real investigation recipe end-to-end:
-    \`journalctl -D /var/log/journal --since "24 hours ago" --no-pager | grep -E "LOOP DETECTED|SIGTERM|OOM|Killed" | tail -20\`
-    (empty output is fine — the point is the pipeline runs against host logs).
+15. Run one real investigation pipeline against each log source. The journal has
+    the host's side (the kernel's OOM kills, for one). ShipIt's own lines are the
+    orchestrator container's output, and its name depends on the install:
+    \`journalctl -D /var/log/journal --since "24 hours ago" --no-pager | grep -Ei "SIGTERM|OOM|Killed" | tail -20\`
+    \`docker ps --filter label=com.docker.compose.service=shipit --format '{{.Names}}'\`
+    \`docker logs --tail 3 <orchestrator> 2>&1\` — must print log lines. The pipe
+    in the next command hides an error such as "No such container".
+    \`docker logs --since 24h <orchestrator> 2>&1 | grep -E "LOOP DETECTED|SIGTERM" | tail -20\`
+    Empty output from the two greps passes — the point is that both pipelines
+    run. It does not show that nothing happened.
 
 ## E. Negative boundaries (these must NOT be accessible)
 16. Confirm no extra host filesystem leaked in: there should be NO host bind of
-    \`/var/lib/docker\`, \`/root\`, \`/home\`, or the host \`/etc\`. Spot-check
-    \`mount | grep -E "/var/lib/docker|/root|/home"\` returns nothing host-related.
+    \`/var/lib/docker\`, \`/root\`, \`/home\`, or the host \`/etc\`. Spot-check by
+    mount point, not by the whole line — overlay options name host paths on every
+    container (\`upperdir=/run/rootfs.upper\`, \`lowerdir=/var/lib/docker/…\`):
+    \`mount | awk '$3 ~ "^(/var/lib/docker|/root|/home)(/|$)"'\` must print nothing.
 
 ## F. Service visibility
 17. Hit the ShipIt service API for this session and confirm \`docker-socket-proxy\`
@@ -353,7 +379,8 @@ The record includes the session's container name, so you can go straight on:
 shipit session logs <session-id> --since 24h      # the session's own SERVER-source lines
 docker ps -a --filter "name=<containerName>" --format 'table {{.Names}}\\t{{.Status}}'
 docker logs --tail 200 <containerName>
-journalctl -D /var/log/journal --since "24 hours ago" --no-pager | grep <session-id>
+docker ps --filter label=com.docker.compose.service=shipit --format '{{.Names}}'   # the orchestrator
+docker logs --since 24h <orchestrator> 2>&1 | grep <session-id>
 \`\`\`
 Run \`shipit session logs\` FIRST when the question is "what did ShipIt do for
 this session?". Auto-push outcomes, compose reconcile failures and container
@@ -393,8 +420,8 @@ server-source lines.
 
 A large class of orchestrator events is written **per session** via
 \`broadcastLog\`, which writes to the durable log store and the in-memory ring and
-makes **no console call**. Those lines never appear in
-\`docker logs shipit-shipit-1\` or in the journal. Auto-push outcomes (including
+makes **no console call**. Those lines never appear in the orchestrator
+container's \`docker logs\` or in the journal. Auto-push outcomes (including
 \`Auto-push rejected: this session's branch and its remote have diverged.\` and the
 \`Divergence shape: …\` line that follows it), compose reconcile
 failures, container re-adoption, idle disposal and OOM notices all live there.
@@ -425,7 +452,8 @@ hand you the whole history dressed as the window you asked for.
 
 \`\`\`
 docker logs --tail 200 <containerName>                       # printed by 'session find'
-journalctl -D /var/log/journal --since "6 hours ago" --no-pager | grep <session-id>
+docker ps --filter label=com.docker.compose.service=shipit --format '{{.Names}}'   # the orchestrator
+docker logs --since 6h <orchestrator> 2>&1 | grep <session-id>
 \`\`\`
 
 ## Reading the result
