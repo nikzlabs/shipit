@@ -139,6 +139,28 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
       waiting
 - [x] Each guard proved red on its own by deleting it singly
 
+## A held request says so (req 8)
+
+- [x] The answer to `--auto` says the merge waits for an idle session, what idle
+      means, and names background work that is live as the request is recorded
+- [x] A request held for two minutes with no turn running gets one transcript
+      notice that names what holds it
+- [x] Every reason a request waits is logged once per change of reason
+- [x] `github.md` and the wiki state the rule and its consequence for a
+      background wait
+- [x] The new tests proved red against the code without the change
+
+## From the independent review of req 8
+
+- [x] The full busy check runs again after the GitHub read, before the hold: a
+      turn that started and ended inside the read could leave a background
+      command running, and the merge went ahead (req 6)
+- [x] The held-request notice is persisted before it is marked as said, so a
+      write that fails is tried again
+- [x] The answer to `--auto` reads the background work as the request is
+      recorded, not before the GitHub read
+- [x] The docs say that the count is the CLI's report, with its one-hour bound
+
 ## Quality
 
 - [x] Tests as listed in plan.md

@@ -267,6 +267,18 @@ arms a watch and ends the turn; ShipIt wakes the session with a new turn when
 the pull request lands, and the armed watch appears in the transcript as a card
 the user can cancel.
 
+A wait also holds back the merge it waits for. In a repo-bound session, ShipIt
+performs a merge you requested with `--auto` only while the session is idle: no
+turn running, no background command or sub-agent consult still running, no
+message queued, and no work of ShipIt's own in progress on the branch. A `sleep`
+or a poll started in the background keeps the session busy while your CLI
+reports it, and its end normally starts a new turn. When a request has waited
+two minutes on a session that is not idle, with no turn running, the transcript
+gets one notice that names what holds it — that notice is the answer when the
+user asks why a pull request with green checks has not merged. A sandbox session
+is different: there `--auto` hands the merge to GitHub, which does not wait for
+the session.
+
 ## After it merges
 
 The card turns to **Merged**, and the session counts as resolved — it stops

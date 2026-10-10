@@ -412,8 +412,29 @@ what restarted CI.
 - **The result always appears in this session's transcript**, whether it merged
   or the request ended. Do not poll for it and do not call `--auto` repeatedly to
   check; a second call only re-arms the same request.
-- **A merge and a turn never overlap.** ShipIt merges only while the session is
-  idle, and a message that arrives during the merge starts as soon as it is done.
+- **A merge and a turn never overlap: ShipIt merges only while the session is
+  idle.** Idle means all of these: no turn is running, no background command
+  and no sub-agent consult is still running, ShipIt has no work of its own in
+  progress on the branch (the commit and push after a turn, a rebase), and no
+  message is queued. A message that arrives during the merge starts as soon as
+  it is done.
+- **So do not wait for the merge — the wait is what holds it back.** A `sleep`
+  or a poll loop in the turn keeps the turn running. The same command started
+  in the background keeps the session busy after the turn ends, for as long as
+  your CLI reports it (ShipIt stops counting a background command one hour
+  after the list of them last changed). When it finishes, its completion
+  normally starts a new turn, and the merge waits for that turn too: a
+  background `sleep 1200` to "check later" delays the merge by twenty minutes.
+  Arm the request, run `shipit session notify-on-merge --self`, and end the
+  turn. A background command that was already running when you armed — a dev
+  server you started — holds the merge the same way; the answer to `--auto`
+  names it. Stop it if it is not necessary.
+- **A request that waits on a session that is not idle says so.** After two
+  minutes of that with no turn running, the transcript gets one notice for the
+  request, naming what holds it. The request stays armed and merges once the
+  session is idle and the checks have passed. If the turn needs the merge and
+  the session cannot become idle, `gh pr merge` without `--auto` merges inside
+  the turn once the checks are green.
 - The request survives a restart of ShipIt.
 
 In a **Sandbox** session `--auto` arms GitHub's own merge-when-green instead, as

@@ -19,7 +19,8 @@ import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { logMergePerformed } from "./merge-attribution.js";
 import {
-  decideMerge, githubRefusalClearsByItself, readMergeObservation, RETRYABLE_REFUSALS,
+  decideMerge, describeBackgroundWork, githubRefusalClearsByItself, readMergeObservation,
+  RETRYABLE_REFUSALS,
 } from "./merge-gate.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
@@ -366,6 +367,8 @@ export async function agentMergePullRequest(
     /** Keep the claim until reconciliation resolves the uncertain outcome. */
     onIndeterminate?: (expectedSha: string) => Promise<void>;
     onArm?: (expectedSha: string) => string | null;
+    /** What the session's agent has running in the background, read as the request is recorded. */
+    backgroundWork?: () => string[];
   },
 ): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; retryable?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
@@ -399,14 +402,26 @@ export async function agentMergePullRequest(
   if (decision.action === "arm") {
     const refusal = opts.onArm?.(decision.sha);
     if (refusal) return { success: false, message: refusal };
-    return {
-      success: true,
-      message:
-        `ShipIt will merge PR #${opts.number} at ${decision.sha.slice(0, 8)} once its checks pass. `
-        + "It merges that exact commit — pushing again cancels the request, and so does withdrawing "
-        + "the repository's merge permission. The result appears in this session's transcript.",
-      autoMergeEnabled: true,
-    };
+    const lines = [
+      `ShipIt will merge PR #${opts.number} at ${decision.sha.slice(0, 8)} once its checks pass `
+      + "and this session is idle. It merges that exact commit — pushing again cancels the "
+      + "request, and so does withdrawing the repository's merge permission. The result appears "
+      + "in this session's transcript.",
+      "Idle means all of: no turn is running, no background command or sub-agent is still "
+      + "running, no message is queued, and ShipIt has no work of its own in progress on the "
+      + "branch. So end this turn. Do not wait for the merge in it, and do not start a background "
+      + "command (a `sleep`, a poll) to check on it: each one keeps the session busy and holds "
+      + "the merge back until it ends. `shipit session notify-on-merge --self` starts a new turn "
+      + "when the pull request merges.",
+    ];
+    const work = opts.backgroundWork?.() ?? [];
+    if (work.length > 0) {
+      lines.push(
+        `Background work is running in this session now (${describeBackgroundWork(work)}). `
+        + "ShipIt will not merge until it ends, so stop it if it is not necessary.",
+      );
+    }
+    return { success: true, message: lines.join("\n"), autoMergeEnabled: true };
   }
 
   if (decision.action === "refuse") {
