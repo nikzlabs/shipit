@@ -524,6 +524,169 @@ describe("runDiskJanitor", () => {
       expect(net.has(COMPOSE_NETWORK)).toBe(true);
       expect(cliRemovals).toEqual([]);
     });
+
+    // An orchestrator container that restarts in place is back on every network it had joined.
+    describe("that the orchestrator holds after a restart in place", () => {
+      const ORCHESTRATOR = os.hostname();
+      const UNSTORED_NETWORK = "shipit-session-fed987654321-aaaa-bbbb-cccc-dddddddddddd";
+
+      // `network ls` as the daemon answers it: `dangling` leaves out a network that has an endpoint.
+      function heldNetworks(seed: (net: ReturnType<typeof fakeNetworkDocker>) => void) {
+        const net = fakeNetworkDocker();
+        seed(net);
+        const names = [...ALL, UNSTORED_NETWORK];
+        const lsRequests: string[][] = [];
+        const cliRemovals: string[] = [];
+        const runDocker = (args: string[]): Promise<string> => {
+          if (args[0] === "network" && args[1] === "ls") {
+            lsRequests.push(args);
+            const dangling = args.includes("dangling=true");
+            const wanted = args.find((arg) => arg.startsWith("name="))?.slice("name=".length) ?? "";
+            return Promise.resolve(names.filter((name) =>
+              net.has(name) && name.includes(wanted) && !(dangling && net.attached(name).length > 0),
+            ).join("\n"));
+          }
+          if (args[0] === "network" && args[1] === "rm") cliRemovals.push(args[2]);
+          return Promise.resolve("");
+        };
+        return { net, runDocker, lsRequests, cliRemovals, docker: net.docker as unknown as Docker };
+      }
+
+      it("is removed when no other container names it", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const { net, runDocker, cliRemovals, docker } = heldNetworks((n) => n.seed(COMPOSE_NETWORK, [ORCHESTRATOR]));
+
+        const result = await runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: () => false,
+        });
+
+        expect(net.has(COMPOSE_NETWORK)).toBe(false);
+        expect(net.calls).toEqual([`disconnect:${COMPOSE_NETWORK}:${ORCHESTRATOR}`, `remove:${COMPOSE_NETWORK}`]);
+        expect(cliRemovals).toEqual([]);
+        expect(result.orphanNetworksRemoved).toBe(1);
+      });
+
+      it("is kept while a service container runs on it", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const { net, runDocker, docker } = heldNetworks((n) => n.seed(COMPOSE_NETWORK, [ORCHESTRATOR, "web-1"]));
+
+        const result = await runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: () => false,
+        });
+
+        expect(net.attached(COMPOSE_NETWORK)).toEqual([ORCHESTRATOR, "web-1"].sort());
+        expect(net.calls).toEqual([]);
+        expect(result.orphanNetworksRemoved).toBe(0);
+      });
+
+      it("is kept while a stopped service container names it", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const { net, runDocker, docker } = heldNetworks((n) => {
+          n.seed(COMPOSE_NETWORK, [ORCHESTRATOR, "web-1"]);
+          n.stopContainer("web-1");
+        });
+
+        await runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: () => false,
+        });
+
+        expect(net.attached(COMPOSE_NETWORK)).toEqual([ORCHESTRATOR]);
+        expect(net.calls).toEqual([]);
+      });
+
+      it("is kept while the session is live", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const { net, runDocker, docker } = heldNetworks((n) => n.seed(COMPOSE_NETWORK, [ORCHESTRATOR]));
+
+        await runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: (id) => id === SID,
+        });
+
+        expect(net.attached(COMPOSE_NETWORK)).toEqual([ORCHESTRATOR]);
+        expect(net.calls).toEqual([]);
+      });
+
+      it("is kept when the session becomes live while the removal waits in its stack queue", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const { net, runDocker, docker } = heldNetworks((n) => n.seed(COMPOSE_NETWORK, [ORCHESTRATOR]));
+        let finishStart: (() => void) | undefined;
+        let startDone = false;
+        const starting = serializeStackOp(SID, async () => {
+          await new Promise<void>((resolve) => { finishStart = resolve; });
+          startDone = true;
+        });
+        // The first two answers are the listing and the check before the queue.
+        let asked = 0;
+
+        const sweep = runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker,
+          isSessionLive: () => (asked++ < 2 ? false : startDone),
+        });
+        await vi.waitFor(() => expect(asked).toBeGreaterThanOrEqual(2));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(net.calls).toEqual([]);
+
+        finishStart?.();
+        await starting;
+        await sweep;
+
+        expect(asked).toBe(3);
+        expect(net.attached(COMPOSE_NETWORK)).toEqual([ORCHESTRATOR]);
+        expect(net.calls).toEqual([]);
+      });
+
+      it("leaves the networks that are not the Compose network of a stored session", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const { net, runDocker, cliRemovals, docker } = heldNetworks((n) => {
+          n.seed(DOCKER_ACCESS_NETWORK, [ORCHESTRATOR]);
+          n.seed(EGRESS_NETWORK, [ORCHESTRATOR]);
+          n.seed(UNSTORED_NETWORK, [ORCHESTRATOR]);
+        });
+
+        const result = await runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: () => false,
+        });
+
+        expect([DOCKER_ACCESS_NETWORK, EGRESS_NETWORK, UNSTORED_NETWORK].filter((name) => !net.has(name))).toEqual([]);
+        expect(net.calls).toEqual([]);
+        expect(cliRemovals).toEqual([]);
+        expect(result.orphanNetworksRemoved).toBe(0);
+      });
+
+      it("lists them by the stack label, and without the dangling filter", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const { runDocker, lsRequests, docker } = heldNetworks(() => {});
+
+        await runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: () => false,
+          stackName: "shipit-a",
+        });
+
+        const networkLists = lsRequests.filter((args) => !args.includes("dangling=true"));
+        expect(networkLists).toHaveLength(1);
+        expect(networkLists[0]).toContain("name=shipit-session-");
+        expect(networkLists[0]).toContain("label=shipit-stack=shipit-a");
+      });
+
+      it("does not stop the sweep of the dangling networks when this listing fails", async () => {
+        const { sessionManager, repoStore } = storedSession();
+        const held = heldNetworks((n) => n.seed(COMPOSE_NETWORK));
+        const runDocker = (args: string[]): Promise<string> =>
+          args[0] === "network" && args[1] === "ls" && !args.includes("dangling=true")
+            ? Promise.reject(new Error("daemon unreachable"))
+            : held.runDocker(args);
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        const result = await runDiskJanitor({
+          sessionManager, repoStore, stateDir: tmpDir, runDocker, docker: held.docker, isSessionLive: () => false,
+        });
+
+        expect(held.net.has(COMPOSE_NETWORK)).toBe(false);
+        expect(result.orphanNetworksRemoved).toBe(1);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("network ls"), expect.anything());
+        warn.mockRestore();
+      });
+    });
   });
 
   it("orphan network sweep ignores rm failures (network reattached / already gone)", async () => {

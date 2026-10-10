@@ -515,6 +515,7 @@ export function buildServiceManager(args: {
           containerManager.getDockerClient(), sessionId, () => deps.serviceManagers?.has(sessionId) ?? false,
         )
       : undefined,
+    stackOwnedFn: () => deps.serviceManagers?.has(sessionId) ?? false,
     networkHealFn: containerManager
       ? async (networkName: string) => {
           await containerManager.ensureConnectedToSessionNetwork(sessionId, networkName);
