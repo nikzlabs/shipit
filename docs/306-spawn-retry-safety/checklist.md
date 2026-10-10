@@ -39,12 +39,40 @@ Three findings, all verified at source and fixed:
       added in `agent-spawned-session.test.ts`; the first goes red when the
       claim is bypassed.
 
+## No second send after the request left (req 6, planning#680)
+
+- [x] `OrchestratorClient` sends a request that is not a read to the next host
+      only before the connection is made; after that it reports the failure
+- [x] One transport on Node `http` with a connection for each call; the 10 s
+      connection limit and the 300 s default limit of the `fetch` path are kept
+- [x] Tests against real local servers: a refused connection, a name that gets
+      no address, a connection closed after the request, an answer that is cut
+      off, a time limit before and after the connection, a `GET`
+- [x] Each test proved red with its rule removed
+- [x] The double run reproduced over the real relay before the change, and gone
+      after it
+- [x] `npm run lint:dev` and `npm run typecheck`
+- [x] Independent review via `shipit agent run --role reviewer`
+
+### Review round (2026-10-10)
+
+Three findings, all verified at source and fixed:
+
+- [x] **Req 6 and the agent docs promised the rule for a whole command; it
+      holds for one request.** `shipit session create` sends its request again
+      by design. Req 6 now names that keyed retry as the exception, and
+      `environment.md` no longer says that a message means "nothing was done".
+- [x] **An IPv6 address in the base URL was looked up as a name**, which the
+      `fetch` path did not do. The request now takes the URL itself.
+- [x] **The plan said the limits of `fetch` were kept.** They have the same
+      numbers and not the same meaning; the plan now says which.
+- [x] Test gaps closed: two real time limits of 50 ms and 100 ms could fail on
+      a loaded machine (now a fake clock); the failure list with two hosts; a
+      refusal with a second host that must not be asked; no timer left after an
+      answer; an uncaught exception now fails the file.
+
 ## Not done here, on purpose
 
-- The six sibling commands in `plan.md`'s audit that also duplicate on retry.
-  `shipit agent run` and `shipit session report` are the expensive ones.
-- The blind fallback-host retry in `orchestrator-client.ts:70-80`, which turns
-  one lost response into a second spawn inside a single invocation whenever
-  `SHIPIT_HOST` is not `shipit`. The key added here collapses that duplicate as
-  a side effect, but the loop itself is still a blind retry of a non-idempotent
-  POST and deserves its own fix.
+- The sibling commands in `plan.md`'s audit that also duplicate when the
+  command is run again. `shipit agent run` and `shipit session report` are the
+  expensive ones.

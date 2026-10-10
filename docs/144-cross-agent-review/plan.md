@@ -1026,7 +1026,9 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   worker→orchestrator leg (`orchestrator-client.ts` `OrchestratorClient.request`)
   now route the explicitly-unbounded (`timeoutMs: 0`) request over Node `http`
   (no default response timeout), matching the orchestrator→worker leg which
-  already used `worker-http.ts`. Short/bounded calls keep the `fetch` path.
+  already used `worker-http.ts`. Short/bounded calls keep the `fetch` path on
+  the shim→worker leg; the worker→orchestrator leg now uses Node `http` for
+  every call (docs/306-spawn-retry-safety req 6).
   Tests: `agent-shim/shim-common.test.ts` (`callBroker`),
   `orchestrator-client.test.ts` (unbounded relay).
 - **Orchestrator route + service** — `api-routes-agent.ts`
