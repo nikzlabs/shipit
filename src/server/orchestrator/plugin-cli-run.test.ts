@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { Duplex, PassThrough } from "node:stream";
+import { setTimeout as realSleep } from "node:timers/promises";
 import Docker from "dockerode";
 import {
   attachStdio,
@@ -23,7 +24,7 @@ import {
   releaseSessionGenerationHolds,
 } from "./plugin-leases.js";
 import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
-import { _resetPluginNetnsPool } from "./plugin-netns-pool.js";
+import { _resetPluginNetnsPool, idlePluginNetnsCount } from "./plugin-netns-pool.js";
 
 // Stub privileged setup; keep the namespace decision on the production path.
 vi.mock("./egress-firewall-install.js", async (load) => ({
@@ -1254,6 +1255,46 @@ describe("runPluginCommand — the command's stdin", () => {
 
     expect(result.exitCode).toBe(124);
     expect(result.error).not.toContain("stdin");
+  });
+});
+
+describe("runPluginCommand — a command that nothing waits for (req 32)", () => {
+  type Wire = (gone: () => boolean) => { request: { callerGone?: () => boolean }; over: Partial<PluginCliDeps> };
+
+  it.each<[string, Wire]>([
+    ["caller", (gone) => ({ request: { callerGone: gone }, over: {} })],
+    ["session", (gone) => ({ request: {}, over: { isCancelled: gone } })],
+  ])("stops a running command when its %s goes away, at the next check and not before", async (who, wire) => {
+    declareConsumer();
+    publishGeneration();
+    // Only a kill ends this command, and its time limit is 15 minutes away.
+    const fake = fakeDocker({ hangs: true });
+    let gone = false;
+    const { request, over } = wire(() => gone);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    try {
+      const run = runPluginCommand(
+        deps(fake.docker, { egress: () => LOCAL_BLOCK_EGRESS, ...over }),
+        { ...call, ...request },
+      );
+      await vi.waitFor(() => { expect(fake.started).toHaveLength(2); });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await Promise.race([run, realSleep(30, "still runs")])).toBe("still runs");
+
+      gone = true;
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(await run).toMatchObject({
+        exitCode: 125,
+        error: `the ${who} went away while the command was running`,
+      });
+      const [, command] = fake.containers;
+      expect(fake.removedContainers).toContain(command.id);
+      expect(idlePluginNetnsCount("s1")).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

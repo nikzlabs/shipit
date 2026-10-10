@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { setTimeout as realSleep } from "node:timers/promises";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
-import type { OrchestratorClient } from "./orchestrator-client.js";
+import { OrchestratorClient } from "./orchestrator-client.js";
 
 interface RecordedCall {
   method: string;
@@ -1002,5 +1005,135 @@ describe("agent-ops routes", () => {
       method: "GET",
       path: "/settings/detail?key=advanced.enableSubAgents",
     });
+  });
+});
+
+describe("agent-ops routes — the caller of a plugin command goes away (docs/262-plugins req 32)", () => {
+  interface Arrived {
+    url: string;
+    res: http.ServerResponse;
+    /** Null while the connection is open; then, whether it closed before the answer was complete. */
+    closedEarly: boolean | null;
+  }
+
+  let app: FastifyInstance;
+  let workerPort: number;
+  let orchestrator: http.Server;
+  let arrived: Arrived[];
+  const agents: http.Agent[] = [];
+
+  beforeEach(async () => {
+    arrived = [];
+    orchestrator = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const call: Arrived = { url: req.url ?? "", res, closedEarly: null };
+        res.once("close", () => { call.closedEarly = !res.writableFinished; });
+        arrived.push(call);
+      });
+    });
+    await new Promise<void>((resolve) => { orchestrator.listen(0, "127.0.0.1", resolve); });
+    const { port } = orchestrator.address() as AddressInfo;
+    app = Fastify({ logger: false });
+    registerAgentOpsRoutes(app, {
+      createOrchestratorClient: () =>
+        new OrchestratorClient({ baseUrl: `http://127.0.0.1:${port}`, sessionId: "ses_me" }),
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    workerPort = (app.server.address() as AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    for (const call of arrived) call.res.destroy();
+    for (const agent of agents.splice(0)) agent.destroy();
+    await app.close();
+    orchestrator.close();
+  });
+
+  // As the shim: one request, and a connection that the test can close.
+  function shim(agent: http.Agent | false): { req: http.ClientRequest; answer: Promise<unknown> } {
+    if (agent) agents.push(agent);
+    const payload = JSON.stringify({ alias: "reqs", command: "reqs" });
+    let req!: http.ClientRequest;
+    const answer = new Promise<unknown>((resolve) => {
+      req = http.request(
+        { host: "127.0.0.1", port: workerPort, path: "/agent-ops/plugin/exec", method: "POST", agent,
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+          res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+        },
+      );
+      req.on("error", () => resolve("no answer"));
+      req.end(payload);
+    });
+    return { req, answer };
+  }
+
+  const atOrchestrator = async (): Promise<Arrived> => {
+    await vi.waitFor(() => { expect(arrived).toHaveLength(1); });
+    return arrived[0];
+  };
+
+  it("closes its connection to the orchestrator when the shim's connection closes before the answer", async () => {
+    const { req, answer } = shim(false);
+    const call = await atOrchestrator();
+    expect(call.url).toBe("/api/sessions/ses_me/plugin/exec");
+
+    req.destroy();
+
+    await vi.waitFor(() => { expect(call.closedEarly).toBe(true); });
+    expect(await answer).toBe("no answer");
+  });
+
+  it.each([
+    ["a connection of its own", (): false => false],
+    ["a connection that it keeps for the next call", (): http.Agent => new http.Agent({ keepAlive: true })],
+  ])("keeps the call of a shim that waits on %s, and gives it the answer", async (_name, agent) => {
+    const { answer } = shim(agent());
+    const call = await atOrchestrator();
+    // The request's own `close` event comes in this time, when its body was read.
+    await realSleep(100);
+    expect(call.closedEarly).toBeNull();
+
+    call.res.writeHead(200, { "content-type": "application/json" });
+    call.res.end(JSON.stringify({ exitCode: 0, stdout: "done\n" }));
+
+    expect(await answer).toEqual({ status: 200, body: { exitCode: 0, stdout: "done\n" } });
+    expect(call.closedEarly).toBe(false);
+  });
+});
+
+describe("agent-ops routes — a plugin command that has its answer", () => {
+  it("does not report the shim as gone when the connection closes after the answer", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const app = Fastify({ logger: false });
+    registerAgentOpsRoutes(app, {
+      createOrchestratorClient: () => ({
+        request: async (_method: string, _suffix: string, _body: unknown, opts?: { signal?: AbortSignal }) => {
+          signals.push(opts?.signal);
+          return { ok: true, status: 200, body: { exitCode: 0 } };
+        },
+      }) as unknown as OrchestratorClient,
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = app.server.address() as AddressInfo;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/agent-ops/plugin/exec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Connection: "close" },
+        body: JSON.stringify({ alias: "reqs", command: "reqs" }),
+      });
+      expect(await res.json()).toEqual({ exitCode: 0 });
+      // The reply's `close` event comes in this time.
+      await realSleep(50);
+
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(false);
+    } finally {
+      await app.close();
+    }
   });
 });

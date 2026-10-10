@@ -115,11 +115,29 @@ The probe reads stdin **only** with the flag. A command that reads stdin to its
 end waits until the caller's stdin ends, so a probe that always read it would
 wait in every call whose stdin is open and idle.
 
+## The hold check
+
+`probe --hold <seconds>` runs for that many seconds before it reports. While it
+runs it records its progress in the shared state directory, and every later
+report has that record in a **`hold`** field. No export ran for longer than a
+moment before, so nothing here could show what ShipIt does with a command
+whose caller goes away.
+
+| Field | Meaning |
+|---|---|
+| `startedAt` / `seconds` | when the last held call started, and for how long it was asked to run |
+| `ranMs` | how long it ran, written four times in a second |
+| `finished` | `true` when it ran its whole time; `false` when something killed it first, or while it still runs |
+
+Step 3 of `docs/262-plugins/real-instance-e2e.md` ends a held call after 3 s
+and reads the record 25 s later: `finished: false` is a command that ShipIt
+stopped (req 32).
+
 Layout:
 
 - `docker-compose.yml` — the compose fragment (service `probe`, port 4820)
 - `cli/probe.mjs` — the exported `probe` command (JSON report; `--host-check`,
-  `--stdin`)
+  `--stdin`, `--hold`)
 - `service/server.mjs` — the report from the service surface + shared counter
 - `lib/report.mjs` — the one report builder both surfaces share
 - `install.mjs` — the manifest's `install`; stamps `.install-stamp.json`

@@ -322,6 +322,11 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     replaces the manifest's. ShipIt puts no maximum on the manifest's value,
     the same as on a plugin service's own memory limit; a project that wants
     less sets its own value.
+32. When the caller of a companion-CLI command goes away before the call has
+    its answer — it was interrupted, or it hit a time limit — ShipIt **stops
+    the command**. The command does not continue with nobody to receive its
+    result, and a command that waits for the end of its stdin does not wait
+    for an end that can no longer come.
 
 ## Out of scope (v1)
 
@@ -394,7 +399,9 @@ commands) restates the user's request of 2026-09-30, raised from the plugin
 repository `nicolasalt/assetgen` (its issue #271). Requirement 31 (a manifest
 default for that limit) is the agent's follow-up offer of 2026-09-30, which the
 user approved: with req 30 alone, every project that uses a heavy command has
-to set the same value, which is the repetition req 5 rules out.
+to set the same value, which is the repetition req 5 rules out. Requirement 32
+(a lost caller stops the command) is the user's decision of 2026-10-10 between
+the two options of planning#683.
 
 ## Open questions
 
@@ -402,6 +409,15 @@ to set the same value, which is the repetition req 5 rules out.
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-10-10 — What does ShipIt do with a plugin command when its caller
+  goes away (planning#683)?** The options were to **stop the command** or to
+  **only end its stdin**. The user chose **"stop the command"**, by approving
+  the status-card action "Fix planning#683: stop a plugin command when its
+  caller goes away", whose description said that the approval makes this
+  choice and named the alternative. → req 32 added. How ShipIt learns that
+  the caller is gone, and how soon the command then stops, are the agent's
+  choices and are recorded in `plan.md` §2.
 
 - **2026-09-30 — Is there a maximum for a manifest's default memory limit
   (req 31)?** Asked because a plugin is less trusted than the project that
