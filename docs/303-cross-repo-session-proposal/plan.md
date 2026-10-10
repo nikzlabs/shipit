@@ -193,12 +193,24 @@ because they are unknown.
   the same never-seen repository can enter `ensureBareCache` together, ahead of
   the claim service's per-repository lock. Also pre-existing and shared with the
   Ops path.
-- **A start interrupted after the target session was created can leave an
-  orphan.** The target is created before environment preparation finishes, and
-  its id reaches the card only when the spawn returns. If preparation fails, the
-  card says `failed` while a session exists, and a retry creates a second one. The
-  duplicate is visible in the sidebar and archivable; persisting the card→target
-  association at allocation is the real fix.
+- **A start the orchestrator does not survive can leave an orphan.** The target
+  is created before environment preparation finishes, and its id reaches the
+  card only when the spawn returns. A start that *fails* no longer leaves one:
+  `spawnChildSession` removes a target it created before it reports the failure
+  (docs/243-agent-messaging-trust-gate `plan.md`, "Spawned sessions"), so the
+  card's `failed` is true and a retry creates one session. What remains is an
+  orchestrator that stops in that window, or a `started` write that fails after
+  the spawn returned; persisting the card→target association at allocation is
+  the real fix for both.
+- **An untrusted target is refused, and the card carries no Trust action.** A
+  repository ShipIt registers on the click starts untrusted, and no agent turn
+  can start there (docs/243-agent-messaging-trust-gate). The start is refused
+  before a session is created, and the card's `failed` reason names the
+  repository and the Trust action; the user opens a session on that repository,
+  trusts it, and retries the card. The repository is registered before the
+  refusal, on purpose: the card said it would be added, and a registered
+  repository is what the Trust action needs. Trusting from the card itself is
+  not built.
 - **A second failed start is not reported again.** The notice compares the
   card's state with the last state the agent heard, so failed → retry → failed
   reads as nothing new. The agent already knows the start failed and that a retry

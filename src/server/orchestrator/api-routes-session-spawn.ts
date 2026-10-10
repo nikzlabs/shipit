@@ -14,6 +14,8 @@ import {
   listWorktrees,
   getChatHistory,
   spawnChildSession,
+  SpawnRepositoryUntrustedError,
+  discardSpawnedChild,
   parseSpawnTarget,
   listSpawnedChildren,
   getSpawnedChild,
@@ -36,6 +38,7 @@ import {
 } from "./services/index.js";
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
+import { AgentTurnAdmissionError } from "./session-runner.js";
 
 // Bump when row decoding, selection, wire projection, or payload assembly changes
 // without a data write; transcriptRevision cannot invalidate those cached responses.
@@ -70,6 +73,8 @@ export async function registerSessionSpawnRoutes(
     chatHistoryManager: deps.chatHistoryManager,
     usageManager: deps.usageManager,
   };
+
+  const discardChild = (childId: string): Promise<void> => discardSpawnedChild(deps, childId);
 
   // Collapses a retry of a spawn whose response was lost. docs/306-spawn-retry-safety.
   const spawnClaims = new SpawnClaims<SpawnOutcome>();
@@ -276,6 +281,7 @@ export async function registerSessionSpawnRoutes(
           deps.credentialStore,
           deps.providerAccountManager,
           graduationDeps,
+          discardChild,
         );
         const parentRunner = body.detached ? undefined : deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
@@ -286,12 +292,18 @@ export async function registerSessionSpawnRoutes(
             spawnedAt: result.session.createdAt,
             ...(shipitFixMeta ? { shipitFix: shipitFixMeta } : {}),
           };
-          emitChatCard(
-            parentRunner,
-            { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
-            { role: "assistant", text: "", spawnedSession },
-            { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
-          );
+          // The child exists and has its prompt. A card that cannot be recorded must not turn
+          // that into "failed": the caller's retry would then create a second child.
+          try {
+            emitChatCard(
+              parentRunner,
+              { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
+              { role: "assistant", text: "", spawnedSession },
+              { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
+            );
+          } catch (err) {
+            console.error(`[spawn] Could not record the spawned card for ${result.sessionId}:`, err);
+          }
         }
 
         recordSpawnInvocation({
@@ -318,10 +330,16 @@ export async function registerSessionSpawnRoutes(
         // can report the session as created rather than as newly created.
         return deduplicated ? { ...result, deduplicated: true } : result;
       } catch (err) {
-        const statusCode = err instanceof ServiceError ? err.statusCode : 500;
-        const errorMessage = err instanceof ServiceError
+        // The check before the claim makes the dispatch refusal unreachable unless trust changed
+        // in between; it keeps its status and code instead of reading as a server fault.
+        const refused = err instanceof ServiceError || err instanceof AgentTurnAdmissionError;
+        const statusCode = refused ? err.statusCode : 500;
+        const errorMessage = refused
           ? err.message
           : `Failed to spawn child session: ${getErrorMessage(err)}`;
+        const code = err instanceof SpawnRepositoryUntrustedError || err instanceof AgentTurnAdmissionError
+          ? err.code
+          : undefined;
 
         const parentRunner = body.detached ? undefined : deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
@@ -356,7 +374,7 @@ export async function registerSessionSpawnRoutes(
           errorMessage,
         });
 
-        reply.code(statusCode).send({ error: errorMessage });
+        reply.code(statusCode).send({ error: errorMessage, ...(code ? { code } : {}) });
       }
     },
   );

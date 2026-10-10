@@ -26,6 +26,8 @@
 - [x] Reconcile the fix child's base with the default branch for PR mergeability. (Child branches from the exact deployed commit to reproduce; incident packet instructs it to rebase onto the latest default branch before opening the PR. GitHub's three-dot diff keeps the displayed diff clean since merge-base = deployed commit.)
 - [x] Add an Ops-specific per-turn quota for `--shipit-source` fix spawns. (`MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 6 — sized for an investigation that finds several independent defects, not as a containment boundary.)
 - [x] Don't cascade archive from an Ops session to its spawned fix sessions (`archiveSession` skips the child loop when `kind === "ops"`; the breadcrumb survives for unarchive).
+- [x] Trust the ShipIt source repository for a fix spawn, after the Ops-only and write-access checks (docs/243-agent-messaging-trust-gate req 7).
+- [x] Remove the child when a fix spawn fails after the child was created (`discardSpawnedChild`).
 - [ ] Redact raw log excerpts copied into incident packets (the diagnosis prompt is passed through verbatim today). Tracked separately — Open Question 4. NOT done in this pass.
 
 ## Client

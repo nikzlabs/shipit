@@ -52,6 +52,33 @@ export function setRepoTrusted(
   repoStore.setTrusted(trimmed, true);
 }
 
+export interface GrantRepoTrustDeps {
+  repoStore: RepoStore;
+  sessionManager: { get(sessionId: string): { remoteUrl?: string } | undefined };
+  runnerRegistry: { ids(): string[]; get(sessionId: string): unknown };
+  sseBroadcast: (event: string, data: unknown) => void;
+  warmSessionForRepo?: (url: string) => Promise<void>;
+}
+
+/** Grants trust, then starts the setup that the trust gate deferred. */
+export function grantRepoTrust(deps: GrantRepoTrustDeps, url: string | undefined): void {
+  setRepoTrusted(deps.repoStore, url);
+  const trusted = url!.trim();
+  deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
+  // The runner registry includes claimed warm sessions that sessionManager.list omits.
+  const key = canonicalRepoKey(trusted);
+  for (const sessionId of deps.runnerRegistry.ids()) {
+    const session = deps.sessionManager.get(sessionId);
+    if (session?.remoteUrl && canonicalRepoKey(session.remoteUrl) === key) {
+      const runner = deps.runnerRegistry.get(sessionId) as
+        | { rerunServiceSetup?: () => void }
+        | undefined;
+      runner?.rerunServiceSetup?.();
+    }
+  }
+  void deps.warmSessionForRepo?.(trusted);
+}
+
 export function setRepoHidden(
   repoStore: RepoStore,
   url: string | undefined,

@@ -19,6 +19,14 @@
 - [x] Re-check authorization when queued or recovered work re-enters `dispatchOnRunner()`
 - [ ] Drop and settle a denied queued entry exactly once without starting it or looping the drain
 
+## Spawn admission (2026-10-10)
+
+- [x] Refuse a spawn into an untrusted repository before the claim, with `403 repository_untrusted` and a message that names the repository and the Trust action
+- [x] Remove a child whose spawn fails after the claim; name its id when the removal fails
+- [x] Trust the ShipIt source repository for an Ops `--shipit-source` spawn, after the Ops-only and write-access checks (requirement 7)
+- [x] Give a dispatch-time refusal on the spawn route its `403` and code instead of a `500`
+- [x] Tests for the ordering, the rollback and the grant
+
 ## Interactive ingress migration
 
 - [ ] Route idle composer `send_message` turns through `runner.dispatch` with interactive execution semantics

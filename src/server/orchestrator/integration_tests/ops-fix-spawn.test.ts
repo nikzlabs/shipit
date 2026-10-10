@@ -26,6 +26,7 @@ import {
   createTestDatabaseManager,
   getRepoCacheDir,
   seedRepoCacheWithLocalBare,
+  waitFor,
 } from "./test-helpers.js";
 
 const SHIPIT_REPO_URL = "https://github.com/owner/shipit.git";
@@ -38,6 +39,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
   let dbManager: DatabaseManager;
   let github: StubGitHubAuthManager;
   let buildSha: string;
+  let agents: FakeClaudeProcess[];
   let port: number;
   let origGitTerminalPrompt: string | undefined;
   const savedEnv = {
@@ -75,6 +77,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
 
     github = new StubGitHubAuthManager();
     await github.setToken("test-token");
+    agents = [];
 
     app = await buildApp({
       credentialStore,
@@ -83,7 +86,11 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
       repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: github as unknown as GitHubAuthManager,
-      agentFactory: () => new FakeClaudeProcess() as never,
+      agentFactory: () => {
+        const cp = new FakeClaudeProcess();
+        agents.push(cp);
+        return cp as never;
+      },
       workspaceDir: tmpDir,
       serveStatic: false,
     });
@@ -234,6 +241,83 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
 
     const children = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/children` });
     expect((children.json().children as unknown[]).length).toBe(0);
+  });
+
+  const spawnFix = (parentId: string) =>
+    app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Fix the container recreate loop", title: "Fix container recreate loop", shipitSource: true },
+    });
+
+  // docs/243-agent-messaging-trust-gate req 7. The incident: on a host that had never trusted
+  // its own source repository, each fix spawn created a child and then refused its prompt.
+  it("trusts the ShipIt source repository, so the child receives its prompt on a host that never trusted it", { timeout: 20_000 }, async () => {
+    const parentId = await createOpsParent();
+    github.setRepoWriteAccess(true);
+    repoStore.setTrusted(SHIPIT_REPO_URL, false);
+
+    const res = await spawnFix(parentId);
+
+    expect(res.statusCode).toBe(200);
+    expect(repoStore.isTrusted(SHIPIT_REPO_URL)).toBe(true);
+    const { sessionId } = res.json() as { sessionId: string };
+    expect(sessionManager.findChildren(parentId).map((c) => c.id)).toEqual([sessionId]);
+    await waitFor(() => agents.some((a) => a.runCalled), "fix agent started");
+    expect(agents.find((a) => a.runCalled)!.lastPrompt).toContain("Fix the container recreate loop");
+  });
+
+  it("does not trust the repository for a spawn that the write-access check refuses", { timeout: 20_000 }, async () => {
+    const parentId = await createOpsParent();
+    github.setRepoWriteAccess(false);
+    repoStore.setTrusted(SHIPIT_REPO_URL, false);
+
+    expect((await spawnFix(parentId)).statusCode).toBe(403);
+
+    expect(repoStore.isTrusted(SHIPIT_REPO_URL)).toBe(false);
+  });
+
+  it("does not trust the repository for a parent that is not an Ops session", { timeout: 20_000 }, async () => {
+    const created = await app.inject({ method: "POST", url: "/api/_test/sessions", payload: { title: "Normal" } });
+    const { sessionId: normalParent } = created.json() as { sessionId: string };
+    github.setRepoWriteAccess(true);
+    repoStore.setTrusted(SHIPIT_REPO_URL, false);
+
+    expect((await spawnFix(normalParent)).statusCode).toBe(403);
+
+    expect(repoStore.isTrusted(SHIPIT_REPO_URL)).toBe(false);
+  });
+
+  it("removes the child when the deployed commit is not in the target repository", { timeout: 20_000 }, async () => {
+    const parentId = await createOpsParent();
+    github.setRepoWriteAccess(true);
+    // A checkout whose HEAD the fix repository has never seen: the reset to it fails,
+    // after the claim has already created the child.
+    const strayDir = path.join(tmpDir, "stray-source");
+    fs.mkdirSync(strayDir);
+    execSync(
+      "git init -q && git -c user.email=test@test.com -c user.name=Test commit -q --allow-empty -m stray",
+      { cwd: strayDir },
+    );
+    process.env.SHIPIT_SOURCE_DIR = strayDir;
+    process.env.SHIPIT_BUILD_ID = execSync("git rev-parse HEAD", { cwd: strayDir, encoding: "utf8" }).trim();
+    const markStarted = vi.spyOn(sessionManager, "markStarted");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Fix the bug", title: "Fix the bug", shipitSource: true },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Failed to reset to base/);
+    // Every claim ends in markStarted, so its argument is the session the spawn created.
+    const [childId] = markStarted.mock.calls.map(([id]) => id);
+    expect(childId).toBeDefined();
+    expect(sessionManager.get(childId)).toBeUndefined();
+    expect(app.runnerRegistry.get(childId)).toBeUndefined();
+    expect(fs.existsSync(path.join(tmpDir, "sessions", childId, "workspace"))).toBe(false);
+    expect(sessionManager.findChildren(parentId)).toEqual([]);
   });
 
   it("refuses --shipit-source from a non-ops parent (403)", { timeout: 20_000 }, async () => {

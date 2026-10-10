@@ -184,6 +184,21 @@ dropped unless the session was created as an ops session.
   report instead (see "File a ShipIt bug" below) rather than dead-ending as text.
   If the source ref was only approximate, add `--approximate` to acknowledge it.
 
+  You do not need the operator to trust the ShipIt source repository first. The
+  host already runs that code, so the spawn trusts the repository itself once
+  the two checks above pass (an Ops session, and push access). The trust is the
+  ordinary one: it stays on the repository, and each later session on it runs
+  its install command and its Compose services without a prompt.
+
+  **A create that fails leaves no session.** If the command exits non-zero with
+  an error from ShipIt — the deployed commit is not in the fix repository, for
+  example — there is no child to find, wait on or message, and it is safe to
+  run the command again after you correct the cause. If ShipIt did not remove a
+  child that it had already created, the error says so and gives that child's
+  id; tell the operator which session that is. The one case that stays
+  uncertain is a reply that never arrived; see
+  `sessions.md` → *When a spawn fails to answer*.
+
   The child's branch *starts* at the exact deployed commit so it can reproduce
   the bug against the code that's actually running — which is usually behind the
   repo's default branch. Its incident packet instructs it to rebase onto the
