@@ -14,6 +14,16 @@ export interface OrchestratorResponse {
   body: unknown;
 }
 
+// For each attempt. The numbers are those of fetch, the transport before this one.
+const CONNECT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
+
+class AttemptFailed extends Error {
+  constructor(message: string, readonly connected: boolean) {
+    super(message);
+  }
+}
+
 // Container recreation can invalidate SHIPIT_HOST; the Compose alias stays stable.
 export function resolveOrchestratorBaseUrls(): string[] {
   const host = process.env.SHIPIT_HOST;
@@ -52,7 +62,8 @@ export class OrchestratorClient {
     return `${baseUrl}/api/sessions/${encodeURIComponent(this.sessionId)}${tail}`;
   }
 
-  // timeoutMs: 0 uses Node HTTP to avoid fetch's default 300s header timeout.
+  // timeoutMs: 0 is no limit. A request that is not a read goes to the next host only
+  // while it cannot have arrived (docs/306-spawn-retry-safety req 6).
   async request(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
@@ -60,17 +71,23 @@ export class OrchestratorClient {
     opts?: { timeoutMs?: number },
   ): Promise<OrchestratorResponse> {
     const payload = body !== undefined && method !== "GET" ? JSON.stringify(body) : undefined;
-    const unbounded = opts?.timeoutMs === 0;
+    const limitMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const failures: string[] = [];
     for (const baseUrl of this.baseUrls) {
-      const url = this.url(baseUrl, suffix);
       try {
-        return unbounded
-          ? await this.requestNodeHttp(method, url, payload)
-          : await this.requestFetch(method, url, payload, opts?.timeoutMs);
+        return await this.send(method, this.url(baseUrl, suffix), payload, limitMs);
       } catch (err) {
         failures.push(`${baseUrl}: ${getErrorMessage(err)}`);
-        continue;
+        if (method !== "GET" && err instanceof AttemptFailed && err.connected) {
+          return {
+            ok: false,
+            status: 0,
+            body: {
+              error: `The connection to the orchestrator failed after the request was sent (${failures.join("; ")}). `
+                + "The request was not sent again, because the orchestrator may have carried it out.",
+            },
+          };
+        }
       }
     }
     return {
@@ -84,35 +101,11 @@ export class OrchestratorClient {
     };
   }
 
-  private async requestFetch(
+  private send(
     method: string,
     url: string,
     payload: string | undefined,
-    timeoutMs: number | undefined,
-  ): Promise<OrchestratorResponse> {
-    const init: RequestInit = { method, headers: { "Content-Type": "application/json" } };
-    if (payload !== undefined) init.body = payload;
-    const controller = timeoutMs ? new AbortController() : undefined;
-    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
-    timer?.unref?.();
-    try {
-      const res = await fetch(url, { ...init, ...(controller ? { signal: controller.signal } : {}) });
-      let parsed: unknown;
-      try {
-        parsed = await res.json();
-      } catch {
-        parsed = {};
-      }
-      return { ok: res.ok, status: res.status, body: parsed };
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  private requestNodeHttp(
-    method: string,
-    url: string,
-    payload: string | undefined,
+    limitMs: number,
   ): Promise<OrchestratorResponse> {
     return new Promise((resolve, reject) => {
       const u = new URL(url);
@@ -122,22 +115,46 @@ export class OrchestratorClient {
         headers["Content-Type"] = "application/json";
         headers["Content-Length"] = Buffer.byteLength(payload);
       }
+      let connected = false;
       const req = mod.request(
-        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers },
+        u,
+        // agent: false gives the call a socket of its own. A pooled socket is already
+        // connected, so a failure on it could be before or after the request arrived.
+        { method, headers, agent: false },
         (res) => {
           let data = "";
           res.setEncoding("utf-8");
           res.on("data", (chunk: string) => { data += chunk; });
           res.on("end", () => {
+            clearTimeout(limitTimer);
             let parsed: unknown;
             try { parsed = JSON.parse(data); } catch { parsed = {}; }
             const status = res.statusCode ?? 0;
             resolve({ ok: status >= 200 && status < 300, status, body: parsed });
           });
-          res.on("error", reject);
+          res.on("error", fail);
         },
       );
-      req.on("error", reject);
+      const connectTimer = setTimeout(() => giveUp(`no connection after ${CONNECT_TIMEOUT_MS} ms`), CONNECT_TIMEOUT_MS);
+      const limitTimer = limitMs > 0
+        ? setTimeout(() => giveUp(`no answer after ${limitMs} ms`), limitMs)
+        : undefined;
+      function fail(err: unknown): void {
+        clearTimeout(connectTimer);
+        clearTimeout(limitTimer);
+        reject(new AttemptFailed(getErrorMessage(err), connected));
+      }
+      function giveUp(why: string): void {
+        fail(new Error(why));
+        req.destroy();
+      }
+      req.on("socket", (socket) => {
+        socket.once("connect", () => {
+          connected = true;
+          clearTimeout(connectTimer);
+        });
+      });
+      req.on("error", fail);
       if (payload !== undefined) req.write(payload);
       req.end();
     });
