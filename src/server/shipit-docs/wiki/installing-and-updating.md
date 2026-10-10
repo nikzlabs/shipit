@@ -129,10 +129,10 @@ says why — that is a host problem from step 1. Inside a session,
 On WSL2, your container is also set up so that a Chrome you start yourself can
 draw WebGL on the GPU — for a rendering test or a benchmark. When the user asks
 for that, do it: `/shipit-docs/environment.md` has the display and the flags
-Chrome needs. That path is not yet confirmed on a real host, so run the check
-it gives and tell the user which renderer Chrome reported. It does not reach
-the built-in browser behind your browser tools, which draws in software, nor
-WebGPU, Compose services, or a native Linux host.
+Chrome needs. Chrome falls back to software drawing without a message, so run
+the check it gives and tell the user which renderer Chrome reported. It does
+not reach the built-in browser behind your browser tools, which draws in
+software, nor WebGPU, Compose services, or a native Linux host.
 
 ## Updating
 

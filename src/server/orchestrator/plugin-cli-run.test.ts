@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
 import { PassThrough } from "node:stream";
-import type Docker from "dockerode";
+import Docker from "dockerode";
 import {
+  attachStdio,
   DEFAULT_PLUGIN_CLI_MEMORY_BYTES,
   mapWorkingDir,
   runPluginCommand,
@@ -166,6 +168,12 @@ function fakeDocker(opts: {
 
   const docker = {
     modem: {
+      dial: (_opts: unknown, cb: (err: Error | null, stream: PassThrough) => void) => {
+        // Consume the stream as dockerode's demuxer would, so end/close can fire.
+        const s = new PassThrough();
+        s.resume();
+        cb(null, s);
+      },
       demuxStream: (_s: NodeJS.ReadableStream, out: NodeJS.WritableStream, err: NodeJS.WritableStream) => {
         if (opts.stdout) out.write(opts.stdout);
         if (opts.stderr) err.write(opts.stderr);
@@ -208,12 +216,6 @@ function fakeDocker(opts: {
       });
       return {
         id,
-        attach: async () => {
-          // Consume the stream as dockerode's demuxer would, so end/close can fire.
-          const s = new PassThrough();
-          s.resume();
-          return s;
-        },
         start: async () => { started.push(id); },
         wait: async () => ({ StatusCode: opts.exit ?? 0 }),
         inspect: async () => {
@@ -1105,6 +1107,51 @@ exports:
     const result = await runPluginCommand(deps(fake.docker), call);
     expect(result.error).toContain("plugin network could not be prepared");
     expect(fake.containers).toHaveLength(0);
+  });
+});
+
+// Answers the attach upgrade as the daemon does, and keeps every byte after the request headers:
+// the daemon hands that raw connection to the container as its stdin.
+async function attachDaemon(): Promise<{
+  docker: Docker;
+  url: () => string | undefined;
+  stdin: Promise<string>;
+  close: () => void;
+}> {
+  const server = http.createServer();
+  let url: string | undefined;
+  const stdin = new Promise<string>((resolve) => {
+    server.on("upgrade", (req, socket, head) => {
+      url = req.url;
+      const chunks: Buffer[] = [head];
+      socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+      socket.on("end", () => {
+        socket.end();
+        resolve(Buffer.concat(chunks).toString());
+      });
+      socket.write(
+        "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\n"
+        + "Connection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
+      );
+    });
+  });
+  const socketPath = path.join(sessionDir, "docker.sock");
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  return { docker: new Docker({ socketPath }), url: () => url, stdin, close: () => server.close() };
+}
+
+describe("attachStdio", () => {
+  it("sends the daemon nothing after the request headers but the command's stdin (#3130)", async () => {
+    const daemon = await attachDaemon();
+    try {
+      const stream = await attachStdio(daemon.docker, "c-1");
+      stream.end("line one\nline two\n");
+
+      expect(await daemon.stdin).toBe("line one\nline two\n");
+      expect(daemon.url()).toBe("/containers/c-1/attach?stream=true&stdin=true&stdout=true&stderr=true");
+    } finally {
+      daemon.close();
+    }
   });
 });
 
