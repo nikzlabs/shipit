@@ -168,6 +168,21 @@ function isContainerRunner(
 
 export type WorkerInstallDecision = "skipped" | "started";
 
+/**
+ * Whether `mgr` is still the session's registered manager. Read it in the stack queue, immediately
+ * before a `start()` or `reconcile()` that waited: `start()` clears a manager's disposal, so one
+ * that was taken out and stopped in the meantime would start a stack that nothing stops (docs/091).
+ */
+function ownsStack(
+  serviceManagers: Map<string, ServiceManager>,
+  sessionId: string,
+  mgr: ServiceManager,
+): boolean {
+  if (serviceManagers.get(sessionId) === mgr) return true;
+  console.log(`[compose:${sessionId}] its manager no longer has the session — not starting the stack`);
+  return false;
+}
+
 export function adoptExistingServiceManager(
   runner: SessionRunnerInterface,
   mgr: ServiceManager,
@@ -257,10 +272,13 @@ export function adoptExistingServiceManager(
         }
         if (containmentChanged) {
           await policyTransition;
-          await deps.resetSessionNetwork?.();
+          // Disposal resolves the readiness wait too, and another manager can have the network by now.
+          if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
         }
         if (containmentChanged || overlayChanged || wasPreStartedWarm) {
-          await serializeStackOp(runner.sessionId, () => mgr.reconcile());
+          await serializeStackOp(runner.sessionId, async () => {
+            if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
+          });
         }
         try {
           await containerManager.connectToNetwork(runner.sessionId, networkName);
@@ -284,8 +302,10 @@ export function adoptExistingServiceManager(
   } else if (containmentChanged || wasPreStartedWarm) {
     void (async () => {
       await policyTransition;
-      await deps.resetSessionNetwork?.();
-      await serializeStackOp(runner.sessionId, () => mgr.reconcile());
+      if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
+      await serializeStackOp(runner.sessionId, async () => {
+        if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
+      });
     })().catch((error: unknown) => {
       mgr.emit("stack_error", error instanceof Error ? error : new Error(getErrorMessage(error)));
     });
@@ -852,6 +872,7 @@ export function setupServiceManager(
         console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
         return;
       }
+      if (!ownsStack(serviceManagers, runner.sessionId, mgr)) return;
       try {
         await mgr.start();
         console.log(`[compose:${runner.sessionId}] Compose stack started`);
@@ -921,6 +942,7 @@ async function refreshPluginServices(
         runner.sessionId, workspaceDir, mgr, deps,
       );
       if (!changed) return;
+      if (!ownsStack(deps.serviceManagers, runner.sessionId, mgr)) return;
       console.log(
         `[plugins:${runner.sessionId}] plugin services changed (${count}) — reconciling`,
       );
@@ -1047,7 +1069,7 @@ export function applyShipitConfigChange(
     if ((await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps)).changed) {
       runner.emitMessage({ type: "plugin_repos_updated", sessionId: runner.sessionId });
     }
-    await mgr.reconcile();
+    if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
   }).catch((err: unknown) => {
     const errMsg = getErrorMessage(err);
     console.error(`[compose:${runner.sessionId}] Reconcile after config change failed:`, errMsg);

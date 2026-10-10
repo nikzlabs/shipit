@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
+import { EventEmitter } from "node:events";
 import {
+  adoptExistingServiceManager,
   applyOverlayDepDirsForSession,
   applyShipitConfigChange,
   buildConfinedCompose,
@@ -19,7 +21,8 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import { installContentKeyDiagnostic } from "./install-content-key.js";
 import { isOpsSafeLine } from "./services/host-session-logs.js";
 import type { DepDirPublishOutcome } from "./overlay-publish.js";
-import type { ServiceManager } from "./service-manager.js";
+import { ServiceManager } from "./service-manager.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionManager } from "./sessions.js";
@@ -352,6 +355,163 @@ describe("applyShipitConfigChange", () => {
 
       await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
       expect(mgr.setPluginServices).not.toHaveBeenCalled();
+    });
+  });
+
+  // `start()` clears a manager's disposal, so a reconcile after the stop starts a stack that nothing stops.
+  describe("a manager that lost the session while its reconcile waited", () => {
+    const flushStackQueue = () => serializeStackOp("s1", async () => {});
+
+    /** An earlier stack operation of the session, which the one under test waits behind. */
+    function holdStackQueue() {
+      let finish = (): void => {};
+      const gate = new Promise<void>((resolve) => { finish = resolve; });
+      const earlier = serializeStackOp("s1", () => gate);
+      return async (): Promise<void> => {
+        finish();
+        await earlier;
+        await flushStackQueue();
+      };
+    }
+
+    function composeSession() {
+      const clone = path.join(tmpDir, "session", "workspace");
+      fs.mkdirSync(clone, { recursive: true });
+      fs.writeFileSync(path.join(clone, "docker-compose.yml"), "services:\n  web:\n    image: node:22\n");
+      fs.writeFileSync(path.join(clone, "shipit.yaml"), "compose: docker-compose.yml\n");
+      return {
+        ...makeDeps(""),
+        sessionManager: { get: () => ({ workspaceDir: clone, remoteUrl: undefined }) } as unknown as SessionManager,
+      };
+    }
+
+    function heldResolution() {
+      let release = (): void => {};
+      const resolvePluginServices = vi.fn(() => new Promise<never>((resolve) => {
+        release = () => resolve([{ name: "probe" }] as never);
+      }));
+      return { resolvePluginServices, release: () => release() };
+    }
+
+    function makePluginManager() {
+      return { ...makeFakeManager(), setPluginServices: vi.fn(() => true) };
+    }
+
+    it("is not reconciled after a config change, when it was taken out during the plugin resolution", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const mgr = makePluginManager();
+      const held = heldResolution();
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: held.resolvePluginServices };
+
+      applyShipitConfigChange(makeRunner(), deps);
+      await vi.waitFor(() => expect(held.resolvePluginServices).toHaveBeenCalled());
+      deps.serviceManagers.delete("s1");
+      held.release();
+      await flushStackQueue();
+
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("is not reconciled after a config change, when it was taken out while the reconcile was in the queue", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const mgr = makeFakeManager();
+      const deps = makeLiveDeps(mgr);
+      const releaseQueue = holdStackQueue();
+
+      applyShipitConfigChange(makeRunner(), deps);
+      deps.serviceManagers.delete("s1");
+      await releaseQueue();
+
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("is not reconciled when another manager has the session by then", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const mgr = makeFakeManager();
+      const next = makeFakeManager();
+      const deps = makeLiveDeps(mgr);
+      const releaseQueue = holdStackQueue();
+
+      applyShipitConfigChange(makeRunner(), deps);
+      deps.serviceManagers.set("s1", next as unknown as ServiceManager);
+      await releaseQueue();
+
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+      expect(next.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("is not reconciled after a plugin round, when it was taken out during the plugin resolution", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const mgr = { ...makePluginManager(), refreshSecretsStatus: vi.fn(async () => {}) };
+      const held = heldResolution();
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: held.resolvePluginServices };
+
+      emitPluginReposUpdated(makeRunner(), deps)("s1");
+      await vi.waitFor(() => expect(held.resolvePluginServices).toHaveBeenCalled());
+      deps.serviceManagers.delete("s1");
+      held.release();
+      await flushStackQueue();
+
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("is not reconciled by an adoption that has no container, when it was taken out before its turn", async () => {
+      const mgr = Object.assign(new EventEmitter(), { ...makeFakeManager(), preStartedWarm: true });
+      const deps = makeLiveDeps(mgr);
+      const releaseQueue = holdStackQueue();
+
+      adoptExistingServiceManager(makeRunner(), mgr as unknown as ServiceManager, { ...deps, installPromise: null });
+      await new Promise((resolve) => setImmediate(resolve));
+      deps.serviceManagers.delete("s1");
+      await releaseQueue();
+
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("does not get its session network reset by an adoption that has no container", async () => {
+      const mgr = Object.assign(new EventEmitter(), { ...makeFakeManager(), updateEgressContainment: () => true });
+      const deps = makeLiveDeps(mgr);
+      const resetSessionNetwork = vi.fn(async () => {});
+
+      adoptExistingServiceManager(makeRunner(), mgr as unknown as ServiceManager, {
+        ...deps, installPromise: null, resetSessionNetwork,
+      });
+      deps.serviceManagers.delete("s1");
+      await new Promise((resolve) => setImmediate(resolve));
+      await flushStackQueue();
+
+      expect(mgr.stop).toHaveBeenCalledTimes(1);
+      expect(resetSessionNetwork).not.toHaveBeenCalled();
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("is not started for the first time, when it was taken out before its turn", async () => {
+      const start = vi.spyOn(ServiceManager.prototype, "start").mockResolvedValue();
+      const deps = composeSession();
+      const releaseQueue = holdStackQueue();
+
+      try {
+        setupServiceManager(makeRunner(), deps);
+        expect(deps.serviceManagers.has("s1")).toBe(true);
+        await new Promise((resolve) => setImmediate(resolve));
+        deps.serviceManagers.delete("s1");
+        await releaseQueue();
+
+        expect(start).not.toHaveBeenCalled();
+      } finally {
+        start.mockRestore();
+      }
+    });
+
+    it("is still started for the first time when it has the session", async () => {
+      const start = vi.spyOn(ServiceManager.prototype, "start").mockResolvedValue();
+
+      try {
+        setupServiceManager(makeRunner(), composeSession());
+        await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      } finally {
+        start.mockRestore();
+      }
     });
   });
 
