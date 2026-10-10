@@ -4,8 +4,10 @@ import {
   ServiceError,
   queryHostSessions,
   queryHostSessionLogs,
+  queryHostSessionTranscript,
   type HostSessionQuery,
   type HostSessionLogQuery,
+  type HostSessionTranscriptQuery,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
@@ -113,6 +115,44 @@ export async function registerHostSessionRoutes(
         reply
           .code(500)
           .send({ error: `Failed to read session logs: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // docs/326-ops-session-transcript — GET only: no ops route writes to another session.
+  app.get<{
+    Params: { id: string };
+    Querystring: {
+      target?: string;
+      since?: string;
+      until?: string;
+      last?: string;
+      before?: string;
+      full?: string;
+    };
+  }>(
+    "/api/sessions/:id/host-session-transcript",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
+      try {
+        const q = request.query;
+        const query: HostSessionTranscriptQuery = {};
+        // A flag that was given with no value is an error, not the default.
+        if (q.since !== undefined) query.since = q.since;
+        if (q.until !== undefined) query.until = q.until;
+        if (q.last !== undefined) query.last = q.last === "" ? Number.NaN : Number(q.last);
+        if (q.before !== undefined) query.before = q.before === "" ? Number.NaN : Number(q.before);
+        if (q.full === "true") query.full = true;
+        return queryHostSessionTranscript(sessionManager, deps.chatHistoryManager, q.target ?? "", query);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        // An unexpected error can quote stored text, and this reply is outside the redaction.
+        console.error(`[ops-transcript] read failed: ${err instanceof Error ? err.name : "unknown error"}`);
+        reply.code(500).send({ error: "Failed to read the session transcript." });
       }
     },
   );

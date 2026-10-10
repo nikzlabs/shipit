@@ -1,0 +1,20 @@
+# 326 — Ops session reads a session's transcript: checklist
+
+- [x] `redactCredentials` in `services/redaction.ts`, with tests, and a timed test on hostile input
+- [x] `ChatHistoryManager.listRowTimes` and `loadRowById`
+- [x] `services/host-session-transcript.ts`: target resolution, window, paging, cuts, redaction of every string, image bytes removed
+- [x] Ops-gated route `GET /api/sessions/:id/host-session-transcript`
+- [x] Worker relay `/agent-ops/session/host-session-transcript`
+- [x] `shipit session transcript` shim handler, generic card print, untrusted envelope, `--json` notice
+- [x] `transcript` source in `shared/untrusted-input.ts`
+- [x] Unit tests: redaction in every text position, cuts, paging, window, removed versus never stored, archived session
+- [x] Integration tests: 403 for a non-ops caller, live / archived / removed transcript, redaction, GET only
+- [x] Shim tests: envelope, structure that text cannot forge, cards, the three empty cases
+- [x] Container guard route table and path-scope case
+- [x] `/shipit-docs/ops-session.md`, `sessions.md`, `untrusted-input.md`, and the wiki
+- [x] Ops system prompt and the seeded recipes in `templates-ops.ts`
+- [x] Pointers in `docs/255-ops-session-inventory` and `docs/264-ops-session-logs`
+- [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`
+- [x] Independent reviewer pass against every numbered requirement
+- [x] Act on the review: whole-text redaction before the cut, linear patterns and the assignment scan, per-message limits, withheld rows, strict block flattening
+- [x] Second independent reviewer pass on the fixes

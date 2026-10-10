@@ -1,4 +1,5 @@
 ---
+issue: planning#674
 title: Ops session — read another session's transcript
 description: An ops session can read the transcript of any session on the host. This reverses the boundary that docs/255-ops-session-inventory req 8 set.
 ---
@@ -28,6 +29,12 @@ it, and sent the operator to the UI.
 ## Requirements
 
 1. An ops session can read the transcript of any session on the host.
+2. The read returns all that the chat shows: the user's messages, the
+   assistant's text, the cards, the tool calls with their inputs, and the tool
+   results. A large body is cut, and the output says that it was cut.
+3. Before the ops session gets the text, ShipIt replaces credentials with
+   `[REDACTED]`: API keys, tokens, JWTs, bearer values, and passwords in URLs.
+   URLs, file paths, e-mail addresses and commit hashes stay readable.
 
 ## What this reverses
 
@@ -53,21 +60,22 @@ and the log read do not change: each still returns what it returned before.
 
 ## Open questions
 
-- **How much of each tool call does the read return?** The UI shows tool calls
-  and their results in the transcript, and the incident needed one failed tool
-  result. But a tool result is also how a session's workspace files and command
-  output get into its transcript, and `docs/255-ops-session-inventory` req 8
-  also withheld "workspace contents". Options: (a) everything the chat shows,
-  with large bodies cut and marked; (b) the conversation, the cards, and for
-  each tool call only its name and whether it failed; (c) the conversation and
-  the cards only.
-- **Is the text redacted before the ops session gets it?** The other ops reads
-  put `[REDACTED]` in place of token-shaped strings, and also in place of every
-  URL, e-mail address and workspace path. In a transcript that removes file
-  paths and pull request links, which an investigation usually needs. Options:
-  (a) redact known credential shapes only; (b) the same full redaction as the
-  other ops reads; (c) no redaction — the same text the UI shows.
+_(none)_
 
 ## Resolved questions
 
-_(none yet)_
+- 2026-10-10 — How much of each tool call does the read return? The UI shows
+  tool calls and their results, and the incident needed one failed tool result.
+  But a tool result is also how a session's workspace files and command output
+  get into its transcript, and `docs/255-ops-session-inventory` req 8 also
+  withheld "workspace contents". The options were: all that the chat shows;
+  names and status only; conversation and cards only. The operator chose **all
+  that the chat shows**, with large bodies cut and marked. Recorded as
+  requirement 2. This means that workspace content which is in a transcript
+  can reach the ops session.
+- 2026-10-10 — Is the text redacted before the ops session gets it? The other
+  ops reads also replace every URL, e-mail address and workspace path, which
+  removes the file paths and pull request links that an investigation needs.
+  The options were: credentials only; the full redaction of the other ops
+  reads; no redaction. The operator chose **credentials only**. Recorded as
+  requirement 3.

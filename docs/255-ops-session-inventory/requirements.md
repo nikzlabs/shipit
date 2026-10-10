@@ -47,6 +47,9 @@ the orchestrator's `sessions` table the whole time.
    session: no conversation replay, no prompts, no queued messages, no assistant
    message bodies, no secrets, tokens, env, or workspace contents. It sees *that*
    a session exists and what it owns, never its contents.
+   *(2026-10-10: the operator reversed this for the transcript — see
+   `docs/326-ops-session-transcript` req 1. It still holds for this feature's
+   own commands, which return metadata only.)*
 9. This capability is Ops-only. An ordinary session asking the same question is
    refused, and the refusal says why.
 10. No existing behaviour changes. In particular `shipit session list` with no

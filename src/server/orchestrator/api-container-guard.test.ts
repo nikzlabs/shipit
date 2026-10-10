@@ -110,6 +110,11 @@ describe("registerContainerOriginGuard — request gating", () => {
       { config: { containerAccessible: true } },
       async () => ({ entries: [] }),
     );
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/host-session-transcript",
+      { config: { containerAccessible: true } },
+      async () => ({ entries: [] }),
+    );
     await app.ready();
   });
 
@@ -303,6 +308,21 @@ describe("registerContainerOriginGuard — request gating", () => {
     const other = await app.inject({
       method: "GET",
       url: "/api/sessions/sess-other/host-session-logs",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(other.statusCode).toBe(403);
+  });
+
+  it("scopes the ops transcript route on the PATH, not on its ?target= filter (docs/326)", async () => {
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/host-session-transcript?target=sess-other`,
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(own.statusCode).toBe(200);
+    const other = await app.inject({
+      method: "GET",
+      url: "/api/sessions/sess-other/host-session-transcript",
       remoteAddress: CONTAINER_IP,
     });
     expect(other.statusCode).toBe(403);
@@ -506,6 +526,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/source/show",
   "GET /api/sessions/:id/host-sessions",
   "GET /api/sessions/:id/host-session-logs",
+  // docs/326-ops-session-transcript — a read; no ops route writes to another session.
+  "GET /api/sessions/:id/host-session-transcript",
   "POST /api/sessions/:id/agent/spawn",
   "GET /api/sessions/:id/agent/result",
   "GET /api/sessions/:id/agent/roles",

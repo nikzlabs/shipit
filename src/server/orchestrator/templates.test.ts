@@ -129,6 +129,9 @@ describe("getTemplate", () => {
     expect(ops.files["prompts/diagnose-stuck-session.md"]).toContain("shipit session logs");
     expect(ops.files["prompts/trace-a-pr.md"]).toContain("shipit session logs");
     expect(ops.files["README.md"]).toContain("shipit session logs");
+    for (const file of ["README.md", "prompts/trace-a-pr.md", "prompts/read-session-logs.md"]) {
+      expect(ops.files[file], file).toContain("shipit session transcript");
+    }
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
     expect(ops.files["docker-compose.yml"]).toContain(`image: ${TRUSTED_OPS_PROXY_IMAGE}\n`);
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");

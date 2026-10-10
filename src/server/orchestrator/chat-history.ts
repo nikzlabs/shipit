@@ -519,6 +519,20 @@ export class ChatHistoryManager {
     return rows.map((r) => this.fromRow(r));
   }
 
+  /** Transcript order. `createdAt` is when the row was last written: a rewind rewrites every row. */
+  listRowTimes(sessionId: string): { id: number; createdAt: string | null }[] {
+    return this.db.prepare(
+      "SELECT id, created_at AS createdAt FROM messages WHERE session_id = ? ORDER BY id",
+    ).all(sessionId) as { id: number; createdAt: string | null }[];
+  }
+
+  loadRowById(sessionId: string, id: number): PersistedMessage | undefined {
+    const row = this.db.prepare("SELECT * FROM messages WHERE session_id = ? AND id = ?").get(sessionId, id) as
+      | MessageRow
+      | undefined;
+    return row ? this.fromRow(row) : undefined;
+  }
+
   loadLatestAssistantText(sessionId: string): string | undefined {
     const row = this.db.prepare(
       "SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content != '' ORDER BY id DESC LIMIT 1",

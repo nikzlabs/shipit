@@ -604,6 +604,29 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  app.get<{
+    Querystring: {
+      target?: string;
+      since?: string;
+      until?: string;
+      last?: string;
+      before?: string;
+      full?: string;
+    };
+  }>(
+    "/agent-ops/session/host-session-transcript",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      for (const key of ["target", "since", "until", "last", "before", "full"] as const) {
+        const value = request.query[key];
+        // An empty value goes on as it is: the orchestrator rejects it.
+        if (value !== undefined) params.set(key, value);
+      }
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/host-session-transcript${qs}`, undefined, reply);
+    },
+  );
+
   app.get<{ Params: { childId: string } }>(
     "/agent-ops/session/view/:childId",
     async (request, reply) =>

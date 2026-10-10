@@ -496,6 +496,42 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toContain("/children?turn=turn-xyz");
   });
 
+  it("GET /agent-ops/session/host-session-transcript forwards the target and the paging flags only", async () => {
+    client.setResponse("GET", "/host-session-transcript", {
+      ok: true, status: 200, body: { entries: [], stored: 0 },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent-ops/session/host-session-transcript?target=7bc72326&last=5&before=40&since=2h&until=1h&full=true&other=1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0].method).toBe("GET");
+    expect(client.calls[0].path).toBe(
+      "/host-session-transcript?target=7bc72326&since=2h&until=1h&last=5&before=40&full=true",
+    );
+  });
+
+  it("GET /agent-ops/session/host-session-transcript forwards an empty value, for the orchestrator to reject", async () => {
+    await app.inject({
+      method: "GET",
+      url: "/agent-ops/session/host-session-transcript?target=7bc72326&last=&since=",
+    });
+    expect(client.calls[0].path).toBe("/host-session-transcript?target=7bc72326&since=&last=");
+  });
+
+  it("GET /agent-ops/session/host-session-transcript passes the ops-only refusal through", async () => {
+    client.setResponse("GET", "/host-session-transcript", {
+      ok: false, status: 403, body: { error: "Host session inventory is only available in Ops sessions." },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent-ops/session/host-session-transcript?target=7bc72326",
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toContain("only available in Ops sessions");
+  });
+
   it("GET /agent-ops/session/view/:childId forwards to /children/:childId", async () => {
     client.setResponse("GET", "/children/ses_x", {
       ok: true, status: 200,

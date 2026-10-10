@@ -23,7 +23,7 @@ describe("wrapUntrustedContent", () => {
   });
 
   it("renders a distinct label and description per source", () => {
-    const sources: UntrustedSource[] = ["file", "web", "mcp", "issue", "pr"];
+    const sources: UntrustedSource[] = ["file", "web", "mcp", "issue", "pr", "transcript"];
     const labels = sources.map((source) =>
       wrapUntrustedContent({ source, content: "x" }),
     );
@@ -32,6 +32,7 @@ describe("wrapUntrustedContent", () => {
     expect(labels[2]).toContain("MCP TOOL RESULT");
     expect(labels[3]).toContain("ISSUE CONTENT");
     expect(labels[4]).toContain("PULL REQUEST CONTENT");
+    expect(labels[5]).toContain("SESSION TRANSCRIPT");
     for (const source of sources) {
       expect(wrapUntrustedContent({ source, content: "x" })).toContain(
         UNTRUSTED_SOURCE_DESCRIPTIONS[source],
