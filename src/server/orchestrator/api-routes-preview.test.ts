@@ -10,6 +10,7 @@ const SESSION = "s1";
 interface FakeManager {
   services: ManagedService[];
   projectComposeFailure: { kind: "refused" | "malformed"; message: string } | null;
+  snapshotLogs?: (name: string, lines?: number) => Promise<string>;
 }
 
 async function appWith(fake: FakeManager | null, gap: DependencyGap | null = null): Promise<FastifyInstance> {
@@ -17,6 +18,8 @@ async function appWith(fake: FakeManager | null, gap: DependencyGap | null = nul
   const mgr = fake
     ? ({
       getServices: () => fake.services,
+      getService: (name: string) => fake.services.find((svc) => svc.name === name),
+      snapshotLogs: fake.snapshotLogs,
       projectComposeFailure: fake.projectComposeFailure,
     } as unknown as ServiceManager)
     : undefined;
@@ -119,4 +122,34 @@ describe("GET /api/sessions/:id/services", () => {
     expect(statusCode).toBe(404);
     expect(body.error).toContain("No compose stack");
   });
+});
+
+describe("GET /api/sessions/:id/services/:name/logs", () => {
+  async function readLogs(query: string): Promise<{ body: unknown; requested: (number | undefined)[] }> {
+    const requested: (number | undefined)[] = [];
+    app = await appWith({
+      services: [{ name: "web", preview: "auto", status: "running", dependsOnInstall: false, port: 5173 }],
+      projectComposeFailure: null,
+      snapshotLogs: async (_name, lines) => {
+        requested.push(lines);
+        return "\x1b[32mready\x1b[0m\n";
+      },
+    });
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION}/services/web/logs${query}` });
+    return { body: res.json(), requested };
+  }
+
+  it("passes `lines` to the snapshot and strips ANSI from the result", async () => {
+    const { body, requested } = await readLogs("?lines=5");
+    expect(requested).toEqual([5]);
+    expect(body).toEqual({ name: "web", logs: "ready\n" });
+  });
+
+  it.each(["", "?lines=abc", "?lines=0", "?lines=-3"])(
+    "asks for the default snapshot when the query is %j",
+    async (query) => {
+      const { requested } = await readLogs(query);
+      expect(requested).toEqual([undefined]);
+    },
+  );
 });

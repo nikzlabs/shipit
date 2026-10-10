@@ -18,3 +18,14 @@ export function truncateTerminalBuffer(buffer: string, maxLen: number): string {
 
   return buffer.slice(cutPoint);
 }
+
+export function tailLines(text: string, maxLines: number): string {
+  // A trailing newline ends the last line; it does not start an empty one.
+  let from = text.endsWith("\n") ? text.length - 1 : text.length;
+  for (let i = 0; i < maxLines; i++) {
+    if (from <= 0) return text;
+    from = text.lastIndexOf("\n", from - 1);
+    if (from < 0) return text;
+  }
+  return text.slice(from + 1);
+}

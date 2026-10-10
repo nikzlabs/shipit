@@ -59,10 +59,10 @@ export async function registerPreviewRoutes(
         reply.code(404).send({ error: `Unknown service: ${request.params.name}` });
         return;
       }
-      // Read Docker's logs; reconciliation clears the in-memory buffer.
+      // Not the in-memory buffer: reconciliation clears it.
       const lines = parseInt(request.query.lines ?? "", 10);
       const tail = Number.isFinite(lines) && lines > 0 ? lines : undefined;
-      const logs = stripAnsi(await mgr.snapshotLogs(request.params.name, tail ?? 2000));
+      const logs = stripAnsi(await mgr.snapshotLogs(request.params.name, tail));
       return { name: request.params.name, logs };
     },
   );

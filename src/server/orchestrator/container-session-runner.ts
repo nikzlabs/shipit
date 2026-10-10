@@ -1954,7 +1954,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "logs": {
           if (!name) throw new Error("Service name is required");
           if (!mgr.getService(name)) throw new Error(`Unknown service: ${name}`);
-          const logs = stripAnsi(await mgr.snapshotLogs(name, lines ?? 2000));
+          const logs = stripAnsi(await mgr.snapshotLogs(name, lines));
           result = { name, logs };
           break;
         }
