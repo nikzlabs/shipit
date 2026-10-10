@@ -126,18 +126,40 @@ Three rules close it. Each is verified at the function named.
 2. **A spawn that fails after the claim removes the child.** Any throw after the claim —
    the pinned commit is not in the clone, environment preparation fails, the dispatch is
    refused — runs `discardSpawnedChild` (`services/session.ts`): runner, container, volumes,
-   checkout and row. "Failed" therefore never describes a session that exists. If the
-   removal itself fails, the error names the child's id instead. This is also what makes
-   the docs/306-spawn-retry-safety rule "a failed spawn drops its claim" correct: the retry
-   of a failed spawn finds nothing left from the first attempt.
+   checkout and row. "Failed" therefore never describes a session that exists. This is also
+   what makes the docs/306-spawn-retry-safety rule "a failed spawn drops its claim" correct:
+   the retry of a failed spawn finds nothing left from the first attempt.
+
+   The removal declines in two cases, and the error then names the child's id and says
+   that the session still exists. **A turn has started in the child:** graduation shows it
+   in the sidebar before the spawn ends and the failed spawn dispatched nothing, so that
+   turn is someone else's work. **Its container cannot be destroyed:** deleting the row
+   would hide a container that is still there.
 3. **The ShipIt source repository is trusted for an Ops fix spawn (req 7).**
    `prepareShipitFixSpawn` (`api-routes-shipit-fix.ts`) calls `grantRepoTrust` after the
-   Ops-only check and the write-access check, never before, so a refused spawn grants
-   nothing. `grantRepoTrust` (`services/repos.ts`) is also what `POST /api/repos/trust`
-   calls, so both grants start the setup the gate deferred in the same way.
+   Ops-only check and the write-access check, never before, so a spawn that those checks
+   refuse grants nothing. A spawn that is refused later — a quota, an unknown role — has
+   already granted it: the trust describes the repository, not the outcome of one spawn.
+   `grantRepoTrust` (`services/repos.ts`) is also what `POST /api/repos/trust` calls, so
+   both grants start the setup the gate deferred in the same way.
 
 The spawn route maps the refusal to `{ error, code }`. It gives a dispatch-time
 `AgentTurnAdmissionError` the same status and code, in place of the `500` it had before.
+Once the child exists and has its prompt, the route's own bookkeeping cannot fail the spawn:
+a parent card that cannot be recorded is logged, and the caller still receives the child.
+
+Where these rules stop:
+
+- **Inside the claim.** The removal starts when `claimService.claim` returns. A claim that
+  fails after it allocated a session is the claim service's to clean up, for every caller
+  and not only a spawn. What it can leave is an ungraduated draft, which no caller can see
+  or address; the abandoned-draft reclaim (`idle-enforcer.ts`) stops its container and the
+  startup sweep (`startup-tasks.ts`) deletes its row.
+- **Registration is not gated.** The cross-repository proposal registers and clones a
+  target ShipIt has never seen before `spawnChildSession` runs, so an untrusted target is
+  refused after its repository appeared in the sidebar. That is intended: this design
+  never gated a clone, the card told the user the repository would be added, and a
+  registered repository is what makes the Trust action reachable.
 
 ### Re-checking queued and recovered work
 
@@ -217,6 +239,7 @@ This design does not invent revocation requirements. It does ensure queue drains
 
 - `integration_tests/spawn-trust-gate.test.ts`: an untrusted target answers `403 repository_untrusted`, with no claim, no child row, no checkout and no runner; the same idempotency key succeeds after the Trust action; a child whose first dispatch is refused after it was created is removed.
 - `services/child-sessions-trust-gate.test.ts`: the refusal happens before `claimService.claim`; a failure after the claim calls the discard; a discard that fails puts the child's id in the error.
+- `services/session-discard-spawned-child.test.ts`: the teardown order; a child with a running turn or a queued message is kept; a container that cannot be destroyed keeps the session.
 - `integration_tests/ops-fix-spawn.test.ts`: an Ops fix spawn trusts the ShipIt source repository and the child receives its prompt; a spawn that the Ops-only check or the write-access check refuses grants no trust; a pinned commit that is not in the target repository removes the child.
 
 ### Client

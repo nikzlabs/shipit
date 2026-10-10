@@ -94,6 +94,6 @@ describe("spawnChildSession — a failure after the child exists", () => {
     expect(err).toBeInstanceOf(ServiceError);
     expect((err as ServiceError).statusCode).toBe(500);
     expect((err as ServiceError).message).toMatch(/Failed to read claimed branch/);
-    expect((err as ServiceError).message).toMatch(/child-1 .* still exists/);
+    expect((err as ServiceError).message).toMatch(/child-1 .* still\s+exists: .*database is locked/);
   });
 });

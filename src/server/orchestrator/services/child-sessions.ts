@@ -191,8 +191,8 @@ export async function spawnChildSession(
       console.error(`[spawn-child] Could not remove ${childId} after its spawn failed:`, discardErr);
       throw new ServiceError(
         err instanceof ServiceError ? err.statusCode : 500,
-        `${getErrorMessage(err)}\nThe session ${childId} was created before this failure and ShipIt `
-          + "could not remove it, so it still exists.",
+        `${getErrorMessage(err)}\nThe session ${childId} was created before this failure and still `
+          + `exists: ShipIt did not remove it (${getErrorMessage(discardErr)}).`,
       );
     }
     throw err;

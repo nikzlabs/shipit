@@ -411,8 +411,9 @@ A refusal is an answer from ShipIt with an error message: a missing title, a
 quota, an unknown role. **A refused or failed create leaves no session.** There
 is nothing to list, wait on or message, and you can run the command again after
 you correct the cause. If the create failed after ShipIt had made the child,
-ShipIt removes that child before it answers; in the rare case where it could
-not, the error gives the child's id.
+ShipIt removes that child before it answers. In the rare case where it did not
+— a turn had already started there, or its container could not be destroyed —
+the error says that the session still exists and gives its id.
 
 One refusal is not yours to correct. **`repository_untrusted` (403)** means the
 target repository is not trusted, so no agent can receive a message there. The

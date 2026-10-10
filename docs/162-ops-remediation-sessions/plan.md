@@ -299,8 +299,8 @@ ask the Ops agent in chat to inspect source or spawn a fix session.
 | Ops mutates ShipIt source directly | Source context is read-only; no Git writes from Ops. |
 | Ops sees host paths outside the contract | Source is brokered or snapshotted; no arbitrary host bind mount. |
 | Ops opens PRs without write access | Orchestrator checks write permission before child creation. |
-| A fix spawn trusts a repository nobody consented to | Trust is granted only to the configured ShipIt source remote, only from an Ops session, and only after the push-access check. A refused spawn grants nothing. |
-| A failed fix spawn leaves a child with no prompt | A failure after the child exists removes it, so the command can be run again. |
+| A fix spawn trusts a repository nobody consented to | Trust is granted only to the configured ShipIt source remote, only from an Ops session, and only after the push-access check. A spawn that those checks refuse grants nothing. |
+| A failed fix spawn leaves a child with no prompt | A failure after the child exists removes it, so the command can be run again. If the child cannot be removed, the error names its id. |
 | Source snapshot does not match production | Surface exact vs approximate source status in `shipit source status` and in the remediation packet. |
 | Logs include secrets | Redact incident packets before passing them to the child session; keep raw logs in the Ops transcript only when already visible there. |
 | Agent creates many fix sessions | Reuse spawned-session quotas, with a lower Ops-specific per-turn default if needed. |
@@ -434,13 +434,15 @@ Write path:
   construction (that doc's req 7), because the host already runs its code as
   the orchestrator. The grant is the ordinary one — stored on the repository's
   entry, for every later session on it — and it comes after the Ops-only check
-  and the push-access check, so a refused spawn grants nothing.
+  and the push-access check, so a spawn that those checks refuse grants nothing.
+  A spawn refused later, by a quota for example, has already granted it.
 - **A failed spawn leaves nothing.** `spawnChildSession` creates the child
   before several steps that can still fail; the commonest here is a deployed
   commit that is not in the fix repository, which fails the reset to `base`.
   Any such failure runs `discardSpawnedChild`, which removes the runner, the
   container, the checkout and the row, so "failed" is true and a retry starts
-  clean.
+  clean. It keeps the child, and the error names its id, when a turn has
+  already started in it or its container cannot be destroyed.
 - Repo identity is canonical (`canonicalRepoKey`): `ensureShipitSourceRepoReady`
   reuses the entry the user already added through the home screen instead of
   registering a credentialed near-duplicate (a credentialed origin URL,

@@ -900,8 +900,8 @@ export interface DiscardSpawnedChildDeps {
 
 /**
  * Removes a session that a failed spawn created, so "failed" never describes a session
- * that exists (docs/243). The session never ran a turn, so nothing here is work to keep.
- * Only the row delete may throw: the caller reports the session's id when it does.
+ * that exists (docs/243). It throws, and keeps the session, when a turn has started in it or
+ * its container cannot be destroyed: the caller then reports the session's id instead.
  */
 export async function discardSpawnedChild(
   deps: DiscardSpawnedChildDeps,
@@ -910,6 +910,11 @@ export async function discardSpawnedChild(
   const session = deps.sessionManager.get(sessionId);
 
   const runner = deps.runnerRegistry.get(sessionId);
+  // Graduation shows the child in the sidebar before the spawn ends, and the failed spawn
+  // dispatched nothing, so a turn here is someone else's work.
+  if (runner?.running || (runner?.queueLength ?? 0) > 0) {
+    throw new Error("a turn has started in it");
+  }
   if (runner && "removeVolumesOnDispose" in runner) {
     (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = true;
   }
@@ -917,12 +922,9 @@ export async function discardSpawnedChild(
   // A claimed warm session can have a pre-started preview that no runner owned.
   stopWarmPreview(deps.serviceManagers, sessionId, deps.composeStopPromises);
 
-  // Release the container's bind mount before removing the workspace directory.
-  try {
-    await deps.containerManager?.destroy(sessionId);
-  } catch (err) {
-    console.warn(`[spawn-child] Failed to destroy the container for ${sessionId}:`, String(err));
-  }
+  // Before the workspace directory goes, to release the bind mount. A failure propagates:
+  // deleting the row would hide a container that is still there.
+  await deps.containerManager?.destroy(sessionId);
   if (!runner) {
     try {
       await deps.pruneSessionVolumes?.(sessionId);
@@ -943,7 +945,7 @@ export async function discardSpawnedChild(
     deps.chatHistoryManager, deps.usageManager, deps.removeSessionLogs, deps.presentStore,
   );
   if (deps.sessionManager.get(sessionId)) {
-    throw new Error(`session ${sessionId} is still present after its delete`);
+    throw new Error("its record could not be deleted");
   }
   deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
 }

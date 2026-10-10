@@ -154,13 +154,19 @@ describe("Integration: spawn trust gate (docs/243)", () => {
 
       expect((await spawn(parentId)).statusCode).toBe(403);
 
-      const failed = await parentClient.receiveType("session_spawn_failed", 5000) as {
-        statusCode: number;
-        message: string;
-      };
-      expect(failed.statusCode).toBe(403);
-      expect(failed.message).toContain("owner/untrusted-spawn-test");
-      await expect(parentClient.receiveType("session_spawned", 300)).rejects.toThrow();
+      // Every message up to the failure card and after it: receiveType would discard a
+      // spawned card that arrived first.
+      const messages = await parentClient.collectUntil((m) => m.type === "session_spawn_failed");
+      const failed = messages.find((m) => m.type === "session_spawn_failed") as
+        | { statusCode: number; message: string }
+        | undefined;
+      expect(failed?.statusCode).toBe(403);
+      expect(failed?.message).toContain("owner/untrusted-spawn-test");
+      expect(messages.some((m) => m.type === "session_spawned")).toBe(false);
+
+      const history = app.chatHistoryManager.load(parentId);
+      expect(history.filter((m) => m.spawnFailed)).toHaveLength(1);
+      expect(history.some((m) => m.spawnedSession)).toBe(false);
     } finally {
       parentClient.close();
     }

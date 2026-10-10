@@ -77,22 +77,42 @@ describe("discardSpawnedChild", () => {
     expect(pruneSessionVolumes).toHaveBeenCalledWith(childId);
   });
 
-  it("still removes the row when the container cannot be destroyed", async () => {
+  it("keeps the session when its container cannot be destroyed, so the leftover stays visible", async () => {
     const containerManager = { destroy: vi.fn().mockRejectedValue(new Error("docker is down")) };
 
-    await discardSpawnedChild(
-      { sessionManager, runnerRegistry: registry(), sseBroadcast: vi.fn(), containerManager },
-      childId,
-    );
+    await expect(
+      discardSpawnedChild(
+        { sessionManager, runnerRegistry: registry(), sseBroadcast: vi.fn(), containerManager },
+        childId,
+      ),
+    ).rejects.toThrow(/docker is down/);
 
-    expect(sessionManager.get(childId)).toBeUndefined();
+    expect(sessionManager.get(childId)).toBeDefined();
+    expect(fs.existsSync(workspaceDir)).toBe(true);
   });
 
-  it("throws when the session is still present, so the caller can report its id", async () => {
+  it.each([
+    ["a running turn", { running: true, queueLength: 0 }],
+    ["a queued message", { running: false, queueLength: 1 }],
+  ])("keeps a session that already has %s", async (_what, runner) => {
+    const runnerRegistry = registry(runner);
+    const containerManager = { destroy: vi.fn() };
+
+    await expect(
+      discardSpawnedChild({ sessionManager, runnerRegistry, sseBroadcast: vi.fn(), containerManager }, childId),
+    ).rejects.toThrow(/a turn has started/);
+
+    expect(runnerRegistry.dispose).not.toHaveBeenCalled();
+    expect(containerManager.destroy).not.toHaveBeenCalled();
+    expect(sessionManager.get(childId)).toBeDefined();
+    expect(fs.existsSync(workspaceDir)).toBe(true);
+  });
+
+  it("throws when the record is still present, so the caller can report its id", async () => {
     vi.spyOn(sessionManager, "delete").mockReturnValue(false);
 
     await expect(
       discardSpawnedChild({ sessionManager, runnerRegistry: registry(), sseBroadcast: vi.fn() }, childId),
-    ).rejects.toThrow(/child-1 is still present/);
+    ).rejects.toThrow(/record could not be deleted/);
   });
 });

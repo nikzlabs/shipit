@@ -292,12 +292,18 @@ export async function registerSessionSpawnRoutes(
             spawnedAt: result.session.createdAt,
             ...(shipitFixMeta ? { shipitFix: shipitFixMeta } : {}),
           };
-          emitChatCard(
-            parentRunner,
-            { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
-            { role: "assistant", text: "", spawnedSession },
-            { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
-          );
+          // The child exists and has its prompt. A card that cannot be recorded must not turn
+          // that into "failed": the caller's retry would then create a second child.
+          try {
+            emitChatCard(
+              parentRunner,
+              { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
+              { role: "assistant", text: "", spawnedSession },
+              { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
+            );
+          } catch (err) {
+            console.error(`[spawn] Could not record the spawned card for ${result.sessionId}:`, err);
+          }
         }
 
         recordSpawnInvocation({

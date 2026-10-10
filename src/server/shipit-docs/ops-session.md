@@ -193,9 +193,10 @@ dropped unless the session was created as an ops session.
   **A create that fails leaves no session.** If the command exits non-zero with
   an error from ShipIt — the deployed commit is not in the fix repository, for
   example — there is no child to find, wait on or message, and it is safe to
-  run the command again after you correct the cause. If ShipIt could not remove
-  a child that it had already created, the error gives that child's id. The one
-  case that stays uncertain is a reply that never arrived; see
+  run the command again after you correct the cause. If ShipIt did not remove a
+  child that it had already created, the error says so and gives that child's
+  id; tell the operator which session that is. The one case that stays
+  uncertain is a reply that never arrived; see
   `sessions.md` → *When a spawn fails to answer*.
 
   The child's branch *starts* at the exact deployed commit so it can reproduce
