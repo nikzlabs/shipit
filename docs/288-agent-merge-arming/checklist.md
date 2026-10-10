@@ -161,6 +161,39 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
       recorded, not before the GitHub read
 - [x] The docs say that the count is the CLI's report, with its one-hour bound
 
+## A held request says so also while a turn runs (req 8)
+
+- [x] The decision is in `requirements.md`, with its receipt, before the code
+- [x] A request held by a running turn for ten minutes gets the one notice, in
+      the turn's own rows
+- [x] A turn that starts or ends restarts the count
+- [x] The system prompt's "Never poll for a merge" covers a wait in a background
+      command
+- [x] `github.md` and the wiki give both delays
+
+## Found with req 8
+
+- [x] The GitHub reads the tick waits for end after thirty seconds; before, one
+      read with no answer held every request for the HTTP client's five minutes
+      (req 1)
+- [x] A direct merge whose recording throws, at its read or at its write, is
+      reported as merged with the recording deferred, and not as a failed merge
+- [x] The janitor deletes no branch when it could not read the list of pull
+      requests to its end; a read that ends at its deadline is one more way to
+      get a partial list
+- [x] Not done, on purpose: to clear the mark of a failed boot probe from a
+      later answer of the worker. Written, reviewed three times, and taken out
+      — plan.md says why, and a test pins the mark's behaviour (req 6)
+
+## From the independent reviews of these changes
+
+- [x] An in-turn notice whose write fails is not said a second time, with rows
+      in progress and with the rows of the turn before still final
+- [x] The ten-minute count is for one turn, named by its runner and its epoch:
+      a turn that follows another with no pass between them starts its own
+- [x] Each guard proved red on its own; the tests that are controls (a state
+      that must stay) pass with and without the change, as controls do
+
 ## Quality
 
 - [x] Tests as listed in plan.md

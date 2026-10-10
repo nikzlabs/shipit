@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   viewPullRequestConversation, viewPullRequest, viewPullRequestResult, listPullRequests,
-  findPullRequest, findPullRequestAnyState,
+  findPullRequest, findPullRequestAnyState, findPullRequestByNumber,
 } from "./github-auth-prs.js";
-import { mockGitHubPulls, type FakePr } from "./github-pulls-test-helpers.js";
+import { GITHUB_READ_TIMEOUT_MS } from "./github-api.js";
+import { mockGitHubPulls, mockGitHubThatNeverAnswers, type FakePr } from "./github-pulls-test-helpers.js";
 
 function mockFetch(payload: unknown, status = 200): void {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -476,5 +477,19 @@ describe("PR lookup by branch", () => {
 
     expect(await findPullRequest("tok", "neworg", "old-name", BRANCH)).toMatchObject({ number: 7 });
     expect(await findPullRequest("tok", "neworg", "old-name", "shipit/no-pr")).toBeNull();
+  });
+});
+
+describe("findPullRequestByNumber", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("gives up a read that GitHub does not answer", async () => {
+    const github = mockGitHubThatNeverAnswers();
+
+    const read = findPullRequestByNumber("tok", "acme", "shipit", 7);
+    expect(github.deadlines).toEqual([GITHUB_READ_TIMEOUT_MS]);
+    github.reachDeadline();
+
+    await expect(read).rejects.toMatchObject({ name: "TimeoutError" });
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
@@ -1059,6 +1059,83 @@ describe("repo-aware PR brokering (docs/211)", () => {
       expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
         prNumber: 7, state: "settling",
       });
+    },
+  );
+
+  it(
+    "does not report a merge as failed when the read that records it gets no answer",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      const error = vi.spyOn(console, "error").mockImplementation(() => { /* silence */ });
+      const read = vi.spyOn(githubAuth, "findPullRequestByNumber").mockRejectedValue(
+        new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+      );
+      const settling = vi.spyOn(AgentMergeClaimStore.prototype, "markSettling");
+
+      try {
+        const res = await withLiveTurn(sessionId, () => app.inject({
+          method: "POST",
+          url: `/api/sessions/${sessionId}/pr/7/merge`,
+          payload: {},
+        }));
+
+        expect(res.json()).toMatchObject({
+          success: true,
+          message: expect.stringContaining("could not finish recording"),
+        });
+        expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
+          prNumber: 7, state: "settling",
+        });
+        expect(settling).toHaveBeenCalledTimes(1);
+      } finally {
+        settling.mockRestore();
+        read.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it(
+    "does not report a merge as failed when the write that records it throws",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      const error = vi.spyOn(console, "error").mockImplementation(() => { /* silence */ });
+      const settling = vi.spyOn(AgentMergeClaimStore.prototype, "markSettling").mockImplementation(() => {
+        throw new Error("database is locked");
+      });
+
+      try {
+        const res = await withLiveTurn(sessionId, () => app.inject({
+          method: "POST",
+          url: `/api/sessions/${sessionId}/pr/7/merge`,
+          payload: {},
+        }));
+
+        expect(githubAuth.mergePullRequestCalls.at(-1)).toMatchObject({ pullNumber: 7, expectedSha: head });
+        expect(res.json()).toMatchObject({
+          success: true,
+          message: expect.stringContaining("could not finish recording"),
+        });
+      } finally {
+        settling.mockRestore();
+        error.mockRestore();
+      }
     },
   );
 

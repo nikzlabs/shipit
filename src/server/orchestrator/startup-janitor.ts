@@ -762,6 +762,7 @@ async function fetchShipitBranchesWithPrStates(
 
   const prStatesByHead = new Map<string, Set<string>>();
   cursor = null;
+  let readToEnd = false;
   for (let page = 0; page < 50; page += 1) {
     const result: ShipitPrStatesQueryResult | null = await githubAuthManager.graphqlQuery(
       prQuery, { owner, repo, cursor },
@@ -776,9 +777,16 @@ async function fetchShipitBranchesWithPrStates(
       }
       set.add(node.state);
     }
-    if (!prs.pageInfo.hasNextPage) break;
+    if (!prs.pageInfo.hasNextPage) {
+      readToEnd = true;
+      break;
+    }
     cursor = prs.pageInfo.endCursor;
     if (!cursor) break;
+  }
+  // A branch is deleted for having no open pull request, and a page not read can hold one.
+  if (branchNames.length > 0 && !readToEnd) {
+    throw new Error("the list of pull requests could not be read to its end");
   }
 
   return branchNames.map((shortName) => ({

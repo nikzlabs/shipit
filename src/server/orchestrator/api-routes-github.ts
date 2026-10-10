@@ -1318,13 +1318,19 @@ export async function registerGitHubRoutes(
                 return null;
               },
               onMerged: async (expectedSha: string) => {
-                const claim = claimDeps.claims.get(request.params.id);
-                if (claim?.expectedSha !== expectedSha) return "settled";
-                claimDeps.claims.markSettling(request.params.id, expectedSha);
-                const outcome = await settleAgentMerge(
-                  claimDeps, { ...claim, state: "settling" }, { witnessed: true, turn },
-                );
-                return outcome.result === "settled" ? "settled" : "deferred";
+                // The merge is done: a recording that throws is retried, and is not a failed merge.
+                try {
+                  const claim = claimDeps.claims.get(request.params.id);
+                  if (claim?.expectedSha !== expectedSha) return "settled";
+                  claimDeps.claims.markSettling(request.params.id, expectedSha);
+                  const outcome = await settleAgentMerge(
+                    claimDeps, { ...claim, state: "settling" }, { witnessed: true, turn },
+                  );
+                  return outcome.result === "settled" ? "settled" : "deferred";
+                } catch (err) {
+                  console.error(`[agent-merge] recording the merge for ${request.params.id} failed:`, err);
+                  return "deferred";
+                }
               },
               onRefused: (expectedSha: string) => {
                 claimDeps.claims.releaseUnmerged(request.params.id, expectedSha);

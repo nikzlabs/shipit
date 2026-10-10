@@ -273,9 +273,10 @@ turn running, no background command or sub-agent consult still running, no
 message queued, and no work of ShipIt's own in progress on the branch. A `sleep`
 or a poll started in the background keeps the session busy while your CLI
 reports it, and its end normally starts a new turn. When a request has waited
-two minutes on a session that is not idle, with no turn running, the transcript
-gets one notice that names what holds it — that notice is the answer when the
-user asks why a pull request with green checks has not merged. A sandbox session
+two minutes on a session that is not idle with no turn running, or ten minutes
+on a turn that still runs, the transcript gets one notice that names what holds
+it — that notice is the answer when the user asks why a pull request with green
+checks has not merged. A sandbox session
 is different: there `--auto` hands the merge to GitHub, which does not wait for
 the session.
 

@@ -5,6 +5,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { GitHubAuthManager, validateGitHubToken, checkGitHubToken } from "./github-auth.js";
 import { CredentialStore } from "./credential-store.js";
+import { GITHUB_READ_TIMEOUT_MS } from "./github-api.js";
+import { mockGitHubThatNeverAnswers } from "./github-pulls-test-helpers.js";
 import {
   getGitIdentity,
   initGlobalGitConfig,
@@ -872,6 +874,17 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
     expect(events).toHaveLength(1);
 
     expect(mgr.getRateLimitState().limited).toBe(true);
+  });
+
+  it("gives up a read that GitHub does not answer, and reports it as unanswered", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => { /* silence */ });
+    const github = mockGitHubThatNeverAnswers();
+
+    const read = mgr.graphqlQuery("query{ x }");
+    expect(github.deadlines).toEqual([GITHUB_READ_TIMEOUT_MS]);
+    github.reachDeadline();
+
+    expect(await read).toBeNull();
   });
 });
 
