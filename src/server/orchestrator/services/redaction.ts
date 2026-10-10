@@ -60,6 +60,15 @@ const SCP_PATH_AFTER_REDACTION_RE = new RegExp(
   "g",
 );
 
+// Git prints a remote with no user: `To github.com:acme/app.git`. The phrases are git's.
+// With no phrase before it, `host:path` is also an image, a file with a key path and a
+// bucket; a first path part that is a number is read as a port (planning#684). In a JSON log
+// line, the phrase follows a written `\n`, which has no word boundary after it.
+const GIT_OUTPUT_REMOTE_RE = new RegExp(
+  String.raw`(?<=^|\W|\\[nrt])((?:To|From|Pushing to|refs to) '?)[A-Za-z0-9.-]{2,}:(?![0-9]+\/)(?:${SCP_PATH}|${SCP_PATH_PART}+\.git\b)`,
+  "g",
+);
+
 export interface Stage1Result {
   text: string;
   redactedCount: number;
@@ -92,7 +101,7 @@ export function redactStage1(input: string): Stage1Result {
     return REDACTION_PLACEHOLDER;
   });
 
-  // These two are last and only replace text: they cannot make redacted text visible.
+  // These three are last and only replace text: they cannot make redacted text visible.
   if (text.includes("@")) {
     text = text.replace(SCP_REMOTE_RE, (match: string, shape: unknown) => {
       if (shape === undefined) return match;
@@ -102,6 +111,10 @@ export function redactStage1(input: string): Stage1Result {
   }
   // Not counted: it makes a redaction longer.
   text = text.replace(SCP_PATH_AFTER_REDACTION_RE, REDACTION_PLACEHOLDER);
+  text = text.replace(GIT_OUTPUT_REMOTE_RE, (_match: string, phrase: string) => {
+    count++;
+    return `${phrase}${REDACTION_PLACEHOLDER}`;
+  });
 
   return { text, redactedCount: count };
 }

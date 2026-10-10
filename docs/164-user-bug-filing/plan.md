@@ -127,14 +127,17 @@ secret/PII *substrings* and replace with `[REDACTED]`:
   The patterns above take such a remote only in part. The e-mail pattern takes
   `git@github.com`, or a part of the host (`git@code.acme-internal` leaves
   `-internal`), before `ssh-remote` sees it, and `ssh-remote` needs `.git`. So
-  Stage 1 has two last steps:
+  Stage 1 has three last steps:
   1. `user@host:path` becomes `[REDACTED]` when the path has a `/` in it
      (planning#682).
   2. A redaction is extended over host characters, a colon and a path that
      follow it: `[REDACTED]:acme/app` becomes `[REDACTED]`. The path must have a
      `/` in it, or end in `.git` at a word boundary (planning#681).
+  3. Git removes the user when it prints a remote. So `host:path` is replaced
+     after one of git's four phrases: `To `, `From `, `Pushing to ` and
+     `refs to `, with or without a `'` before the host (planning#684, below).
 
-  The two steps are last and they only replace text, so they cannot make text
+  The three steps are last and they only replace text, so they cannot make text
   visible that an earlier step hid. A change of the patterns above can:
   with `ssh-remote` before `email`, `jane+work@github.com:acme/app.git` keeps
   `jane+`; and a wider `ssh-remote` takes text that the path pattern would hide
@@ -147,11 +150,42 @@ secret/PII *substrings* and replace with `[REDACTED]`:
   (`git show <commit id>:src/index.ts`), `user@host:port/path` (a connection
   string with no scheme), `name@version:dir/file`, and the directory of a shell
   prompt (`user@host:/srv/app$ npm test` becomes `[REDACTED]$ npm test`; a prompt
-  with `~` stays). Three forms stay visible:
-  a remote with one path part and no `.git` (`git@myhost:app`), a remote with no
-  user (`github.com:acme/app`, as `git push` prints it), and the text after
-  `.git` when `ssh-remote` took the remote (`git@myhost:a/app.git/info/refs`
+  with `~` stays). Two forms stay visible:
+  a remote with one path part and no `.git` (`git@myhost:app`), and the text
+  after `.git` when `ssh-remote` took the remote (`git@myhost:a/app.git/info/refs`
   becomes `[REDACTED]/info/refs`).
+
+  **A remote with no user (step 3).** These are the lines that git 2.39.5 prints
+  for a remote `git@github.com:acme/app.git`:
+
+  | Command | Line |
+  |---|---|
+  | `git push` | `To github.com:acme/app.git` |
+  | `git fetch`, `git pull` | `From github.com:acme/app` |
+  | `git push -v` | `Pushing to github.com:acme/app.git` |
+  | a rejected `git push` | `error: failed to push some refs to 'github.com:acme/app.git'` |
+
+  The phrase is the condition, and it can be anywhere in a line: a log line
+  puts a time or a JSON key before it. In a JSON string, the line before it ends
+  in a written `\n`, so the phrase is accepted after `\n`, `\r` and `\t` too,
+  where there is no word boundary. With no phrase, `host:path` is too common:
+  an image (`registry.example.com:5000/team/app`), a file with a key path
+  (`package.json:scripts/build`), a bucket. Three more conditions keep ordinary
+  text: a number before the first `/` is a port (`To localhost:3000/api`), the
+  host has two characters or more (`To D:/proj`), and the path needs a `/` or
+  `.git`. The cost, measured on 17 kinds of ordinary text: the step hides
+  `word:dir/file` directly after a capital "To" or "From", as in
+  `From main:src/index.ts` and `To s3:bucket/key`. That includes a URI whose
+  scheme the URL step does not know (`From file:///tmp/build/output.log`), and
+  the words "refs to" in a sentence (`update refs to HEAD:refs/heads/main`).
+  Still visible: `host:path`
+  with no phrase before it (`url = github.com:acme/app.git`, "cloned from
+  github.com:acme/app"), `From myhost:app` (one path part; the line of a fetch
+  has no `.git`), a path below a directory whose name is a number
+  (`From myhost:2024/app`), and lines of git that have no `host:path` in them:
+  `Cloning into 'app'...` (the directory, which is the name of the repository
+  by default) and, from a plain ssh git server, `fatal: 'acme/app.git' does not
+  appear to be a git repository`.
 - Note `REDACTED_PATTERNS` / `isRedactedSourcePath` in `shipit-source.ts` match
   file *paths*, not content — they decide whether a whole file may be referenced.
   Reuse them only to *exclude* sensitive paths from the excerpt and to redact

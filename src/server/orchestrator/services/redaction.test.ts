@@ -127,9 +127,44 @@ describe("redactStage1 (deterministic floor)", () => {
     for (const [input, expected] of cases) expect(redactStage1(input).text, input).toBe(expected);
   });
 
-  // The two last steps of Stage 1 as scans. A path is the longest text of path characters,
-  // `/` and placeholders: it must have a `/` in it, or, after a placeholder, end in `.git` at
-  // a word boundary.
+  it("replaces the remote in a line that git prints, which has no user (planning#684)", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const hidden: [string, string][] = [
+      ["To github.com:acme/app.git\n ! [rejected]        main -> main", `To ${R}\n ! [rejected]        main -> main`],
+      ["From github.com:acme/app\n * branch            main       -> FETCH_HEAD", `From ${R}\n * branch            main       -> FETCH_HEAD`],
+      ["Pushing to github.com:acme/app.git", `Pushing to ${R}`],
+      ["error: failed to push some refs to 'github.com:acme/app.git'", `error: failed to push some refs to '${R}'`],
+      ["To work:acme/app.git", `To ${R}`],
+      ["From git.corp.example:/srv/git/team/app", `From ${R}`],
+      ["To myhost:app.git", `To ${R}`],
+      ["From git.example.org:2fa/app", `From ${R}`],
+      [String.raw`{"stderr":"To github.com:acme/app.git\n ! [rejected]"}`, String.raw`{"stderr":"To ` + R + String.raw`\n ! [rejected]"}`],
+      // In JSON, a written `\n` is before the phrase: the letter `n` and no word boundary.
+      [String.raw`{"stderr":"Counting objects: 5\nTo github.com:acme/app.git\nDone"}`, String.raw`{"stderr":"Counting objects: 5\nTo ` + R + String.raw`\nDone"}`],
+      [String.raw`"remote: done\r\nFrom github.com:acme/app\n * branch"`, String.raw`"remote: done\r\nFrom ` + R + String.raw`\n * branch"`],
+      ["> To github.com:acme/app.git", `> To ${R}`],
+    ];
+    for (const [input, expected] of hidden) {
+      expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: 1 });
+    }
+    for (const visible of [
+      "To localhost:3000/api/x the request fails",
+      "pull registry.example.com:5000/team/app:1.2",
+      "package.json:scripts/build and README.md:intro/usage",
+      "From: jane and To: ops",
+      "From src/server/index.ts:12:3",
+      "From myhost:app",
+      "To D:/proj/x and From v:a/b",
+      "UpTo github.com:acme/app and xnTo github.com:acme/app",
+      "the path to data:image/png and from gs:bucket/dir/file",
+    ]) {
+      expect(redactStage1(visible), visible).toEqual({ text: visible, redactedCount: 0 });
+    }
+  });
+
+  // The three last steps of Stage 1 as scans. A path is the longest text of path characters,
+  // `/` and placeholders: it must have a `/` in it, or, where `gitEnd` is set, end in `.git`
+  // at a word boundary.
   const R = REDACTION_PLACEHOLDER;
   const isIn = (set: RegExp, text: string, at: number): boolean => at < text.length && set.test(text[at]);
   const pathEnd = (text: string, from: number, gitEnd: boolean): number => {
@@ -185,8 +220,34 @@ describe("redactStage1 (deterministic floor)", () => {
     return out + text.slice(at);
   };
 
+  const gitOutputRemotes = (text: string): { text: string; added: number } => {
+    let out = "";
+    let at = 0;
+    let added = 0;
+    for (let i = 0; i < text.length; i++) {
+      const afterWrittenLineEnd = i > 1 && text[i - 2] === "\\" && "nrt".includes(text[i - 1]);
+      if (i > 0 && isIn(/\w/, text, i - 1) && !afterWrittenLineEnd) continue;
+      const phrase = ["To ", "From ", "Pushing to ", "refs to "].find((words) => text.startsWith(words, i));
+      if (phrase === undefined) continue;
+      const host = i + phrase.length + (text[i + phrase.length] === "'" ? 1 : 0);
+      let colon = host;
+      while (isIn(/[A-Za-z0-9.-]/, text, colon)) colon++;
+      if (colon - host < 2 || text[colon] !== ":") continue;
+      let digits = colon + 1;
+      while (isIn(/[0-9]/, text, digits)) digits++;
+      if (digits > colon + 1 && text[digits] === "/") continue;
+      const end = pathEnd(text, colon + 1, true);
+      if (end < 0) continue;
+      out += `${text.slice(at, host)}${R}`;
+      at = end;
+      i = end - 1;
+      added++;
+    }
+    return { text: out + text.slice(at), added };
+  };
+
   // Each of the three shapes is tried once in a run. The expected text is from one global
-  // pattern for each, which is what Stage 1 had, and then the two last steps. The strings are
+  // pattern for each, which is what Stage 1 had, and then the three last steps. The strings are
   // shorter than 40 characters, and their parts cannot start a URL, a key, a scheme or a
   // home path: no other step can match.
   it("replaces an e-mail address, an SSH remote and a JWT exactly where a global pattern matches one", () => {
@@ -201,6 +262,7 @@ describe("redactStage1 (deterministic floor)", () => {
       jwt: ["eyJ", "eyJ", "abcdef", "abcdefg", "-", "-", "_", ".", ".", " ", "x", ["eyJabcdef", "ghijkl", "mnopqr"].join(".")],
       "scp path": ["a@b.cc:", "a@b.cc:", "a@b.cc-x:", "a@b.cc.:p", "a@b.cc", ":", "p/q", ".git", ".git", ".git", "a", "-", "_", ".", " ", "x1", "u@h:p.git"],
       "remote with no .git": ["u@h:", "u@h:", "u@h", "@", ":", ":", "p/q", "p", "/", "a", "-", "_", ".", " ", "x1", "a@b.cc", ".git"],
+      "git output": ["To h.x:", "From ab:", "refs to 'ab:", "Pushing to ab:", "To a:", "To ", "to ab:", "'", ":", "p/q", "p/q", "p", "/", ".git", "22/", "22", " ", "x1", "u@h:", "a@b.cc:", "h.x:", "\\n", "\\", "n"],
     };
     for (const [shape, from] of Object.entries(parts)) {
       let seed = 1;
@@ -212,6 +274,7 @@ describe("redactStage1 (deterministic floor)", () => {
       let withMatch = 0;
       let withRemote = 0;
       let withScpPath = 0;
+      let withGitOutput = 0;
       for (let i = 0; i < 4000; i++) {
         let input = "";
         for (let n = 1 + below(12); n > 0; n--) {
@@ -227,18 +290,23 @@ describe("redactStage1 (deterministic floor)", () => {
           });
         }
         const remotes = scpRemotes(shapes);
-        const expected = extendOverScpPath(remotes.text);
+        const extended = extendOverScpPath(remotes.text);
+        const printed = gitOutputRemotes(extended);
         if (count > 0) withMatch++;
         if (remotes.added > 0) withRemote++;
-        if (expected !== remotes.text) withScpPath++;
+        if (extended !== remotes.text) withScpPath++;
+        if (printed.added > 0) withGitOutput++;
         const result = redactStage1(input);
-        if (result.text !== expected || result.redactedCount !== count + remotes.added) different.push(input);
+        if (result.text !== printed.text || result.redactedCount !== count + remotes.added + printed.added) {
+          different.push(input);
+        }
       }
       expect(different, shape).toEqual([]);
       // A generator that makes no match compares nothing.
-      expect(withMatch, shape).toBeGreaterThan(500);
+      if (shape !== "git output") expect(withMatch, shape).toBeGreaterThan(500);
       if (shape === "scp path") expect(withScpPath, shape).toBeGreaterThan(200);
       if (shape === "remote with no .git") expect(withRemote, shape).toBeGreaterThan(200);
+      if (shape === "git output") expect(withGitOutput, shape).toBeGreaterThan(200);
     }
   });
 
@@ -279,6 +347,14 @@ describe("redactStage1 (deterministic floor)", () => {
       "remotes with no slash in one run": (n) => "a@b:c.".repeat(n / 6),
       "remotes with a slash": (n) => "a@b:c/d ".repeat(n / 8),
       "remote starts, then a real tail": (n) => `${"a.".repeat(n / 2)}u@h:p/q`,
+      "git phrases": (n) => "To From refs to 'Pushing to ".repeat(n / 28),
+      "git phrase, then a long host with no colon": (n) => `To ${"a.".repeat(n / 2)}`,
+      "git phrase, then a path with no slash": (n) => `To ab:${"c.".repeat(n / 2)}`,
+      "git phrases, each with a port": (n) => "From ab:123/x ".repeat(n / 14),
+      "git phrases after a written line end": (n) => String.raw`\nTo ab:c `.repeat(n / 10),
+      "git phrase, then a path of slashes": (n) => `To ab:${"c/".repeat(n / 2)}`,
+      "git lines": (n) => "To ab:c/d\n".repeat(n / 10),
+      "git phrases with a host and no path": (n) => "To ab: ".repeat(n / 7),
       "scp path of addresses": (n) => `a@b.cc:${"c@d.ee/".repeat(n / 7)}`,
       "scp path of .git that a letter follows": (n) => `a@b.cc:${".gitx".repeat(n / 5)}`,
       "addresses before a colon": (n) => "a@b.cc:".repeat(n / 7),
