@@ -1,7 +1,7 @@
 # Self-merge wake — checklist
 
-The existing merge-watch pointed back at the same session. No new column, no parallel
-manager, no chain object, no card lifecycle. If an item here looks like a subsystem,
+The existing merge-watch pointed back at the same session. No parallel manager, no chain
+object, no card lifecycle. If an item here looks like a subsystem,
 it has been cut — see the plan's "Resolved decisions".
 
 ## Prerequisite
@@ -14,7 +14,13 @@ it has been cut — see the plan's "Resolved decisions".
 ## Watch
 
 - [x] Optional `{ kind: "self", watchId, prNumber }` on `SessionMergeWatch`; `parentSessionId === sessionId`
-- [x] Self-arm refused when the row holds a genuine parent→child watch
+- [x] The self-watch has its own column (`self_merge_watch`); a parent's watch and the
+      session's own coexist, and one merge delivers both
+- [x] Older rows that hold a self-watch in `merge_watch` are moved on every start, so a
+      rollback to the older code and back loses nothing
+- [x] Every arm, replacement and refusal logs with the `[merge-watch]` prefix; so does
+      every watch the manager drops and every cancel that clears one
+- [x] Replacing a watch still armed on another PR appends a persisted note
 - [x] Arming always replaces an existing self-watch, including one delivering
 
 ## Arm / cancel
@@ -28,7 +34,8 @@ it has been cut — see the plan's "Resolved decisions".
 ## Delivery
 
 - [x] Fire from `onMergeDetectedCb` after `markMergedAndPruneExcess` resolves
-- [x] Read PR facts from the persisted snapshot — no callback signature change
+- [x] Read PR facts from the merge's own terminal event, stored on the watch
+      (`mergedPr`); the persisted snapshot is the fallback — no callback signature change
 - [x] Merged PR number ≠ anchor → append a note, clear the watch, no turn
 - [x] Closed-without-merge from `onPrTerminalState` → note, clear, no turn
 - [x] `watchId` checked on asynchronous settlement

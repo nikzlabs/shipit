@@ -44,18 +44,27 @@ on the child because PR-terminal detection is keyed by the child's session id, s
 the poller has the child in scope at fire time.
 
 > **See also — the SELF variant (docs/239).** `shipit session notify-on-merge
-> --self` reuses this exact row, manager, state machine, retry supervisor,
-> polling gate and startup reconcile, with `kind: "self"` and
-> `parentSessionId === ` the watched session's own id. Only three things differ,
-> and each lives on a `kind` branch rather than in a parallel path: it fires from
-> the poller's `onMergeDetectedCb` (after `markMergedAndPruneExcess`, so the wake
-> can't race the remote-branch deletion) instead of `onPrTerminalState`; arming
-> always replaces (an idempotent "already armed" would make chaining impossible),
-> so settlements carry an expected `watchId`; and terminal outcomes append plain
-> notes instead of a card. **Accepted limitation:** one row means one watch, so a
-> session cannot be parent-watched and self-watching at once — a self-arm is
-> refused while a genuine parent→child watch is live. Changes here must keep both
-> working; `merge-watch.test.ts` and `self-merge-watch.test.ts` cover the pair.
+> --self` reuses this exact manager, state machine, retry supervisor, polling
+> gate and startup reconcile, with `kind: "self"` and `parentSessionId === ` the
+> watched session's own id. Only three things differ, and each lives on a `kind`
+> branch rather than in a parallel path: it fires from the poller's
+> `onMergeDetectedCb` (after `markMergedAndPruneExcess`, so the wake can't race
+> the remote-branch deletion) instead of `onPrTerminalState`; arming always
+> replaces (an idempotent "already armed" would make chaining impossible), so
+> settlements carry an expected `watchId`; and terminal outcomes append plain
+> notes instead of a card.
+>
+> **The two watches are stored apart and coexist.** The parent's watch is the
+> row's `merge_watch` column (`SessionInfo.mergeWatch`); the session's own is
+> `self_merge_watch` (`SessionInfo.selfMergeWatch`). `registerMergeWatch` reads
+> and writes only the first, the self-arm only the second, so neither arm can
+> displace or block the other, and one merge delivers both — this watch from
+> `onPrTerminalState`, the self one from `onMergeDetectedCb`. The manager
+> addresses a watch by slot (`(sessionId, "parent" | "self")`), and its
+> in-memory state is keyed the same way. They once shared one column, and a
+> parent's arm silently overwrote a child's live self-watch; docs/239 § Storage
+> has the incident. Changes here must keep both working; `merge-watch.test.ts`
+> and `self-merge-watch.test.ts` cover the pair.
 
 ```
 armed ──merge observed──▶ merge-observed ──wake-turn RAN──▶ delivered      (terminal)
@@ -87,6 +96,23 @@ fire-once guard: a re-poll or a restart re-observation is a no-op. Re-arming a
 recovery path is deliberately the user's / agent's call, not an automatic
 resurrection of a watch that already reported it gave up.
 
+**Known limits — a parent that follows a child across several PRs.** The watch is
+fire-once and carries no PR number, which leaves two gaps for a coordinator that
+re-arms after each merge of a chaining child:
+
+- A re-arm made **while the wake for the previous merge is still being
+  delivered** — which includes the wake turn itself — is the idempotent
+  `alreadyArmed` no-op: the watch is still `merge-observed`. It then settles to
+  `delivered`, and the child's next merge wakes nobody.
+- A re-arm made **after** `delivered`, while the child's PR snapshot still names
+  the PR that already merged, fires again at once for that same PR (the
+  register-time `checkAndFireNow`).
+
+Arming in a **later turn** — after the wake turn for the previous merge has
+ended, and after the child has opened its next PR — avoids both, and
+`shipit-docs/sessions.md` tells the parent agent so. Every arm writes a
+`[merge-watch]` log line that names which of these cases it was.
+
 **Why `delivered` means "ran", not "enqueued" (the docs/196 restart fix).** The
 dispatched turn lives only in the parent runner's **in-memory** queue until it
 executes. If the watch were stamped `delivered` the instant the turn was
@@ -101,7 +127,8 @@ turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`).
 
 > **Updated by docs/240 (planning#263).** That signal is now a *settlement* carrying a
 > `TurnOutcome`, and `delivered` is stamped **only** when the outcome is a clean
-> `completed`. A wake-turn that errored, exited without ever producing a result
+> `completed` — or `interrupted`, a turn that reached the agent and was then cut
+> short (planning#318). A wake-turn that errored, exited without ever producing a result
 > (planning#262), or was dropped when the parent's queue was cleared records a failed
 > attempt instead — and its delivery stops reading as in-flight the moment the
 > turn settles — so the retry supervisor re-attempts it rather than the watch
@@ -277,8 +304,17 @@ delivery-failure card instead of vanishing into a server log.
   steering settings say (planning#256, above).
 - **Survives an orchestrator restart.** The watch is persisted; on startup
   `MergeWatchManager.reconcilePending()` re-derives "child PR terminal + watch
-  un-delivered → fire" from the persisted PR snapshot (`loadPersisted` seeds it),
-  independent of whether the poller re-observes the (now-archived) merged child.
+  un-delivered → fire", independent of whether the poller re-observes the
+  (now-archived) merged child. A watch that already **observed** its merge
+  carries the merge facts itself (`SessionMergeWatch.mergedPr`, written at
+  `armed → merge-observed`), and reconcile, the retry supervisor and the
+  failure card all read them from there. The child's PR snapshot is the source
+  only for a watch still `armed` (`loadPersisted` seeds it). The snapshot alone
+  was not durable enough: a docs/202 re-arm nulls it, and a child that also
+  watches its own PR resets its branch — a re-arm — in the wake turn of the very
+  merge the parent is still waiting to hear about. Until `mergedPr`, the facts
+  for a retry lived in an in-memory map, so that sequence plus a restart left the
+  parent's watch at `merge-observed` with nothing able to deliver it.
 - **Survives a failed delivery, without a restart.** A `deliverWakeTurn` that
   throws is recorded on the watch and re-attempted in-process by the retry
   supervisor on an exponential backoff, capped and then terminal
@@ -297,9 +333,10 @@ delivery-failure card instead of vanishing into a server log.
   is the restart backstop; this is the steady-state one. Covered by
   `polling-global-gate.test.ts` ("a pending notify-on-merge watch keeps the gate
   open with no viewer").
-- **Self-describing payload.** The wake-turn prompt carries the child id, branch,
-  PR ref, merge SHA, and intent — it depends on no in-memory state, so it stands
-  alone even if it runs many turns or a restart later.
+- **Self-describing payload.** The wake-turn prompt carries the child's title
+  and id, the PR number and title, and the intent — it depends on no in-memory
+  state, so it stands alone even if it runs many turns or a restart later. The
+  branch, PR URL and merge SHA are on the persisted card, not in the prompt.
 - **Persisted merge card, decoupled from the turn.** Surfaced via
   `chatHistoryManager.append` + a live `child_merged_card` WS emit (the card fires
   outside any turn, so it's an append, not `emitChatCard` — same pattern as
@@ -318,7 +355,11 @@ delivery-failure card instead of vanishing into a server log.
   Now also refused at **arm time**: `registerMergeWatch` rejects (400) when the
   parent is archived, so a watch that could only ever be dropped is never even
   persisted. Both ends enforce the same invariant — an archived parent receives
-  nothing.
+  nothing. Only the parent's watch is dropped; the child's own self-watch still
+  fires.
+- **The child also watches its own PR** (`--self`, docs/239) → both watches
+  fire on the one merge. The register-time `checkAndFireNow` handles this watch
+  only; the startup reconcile takes each of the two down its own path.
 - **PR already resolved when the watch is armed** (the poller won't re-observe an
   already-promoted session) → the register route fires a one-shot
   `checkAndFireNow` off the response path.
@@ -353,7 +394,7 @@ construction elsewhere.
 ```
 shipit session notify-on-merge <child>   (shim, agent-shim/shipit.ts)
   → POST /agent-ops/session/notify-on-merge/:childId   (worker, agent-ops-routes.ts)
-  → POST /api/sessions/:parentId/children/:childId/notify-on-merge   (api-routes-session.ts)
+  → POST /api/sessions/:parentId/children/:childId/notify-on-merge   (api-routes-session-spawn.ts)
   → registerMergeWatch(...)   (services/child-sessions.ts) — persists armed watch
 
 PR poller detects terminal PR state (verifyMissingPr)
@@ -378,7 +419,11 @@ PR poller detects terminal PR state (verifyMissingPr)
   (arms the watch, reuses `assertChildOfParent`).
 - `src/server/orchestrator/sessions.ts` — `merge_watch` column,
   `setMergeWatch` / `getMergeWatch` / `listPendingMergeWatches` (non-terminal
-  only, so a `delivery-failed` watch stops holding the polling gate open).
+  only, so a `delivery-failed` watch stops holding the polling gate open). The
+  list also returns each session's own docs/239 watch from `self_merge_watch`
+  (`setSelfMergeWatch` / `getSelfMergeWatch`).
+- `src/server/shared/types/domain-types/session.ts` — `SessionMergeWatch`,
+  including `mergedPr`, the watch's own record of the merge it fires for.
 - `src/server/orchestrator/session-runner.ts` +
   `src/server/orchestrator/dispatched-turn.ts` — `onTurnComplete` is carried
   through the in-memory queue (`QueuedMessage` / `toQueuedMessage` /
@@ -395,7 +440,9 @@ PR poller detects terminal PR state (verifyMissingPr)
   reached only by `"interactive"` entries.
 - `src/server/orchestrator/turn-executor.ts` — sets `systemTurnInProgress` from
   `input.systemTurn`, so a *drained* system turn also suppresses live steering.
-- `src/server/orchestrator/api-routes-session.ts` — register route.
+- `src/server/orchestrator/api-routes-session-spawn.ts` — register route; logs
+  each refusal with the `[merge-watch]` prefix (`registerMergeWatch` logs each
+  arm).
 - `src/server/session/agent-ops-routes.ts` — worker relay.
 - `src/server/session/agent-shim/shipit.ts` — `notify-on-merge` subcommand.
 - `src/server/orchestrator/chat-history.ts`, `src/server/shared/database.ts`,
@@ -430,12 +477,22 @@ PR poller detects terminal PR state (verifyMissingPr)
   failure card and an empty pending list; a `delivery-failed` watch is never
   resurrected by a retry / reconcile / re-observation; an archived parent drops
   the watch mid-retry; and a failed closed-unmerged delivery surfaces a failure
-  card.
+  card. Beside a self-watch on the same child (docs/239): one merge delivers
+  both, also when the two paths run at the same time; each wake turn settles
+  only its own watch; `rebindDelivery`, the retry supervisor, `reconcilePending`
+  and the pending list work per watch; a closed PR wakes the parent and clears
+  the self-watch with its note; an archived parent drops only its own watch;
+  and a failed parent wake is re-delivered by a **fresh** manager with no PR
+  snapshot, by reconcile and by the retry supervisor (the restart after the
+  child's own wake cleared the snapshot).
 - `ChildMergedCard.test.tsx` — the three card variants (merged, closed-unmerged,
   delivery-failure), including that the failure copy replaces the success copy.
 - `services/child-sessions-wait.test.ts` — `registerMergeWatch` arm-time guards:
   arms when active, rejects (400) an archived parent (no watch persisted) and an
-  archived child.
+  archived child. Against a child that holds its own live self-watch: arms
+  beside it and leaves it as it was, on a first arm, an `alreadyArmed` re-arm
+  and a re-arm over a terminal watch; and each arm writes a `[merge-watch]` log
+  line.
 - `issue-lifecycle.test.ts` — an archived session still gets the outward tracker
   write on merge but **no** provenance card appended or emitted.
 - `pr-status-poller.test.ts` — `onPrTerminalState` fires on merged AND closed.
@@ -450,7 +507,10 @@ PR poller detects terminal PR state (verifyMissingPr)
   retried in-process to a real completed wake-turn with still one card, and a
   permanently-failing one reaches `delivery-failed`, empties the pending list, and
   serves its failure card back over `GET /history` — proving the card is
-  persisted, not emit-only.
+  persisted, not emit-only. And the docs/239 pair: the parent's arm and the
+  child's self-arm leave each other in place in both orders, and one merge seen
+  by the real poller (`forceVerifySessionPrState`) starts a wake turn in the
+  parent and in the child, each reaching `delivered`.
 - `integration_tests/system-turn-queue.test.ts` — the two dispatch-path
   regressions against a real turn (the fake busy runner in `merge-watch.test.ts`
   cannot reproduce either): with live steering on a `systemTurn` dispatch queues

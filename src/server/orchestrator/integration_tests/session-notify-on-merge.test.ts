@@ -41,6 +41,9 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10000, label = "con
 const isMergeWakePrompt = (prompt: string | undefined): boolean =>
   prompt?.includes("Child PR #") === true && prompt.includes(" merged:");
 
+const isSelfWakePrompt = (prompt: string | undefined): boolean =>
+  prompt?.includes("shipit branch reset-to-base") === true;
+
 describe("Integration: notify-on-merge watch (docs/196)", () => {
   let app: FastifyInstance;
   let port: number;
@@ -50,6 +53,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
   let dbManager: DatabaseManager;
   let origGitTerminalPrompt: string | undefined;
   let spawnedAgents: FakeClaudeProcess[];
+  let githubAuth: StubGitHubAuthManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -66,13 +70,14 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     repoStore.setReady(REPO_URL);
     repoStore.setTrusted(REPO_URL, true);
 
+    githubAuth = new StubGitHubAuthManager();
     app = await buildApp({
       credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      githubAuthManager: githubAuth as unknown as GitHubAuthManager,
       agentFactory: () => {
         const a = new FakeClaudeProcess();
         spawnedAgents.push(a);
@@ -429,5 +434,92 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
 
     expect(sessionManager.getMergeWatch(childId)?.state).toBe("closed-unmerged");
     expect(await parentCardOutcomes(parentId)).toEqual(["closed-unmerged"]);
+  });
+
+  describe("a child that also watches its own PR (docs/239)", () => {
+    const PR = {
+      url: "https://github.com/owner/notify-on-merge-test/pull/7",
+      number: 7,
+      base: "main",
+      title: "Foundation",
+    };
+
+    async function armSelf(childId: string) {
+      await githubAuth.setToken("test-token");
+      githubAuth.setPrData(PR);
+      return app.inject({ method: "POST", url: `/api/sessions/${childId}/notify-on-merge-self` });
+    }
+
+    it("neither arm displaces the other, in either order", { timeout: 15_000 }, async () => {
+      const parentId = await createParent();
+      const selfFirst = await spawnChild(parentId, "Self first");
+      const parentFirst = await spawnChild(parentId, "Parent first");
+
+      expect((await armSelf(selfFirst)).statusCode).toBe(200);
+      expect((await armWatch(parentId, selfFirst)).statusCode).toBe(200);
+      expect((await armWatch(parentId, parentFirst)).statusCode).toBe(200);
+      expect((await armSelf(parentFirst)).statusCode).toBe(200);
+
+      for (const childId of [selfFirst, parentFirst]) {
+        expect(sessionManager.getMergeWatch(childId)).toMatchObject({ parentSessionId: parentId, state: "armed" });
+        expect(sessionManager.getSelfMergeWatch(childId)).toMatchObject({ kind: "self", prNumber: 7, state: "armed" });
+      }
+    });
+
+    it("one merge, seen by the poller, wakes the parent AND the child", { timeout: 30_000 }, async () => {
+      const parentId = await createParent();
+      const childId = await spawnChild(parentId);
+      // The spawn starts the child's first turn; a wake must find the child idle to start at once.
+      await waitFor(() => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("Build the foundation")));
+      spawnedAgents.find((a) => a.lastPrompt?.includes("Build the foundation"))!.finish("child-first-turn");
+      await waitFor(() => app.runnerRegistry.get(childId)?.running === false, 10_000, "child idle");
+
+      expect((await armSelf(childId)).statusCode).toBe(200);
+      expect((await armWatch(parentId, childId)).statusCode).toBe(200);
+
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        ...PR, body: "", state: "closed", merged_at: "2026-10-10T02:53:43Z", additions: 3, deletions: 1,
+      });
+      app.prStatusPoller!.trackSession(childId, REPO_URL);
+      await app.prStatusPoller!.forceVerifySessionPrState(childId);
+
+      await waitFor(
+        () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
+        15_000,
+        "parent wake-turn started",
+      );
+      // A branch that can be reset gets a compaction turn before its wake; whether this one can
+      // depends on how the child's first post-turn flow interleaves with the merge. End it if it runs.
+      const compacted = new Set<FakeClaudeProcess>();
+      await waitFor(
+        () => {
+          for (const a of spawnedAgents) {
+            if (!a.runCalled || !a.lastCompact || compacted.has(a)) continue;
+            compacted.add(a);
+            a.finish("child-compaction");
+          }
+          return spawnedAgents.some((a) => a.runCalled && !a.lastCompact && isSelfWakePrompt(a.lastPrompt));
+        },
+        15_000,
+        "child wake-turn started",
+      );
+      expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+      expect(spawnedAgents.find((a) => !a.lastCompact && isSelfWakePrompt(a.lastPrompt))!.lastPrompt).toContain("#7");
+
+      spawnedAgents.find((a) => isMergeWakePrompt(a.lastPrompt))!.finish("parent-wake-turn");
+      spawnedAgents.find((a) => !a.lastCompact && isSelfWakePrompt(a.lastPrompt))!.finish("child-wake-turn");
+      await waitFor(
+        () => sessionManager.getMergeWatch(childId)?.state === "delivered",
+        10_000,
+        "parent watch delivered",
+      );
+      await waitFor(
+        () => sessionManager.getSelfMergeWatch(childId)?.state === "delivered",
+        10_000,
+        "self-watch delivered",
+      );
+      expect(sessionManager.listPendingMergeWatches()).toEqual([]);
+    });
   });
 });

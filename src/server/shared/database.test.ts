@@ -14,6 +14,7 @@ import {
   SCHEDULE_NOTES_ACCESS_MIGRATION,
   SCHEDULE_PROPOSALS_MIGRATION,
   SCHEDULE_RUN_TIME_ZONE_MIGRATION,
+  SELF_MERGE_WATCH_MIGRATION,
   DatabaseManager,
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
@@ -1449,6 +1450,43 @@ describe("docs/324-scheduled-sessions — a run's own time zone (real migration)
 
     const replayed = new DatabaseManager(file);
     expect(zones(replayed)).toEqual({ run: { time_zone: "Europe/Berlin" }, session: { run_time_zone: "Europe/Berlin" } });
+    replayed.close();
+  });
+});
+
+describe("docs/239-self-merge-wake — the self-watch gets its own column (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const stored = (m: DatabaseManager) =>
+    m.db.prepare("SELECT merge_watch, self_merge_watch FROM sessions WHERE id = 's1'").get();
+
+  it("adds the column to an older database, keeps the rows as they are, and replays over a stored value", () => {
+    const m = new DatabaseManager(file);
+    m.db.exec(`
+      ALTER TABLE sessions DROP COLUMN self_merge_watch;
+      INSERT INTO sessions (id, title, created_at, last_used_at, merge_watch) VALUES ('s1', 'S', 'x', 'x', '{"a":1}');
+    `);
+    m.db.pragma(`user_version = ${SELF_MERGE_WATCH_MIGRATION}`);
+    m.close();
+
+    const migrated = new DatabaseManager(file);
+    expect(stored(migrated)).toEqual({ merge_watch: '{"a":1}', self_merge_watch: null });
+    migrated.db.exec(`UPDATE sessions SET self_merge_watch = '{"b":2}' WHERE id = 's1'`);
+    migrated.db.pragma(`user_version = ${SELF_MERGE_WATCH_MIGRATION}`);
+    migrated.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(stored(replayed)).toEqual({ merge_watch: '{"a":1}', self_merge_watch: '{"b":2}' });
     replayed.close();
   });
 });

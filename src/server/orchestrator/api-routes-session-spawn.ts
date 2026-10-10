@@ -500,10 +500,15 @@ export async function registerSessionSpawnRoutes(
         }
         return { armed: true, state: result.state, alreadyArmed: result.alreadyArmed };
       } catch (err) {
+        const { parentId, childId } = request.params;
         if (err instanceof ServiceError) {
+          console.warn(
+            `[merge-watch] refused parent ${parentId}'s watch on ${childId}: ${err.statusCode} ${err.message}`,
+          );
           reply.code(err.statusCode).send({ error: err.message });
           return;
         }
+        console.error(`[merge-watch] arming parent ${parentId}'s watch on ${childId} failed:`, err);
         reply.code(500).send({ error: `Failed to register merge watch: ${getErrorMessage(err)}` });
       }
     },
@@ -527,10 +532,13 @@ export async function registerSessionSpawnRoutes(
         );
         return { armed: true, ...result };
       } catch (err) {
+        const { sessionId } = request.params;
         if (err instanceof ServiceError) {
+          console.warn(`[merge-watch] refused the self-watch of ${sessionId}: ${err.statusCode} ${err.message}`);
           reply.code(err.statusCode).send({ error: err.message });
           return;
         }
+        console.error(`[merge-watch] arming the self-watch of ${sessionId} failed:`, err);
         reply.code(500).send({ error: `Failed to arm self merge-watch: ${getErrorMessage(err)}` });
       }
     },

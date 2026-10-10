@@ -175,18 +175,28 @@ describe("Integration: durable delivery identity across a restart (planning#266)
     return runner;
   }
 
+  function watchOf(kind: "child" | "self") {
+    return kind === "self"
+      ? sessionManager.getSelfMergeWatch(WOKEN_ID)
+      : sessionManager.getMergeWatch(CHILD_ID);
+  }
+
   function seedDispatchedWatch(kind: "child" | "self"): void {
     const watchedId = kind === "self" ? WOKEN_ID : CHILD_ID;
-    sessionManager.setMergeWatch(watchedId, {
+    const delivery = {
       parentSessionId: WOKEN_ID,
-      ...(kind === "self" ? { kind: "self" as const, watchId: "watch-abc", prNumber: 7 } : {}),
-      state: "merge-observed",
+      state: "merge-observed" as const,
       registeredAt: "t0",
       observedAt: "t1",
       deliveryAttempts: 1,
       lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       deliveryId: DELIVERY_ID,
-    });
+    };
+    if (kind === "self") {
+      sessionManager.setSelfMergeWatch(WOKEN_ID, { ...delivery, kind: "self", watchId: "watch-abc", prNumber: 7 });
+    } else {
+      sessionManager.setMergeWatch(CHILD_ID, delivery);
+    }
     sessionManager.setPrStatus(watchedId, mergedPrStatus(watchedId));
     manager.setPrStatusLookup((id) => sessionManager.getPrStatus(id) ?? undefined);
   }
@@ -243,7 +253,6 @@ describe("Integration: durable delivery identity across a restart (planning#266)
   for (const kind of ["child", "self"] as const) {
     describe(`kind: "${kind}"`, () => {
       it("a restart during a watch-originated turn yields ONE turn, and the watch settles from the adopted turn", async () => {
-        const watchedId = kind === "self" ? WOKEN_ID : CHILD_ID;
         seedDispatchedWatch(kind);
         await startPreRestartWakeTurn();
         expect(spawnCount).toBe(1);
@@ -253,21 +262,20 @@ describe("Integration: durable delivery identity across a restart (planning#266)
 
         expect(spawnCount).toBe(1);
         expect(runners[0].queueLength).toBe(0);
-        expect(sessionManager.getMergeWatch(watchedId)?.state).toBe("merge-observed");
+        expect(watchOf(kind)?.state).toBe("merge-observed");
 
         await waitFor(() => runners[0].accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
         lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
         lastAgent.emit("done", 0);
         await waitFor(
-          () => sessionManager.getMergeWatch(watchedId)?.state === "delivered",
+          () => watchOf(kind)?.state === "delivered",
           3000,
           "watch delivered from the adopted turn",
         );
-        expect(sessionManager.getMergeWatch(watchedId)?.deliveryAttempts).toBe(1);
+        expect(watchOf(kind)?.deliveryAttempts).toBe(1);
       });
 
       it("a restart where the worker turn genuinely died redispatches exactly once", async () => {
-        const watchedId = kind === "self" ? WOKEN_ID : CHILD_ID;
         seedDispatchedWatch(kind);
         const status = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
         expect(status.turnActive).toBe(false);
@@ -277,7 +285,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
         expect(adopted).toBe(false);
 
         await waitFor(() => spawnCount === 1, 3000, "redispatched wake turn");
-        const watch = sessionManager.getMergeWatch(watchedId);
+        const watch = watchOf(kind);
         expect(watch?.deliveryAttempts).toBe(2);
         expect(watch?.deliveryId).not.toBe(DELIVERY_ID);
 

@@ -76,6 +76,7 @@ interface SessionRow {
   keep_preview_running: number;
   muted_at: string | null;
   merge_watch: string | null;
+  self_merge_watch: string | null;
   secret_block: string | null;
   workspace_block: string | null;
   merge_issue_effects: string | null;
@@ -207,6 +208,11 @@ export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
   }
 }
 
+/** Not yet terminal: such a watch can still deliver, and holds the PR polling gate open. */
+export function isLiveMergeWatch(watch: SessionMergeWatch): boolean {
+  return watch.state === "armed" || watch.state === "merge-observed";
+}
+
 /** The same session as a list row, for an event that carries one session to every tab. */
 export function toListRow(session: SessionInfo): SessionListRow {
   const {
@@ -273,6 +279,32 @@ export class SessionManager {
   constructor(dbManager: DatabaseManager, opts: { dataRetention?: DataRetentionConfig } = {}) {
     this.db = dbManager.db;
     this.dataRetention = opts.dataRetention ?? dataRetentionConfigFromEnv();
+    this.adoptLegacySelfMergeWatches();
+  }
+
+  /**
+   * docs/239-self-merge-wake — a session's own watch belongs in `self_merge_watch`. Code older than
+   * that column wrote it into `merge_watch`, and does so again after a rollback, so this runs on
+   * every start and not as a one-time migration. Such a value is always the newer arming (only the
+   * older code writes it, and only while this code does not run), so it replaces what the new
+   * column holds, as a re-arm does.
+   */
+  private adoptLegacySelfMergeWatches(): void {
+    const rows = this.db
+      .prepare("SELECT id, merge_watch, self_merge_watch FROM sessions WHERE merge_watch IS NOT NULL")
+      .all() as { id: string; merge_watch: string; self_merge_watch: string | null }[];
+    for (const row of rows) {
+      try {
+        if ((JSON.parse(row.merge_watch) as SessionMergeWatch).kind !== "self") continue;
+      } catch {
+        continue;
+      }
+      this.db
+        .prepare("UPDATE sessions SET self_merge_watch = ?, merge_watch = NULL WHERE id = ?")
+        .run(row.merge_watch, row.id);
+      const replaced = row.self_merge_watch ? "; it replaces an older self-watch there" : "";
+      console.log(`[merge-watch] moved the self-watch of ${row.id} to its own column${replaced}`);
+    }
   }
 
   /** Runs after each write of a session's status card or goal; returns the unsubscribe. */
@@ -375,6 +407,13 @@ export class SessionManager {
     if (row.merge_watch) {
       try {
         info.mergeWatch = JSON.parse(row.merge_watch) as SessionInfo["mergeWatch"];
+      } catch {
+        // Ignore corrupt JSON.
+      }
+    }
+    if (row.self_merge_watch) {
+      try {
+        info.selfMergeWatch = JSON.parse(row.self_merge_watch) as SessionInfo["selfMergeWatch"];
       } catch {
         // Ignore corrupt JSON.
       }
@@ -1344,6 +1383,15 @@ export class SessionManager {
     return this.get(id)?.mergeWatch;
   }
 
+  setSelfMergeWatch(id: string, watch: SessionMergeWatch | null): void {
+    const json = watch === null ? null : JSON.stringify(watch);
+    this.db.prepare("UPDATE sessions SET self_merge_watch = ? WHERE id = ?").run(json, id);
+  }
+
+  getSelfMergeWatch(id: string): SessionMergeWatch | undefined {
+    return this.get(id)?.selfMergeWatch;
+  }
+
   setSecretBlock(id: string, block: SessionSecretBlock | null): void {
     const json = block === null ? null : JSON.stringify(block);
     this.db.prepare("UPDATE sessions SET secret_block = ? WHERE id = ?").run(json, id);
@@ -1365,20 +1413,23 @@ export class SessionManager {
     return true;
   }
 
-  // Archived children can still owe a merge notification.
+  // Archived children can still owe a merge notification. One session can appear twice:
+  // once for its parent's watch and once for its own (`watch.kind === "self"`).
   listPendingMergeWatches(): { childSessionId: string; watch: SessionMergeWatch }[] {
     const rows = this.db.prepare(
-      "SELECT id, merge_watch FROM sessions WHERE merge_watch IS NOT NULL",
-    ).all() as { id: string; merge_watch: string }[];
+      "SELECT id, merge_watch, self_merge_watch FROM sessions "
+      + "WHERE merge_watch IS NOT NULL OR self_merge_watch IS NOT NULL",
+    ).all() as { id: string; merge_watch: string | null; self_merge_watch: string | null }[];
     const out: { childSessionId: string; watch: SessionMergeWatch }[] = [];
     for (const row of rows) {
-      try {
-        const watch = JSON.parse(row.merge_watch) as SessionMergeWatch;
-        if (watch.state === "armed" || watch.state === "merge-observed") {
-          out.push({ childSessionId: row.id, watch });
+      for (const json of [row.merge_watch, row.self_merge_watch]) {
+        if (!json) continue;
+        try {
+          const watch = JSON.parse(json) as SessionMergeWatch;
+          if (isLiveMergeWatch(watch)) out.push({ childSessionId: row.id, watch });
+        } catch {
+          // Skip corrupt JSON.
         }
-      } catch {
-        // Skip corrupt JSON.
       }
     }
     return out;

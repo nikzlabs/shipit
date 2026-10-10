@@ -1865,3 +1865,67 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
     });
   });
 });
+
+describe("docs/239-self-merge-wake — a self-watch stored by older code moves to its own column", () => {
+  let dbManager: DatabaseManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const SELF = {
+    parentSessionId: "s", kind: "self" as const, watchId: "w-old", prNumber: 251,
+    state: "merge-observed" as const, registeredAt: "t0", observedAt: "t1", deliveryAttempts: 1, deliveryId: "w-old:1",
+  };
+  const PARENT = { parentSessionId: "coordinator", state: "armed" as const, registeredAt: "t0" };
+
+  // The older code wrote both kinds of watch into this one column.
+  function storeAsOlderCode(id: string, mergeWatch: string): void {
+    new SessionManager(dbManager).track(id, "S", `/ws/${id}`);
+    dbManager.db.prepare("UPDATE sessions SET merge_watch = ? WHERE id = ?").run(mergeWatch, id);
+  }
+
+  it("moves a session's own watch on the next start and leaves a parent's watch in place", () => {
+    storeAsOlderCode("s", JSON.stringify(SELF));
+    storeAsOlderCode("child", JSON.stringify(PARENT));
+
+    const mgr = new SessionManager(dbManager);
+
+    expect(mgr.getSelfMergeWatch("s")).toEqual(SELF);
+    expect(mgr.getMergeWatch("s")).toBeUndefined();
+    expect(mgr.getMergeWatch("child")).toEqual(PARENT);
+    expect(mgr.getSelfMergeWatch("child")).toBeUndefined();
+    expect(mgr.listPendingMergeWatches().map((e) => `${e.childSessionId}:${e.watch.kind ?? "parent"}`).sort())
+      .toEqual(["child:parent", "s:self"]);
+  });
+
+  it("does it on every start, so a rollback to the older code and back loses nothing", () => {
+    const beforeRollback = new SessionManager(dbManager);
+    beforeRollback.track("s", "S", "/ws/s");
+    beforeRollback.setSelfMergeWatch("s", { ...SELF, watchId: "w-before-rollback", prNumber: 250 });
+    // The older code runs for a while: it cannot see the new column, and the session arms again.
+    dbManager.db.prepare("UPDATE sessions SET merge_watch = ? WHERE id = 's'").run(JSON.stringify(SELF));
+
+    const afterRollForward = new SessionManager(dbManager);
+
+    // The watch the older code stored is the newer arming, so it wins, as a re-arm does.
+    expect(afterRollForward.getSelfMergeWatch("s")).toEqual(SELF);
+    expect(afterRollForward.getMergeWatch("s")).toBeUndefined();
+  });
+
+  it("reads JSON with any spacing, and leaves corrupt JSON where it is", () => {
+    storeAsOlderCode("spaced", JSON.stringify(SELF, null, 2));
+    storeAsOlderCode("corrupt", '{"kind":"self"');
+
+    const mgr = new SessionManager(dbManager);
+
+    expect(mgr.getSelfMergeWatch("spaced")).toEqual(SELF);
+    expect(mgr.getSelfMergeWatch("corrupt")).toBeUndefined();
+    expect(dbManager.db.prepare("SELECT merge_watch FROM sessions WHERE id = 'corrupt'").get())
+      .toEqual({ merge_watch: '{"kind":"self"' });
+  });
+});

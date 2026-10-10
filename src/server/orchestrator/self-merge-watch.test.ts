@@ -131,37 +131,79 @@ describe("arming a self merge-watch (docs/239)", () => {
   it("refuses when the branch has no open PR", async () => {
     ctx.livePr.value = null;
     await expect(armSelfMergeWatch(ctx.armDeps, SESSION_ID)).rejects.toThrow(ServiceError);
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)).toBeUndefined();
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)).toBeUndefined();
   });
 
   it("anchors to the LIVE open PR, not the stale pr_status snapshot", async () => {
     ctx.sessionManager.setPrStatus(SESSION_ID, makePrStatus({ prNumber: 42, prState: "merged" }));
     const result = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
     expect(result.prNumber).toBe(43);
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.prNumber).toBe(43);
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.prNumber).toBe(43);
   });
 
-  it("refuses while a genuine parent→child watch holds the row", async () => {
-    ctx.sessionManager.setMergeWatch(SESSION_ID, {
-      parentSessionId: "some-parent",
-      state: "armed",
-      registeredAt: "t0",
+  it("arms beside a live parent→child watch and leaves that watch as it was", async () => {
+    const parentWatch = { parentSessionId: "some-parent", state: "armed" as const, registeredAt: "t0" };
+    ctx.sessionManager.setMergeWatch(SESSION_ID, parentWatch);
+
+    const result = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    expect(result.replaced).toBe(false);
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)).toMatchObject({
+      kind: "self", prNumber: 43, state: "armed", parentSessionId: SESSION_ID,
     });
-    await expect(armSelfMergeWatch(ctx.armDeps, SESSION_ID)).rejects.toThrow(/parent session/i);
+    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)).toEqual(parentWatch);
+  });
+
+  it("re-arming while a parent watch is mid-delivery does not disturb that delivery", async () => {
+    const delivering = {
+      parentSessionId: "some-parent", state: "merge-observed" as const, registeredAt: "t0",
+      observedAt: "t1", deliveryAttempts: 1, lastAttemptAt: "t1", deliveryId: `${SESSION_ID}:1`,
+    };
+    ctx.sessionManager.setMergeWatch(SESSION_ID, delivering);
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)).toEqual(delivering);
+    expect(ctx.manager.rebindDelivery(`${SESSION_ID}:1`)).toBeTypeOf("function");
   });
 
   it("always REPLACES an existing self-watch, including one mid-delivery", async () => {
     const first = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
-    const observed = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
-    ctx.sessionManager.setMergeWatch(SESSION_ID, { ...observed, state: "merge-observed" });
+    const observed = ctx.sessionManager.getSelfMergeWatch(SESSION_ID)!;
+    ctx.sessionManager.setSelfMergeWatch(SESSION_ID, { ...observed, state: "merge-observed" });
     ctx.livePr.value = { number: 44, url: "https://github.com/o/r/pull/44", base: "main", title: "Step three" };
 
     const second = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
     expect(second.replaced).toBe(true);
     expect(second.watchId).not.toBe(first.watchId);
-    const watch = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
+    const watch = ctx.sessionManager.getSelfMergeWatch(SESSION_ID)!;
     expect(watch.state).toBe("armed");
     expect(watch.prNumber).toBe(44);
+  });
+
+  const notes = () => ctx.chatHistoryManager.load(SESSION_ID).filter((m) => m.notice);
+
+  it("replacing a watch that still waits on ANOTHER PR leaves a persisted note in the transcript", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    ctx.livePr.value = { number: 44, url: "https://github.com/o/r/pull/44", base: "main", title: "Step three" };
+
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    expect(notes()).toHaveLength(1);
+    expect(notes()[0]!.text).toContain("#43");
+    expect(notes()[0]!.text).toContain("#44");
+  });
+
+  it("a re-arm that loses nothing leaves no note: the same PR, or a watch that already saw its merge", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    const observed = ctx.sessionManager.getSelfMergeWatch(SESSION_ID)!;
+    ctx.sessionManager.setSelfMergeWatch(SESSION_ID, { ...observed, state: "merge-observed" });
+    ctx.livePr.value = { number: 44, url: "https://github.com/o/r/pull/44", base: "main", title: "Step three" };
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    expect(notes()).toHaveLength(0);
   });
 
   it("persists the arm card so it round-trips a reload", async () => {
@@ -181,7 +223,17 @@ describe("cancelling a self merge-watch (docs/239)", () => {
   it("clears the watch when the watchId matches", async () => {
     const { watchId } = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
     expect(cancelSelfMergeWatch(ctx.armDeps, SESSION_ID, watchId)).toEqual({ cancelled: true });
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)).toBeUndefined();
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)).toBeUndefined();
+  });
+
+  it("leaves a parent's watch on this session in place", async () => {
+    const parentWatch = { parentSessionId: "some-parent", state: "armed" as const, registeredAt: "t0" };
+    ctx.sessionManager.setMergeWatch(SESSION_ID, parentWatch);
+    const { watchId } = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    expect(cancelSelfMergeWatch(ctx.armDeps, SESSION_ID, watchId)).toEqual({ cancelled: true });
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)).toBeUndefined();
+    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)).toEqual(parentWatch);
   });
 
   it("a stale card's Cancel does NOT cancel the newer watch", async () => {
@@ -191,7 +243,7 @@ describe("cancelling a self merge-watch (docs/239)", () => {
 
     expect(cancelSelfMergeWatch(ctx.armDeps, SESSION_ID, stale.watchId))
       .toEqual({ cancelled: false, reason: "superseded" });
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.watchId).toBe(current.watchId);
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.watchId).toBe(current.watchId);
   });
 });
 
@@ -205,7 +257,7 @@ describe("delivering a self merge wake (docs/239)", () => {
 
     await ctx.manager.handleSelfMerge(SESSION_ID);
 
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
     expect(ctx.runner.dispatched).toHaveLength(1);
     expect(ctx.runner.dispatched[0]!.systemTurn).toBe(true);
     expect(ctx.runner.dispatched[0]!.text).toContain("#43");
@@ -213,7 +265,7 @@ describe("delivering a self merge wake (docs/239)", () => {
     expect(ctx.runner.dispatched[0]!.text.length).toBeLessThan(500);
 
     ctx.runner.completeTurns();
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("delivered");
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("delivered");
   });
 
   it("does NOT wake from the earlier onPrTerminalState hook (it races branch deletion)", async () => {
@@ -224,7 +276,23 @@ describe("delivering a self merge wake (docs/239)", () => {
     };
     await ctx.manager.handleChildPrTerminal(info);
     expect(ctx.runner.dispatched).toHaveLength(0);
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("armed");
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("armed");
+  });
+
+  it("still wakes when a docs/202 re-arm clears the PR snapshot before the merge callback runs", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    await ctx.manager.handleChildPrTerminal({
+      sessionId: SESSION_ID, outcome: "merged", prNumber: 43,
+      prUrl: "https://github.com/o/r/pull/43", prTitle: "Step two", branch: "shipit/s1",
+    });
+    ctx.manager.setPrStatusLookup(() => undefined);
+
+    await ctx.manager.handleSelfMerge(SESSION_ID);
+
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(ctx.runner.dispatched[0]!.text).toContain("#43");
+    ctx.runner.completeTurns();
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("delivered");
   });
 
   it("an anchor mismatch appends a note and wakes nothing", async () => {
@@ -234,7 +302,7 @@ describe("delivering a self merge wake (docs/239)", () => {
     await ctx.manager.handleSelfMerge(SESSION_ID);
 
     expect(ctx.runner.dispatched).toHaveLength(0);
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)).toBeUndefined();
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)).toBeUndefined();
     const note = ctx.chatHistoryManager.load(SESSION_ID).find((m) => m.notice);
     expect(note?.text).toContain("#42");
     expect(note?.text).toContain("#43");
@@ -248,7 +316,7 @@ describe("delivering a self merge wake (docs/239)", () => {
     });
 
     expect(ctx.runner.dispatched).toHaveLength(0);
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)).toBeUndefined();
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)).toBeUndefined();
     expect(ctx.chatHistoryManager.load(SESSION_ID).find((m) => m.notice)?.text)
       .toContain("closed without merging");
   });
@@ -264,7 +332,7 @@ describe("delivering a self merge wake (docs/239)", () => {
 
     ctx.runner.completeTurns();
 
-    const watch = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
+    const watch = ctx.sessionManager.getSelfMergeWatch(SESSION_ID)!;
     expect(watch.watchId).toBe(next.watchId);
     expect(watch.state).toBe("armed");
   });
@@ -308,8 +376,8 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
   }
 
   function expireBackoff(): void {
-    const watch = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
-    ctx.sessionManager.setMergeWatch(SESSION_ID, {
+    const watch = ctx.sessionManager.getSelfMergeWatch(SESSION_ID)!;
+    ctx.sessionManager.setSelfMergeWatch(SESSION_ID, {
       ...watch,
       lastAttemptAt: new Date(Date.now() - 10 * 60_000).toISOString(),
     });
@@ -320,7 +388,7 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
 
     ctx.runner.completeTurns(turnInterrupted("the turn was interrupted before it produced a result"));
 
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("delivered");
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("delivered");
     expireBackoff();
     await ctx.manager.retryStalledDeliveries();
     expect(ctx.runner.dispatched).toHaveLength(1);
@@ -329,7 +397,7 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
   it("a wake that genuinely never ran is still retried", async () => {
     await deliverWake();
     ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
-    expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
 
     expireBackoff();
     await ctx.manager.retryStalledDeliveries();
