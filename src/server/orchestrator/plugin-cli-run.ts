@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
-import { PassThrough, type Duplex } from "node:stream";
+import { PassThrough, type Duplex, type Readable } from "node:stream";
 import {
   CONTAINER_PLUGIN_DIR,
   CONTAINER_PLUGIN_SETTINGS_FILE,
@@ -86,7 +86,8 @@ export interface PluginCliRequest {
   command: string;
   args: string[];
   cwd?: string;
-  stdin?: string;
+  /** A stream is input that the caller sends as it arrives; it can still be open when the command exits. */
+  stdin?: string | Readable;
 }
 
 export interface PluginCliResult {
@@ -464,7 +465,7 @@ interface ExecuteSpec {
   entry: string;
   args: string[];
   workingDir: string;
-  stdin: string;
+  stdin: string | Readable;
   networkMode: string;
   overlaySpec?: PluginOverlaySpec;
   memoryBytes: number;
@@ -547,6 +548,8 @@ async function runCreated(
   }
   // Attach before start to capture even commands that exit immediately.
   const stream = await attachStdio(deps.docker, container.id);
+  // A command that exits before it takes all of its stdin breaks the connection under a write.
+  stream.on("error", () => undefined);
   const out = new Capture();
   const err = new Capture();
   deps.docker.modem.demuxStream(stream, out.sink, err.sink);
@@ -554,7 +557,8 @@ async function runCreated(
   const startingAt = performance.now();
   await container.start();
   const runningAt = performance.now();
-  stream.end(spec.stdin);
+  if (typeof spec.stdin === "string") stream.end(spec.stdin);
+  else spec.stdin.pipe(stream);
 
   const code = await waitForContainerExit(container, timeoutMs, deps.isCancelled);
   // Stop the command's clock here: the drain and the OOM inspection below are ShipIt's time.
@@ -569,8 +573,12 @@ async function runCreated(
     exitedAt,
   });
   if (code === "timeout") {
+    const stdinNote = typeof spec.stdin !== "string" && !spec.stdin.readableEnded
+      ? " Its stdin had not ended: a command that reads stdin to its end waits until the caller's stdin "
+        + "ends (for no input, run it with `</dev/null`)."
+      : "";
     return timed({
-      error: `\`${path.posix.basename(spec.entry)}\` did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.`,
+      error: `\`${path.posix.basename(spec.entry)}\` did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.${stdinNote}`,
       exitCode: 124,
       stdout: out.text(),
       stderr: err.text(),

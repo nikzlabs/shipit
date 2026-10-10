@@ -177,6 +177,23 @@ other part is ShipIt's: `network` says whether the namespace was `built` or
 large part, report it to the plugin (below). When another part is, that is a
 ShipIt bug report, with that line in it.
 
+**A command gets this call's stdin as it arrives.** You can pipe input to a
+plugin's command as you do to a local program. The command gets each part when
+it arrives, and the end of its stdin when yours ends. ShipIt does not wait for
+input that has not arrived before it starts the command: input from a slow
+producer is delivered when it comes, and a command that does not read stdin
+does not wait for it. If ShipIt cannot deliver a part, the call ends with exit
+code 2 and a `Could not deliver stdin` message. The command is not stopped: it
+can still run, with the part of the input that it has, so do not read that
+exit as "nothing happened".
+
+The other side of that rule is also the one a local program has: **a command
+that reads stdin to its end waits until your stdin ends.** A shell tool can
+give a call a stdin that stays open and sends nothing. Such a command then
+waits until its time limit, and the timeout message says that its stdin had
+not ended. When you pass no input, run the command with `</dev/null`. Output
+is different: you see it when the command exits, not while it runs.
+
 The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
 layer that belongs to the plugin's own execution environment, not to yours.

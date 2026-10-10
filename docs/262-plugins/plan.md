@@ -1336,7 +1336,9 @@ instead of a repeat.
   unchecked writes a stray directory into the user's repository. Output is
   **buffered, not streamed**, with an 8 MiB per-stream cap that announces its
   own truncation; streaming through two relay hops is real machinery and the
-  plan already accepts per-call latency here. And the **trust gate** (docs/178)
+  plan already accepts per-call latency here. (Stdin is no longer read whole
+  before the call: "Stdin is delivered when it arrives", below.) And the
+  **trust gate** (docs/178)
   is re-read on every call, not at wrapper-generation time: a repository
   un-trusted since the wrapper was written must stop executing, and this is the
   only place that can notice.
@@ -1402,6 +1404,78 @@ instead of a repeat.
   answered; the output drain and everything else is in ShipIt's phases. That is
   the question a session could not answer before, because it cannot run
   anything inside the plugin's container except the plugin's commands.
+
+  **Stdin is delivered when it arrives.** The request used to carry stdin as
+  one string, so the shim read all of it before it sent the call. It cannot
+  tell an inherited stdin that is open and idle from a producer that has not
+  written yet, so it waited 2 s for a first byte. That cost 2 s on every call
+  whose stdin was open and idle, and it dropped input whose first byte came
+  later, with no message (planning#678). No time limit separates those two
+  cases, so the limit is gone:
+
+  - **Small input that ended at once goes with the call.** The shim waits
+    `STDIN_INLINE_WAIT_MS` (50 ms) for stdin to *end*. `/dev/null`, a file, a
+    here-document and `echo x |` are at their end in a few milliseconds, and
+    they travel in the one request, as before. The wait is not a limit on the
+    input: when it passes, nothing is lost. It is kept, although the next
+    path is correct for every input, so that the most frequent call (an
+    agent's shell gives `/dev/null`) stays one request and does not depend on
+    a second route.
+  - **Other input follows the call.** This is input that did not end within
+    the wait, and input that is larger than one request can hold (the shim
+    stops its first read when it has more than that, which is at most about
+    two stream chunks more). The shim sends the call with a
+    `stdinId` and no stdin, and the command starts. The shim then sends stdin
+    as it arrives (`POST plugin/exec/stdin`), one numbered part at a time, and
+    then the end. A part is at most 128 Ki UTF-16 code units, so that its JSON
+    fits the 1 MiB body limit. `plugin-cli-stdin.ts` holds one stream for each
+    running call; `runCreated` pipes it into the container's attach
+    connection, and its end closes the command's stdin.
+  - **A part is answered when the stream to the command had room for it**,
+    not when the plugin's process read it. The shim sends the next part after
+    that answer, so a command that reads slowly slows the producer down, as a
+    pipe does, and neither side holds the whole input. Input larger than one
+    request body, which was refused before, now arrives.
+  - **A part has a number, and the orchestrator takes each number once.** The
+    worker's client sends a request again through another host name when the
+    connection fails, and a part whose answer was lost would be written twice.
+    A number that the call already has is answered and not written; one that
+    is not the next is an error. This also keeps one write at a time for a
+    call, whatever a session container sends.
+  - **A part can arrive before its call**, because the two travel on two
+    connections. It waits `PLUGIN_STDIN_CLAIM_WAIT_MS` for the call. A session
+    can have `MAX_WAITING_PLUGIN_STDIN_PARTS_PER_SESSION` parts in that wait.
+  - **"No more input" and "not delivered" are two answers.** When the command
+    exits, its stream is destroyed, each part that still waits is answered
+    `accepted: false`, and the shim stops without a message: a program that
+    exits does not read the rest of its stdin. A part whose call did not
+    arrive, or that is out of order, gets an error, and the shim ends with
+    exit code 2 and says that it could not deliver stdin. The command is not
+    stopped: it can still run, with the part of the input that it has.
+  - **A finished call's id is remembered for `FINISHED_PLUGIN_STDIN_CALL_MS`**,
+    without its stream. A part that was on its way when the command exited is
+    then answered `accepted: false` at once, and does not wait as a part
+    whose call has not arrived. A call with an id that ShipIt has, running or
+    finished, is refused: it does not take the first one's input and the
+    command does not run again. This matters because the worker's client can
+    send the call again after a connection failure. A call whose stdin went
+    with it has no id, and that case is not changed here.
+
+  These are the semantics of a local program, including the one that has a
+  cost: **a command that reads stdin to its end waits until the caller's stdin
+  ends.** Before, an open and idle stdin became an empty one after 2 s. Now it
+  stays open, and such a command runs until its time limit; the timeout message
+  says that its stdin had not ended. Two alternatives were not taken. A shorter
+  wait drops more input. One streamed request body through both relay hops
+  needs no ids and no part numbers, but it needs a raw body parser and an
+  early response, with the request body still open, at each of the two hops; a
+  second JSON route uses both hops as they are and can be tested with them.
+
+  The attach connection now has an error handler. A command that exits before
+  it takes its stdin breaks the connection under a write, and the orchestrator
+  has no handler of last resort: an error that nothing handles there ends the
+  process, not the call. A large stdin that came with the call could do this
+  before.
 
   One thing this slice does **not** settle, found by the independent review and
   cross-slice. (The other — a refresh deleting a generation out from under a

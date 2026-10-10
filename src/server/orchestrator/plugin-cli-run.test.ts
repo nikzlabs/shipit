@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
-import { PassThrough } from "node:stream";
+import { Duplex, PassThrough } from "node:stream";
 import Docker from "dockerode";
 import {
   attachStdio,
@@ -165,6 +165,10 @@ function fakeDocker(opts: {
   removeError?: string;
   startError?: string;
   runMs?: number;
+  /** The command runs until it is killed. */
+  hangs?: boolean;
+  /** The command closed its stdin, as one that exited does: a write to it fails. */
+  stdinClosed?: boolean;
   oomKilled?: boolean;
 } = {}) {
   const containers: Created[] = [];
@@ -178,14 +182,41 @@ function fakeDocker(opts: {
   const notFound = (): never => {
     throw Object.assign(new Error("no such thing"), { statusCode: 404 });
   };
+  let stdinChunks: Buffer[] = [];
+  let stdinEnded = false;
+  let stdinWrites = 0;
+  let attached: Duplex | undefined;
+  // As the daemon's connection: what is written is the command's stdin, and the output side ends
+  // when the command exits, whatever its stdin did.
+  const attach = (): Duplex => {
+    stdinChunks = [];
+    stdinEnded = false;
+    return new Duplex({
+      read() { /* output is faked in demuxStream */ },
+      write(chunk: Buffer, _encoding, done) {
+        stdinWrites += 1;
+        if (opts.stdinClosed) {
+          done(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+          return;
+        }
+        stdinChunks.push(chunk);
+        done();
+      },
+      final(done) {
+        stdinEnded = true;
+        done();
+      },
+    });
+  };
+  let killCommand: (() => void) | undefined;
 
   const docker = {
     modem: {
-      dial: (_opts: unknown, cb: (err: Error | null, stream: PassThrough) => void) => {
+      dial: (_opts: unknown, cb: (err: Error | null, stream: Duplex) => void) => {
         // Consume the stream as dockerode's demuxer would, so end/close can fire.
-        const s = new PassThrough();
-        s.resume();
-        cb(null, s);
+        attached = attach();
+        attached.resume();
+        cb(null, attached);
       },
       demuxStream: (_s: NodeJS.ReadableStream, out: NodeJS.WritableStream, err: NodeJS.WritableStream) => {
         if (opts.stdout) out.write(opts.stdout);
@@ -237,14 +268,17 @@ function fakeDocker(opts: {
           started.push(id);
         },
         wait: async () => {
-          if (opts.runMs && isCommand) await new Promise((resolve) => setTimeout(resolve, opts.runMs));
-          return { StatusCode: opts.exit ?? 0 };
+          if (!isCommand) return { StatusCode: 0 };
+          if (opts.runMs) await new Promise((resolve) => setTimeout(resolve, opts.runMs));
+          if (opts.hangs) await new Promise<void>((resolve) => { killCommand = resolve; });
+          attached?.push(null);
+          return { StatusCode: opts.hangs ? 137 : opts.exit ?? 0 };
         },
         inspect: async () => {
           if (removedContainers.includes(id)) notFound();
           return { State: { OOMKilled: opts.oomKilled ?? false } };
         },
-        kill: async () => undefined,
+        kill: async () => { if (isCommand) killCommand?.(); },
         remove: async () => {
           if (opts.removeError && isCommand) throw new Error(opts.removeError);
           removedContainers.push(id);
@@ -255,6 +289,9 @@ function fakeDocker(opts: {
   return {
     docker: docker as unknown as Docker,
     containers, networks, volumes, volumeLabels, connected, started, removedContainers,
+    stdin: () => Buffer.concat(stdinChunks).toString(),
+    stdinEnded: () => stdinEnded,
+    stdinWrites: () => stdinWrites,
   };
 }
 
@@ -1120,6 +1157,103 @@ describe("runPluginCommand — the network namespace between calls", () => {
       cleanupMs: expect.any(Number),
     });
     expect(result.timings!.commandMs).toBeGreaterThanOrEqual(50);
+  });
+});
+
+describe("runPluginCommand — the command's stdin", () => {
+  it("gives the command the stdin that came with the call, and its end", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    await runPluginCommand(deps(fake.docker), { ...call, stdin: "all of it\n" });
+
+    expect(fake.stdin()).toBe("all of it\n");
+    expect(fake.stdinEnded()).toBe(true);
+  });
+
+  it("gives the command each part the caller sends while it runs, and the end when the caller ends", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ runMs: 80 });
+    const stdin = new PassThrough();
+    stdin.write("before the start\n");
+
+    const running = runPluginCommand(deps(fake.docker), { ...call, stdin });
+    await vi.waitFor(() => { expect(fake.stdin()).toBe("before the start\n"); });
+    expect(fake.stdinEnded()).toBe(false);
+    stdin.end("while it runs\n");
+    await running;
+
+    expect(fake.stdin()).toBe("before the start\nwhile it runs\n");
+    expect(fake.stdinEnded()).toBe(true);
+  });
+
+  it("returns the result of a command that exits while the caller's stdin is still open", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ exit: 3, stdout: "done\n" });
+
+    const result = await runPluginCommand(deps(fake.docker), { ...call, stdin: new PassThrough() });
+
+    expect(result).toMatchObject({ exitCode: 3, stdout: "done\n" });
+    expect(fake.stdinEnded()).toBe(false);
+  });
+
+  it.each([
+    ["that came with the call", (): string => "not read\n"],
+    ["that the caller sends while it runs", (): PassThrough => {
+      const stdin = new PassThrough();
+      stdin.write("not read\n");
+      return stdin;
+    }],
+  ])("returns the result of a command that does not take stdin %s", async (_name, stdin) => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ stdout: "done\n", stdinClosed: true, runMs: 30 });
+    // This suite's runner does not report an error that nothing handled, and the orchestrator
+    // is one process: an unhandled one there is not a failed call, it is every session.
+    const unhandled: unknown[] = [];
+    const record = (err: unknown): void => { unhandled.push(err); };
+    process.on("uncaughtException", record);
+
+    try {
+      const result = await runPluginCommand(deps(fake.docker), { ...call, stdin: stdin() });
+
+      expect(result).toMatchObject({ exitCode: 0, stdout: "done\n" });
+      expect(fake.stdinWrites()).toBeGreaterThan(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("uncaughtException", record);
+    }
+  });
+
+  it("says that stdin had not ended when a command runs out of time with the caller's stdin open", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ hangs: true });
+
+    const result = await runPluginCommand(
+      deps(fake.docker, { timeoutMs: 20 }),
+      { ...call, stdin: new PassThrough() },
+    );
+
+    expect(result.exitCode).toBe(124);
+    expect(result.error).toContain("did not finish within");
+    expect(result.error).toContain("Its stdin had not ended");
+  });
+
+  it("does not blame stdin when the command had all of it", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ hangs: true });
+    const stdin = new PassThrough();
+    stdin.end("all of it\n");
+
+    const result = await runPluginCommand(deps(fake.docker, { timeoutMs: 20 }), { ...call, stdin });
+
+    expect(result.exitCode).toBe(124);
+    expect(result.error).not.toContain("stdin");
   });
 });
 

@@ -486,6 +486,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/git/credential",
   "POST /api/sessions/:id/plugin/refresh",
   "POST /api/sessions/:id/plugin/exec",
+  "POST /api/sessions/:id/plugin/exec/stdin",
   "GET /api/sessions/:id/plugin/status",
   "PATCH /api/sessions/:id/pr/:number",
   "GET /api/sessions/:id/pr/list",

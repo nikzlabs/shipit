@@ -1,5 +1,6 @@
 
-import { asString, fail, parseFlags, readStdin, success } from "./shim-common.js";
+import crypto from "node:crypto";
+import { asString, fail, parseFlags, success } from "./shim-common.js";
 import { formatError, type RunDeps } from "./shipit.js";
 
 interface RefreshRow {
@@ -88,6 +89,10 @@ Run one imported plugin's companion CLI (docs/262 req 17). You do not normally
 type this: each surfaced command has a generated wrapper on PATH that calls it,
 and the wrapper's name is what a plugin's docs tell you to run.
 
+The command gets this call's stdin as it arrives, and its end when it ends. A
+command that reads stdin to its end waits for that end, as a local program
+does: when you pass no input, give the call \`</dev/null\`.
+
 Set SHIPIT_PLUGIN_TIMING=1 on a call to see, on stderr, where its time went:
 \`command\` is the container's start to its exit — the plugin's own program —
 and every other part is ShipIt's.
@@ -135,7 +140,13 @@ async function exec(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, `\`shipit plugin exec\` needs \`--alias\` and \`--command\`.\n\n${HELP}`);
   }
 
-  const res = await deps.call(
+  const head = process.stdin.isTTY
+    ? { parts: [], rest: null }
+    : await readStdinHead(process.stdin, deps.sleep(STDIN_INLINE_WAIT_MS));
+  // Input that did not end at once, or is too large for one request, follows the call in parts.
+  const stdinId = head.rest === null ? undefined : crypto.randomUUID();
+
+  const call = deps.call(
     "POST",
     "/agent-ops/plugin/exec",
     {
@@ -143,12 +154,23 @@ async function exec(args: string[], deps: RunDeps): Promise<void> {
       command: values.command,
       args: passthrough,
       cwd: process.cwd(),
-      stdin: await readOptionalStdin(),
+      ...(stdinId ? { stdinId } : { stdin: head.parts.join("") }),
     },
     deps.env,
     // No transport deadline while the plugin command is still running.
     0,
   );
+  const undelivered = stdinId
+    ? new Promise<{ undelivered: BrokerResponse }>((resolve) => {
+      void forwardStdin(deps, stdinId, head, (res) => resolve({ undelivered: res }));
+    })
+    : null;
+  const first = await (undelivered ? Promise.race([call, undelivered]) : call);
+  if ("undelivered" in first) {
+    const reason = formatError(first.undelivered, `the session worker answered ${first.undelivered.status}`);
+    fail(deps.io, `Could not deliver stdin to \`${values.command}\`, which can still be running: ${reason}`);
+  }
+  const res = first;
 
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, `Could not run \`${values.command}\`.`));
@@ -179,13 +201,94 @@ function describeTimings(value: unknown): string | null {
     + `cleanup ${ms("cleanupMs")}\n`;
 }
 
-// Bound idle inherited pipes; readStdin removes the deadline after the first byte.
-async function readOptionalStdin(): Promise<string> {
-  if (process.stdin.isTTY) return "";
+type BrokerResponse = Awaited<ReturnType<RunDeps["call"]>>;
+
+// Long enough for a stdin that is already at its end to say so. It is not a limit on the input:
+// a stdin that is still open after it loses nothing, and the call does not wait for it.
+const STDIN_INLINE_WAIT_MS = 50;
+// In UTF-16 code units. A request body is limited to 1 MiB, and JSON can write one unit as six bytes.
+const STDIN_REQUEST_MAX_CHARS = 128 * 1024;
+
+interface StdinHead {
+  parts: string[];
+  /** Null when stdin ended within the wait and fits one request; otherwise the read that was pending. */
+  rest: { pending: Promise<IteratorResult<string>>; source: AsyncIterator<string> } | null;
+}
+
+async function readStdinHead(stdin: NodeJS.ReadStream, wait: Promise<void>): Promise<StdinHead> {
+  stdin.setEncoding("utf8");
+  const source = stdin[Symbol.asyncIterator]() as AsyncIterator<string>;
+  const waited = (async () => {
+    await wait;
+    return null;
+  })();
+  const parts: string[] = [];
+  let size = 0;
+  let pending = source.next();
   try {
-    return await readStdin(process.stdin, 2000);
+    // Input that is already too large for the one request is not read further here.
+    while (size <= STDIN_REQUEST_MAX_CHARS) {
+      const part = await Promise.race([pending, waited]);
+      if (part === null) break;
+      if (part.done) return { parts, rest: null };
+      parts.push(part.value);
+      size += part.value.length;
+      pending = source.next();
+    }
   } catch {
-    return "";
+    return { parts, rest: null };
+  }
+  return { parts, rest: { pending, source } };
+}
+
+// One part at a time, each answered when ShipIt's stream to the command had room for it: a command
+// that reads slowly slows the producer down, as a pipe does. `onFailure` is for a part that was
+// not delivered.
+async function forwardStdin(
+  deps: RunDeps,
+  id: string,
+  head: StdinHead,
+  onFailure: (res: BrokerResponse) => void,
+): Promise<void> {
+  let seq = 0;
+  const send = async (data: string, end: boolean): Promise<boolean> => {
+    const res = await deps.call("POST", "/agent-ops/plugin/exec/stdin", { id, seq, data, end }, deps.env, 0);
+    seq += 1;
+    if (res.status < 200 || res.status >= 300) {
+      onFailure(res);
+      return false;
+    }
+    return res.body.accepted === true;
+  };
+  const sendAll = async (text: string): Promise<boolean> => {
+    for (const part of slices(text)) {
+      if (!(await send(part, false))) return false;
+    }
+    return true;
+  };
+  for (const part of head.parts) {
+    if (!(await sendAll(part))) return;
+  }
+  if (head.rest) {
+    try {
+      for (let part = await head.rest.pending; !part.done; part = await head.rest.source.next()) {
+        if (!(await sendAll(part.value))) return;
+      }
+    } catch {
+      // A read error ends the input.
+    }
+  }
+  await send("", true);
+}
+
+function* slices(text: string): Generator<string> {
+  for (let at = 0; at < text.length;) {
+    let end = Math.min(text.length, at + STDIN_REQUEST_MAX_CHARS);
+    // Each part becomes bytes on its own, so a cut inside a surrogate pair would damage the character.
+    const last = text.charCodeAt(end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+    yield text.slice(at, end);
+    at = end;
   }
 }
 
