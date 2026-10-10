@@ -286,6 +286,18 @@ Two directions, and they need different mechanisms.
 only when the session is idle: no runner, or a runner that is not `running`, not
 `agentBusy`, not holding `systemTurnInProgress`, with an empty queue.
 
+**A live background command is not idle, and that is the rule, not an accident
+of `agentBusy`.** `agentBusy` counts the resident CLI's background tasks
+(verified at `container-session-runner.ts` `agentBusy`), and a background task
+ends by starting a turn the orchestrator did not start (verified at
+`ws-handlers/agent-listeners.ts` `adoptCliStartedTurn`). That turn passes no
+admission site, so `mergeHold` cannot keep it back: a merge that began while the
+task was live could not keep the second half of req 6. It is also
+`docs/266-auto-merge-busy-guard` req 2 — the window in which the agent can still
+produce commits. The cost is real: a background `sleep 1200` started to look at
+the pull request later holds the merge for those twenty minutes, and then for
+the turn its end starts. Requirement 8 exists because that wait was silent.
+
 **A turn does not start while the merge is in progress.** A busy check cannot give
 that — `PostTurnHold.begin()` only increments a counter, and neither admission
 site consults `agentBusy` — so the executor sets `runner.mergeHold` for the
@@ -346,6 +358,41 @@ clears `mergeHold` and calls the shared `releaseQueuedTurn()`
 own (req 6, last sentence). Both run in a `finally`, **after** the durable state
 change, so a crash in between leaves a row reconciliation resolves rather than a
 queue released against a hold that still exists.
+
+### A request that waits on a session that is not idle says so (req 8)
+
+Three places, one rule each.
+
+**The answer to `--auto`** says "once its checks pass **and this session is
+idle**", says what idle means, and tells the agent what follows from it: end the
+turn, and do not wait for the merge in the turn or in a background command. That
+is the place the agent reads at the moment it decides how to wait. When the
+session already has background work as it arms — a dev server the agent
+started — the answer names it (`backgroundWork`, read from the runner by the
+route).
+
+**The transcript** gets one notice per request when the session has been not
+idle for two minutes with no turn running (`noteHold`). The notice names what
+holds the request, from the same function that decides the wait
+(`idleBlocker`), so the two cannot disagree.
+
+- *Two minutes*, because the commit and push that follow every turn also hold
+  the session, and that is not news.
+- *Not while a turn runs.* The transcript shows the turn, and the count restarts
+  when it ends — otherwise a request armed early in a long turn would announce
+  the ordinary post-turn work the moment that turn finished.
+- *It does not say the checks passed.* The executor reads nothing from GitHub
+  while the session is not idle, and that stays: the notice states the hold and
+  what ends it.
+- *Once per request.* A request armed again is a new request and may say so
+  again. The record is in memory, so a restart may repeat it.
+
+**The log** gets every reason a request waits, once per change of reason
+(`logWaitOnce`) — the session not idle and why, checks running, a rollup that
+lags. Before this, a waiting request logged nothing at all, so the incident that
+prompted req 8 left no record to read. Background work is logged as a count: the
+descriptions are text the agent wrote, and they stay in the session's own
+transcript.
 
 ### Revocation (req 4)
 
@@ -430,3 +477,7 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
 - "Not yet": the refusal returns the row to `pending` and a later pass merges; a
   failing required check still ends it; a withdrawal during the PUT is not
   revived; a long run of such refusals says so once and keeps the row.
+- A held request (req 8): a real runner with a background command waits, says so
+  once with the command named, and merges when the command ends; the post-turn
+  work is not announced; the count starts at the end of the turn; the answer to
+  `--auto` states the rule and names live background work.

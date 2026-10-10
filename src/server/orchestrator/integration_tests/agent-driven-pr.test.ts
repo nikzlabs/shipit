@@ -1231,6 +1231,39 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
+    "docs/288 — the answer to `--auto` names the background work that will hold the merge",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "PENDING" });
+
+      const res = await withLiveTurn(sessionId, async () => {
+        const runner = app.runnerRegistry.get(sessionId)!;
+        runner.isStreamingActive = true;
+        runner.setBackgroundTasks([{ id: "bash-1", description: "npm run dev" }]);
+        try {
+          return await app.inject({
+            method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: { auto: true },
+          });
+        } finally {
+          runner.clearBackgroundTasks();
+          runner.isStreamingActive = false;
+        }
+      });
+
+      const message = (res.json() as { message: string }).message;
+      expect(message).toContain("once its checks pass and this session is idle");
+      expect(message).toContain('Background work is running in this session now ("npm run dev")');
+    },
+  );
+
+  it(
     "docs/288 — a diverged branch still refuses `--auto`, since the commit is not on GitHub",
     { timeout: 15_000 },
     async () => {

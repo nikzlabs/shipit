@@ -11,7 +11,9 @@ import {
 } from "../chat-card-persistence.js";
 import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
 import { mergeDisposition } from "../pr-target.js";
-import { githubRefusalClearsByItself, readMergeObservation } from "./merge-gate.js";
+import {
+  describeBackgroundWork, githubRefusalClearsByItself, readMergeObservation,
+} from "./merge-gate.js";
 import { settleAgentMerge, reconcileAgentMergeClaims } from "./agent-merge-settlement.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { unprobedAfterRestart } from "../restart-turn-reattach.js";
@@ -80,10 +82,17 @@ export async function runAgentMergeRequests(deps: AgentMergeExecutorDeps): Promi
   });
   reportStuckAttempts(deps, before);
 
-  for (const claim of deps.claims.listPending()) {
+  const pending = deps.claims.listPending();
+  for (const sessionId of waits.keys()) {
+    if (!pending.some((claim) => claim.sessionId === sessionId)) waits.delete(sessionId);
+  }
+
+  for (const claim of pending) {
     try {
       const outcome = await runOneRequest(deps, claim);
-      if (outcome.result !== "waiting") {
+      if (outcome.result === "waiting") {
+        logWaitOnce(claim, outcome.reason);
+      } else {
         const why = outcome.result === "ended" ? ` — ${outcome.reason}` : "";
         console.log(`[agent-merge] request ${claim.sessionId} PR #${claim.prNumber}: ${outcome.result}${why}`);
       }
@@ -128,7 +137,12 @@ export async function runOneRequest(
     );
   }
 
-  if (!isIdle(deps, claim.sessionId)) return { result: "waiting", reason: "the session is busy" };
+  const blocker = idleBlocker(deps, claim.sessionId);
+  if (blocker) {
+    noteHold(deps, claim, blocker);
+    return { result: "waiting", reason: `the session is not idle: ${blocker.why}` };
+  }
+  waitState(claim).heldSince = null;
 
   const observation = await readMergeObservation(
     deps.githubAuthManager, target.owner, target.repo, claim.prNumber,
@@ -446,23 +460,99 @@ function splitNotice(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim, messa
   };
 }
 
+interface IdleBlocker {
+  /** Completes "…, and <why>" in a notice. It is also logged, so it carries no agent text. */
+  why: string;
+  work?: string[];
+  turn?: true;
+}
+
+function idleBlocker(deps: AgentMergeExecutorDeps, sessionId: string): IdleBlocker | null {
+  const runner = deps.runnerRegistry?.get(sessionId);
+  if (!runner) {
+    // A failed startup probe can hide a surviving turn despite an absent runner.
+    return unprobedAfterRestart.has(sessionId)
+      ? { why: "ShipIt restarted and has not confirmed that this session's last turn ended" }
+      : null;
+  }
+  unprobedAfterRestart.delete(sessionId);
+  if (runner.running) return { why: "a turn is running", turn: true };
+  if (runner.systemTurnInProgress) return { why: "ShipIt is working on this session's branch" };
+  if (runner.agentBusy) {
+    // Background work ends by starting a turn that no hold can keep back (docs/288-agent-merge-arming req 6).
+    const work = runner.backgroundWorkDescriptions;
+    return work.length > 0
+      ? { why: `background work is still running (${work.length})`, work }
+      : { why: "ShipIt still has work in progress on this session (a commit, a push or an install)" };
+  }
+  if (runner.queueLength > 0) return { why: "a queued message is waiting to start" };
+  if (runner.mergeHold) return { why: "another merge is in progress" };
+  return null;
+}
+
 function isIdle(
   deps: AgentMergeExecutorDeps,
   sessionId: string,
   opts: { underHold?: boolean } = {},
 ): boolean {
+  if (opts.underHold !== true) return idleBlocker(deps, sessionId) === null;
   const runner = deps.runnerRegistry?.get(sessionId);
-  if (!runner) {
-    // A failed startup probe can hide a surviving turn despite an absent runner.
-    return !unprobedAfterRestart.has(sessionId);
-  }
+  if (!runner) return !unprobedAfterRestart.has(sessionId);
   unprobedAfterRestart.delete(sessionId);
-  if (runner.running || runner.systemTurnInProgress) return false;
-
   // Under our hold, ignore our own lease and messages queued behind the merge.
-  if (opts.underHold === true) return true;
+  return !runner.running && !runner.systemTurnInProgress;
+}
 
-  if (runner.agentBusy) return false;
-  if (runner.queueLength > 0) return false;
-  return !runner.mergeHold;
+interface WaitState {
+  request: string;
+  logged: string | null;
+  heldSince: number | null;
+  announced: boolean;
+}
+
+// A session holds at most one request, and a request armed again starts over.
+const waits = new Map<string, WaitState>();
+
+function waitState(claim: AgentMergeClaim): WaitState {
+  const request = `${claim.prNumber}@${claim.expectedSha}@${claim.createdAt}`;
+  let state = waits.get(claim.sessionId);
+  if (state?.request !== request) {
+    state = { request, logged: null, heldSince: null, announced: false };
+    waits.set(claim.sessionId, state);
+  }
+  return state;
+}
+
+function logWaitOnce(claim: AgentMergeClaim, reason: string): void {
+  const state = waitState(claim);
+  if (state.logged === reason) return;
+  state.logged = reason;
+  console.log(`[agent-merge] request ${claim.sessionId} PR #${claim.prNumber}: waiting — ${reason}`);
+}
+
+// Longer than the commit and push that follow every turn, which hold the session too.
+const HOLD_NOTICE_AFTER_MS = 120_000;
+
+/** Say once per request what holds it, when nothing else in the transcript shows the wait. */
+function noteHold(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim, blocker: IdleBlocker): void {
+  const state = waitState(claim);
+  // A running turn shows in the transcript, and its end restarts the count.
+  if (blocker.turn) {
+    state.heldSince = null;
+    return;
+  }
+  const now = Date.now();
+  state.heldSince ??= now;
+  if (state.announced || now - state.heldSince < HOLD_NOTICE_AFTER_MS) return;
+  state.announced = true;
+  const why = blocker.work
+    ? `background work is still running (${describeBackgroundWork(blocker.work)})`
+    : blocker.why;
+  notify(
+    deps, claim,
+    `ShipIt has not merged pull request #${claim.prNumber}: it merges on request only while this `
+    + `session is idle, and ${why}. The request stays armed — ShipIt merges once the session is idle `
+    + "and the checks have passed.",
+    "info",
+  );
 }

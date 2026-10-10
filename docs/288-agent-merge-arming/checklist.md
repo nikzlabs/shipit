@@ -139,6 +139,17 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
       waiting
 - [x] Each guard proved red on its own by deleting it singly
 
+## A held request says so (req 8)
+
+- [x] The answer to `--auto` says the merge waits for an idle session, what idle
+      means, and names background work that is live as the request is recorded
+- [x] A request held for two minutes with no turn running gets one transcript
+      notice that names what holds it
+- [x] Every reason a request waits is logged once per change of reason
+- [x] `github.md` and the wiki state the rule and its consequence for a
+      background wait
+- [x] The new tests proved red against the code without the change
+
 ## Quality
 
 - [x] Tests as listed in plan.md
