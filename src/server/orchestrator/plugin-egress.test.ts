@@ -408,6 +408,20 @@ describe("preparePluginNetns — failing closed", () => {
     expect(fake.created).toHaveLength(0);
   });
 
+  it("gives up rather than hanging when the host's addresses cannot be read", async () => {
+    const fake = fakeDocker();
+
+    await expect(preparePluginNetns({
+      docker: fake.docker,
+      sessionId: SESSION,
+      network: NETWORK,
+      holderImage: "worker:test",
+      policy: contained({ hostAddresses: () => new Promise<string[]>(() => { /* never */ }) }),
+      setupTimeoutMs: 20,
+    })).rejects.toThrow(/did not finish within/);
+    expect(fake.created).toHaveLength(0);
+  });
+
   it("gives up rather than hanging when a tier install never returns", async () => {
     const fake = fakeDocker();
     installFirewall.mockImplementationOnce(() => new Promise<void>(() => { /* never */ }));
