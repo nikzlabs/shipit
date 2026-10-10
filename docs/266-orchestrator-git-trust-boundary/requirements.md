@@ -137,6 +137,25 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
     `git add -A` exit 128 with nothing staged, including every unrelated file
     the turn changed.
 
+16. Repository-controlled code that executes during an orchestrator-side git
+    operation — a hook, a `filter`/`fsmonitor`/`credential.helper`, any
+    config-driven exec — MUST NOT be able to reach the orchestrator's HTTP API
+    with the user's authority. The git child runs in the orchestrator's own
+    network namespace (req 1's "trust context" includes that namespace), so the
+    API's container-origin guard MUST NOT treat the orchestrator's own container
+    — its loopback and its own addresses — as "the user". *(Decided by the
+    requester on 2026-10-10 — see Resolved questions, Q6. This is the concrete
+    form of requirements 1 and 11 for the network path, and it closes the
+    loopback surface `plan.md` recorded as "not audited" — planning#668.)*
+
+    *Not a change to requirement 9.* The chosen fix is at the API boundary, not
+    at the hook suppression, so a project's own hooks keep firing on the
+    auto-commit exactly as E4 shipped them. The alternatives that would have
+    touched req 9 — running git in an isolated namespace (needs mechanism req 9's
+    "if it's easy" clause rules out) or reverting E4 (changes req 9, and covers
+    only hooks while filters/fsmonitor/helpers keep reaching the API) — were
+    rejected for the reasons in Q6's receipt.
+
 ## Requirement provenance
 
 Separating what was asked for from what the design supplied, per `CLAUDE.md`
@@ -258,6 +277,39 @@ called out rather than folded in.
 None.
 
 ## Resolved questions
+
+**2026-10-10 — Q6: planning#668 — repo-controlled git config (hooks, filters,
+`fsmonitor`, helpers) runs in the orchestrator's network namespace and reaches
+the API over loopback, where the container-origin guard trusts it as the user.
+Which fix mechanism? → (a) guard the orchestrator's own container.** Requester
+chose the recommended option: in `api-container-guard.ts`, stop treating the
+orchestrator's own container addresses (loopback and its own bridge IPs) as "the
+user", denying them like an unknown container. Recorded as **requirement 16**.
+
+Why this over the two alternatives, both of which were put to the requester:
+
+- **Run the git in an isolated network namespace** (the issue's first option)
+  covers the whole class too, but the orchestrator container holds no
+  `CAP_SYS_ADMIN` — egress uses sidecar *containers* for exactly this reason —
+  so it needs either a privilege increase on the orchestrator or a sidecar
+  container, and the latter reintroduces the req 6 availability dependency on the
+  commit path that Option C was rejected for. More mechanism than req 9's "if
+  it's easy" clause allows.
+- **Revert E4 (turn hooks off on auto-commit again)** changes requirement 9 and
+  covers **only** the hook vector: `filter.*.clean`, `core.fsmonitor` and
+  `credential.helper` execute on every orchestrator git op regardless of the
+  `core.hooksPath` override (reproduced — see `plan.md` §1 and the probe test
+  `integration_tests/git-payload-api-reach.test.ts`), and still reach the API.
+  Insufficient on its own.
+
+The chosen option covers the whole class — hooks, filters, `fsmonitor`, helpers,
+and any future config-driven exec — at one choke point, keeps req 9 (hooks keep
+firing), and adds no runtime dependency to the commit path (req 6). Its one cost,
+accepted in the same answer: a dev/local exemption so ShipIt's own
+single-container dev stack, whose in-container Vite proxy legitimately calls the
+API over loopback, keeps working (`SHIPIT_TRUST_OWN_LOOPBACK`, and `local`
+runtime mode / test mode). This matches how the security model already treats a
+developer's own machine.
 
 **2026-09-22 — Q5: should hooks run beyond the auto-commit? → no, the
 auto-commit only.** Requester: *"Autocommit only is fine for now."*

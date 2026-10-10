@@ -157,6 +157,8 @@ export interface ApiDeps {
   shouldSkipClaimFetch?: (repoUrl: string) => boolean;
   createSessionDirFull: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   containerManager?: SessionContainerManager;
+  /** Skip the planning#668 own-container API denial (dev/local/test only — see the guard). */
+  trustOwnContainerLoopback?: boolean;
   prStatusPoller?: PrStatusPoller;
   releaseStatusPoller?: ReleaseStatusPoller;
   mergeWatchManager?: MergeWatchManager;
@@ -229,7 +231,10 @@ export async function registerApiRoutes(
   });
 
   // Register first so the guard observes every route's containerAccessible setting.
-  registerContainerOriginGuard(app, { containerManager: deps.containerManager });
+  registerContainerOriginGuard(app, {
+    containerManager: deps.containerManager,
+    trustOwnContainerLoopback: deps.trustOwnContainerLoopback,
+  });
 
   // Share the claim service: its per-repo lock lives in the instance's closure.
   const claimSessionService = deps.claimSessionService ?? createClaimSessionService({

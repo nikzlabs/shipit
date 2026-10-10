@@ -9,9 +9,12 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: E1 + E2 + E3 + E4 + E5-detect shipped; the per-session-uid follow-up
-is planning#405 (shipped separately as docs/270).** All four open questions were answered on
-2026-08-16 (`requirements.md` → Resolved questions). See
+**Status: E1 + E2 + E3 + E4 + E5-detect + E6 shipped; the per-session-uid
+follow-up is planning#405 (shipped separately as docs/270).** E6 (planning#668,
+2026-10-10) closes the loopback surface the earlier phases left recorded as
+unaudited — see the "Loopback surface" residual in §2. All four original open
+questions were answered on 2026-08-16 (`requirements.md` → Resolved questions),
+and Q6 (the loopback fix) on 2026-10-10. See
 [checklist.md](./checklist.md) for exactly what landed and why each remaining
 piece was split out — planning#403 (E2), planning#405 (per-session uids).
 
@@ -902,9 +905,38 @@ path, its owner, and the service that most likely wrote it, not a bare errno.
   session-to-session is not. Q3 asks whether to fix this now with per-session
   uids or file it. **This is the honest limit of the recommendation and must not
   be described as "closed".**
-- **Loopback surface.** The dropped-uid process shares a network namespace with
-  the orchestrator's HTTP API. Any orchestrator endpoint that trusts "reached me
-  over loopback" is reachable by the payload. Not audited here — see §4.
+- **Loopback surface — audited and closed (E6, planning#668, 2026-10-10).** The
+  dropped-uid process shares a network namespace with the orchestrator's HTTP
+  API, so it can reach the API over the orchestrator's own loopback — and
+  `api-container-guard.ts` trusted *any* source that was not a known container
+  IP, loopback included, as the user. Reproduced here (git 2.39.5): a
+  `pre-commit` hook, a `core.fsmonitor` **and** a `filter.*.clean` each wrote a
+  secret through `PUT /api/secrets` during the auto-commit — the filter and
+  fsmonitor fire even with `core.hooksPath=/dev/null`, so this was never only a
+  hooks problem. The Docker API proxy was **not** affected: it already fails
+  closed on an unknown source IP (`docker-proxy.ts`, `forbidden("Unknown source
+  IP")`).
+
+  **The fix is E6 (req 16): the guard no longer treats the orchestrator's own
+  container as the user.** A request whose peer is the orchestrator's loopback or
+  one of its own container addresses is refused the whole API, exactly as an
+  unknown container is. A legitimate caller never sources from the orchestrator
+  itself — the browser arrives through the published port (translated to a host
+  or gateway address) and a session worker from its own container IP. The one
+  place ShipIt's own UI dials the API over the orchestrator's loopback is the
+  single-container dev stack (in-container Vite proxy) and local mode; those are
+  exempted by `SHIPIT_TRUST_OWN_LOOPBACK` / `runtime === "local"` / test mode,
+  which is the developer's-own-machine trust the security model already grants.
+  Key files: `api-container-guard.ts` (the denial + the `trustOwnContainerLoopback`
+  exemption), `SessionContainerManager.ownContainerAddresses` (the own-address
+  set), `route-registry.ts` (where the exemption is computed). Regression:
+  `integration_tests/git-payload-api-reach.test.ts` (real git + real listener)
+  and `api-container-guard.test.ts` (the loopback/own-address/exemption cases).
+
+  **Residual, narrow:** if the own-address enumeration (one Docker inspect) fails,
+  loopback is still denied but a pivot to the orchestrator's own *bridge* IP is
+  reopened until it next resolves. It is primed once at registration and cached.
+  The cross-session workspace residual above is unchanged and separate.
 - **Root writes into `.git` must drop too.** `github-auth.ts:393` writes
   `credential.helper` into the workspace config with `execFileSync` as root. Left
   as-is it creates a root-owned `config` inside a 1000-owned `.git`, breaking the
@@ -1017,9 +1049,15 @@ inherited guarantee at the source").
   cache is therefore not a second instance of this bug. *(One thing that mount
   list does show and this design does not address: `perSessionCredentialsDir` is
   bound `rw` into the session container.)*
-- **Not checked: whether any orchestrator HTTP endpoint authorizes on "came from
-  loopback".** The residual in §2 depends on this. I did not audit
-  `agent-ops-routes.ts` or the credential-broker route's auth.
+- **Audited and closed (2026-10-10, planning#668): the orchestrator HTTP API
+  authorized on "came from loopback".** `api-container-guard.ts` trusted every
+  source that was not a known container IP — loopback and the orchestrator's own
+  addresses included — as the user, so a payload in the orchestrator's netns
+  reached `PUT /api/secrets` (reproduced). E6 refuses the orchestrator's own
+  container at the guard (req 16); see §2's "Loopback surface" residual, now
+  marked closed. The separate `/agent-ops/*` surface is a worker-side concern
+  governed by docs/251 (loopback-pinned there, the opposite direction) and was
+  not re-audited here.
 - **The simple-git rejection is exercised, not inferred.** The parent session
   flagged its own claim here as an inference from "no try/catch plus documented
   behaviour". It was run: `add("-A")` against a case-D tree rejects with a
@@ -1150,6 +1188,15 @@ Sequence:
    window where a turn commits short, or does not commit at all, with no trace.
 7. File the per-session-uid follow-up (req 13). The route-2 issue is already
    filed as planning#400.
+8. **E6 — refuse the orchestrator's own container at the API guard (req 16,
+   planning#668).** Everything above lets the git child run repo-controlled code
+   at the session's own uid (Q2) — but the child still shares the orchestrator's
+   network namespace, so it could reach `PUT /api/secrets` over loopback, where
+   `api-container-guard.ts` trusted any non-container source as the user. The
+   guard now refuses the orchestrator's own loopback and own addresses, with an
+   exemption for the single-container dev stack and local/test mode. *Shipped
+   2026-10-10. See §2's "Loopback surface" residual for the reproduction, the
+   mechanism and the narrow own-address-enumeration residual.*
 
 The follow-up in step 7 inherits req 12: per-session uids change
 `SHIPIT_SESSION_WORKER_UID` from one global value into an allocated one, so its

@@ -44,6 +44,16 @@ export function normalizeRemoteIp(remoteAddress: string | undefined): string | n
   return remoteAddress.replace(/^::ffff:/, "");
 }
 
+// planning#668: an orchestrator-side git on a session tree runs repo-controlled
+// hooks/filters/fsmonitor/helpers as a child in the orchestrator's OWN network
+// namespace, so loopback and the orchestrator's own addresses reach the API. A
+// legitimate caller never sources from them: the browser arrives through the
+// published port (translated to a host/gateway address) and a session worker
+// from its own container IP.
+export function isLoopbackAddress(ip: string): boolean {
+  return ip === "::1" || ip.startsWith("127.");
+}
+
 const untrustedCidrs = new Set<string>();
 
 export function registerUntrustedContainerNetwork(cidr: string): boolean {
@@ -102,7 +112,15 @@ export interface ContainerGuardDeps {
     getSessionByContainerIp(ip: string): { sessionId: string } | undefined;
     getSessionByAnyContainerIp?(ip: string): Promise<{ sessionId: string } | undefined>;
     isLikelySessionContainerIp?(ip: string): boolean;
+    /** The orchestrator's own container addresses; a git child shares its netns (planning#668). */
+    ownContainerAddresses?(): Promise<string[]>;
   };
+  /**
+   * Skip the own-container denial (planning#668 req 16). Set only where ShipIt's
+   * own UI legitimately calls the API over the orchestrator's loopback — the
+   * single-container dev stack and local/test mode — never on a real deployment.
+   */
+  trustOwnContainerLoopback?: boolean;
 }
 
 // Register before domain routes so onRoute observes every opt-in.
@@ -126,6 +144,27 @@ export function registerContainerOriginGuard(
 
   const { containerManager } = deps;
 
+  // Resolve the orchestrator's own container addresses once (loopback is covered
+  // synchronously, so an unresolved set still blocks the primary vector). Primed
+  // at registration so the first real request already has it.
+  let ownAddressLoad: Promise<Set<string>> | null = null;
+  const orchestratorOwnAddresses = (): Promise<Set<string>> => {
+    ownAddressLoad ??= (async () => {
+      const set = new Set<string>();
+      try {
+        for (const addr of (await containerManager?.ownContainerAddresses?.()) ?? []) {
+          const normalized = normalizeRemoteIp(addr);
+          if (normalized) set.add(normalized);
+        }
+      } catch {
+        // Loopback is still denied below; the bridge-IP pivot reopens only until this resolves.
+      }
+      return set;
+    })();
+    return ownAddressLoad;
+  };
+  if (!deps.trustOwnContainerLoopback) void orchestratorOwnAddresses();
+
   app.addHook("onRequest", async (request, reply) => {
     const ip = normalizeRemoteIp(request.socket.remoteAddress);
 
@@ -133,6 +172,16 @@ export function registerContainerOriginGuard(
       return reply
         .code(403)
         .send({ error: "This endpoint is not available to session containers." });
+    }
+
+    // planning#668 req 16: a request from inside the orchestrator's own netns —
+    // a git subprocess running repo-controlled hooks/filters/config — must not be
+    // trusted as the user. A real caller never sources from the orchestrator itself.
+    if (ip && !deps.trustOwnContainerLoopback
+      && (isLoopbackAddress(ip) || (await orchestratorOwnAddresses()).has(ip))) {
+      return reply
+        .code(403)
+        .send({ error: "This endpoint is not available to the orchestrator's own processes." });
     }
 
     if (!containerManager) return;

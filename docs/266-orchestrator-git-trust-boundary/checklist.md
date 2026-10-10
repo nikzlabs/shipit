@@ -4,6 +4,20 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 
 ## Shipped
 
+- [x] **E6 — the API guard no longer trusts the orchestrator's own container**
+      (req 16, planning#668, 2026-10-10). The dropped-uid git child runs
+      repo-controlled hooks/filters/`fsmonitor` in the orchestrator's own netns,
+      so it reached `PUT /api/secrets` over loopback, where
+      `api-container-guard.ts` trusted any non-container source as the user.
+      The guard now refuses the orchestrator's own loopback and own container
+      addresses (`isLoopbackAddress` + `SessionContainerManager.ownContainerAddresses`),
+      with a `trustOwnContainerLoopback` exemption for the single-container dev
+      stack (`SHIPIT_TRUST_OWN_LOOPBACK` in `docker/local/dev/compose.yml`),
+      local mode and test mode. Reproduced and pinned by
+      `integration_tests/git-payload-api-reach.test.ts` (real git + real
+      listener: hook, `fsmonitor` and `filter.clean` all refused) and
+      `api-container-guard.test.ts` (loopback / own-address / exemption cases).
+      The Docker proxy was already fail-closed on an unknown source IP.
 - [x] **E1 — orchestrator git on a session workspace runs as the tree's owner**
       (reqs 1, 2, 3, 11). `shared/git-tree-uid.ts` decides by **ownership**, the
       same fact git's own CVE-2022-24765 check tests, applied inside
