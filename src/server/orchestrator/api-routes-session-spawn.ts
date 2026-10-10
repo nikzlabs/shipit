@@ -516,7 +516,12 @@ export async function registerSessionSpawnRoutes(
             console.error(`[merge-watch] register-time check failed for ${request.params.childId}:`, err);
           });
         }
-        return { armed: true, state: result.state, alreadyArmed: result.alreadyArmed };
+        return {
+          armed: true,
+          state: result.state,
+          alreadyArmed: result.alreadyArmed,
+          ...(result.skipsPr !== undefined ? { skipsPr: result.skipsPr } : {}),
+        };
       } catch (err) {
         const { parentId, childId } = request.params;
         if (err instanceof ServiceError) {
@@ -637,6 +642,8 @@ export async function registerSessionSpawnRoutes(
         return cancelSelfMergeWatch(
           {
             sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
             ...(deps.mergeWatchManager ? { mergeWatchManager: deps.mergeWatchManager } : {}),
           },
           request.params.sessionId,

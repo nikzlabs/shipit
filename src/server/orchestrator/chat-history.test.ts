@@ -1359,6 +1359,41 @@ describe("ChatHistoryManager", () => {
     });
   });
 
+  describe("self merge-watch arm card end (docs/239)", () => {
+    const armCard = (watchId: string, prNumber: number): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      selfMergeWatch: {
+        cardId: `card-${watchId}`,
+        watchId,
+        prNumber,
+        prUrl: `https://github.com/o/r/pull/${prNumber}`,
+        createdAt: "2026-10-10T00:00:00.000Z",
+      },
+    });
+
+    it("stores the end inside the existing card JSON, on the card of that arming only", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", armCard("w1", 43));
+      mgr.append("sess-1", armCard("w2", 44));
+      // An older row reads as still armed, which is the correct default.
+      expect(mgr.findSelfMergeWatchCard("sess-1", "w1")?.ended).toBeUndefined();
+
+      expect(mgr.updateSelfMergeWatchCard("sess-1", "w1", { ended: "replaced" })).toBe(true);
+      const cards = mgr.load("sess-1").map((m) => m.selfMergeWatch);
+      expect(cards.map((c) => c?.ended)).toEqual(["replaced", undefined]);
+      expect(cards[0]?.prNumber).toBe(43);
+    });
+
+    it("does not reach a card of another session, and reports a missing card", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", armCard("w1", 43));
+      expect(mgr.updateSelfMergeWatchCard("sess-2", "w1", { ended: "cancelled" })).toBe(false);
+      expect(mgr.findSelfMergeWatchCard("sess-1", "missing")).toBeNull();
+      expect(mgr.load("sess-1")[0].selfMergeWatch?.ended).toBeUndefined();
+    });
+  });
+
   describe("issue-ref card persistence (docs/188)", () => {
     const refCard = (cardId: string): PersistedMessage => ({
       role: "assistant",

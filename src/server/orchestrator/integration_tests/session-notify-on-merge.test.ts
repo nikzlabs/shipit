@@ -522,4 +522,134 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       expect(sessionManager.listPendingMergeWatches()).toEqual([]);
     });
   });
+
+  describe("a parent that follows a child across several PRs (docs/196-session-notify-on-merge)", () => {
+    const prData = (n: number) => ({
+      url: `https://github.com/owner/notify-on-merge-test/pull/${n}`,
+      number: n,
+      base: "main",
+      title: `Step ${n}`,
+    });
+    const wakesFor = (n: number) =>
+      spawnedAgents.filter((a) => a.runCalled && a.lastPrompt?.includes(`Child PR #${n} merged`));
+    const settle = () => new Promise((r) => setTimeout(r, 300));
+
+    async function idleChild(parentId: string): Promise<string> {
+      const childId = await spawnChild(parentId);
+      await waitFor(() => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("Build the foundation")));
+      spawnedAgents.find((a) => a.lastPrompt?.includes("Build the foundation"))!.finish("child-first-turn");
+      await waitFor(() => app.runnerRegistry.get(childId)?.running === false, 10_000, "child idle");
+      return childId;
+    }
+
+    async function mergeSeenByPoller(childId: string, n: number): Promise<void> {
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        ...prData(n), body: "", state: "closed", merged_at: "2026-10-10T02:53:43Z", additions: 3, deletions: 1,
+      });
+      app.prStatusPoller!.trackSession(childId, REPO_URL);
+      await app.prStatusPoller!.forceVerifySessionPrState(childId);
+    }
+
+    it("an arm inside each wake turn gives one wake for each PR, and none twice", { timeout: 40_000 }, async () => {
+      const parentId = await createParent();
+      const childId = await idleChild(parentId);
+      await githubAuth.setToken("test-token");
+      expect((await armWatch(parentId, childId)).statusCode).toBe(200);
+
+      await mergeSeenByPoller(childId, 7);
+      await waitFor(() => wakesFor(7).length === 1, 15_000, "wake for PR #7 started");
+
+      // req 3 — the parent's agent arms again inside the wake turn.
+      const during = await armWatch(parentId, childId);
+      expect(during.json()).toMatchObject({ armed: true, state: "merge-observed", alreadyArmed: false, skipsPr: 7 });
+      wakesFor(7)[0].finish("parent-wake-7");
+      await waitFor(() => sessionManager.getMergeWatch(childId)?.state === "armed", 10_000, "watch armed for the next PR");
+      expect(sessionManager.getMergeWatch(childId)?.reportedPr).toEqual({ prNumber: 7, outcome: "merged" });
+
+      // req 4 — the child's stored state still names PR #7: as its PR snapshot, or as its previous
+      // merge when its own post-turn flow re-armed first. Neither the queued arm nor a new one sends it again.
+      expect((await armWatch(parentId, childId)).json()).toMatchObject({ state: "armed", alreadyArmed: true, skipsPr: 7 });
+      await settle();
+      expect(wakesFor(7)).toHaveLength(1);
+      expect((await parentCards(parentId)).map((c) => c.prNumber)).toEqual([7]);
+
+      // req 2 — the child continues (its snapshot is cleared) and its next PR merges.
+      app.prStatusPoller!.reArm(childId, 7);
+      await mergeSeenByPoller(childId, 8);
+      await waitFor(() => wakesFor(8).length === 1, 15_000, "wake for PR #8 started");
+      wakesFor(8)[0].finish("parent-wake-8");
+      await waitFor(() => sessionManager.getMergeWatch(childId)?.state === "delivered", 10_000, "second wake delivered");
+
+      // req 4 — an arm in a later turn, after the wake.
+      expect((await armWatch(parentId, childId)).json()).toMatchObject({ state: "armed", alreadyArmed: false, skipsPr: 8 });
+      await settle();
+      expect(wakesFor(8)).toHaveLength(1);
+      expect(sessionManager.getMergeWatch(childId)?.state).toBe("armed");
+      expect((await parentCards(parentId)).map((c) => c.prNumber)).toEqual([7, 8]);
+    });
+  });
+
+  describe("the --self arm card says when its watch is gone (docs/239)", () => {
+    const prData = (n: number) => ({
+      url: `https://github.com/owner/notify-on-merge-test/pull/${n}`,
+      number: n,
+      base: "main",
+      title: `Step ${n}`,
+    });
+
+    async function armSelfOn(sessionId: string, n: number): Promise<string> {
+      await githubAuth.setToken("test-token");
+      githubAuth.setPrData(prData(n));
+      const res = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/notify-on-merge-self` });
+      expect(res.statusCode).toBe(200);
+      return (res.json() as { watchId: string }).watchId;
+    }
+
+    async function armCards(sessionId: string): Promise<{ prNumber: number; ended?: string }[]> {
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+      const messages = (res.json() as { messages: { selfMergeWatch?: { prNumber: number; ended?: string } }[] }).messages;
+      return messages.flatMap((m) => (m.selfMergeWatch ? [{ prNumber: m.selfMergeWatch.prNumber, ended: m.selfMergeWatch.ended }] : []));
+    }
+
+    it("replaced, cancelled and merged are in the history that a reload reads", { timeout: 40_000 }, async () => {
+      // A spawned session has a branch for the poller, and its first turn left it a runner.
+      const sessionId = await spawnChild(await createParent(), "Chained");
+      await waitFor(() => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("Build the foundation")));
+      spawnedAgents.find((a) => a.lastPrompt?.includes("Build the foundation"))!.finish("first-turn");
+      await waitFor(() => app.runnerRegistry.get(sessionId)?.running === false, 10_000, "session idle");
+
+      await armSelfOn(sessionId, 7);
+      const second = await armSelfOn(sessionId, 8);
+      expect(await armCards(sessionId)).toEqual([
+        { prNumber: 7, ended: "replaced" },
+        { prNumber: 8, ended: undefined },
+      ]);
+
+      const cancel = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/notify-on-merge-self/cancel`,
+        payload: { watchId: second },
+      });
+      expect(cancel.json()).toEqual({ cancelled: true });
+      expect((await armCards(sessionId)).map((c) => c.ended)).toEqual(["replaced", "cancelled"]);
+
+      await armSelfOn(sessionId, 9);
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        ...prData(9), body: "", state: "closed", merged_at: "2026-10-10T02:53:43Z", additions: 3, deletions: 1,
+      });
+      app.prStatusPoller!.trackSession(sessionId, REPO_URL);
+      await app.prStatusPoller!.forceVerifySessionPrState(sessionId);
+
+      await waitFor(
+        () => sessionManager.getSelfMergeWatch(sessionId)?.state === "merge-observed",
+        15_000,
+        "self-watch observed its merge",
+      );
+      expect((await armCards(sessionId)).map((c) => c.ended)).toEqual(["replaced", "cancelled", "merged"]);
+      // End the turns that the wake started, so the app closes with nothing in flight.
+      for (const a of spawnedAgents) if (a.runCalled) a.finish("done");
+    });
+  });
 });

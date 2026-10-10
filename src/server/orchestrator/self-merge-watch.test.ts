@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
-import { MergeWatchManager } from "./merge-watch.js";
+import { MergeWatchManager, MAX_DELIVERY_ATTEMPTS } from "./merge-watch.js";
 import { armSelfMergeWatch, cancelSelfMergeWatch } from "./services/self-merge-watch.js";
 import { ServiceError } from "./services/types.js";
 import {
@@ -417,5 +417,158 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
     ctx.runner.workerTurnActive = false;
     await ctx.manager.retryStalledDeliveries();
     expect(ctx.runner.dispatched).toHaveLength(2);
+  });
+});
+
+describe("the arm card says when its watch is gone (docs/239)", () => {
+  let ctx: ReturnType<typeof makeCtx>;
+  beforeEach(() => { ctx = makeCtx(); });
+
+  const NEXT_PR = { number: 44, url: "https://github.com/o/r/pull/44", base: "main", title: "Step three" };
+  const storedCards = () =>
+    ctx.chatHistoryManager.load(SESSION_ID).flatMap((m) => (m.selfMergeWatch ? [m.selfMergeWatch] : []));
+  const emittedCards = () =>
+    ctx.runner.emitted.filter((m) => m.type === "self_merge_watch_card").map((m) => m.card as { watchId: string; ended?: string });
+
+  it("a new card has no end, and offers Cancel", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    expect(storedCards()).toHaveLength(1);
+    expect(storedCards()[0].ended).toBeUndefined();
+  });
+
+  it("replaced: a re-arm on another PR ends the older card, in history and for live viewers", async () => {
+    const first = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    ctx.livePr.value = NEXT_PR;
+    const second = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    expect(storedCards().map((c) => [c.watchId, c.ended])).toEqual([
+      [first.watchId, "replaced"],
+      [second.watchId, undefined],
+    ]);
+    expect(emittedCards().map((c) => [c.watchId, c.ended])).toEqual([
+      [first.watchId, undefined],
+      [first.watchId, "replaced"],
+      [second.watchId, undefined],
+    ]);
+  });
+
+  it("replaced: a re-arm on the same PR ends the older card too", async () => {
+    const first = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    expect(storedCards().find((c) => c.watchId === first.watchId)?.ended).toBe("replaced");
+  });
+
+  it("replaced: of two arms that run at the same time, the one that lost ends its card", async () => {
+    const [a, b] = await Promise.all([
+      armSelfMergeWatch(ctx.armDeps, SESSION_ID),
+      armSelfMergeWatch(ctx.armDeps, SESSION_ID),
+    ]);
+    const current = ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.watchId;
+    const lost = current === a.watchId ? b.watchId : a.watchId;
+
+    expect(storedCards().find((c) => c.watchId === lost)?.ended).toBe("replaced");
+    expect(storedCards().find((c) => c.watchId === current)?.ended).toBeUndefined();
+  });
+
+  it("replaced: a card armed and replaced inside one running turn keeps its end when the turn is rebuilt", async () => {
+    ctx.runner.running = true;
+    const first = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    ctx.livePr.value = NEXT_PR;
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+
+    const recorded = ctx.runner.recordedCards.map((c) => c.message.selfMergeWatch as { watchId: string; ended?: string });
+    expect(recorded.find((c) => c.watchId === first.watchId)?.ended).toBe("replaced");
+    expect(storedCards().find((c) => c.watchId === first.watchId)?.ended).toBe("replaced");
+    expect(storedCards()).toHaveLength(2);
+  });
+
+  it("cancelled: Cancel ends the card", async () => {
+    const { watchId } = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    cancelSelfMergeWatch(ctx.armDeps, SESSION_ID, watchId);
+
+    expect(storedCards()[0].ended).toBe("cancelled");
+    expect(emittedCards().at(-1)).toMatchObject({ watchId, ended: "cancelled" });
+  });
+
+  it("cancelled: the card changes in history with no runner for the session", async () => {
+    const { watchId } = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    const noRunner = { get: () => undefined } as unknown as SessionRunnerRegistry;
+    cancelSelfMergeWatch({ ...ctx.armDeps, runnerRegistry: noRunner }, SESSION_ID, watchId);
+
+    expect(storedCards()[0].ended).toBe("cancelled");
+  });
+
+  it("a stale Cancel changes neither card", async () => {
+    const stale = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    ctx.livePr.value = NEXT_PR;
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    cancelSelfMergeWatch(ctx.armDeps, SESSION_ID, stale.watchId);
+
+    expect(storedCards().map((c) => c.ended)).toEqual(["replaced", undefined]);
+  });
+
+  it("merged: the card ends when the wake starts, and the re-arm inside the wake does not call it replaced", async () => {
+    const first = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    markMerged(ctx, 43);
+    await ctx.manager.handleSelfMerge(SESSION_ID);
+    expect(storedCards()[0].ended).toBe("merged");
+    expect(emittedCards().at(-1)).toMatchObject({ watchId: first.watchId, ended: "merged" });
+
+    ctx.livePr.value = NEXT_PR;
+    const second = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    ctx.runner.completeTurns();
+
+    expect(storedCards().map((c) => [c.watchId, c.ended])).toEqual([
+      [first.watchId, "merged"],
+      [second.watchId, undefined],
+    ]);
+  });
+
+  it("closed: a PR closed without a merge ends the card", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    await ctx.manager.handleChildPrTerminal({
+      sessionId: SESSION_ID, outcome: "closed", prNumber: 43,
+      prUrl: "https://github.com/o/r/pull/43", prTitle: "Step two", branch: "shipit/s1",
+    });
+    expect(storedCards()[0].ended).toBe("closed");
+  });
+
+  it("other-pr-merged: a merge of a different PR ends the card", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    markMerged(ctx, 42);
+    await ctx.manager.handleSelfMerge(SESSION_ID);
+    expect(storedCards()[0].ended).toBe("other-pr-merged");
+  });
+
+  it("wake-failed: a wake that is given up replaces the merged end", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    markMerged(ctx, 43);
+    await ctx.manager.handleSelfMerge(SESSION_ID);
+    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
+      ctx.runner.completeTurns(turnNoResult("agent exited without a result"));
+      const watch = ctx.sessionManager.getSelfMergeWatch(SESSION_ID)!;
+      if (watch.state !== "merge-observed") break;
+      ctx.sessionManager.setSelfMergeWatch(SESSION_ID, { ...watch, lastAttemptAt: new Date(0).toISOString() });
+      await ctx.manager.retryStalledDeliveries();
+    }
+    ctx.manager.stopRetryLoop();
+
+    expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("delivery-failed");
+    expect(storedCards()[0].ended).toBe("wake-failed");
+  });
+
+  it("a card that cannot be updated does not stop the wake", async () => {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    markMerged(ctx, 43);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(ctx.chatHistoryManager, "findSelfMergeWatchCard").mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+
+    await ctx.manager.handleSelfMerge(SESSION_ID);
+
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("[merge-watch] could not mark the arm card"))).toBe(true);
+    vi.restoreAllMocks();
   });
 });
