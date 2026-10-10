@@ -481,9 +481,7 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
       });
     }
     // Attach before start to capture even commands that exit immediately.
-    const stream = await container.attach({
-      stream: true, stdin: true, stdout: true, stderr: true, hijack: true,
-    });
+    const stream = await attachStdio(deps.docker, container.id);
     const out = new Capture();
     const err = new Capture();
     deps.docker.modem.demuxStream(stream, out.sink, err.sink);
@@ -493,7 +491,7 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
 
     const code = await waitForContainerExit(container, timeoutMs, deps.isCancelled);
     // Container exit can precede the last output chunk.
-    await streamSettled(stream as unknown as Duplex);
+    await streamSettled(stream);
     if (code === "timeout") {
       return {
         error: `\`${path.posix.basename(spec.entry)}\` did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.`,
@@ -519,6 +517,27 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
       );
     });
   }
+}
+
+// Not `container.attach()`: dockerode sends its options as a JSON request body, which the daemon
+// never reads. It hijacks the connection, so body bytes that arrive after the headers reach the
+// command as the start of its stdin (#3130). An empty `file` is how docker-modem sends no body.
+export function attachStdio(docker: Docker, containerId: string): Promise<Duplex> {
+  return new Promise((resolve, reject) => {
+    docker.modem.dial({
+      path: `/containers/${containerId}/attach?`,
+      method: "POST",
+      options: { stream: true, stdin: true, stdout: true, stderr: true },
+      file: Buffer.alloc(0),
+      isStream: true,
+      hijack: true,
+      openStdin: true,
+      statusCodes: { 200: true, 404: "no such container", 500: "server error" },
+    }, (err, stream) => {
+      if (err) reject(err);
+      else resolve(stream as Duplex);
+    });
+  });
 }
 
 async function wasOomKilled(container: Docker.Container): Promise<boolean> {
