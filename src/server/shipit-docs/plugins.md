@@ -157,6 +157,26 @@ code comes from another repository, so it runs where that is not reachable.
 A plugin's command on your `PATH` is therefore a ShipIt wrapper: you run it
 like any other command, and the plugin's own code runs elsewhere.
 
+**A command's first call is slower than the calls that follow it.** On most
+sessions ShipIt builds a network namespace for plugin commands, with this
+session's own egress rules, and keeps it for a few minutes for the next call.
+So the first call does not tell you how fast the command is. Each call still
+starts a new container, which costs a fraction of a second: when you have many
+items, one call that takes all of them is faster than one call for each, if the
+command accepts that.
+
+To see where one call's time went, set `SHIPIT_PLUGIN_TIMING=1` on it:
+
+```bash
+SHIPIT_PLUGIN_TIMING=1 <command> --help
+```
+
+One line on stderr gives each part in milliseconds. `command` is the plugin's
+own program, from its start to its exit; every other part is ShipIt's, and
+`network` says whether the namespace was `built` or `reused`. A slow `command`
+part belongs in a report to the plugin (below). A slow part of ShipIt's belongs
+in a ShipIt bug report, with that line in it.
+
 The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
 layer that belongs to the plugin's own execution environment, not to yours.

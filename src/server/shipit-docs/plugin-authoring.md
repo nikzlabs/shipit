@@ -146,6 +146,26 @@ exports:
   child that was killed by signal 9, print that it ran out of memory before
   you exit.
 
+### Your command's container is new each call; its network namespace may not be
+
+Each call starts a new container, so nothing a call leaves in its filesystem,
+its `/tmp` or its processes reaches the next call. The **network namespace** is
+different: ShipIt keeps it for the session's next call, because building it is
+most of what a call costs to start. Two calls never use one namespace at the
+same time, and no process of an earlier call is left in it.
+
+Two things follow for a command you write:
+
+- **A command that listens on a fixed loopback port must be able to bind that
+  port again immediately**, as it must when you run it twice in a terminal. Set
+  `SO_REUSEADDR` or let the system choose the port.
+- **Starting your program is the cost you control.** A call's start is a
+  container start plus your program's own start. Run a call with
+  `SHIPIT_PLUGIN_TIMING=1` to see the two apart — see
+  [plugins.md → Plugin code does not run in your container](plugins.md#plugin-code-does-not-run-in-your-container).
+  When an agent will call your command once for each of many items, let one
+  call accept all of them.
+
 ### Your service does not choose its port
 
 An exported compose fragment **must not declare `ports:`**. A fragment that does

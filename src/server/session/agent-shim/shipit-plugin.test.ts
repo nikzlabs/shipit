@@ -1,5 +1,5 @@
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { runShim, type ShimIO } from "./shipit.js";
 
 interface RecordedCall {
@@ -243,6 +243,44 @@ describe("shipit plugin exec", () => {
     const res = await run(["plugin", "exec", "--alias", "reqs"], {});
     expect(res.exitCode).not.toBe(0);
     expect(res.calls).toHaveLength(0);
+  });
+
+  const TIMED = {
+    status: 200,
+    body: {
+      exitCode: 0,
+      stdout: "out",
+      stderr: "",
+      timings: {
+        prepareMs: 41, networkMs: 12, networkReused: true,
+        createMs: 62, startMs: 310, commandMs: 95, cleanupMs: 120,
+      },
+    },
+  };
+
+  it("says where the call's time went when SHIPIT_PLUGIN_TIMING is set, on stderr only", async () => {
+    vi.stubEnv("SHIPIT_PLUGIN_TIMING", "1");
+    try {
+      const { run } = makeRunner();
+      const res = await run(["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--"], { [EXEC]: TIMED });
+
+      expect(res.stdout).toBe("out");
+      expect(res.stderr).toBe(
+        "[shipit] plugin exec timing: prepare 41 ms, network 12 ms (reused), create 62 ms, "
+        + "start 310 ms, command 95 ms, cleanup 120 ms\n",
+      );
+      expect(res.exitCode).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("adds nothing to the command's streams without it", async () => {
+    const { run } = makeRunner();
+    const res = await run(["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--"], { [EXEC]: TIMED });
+
+    expect(res.stdout).toBe("out");
+    expect(res.stderr).toBe("");
   });
 });
 

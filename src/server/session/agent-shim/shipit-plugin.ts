@@ -88,6 +88,9 @@ Run one imported plugin's companion CLI (docs/262 req 17). You do not normally
 type this: each surfaced command has a generated wrapper on PATH that calls it,
 and the wrapper's name is what a plugin's docs tell you to run.
 
+Set SHIPIT_PLUGIN_TIMING=1 on a call to see, on stderr, where its time went:
+\`command\` is the plugin's own program, and every other part is ShipIt's.
+
 See /shipit-docs/plugins.md for using a plugin repository — declaring one, the
 read-only checkout, install, and what to read when a plugin is live but broken.
 If THIS repository is the plugin (its shipit.yaml declares exports.plugins),
@@ -157,8 +160,22 @@ async function exec(args: string[], deps: RunDeps): Promise<void> {
   if (typeof res.body.error === "string" && res.body.error) {
     deps.io.stderr(res.body.error.endsWith("\n") ? res.body.error : `${res.body.error}\n`);
   }
+  if (process.env.SHIPIT_PLUGIN_TIMING) {
+    const line = describeTimings(res.body.timings);
+    if (line) deps.io.stderr(line);
+  }
   const code = typeof res.body.exitCode === "number" ? res.body.exitCode : 1;
   deps.io.exit(code);
+}
+
+function describeTimings(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const t = value as Record<string, unknown>;
+  const ms = (key: string): string => `${typeof t[key] === "number" ? t[key] : "?"} ms`;
+  return `[shipit] plugin exec timing: prepare ${ms("prepareMs")}, `
+    + `network ${ms("networkMs")} (${t.networkReused === true ? "reused" : "built"}), `
+    + `create ${ms("createMs")}, start ${ms("startMs")}, command ${ms("commandMs")}, `
+    + `cleanup ${ms("cleanupMs")}\n`;
 }
 
 // Bound idle inherited pipes; readStdin removes the deadline after the first byte.

@@ -23,6 +23,7 @@ import {
   releaseSessionGenerationHolds,
 } from "./plugin-leases.js";
 import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
+import { _resetPluginNetnsPool } from "./plugin-netns-pool.js";
 
 // Stub privileged setup; keep the namespace decision on the production path.
 vi.mock("./egress-firewall-install.js", async (load) => ({
@@ -50,6 +51,14 @@ const CONTAINED_EGRESS: PluginEgressPolicy = {
   proxyEnabled: true,
 };
 
+// The usual shape of an open session: no allowlist, the local block only.
+const LOCAL_BLOCK_EGRESS: PluginEgressPolicy = {
+  ...UNCONTAINED_PLUGIN_EGRESS,
+  sidecarImage: "egress-sidecar:test",
+  blockLocal: true,
+  hostAddresses: async () => [],
+};
+
 const COMMIT = "d".repeat(40);
 
 const CLI_SUBNET_ADDRESS = "172.29.0.7";
@@ -70,6 +79,7 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(sessionDir, { recursive: true, force: true });
   clearUntrustedContainerNetworks();
+  _resetPluginNetnsPool();
   vi.unstubAllEnvs();
 });
 
@@ -151,7 +161,9 @@ function fakeDocker(opts: {
   stdout?: string;
   stderr?: string;
   vanishNamedVolumesOnCreate?: boolean;
+  /** Fails the removal of the command's own container. */
   removeError?: string;
+  startError?: string;
   oomKilled?: boolean;
 } = {}) {
   const containers: Created[] = [];
@@ -199,7 +211,9 @@ function fakeDocker(opts: {
       },
       remove: async () => { volumes.delete(name); volumeOpts.delete(name); },
     }),
-    listContainers: async () => [],
+    listContainers: async () => containers
+      .filter((c) => started.includes(c.id) && !removedContainers.includes(c.id))
+      .map((c) => ({ Id: c.id, Labels: c.opts.Labels ?? {} })),
     getContainer: (_id: string) => ({ remove: async () => undefined }),
     createContainer: async (createOpts: Record<string, unknown>) => {
       if (opts.vanishNamedVolumesOnCreate) {
@@ -214,9 +228,13 @@ function fakeDocker(opts: {
         opts: createOpts,
         deniedAtCreate: isUntrustedContainerIp(CLI_SUBNET_ADDRESS),
       });
+      const isCommand = PLUGIN_CLI_LABEL in ((createOpts.Labels ?? {}) as Record<string, string>);
       return {
         id,
-        start: async () => { started.push(id); },
+        start: async () => {
+          if (opts.startError && isCommand) throw new Error(opts.startError);
+          started.push(id);
+        },
         wait: async () => ({ StatusCode: opts.exit ?? 0 }),
         inspect: async () => {
           if (removedContainers.includes(id)) notFound();
@@ -224,7 +242,7 @@ function fakeDocker(opts: {
         },
         kill: async () => undefined,
         remove: async () => {
-          if (opts.removeError) throw new Error(opts.removeError);
+          if (opts.removeError && isCommand) throw new Error(opts.removeError);
           removedContainers.push(id);
         },
       };
@@ -1022,6 +1040,81 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     const result = await runPluginCommand(deps(fake.docker), call);
     expect(result.error).toContain("plugin network could not be prepared");
     expect(fake.containers).toHaveLength(0);
+  });
+});
+
+describe("runPluginCommand — the network namespace between calls", () => {
+  const networkModeOf = (c: Created): string => (c.opts.HostConfig as { NetworkMode: string }).NetworkMode;
+
+  it("runs the next command in the namespace the first one left", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+    const sessionDeps = deps(fake.docker, { egress: () => LOCAL_BLOCK_EGRESS });
+
+    const first = await runPluginCommand(sessionDeps, call);
+    const second = await runPluginCommand(sessionDeps, call);
+
+    expect(fake.containers).toHaveLength(3);
+    const [holder, one, two] = fake.containers;
+    expect(networkModeOf(one)).toBe(`container:${holder.id}`);
+    expect(networkModeOf(two)).toBe(`container:${holder.id}`);
+    expect(fake.removedContainers).toEqual([one.id, two.id]);
+    expect(first.timings?.networkReused).toBe(false);
+    expect(second.timings?.networkReused).toBe(true);
+  });
+
+  it("does not keep the namespace of a command whose container could not be removed", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ removeError: "device or resource busy" });
+    const sessionDeps = deps(fake.docker, { egress: () => LOCAL_BLOCK_EGRESS });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await runPluginCommand(sessionDeps, call);
+      const [holder] = fake.containers;
+      expect(fake.removedContainers).toContain(holder.id);
+
+      const second = await runPluginCommand(sessionDeps, call);
+
+      expect(second.timings?.networkReused).toBe(false);
+      expect(networkModeOf(fake.containers[3])).toBe(`container:${fake.containers[2].id}`);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not keep the namespace of a command that could not start", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ startError: "no such container" });
+
+    const result = await runPluginCommand(deps(fake.docker, { egress: () => LOCAL_BLOCK_EGRESS }), call);
+
+    expect(result.exitCode).toBe(126);
+    expect(result.error).toContain("could not be started");
+    expect(result.timings).toBeUndefined();
+    const [holder, command] = fake.containers;
+    expect(fake.removedContainers).toEqual([command.id, holder.id]);
+  });
+
+  it("says where the time of a call went", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    const result = await runPluginCommand(deps(fake.docker), call);
+
+    expect(result.timings).toEqual({
+      prepareMs: expect.any(Number),
+      networkMs: expect.any(Number),
+      networkReused: false,
+      createMs: expect.any(Number),
+      startMs: expect.any(Number),
+      commandMs: expect.any(Number),
+      cleanupMs: expect.any(Number),
+    });
   });
 });
 

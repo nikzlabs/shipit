@@ -25,12 +25,8 @@ import {
 } from "./plugin-generations.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
 import { pluginContainerEnv } from "./plugin-container-env.js";
-import {
-  preparePluginNetns,
-  UNCONTAINED_PLUGIN_EGRESS,
-  type PluginEgressPolicy,
-  type PluginNetns,
-} from "./plugin-egress.js";
+import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
+import { acquirePluginNetns, type PluginNetnsLease } from "./plugin-netns-pool.js";
 import { holdGeneration, type ReleaseHold } from "./plugin-leases.js";
 import { assertOverlayVolumesMatch } from "./overlay-volume.js";
 import { stackLabel } from "./stack-label.js";
@@ -98,6 +94,18 @@ export interface PluginCliResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  timings?: PluginCliTimings;
+}
+
+/** Where one call's time went. `commandMs` is the plugin's own program; the rest is ShipIt's. */
+export interface PluginCliTimings {
+  prepareMs: number;
+  networkMs: number;
+  networkReused: boolean;
+  createMs: number;
+  startMs: number;
+  commandMs: number;
+  cleanupMs: number;
 }
 
 export async function runPluginCommand(
@@ -118,6 +126,7 @@ async function runHeldPluginCommand(
   held: { release?: ReleaseHold },
 ): Promise<PluginCliResult> {
   const refuse = (error: string): PluginCliResult => ({ error, exitCode: 126, stdout: "", stderr: "" });
+  const startedAt = performance.now();
 
   let stateDir: string;
   let sessionRoot: string;
@@ -299,9 +308,10 @@ async function runHeldPluginCommand(
     return refuse(`the plugin network could not be prepared: ${message(err)}`);
   }
 
-  let netns: PluginNetns;
+  const preparedAt = performance.now();
+  let netns: PluginNetnsLease;
   try {
-    netns = await preparePluginNetns({
+    netns = await acquirePluginNetns({
       docker: deps.docker,
       sessionId: deps.sessionId,
       network: PLUGIN_CLI_NETWORK,
@@ -313,10 +323,13 @@ async function runHeldPluginCommand(
     return refuse(`this session's network policy could not be applied to the plugin container: ${message(err)}`);
   }
 
+  const networkMs = performance.now() - preparedAt;
   const entry = path.posix.join(CONTAINER_PLUGIN_DIR, surfaced.entry);
   const memoryBytes = surfaced.memoryBytes ?? DEFAULT_PLUGIN_CLI_MEMORY_BYTES;
+  let executed: Executed | null = null;
+  let failure = "";
   try {
-    return await execute(deps, {
+    executed = await execute(deps, {
       mounts,
       env,
       entry,
@@ -332,10 +345,26 @@ async function runHeldPluginCommand(
         + `\`overrides.commands.${surfaced.declared}.memory\` (for example \`memory: 4g\`).`,
     });
   } catch (err) {
-    return refuse(`\`${surfaced.name}\` could not be started (${entry}): ${message(err)}`);
-  } finally {
-    await netns.release();
+    failure = message(err);
   }
+  const releasingAt = performance.now();
+  // A container that outlived its removal is still in the namespace.
+  await netns.release({ reusable: executed?.containerRemoved ?? false });
+  if (!executed) {
+    return refuse(`\`${surfaced.name}\` could not be started (${entry}): ${failure}`);
+  }
+  return {
+    ...executed.result,
+    timings: {
+      prepareMs: Math.round(preparedAt - startedAt),
+      networkMs: Math.round(networkMs),
+      networkReused: netns.reused,
+      createMs: Math.round(executed.createMs),
+      startMs: Math.round(executed.startMs),
+      commandMs: Math.round(executed.commandMs),
+      cleanupMs: Math.round(executed.removeMs + (performance.now() - releasingAt)),
+    },
+  };
 }
 
 interface PinnedGeneration {
@@ -443,8 +472,21 @@ interface ExecuteSpec {
   outOfMemoryError: string;
 }
 
-async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCliResult> {
+interface Ran {
+  result: PluginCliResult;
+  createMs: number;
+  startMs: number;
+  commandMs: number;
+}
+
+interface Executed extends Ran {
+  containerRemoved: boolean;
+  removeMs: number;
+}
+
+async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<Executed> {
   const identity = identityForSession(deps.sessionId);
+  const createdAt = performance.now();
   const container = await deps.docker.createContainer({
     Image: deps.image,
     Labels: { [PLUGIN_CLI_LABEL]: deps.sessionId, ...stackLabel(deps.stackName) },
@@ -473,50 +515,76 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
     },
   });
 
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_PLUGIN_CLI_TIMEOUT_MS;
+  let ran: Ran;
+  let containerRemoved = false;
+  let removeMs: number;
   try {
-    if (spec.overlaySpec) {
-      await assertOverlayVolumesMatch(deps.docker, [spec.overlaySpec], {
-        sessionId: deps.sessionId,
-      });
-    }
-    // Attach before start to capture even commands that exit immediately.
-    const stream = await attachStdio(deps.docker, container.id);
-    const out = new Capture();
-    const err = new Capture();
-    deps.docker.modem.demuxStream(stream, out.sink, err.sink);
-
-    await container.start();
-    stream.end(spec.stdin);
-
-    const code = await waitForContainerExit(container, timeoutMs, deps.isCancelled);
-    // Container exit can precede the last output chunk.
-    await streamSettled(stream);
-    if (code === "timeout") {
-      return {
-        error: `\`${path.posix.basename(spec.entry)}\` did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.`,
-        exitCode: 124,
-        stdout: out.text(),
-        stderr: err.text(),
-      };
-    }
-    if (code === "cancelled") {
-      return { error: "the session went away while the command was running", exitCode: 125, stdout: out.text(), stderr: err.text() };
-    }
-    const exitCode = typeof code === "number" ? code : 1;
-    const result: PluginCliResult = { exitCode, stdout: out.text(), stderr: err.text() };
-    // Any non-zero exit, not only 137: Docker can flag an OOM kill of a child the CLI outlived.
-    if (exitCode !== 0 && await wasOomKilled(container)) result.error = spec.outOfMemoryError;
-    return result;
+    ran = await runCreated(deps, spec, container, createdAt);
   } finally {
-    await container.remove({ force: true }).catch((err: unknown) => {
+    const removingAt = performance.now();
+    try {
+      await container.remove({ force: true });
+      containerRemoved = true;
+    } catch (err) {
       console.warn(
         `[plugins:${deps.sessionId}] could not remove the companion-CLI container ${container.id} — `
         + "it is stranded until the next orchestrator restart:",
         message(err),
       );
+    }
+    removeMs = performance.now() - removingAt;
+  }
+  return { ...ran, containerRemoved, removeMs };
+}
+
+async function runCreated(
+  deps: PluginCliDeps,
+  spec: ExecuteSpec,
+  container: Docker.Container,
+  createdAt: number,
+): Promise<Ran> {
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_PLUGIN_CLI_TIMEOUT_MS;
+  if (spec.overlaySpec) {
+    await assertOverlayVolumesMatch(deps.docker, [spec.overlaySpec], {
+      sessionId: deps.sessionId,
     });
   }
+  // Attach before start to capture even commands that exit immediately.
+  const stream = await attachStdio(deps.docker, container.id);
+  const out = new Capture();
+  const err = new Capture();
+  deps.docker.modem.demuxStream(stream, out.sink, err.sink);
+
+  const startingAt = performance.now();
+  await container.start();
+  const runningAt = performance.now();
+  stream.end(spec.stdin);
+
+  const code = await waitForContainerExit(container, timeoutMs, deps.isCancelled);
+  // Container exit can precede the last output chunk.
+  await streamSettled(stream);
+  const timed = (result: PluginCliResult): Ran => ({
+    result,
+    createMs: startingAt - createdAt,
+    startMs: runningAt - startingAt,
+    commandMs: performance.now() - runningAt,
+  });
+  if (code === "timeout") {
+    return timed({
+      error: `\`${path.posix.basename(spec.entry)}\` did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.`,
+      exitCode: 124,
+      stdout: out.text(),
+      stderr: err.text(),
+    });
+  }
+  if (code === "cancelled") {
+    return timed({ error: "the session went away while the command was running", exitCode: 125, stdout: out.text(), stderr: err.text() });
+  }
+  const exitCode = typeof code === "number" ? code : 1;
+  const result: PluginCliResult = { exitCode, stdout: out.text(), stderr: err.text() };
+  // Any non-zero exit, not only 137: Docker can flag an OOM kill of a child the CLI outlived.
+  if (exitCode !== 0 && await wasOomKilled(container)) result.error = spec.outOfMemoryError;
+  return timed(result);
 }
 
 // Not `container.attach()`: dockerode sends its options as a JSON request body, which the daemon

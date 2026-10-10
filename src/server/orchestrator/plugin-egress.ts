@@ -8,6 +8,8 @@ import {
   buildTierAEgressInputs,
   installEgressFirewall,
   NO_TIER_A_INPUTS,
+  type EgressPolicy,
+  type TierAEgressInputs,
 } from "./egress-firewall-install.js";
 import {
   buildResolverConfigB64,
@@ -54,6 +56,12 @@ export interface PluginNetns {
   release(): Promise<void>;
 }
 
+/** A namespace ShipIt built: its holder, and the sidecars that keep running in it. */
+export interface BuiltPluginNetns extends PluginNetns {
+  holderId: string;
+  sidecars: number;
+}
+
 export interface PreparePluginNetnsOptions {
   docker: Docker;
   sessionId: string;
@@ -66,14 +74,33 @@ export interface PreparePluginNetnsOptions {
   labels?: Record<string, string>;
 }
 
-// Contain a separate holder before starting plugin code. Sharing the session netns exposes its broker.
-export async function preparePluginNetns(
-  opts: PreparePluginNetnsOptions,
-): Promise<PluginNetns> {
+/**
+ * Every policy input a namespace is built from. `buildPluginNetns` takes the plan
+ * and no policy, so two equal plans give namespaces that allow the same traffic.
+ */
+export interface PluginNetnsPlan {
+  network: string;
+  holderImage: string;
+  sidecarImage: string;
+  routeLocalnet: boolean;
+  firewall: {
+    policy: EgressPolicy;
+    inputs: TierAEgressInputs;
+    hostAddresses: string[];
+    resolverUid?: number;
+    proxyUid?: number;
+    proxyPort?: number;
+  };
+  resolverConfigB64?: string;
+  proxy?: { allowed: string; identityRules?: string };
+}
+
+/** Null when the session needs no namespace of ShipIt's making. */
+export async function resolvePluginNetnsPlan(
+  opts: Pick<PreparePluginNetnsOptions, "network" | "holderImage" | "policy">,
+): Promise<PluginNetnsPlan | null> {
   const { policy } = opts;
-  if (!policy.contained && !policy.blockLocal) {
-    return { networkMode: opts.network, release: async () => undefined };
-  }
+  if (!policy.contained && !policy.blockLocal) return null;
   const contained = policy.contained;
   const sidecarImage = policy.sidecarImage;
   if (!sidecarImage) {
@@ -82,19 +109,71 @@ export async function preparePluginNetns(
       + "so ShipIt cannot contain a plugin container's network",
     );
   }
+  const allowed = allowedHosts(policy);
+  const withResolver = contained && policy.dnsEnabled;
+  const withProxy = contained && policy.proxyEnabled;
+  return {
+    network: opts.network,
+    holderImage: opts.holderImage,
+    sidecarImage,
+    // The proxy's loopback redirect needs this sysctl; installer sidecars cannot set it later.
+    routeLocalnet: withProxy,
+    firewall: {
+      inputs: contained ? await buildTierAEgressInputs() : NO_TIER_A_INPUTS,
+      policy: contained ? "contained" : "open",
+      hostAddresses: await (policy.hostAddresses?.() ?? Promise.resolve([])),
+      ...(withResolver ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
+      ...(withProxy ? { proxyUid: EGRESS_PROXY_UID, proxyPort: EGRESS_PROXY_PORT } : {}),
+    },
+    ...(withResolver
+      ? {
+        resolverConfigB64: buildResolverConfigB64({
+          // Plugins need no orchestrator callback domains.
+          extraDomains: allowed.extras,
+          ...(allowed.base ? { base: allowed.base } : {}),
+        }),
+      }
+      : {}),
+    ...(withProxy
+      ? {
+        proxy: {
+          allowed: buildProxyAllowed({
+            extraHosts: [...allowed.extras],
+            ...(allowed.base ? { base: allowed.base } : {}),
+          }),
+          ...(policy.config?.identityRules ? { identityRules: policy.config.identityRules } : {}),
+        },
+      }
+      : {}),
+  };
+}
+
+// Contain a separate holder before starting plugin code. Sharing the session netns exposes its broker.
+export async function preparePluginNetns(
+  opts: PreparePluginNetnsOptions,
+): Promise<PluginNetns> {
+  const plan = await resolvePluginNetnsPlan(opts);
+  if (!plan) return { networkMode: opts.network, release: async () => undefined };
+  return await buildPluginNetns(opts, plan);
+}
+
+export async function buildPluginNetns(
+  opts: Pick<PreparePluginNetnsOptions, "docker" | "sessionId" | "setupTimeoutMs" | "labels">,
+  plan: PluginNetnsPlan,
+): Promise<BuiltPluginNetns> {
+  const { sidecarImage } = plan;
 
   // Do not add shipit-parent-session: Compose's stale-container sweep would delete this holder.
   const labels = { ...(opts.labels ?? {}), [PLUGIN_NETNS_LABEL]: opts.sessionId };
 
   const holder = await opts.docker.createContainer({
-    Image: opts.holderImage,
+    Image: plan.holderImage,
     Labels: labels,
     Entrypoint: ["/bin/sh", "-c"],
     Cmd: ["exec sleep infinity"],
     HostConfig: {
-      NetworkMode: opts.network,
-      // The proxy's loopback redirect needs this sysctl; installer sidecars cannot set it later.
-      ...(contained && policy.proxyEnabled ? { Sysctls: { "net.ipv4.conf.all.route_localnet": "1" } } : {}),
+      NetworkMode: plan.network,
+      ...(plan.routeLocalnet ? { Sysctls: { "net.ipv4.conf.all.route_localnet": "1" } } : {}),
       AutoRemove: false,
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
@@ -129,52 +208,43 @@ export async function preparePluginNetns(
     await holder.start();
 
     const sidecarLabels = { ...labels, [PLUGIN_NETNS_PARENT_LABEL]: holder.id };
-    const allowed = allowedHosts(policy);
 
     // Await the firewall's self-test before starting the other tiers. The
     // plugin network is shared between sessions, so nothing on it is accepted.
     await installEgressFirewall(opts.docker, {
       agentContainerId: holder.id,
       sidecarImage,
-      inputs: contained ? await buildTierAEgressInputs() : NO_TIER_A_INPUTS,
-      policy: contained ? "contained" : "open",
-      hostAddresses: await (policy.hostAddresses?.() ?? Promise.resolve([])),
-      ...(contained && policy.dnsEnabled ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
-      ...(contained && policy.proxyEnabled
-        ? { proxyUid: EGRESS_PROXY_UID, proxyPort: EGRESS_PROXY_PORT }
-        : {}),
+      ...plan.firewall,
       labels: sidecarLabels,
     });
 
-    if (contained && policy.dnsEnabled) {
+    if (plan.resolverConfigB64 !== undefined) {
       await launchEgressResolver(opts.docker, {
         agentContainerId: holder.id,
         sidecarImage,
-        configB64: buildResolverConfigB64({
-          // Plugins need no orchestrator callback domains.
-          extraDomains: allowed.extras,
-          ...(allowed.base ? { base: allowed.base } : {}),
-        }),
+        configB64: plan.resolverConfigB64,
         labels: { ...sidecarLabels, [EGRESS_RESOLVER_LABEL]: opts.sessionId },
       });
     }
 
-    if (contained && policy.proxyEnabled) {
+    if (plan.proxy) {
       await launchEgressProxy(opts.docker, {
         agentContainerId: holder.id,
         sidecarImage,
-        allowed: buildProxyAllowed({
-          extraHosts: [...allowed.extras],
-          ...(allowed.base ? { base: allowed.base } : {}),
-        }),
+        allowed: plan.proxy.allowed,
         sessionId: opts.sessionId,
         // No decisionUrl: the API denies this network. Grants during a call take effect next call.
-        ...(policy.config?.identityRules ? { identityRules: policy.config.identityRules } : {}),
+        ...(plan.proxy.identityRules ? { identityRules: plan.proxy.identityRules } : {}),
         labels: { ...sidecarLabels, [EGRESS_PROXY_LABEL]: opts.sessionId },
       });
     }
     });
-    return { networkMode: `container:${holder.id}`, release };
+    return {
+      networkMode: `container:${holder.id}`,
+      release,
+      holderId: holder.id,
+      sidecars: (plan.resolverConfigB64 !== undefined ? 1 : 0) + (plan.proxy ? 1 : 0),
+    };
   } catch (err) {
     await release();
     throw err;
