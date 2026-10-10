@@ -94,10 +94,32 @@ Note the nesting the report cannot see: `settings:` written directly on a
 about that key and names where it belongs (`shipit plugin status`, and the
 Plugins tab), but the plugin just receives the default.
 
+## The stdin check
+
+`probe --stdin` reads stdin to its end and adds a **`stdin`** field. No export
+read stdin before, so nothing here could show what a command receives.
+
+| Field | Meaning |
+|---|---|
+| `bytes` / `sha256` | what arrived. They must equal the input's `wc -c` and `sha256sum` |
+| `firstByteAfterMs` | when the probe read the first byte, from its process start; `null` for an empty stdin |
+| `endAfterMs` | when the probe read the end of stdin, from its process start |
+| `error` | the read failed; then there is no `sha256` |
+
+A gap between the two times is input that arrived while the caller's stdin was
+still open. Step 3 of `docs/262-plugins/real-instance-e2e.md` has the inputs to
+use. Give it valid UTF-8: ShipIt decodes stdin as UTF-8 text, so arbitrary
+binary is not preserved.
+
+The probe reads stdin **only** with the flag. A command that reads stdin to its
+end waits until the caller's stdin ends, so a probe that always read it would
+wait in every call whose stdin is open and idle.
+
 Layout:
 
 - `docker-compose.yml` — the compose fragment (service `probe`, port 4820)
-- `cli/probe.mjs` — the exported `probe` command (JSON report; `--host-check`)
+- `cli/probe.mjs` — the exported `probe` command (JSON report; `--host-check`,
+  `--stdin`)
 - `service/server.mjs` — the report from the service surface + shared counter
 - `lib/report.mjs` — the one report builder both surfaces share
 - `install.mjs` — the manifest's `install`; stamps `.install-stamp.json`

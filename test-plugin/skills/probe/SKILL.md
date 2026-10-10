@@ -16,7 +16,9 @@ nothing. Flags: `--bump` increments the shared counter before reporting;
 which the manifest declares **optional** (reqs 23, 24) — the probe reports
 whether it got through and exits 0 either way, so the Plugins card offers that
 host rather than counting it as an unmet need. `PROBE_TOKEN` stays required, so
-the fixture carries one of each.
+the fixture carries one of each. `--stdin` reads stdin to its end and reports
+what arrived; without it the probe does not touch stdin, because a command that
+reads stdin to its end waits until the caller's stdin ends.
 
 | Field | Verifies |
 |---|---|
@@ -27,6 +29,7 @@ the fixture carries one of each.
 | `project.readable` | the workspace handle (req 21) |
 | `state.counter` | shared state with the probe service — `probe --bump`, then reload its page: same number (reqs 17, 18) |
 | `checkout.writable` | this surface's own mount — not the self/consumer signal (read `mode`), but it does check the rule directly: the plugin's tree is writable exactly when it is the project, so a consumer generation reports `false` and `repo: self` reports `true` (reqs 7, 15, 27). On the service surface it measures this fragment's own `.:/app`, which ShipIt forces read-only for a tracked generation and leaves as declared under `repo: self` |
+| `stdin` (only with `--stdin`) | the command's stdin arrives whole, and while the caller still writes (req 17): `bytes` and `sha256` equal the input's, and `firstByteAfterMs` / `endAfterMs` say when the probe read them. Give it valid UTF-8 (`test-plugin/README.md` has the fields) |
 | `install.matchesActiveCommit` | install ran for the active generation; `null` under self-use, which has no generations (req 7) |
 | `dependency.project` / `.plugin` | a real dependency loads from each mount of the tree, reported per root because `/plugin` and `/project` are separate mounts even when they are one tree. Under `repo: self` the CLI must show both `resolved: true, used: true` — the working tree's own `agent.install` prepares the tree the CLIs and services run out of (req 27); the service shows `plugin: resolved false`, since its fragment mounts only its own directory at `/app`. This is the one field that would have caught nikzlabs/shipit#2298 (`test-plugin/README.md` has the full table) |
 
