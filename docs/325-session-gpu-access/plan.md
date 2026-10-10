@@ -191,8 +191,10 @@ The last two rows are the exception that the user accepted. `--use-angle=gl` on 
 
 - **Pictures of WebGL content change.** In the test page, 21 % of the pixels differed from SwiftShader's, 87 of them by more than 16 levels of 255. The way back for the built-in browser is the GPU access switch. For one software picture in a GPU session, the agent starts its own Chrome with default flags; `environment.md` says so.
 - **The reclaim of a browser that still renders measures CPU** (docs/315-browser-cpu-between-turns). On the GPU a WebGL page uses much less of it, so a light page can stay below the threshold and continue to draw on the GPU between turns. The page of the measurement stayed above it.
-- **The first WebGL context is slower:** 55 to 83 ms, against 7 to 9 ms in software.
-- **Each built-in browser uses about 80 MB more memory:** 313 MB against 233 MB for its process tree on `about:blank`, with or without a WebGL context. The browser's GPU process loads the card's driver when it starts.
+- **The first WebGL context is slower:** 22 to 106 ms in a browser that started a moment before, against 7 to 9 ms in software. In the session's own built-in browser, which was already in operation, it took 16 ms.
+- **Each built-in browser uses about 50 MB more memory:** 291 to 295 MB against 243 to 246 MB for its process tree on `about:blank` with one WebGL context, and 288 to 292 MB against 237 to 239 MB with none. The browser's GPU process loads the card's driver when it starts.
+
+The numbers in the last two items are from [the image that has the library](#measured-after-the-update-on-the-image-that-has-the-library). With the extracted packages the measurement before it gave 55 to 83 ms and about 80 MB.
 
 ### Measured for req 8 to 11
 
@@ -205,13 +207,28 @@ Measured on 2026-10-10 in a `granted` session container on the host of the earli
 - **A driver that cannot start:** SwiftShader, and both pictures byte-identical to software. Two cases gave this: DirectX libraries that cannot load, with the pin, and `GALLIUM_DRIVER` set to a name that Mesa does not have.
 - **Mesa on the CPU, without the pin:** `llvmpipe` with `--ignore-gpu-blocklist`, and no WebGL context without it.
 
+### Measured after the update, on the image that has the library
+
+Measured on 2026-10-10 on the same host, in a `granted` session container of an image built after this change. `ldconfig` lists `libEGL.so.1`, and the image has the three packages in the versions above. There was no display, no `LD_LIBRARY_PATH` and no extracted package. The browser is Chromium 153.0.8010.12, the server is `@playwright/mcp` 0.0.80.
+
+- **The session's own built-in browser reports `ANGLE (Microsoft Corporation, D3D12 (NVIDIA GeForce RTX 4090), OpenGL ES 3.1)` on `about:blank`** (req 8). This is the browser that the Claude Code CLI started for the agent's browser tools. Its server has `GALLIUM_DRIVER=d3d12` and `--config` with the path of `playwright-mcp-gpu.json`. Its Chromium has the three flags. Its GPU process has `libEGL.so.1`, `libEGL_mesa.so.0`, `libd3d12.so`, `libd3d12core.so` and `libdxcore.so` loaded. The server is the CLI's direct child, and Chromium is the server's child.
+- **A Chromium with no display and no environment variable reports the card** with `--use-angle=gl-egl --ignore-gpu-blocklist`, as full Chrome and as the headless shell (req 9). It also does so with `--use-angle=gl-egl` alone. With default flags, and with `--use-angle=gl`, it reports SwiftShader.
+- **Pages with no WebGL keep their picture** (req 11). Three screenshots were compared: the page of the first measurement, and the viewport and the full page of a second page with 3D transforms, `will-change`, a backdrop filter, a blend mode, a clip path, a mask, a 640×300 2D canvas and an `OffscreenCanvas`. Each screenshot is byte-identical from five browsers: the session's built-in browser, a `playwright-mcp` with the GPU command, a `playwright-mcp` with the old command (SwiftShader), a Chromium with default flags (SwiftShader), and a Chromium with the three flags. Without `--disable-gpu-compositing`, 51 % and 50 % of the pixels of the two viewport screenshots changed.
+- **The picture of a WebGL page** is byte-identical from the built-in browser and from each other browser on the card. It differs from SwiftShader's picture in 20.7 % of the pixels, 87 of them by more than 16 levels of 255.
+- **A page that draws WebGL frames continuously** (the page of the first measurement): SwiftShader 42 frames/s on 9.1 CPU cores; the GPU for WebGL only 60 frames/s on 0.28 to 0.30 cores; the GPU for the whole page 60 frames/s on 0.18 cores.
+- **One start was slow.** The first Chromium that the session started itself took 1.3 s for its first WebGL context. The 13 starts after it took 22 to 379 ms, and an empty shader cache did not bring the 1.3 s back. The cause was not found.
+
 ## What is not verified here
 
 The tests drive fakes. One real host was observed, Docker Desktop with the WSL 2 backend: a session container created with the switch on has `SHIPIT_GPU=granted`, `nvidia-smi` lists the card, and req 7 holds ([Measured on the host](#measured-on-the-host)). Not yet checked: Docker Engine + the toolkit in WSL2, and native Linux; `SESSION_READONLY_ROOTFS=1` and `SESSION_SECCOMP=1`; and what `docker compose config` writes for `gpus: all` (the check accepts both the string and the list form). The fallback means a failure on any of these leaves a session without the GPU, not a session that cannot start.
 
 For req 7, two cases are not checked. Docker Engine + the toolkit in WSL2 can treat the two binds differently from Docker Desktop: if the start fails there, the container starts with the GPU alone and `SHIPIT_GPU_GRAPHICS_REASON` says why. And no machine with a second adapter was tried: the image's Mesa has `MESA_D3D12_DEFAULT_ADAPTER_NAME`, but its effect was not seen, because this machine gives Mesa one adapter.
 
-For req 8 to 11, nothing ran on an image that has `libegl1`: the session could not build one, and the library was imitated as [Measured for req 8 to 11](#measured-for-req-8-to-11) says. Also not seen: the built-in browser of a real session after the update, a real container with no GPU, and a native Linux host — the last two were imitated. The claim that a page with no WebGL keeps its picture comes from two test pages: the one above, and a second one with more 2D canvas and `OffscreenCanvas` drawing that the independent review ran.
+For req 8, 9 and 11, one host, one image and one agent CLI were observed after the update: Docker Desktop with the WSL 2 backend, and the built-in browser that Claude Code starts. The adapters of the other four CLIs take the same start command from the one constant `PLAYWRIGHT_MCP_ARGS`, but their built-in browsers were not observed.
+
+For req 10, no real container with no GPU and no native Linux host was seen. Before the update both were imitated with DirectX libraries that cannot load. After the update, the old command ran in a `granted` container, where it reports SwiftShader with the library in the image. A session with GPU access off was not started, because the switch is the user's and it changes each new session of the install.
+
+The claim that a page with no WebGL keeps its picture comes from three test pages: the two of the measurements, and one with more 2D canvas and `OffscreenCanvas` drawing that the independent review of the change ran.
 
 ## Key files
 

@@ -18,5 +18,6 @@
 - [x] Worker images: `libegl1`, so that Chrome reaches Mesa with no display (req 9)
 - [x] Built-in browser: the GPU start command, only with a granted GPU and the DirectX link (req 8, 10, 11)
 - [x] Docs for req 8 to 11: environment.md, the agent's prompt, wiki, deployment README, the setting's description
-- [ ] Verify on the WSL2 host, after the update: the built-in browser reports `D3D12 (…)` on `about:blank`, and a Chrome with no display does so with `--use-angle=gl-egl --ignore-gpu-blocklist` (req 8, 9)
-- [ ] Verify after the update: with GPU access off, the built-in browser reports SwiftShader, and its screenshot of a page with no WebGL is the same with GPU access on (req 10, 11)
+- [x] Verify on the WSL2 host, after the update: the built-in browser reports `D3D12 (…)` on `about:blank`, and a Chrome with no display does so with `--use-angle=gl-egl --ignore-gpu-blocklist` (req 8, 9)
+- [x] Verify after the update: the built-in browser's screenshot of a page with no WebGL is byte-identical to the screenshot from the old start command (req 11)
+- [ ] Verify after the update, in a session with GPU access off: the built-in browser reports SwiftShader, and its screenshot of a page with no WebGL is the same as with GPU access on (req 10)
