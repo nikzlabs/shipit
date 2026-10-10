@@ -24,14 +24,23 @@ export interface MergeWatchDeps extends WakeSessionDeps {
   chatHistoryManager: ChatHistoryManager;
 }
 
+// A session holds two independent watches: its parent's (docs/196) and its own (docs/239).
+type WatchSlot = "parent" | "self";
+
+function slotOf(watch: SessionMergeWatch): WatchSlot {
+  return watch.kind === "self" ? "self" : "parent";
+}
+
+function slotKey(sessionId: string, slot: WatchSlot): string {
+  return `${slot}:${sessionId}`;
+}
+
 export class MergeWatchManager {
   private prStatusLookup?: (sessionId: string) => PrStatusSummary | undefined;
 
   // Covers only dispatch's await, before a runner can report ownership of the delivery.
+  // Keyed by slotKey: one merge starts both of a session's deliveries at once.
   private readonly dispatching = new Set<string>();
-
-  // Preserve observed merge SHA for retries; the persisted PR snapshot lacks it.
-  private readonly lastTerminalInfo = new Map<string, PrTerminalStateInfo>();
   private retryTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: MergeWatchDeps) {}
@@ -50,7 +59,7 @@ export class MergeWatchManager {
   async checkAndFireNow(childSessionId: string): Promise<void> {
     const info = this.infoFromPersistedStatus(childSessionId);
     if (!info) return;
-    await this.handleChildPrTerminal(info);
+    await this.handleParentWatchTerminal(info);
   }
 
   private infoFromPersistedStatus(childSessionId: string): PrTerminalStateInfo | undefined {
@@ -66,22 +75,38 @@ export class MergeWatchManager {
     };
   }
 
+  // The poller's terminal hook. Each of the session's two watches takes its own path from here.
   async handleChildPrTerminal(info: PrTerminalStateInfo): Promise<void> {
+    if (info.outcome === "merged") {
+      // The self wake waits for handleSelfMerge: the reset anchor and remote branch deletion come
+      // first. Keep the merge facts for it; a docs/202 re-arm in between clears the PR snapshot.
+      const self = this.deps.sessionManager.getSelfMergeWatch(info.sessionId);
+      if (self?.state === "armed") {
+        this.deps.sessionManager.setSelfMergeWatch(info.sessionId, { ...self, mergedPr: mergedPrOf(info) });
+      }
+    } else {
+      try {
+        this.handleSelfPrClosed(info);
+      } catch (err) {
+        console.error(`[merge-watch] self-watch close handling failed for ${info.sessionId}:`, err);
+      }
+    }
+    await this.handleParentWatchTerminal(info);
+  }
+
+  private async handleParentWatchTerminal(info: PrTerminalStateInfo): Promise<void> {
     const child = this.deps.sessionManager.get(info.sessionId);
     const watch = child?.mergeWatch;
     if (!child || !watch) return;
     if (isTerminalWatchState(watch.state)) return;
 
-    // Self-merge wakes must wait for the reset anchor and remote branch deletion.
-    if (watch.kind === "self") {
-      if (info.outcome === "merged") return;
-      this.handleSelfPrClosed(info, watch);
-      return;
-    }
-
     const parent = this.deps.sessionManager.get(watch.parentSessionId);
     if (!parent || parent.archived || parent.userArchived) {
-      this.clearWatch(info.sessionId);
+      console.log(
+        `[merge-watch] dropped the parent watch on ${info.sessionId}: `
+        + `parent ${watch.parentSessionId} is archived or gone`,
+      );
+      this.clearWatch(info.sessionId, "parent");
       return;
     }
 
@@ -94,11 +119,12 @@ export class MergeWatchManager {
           ...watch,
           state: "merge-observed",
           observedAt: now,
+          mergedPr: mergedPrOf(info),
         });
         this.surfaceCard(parent.id, child, info, cardOutcome);
       }
       // Enqueueing is not delivery: settlement must confirm the turn reached the agent.
-      await this.attemptDelivery(parent, child, info);
+      await this.attemptDelivery("parent", parent, child, info);
       return;
     }
 
@@ -129,16 +155,17 @@ export class MergeWatchManager {
   // Called after markMergedAndPruneExcess resolves, when resetting and pushing are safe.
   async handleSelfMerge(sessionId: string): Promise<void> {
     const session = this.deps.sessionManager.get(sessionId);
-    const watch = session?.mergeWatch;
-    if (!session || watch?.kind !== "self") return;
+    const watch = session?.selfMergeWatch;
+    if (!session || !watch) return;
     if (isTerminalWatchState(watch.state)) return;
 
     if (session.archived || session.userArchived) {
-      this.clearWatch(sessionId);
+      console.log(`[merge-watch] dropped the self-watch on ${sessionId}: the session is archived`);
+      this.clearWatch(sessionId, "self");
       return;
     }
 
-    const info = this.infoFromPersistedStatus(sessionId);
+    const info = infoFromWatch(sessionId, watch) ?? this.infoFromPersistedStatus(sessionId);
     if (info?.outcome !== "merged") return;
 
     if (watch.prNumber !== undefined && info.prNumber !== watch.prNumber) {
@@ -149,22 +176,29 @@ export class MergeWatchManager {
         + "send a message to continue.",
         "warn",
       );
-      this.clearWatch(sessionId);
+      console.log(
+        `[merge-watch] dropped the self-watch on ${sessionId}: `
+        + `PR #${info.prNumber} merged, the watch was on PR #${watch.prNumber}`,
+      );
+      this.clearWatch(sessionId, "self");
       return;
     }
 
     if (watch.state === "armed") {
-      this.deps.sessionManager.setMergeWatch(sessionId, {
+      this.deps.sessionManager.setSelfMergeWatch(sessionId, {
         ...watch,
         state: "merge-observed",
         observedAt: new Date().toISOString(),
+        mergedPr: mergedPrOf(info),
       });
     }
-    await this.attemptDelivery(session, session, info);
+    await this.attemptDelivery("self", session, session, info);
   }
 
-  private handleSelfPrClosed(info: PrTerminalStateInfo, watch: SessionMergeWatch): void {
+  private handleSelfPrClosed(info: PrTerminalStateInfo): void {
     const sessionId = info.sessionId;
+    const watch = this.deps.sessionManager.getSelfMergeWatch(sessionId);
+    if (!watch || isTerminalWatchState(watch.state)) return;
     if (watch.prNumber !== undefined && info.prNumber !== watch.prNumber) {
       return;
     }
@@ -174,7 +208,8 @@ export class MergeWatchManager {
       + "The merge-watch has been cleared — send a message to decide what to do next.",
       "warn",
     );
-    this.clearWatch(sessionId);
+    console.log(`[merge-watch] dropped the self-watch on ${sessionId}: PR #${info.prNumber} closed unmerged`);
+    this.clearWatch(sessionId, "self");
   }
 
   private appendNote(sessionId: string, text: string, level: "info" | "warn"): void {
@@ -188,74 +223,100 @@ export class MergeWatchManager {
     );
   }
 
-  forgetWatch(sessionId: string): void {
-    this.clearWatch(sessionId);
+  forgetSelfWatch(sessionId: string): void {
+    this.clearWatch(sessionId, "self");
   }
 
+  private readWatch(sessionId: string, slot: WatchSlot): SessionMergeWatch | undefined {
+    return slot === "self"
+      ? this.deps.sessionManager.getSelfMergeWatch(sessionId)
+      : this.deps.sessionManager.getMergeWatch(sessionId);
+  }
+
+  private writeWatch(sessionId: string, slot: WatchSlot, watch: SessionMergeWatch | null): void {
+    if (slot === "self") this.deps.sessionManager.setSelfMergeWatch(sessionId, watch);
+    else this.deps.sessionManager.setMergeWatch(sessionId, watch);
+  }
+
+  // `parent` is the session to wake: the real parent, or the child itself in the self slot.
   private async attemptDelivery(
+    slot: WatchSlot,
     parent: SessionInfo,
     child: SessionInfo,
     info: PrTerminalStateInfo,
   ): Promise<void> {
     const childId = child.id;
-    const watch = this.deps.sessionManager.getMergeWatch(childId);
+    const key = slotKey(childId, slot);
+    const watch = this.readWatch(childId, slot);
     if (watch?.state !== "merge-observed") return;
     // All callers use this guard, including reconciliation after turn adoption.
     if (this.isDeliveryInFlight(childId, watch)) return;
 
+    // What the watch recorded is what it delivers; the argument only serves a watch without it.
+    const merged = infoFromWatch(childId, watch) ?? info;
     const attempts = (watch.deliveryAttempts ?? 0) + 1;
     const observedAt = watch.observedAt ?? new Date().toISOString();
     // Persist identity before dispatch so restart adoption can bind the surviving turn.
     const deliveryId = `${watch.watchId ?? childId}:${attempts}`;
-    this.deps.sessionManager.setMergeWatch(childId, {
+    this.writeWatch(childId, slot, {
       ...watch,
       deliveryAttempts: attempts,
       lastAttemptAt: new Date().toISOString(),
       deliveryId,
+      // A watch observed before `mergedPr` existed gets it here, for its later retries.
+      mergedPr: mergedPrOf(merged),
     });
-    this.lastTerminalInfo.set(childId, info);
-    this.dispatching.add(childId);
+    this.dispatching.add(key);
     this.ensureRetryLoop();
+    console.log(
+      `[merge-watch] PR #${merged.prNumber} of ${childId} merged: waking ${parent.id} `
+      + `(${slot} watch, attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS})`,
+    );
 
     try {
       await this.deliverWakeTurn(
-        parent, child, info, "merged",
-        this.buildDeliverySettlement(childId, watch.watchId, attempts, observedAt),
+        parent, child, merged, "merged",
+        this.buildDeliverySettlement(childId, slot, watch.watchId, attempts, observedAt),
         deliveryId,
       );
     } catch (err) {
       const message = errorMessage(err);
       console.error(
-        `[merge-watch] wake-turn delivery failed for ${childId} `
-        + `(attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}):`,
+        `[merge-watch] wake-turn delivery failed for ${childId} (${slot} watch, `
+        + `attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}):`,
         err,
       );
-      if (!this.isCurrentWatch(childId, watch.watchId)) return;
-      const current = this.deps.sessionManager.getMergeWatch(childId);
+      if (!this.isCurrentWatch(childId, slot, watch.watchId)) return;
+      const current = this.readWatch(childId, slot);
       if (current?.state !== "merge-observed") return;
-      this.deps.sessionManager.setMergeWatch(childId, { ...current, lastDeliveryError: message });
-      if (attempts >= MAX_DELIVERY_ATTEMPTS) this.failWatch(childId, message);
+      this.writeWatch(childId, slot, { ...current, lastDeliveryError: message });
+      if (attempts >= MAX_DELIVERY_ATTEMPTS) this.failWatch(childId, slot, message);
     } finally {
-      this.dispatching.delete(childId);
+      this.dispatching.delete(key);
     }
   }
 
   // A wake turn may re-arm before settling; its old callback must not change the new watch.
-  private isCurrentWatch(childSessionId: string, expectedWatchId: string | undefined): boolean {
+  private isCurrentWatch(
+    childSessionId: string,
+    slot: WatchSlot,
+    expectedWatchId: string | undefined,
+  ): boolean {
     if (expectedWatchId === undefined) return true;
-    return this.deps.sessionManager.getMergeWatch(childSessionId)?.watchId === expectedWatchId;
+    return this.readWatch(childSessionId, slot)?.watchId === expectedWatchId;
   }
 
   private buildDeliverySettlement(
     childSessionId: string,
+    slot: WatchSlot,
     expectedWatchId: string | undefined,
     attempts: number,
     observedAt: string,
   ): (outcome: TurnOutcome) => void {
     return (outcome: TurnOutcome) => {
-      if (!this.isCurrentWatch(childSessionId, expectedWatchId)) return;
+      if (!this.isCurrentWatch(childSessionId, slot, expectedWatchId)) return;
       if (outcome.status === "completed") {
-        this.markDelivered(childSessionId, observedAt);
+        this.markDelivered(childSessionId, slot, observedAt);
         return;
       }
       // An interrupted turn reached the agent; retrying would duplicate a delivered notification.
@@ -264,11 +325,12 @@ export class MergeWatchManager {
           `[merge-watch] wake-turn for ${childSessionId} reached the agent and was then cut short `
           + `(${outcome.detail ?? "interrupted"}) — treating the wake as delivered, not re-delivering`,
         );
-        this.markDelivered(childSessionId, observedAt);
+        this.markDelivered(childSessionId, slot, observedAt);
         return;
       }
       this.recordDeliveryOutcomeFailure(
         childSessionId,
+        slot,
         attempts,
         outcome.detail ?? `wake-turn ended as "${outcome.status}"`,
       );
@@ -284,6 +346,7 @@ export class MergeWatchManager {
     this.ensureRetryLoop();
     return this.buildDeliverySettlement(
       childSessionId,
+      slotOf(watch),
       watch.watchId,
       watch.deliveryAttempts ?? 1,
       watch.observedAt ?? watch.registeredAt,
@@ -309,7 +372,7 @@ export class MergeWatchManager {
       if (Number.isFinite(lastAt) && now - lastAt < retryBackoffMs(attempts)) continue;
 
       if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-        this.failWatch(childSessionId, watch.lastDeliveryError ?? "wake-turn never ran");
+        this.failWatch(childSessionId, slotOf(watch), watch.lastDeliveryError ?? "wake-turn never ran");
         continue;
       }
 
@@ -323,7 +386,7 @@ export class MergeWatchManager {
   }
 
   private isDeliveryInFlight(childSessionId: string, watch: SessionMergeWatch): boolean {
-    if (this.dispatching.has(childSessionId)) return true;
+    if (this.dispatching.has(slotKey(childSessionId, slotOf(watch)))) return true;
     if (!watch.deliveryId) return false;
     // docs/322 — a wake held for the user's answer is saved, with or without a runner.
     if (hasHeldDelivery(this.deps.sessionManager, watch.parentSessionId, watch.deliveryId)) return true;
@@ -352,29 +415,31 @@ export class MergeWatchManager {
   private async retryDelivery(childSessionId: string, watch: SessionMergeWatch): Promise<void> {
     const child = this.deps.sessionManager.get(childSessionId);
     if (!child) return;
+    const slot = slotOf(watch);
     const parent = this.deps.sessionManager.get(watch.parentSessionId);
     if (!parent || parent.archived || parent.userArchived) {
-      this.clearWatch(childSessionId);
+      console.log(
+        `[merge-watch] dropped the ${slot} watch on ${childSessionId} before a retry: `
+        + `${watch.parentSessionId} is archived or gone`,
+      );
+      this.clearWatch(childSessionId, slot);
       return;
     }
-    const info = this.lastTerminalInfo.get(childSessionId)
-      ?? this.infoFromPersistedStatus(childSessionId);
+    const info = infoFromWatch(childSessionId, watch) ?? this.infoFromPersistedStatus(childSessionId);
     if (info?.outcome !== "merged") return;
-    await this.attemptDelivery(parent, child, info);
+    await this.attemptDelivery(slot, parent, child, info);
   }
 
-  private failWatch(childSessionId: string, error: string): void {
-    const watch = this.deps.sessionManager.getMergeWatch(childSessionId);
+  private failWatch(childSessionId: string, slot: WatchSlot, error: string): void {
+    const watch = this.readWatch(childSessionId, slot);
     if (watch?.state !== "merge-observed") return;
-    this.deps.sessionManager.setMergeWatch(childSessionId, {
+    this.writeWatch(childSessionId, slot, {
       ...watch,
       state: "delivery-failed",
       failedAt: new Date().toISOString(),
       lastDeliveryError: error,
     });
-    const info = this.lastTerminalInfo.get(childSessionId)
-      ?? this.infoFromPersistedStatus(childSessionId);
-    this.lastTerminalInfo.delete(childSessionId);
+    const info = infoFromWatch(childSessionId, watch) ?? this.infoFromPersistedStatus(childSessionId);
 
     const child = this.deps.sessionManager.get(childSessionId);
     const parent = this.deps.sessionManager.get(watch.parentSessionId);
@@ -392,16 +457,15 @@ export class MergeWatchManager {
       this.surfaceCard(parent.id, child, info, "merged", { attempts, error });
     }
     console.error(
-      `[merge-watch] giving up on the wake-turn for ${childSessionId} after `
+      `[merge-watch] giving up on the wake-turn for ${childSessionId} (${slot} watch) after `
       + `${watch.deliveryAttempts ?? MAX_DELIVERY_ATTEMPTS} attempts: ${error}`,
     );
     this.stopRetryLoopIfIdle();
   }
 
-  private clearWatch(childSessionId: string): void {
-    this.deps.sessionManager.setMergeWatch(childSessionId, null);
-    this.dispatching.delete(childSessionId);
-    this.lastTerminalInfo.delete(childSessionId);
+  private clearWatch(childSessionId: string, slot: WatchSlot): void {
+    this.writeWatch(childSessionId, slot, null);
+    this.dispatching.delete(slotKey(childSessionId, slot));
     this.stopRetryLoopIfIdle();
   }
 
@@ -432,32 +496,36 @@ export class MergeWatchManager {
           await this.handleSelfMerge(childSessionId);
           continue;
         }
-        const info = this.infoFromPersistedStatus(childSessionId);
+        const info = infoFromWatch(childSessionId, watch) ?? this.infoFromPersistedStatus(childSessionId);
         if (!info) continue;
-        await this.handleChildPrTerminal(info);
+        await this.handleParentWatchTerminal(info);
       } catch (err) {
         console.error(`[merge-watch] reconcile delivery failed for ${childSessionId}:`, err);
       }
     }
   }
 
-  private recordDeliveryOutcomeFailure(childSessionId: string, attempts: number, reason: string): void {
+  private recordDeliveryOutcomeFailure(
+    childSessionId: string,
+    slot: WatchSlot,
+    attempts: number,
+    reason: string,
+  ): void {
     console.error(
-      `[merge-watch] wake-turn for ${childSessionId} did not complete `
+      `[merge-watch] wake-turn for ${childSessionId} (${slot} watch) did not complete `
       + `(attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}): ${reason}`,
     );
-    const current = this.deps.sessionManager.getMergeWatch(childSessionId);
+    const current = this.readWatch(childSessionId, slot);
     if (current?.state !== "merge-observed") return;
-    this.deps.sessionManager.setMergeWatch(childSessionId, { ...current, lastDeliveryError: reason });
-    if (attempts >= MAX_DELIVERY_ATTEMPTS) this.failWatch(childSessionId, reason);
+    this.writeWatch(childSessionId, slot, { ...current, lastDeliveryError: reason });
+    if (attempts >= MAX_DELIVERY_ATTEMPTS) this.failWatch(childSessionId, slot, reason);
     else this.ensureRetryLoop();
   }
 
-  private markDelivered(childSessionId: string, fallbackObservedAt: string): void {
-    const watch = this.deps.sessionManager.getMergeWatch(childSessionId);
-    this.lastTerminalInfo.delete(childSessionId);
+  private markDelivered(childSessionId: string, slot: WatchSlot, fallbackObservedAt: string): void {
+    const watch = this.readWatch(childSessionId, slot);
     if (!watch || isTerminalWatchState(watch.state)) return;
-    this.deps.sessionManager.setMergeWatch(childSessionId, {
+    this.writeWatch(childSessionId, slot, {
       parentSessionId: watch.parentSessionId,
       state: "delivered",
       registeredAt: watch.registeredAt,
@@ -526,6 +594,20 @@ export class MergeWatchManager {
       );
     }
   }
+}
+
+function mergedPrOf(info: PrTerminalStateInfo): NonNullable<SessionMergeWatch["mergedPr"]> {
+  return {
+    prNumber: info.prNumber,
+    prUrl: info.prUrl,
+    prTitle: info.prTitle,
+    branch: info.branch,
+    ...(info.mergeSha ? { mergeSha: info.mergeSha } : {}),
+  };
+}
+
+function infoFromWatch(sessionId: string, watch: SessionMergeWatch): PrTerminalStateInfo | undefined {
+  return watch.mergedPr ? { sessionId, outcome: "merged", ...watch.mergedPr } : undefined;
 }
 
 function isTerminalWatchState(state: SessionMergeWatch["state"]): boolean {

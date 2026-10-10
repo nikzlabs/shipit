@@ -1155,6 +1155,12 @@ const MIGRATIONS: Migration[] = [
     }
     addSessionColumnIfMissing(db, "run_time_zone");
   },
+  // docs/239-self-merge-wake — a session's own merge-watch gets its own column. Both kinds used
+  // to share `merge_watch`, so a parent's arm overwrote the self-watch of the child it watched.
+  // The rows are moved by SessionManager on every start, not here: see adoptLegacySelfMergeWatches.
+  (db) => {
+    addSessionColumnIfMissing(db, "self_merge_watch");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1186,6 +1192,8 @@ export const SCHEDULE_PROPOSALS_MIGRATION = 108;
 export const SCHEDULE_NOTES_ACCESS_MIGRATION = 109;
 
 export const SCHEDULE_RUN_TIME_ZONE_MIGRATION = 110;
+
+export const SELF_MERGE_WATCH_MIGRATION = 111;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

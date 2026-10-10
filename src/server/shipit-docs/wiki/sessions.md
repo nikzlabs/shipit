@@ -361,7 +361,9 @@ Four things users ask about children:
   when one merges; archiving is the user's, above. A child steered by the user in
   its own chat is doing exactly that, and the parent has no way to see it.
 - **Being told about a merge** does not need watching. `shipit session
-  notify-on-merge` wakes the session when the pull request lands.
+  notify-on-merge` wakes the session when the pull request lands. A parent's
+  watch on a child and that child's own `--self` watch are independent: one
+  merge wakes both.
 - A child sees the repository as of **main**, not the parent's uncommitted or
   unmerged work. Work it must build on has to be merged first, or carried in
   the prompt.

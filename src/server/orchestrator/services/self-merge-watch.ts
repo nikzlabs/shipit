@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { SelfMergeWatchCard, SessionMergeWatch } from "../../shared/types.js";
-import type { SessionManager } from "../sessions.js";
+import { isLiveMergeWatch, type SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ChatHistoryManager } from "../chat-history.js";
-import { emitChatCard } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, persistNoticeUnattached } from "../chat-card-persistence.js";
 import { resolveSessionPr } from "./github.js";
 import { ServiceError } from "./types.js";
 
@@ -15,7 +15,7 @@ export interface SelfMergeWatchDeps {
   createGitManager: (dir: string) => GitManager;
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
-  mergeWatchManager?: { forgetWatch(sessionId: string): void } | undefined;
+  mergeWatchManager?: { forgetSelfWatch(sessionId: string): void } | undefined;
 }
 
 export interface ArmSelfMergeWatchResult {
@@ -26,12 +26,7 @@ export interface ArmSelfMergeWatchResult {
   replaced: boolean;
 }
 
-function isForeignParentWatch(watch: SessionMergeWatch | undefined, sessionId: string): boolean {
-  if (!watch || watch.kind === "self") return false;
-  if (watch.parentSessionId === sessionId) return false;
-  return watch.state === "armed" || watch.state === "merge-observed";
-}
-
+// A parent's watch on this session is stored apart (`mergeWatch`); this never reads or writes it.
 export async function armSelfMergeWatch(
   deps: SelfMergeWatchDeps,
   sessionId: string,
@@ -40,15 +35,7 @@ export async function armSelfMergeWatch(
   if (!session) throw new ServiceError(404, "Session not found");
   if (!session.workspaceDir) throw new ServiceError(400, "Session has no workspace");
 
-  const existing = session.mergeWatch;
-  if (isForeignParentWatch(existing, sessionId)) {
-    throw new ServiceError(
-      409,
-      "This session is already being watched by its parent session, and a session can hold "
-        + "only one merge-watch. Ask the parent to cancel its watch, or continue without "
-        + "arming a self-watch.",
-    );
-  }
+  const existing = session.selfMergeWatch;
 
   const git = deps.createGitManager(session.workspaceDir);
   // The persisted PR snapshot can still name the previous, merged PR.
@@ -73,8 +60,18 @@ export async function armSelfMergeWatch(
   };
   // Re-arming can occur during delivery. Clear old retry state before replacing
   // the watch so it cannot suppress the new watch's first retry.
-  deps.mergeWatchManager?.forgetWatch(sessionId);
-  deps.sessionManager.setMergeWatch(sessionId, watch);
+  deps.mergeWatchManager?.forgetSelfWatch(sessionId);
+  deps.sessionManager.setSelfMergeWatch(sessionId, watch);
+  const parentWatch = session.mergeWatch;
+  const replaces = existing && isLiveMergeWatch(existing)
+    ? ` (replaces its ${existing.state} self-watch on PR #${existing.prNumber ?? "?"})`
+    : "";
+  const beside = parentWatch && isLiveMergeWatch(parentWatch)
+    ? `; parent ${parentWatch.parentSessionId} also watches this session`
+    : "";
+  console.log(
+    `[merge-watch] ${sessionId} armed a self-watch on PR #${pr.number} (watch ${watchId})${replaces}${beside}`,
+  );
 
   const card: SelfMergeWatchCard = {
     cardId: `self-merge-watch-${randomUUID()}`,
@@ -86,6 +83,14 @@ export async function armSelfMergeWatch(
     createdAt: new Date().toISOString(),
   };
   const runner = deps.runnerRegistry.get(sessionId);
+  // The older arm card stays in the transcript; say that its watch is gone. A watch that already
+  // saw its merge, or a re-arm on the same PR, loses nothing and gets no note.
+  if (existing?.state === "armed" && existing.prNumber !== undefined && existing.prNumber !== pr.number) {
+    const text = `The merge-watch on PR #${existing.prNumber} was replaced by a watch on PR #${pr.number}. `
+      + `This session will not be woken when PR #${existing.prNumber} merges.`;
+    if (runner) emitNoticeInTurn(runner, sessionId, text, deps.chatHistoryManager, "warn");
+    else persistNoticeUnattached(deps.chatHistoryManager, sessionId, text, "warn");
+  }
   if (runner) {
     emitChatCard(
       runner,
@@ -116,11 +121,15 @@ export function cancelSelfMergeWatch(
 ): CancelSelfMergeWatchResult {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
-  const watch = session.mergeWatch;
+  const watch = session.selfMergeWatch;
   if (watch?.kind !== "self") return { cancelled: false, reason: "not-armed" };
   // An old transcript card must not cancel a newer watch.
   if (watch.watchId !== watchId) return { cancelled: false, reason: "superseded" };
-  if (deps.mergeWatchManager) deps.mergeWatchManager.forgetWatch(sessionId);
-  else deps.sessionManager.setMergeWatch(sessionId, null);
+  if (deps.mergeWatchManager) deps.mergeWatchManager.forgetSelfWatch(sessionId);
+  else deps.sessionManager.setSelfMergeWatch(sessionId, null);
+  console.log(
+    `[merge-watch] the user cancelled the self-watch of ${sessionId} on PR #${watch.prNumber ?? "?"} `
+    + `(watch ${watchId}, ${watch.state})`,
+  );
   return { cancelled: true };
 }

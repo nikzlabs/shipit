@@ -1,5 +1,5 @@
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
-import type { SessionManager } from "../sessions.js";
+import { isLiveMergeWatch, type SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import { REPOSITORY_UNTRUSTED_CODE } from "../session-runner.js";
 import { parseGitHubRemote, stripUrlCredentials } from "../git-utils.js";
@@ -828,6 +828,7 @@ export interface RegisterMergeWatchResult {
 }
 
 // Terminal watches can be explicitly re-armed, including a failed delivery.
+// The child's own `--self` watch is stored apart (`selfMergeWatch`); this never reads or writes it.
 export function registerMergeWatch(
   sessionManager: SessionManager,
   parentSessionId: string,
@@ -842,10 +843,11 @@ export function registerMergeWatch(
     throw new ServiceError(400, "Parent session is archived");
   }
   const existing = child.mergeWatch;
-  const liveForThisParent =
-    existing?.parentSessionId === parentSessionId
-    && (existing?.state === "armed" || existing?.state === "merge-observed");
-  if (existing && liveForThisParent) {
+  if (existing?.parentSessionId === parentSessionId && isLiveMergeWatch(existing)) {
+    console.log(
+      `[merge-watch] parent ${parentSessionId} armed its watch on ${childSessionId} again: `
+      + `already ${existing.state}, nothing changed`,
+    );
     return { childId: childSessionId, state: existing.state, alreadyArmed: true };
   }
   const watch: SessionMergeWatch = {
@@ -854,6 +856,12 @@ export function registerMergeWatch(
     registeredAt: new Date().toISOString(),
   };
   sessionManager.setMergeWatch(childSessionId, watch);
+  const self = child.selfMergeWatch;
+  const replaces = existing ? ` (replaces its ${existing.state} watch)` : "";
+  const beside = self && isLiveMergeWatch(self)
+    ? `; the child also watches its own PR #${self.prNumber ?? "?"}`
+    : "";
+  console.log(`[merge-watch] parent ${parentSessionId} armed a watch on ${childSessionId}${replaces}${beside}`);
   return { childId: childSessionId, state: "armed", alreadyArmed: false };
 }
 

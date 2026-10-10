@@ -554,3 +554,243 @@ describe("MergeWatchManager (docs/196)", () => {
     });
   });
 });
+
+describe("a session watched by its parent AND by itself (docs/196 + docs/239)", () => {
+  let ctx: ReturnType<typeof makeManager>;
+  beforeEach(() => {
+    ctx = makeManager();
+    arm(ctx.sessionManager);
+    armSelf(ctx.sessionManager);
+    ctx.sessionManager.setPrStatus("child", MERGED_STATUS);
+    ctx.manager.setPrStatusLookup((id) => ctx.sessionManager.getPrStatus(id) ?? undefined);
+  });
+  afterEach(() => { ctx.manager.stopRetryLoop(); });
+
+  const SELF_ID = "self-watch-1";
+  const MERGED_STATUS = {
+    sessionId: "child", prNumber: 7, prUrl: MERGED.prUrl, prTitle: "Foundation", prBody: "",
+    prState: "merged", baseBranch: "main", headBranch: "shipit/child", insertions: 1, deletions: 0,
+    checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+    mergeable: "unknown", reviewDecision: "none", autoMergeEnabled: false,
+  } as PrStatusSummary;
+
+  function armSelf(sessionManager: SessionManager) {
+    sessionManager.setSelfMergeWatch("child", {
+      parentSessionId: "child", kind: "self", watchId: SELF_ID, prNumber: 7, state: "armed", registeredAt: "t0",
+    });
+  }
+
+  function heldRunner(id: string): FakeRunner {
+    ctx.registry.getOrCreate(id, `/ws/${id}`, "claude");
+    const runner = ctx.runners.get(id)!;
+    runner.autoCompleteTurn = false;
+    return runner;
+  }
+
+  const parentState = () => ctx.sessionManager.getMergeWatch("child")?.state;
+  const selfState = () => ctx.sessionManager.getSelfMergeWatch("child")?.state;
+
+  it("one merge wakes the parent from the terminal hook and the child from the merge callback", async () => {
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+    expect(ctx.runners.get("child")).toBeUndefined();
+    expect(parentState()).toBe("delivered");
+    expect(selfState()).toBe("armed");
+
+    await ctx.manager.handleSelfMerge("child");
+    expect(ctx.runners.get("child")?.dispatched).toHaveLength(1);
+    expect(ctx.runners.get("child")?.dispatched[0].text).toContain("shipit branch reset-to-base");
+    expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+    expect(selfState()).toBe("delivered");
+    expect(parentState()).toBe("delivered");
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+  });
+
+  it("delivers both when the two paths run at the same time, as the poller starts them", async () => {
+    await Promise.all([ctx.manager.handleChildPrTerminal(MERGED), ctx.manager.handleSelfMerge("child")]);
+
+    expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+    expect(ctx.runners.get("child")?.dispatched).toHaveLength(1);
+    expect(parentState()).toBe("delivered");
+    expect(selfState()).toBe("delivered");
+  });
+
+  it("each wake turn settles only its own watch", async () => {
+    const parentRunner = heldRunner("parent");
+    const childRunner = heldRunner("child");
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    await ctx.manager.handleSelfMerge("child");
+    expect(parentState()).toBe("merge-observed");
+    expect(selfState()).toBe("merge-observed");
+    expect(ctx.sessionManager.getMergeWatch("child")?.deliveryId).toBe("child:1");
+    expect(ctx.sessionManager.getSelfMergeWatch("child")?.deliveryId).toBe(`${SELF_ID}:1`);
+
+    childRunner.completeTurn();
+    expect(selfState()).toBe("delivered");
+    expect(parentState()).toBe("merge-observed");
+
+    parentRunner.completeTurn();
+    expect(parentState()).toBe("delivered");
+  });
+
+  it("both watches hold the polling gate, and each one releases only itself", async () => {
+    const pendingKinds = () =>
+      ctx.sessionManager.listPendingMergeWatches().map((e) => e.watch.kind ?? "parent").sort();
+    expect(pendingKinds()).toEqual(["parent", "self"]);
+
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    expect(pendingKinds()).toEqual(["self"]);
+
+    await ctx.manager.handleSelfMerge("child");
+    expect(pendingKinds()).toEqual([]);
+  });
+
+  it("rebindDelivery finds each watch by its own delivery id after a restart", async () => {
+    heldRunner("parent");
+    heldRunner("child");
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    await ctx.manager.handleSelfMerge("child");
+    ctx.runners.get("parent")!.simulateRestart();
+    ctx.runners.get("child")!.simulateRestart();
+
+    ctx.manager.rebindDelivery(`${SELF_ID}:1`)!(TURN_COMPLETED);
+    expect(selfState()).toBe("delivered");
+    expect(parentState()).toBe("merge-observed");
+
+    ctx.manager.rebindDelivery("child:1")!(TURN_COMPLETED);
+    expect(parentState()).toBe("delivered");
+  });
+
+  it("the retry supervisor recovers both failed deliveries, with one attempt count per watch", async () => {
+    ctx.control.failWake = true;
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    await ctx.manager.handleSelfMerge("child");
+    expect(ctx.sessionManager.getMergeWatch("child")).toMatchObject({ state: "merge-observed", deliveryAttempts: 1 });
+    expect(ctx.sessionManager.getSelfMergeWatch("child")).toMatchObject({ state: "merge-observed", deliveryAttempts: 1 });
+
+    ctx.control.failWake = false;
+    const longAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+    ctx.sessionManager.setMergeWatch("child", { ...ctx.sessionManager.getMergeWatch("child")!, lastAttemptAt: longAgo });
+    ctx.sessionManager.setSelfMergeWatch("child", { ...ctx.sessionManager.getSelfMergeWatch("child")!, lastAttemptAt: longAgo });
+    await ctx.manager.retryStalledDeliveries();
+
+    expect(ctx.sessionManager.getMergeWatch("child")).toMatchObject({ state: "delivered", deliveryAttempts: 2 });
+    expect(ctx.sessionManager.getSelfMergeWatch("child")).toMatchObject({ state: "delivered", deliveryAttempts: 2 });
+    expect(ctx.runners.get("child")?.dispatched[0].text).toContain("shipit branch reset-to-base");
+    expect(ctx.runners.get("parent")?.dispatched[0].text).toContain("Child PR #7 merged");
+  });
+
+  it("a wake queued behind a busy parent does not hold back the child's own retry", async () => {
+    const parentRunner = heldRunner("parent");
+    parentRunner.running = true;
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    ctx.control.failWake = true;
+    await ctx.manager.handleSelfMerge("child");
+    ctx.control.failWake = false;
+    parentRunner.disposed = false;
+
+    ctx.sessionManager.setSelfMergeWatch("child", {
+      ...ctx.sessionManager.getSelfMergeWatch("child")!,
+      lastAttemptAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    });
+    await ctx.manager.retryStalledDeliveries();
+
+    expect(selfState()).toBe("delivered");
+    expect(parentState()).toBe("merge-observed");
+    expect(parentRunner.dispatched).toHaveLength(1);
+  });
+
+  it("reconcilePending delivers both after a restart", async () => {
+    await ctx.manager.reconcilePending();
+    expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+    expect(ctx.runners.get("child")?.dispatched).toHaveLength(1);
+    expect(parentState()).toBe("delivered");
+    expect(selfState()).toBe("delivered");
+  });
+
+  // A restart keeps nothing in memory, and the child's own wake turn resets its branch, which
+  // clears the PR snapshot. The watch's own record of the merge is then the only one left.
+  function restartWithoutSnapshot(): MergeWatchManager {
+    ctx.manager.stopRetryLoop();
+    const fresh = new MergeWatchManager({
+      sessionManager: ctx.sessionManager,
+      runnerRegistry: ctx.registry,
+      chatHistoryManager: ctx.chatHistoryManager,
+      defaultAgentId: "claude",
+    });
+    fresh.setPrStatusLookup(() => undefined);
+    return fresh;
+  }
+
+  it("a parent wake that failed is re-delivered after a restart, though the child's wake cleared the PR snapshot", async () => {
+    ctx.control.failWake = true;
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    expect(parentState()).toBe("merge-observed");
+    ctx.control.failWake = false;
+
+    const fresh = restartWithoutSnapshot();
+    await fresh.reconcilePending();
+    fresh.stopRetryLoop();
+
+    expect(parentState()).toBe("delivered");
+    const wake = ctx.runners.get("parent")!.dispatched.at(-1)!;
+    expect(wake.text).toContain("Child PR #7 merged");
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+  });
+
+  it("the retry supervisor also re-delivers it after such a restart", async () => {
+    ctx.control.failWake = true;
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    ctx.control.failWake = false;
+    ctx.sessionManager.setMergeWatch("child", {
+      ...ctx.sessionManager.getMergeWatch("child")!,
+      lastAttemptAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    });
+
+    const fresh = restartWithoutSnapshot();
+    await fresh.retryStalledDeliveries();
+    fresh.stopRetryLoop();
+
+    expect(ctx.sessionManager.getMergeWatch("child")).toMatchObject({ state: "delivered", deliveryAttempts: 2 });
+  });
+
+  it("a self wake whose merge callback never ran is delivered after a restart without the PR snapshot", async () => {
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    expect(selfState()).toBe("armed");
+
+    const fresh = restartWithoutSnapshot();
+    await fresh.reconcilePending();
+    fresh.stopRetryLoop();
+
+    expect(selfState()).toBe("delivered");
+    expect(ctx.runners.get("child")?.dispatched[0].text).toContain("#7");
+  });
+
+  it("the parent's register-time check leaves the self-watch to the merge callback", async () => {
+    await ctx.manager.checkAndFireNow("child");
+    expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+    expect(ctx.runners.get("child")).toBeUndefined();
+    expect(selfState()).toBe("armed");
+  });
+
+  it("closed without merging: the parent is woken, and the child gets its note and loses its watch", async () => {
+    await ctx.manager.handleChildPrTerminal(CLOSED);
+
+    expect(parentState()).toBe("closed-unmerged");
+    expect(ctx.runners.get("parent")?.dispatched[0].text).toContain("closed without merging");
+    expect(ctx.sessionManager.getSelfMergeWatch("child")).toBeUndefined();
+    expect(ctx.runners.get("child")).toBeUndefined();
+    expect(ctx.chatHistoryManager.load("child").find((m) => m.notice)?.text).toContain("closed without merging");
+  });
+
+  it("an archived parent drops only its own watch; the child is still woken", async () => {
+    ctx.sessionManager.archive("parent");
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    await ctx.manager.handleSelfMerge("child");
+
+    expect(ctx.sessionManager.getMergeWatch("child")).toBeUndefined();
+    expect(ctx.runners.get("parent")).toBeUndefined();
+    expect(ctx.runners.get("child")?.dispatched).toHaveLength(1);
+    expect(selfState()).toBe("delivered");
+  });
+});

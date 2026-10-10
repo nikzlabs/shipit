@@ -112,7 +112,10 @@ export interface SessionInfo {
   rootSessionId?: string;
   lastTurnErrored?: boolean;
   autoFixCiPaused?: boolean;
+  /** The parent's watch on this session's PR (docs/196). */
   mergeWatch?: SessionMergeWatch;
+  /** This session's watch on its own PR (docs/239). Stored apart, so neither arm displaces the other. */
+  selfMergeWatch?: SessionMergeWatch;
   secretBlock?: SessionSecretBlock;
   /** Set when the checkout cannot be made durable; exempts the row from the sidebar cap. */
   workspaceBlock?: WorkspaceBlockKind;
@@ -272,6 +275,8 @@ export interface SessionMergeWatch {
   lastAttemptAt?: string;
   /** Worker-visible watchId:attempt; reconnect adoption uses it to avoid duplicate wakes. */
   deliveryId?: string;
+  /** The merge this watch fires for. Kept here because a branch re-arm clears the session's PR snapshot. */
+  mergedPr?: { prNumber: number; prUrl: string; prTitle: string; branch: string; mergeSha?: string };
   lastDeliveryError?: string;
   failedAt?: string;
 }
