@@ -123,6 +123,109 @@ secret/PII *substrings* and replace with `[REDACTED]`:
 - The patterns from `docs/023` (`sk-…`, `ghp_…`, `Bearer …`, generic long-token
   heuristics), **email addresses**, and **git/remote URLs** (the whole URL is
   replaced, so embedded creds, host and path all go; it is not parsed).
+- **scp-style remotes** (`git@github.com:acme/app.git`, `git@myhost:acme/app`).
+  The patterns above take such a remote only in part. The e-mail pattern takes
+  `git@github.com`, or a part of the host (`git@code.acme-internal` leaves
+  `-internal`), before `ssh-remote` sees it, and `ssh-remote` needs `.git`. So
+  Stage 1 has three last steps for a remote:
+  1. `user@host:path` becomes `[REDACTED]` when the path has a `/` in it
+     (planning#682).
+  2. A redaction is extended over host characters, a colon and a path that
+     follow it: `[REDACTED]:acme/app` becomes `[REDACTED]`. The path must have a
+     `/` in it, or end in `.git` at a word boundary (planning#681).
+  3. Git removes the user when it prints a remote. So `host:path` is replaced
+     after one of git's four phrases: `To `, `From `, `Pushing to ` and
+     `refs to `, with or without a `'` before the host (planning#684, below).
+
+  The three steps are last and they only replace text, so they cannot make text
+  visible that an earlier step hid. A change of the patterns above can:
+  with `ssh-remote` before `email`, `jane+work@github.com:acme/app.git` keeps
+  `jane+`; and a wider `ssh-remote` takes text that the path pattern would hide
+  to a later end.
+
+  The path needs a `/` or `.git` because a colon after an address is common in
+  ordinary text. A port (`jane@example.com:587`, `root@10.0.0.5:22`), a time, and
+  a word after the colon stay. The cost, measured on 25 kinds of ordinary text:
+  the steps also hide a path with a directory after a redacted token
+  (`git show <commit id>:src/index.ts`), `user@host:port/path` (a connection
+  string with no scheme), `name@version:dir/file`, and the directory of a shell
+  prompt (`user@host:/srv/app$ npm test` becomes `[REDACTED]$ npm test`; a prompt
+  with `~` stays). Two forms stay visible:
+  a remote with one path part and no `.git` (`git@myhost:app`), and the text
+  after `.git` when `ssh-remote` took the remote (`git@myhost:a/app.git/info/refs`
+  becomes `[REDACTED]/info/refs`).
+
+  **A remote with no user (step 3).** These are the lines that git 2.39.5 prints
+  for a remote `git@github.com:acme/app.git`:
+
+  | Command | Line |
+  |---|---|
+  | `git push` | `To github.com:acme/app.git` |
+  | `git fetch`, `git pull` | `From github.com:acme/app` |
+  | `git push -v` | `Pushing to github.com:acme/app.git` |
+  | a rejected `git push` | `error: failed to push some refs to 'github.com:acme/app.git'` |
+
+  The phrase is the condition, and it can be anywhere in a line: a log line
+  puts a time or a JSON key before it. In a JSON string, the line before it ends
+  in a written `\n`, so the phrase is accepted after `\n`, `\r` and `\t` too,
+  where there is no word boundary. With no phrase, `host:path` is too common:
+  an image (`registry.example.com:5000/team/app`), a file with a key path
+  (`package.json:scripts/build`), a bucket. Three more conditions keep ordinary
+  text: a number before the first `/` is a port (`To localhost:3000/api`), the
+  host has two characters or more (`To D:/proj`), and the path needs a `/` or
+  `.git`. The cost, measured on 17 kinds of ordinary text: the step hides
+  `word:dir/file` directly after a capital "To" or "From", as in
+  `From main:src/index.ts` and `To s3:bucket/key`. That includes a URI whose
+  scheme the URL step does not know (`From file:///tmp/build/output.log`), and
+  the words "refs to" in a sentence (`update refs to HEAD:refs/heads/main`).
+  Still visible: `host:path`
+  with no phrase before it (`url = github.com:acme/app.git`, "cloned from
+  github.com:acme/app"), `From myhost:app` (one path part; the line of a fetch
+  has no `.git`), a path below a directory whose name is a number
+  (`From myhost:2024/app`).
+- **Messages that name a repository with no remote in them** (planning#685).
+  These steps are last too, after the three above, and they only replace text.
+  Each rule is the phrase before the name, the name, and the phrase after it. It
+  replaces the name and keeps the phrases.
+
+  | Line | Source of the text |
+  |---|---|
+  | `Cloning into 'app'...`, `Cloning into bare repository 'app.git'...` | git 2.39.5, observed |
+  | `fatal: destination path 'app' already exists and is not an empty directory.` | git 2.39.5, observed |
+  | `fatal: 'acme/app.git' does not appear to be a git repository` | git 2.39.5 with a plain ssh server, observed |
+  | `fatal: repository '/srv/git/acme/app.git' does not exist` | git 2.39.5, observed |
+  | `Permission to user/repo denied to other-user` | the titles of two pages of GitHub's documentation |
+  | `Project 'old/app' was moved to 'new/app'.` | GitLab's source, `lib/gitlab/checks/container_moved.rb` |
+
+  In the first two lines the quoted text is a directory, which is the name of
+  the repository by default. For the last two lines, both names are replaced.
+
+  The phrase after the name is a part of a rule, because the phrase before it
+  is also in ordinary sentences: `Cloning into 'app' took 3 s` and `the
+  repository 'thing' is public` stay. One name has no phrase after it, the
+  second name of GitHub's line: it ends where the characters of a name end, so
+  that the rule does not take the rest of a JSON log line. A name does not cross
+  a line end, and it has no maximum length: with a maximum, a long name would
+  make the rule fail and the line would stay as it is.
+
+  `fatal: 'origin' does not appear to be a git repository` is a common line for
+  a wrong remote name, so there the name must have a `/` in it or end in `.git`.
+  That condition is a heuristic with a cost on each side. It hides the name of a
+  branch (`fatal: 'origin/main' does not appear to be a git repository`), and a
+  repository path of one part with no `.git` (`'app'`) stays. For GitHub's line,
+  the first name must have a `/`.
+
+  The cost, measured on 12 kinds of ordinary text: a sentence with the exact
+  words of a server is changed too (`Permission to read/write denied to guests`,
+  `Project 'Apollo' was moved to 'Q3'.`).
+
+  **These rules do not find every line that names a repository.** They know
+  seven lines of git, GitHub and GitLab. Git itself has more: `Initialized empty
+  Git repository in /srv/git/acme/app/.git/` stays as it is, because the path
+  pattern knows only `/workspace`, `/uploads`, `/home/<user>`, `/root` and
+  `/Users/<user>`. A hook, a CI log, another tool, a later version of git or a
+  sentence of the user can name a repository in a form that no rule knows.
+  Stage 2 and the user's review of the card are the protection for those.
 - Note `REDACTED_PATTERNS` / `isRedactedSourcePath` in `shipit-source.ts` match
   file *paths*, not content — they decide whether a whole file may be referenced.
   Reuse them only to *exclude* sensitive paths from the excerpt and to redact
@@ -132,9 +235,10 @@ secret/PII *substrings* and replace with `[REDACTED]`:
 This stage is fully deterministic and unit-testable, and it is the **guaranteed
 floor**: whatever happens next, known-shape secrets are already gone.
 
-Stage 1 runs synchronously on the orchestrator's main thread, and the body of a
-report can be as long as one HTTP request (1 MiB), so each pattern must be
-linear in the length of the text. A shape that can start at many positions of
+Stage 1 runs synchronously on the orchestrator's main thread, so each pattern
+must be linear in the length of the text. The route limits the length of a
+report ([Length limits](#length-limits)), but Stage 1 does not rely on that
+limit: it is a second protection, and Stage 1 has other callers. A shape that can start at many positions of
 one run, and that reads the rest of the run from each of them, is quadratic. The
 e-mail, ssh-remote and JWT patterns have a second alternative that takes the
 rest of the run for that reason, and no step parses a URL (planning#677; the
@@ -257,6 +361,32 @@ user's NEXT turn (typed OR dispatched — SDK / `shipit session message`)
       → consumeUnreportedBugOutcomes() reads-and-marks the terminal cards
       → buildBugOutcomeNotice() prefixes "#N + url" / "declined" onto the prompt
 ```
+
+### Length limits
+
+`POST /api/sessions/:sessionId/bug-report` refuses a title above 256 characters
+and a body above 60,000 characters with HTTP 413. It does that before it
+compiles the report: no redaction runs on a text that is refused, and no card is
+posted. The message gives the length and the limit, and tells the agent to
+shorten the report and to call the tool again. The limits are
+`MAX_BUG_REPORT_TITLE_LENGTH` and `MAX_BUG_REPORT_BODY_LENGTH` in
+`src/server/shared/bug-report-limits.ts`. The schema and the description of
+`report_shipit_bug` state them too.
+
+The limits come from the destination. GitHub refuses an issue title above 256
+characters and an issue body above 65,536 (`body is too long (maximum is 65536
+characters)`). The route refuses such a report when the agent sends it, so the
+agent gets a message that it can act on, and no card is posted that cannot be
+filed. 60,000 leaves room for the footer. A character is a code point, for
+GitHub, for the schema of the tool and for the route.
+
+Two cases stay with GitHub's limit. The user can make the text longer in the
+card. And redaction can make a text longer: a match of six characters becomes a
+placeholder of ten, so a body with thousands of short matches can pass the route
+and fail at the filing step. The card then shows GitHub's reason. The top-level
+message of a validation error is only "Validation Failed", so `parseGitHubError`
+(`github-api.ts`) adds the reasons from the `errors` list of the answer: the
+first three, on one line, with no control characters, 300 characters at most.
 
 ### The consent gate must not swallow its own result (nikzlabs/shipit#2350)
 
@@ -544,6 +674,8 @@ agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
 - `src/server/orchestrator/services/redaction.ts` (new) + test — shared redaction.
 - `src/server/orchestrator/services/bug-report.ts` (new) — compile draft, redact,
   stamp platform version, dispatch to `GitHubAuthManager`.
+- `src/server/shared/bug-report-limits.ts` — the maximum length of a title and
+  of a body, for the route and for the tool.
 - `src/server/orchestrator/github-auth.ts` (+ `github-auth-*.ts`) — new
   `createIssue(repo, { title, body })` method against the fixed upstream repo,
   using the user's existing token; no scope pre-check — surfaces the GitHub
