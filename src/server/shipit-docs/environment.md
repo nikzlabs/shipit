@@ -763,3 +763,18 @@ A host that cannot run ShipIt's egress sidecar cannot apply this block. There
 ShipIt listens only on loopback, and contained sessions do not start. A Compose
 service given the Docker socket controls this machine, so none of this holds
 for it ([compose.md](compose.md)).
+
+### When a command loses its connection to ShipIt
+
+A `shipit` or `gh` command reaches ShipIt through this container's worker. When
+a command that changes something ends with
+`The connection to the orchestrator failed after the request was sent (…)`,
+ShipIt may have done the work. The worker did not send that request a second
+time. Check the result first — the pull request, the issue, the comment — and
+run the command again only when the work is not there.
+
+Do the same after any other failure to reach ShipIt (a 502, 503 or 504,
+`Could not reach orchestrator`, `Could not reach the ShipIt session worker`):
+the message of a whole command does not say that nothing was done.
+`shipit session create` has its own rules for this
+([sessions.md](sessions.md), "When a spawn fails to answer").

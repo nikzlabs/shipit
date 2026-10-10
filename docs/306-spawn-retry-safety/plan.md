@@ -20,7 +20,7 @@ ambiguity is created at the second one.
 2. The worker relays to the **orchestrator** — `relay` in
    `src/server/session/agent-ops-routes.ts:48`, which calls
    `OrchestratorClient.request`.
-3. On a thrown fetch, `src/server/session/orchestrator-client.ts:81-89` returns
+3. On a failed request, `src/server/session/orchestrator-client.ts` returns
    a synthetic `{ ok: false, status: 0 }` carrying "Could not reach
    orchestrator". `relay` maps `status: 0` to **502**
    (`agent-ops-routes.ts:61`).
@@ -34,15 +34,16 @@ same 502. Observed live: two `shipit session create` calls reported
 had in fact been created, and retrying produced two duplicate children that had
 to be stopped mid-turn and archived.
 
-**A second, narrower duplicate source sits in the same file.**
+**A second, narrower duplicate source sat in the same file.**
 `OrchestratorClient.request` loops over `resolveOrchestratorBaseUrls()` — the
 configured host plus the `shipit` Compose alias — and on a thrown request it
-*continues to the next base URL* (`orchestrator-client.ts:70-80`). For a
-non-idempotent POST that is a blind retry: if the first host processed the
-spawn and only the response was lost, the second host spawns again, inside one
+*continued to the next base URL*, whatever the failure was. For a
+non-idempotent POST that was a blind retry: if the first host processed the
+spawn and only the response was lost, the second host spawned again, inside one
 invocation. It did not fire in the observed incident, where both names deduped
-to one entry and the error listed a single failure — but it is live whenever
-`SHIPIT_HOST` is not `shipit`.
+to one entry and the error listed a single failure — but it was live whenever
+`SHIPIT_HOST` was not `shipit`. It is closed by
+[the rule below](#no-second-send-after-the-request-left-req-6).
 
 ## The fix, in two halves
 
@@ -106,6 +107,75 @@ that this is the same session rather than a second one.
 `shipit session wait` (`shipit-session.ts:651`). This reuses it rather than
 adding a second classification.
 
+### No second send after the request left (req 6)
+
+The loop over the host names exists for one case: `SHIPIT_HOST` goes stale when
+ShipIt's container is recreated, and the next name still reaches it
+(docs/319-api-reach-through-host, planning#626). In that case the request never
+left the worker. So the rule is: **a request that is not a read goes to the next
+host only while it cannot have arrived.** After the connection is made, a
+failure ends the call with a message that says the request may have been
+carried out, and that it was not sent again. A `GET` keeps the old behaviour and
+goes to the next host after any failure, because a read does no harm twice.
+
+**The signal is the socket's `connect` event.** Measured on Node 24 against
+local servers, for a `POST`:
+
+| The first host | `connect` fired | The request's `finish` fired |
+|---|---|---|
+| refuses the connection | no | no |
+| has a name that does not resolve | no | no |
+| closes at once, reads nothing | yes | yes |
+| reads the request, then closes | yes | yes |
+| closes in the middle of its answer | yes | yes |
+| never reads an 8 MB body, then closes | yes | no |
+
+`finish` is not the signal: it is true for a host that read nothing, and false
+for a host that already has part of the request. `connect` is the last moment at
+which the worker knows that nothing was sent.
+
+Two things follow from that choice.
+
+- **Each call has a connection of its own** (`agent: false`). Node's default
+  agent keeps connections open and uses them again, and a connection that was
+  used before has no `connect` event: a failure on it could be before or after
+  the request arrived. A new connection costs about 0.2 ms more than a kept one
+  on loopback, which is less than the pooled `fetch` path took.
+- **Every call goes over Node `http`; the `fetch` path is gone.** `fetch` shows
+  only an error code, and the code is not enough: a name that does not resolve
+  was `EAI_AGAIN` in a session container, not the `ENOTFOUND` that a list from
+  memory would hold, and a time limit that ends gives no code at all. `fetch`
+  also read an answer that was cut off as a success with an empty body. Two
+  limits take the place of the ones `fetch` had, with the same numbers and not
+  exactly the same meaning. A host gets 10 s to take the TCP connection, now
+  also in a call with `timeoutMs: 0`. An attempt that names no limit gets 300 s
+  from its start to the end of the answer; `fetch` counted 300 s to the headers
+  and 300 s between parts of the body, which is the same thing for a relay
+  because none answers in parts. Both limits are for one attempt, as before, so
+  a call with two hosts can take twice as long.
+
+A time limit that ends is classified in the same way as any other failure:
+before the connection, the next host; after it, no second send.
+
+**What this does not do.** It stops the second send inside one call of the
+client, which is one request of a command. It does not make a second *run* of
+the command safe: an agent that runs `shipit issue create` again after "may
+have carried it out" still makes a second issue. That is the table below.
+
+`shipit session create` is the only command that sends its request again by
+design, under its key (the exception in req 6). The new failure is a transient
+status for it like any other, so its one retry still resolves a lost answer.
+One case moved: an answer that was cut off was a 200 with an empty body on the
+`fetch` path, which the shim reported as uncertain without a retry. It is now a
+transient status, so the shim retries once under the key. That is the better
+result while ShipIt keeps running, and it has the limit that req 2 always had:
+a restart between the two attempts loses the key.
+
+Reproduced over the real relay, with a first host that takes
+`plugin/exec`, starts the command and loses the connection: before the rule the
+command ran twice and the relay answered 200; with it the command runs once and
+the relay answers 502 with the message above.
+
 ## The sibling commands (req 5)
 
 Every non-GET shim command inherits the same synthetic-502 ambiguity, because
@@ -157,3 +227,4 @@ against. The list above is what a follow-up would work from.
 | `src/server/orchestrator/services/spawn-idempotency.ts` | New — the keyed claim map, TTL, and register-before-await |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | Accepts `idempotencyKey` and routes the spawn through the claim |
 | `src/server/session/agent-shim/shipit-session.ts` | Derives the key, retries once on a transient status, reports honestly |
+| `src/server/session/orchestrator-client.ts` | One transport on Node `http`, a connection for each call, and the next host only before the connection is made (req 6) |

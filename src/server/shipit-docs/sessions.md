@@ -427,13 +427,12 @@ it (see [ops-session.md](ops-session.md)).
 
 ### When a spawn fails to answer
 
-A `shipit session create` that ends in a transport error — "Could not reach
-orchestrator", or any 502/503/504 — has **not** told you that no session was
-created. It may have spawned one and lost only the reply. Two rules follow.
+A `shipit session create` that ends in a transport error — a lost connection,
+or any 502/503/504 — has **not** told you that no session was created. It may have spawned one and lost only the reply. Two rules follow.
 
 **The shim retries once for you, under a key derived from the request**, so a
-lost reply resolves itself: the retry returns the session the first attempt
-made, rather than making a second one. If it says
+lost reply resolves itself while ShipIt keeps running: the retry returns the
+session the first attempt made, rather than making a second one. If it says
 `the first attempt did reach ShipIt`, that is what happened — the session in the
 output is the one you already asked for, not an extra.
 
