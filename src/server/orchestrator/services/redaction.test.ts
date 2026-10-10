@@ -63,6 +63,117 @@ describe("redactStage1 (deterministic floor)", () => {
     expect(text).toBe(input);
     expect(redactedCount).toBe(0);
   });
+
+  it("finds a match that starts where the one before it ended, and one that starts later in a run", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const jwt = ["eyJabcdefg", "hijklmnop", "qrstuvwx"].join(".");
+    const cases: [string, string, number][] = [
+      ["a@b.cc.d@e.ff", `${R}${R}`, 2],
+      ["a@b.cc-d@e.ff.g@h.ii", `${R}${R}${R}`, 3],
+      ["u@h:a.git.x@h:b.git", `${R}${R}`, 2],
+      ["..a@b.cc", `..${R}`, 1],
+      [`x-${jwt}`, `x-${R}`, 1],
+      [`eyJ-x-${jwt} ${jwt}`, `${R} ${R}`, 2],
+    ];
+    for (const [input, expected, count] of cases) {
+      expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: count });
+    }
+  });
+
+  // Each of the three shapes is tried once in a run. The expected text is from one global
+  // pattern for each, which is what Stage 1 had. The strings are shorter than 40 characters,
+  // and their parts cannot start a URL, a key, a scheme or a path: no other step can match.
+  it("replaces an e-mail address, an SSH remote and a JWT exactly where a global pattern matches one", () => {
+    const globalPatterns = [
+      /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
+      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
+      /\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+\.git\b/g,
+    ];
+    const parts: Record<string, string[]> = {
+      "e-mail": ["a", "bc", "x1", "_", ".", "-", "%", "+", "@", "@", " ", "cc", ".cc", "a@b.cc", "["],
+      "ssh remote": ["a", "git", ".git", ".git", ".", "-", "_", "@", "@", ":", ":", "p/q", " ", "h", "u@h:p.git", "x1"],
+      jwt: ["eyJ", "eyJ", "abcdef", "abcdefg", "-", "-", "_", ".", ".", " ", "x", ["eyJabcdef", "ghijkl", "mnopqr"].join(".")],
+    };
+    for (const [shape, from] of Object.entries(parts)) {
+      let seed = 1;
+      const below = (n: number): number => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return Math.floor((seed / 2 ** 32) * n);
+      };
+      const different: string[] = [];
+      let withMatch = 0;
+      for (let i = 0; i < 4000; i++) {
+        let input = "";
+        for (let n = 1 + below(12); n > 0; n--) {
+          const part = from[below(from.length)];
+          if (input.length + part.length < 40) input += part;
+        }
+        let expected = input;
+        let count = 0;
+        for (const re of globalPatterns) {
+          expected = expected.replace(re, () => {
+            count++;
+            return REDACTION_PLACEHOLDER;
+          });
+        }
+        if (count > 0) withMatch++;
+        const result = redactStage1(input);
+        if (result.text !== expected || result.redactedCount !== count) different.push(input);
+      }
+      expect(different, shape).toEqual([]);
+      // A generator that makes no match compares nothing.
+      expect(withMatch, shape).toBeGreaterThan(500);
+    }
+  });
+
+  it("stays linear on a report body that was written to make a pattern slow", () => {
+    const hostile: Record<string, (size: number) => string> = {
+      "e-mail starts": (n) => "a.".repeat(n / 2),
+      "e-mail starts of every kind": (n) => "a.b-c%d+e_".repeat(n / 10),
+      "e-mail starts, then an @ and no domain": (n) => `${"a.".repeat(n / 2)}@b`,
+      "e-mail starts, then a real tail": (n) => `${"a.".repeat(n / 2)}a@b.cc`,
+      "e-mail one-letter domains": (n) => "a@a.".repeat(n / 4),
+      "e-mail long domain of one-letter labels": (n) => `a@${"b.".repeat(n / 2)}`,
+      "e-mail addresses in one run": (n) => "a@b.cc.".repeat(n / 7),
+      "a@ pairs": (n) => "a@".repeat(n / 2),
+      "ssh starts": (n) => "a-".repeat(n / 2),
+      "ssh starts, then a real tail": (n) => `${"a-".repeat(n / 2)}u@h:p.git`,
+      "ssh long path with no .git": (n) => `a@b:${"c/".repeat(n / 2)}`,
+      "ssh remotes with no .git": (n) => "a@b:c ".repeat(n / 6),
+      "ssh remotes in one run": (n) => "a@b:c.git.".repeat(n / 10),
+      "jwt starts": (n) => "eyJ-".repeat(n / 4),
+      "jwt starts, then a real tail": (n) => `${"eyJ-".repeat(n / 4)}.aaaaaa.bbbbbb`,
+      "jwt starts, then a tail that fails": (n) => `${"eyJ-".repeat(n / 4)}.aaaaaa.b`,
+      "jwt segments": (n) => "eyJaaaaaa.".repeat(n / 10),
+      "jwt long second segment with starts": (n) => `eyJaaaaaa.${"eyJ-".repeat(n / 4)}`,
+      "sweep boundaries, then hyphens": (n) => `${"a-".repeat(20)}${"-".repeat(n)}`,
+      "sweep letters": (n) => "a".repeat(n),
+      "scheme spaces": (n) => `Bearer${" ".repeat(n)}x`,
+      "path starts": (n) => "/home/".repeat(n / 6),
+      "path long user": (n) => `/home/${"x".repeat(n)}`,
+      "url starts": (n) => "http:/".repeat(n / 6),
+      "url long host": (n) => `http://${"a.".repeat(n / 2)}`,
+      "url host of many different characters": (n) =>
+        `http://${Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + (i % 20_000))).join("")}`,
+    };
+    // One match is all of the text: a limit on the length of a shape would show here.
+    const whole = ["e-mail starts, then a real tail", "ssh starts, then a real tail", "jwt starts, then a real tail"];
+    for (const [name, make] of Object.entries(hostile)) {
+      // The body of a bug report has the size limit of an HTTP request, 1 MiB, and no other.
+      // Smallest first: a quadratic pattern fails at a small size, after seconds. At the full
+      // size it needs many minutes, and no timeout can stop a synchronous call.
+      for (const size of [16_000, 64_000, 256_000, 1_024_000]) {
+        const input = make(size);
+        const started = performance.now();
+        const result = redactStage1(input);
+        expect(performance.now() - started, `${name}, ${size} characters`).toBeLessThan(3_000);
+        if (whole.includes(name)) {
+          // Not `toBe` on the text: a failure would print all of it.
+          expect(result.text === REDACTION_PLACEHOLDER && result.redactedCount === 1, `${name}, ${size} characters`).toBe(true);
+        }
+      }
+    }
+  }, 60_000);
 });
 
 describe("redact (two-stage)", () => {
