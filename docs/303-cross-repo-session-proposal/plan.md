@@ -108,6 +108,7 @@ user clicks "Start in owner/repo", or "Trust and start in owner/repo" (req 12)
             ensureRepoReady(repoUrl)
             grantRepoTrust(repoUrl)   only with { trust: true }, and only if not trusted yet
             spawnChildSession(thisSession, { detached: true, noRole, repoUrlOverride, prompt, title })
+              └ on the claim: persist pendingSessionId on the card, before the prompt is sent
             patch state=started + startedSessionId   (emit + persist)
             …or state=failed + errorMessage, and the card offers a retry
 ```
@@ -161,6 +162,57 @@ that still shows a trusted entry — the repository was removed and added again,
 and the update did not arrive — corrects itself on the first refusal. The
 override lasts until the next start settles; after that the list decides again.
 
+## A start that did not finish
+
+A start has three moments: the target session is allocated, its prompt is sent,
+and the card is told. The card used to learn the session's id only at the third.
+An orchestrator that stopped before then, or a card write that failed, left a
+session the card did not know: the card stayed retryable, and the retry started
+a second session on the same work.
+
+**The card records the session when it is allocated.** `spawnChildSession`
+calls `onChildClaimed` when the claim returns, before graduation and before
+the dispatch, and the start route persists the id as `pendingSessionId`, then
+reads it back. If the write fails, or the card is no longer in the history, the
+spawn fails and the session is removed. So a session never receives its prompt
+without a card that names it.
+
+**The next click asks what the last one left** (`unfinishedStart`,
+`api-routes-propose-repo-session.ts`), before it does anything else:
+
+- **The card's prompt is in the session's transcript:** it *is* the started
+  session. The card goes to `started` with that id and nothing new is created.
+- **The prompt is not there, and a turn runs or waits in that session:** the
+  prompt can still be on its way, in a turn that has not written its message or
+  in the queue behind another turn. The click answers "already starting" and
+  changes nothing. This is checked before any "not this card's" verdict.
+- **Anything else:** the click starts a new session. That covers a recorded
+  session that is gone, one that sits idle and empty, and an idle one that
+  someone used for other work.
+
+The evidence is the prompt itself because of when a turn writes it. A dispatched
+turn persists its user message when the executor begins the turn, before the
+agent runs (verified at `dispatched-turn.ts`, which passes `isNewSession:
+false`, and at `turn-executor.ts`, `persistUserMessageOnce`). A session without
+it never began the prompt. A session with it can have lost that turn to the
+restart; it is still the session the card started, in the state of any session
+that a restart interrupts. Any other message proves nothing about this card,
+which is why "some user message" is not the test.
+
+**Recovery never removes a session.** An earlier design deleted a leftover that
+had no prompt. The leftover is a session the user can see and open, so deleting
+it safely needs a guard that activation and dispatch both respect, for the whole
+of the teardown. That is a platform primitive for a cosmetic gain, so the
+leftover stays (see Known limitations).
+
+**Decline asks too.** "No session was started" is what the card and the
+next-turn notice say for a decline. A session that has the card's prompt turns
+the card to `started` and refuses the decline.
+
+**Once the session has its prompt, the card write cannot fail the start.** A
+`started` write that throws is logged and the route still answers with the
+session. The card keeps `pendingSessionId`, so the next click finds it.
+
 ## Declining, and telling the agent (reqs 10, 11)
 
 ```
@@ -207,7 +259,8 @@ their quote and bracket characters stripped. The prompt is never carried.
 | `src/server/shared/repo-session-proposal-validation.ts` | Shared field validation (lengths, required fields), used by the tool and the route so the two cannot drift. |
 | `src/server/session/mcp-tools/propose-repo-session.ts` | The MCP tool: schema, agent-facing description, worker relay. |
 | `src/server/session/agent-ops-routes.ts` | Worker relay `/agent-ops/propose-repo-session`. |
-| `src/server/orchestrator/api-routes-propose-repo-session.ts` | The routes: the agent's emit, the user's start (ensure repo ready, detached spawn, card state transitions) and the user's decline. |
+| `src/server/orchestrator/api-routes-propose-repo-session.ts` | The routes: the agent's emit, the user's start (ensure repo ready, detached spawn, card state transitions) and the user's decline; `unfinishedStart`. |
+| `src/server/orchestrator/services/child-sessions.ts` | `spawnChildSession` and its `onChildClaimed` hook. |
 | `src/server/orchestrator/services/repo-session-outcome-notice.ts` | The next-turn notice and its delivery receipt (req 11). |
 | `src/server/orchestrator/services/repos.ts` | `ensureRepoReady()` — register + bare-clone a repository synchronously. |
 | `src/client/components/RepoSessionProposalCard.tsx` | The card: proposed / starting / started / failed, and the trust notice (req 12). |
@@ -240,19 +293,26 @@ because they are unknown.
   the same never-seen repository can enter `ensureBareCache` together, ahead of
   the claim service's per-repository lock. Also pre-existing and shared with the
   Ops path.
-- **A start the orchestrator does not survive can leave an orphan.** The target
-  is created before environment preparation finishes, and its id reaches the
-  card only when the spawn returns. A start that *fails* no longer leaves one:
-  `spawnChildSession` removes a target it created before it reports the failure
-  (docs/243-agent-messaging-trust-gate `plan.md`, "Spawned sessions"), so the
-  card's `failed` is true and a retry creates one session. What remains is an
-  orchestrator that stops in that window, or a `started` write that fails after
-  the spawn returned; persisting the card→target association at allocation is
-  the real fix for both.
-- **A refused start for trust is reported to the agent as a failed start.** It
-  is reachable only when the card did not know the target was untrusted, and the
-  card then offers the consent. The notice of req 11 carries the reason, which
-  says that the repository is not trusted and that the card can trust it.
+- **A start that an orchestrator stop interrupts can leave an empty session.**
+  A stop after the target was graduated and before its turn began leaves a
+  titled session with no message. The card's next start makes a new session and
+  does not remove the empty one; the user archives it. Nothing duplicates the
+  work.
+- **"Already starting" lasts as long as the recorded session is busy.** A
+  session whose runner stays busy and never writes the prompt keeps the card on
+  that answer. No ordinary path does that; stopping the turn in that session
+  releases the card. A timeout was rejected: it would start the second session
+  this design exists to prevent.
+- **Nothing settles an interrupted card without a click.** After a restart, or
+  after a `started` write that failed, the card reads as retryable until the
+  user acts on it, and the proposing agent hears the outcome only then.
+- **The `started` write precedes the prompt's.** The route records `started`
+  when the spawn returns, and the turn writes its user message a moment later.
+  An orchestrator that stops in between leaves a `started` card that opens a
+  session without the prompt. Closing it needs the card write to follow an
+  acknowledgement from the turn, which the dispatch does not give its caller.
+- **A card posted in a turn that a restart adopts can be lost whole,** and
+  `pendingSessionId` with it. This is not specific to this card: planning#676.
 - **A second failed start is not reported again.** The notice compares the
   card's state with the last state the agent heard, so failed → retry → failed
   reads as nothing new. The agent already knows the start failed and that a retry
@@ -261,4 +321,6 @@ because they are unknown.
 - **A card left `starting` by a crashed orchestrator is retryable, deliberately.**
   The process-local in-flight set is what refuses a genuine double-start; a
   persisted `starting` that no process is working on is treated as a leftover, on
-  both sides. The trade is a possible duplicate over a spinner with no exit.
+  both sides. The retry first looks at the session the dead start recorded ("A
+  start that did not finish"), so it starts a second one only when that session
+  does not hold the card's prompt and has no work under way.

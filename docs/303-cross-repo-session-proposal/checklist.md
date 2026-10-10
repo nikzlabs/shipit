@@ -45,3 +45,14 @@
 - [x] Independent review against req 12 (applied: a target the list does not have
       needs the consent, also when the card was written for a registered one; the
       refusal override ends when the next start settles)
+
+## A start that did not finish
+
+- [x] `pendingSessionId` on the card, written by `onChildClaimed` before the prompt is sent, and read back
+- [x] Start and decline find the session an earlier start left, by the card's prompt in its transcript
+- [x] A `started` write that fails no longer reports a failed start
+- [x] Tests: start route, decline route, `spawnChildSession` hook
+- [x] lint:dev + typecheck clean
+- [x] Independent review, two passes (applied: recovery removes no session; the
+      evidence is the card's prompt, not any message; a write that finds no card
+      fails the spawn; work under way is checked before "not this card's")

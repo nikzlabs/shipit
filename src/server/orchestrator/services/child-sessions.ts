@@ -151,6 +151,11 @@ export interface SpawnChildSessionOptions {
   repoUrlOverride?: string;
   /** No parent/root linkage; the originating turn still counts toward the spawn cap. */
   detached?: boolean;
+  /**
+   * Called once the child exists and before anything is sent to it, so a caller can record
+   * the id durably. A throw fails the spawn and the child is removed.
+   */
+  onChildClaimed?: (sessionId: string) => void;
 }
 
 export interface SpawnChildSessionResult {
@@ -393,6 +398,7 @@ async function claimAndStartChild(
     excludeSessionIds: [parentSessionId],
   });
   claimed.sessionId = claim.sessionId;
+  opts.onChildClaimed?.(claim.sessionId);
   const newSessionId = claim.sessionId;
   const newWorkspaceDir = claim.workspaceDir;
 
