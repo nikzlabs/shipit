@@ -10,6 +10,7 @@ import {
   buildOrchestratorCallbackEnv,
   buildContainerConfig,
   createContainer,
+  resolveWorkerImageName,
   destroyContainer,
   ContainerCreateCancelledError,
   prepareOverlayDirs,
@@ -830,6 +831,37 @@ describe("buildContainerConfig", () => {
   });
 });
 
+describe("resolveWorkerImageName (docs/128)", () => {
+  it("gives ops and Docker-access sessions the Docker-capable image, and nobody else", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(resolveWorkerImageName(baseConfig({ opsSession: true }), "worker:docker")).toBe("worker:docker");
+      expect(resolveWorkerImageName(baseConfig({ dockerAccess: true }), "worker:docker")).toBe("worker:docker");
+      expect(resolveWorkerImageName(baseConfig(), "worker:docker")).toBe("shipit-worker:test");
+      expect(resolveWorkerImageName(baseConfig(), undefined)).toBe("shipit-worker:test");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The base image has no docker CLI and no journalctl, and this fallback once went unlogged.
+  it.each([{ opsSession: true }, { dockerAccess: true }])(
+    "names the session and the missing setting when %o falls back to the base image",
+    (overrides) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(resolveWorkerImageName(baseConfig(overrides), undefined)).toBe("shipit-worker:test");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][0]).toContain("sess-1");
+        expect(warn.mock.calls[0][0]).toContain("SESSION_WORKER_DOCKER_IMAGE");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+});
+
 describe("destroyContainer — overlay volume teardown", () => {
   function fakeDocker(
     removedVolumes: string[],
@@ -1203,6 +1235,76 @@ describe("createContainer — overlay volume re-verification (nikzlabs/shipit#24
 
     expect(daemon.started).toEqual(["cid-new"]);
     expect(sc.status).toBe("running");
+  });
+});
+
+describe("createContainer — an ops session's worker image (docs/128)", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  async function createdImage(dockerImageName: string | undefined): Promise<string | undefined> {
+    let image: string | undefined;
+    const docker = {
+      listContainers: async () => [],
+      getContainer: () => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => {},
+      }),
+      createContainer: async (cfg: { Image?: string }) => {
+        image = cfg.Image;
+        return {
+          id: "cid-new",
+          start: async () => {},
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-ops-image-"));
+    tmpDirs.push(tmp);
+    fs.mkdirSync(path.join(tmp, "session", "workspace"), { recursive: true });
+
+    await createContainer({
+      docker,
+      containers: new Map(),
+      standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      skipHealthCheck: true,
+      dockerImageName,
+    } as unknown as LifecycleDeps, baseConfig({
+      sessionId: "3f6d1497-c466-4b2c-b9af-0f1800fbf759",
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+      opsSession: true,
+    }));
+    return image;
+  }
+
+  it("asks the daemon for the Docker-capable image", async () => {
+    expect(await createdImage("worker:docker")).toBe("worker:docker");
+  });
+
+  it("starts on the base image when none is configured, and says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await createdImage(undefined)).toBe("shipit-worker:test");
+      const said = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("SESSION_WORKER_DOCKER_IMAGE"));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("3f6d1497-c466-4b2c-b9af-0f1800fbf759");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

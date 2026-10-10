@@ -394,10 +394,12 @@ describe("deployment/local/lib.sh — loopback only without the local block (doc
     const { stderr } = start("fail", "shipit_build_and_up");
 
     const calls = fs.readFileSync(dockerLog, "utf8").trim().split("\n");
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(calls[0]).toMatch(/^compose -f \S+ build --pull /);
-    expect(calls[1]).toMatch(/^run .*probe-firewall\.sh/);
-    expect(calls[2]).toBe(
+    // No registry has its base image, so this build must not pull (docs/128).
+    expect(calls[1]).toMatch(/^compose -f \S+ build session-worker-docker( |$)/);
+    expect(calls[2]).toMatch(/^run .*probe-firewall\.sh/);
+    expect(calls[3]).toBe(
       `compose -f ${path.join(home, "docker/local/prod/compose.yml")} up -d --no-build --force-recreate shipit | bind=127.0.0.1`,
     );
     expect(fs.existsSync(overlay)).toBe(false);
@@ -410,7 +412,7 @@ describe("deployment/local/lib.sh — loopback only without the local block (doc
     start("pass", "shipit_build_and_up");
 
     const calls = fs.readFileSync(dockerLog, "utf8").trim().split("\n");
-    expect(calls[2]).toBe(
+    expect(calls[3]).toBe(
       `compose -f ${path.join(home, "docker/local/prod/compose.yml")} -f ${overlay} up -d --no-build --force-recreate shipit | bind=0.0.0.0`,
     );
   });

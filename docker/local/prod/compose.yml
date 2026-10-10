@@ -39,6 +39,7 @@ services:
       - CREDENTIALS_VOLUME=shipit-prod_credentials
       - DOCKER_NETWORK=shipit-prod
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
+      - SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker
       - DOCKER_STACK=shipit-prod
       - SHIPIT_DEPLOYMENT=local
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
@@ -75,6 +76,18 @@ services:
       context: ../..
       dockerfile: Dockerfile.compose-helper
     image: shipit-compose-helper:prod
+    profiles:
+      - build-only
+
+  # Ops and Docker-access sessions run this image (docs/128). Build after session-worker
+  # without --pull; its base image is local-only.
+  session-worker-docker:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.session-worker.docker
+      args:
+        BASE_IMAGE: shipit-session-worker:prod
+    image: shipit-session-worker:docker
     profiles:
       - build-only
 

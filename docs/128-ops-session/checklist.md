@@ -83,6 +83,19 @@
       builds it after the base (separate step, no `--pull`, local base); the
       orchestrator env sets `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`.
       This also fixes ordinary `capabilities.docker` sessions, which had the same gap.
+- [x] **Docker-capable image built + wired on the local stacks.** Both
+      `docker/local/*/compose.yml` files have the `session-worker-docker` service
+      and `SESSION_WORKER_DOCKER_IMAGE`; `docker/local/prod.sh`, `docker/local/dev.sh`
+      and `deployment/local/lib.sh` build it after the worker image, without `--pull`.
+- [x] **The base-image fallback is logged.** `resolveWorkerImageName` warns per
+      session, the orchestrator warns at boot when the env var is unset, and the
+      image name no longer depends on the read-write proxy having started.
+- [x] **The agent checks its tools first.** `command -v docker journalctl` in the
+      ops prompt overlay, `shipit-docs/ops-session.md` (with the Engine-API
+      fallback) and check 0 of `prompts/verify-ops-access.md`.
+- [x] **Guard against stack drift.** `orchestrator-compose.test.ts` — every compose
+      file that names a worker image also names and builds the Docker-capable one,
+      and every build script builds it.
 - [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
       Traced the full path: `createStandby` has a single caller, the warm pool
       (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed

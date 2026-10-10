@@ -220,6 +220,14 @@ boundaries it promises hold. Run the checks read-only, then give me a PASS/FAIL
 table with the evidence for each row. Do NOT attempt any destructive action
 beyond the explicitly-labeled "should be rejected" probes below.
 
+## Preflight — the tools themselves
+0. \`command -v docker journalctl\` — must print two paths. Fewer than two means
+   this container runs the plain worker image: the host's ShipIt stack did not
+   build its Docker-capable worker image, or does not name it to the orchestrator
+   (\`SESSION_WORKER_DOCKER_IMAGE\`). Report check 0 as FAIL with that cause, and
+   mark every later check that needs the missing binary "not run (check 0)" —
+   not as a failure of its own. Checks that need neither binary still run.
+
 ## A. Environment wiring
 1. \`printenv DOCKER_HOST\` — confirm it is exactly \`tcp://docker-socket-proxy:2375\`.
 2. \`getent hosts docker-socket-proxy\` — confirm the proxy resolves on the compose
@@ -279,6 +287,11 @@ it can be fixed. Do not summarize as "working" unless B+D actually returned real
 host data and C was actually rejected.
 
 ## Reading the result
+- **Check 0 failing is one defect, not many.** It is a deployment fault on this
+  host: the rows that need the binary cannot pass, so do not look for the cause
+  in the proxy or the journal mounts. The remedy is the operator's — update this
+  ShipIt install, which rebuilds its images. See "If \`docker\` or \`journalctl\`
+  is missing" in \`/shipit-docs/ops-session.md\`.
 - **B** (real Docker data) and **D** (real host journal lines) are the core
   capabilities — they must pass.
 - **C failing is success**: the proxy is supposed to reject mutations. If

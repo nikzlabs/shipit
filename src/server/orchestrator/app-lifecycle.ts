@@ -175,6 +175,9 @@ export async function setupContainerManager(
       stateDir: setupDeps.stateDir,
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
       stackName: process.env.DOCKER_STACK,
+      // Set here as well as in setDockerProxy: an ops session does not use that proxy, so its
+      // image must not depend on the proxy having started.
+      dockerImageName: process.env.SESSION_WORKER_DOCKER_IMAGE,
       ...(setupDeps.resolveEgressConfig ? { resolveEgressConfig: setupDeps.resolveEgressConfig } : {}),
       ...(setupDeps.gpuAccess ? { gpuAccess: setupDeps.gpuAccess } : {}),
     });
@@ -251,6 +254,12 @@ export async function setupContainerManager(
       );
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
+      if (!process.env.SESSION_WORKER_DOCKER_IMAGE) {
+        console.warn(
+          "[server] SESSION_WORKER_DOCKER_IMAGE is not set — ops sessions and Docker-access sessions "
+          + "will run the base worker image, which has no docker CLI and no journalctl",
+        );
+      }
     } else {
       throw new Error("Docker is not available (is /var/run/docker.sock mounted?)");
     }
