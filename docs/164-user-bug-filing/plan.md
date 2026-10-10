@@ -123,18 +123,35 @@ secret/PII *substrings* and replace with `[REDACTED]`:
 - The patterns from `docs/023` (`sk-…`, `ghp_…`, `Bearer …`, generic long-token
   heuristics), **email addresses**, and **git/remote URLs** (the whole URL is
   replaced, so embedded creds, host and path all go; it is not parsed).
-- **scp-style remotes** (`git@github.com:acme/app.git`). The e-mail pattern takes
-  `git@github.com` first, so the `ssh-remote` pattern matches only a host that
-  has no top-level domain. The last step of Stage 1 thus extends a redaction over
-  an scp path that follows it: `[REDACTED]:acme/app.git` becomes `[REDACTED]`
-  (planning#681). The e-mail pattern can take only a part of the host
-  (`git@code.acme-internal` leaves `-internal`), so the step accepts host
-  characters between the placeholder and the colon. The step is last and it only
-  replaces text, so it cannot make text visible that an earlier step hid.
-  `ssh-remote` before `email` can: `jane+work@github.com:acme/app.git` then keeps
-  `jane+`. As in the `ssh-remote` pattern, the path must have `.git` at a word
-  boundary, and the match ends there: a remote with no `.git` keeps its path,
-  and `git@github.com:repo.git/private` becomes `[REDACTED]/private`.
+- **scp-style remotes** (`git@github.com:acme/app.git`, `git@myhost:acme/app`).
+  The patterns above take such a remote only in part. The e-mail pattern takes
+  `git@github.com`, or a part of the host (`git@code.acme-internal` leaves
+  `-internal`), before `ssh-remote` sees it, and `ssh-remote` needs `.git`. So
+  Stage 1 has two last steps:
+  1. `user@host:path` becomes `[REDACTED]` when the path has a `/` in it
+     (planning#682).
+  2. A redaction is extended over host characters, a colon and a path that
+     follow it: `[REDACTED]:acme/app` becomes `[REDACTED]`. The path must have a
+     `/` in it, or end in `.git` at a word boundary (planning#681).
+
+  The two steps are last and they only replace text, so they cannot make text
+  visible that an earlier step hid. A change of the patterns above can:
+  with `ssh-remote` before `email`, `jane+work@github.com:acme/app.git` keeps
+  `jane+`; and a wider `ssh-remote` takes text that the path pattern would hide
+  to a later end.
+
+  The path needs a `/` or `.git` because a colon after an address is common in
+  ordinary text. A port (`jane@example.com:587`, `root@10.0.0.5:22`), a time, and
+  a word after the colon stay. The cost, measured on 25 kinds of ordinary text:
+  the steps also hide a path with a directory after a redacted token
+  (`git show <commit id>:src/index.ts`), `user@host:port/path` (a connection
+  string with no scheme), `name@version:dir/file`, and the directory of a shell
+  prompt (`user@host:/srv/app$ npm test` becomes `[REDACTED]$ npm test`; a prompt
+  with `~` stays). Three forms stay visible:
+  a remote with one path part and no `.git` (`git@myhost:app`), a remote with no
+  user (`github.com:acme/app`, as `git push` prints it), and the text after
+  `.git` when `ssh-remote` took the remote (`git@myhost:a/app.git/info/refs`
+  becomes `[REDACTED]/info/refs`).
 - Note `REDACTED_PATTERNS` / `isRedactedSourcePath` in `shipit-source.ts` match
   file *paths*, not content — they decide whether a whole file may be referenced.
   Reuse them only to *exclude* sensitive paths from the excerpt and to redact
@@ -284,15 +301,18 @@ shorten the report and to call the tool again. The limits are
 
 The limits come from the destination. GitHub refuses an issue title above 256
 characters and an issue body above 65,536 (`body is too long (maximum is 65536
-characters)`). `parseGitHubError` keeps only the top-level message of that
-answer, so the card shows "Validation Failed" and no cause. 60,000 leaves room
-for the footer. A character is a code point, for GitHub, for the schema of the
-tool and for the route.
+characters)`). The route refuses such a report when the agent sends it, so the
+agent gets a message that it can act on, and no card is posted that cannot be
+filed. 60,000 leaves room for the footer. A character is a code point, for
+GitHub, for the schema of the tool and for the route.
 
 Two cases stay with GitHub's limit. The user can make the text longer in the
 card. And redaction can make a text longer: a match of six characters becomes a
 placeholder of ten, so a body with thousands of short matches can pass the route
-and fail at the filing step.
+and fail at the filing step. The card then shows GitHub's reason. The top-level
+message of a validation error is only "Validation Failed", so `parseGitHubError`
+(`github-api.ts`) adds the reasons from the `errors` list of the answer: the
+first three, on one line, with no control characters, 300 characters at most.
 
 ### The consent gate must not swallow its own result (nikzlabs/shipit#2350)
 

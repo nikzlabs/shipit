@@ -42,12 +42,23 @@ const STAGE1_PATTERNS: { name: string; re: RegExp; orRun?: string }[] = [
 // Plain URLs can disclose private project remotes too.
 const URL_RE = /\b(?:https?|git|ssh):\/\/[^\s)'"`]+/gi;
 
-// The e-mail pattern takes `git@github.com`, or a part of the host, before `ssh-remote` sees
-// it, and the path of the remote stays. `ssh-remote` cannot go first (planning#681,
-// docs/164-user-bug-filing/plan.md). A host has no `[` in it and a path has no colon in it:
-// no text is read again from each placeholder.
-const SCP_PATH_AFTER_REDACTION_RE =
-  /\[REDACTED\][A-Za-z0-9.-]*:(?:[A-Za-z0-9._/-]|\[REDACTED\])+\.git\b/g;
+// The last steps take an scp-style remote that the patterns above took in part or not at
+// all. Those patterns stay as they are: a change there shows text that a later step hides
+// (docs/164-user-bug-filing/plan.md). A path can hold placeholders of earlier steps, and it
+// needs a `/` or `.git`: a port, a time or a word after a colon stays.
+const SCP_PATH_PART = String.raw`(?:[A-Za-z0-9._-]|\[REDACTED\])`;
+const SCP_PATH = String.raw`${SCP_PATH_PART}*\/(?:${SCP_PATH_PART}|\/)*`;
+// `(shape)|rest of the run`, as in `STAGE1_PATTERNS`.
+const SCP_REMOTE_RE = new RegExp(
+  String.raw`(\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:${SCP_PATH})|\b[A-Za-z0-9._-]+`,
+  "g",
+);
+// A host has no `[` in it and a path has no colon in it: no text is read again from each
+// placeholder.
+const SCP_PATH_AFTER_REDACTION_RE = new RegExp(
+  String.raw`\[REDACTED\][A-Za-z0-9.-]*:(?:${SCP_PATH}|${SCP_PATH_PART}+\.git\b)`,
+  "g",
+);
 
 export interface Stage1Result {
   text: string;
@@ -81,8 +92,15 @@ export function redactStage1(input: string): Stage1Result {
     return REDACTION_PLACEHOLDER;
   });
 
-  // Last, and it only replaces text: it cannot make redacted text visible. Not counted: it
-  // makes a redaction longer.
+  // These two are last and only replace text: they cannot make redacted text visible.
+  if (text.includes("@")) {
+    text = text.replace(SCP_REMOTE_RE, (match: string, shape: unknown) => {
+      if (shape === undefined) return match;
+      count++;
+      return REDACTION_PLACEHOLDER;
+    });
+  }
+  // Not counted: it makes a redaction longer.
   text = text.replace(SCP_PATH_AFTER_REDACTION_RE, REDACTION_PLACEHOLDER);
 
   return { text, redactedCount: count };

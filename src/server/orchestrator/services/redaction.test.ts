@@ -80,7 +80,7 @@ describe("redactStage1 (deterministic floor)", () => {
     }
   });
 
-  it("replaces the path of an scp-style remote whose user@host is an e-mail address (planning#681)", () => {
+  it("replaces an scp-style remote that the e-mail pattern takes in part, or that has no .git (planning#681, planning#682)", () => {
     const R = REDACTION_PLACEHOLDER;
     const cases: [string, string, number][] = [
       ["git@github.com:acme/app.git", R, 1],
@@ -90,47 +90,105 @@ describe("redactStage1 (deterministic floor)", () => {
       ["jane+work@github.com:acme/app.git", R, 1],
       // The generic sweep takes a long name first.
       [`git@github.com:acme/${"a".repeat(45)}.git`, R, 2],
+      [`git@myhost:acme/${"a".repeat(45)}`, R, 2],
       // The e-mail pattern takes only a part of these hosts.
       ["git@github.com.:acme/app.git", R, 1],
       ["git@code.acme-internal:team/app.git", R, 1],
       ["git@example.xn--p1ai:acme/app.git", R, 1],
-      ["write to jane@example.com: the file app.git", `write to ${R}: the file app.git`, 1],
-      ["jane@example.com and repo:acme/app.git", `${R} and repo:acme/app.git`, 1],
+      ["git clone git@github.com:acme/app", `git clone ${R}`, 1],
+      ["origin\tgit@myhost:acme/app (fetch)", `origin\t${R} (fetch)`, 1],
+      ["scp build.tar deploy@prod-1:/srv/app/releases/", `scp build.tar ${R}`, 1],
+      // A shell prompt has the same shape.
+      ["user@host:/srv/app$ npm test", `${R}$ npm test`, 1],
+      ["git@github.com:acme/app.git/info/refs", R, 1],
+      ["git@myhost:app.git", R, 1],
     ];
     for (const [input, expected, count] of cases) {
       expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: count });
     }
   });
 
-  // The last step of Stage 1 as a scan: a placeholder, host characters, a colon, then the
-  // longest text of path characters and placeholders that ends in `.git` at a word boundary.
-  const extendOverScpPath = (text: string): string => {
+  it("leaves a port, a time and a word after a colon, which are not the path of a remote", () => {
     const R = REDACTION_PLACEHOLDER;
+    const commit = "a090492d".repeat(5);
+    const cases: [string, string][] = [
+      ["ssh root@10.0.0.5:22 failed", "ssh root@10.0.0.5:22 failed"],
+      ["relay jane@example.com:587 refused", `relay ${R}:587 refused`],
+      ["mail from jane@example.com:10:42:07", `mail from ${R}:10:42:07`],
+      ["jane@example.com:thanks and root@box:ok", `${R}:thanks and root@box:ok`],
+      ["write to jane@example.com: the file a/app.git", `write to ${R}: the file a/app.git`],
+      ["jane@example.com and repo:acme/app.git", `${R} and repo:acme/app.git`],
+      [`git show ${commit}:README.md`, `git show ${R}:README.md`],
+      [`ghcr.io/acme/app@sha256:${"ab12".repeat(16)}`, `ghcr.io/acme/app@sha256:${R}`],
+      ["listening on db.internal:5432, see src/index.ts:12:3", "listening on db.internal:5432, see src/index.ts:12:3"],
+      ["git@myhost:app", "git@myhost:app"],
+      ["root@box:~/project$ npm test", "root@box:~/project$ npm test"],
+    ];
+    for (const [input, expected] of cases) expect(redactStage1(input).text, input).toBe(expected);
+  });
+
+  // The two last steps of Stage 1 as scans. A path is the longest text of path characters,
+  // `/` and placeholders: it must have a `/` in it, or, after a placeholder, end in `.git` at
+  // a word boundary.
+  const R = REDACTION_PLACEHOLDER;
+  const isIn = (set: RegExp, text: string, at: number): boolean => at < text.length && set.test(text[at]);
+  const pathEnd = (text: string, from: number, gitEnd: boolean): number => {
+    let end = from;
+    let slash = false;
+    let git = -1;
+    for (let items = 1; ; items++) {
+      if (text.startsWith(R, end)) end += R.length;
+      else if (isIn(/[A-Za-z0-9._/-]/, text, end)) {
+        if (text[end] === "/") slash = true;
+        end++;
+      } else break;
+      if (items > 4 && text.slice(end - 4, end) === ".git" && !isIn(/\w/, text, end)) git = end;
+    }
+    if (slash) return end;
+    return gitEnd ? git : -1;
+  };
+  const scpRemotes = (text: string): { text: string; added: number } => {
+    let out = "";
+    let at = 0;
+    let added = 0;
+    for (let i = 0; i < text.length; ) {
+      const atBoundary = isIn(/\w/, text, i) !== (i > 0 && isIn(/\w/, text, i - 1));
+      if (!atBoundary || !isIn(/[A-Za-z0-9._-]/, text, i)) {
+        i++;
+        continue;
+      }
+      let run = i;
+      while (isIn(/[A-Za-z0-9._-]/, text, run)) run++;
+      let host = run + 1;
+      while (text[run] === "@" && isIn(/[A-Za-z0-9.-]/, text, host)) host++;
+      const end = text[run] === "@" && host > run + 1 && text[host] === ":" ? pathEnd(text, host + 1, false) : -1;
+      if (end < 0) {
+        i = run;
+        continue;
+      }
+      out += `${text.slice(at, i)}${R}`;
+      at = i = end;
+      added++;
+    }
+    return { text: out + text.slice(at), added };
+  };
+  const extendOverScpPath = (text: string): string => {
     let out = "";
     let at = 0;
     for (let start = text.indexOf(R); start >= 0; start = text.indexOf(R, at)) {
-      let end = start + R.length;
-      while (/^[A-Za-z0-9.-]$/.test(text.charAt(end))) end++;
-      let matchEnd = -1;
-      if (text.charAt(end) === ":") {
-        end++;
-        for (let items = 1; ; items++) {
-          if (text.startsWith(R, end)) end += R.length;
-          else if (/^[A-Za-z0-9._/-]$/.test(text.charAt(end))) end++;
-          else break;
-          if (items > 4 && text.slice(end - 4, end) === ".git" && !/^\w$/.test(text.charAt(end))) matchEnd = end;
-        }
-      }
-      out += matchEnd < 0 ? text.slice(at, start + R.length) : `${text.slice(at, start)}${R}`;
-      at = matchEnd < 0 ? start + R.length : matchEnd;
+      let host = start + R.length;
+      while (isIn(/[A-Za-z0-9.-]/, text, host)) host++;
+      const end = text[host] === ":" ? pathEnd(text, host + 1, true) : -1;
+      out += end < 0 ? text.slice(at, start + R.length) : `${text.slice(at, start)}${R}`;
+      at = end < 0 ? start + R.length : end;
     }
     return out + text.slice(at);
   };
 
   // Each of the three shapes is tried once in a run. The expected text is from one global
-  // pattern for each, which is what Stage 1 had, and then the last step. The strings are
+  // pattern for each, which is what Stage 1 had, and then the two last steps. The strings are
   // shorter than 40 characters, and their parts cannot start a URL, a key, a scheme or a
-  // path: no other step can match.
+  // home path: no other step can match.
   it("replaces an e-mail address, an SSH remote and a JWT exactly where a global pattern matches one", () => {
     const globalPatterns = [
       /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
@@ -142,6 +200,7 @@ describe("redactStage1 (deterministic floor)", () => {
       "ssh remote": ["a", "git", ".git", ".git", ".", "-", "_", "@", "@", ":", ":", "p/q", " ", "h", "u@h:p.git", "x1"],
       jwt: ["eyJ", "eyJ", "abcdef", "abcdefg", "-", "-", "_", ".", ".", " ", "x", ["eyJabcdef", "ghijkl", "mnopqr"].join(".")],
       "scp path": ["a@b.cc:", "a@b.cc:", "a@b.cc-x:", "a@b.cc.:p", "a@b.cc", ":", "p/q", ".git", ".git", ".git", "a", "-", "_", ".", " ", "x1", "u@h:p.git"],
+      "remote with no .git": ["u@h:", "u@h:", "u@h", "@", ":", ":", "p/q", "p", "/", "a", "-", "_", ".", " ", "x1", "a@b.cc", ".git"],
     };
     for (const [shape, from] of Object.entries(parts)) {
       let seed = 1;
@@ -151,6 +210,7 @@ describe("redactStage1 (deterministic floor)", () => {
       };
       const different: string[] = [];
       let withMatch = 0;
+      let withRemote = 0;
       let withScpPath = 0;
       for (let i = 0; i < 4000; i++) {
         let input = "";
@@ -166,16 +226,19 @@ describe("redactStage1 (deterministic floor)", () => {
             return REDACTION_PLACEHOLDER;
           });
         }
-        const expected = extendOverScpPath(shapes);
+        const remotes = scpRemotes(shapes);
+        const expected = extendOverScpPath(remotes.text);
         if (count > 0) withMatch++;
-        if (expected !== shapes) withScpPath++;
+        if (remotes.added > 0) withRemote++;
+        if (expected !== remotes.text) withScpPath++;
         const result = redactStage1(input);
-        if (result.text !== expected || result.redactedCount !== count) different.push(input);
+        if (result.text !== expected || result.redactedCount !== count + remotes.added) different.push(input);
       }
       expect(different, shape).toEqual([]);
       // A generator that makes no match compares nothing.
       expect(withMatch, shape).toBeGreaterThan(500);
       if (shape === "scp path") expect(withScpPath, shape).toBeGreaterThan(200);
+      if (shape === "remote with no .git") expect(withRemote, shape).toBeGreaterThan(200);
     }
   });
 
@@ -208,8 +271,14 @@ describe("redactStage1 (deterministic floor)", () => {
       "url long host": (n) => `http://${"a.".repeat(n / 2)}`,
       "url host of many different characters": (n) =>
         `http://${Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + (i % 20_000))).join("")}`,
-      "scp path with no .git": (n) => `a@b.cc:${"c/".repeat(n / 2)}`,
-      "scp path, then a real tail": (n) => `a@b.cc:${"c/".repeat(n / 2)}p.git`,
+      "scp path of slashes": (n) => `a@b.cc:${"c/".repeat(n / 2)}`,
+      "scp path with no slash and no .git": (n) => `a@b.cc:${"c.".repeat(n / 2)}`,
+      "scp path with no slash, then a real tail": (n) => `a@b.cc:${"c.".repeat(n / 2)}git`,
+      "remote path with no slash": (n) => `a@b:${"c.".repeat(n / 2)}`,
+      "remote path of written placeholders": (n) => `a@b:${REDACTION_PLACEHOLDER.repeat(n / 10)}`,
+      "remotes with no slash in one run": (n) => "a@b:c.".repeat(n / 6),
+      "remotes with a slash": (n) => "a@b:c/d ".repeat(n / 8),
+      "remote starts, then a real tail": (n) => `${"a.".repeat(n / 2)}u@h:p/q`,
       "scp path of addresses": (n) => `a@b.cc:${"c@d.ee/".repeat(n / 7)}`,
       "scp path of .git that a letter follows": (n) => `a@b.cc:${".gitx".repeat(n / 5)}`,
       "addresses before a colon": (n) => "a@b.cc:".repeat(n / 7),
@@ -225,7 +294,10 @@ describe("redactStage1 (deterministic floor)", () => {
       "e-mail starts, then a real tail",
       "ssh starts, then a real tail",
       "jwt starts, then a real tail",
-      "scp path, then a real tail",
+      "ssh long path with no .git",
+      "scp path of slashes",
+      "scp path with no slash, then a real tail",
+      "remote starts, then a real tail",
     ];
     for (const [name, make] of Object.entries(hostile)) {
       // Up to the size limit of an HTTP request, 1 MiB. The route refuses a report body above
