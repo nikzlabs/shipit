@@ -173,6 +173,9 @@ export async function registerPluginRepoRoutes(
         return;
       }
       const stdin: PluginCliRequest["stdin"] = sent?.stream ?? inline;
+      // Not `request.raw`: its `close` comes when the body was read, while the caller still waits.
+      let callerGone = false;
+      reply.raw.once("close", () => { callerGone = !reply.raw.writableFinished; });
       try {
         return await deps.runPluginCommandForSession(request.params.id, session.workspaceDir, {
           alias,
@@ -180,6 +183,7 @@ export async function registerPluginRepoRoutes(
           args,
           ...(typeof request.body?.cwd === "string" ? { cwd: request.body.cwd } : {}),
           ...(stdin !== undefined ? { stdin } : {}),
+          callerGone: () => callerGone,
         });
       } finally {
         sent?.release();

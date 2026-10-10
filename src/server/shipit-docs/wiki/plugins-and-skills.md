@@ -129,7 +129,8 @@ What an activated plugin gives this project, all from its manifest:
   memory, that edit is yours to make here, without waiting for the plugin's
   author. A command takes piped input as a local program does, when it arrives;
   one that reads its stdin to the end waits until yours ends, so give it
-  `</dev/null` when you pass no input.
+  `</dev/null` when you pass no input. A call that you stop, or that hits your
+  shell tool's time limit, stops its command too.
 - **Skills**, which reach you and not the composer's menu.
 - **Settings** the consuming project sets, and a state directory of the
   plugin's own.

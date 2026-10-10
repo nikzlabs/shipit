@@ -318,6 +318,42 @@ describe("OrchestratorClient", () => {
     });
   });
 
+  describe("a caller that goes away (docs/262-plugins req 32)", () => {
+    const GONE = { ok: false, status: 0, body: { error: "The request was ended, because its caller went away." } };
+
+    it("closes the connection, which is how the host learns it", async () => {
+      const held: net.Socket[] = [];
+      const first = failingServer((socket) => { held.push(socket); });
+      const { client, second } = await twoHosts(first.server);
+      const caller = new AbortController();
+
+      const pending = client.request("POST", "/plugin/exec", {}, { timeoutMs: 0, signal: caller.signal });
+      await requestArrived(held);
+      caller.abort();
+
+      expect(await pending).toEqual(GONE);
+      while (!held[0].destroyed) await realSleep(5);
+      expect(second.requests).toBe(0);
+    });
+
+    it.each(["POST", "GET"] as const)(
+      "does not send a %s to the next host when the caller goes away before the connection is made",
+      async (method) => {
+        const { client, second } = await hungFirstName();
+        const caller = new AbortController();
+
+        const pending = client.request(method, "/plugin/exec", undefined, { timeoutMs: 0, signal: caller.signal });
+        await realSleep(20);
+        caller.abort();
+
+        expect(await pending).toEqual(GONE);
+        // Real time, in which a request that went to the next host would arrive.
+        await realSleep(100);
+        expect(second.requests).toBe(0);
+      },
+    );
+  });
+
   it("opens a connection for each call, so that a failure cannot come from a connection used before", async () => {
     const { server, seen } = answeringServer();
     const port = await listen(server, SECOND_HOST);

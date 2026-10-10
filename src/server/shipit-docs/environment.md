@@ -816,4 +816,7 @@ Do the same after any other failure to reach ShipIt (a 502, 503 or 504,
 `Could not reach orchestrator`, `Could not reach the ShipIt session worker`):
 the message of a whole command does not say that nothing was done.
 `shipit session create` has its own rules for this
-([sessions.md](sessions.md), "When a spawn fails to answer").
+([sessions.md](sessions.md), "When a spawn fails to answer"). A plugin's
+command is stopped when its call loses the connection, and it can have done a
+part of its work ([plugins.md](plugins.md), "A call that ends before its
+command does stops the command").

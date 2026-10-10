@@ -1,7 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import type { Readable } from "node:stream";
+import { setTimeout as realSleep } from "node:timers/promises";
 import type { ApiDeps } from "./api-routes.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
 import type { PluginCliRequest, PluginCliResult } from "./plugin-cli-run.js";
@@ -124,5 +127,88 @@ describe("the plugin exec routes — stdin", () => {
     expect((await part({ seq: 0, data: "x" })).statusCode).toBe(400);
     expect((await part({ id: "call-6", data: "x" })).statusCode).toBe(400);
     expect((await part({ id: "call-6", seq: -1, data: "x" })).statusCode).toBe(400);
+  });
+});
+
+describe("the plugin exec route — a caller that goes away (req 32)", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let seen: PluginCliRequest | undefined;
+  let finish: (result: PluginCliResult) => void = () => undefined;
+  const agents: http.Agent[] = [];
+
+  beforeEach(async () => {
+    app = Fastify({ logger: false });
+    seen = undefined;
+    await registerPluginRepoRoutes(app, {
+      sessionManager: { get: () => ({ workspaceDir: "/ws" }) },
+      runPluginCommandForSession: (_id: string, _dir: string, request: PluginCliRequest) => {
+        seen = request;
+        return new Promise<PluginCliResult>((resolve) => { finish = resolve; });
+      },
+    } as unknown as ApiDeps);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    port = (app.server.address() as AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    finish({ exitCode: 0, stdout: "", stderr: "" });
+    for (const agent of agents.splice(0)) agent.destroy();
+    await app.close();
+  });
+
+  // A real connection: an injected request has none to lose.
+  function call(agent: http.Agent | false): { req: http.ClientRequest; answer: Promise<unknown> } {
+    if (agent) agents.push(agent);
+    const payload = JSON.stringify({ alias: "reqs", command: "reqs" });
+    let req!: http.ClientRequest;
+    const answer = new Promise<unknown>((resolve) => {
+      req = http.request(
+        { host: "127.0.0.1", port, path: EXEC, method: "POST", agent,
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+          res.on("end", () => resolve(JSON.parse(data)));
+        },
+      );
+      req.on("error", () => resolve("no answer"));
+      req.end(payload);
+    });
+    return { req, answer };
+  }
+
+  const running = async (): Promise<() => boolean> => {
+    await vi.waitFor(() => { expect(seen).toBeDefined(); });
+    return seen!.callerGone!;
+  };
+
+  it("tells the command's run when the caller closes the connection before the answer", async () => {
+    const { req, answer } = call(false);
+    const callerGone = await running();
+    expect(callerGone()).toBe(false);
+
+    req.destroy();
+
+    await vi.waitFor(() => { expect(callerGone()).toBe(true); });
+    expect(await answer).toBe("no answer");
+  });
+
+  it.each([
+    ["a connection of its own", (): false => false],
+    ["a connection that it keeps for the next call", (): http.Agent => new http.Agent({ keepAlive: true })],
+  ])("does not say so while the caller waits on %s, or after the answer", async (_name, agent) => {
+    const { answer } = call(agent());
+    const callerGone = await running();
+    // The request's own `close` event comes in this time, when its body was read.
+    await realSleep(100);
+    expect(callerGone()).toBe(false);
+
+    finish({ exitCode: 0, stdout: "done\n", stderr: "" });
+
+    expect(await answer).toEqual({ exitCode: 0, stdout: "done\n", stderr: "" });
+    // The reply's `close` event comes in this time, after the answer.
+    await realSleep(50);
+    expect(callerGone()).toBe(false);
   });
 });

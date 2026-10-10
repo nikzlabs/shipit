@@ -93,6 +93,9 @@ The command gets this call's stdin as it arrives, and its end when it ends. A
 command that reads stdin to its end waits for that end, as a local program
 does: when you pass no input, give the call \`</dev/null\`.
 
+When this call ends before the command does (Ctrl-C, \`timeout\`, a tool's time
+limit), ShipIt stops the command. It is killed, so it does no cleanup.
+
 Set SHIPIT_PLUGIN_TIMING=1 on a call to see, on stderr, where its time went:
 \`command\` is the container's start to its exit — the plugin's own program —
 and every other part is ShipIt's.
@@ -168,7 +171,12 @@ async function exec(args: string[], deps: RunDeps): Promise<void> {
   const first = await (undelivered ? Promise.race([call, undelivered]) : call);
   if ("undelivered" in first) {
     const reason = formatError(first.undelivered, `the session worker answered ${first.undelivered.status}`);
-    fail(deps.io, `Could not deliver stdin to \`${values.command}\`, which can still be running: ${reason}`);
+    // This exit closes the call's connection, and that stops the command (docs/262-plugins req 32).
+    fail(
+      deps.io,
+      `Could not deliver stdin to \`${values.command}\`: ${reason}\n`
+        + "This call ends, so ShipIt stops the command. It can have done a part of its work with the input that it had.",
+    );
   }
   const res = first;
 
