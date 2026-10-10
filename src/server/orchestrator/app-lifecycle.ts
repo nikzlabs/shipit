@@ -18,6 +18,7 @@ import type { PresentStore } from "./present-store.js";
 import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
+import { warnIfAddressPoolIsSmall } from "./docker-address-pool.js";
 import {
   COMPOSE_HELPER_IMAGE_ENV,
   resolveComposeHelperImage,
@@ -254,6 +255,7 @@ export async function setupContainerManager(
       );
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
+      void warnIfAddressPoolIsSmall(containerManager.getDockerClient());
       if (!process.env.SESSION_WORKER_DOCKER_IMAGE) {
         console.warn(
           "[server] SESSION_WORKER_DOCKER_IMAGE is not set — ops sessions and Docker-access sessions "

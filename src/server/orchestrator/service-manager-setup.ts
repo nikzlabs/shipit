@@ -23,6 +23,7 @@ import { clearActivationState } from "./services/plugin-activation.js";
 import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
+import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { workspaceVolumeDaemonPath } from "./compose-persist.js";
 import type { DockerSocketGrant } from "./compose-generator.js";
 import type { EgressPolicy } from "./egress-firewall-install.js";
@@ -341,7 +342,7 @@ export type ServiceManagerBuildDeps = Pick<
   | "serviceEnvDir"
   | "composeHelperConfig"
   | "logStore"
->;
+> & Partial<Pick<ServiceSetupDeps, "serviceManagers">>;
 
 /** Where the confined Compose containers find ShipIt's files on the Docker host (docs/318). */
 export interface ComposeHelperConfig {
@@ -499,6 +500,11 @@ export function buildServiceManager(args: {
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? (networkName: string) => joinSessionNetworkEndpoints(containerManager, sessionId, networkName)
+      : undefined,
+    networkReleaseFn: containerManager
+      ? () => releaseSessionNetworkQueued(
+          containerManager.getDockerClient(), sessionId, () => deps.serviceManagers?.has(sessionId) ?? false,
+        )
       : undefined,
     networkHealFn: containerManager
       ? async (networkName: string) => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import os from "node:os";
 import type Docker from "dockerode";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionManager } from "./sessions.js";
@@ -27,6 +28,10 @@ describe("compose-stack-reaper", () => {
     Id: string;
     Name: string;
     Labels: Record<string, string>;
+    /** Containers with an endpoint on it. */
+    attached?: string[];
+    /** Containers that name it and do not run. */
+    named?: string[];
   }
 
   function matchesLabelFilter(labels: Record<string, string>, filters: string[]): boolean {
@@ -55,7 +60,17 @@ describe("compose-stack-reaper", () => {
     };
 
     const docker = {
-      listContainers: vi.fn(async (o: { filters: { label: string[] } }) => {
+      listContainers: vi.fn(async (o: { filters: { label: string[]; network?: string[] } }) => {
+        if (o.filters.network) {
+          const asked = o.filters.network;
+          // A container that has not started names its network by name, never by id.
+          return networks
+            .flatMap((n) => [
+              ...(asked.includes(n.Id) || asked.includes(n.Name) ? n.attached ?? [] : []),
+              ...(asked.includes(n.Name) ? n.named ?? [] : []),
+            ])
+            .map((id) => ({ Id: id, Names: [`/${id}`] }));
+        }
         calls.push(`list:${o.filters.label.join("+")}`);
         if (opts.listContainersThrows) throw new Error("daemon unreachable");
         return [...live.values()].filter((c) => matchesLabelFilter(c.Labels, o.filters.label));
@@ -85,9 +100,20 @@ describe("compose-stack-reaper", () => {
         calls.push("listNetworks");
         return networks.filter((n) => matchesLabelFilter(n.Labels, o.filters.label));
       }),
-      getNetwork: (id: string) => ({
-        remove: async () => { calls.push(`removeNetwork:${id}`); },
-      }),
+      getNetwork: (id: string) => {
+        const attached = networks.find((n) => n.Id === id)?.attached ?? [];
+        return {
+          connect: async () => { calls.push(`connectNetwork:${id}`); },
+          disconnect: async (o: { Container: string }) => {
+            calls.push(`disconnectNetwork:${id}`);
+            attached.splice(attached.indexOf(o.Container), 1);
+          },
+          remove: async () => {
+            if (attached.length > 0) fail(id, 403, "remove");
+            calls.push(`removeNetwork:${id}`);
+          },
+        };
+      },
       listVolumes: vi.fn(async () => { calls.push("listVolumes"); return { Volumes: [] }; }),
       getVolume: (name: string) => ({ remove: async () => { calls.push(`removeVolume:${name}`); } }),
     };
@@ -185,6 +211,58 @@ describe("compose-stack-reaper", () => {
       expect(h.calls.indexOf("removeNetwork:n1")).toBeGreaterThan(
         h.calls.findIndex((c) => c.startsWith("remove:c2")),
       );
+    });
+
+    it("detaches the orchestrator from the project's network, which a plain removal fails on", async () => {
+      const project = composeProjectName(SID);
+      const h = fakeDocker({
+        containers: [serviceContainer(SID, "c1")],
+        networks: [{
+          Id: "n1",
+          Name: `shipit-session-${SID}`,
+          Labels: { [COMPOSE_PROJECT_LABEL]: project },
+          attached: [os.hostname()],
+        }],
+      });
+
+      await downComposeStackByProject(h.docker, SID);
+
+      expect(h.calls.filter((c) => c.includes("Network:"))).toEqual(["disconnectNetwork:n1", "removeNetwork:n1"]);
+    });
+
+    it("keeps a network that a stopped container outside the project names", async () => {
+      const project = composeProjectName(SID);
+      const h = fakeDocker({
+        containers: [serviceContainer(SID, "c1")],
+        networks: [{
+          Id: "n1",
+          Name: `shipit-session-${SID}`,
+          Labels: { [COMPOSE_PROJECT_LABEL]: project },
+          attached: [os.hostname()],
+          named: ["agent-aaaaaaaa-bbb"],
+        }],
+      });
+
+      await downComposeStackByProject(h.docker, SID);
+
+      expect(h.calls.filter((c) => c.includes("Network:"))).toEqual([]);
+    });
+
+    it("keeps a network that a container outside the project is attached to", async () => {
+      const project = composeProjectName(SID);
+      const h = fakeDocker({
+        containers: [serviceContainer(SID, "c1")],
+        networks: [{
+          Id: "n1",
+          Name: `shipit-session-${SID}`,
+          Labels: { [COMPOSE_PROJECT_LABEL]: project },
+          attached: [os.hostname(), "agent-aaaaaaaa-bbb"],
+        }],
+      });
+
+      await downComposeStackByProject(h.docker, SID);
+
+      expect(h.calls.filter((c) => c.includes("Network:"))).toEqual([]);
     });
 
     it("removes the egress sidecars of the service containers it removed, which are outside the project", async () => {

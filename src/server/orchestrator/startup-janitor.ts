@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import type Docker from "dockerode";
 import { reapOrphanEgressSidecars } from "./egress-orphan-reaper.js";
 import { stackLabelFilters } from "./stack-label.js";
+import { serializeStackOp } from "./stack-op-queue.js";
+import { releaseSessionNetwork, type SessionNetworkDocker } from "./session-network-release.js";
 import { reapOrphanPluginInstalls } from "./plugin-install.js";
 import { reapOrphanPnpmBaseBuilds } from "./pnpm-base-builder.js";
 import { reapOrphanComposeHelpers } from "./compose-helper.js";
@@ -42,6 +44,11 @@ export interface DiskJanitorDeps {
   paceMs?: number;
   /** DOCKER_STACK; the Docker sweeps select only resources labelled with it (planning#584). */
   stackName?: string;
+  /**
+   * Whether this process holds a runner, a container, a Compose stack, or a restore for the
+   * session. Without it, or without `docker`, every stored session keeps its networks.
+   */
+  isSessionLive?: (sessionId: string) => boolean;
 }
 
 export interface DiskJanitorResult {
@@ -118,6 +125,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   try {
     result.orphanNetworksRemoved = await sweepOrphanSessionNetworks(
       deps.sessionManager, runDocker, paceMs, stackFilterArgs,
+      deps.docker && deps.isSessionLive ? { docker: deps.docker, isSessionLive: deps.isSessionLive } : undefined,
     );
   } catch (err) {
     console.warn("[disk-janitor] orphan network sweep failed:", getMessage(err));
@@ -358,15 +366,26 @@ async function sweepOrphanSessionNetworks(
   runDocker: (args: string[]) => Promise<string>,
   paceMs: number,
   stackFilterArgs: string[],
+  stored?: { docker: SessionNetworkDocker; isSessionLive: (sessionId: string) => boolean },
 ): Promise<number> {
   const SESSION_NETWORK_RE = /^shipit-(?:session|egress)-([a-f0-9-]{12})/;
 
   // Re-read before each removal: a new session's network is dangling until its container attaches.
-  const livePrefixes = (): Set<string> => new Set(
-    sessionManager.listAll()
-      .filter((s) => s.diskTier !== "evicted")
-      .map((s) => s.id.slice(0, 12).toLowerCase()),
-  );
+  // A stored session gives up only its Compose network, and only while nothing of it is live:
+  // Compose creates that one under a registered ServiceManager, so a start in flight reads as
+  // live. The other two are created before the container record exists.
+  const isLive = stored?.isSessionLive;
+  const read = () => {
+    const sessions = sessionManager.listAll().filter((s) => s.diskTier !== "evicted");
+    const prefixes = new Set(sessions.map((s) => s.id.slice(0, 12).toLowerCase()));
+    const stale = new Map<string, string>(
+      isLive ? sessions.filter((s) => !isLive(s.id)).map((s) => [`shipit-session-${s.id}`, s.id]) : [],
+    );
+    return {
+      keeps: (name: string, prefix: string): boolean => prefixes.has(prefix) && !stale.has(name),
+      staleSession: (name: string): string | undefined => stale.get(name),
+    };
+  };
 
   let listOut: string;
   try {
@@ -382,25 +401,35 @@ async function sweepOrphanSessionNetworks(
     return 0;
   }
 
-  const candidates: { name: string; prefix: string }[] = [];
-  const listed = livePrefixes();
+  const candidates: { name: string; prefix: string; sessionId?: string }[] = [];
+  const atListing = read();
   for (const raw of listOut.split("\n")) {
     const name = raw.trim();
     if (!name) continue;
     const m = SESSION_NETWORK_RE.exec(name);
     if (!m) continue;
     const prefix = m[1].toLowerCase();
-    if (listed.has(prefix)) continue;
-    candidates.push({ name, prefix });
+    if (atListing.keeps(name, prefix)) continue;
+    candidates.push({ name, prefix, sessionId: atListing.staleSession(name) });
   }
 
   let removed = 0;
-  for (const { name, prefix } of candidates) {
+  for (const { name, prefix, sessionId } of candidates) {
     try {
       await sleep(paceMs);
-      if (livePrefixes().has(prefix)) continue;
-      await runDocker(["network", "rm", name]);
-      removed += 1;
+      if (read().keeps(name, prefix)) continue;
+      if (!sessionId || !stored) {
+        await runDocker(["network", "rm", name]);
+        removed += 1;
+        continue;
+      }
+      // A stored session can start its stack at any moment. Its stack queue keeps that start
+      // out of the time between the check and the removal; the check above saves a wait behind
+      // the build of a session that is live again. A network with no endpoint can still have a
+      // stopped container that names it, which `releaseSessionNetwork` leaves alone.
+      const outcome = await serializeStackOp(sessionId, async () =>
+        read().keeps(name, prefix) ? "kept" : await releaseSessionNetwork(stored.docker, name));
+      if (outcome === "removed") removed += 1;
     } catch {
       // A concurrent operation may have attached or removed the network.
     }

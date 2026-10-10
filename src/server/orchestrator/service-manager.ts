@@ -218,6 +218,8 @@ export interface ServiceManagerOptions {
    */
   sessionGpu?: () => Promise<SessionGpu | undefined>;
   networkJoinFn?: (networkName: string) => Promise<void>;
+  /** Queues the removal of the session network after a `down`; not awaited (docs/091). */
+  networkReleaseFn?: () => void;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
   /** What `containServicesFn` installs; omitted means contained. */
@@ -290,6 +292,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private gpuRemovals = new Map<string, string>();
   private noProjectCompose: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  private readonly networkReleaseFn?: () => void;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   private containServicesFn?: (serviceNames: string[]) => Promise<void>;
   private firewallPolicy: EgressPolicy;
@@ -390,6 +393,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.sessionGpu = opts.sessionGpu ?? (() => Promise.resolve(undefined));
     this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
+    this.networkReleaseFn = opts.networkReleaseFn;
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
     this.firewallPolicy = opts.firewallPolicy ?? "contained";
@@ -1234,6 +1238,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     try {
       await this.compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
       this.startRecord.clear();
+      // `down` exits 0 and leaves a network that has an endpoint Compose does not own, and the
+      // orchestrator's is one.
+      this.networkReleaseFn?.();
     } catch {
       // Best-effort cleanup
     }

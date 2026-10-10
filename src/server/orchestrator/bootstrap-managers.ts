@@ -125,6 +125,7 @@ import {
   trackComposeStop,
   type ComposeHelperConfig,
 } from "./service-manager-setup.js";
+import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { composeRegistryLoginDir } from "./compose-helper.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
@@ -253,6 +254,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   containerManager?.on("container_destroyed", (sessionId, previewsStopped) => {
     if (previewsStopped) announcePreviewsStopped(sessionId);
+    // The agent can be the last container on the network of a stack that stopped before it (docs/091).
+    releaseSessionNetworkQueued(
+      containerManager.getDockerClient(), sessionId, () => serviceManagers.has(sessionId),
+    );
   });
   if (containerManager) announceEgressOnContainerStart(containerManager, sseBroadcast);
 
