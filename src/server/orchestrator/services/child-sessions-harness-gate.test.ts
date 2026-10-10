@@ -37,6 +37,7 @@ async function spawnWith(
     undefined,
     undefined,
     {} as never,
+    async () => {},
   );
 }
 

@@ -184,6 +184,21 @@ dropped unless the session was created as an ops session.
   report instead (see "File a ShipIt bug" below) rather than dead-ending as text.
   If the source ref was only approximate, add `--approximate` to acknowledge it.
 
+  You do not need the operator to trust the ShipIt source repository first. The
+  host already runs that code, so the spawn trusts the repository itself once
+  the two checks above pass (an Ops session, and push access). The trust is the
+  ordinary one: it stays on the repository, and each later session on it runs
+  its install command and its Compose services without a prompt.
+
+  **A create that fails leaves no session.** If the command exits non-zero with
+  an error from ShipIt — the deployed commit is not in the fix repository, for
+  example — there is no child to find, wait on or message, and it is safe to
+  run the command again after you correct the cause. If ShipIt did not remove a
+  child that it had already created, the error says so and gives that child's
+  id; tell the operator which session that is. The one case that stays
+  uncertain is a reply that never arrived; see
+  `sessions.md` → *When a spawn fails to answer*.
+
   The child's branch *starts* at the exact deployed commit so it can reproduce
   the bug against the code that's actually running — which is usually behind the
   repo's default branch. Its incident packet instructs it to rebase onto the
@@ -201,6 +216,44 @@ dropped unless the session was created as an ops session.
   upstream repo under their own GitHub identity (marked `source:ops`). Downstream, a
   developer with push access can pick the issue up as a fix session. See
   `bug-filing.md` for the tool contract and what never goes in the body.
+
+## If `docker` or `journalctl` is missing
+
+Both binaries come from the **Docker-capable worker image**, which a ShipIt
+stack builds on top of the plain worker image and names to the orchestrator as
+`SESSION_WORKER_DOCKER_IMAGE`. Check once, before you rely on them:
+
+```bash
+command -v docker journalctl    # two paths
+```
+
+Fewer than two paths means this container runs the plain worker image: the
+host's stack did not build the Docker-capable image, or does not name it. That
+is a defect in how ShipIt is deployed on this host, not a fault in what you were
+asked to investigate, and it is one cause, not several — do not look for it in
+the proxy or the journal mounts, which are wired separately and usually work.
+The orchestrator's log names it when it creates the container: `… no
+Docker-capable worker image is configured (SESSION_WORKER_DOCKER_IMAGE)`.
+
+Tell the operator first. The remedy is theirs: update this ShipIt install, which
+rebuilds its images. The image is chosen when a container is created, so a
+container that already runs keeps the plain image until it is replaced.
+
+Until then:
+
+- **Docker has a fallback.** The proxy answers the Docker Engine API over HTTP,
+  with the same read-only limits:
+  ```bash
+  curl -s "http://docker-socket-proxy:2375/containers/json?all=1"
+  curl -s "http://docker-socket-proxy:2375/containers/<name>/json"
+  curl -s --output - "http://docker-socket-proxy:2375/containers/<name>/logs?stdout=1&stderr=1&tail=200"
+  curl -s "http://docker-socket-proxy:2375/images/json"
+  ```
+  For a container without a TTY the log response is a multiplexed stream: each
+  frame of output starts with an 8-byte binary header. The text between the
+  headers is intact; do not cut a fixed prefix from every line to remove them.
+- **The journal has none.** Its files are binary and only `journalctl` reads
+  them. Say that the journal was not read; never report it as empty.
 
 ## Your workspace git — ShipIt does not commit it
 

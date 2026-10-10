@@ -88,7 +88,15 @@ Two places carry the grant, and both say **"Trust this repository"**:
 The decision is **per remote**, and it is remembered for every session on that
 repository — nobody is asked twice. Granting it needs no restart: the deferred
 install and compose start running on the spot. A repository ShipIt **created**
-from a template is trusted at creation and never reaches this state.
+from a template is trusted at creation and never reaches this state. Neither
+does ShipIt's own source repository once an Ops session has started a fix
+session on it: the host already runs that code, so ShipIt trusts it then.
+
+An agent cannot start a session on an untrusted repository either. A
+`shipit session create` or a "start in another repository" card that targets
+one is refused before anything is created, and the refusal names the
+repository. The answer is the same grant: the user opens a session on that
+repository and selects **Trust this repository**.
 
 One limit worth knowing before recommending a clean-up: trust is stored **on the
 repository's entry**, so *removing* a repository discards it. Add the same

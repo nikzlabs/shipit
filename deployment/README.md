@@ -255,6 +255,12 @@ The local install runs in **manual update mode**: the channel selector in
 **Settings → Advanced → Software Updates** works, but "Update Now" defers to `update.sh` rather than
 updating in place (no host-side systemd watcher locally).
 
+> **Ops sessions on an older local install:** an Ops session, and any session with
+> Docker access, runs a second worker image that adds the Docker CLI and `journalctl`. The local
+> install did not build it, so those sessions started without either tool. `update.sh` now builds it
+> after the worker image; run it once. A session that was already open keeps its old container until
+> that container is replaced.
+
 > Contributing to ShipIt? `docker/local/prod.sh` builds the prod images from your *current checkout*
 > and runs them in the foreground — the prod counterpart of `docker/local/dev.sh` — for testing in a
 > prod-like environment without installing into `~/.shipit`.

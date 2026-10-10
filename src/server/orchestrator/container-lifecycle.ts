@@ -460,6 +460,24 @@ export function buildEnv(
   return env;
 }
 
+/**
+ * Ops and Docker-access sessions need the image with the docker CLI and journalctl (docs/128).
+ * Without one they still start on the base image, so the fallback must be visible in the log.
+ */
+export function resolveWorkerImageName(
+  config: Pick<ContainerConfig, "sessionId" | "imageName" | "dockerAccess" | "opsSession">,
+  dockerImageName: string | undefined,
+): string {
+  if (!config.dockerAccess && !config.opsSession) return config.imageName;
+  if (dockerImageName) return dockerImageName;
+  console.warn(
+    `[containers] ${config.sessionId} is ${config.opsSession ? "an ops" : "a Docker-access"} session, but no `
+    + "Docker-capable worker image is configured (SESSION_WORKER_DOCKER_IMAGE). "
+    + `It runs ${config.imageName}, which has no docker CLI and no journalctl.`,
+  );
+  return config.imageName;
+}
+
 export async function buildOrchestratorCallbackEnv(sessionId: string): Promise<string[]> {
   const orchestratorPort = process.env.PORT || "3000";
   const orchestratorHost = orchestratorCallbackHost();
@@ -713,9 +731,7 @@ export async function createContainer(
   const workerToken = generateWorkerToken();
   env.push(`${WORKER_TOKEN_ENV}=${workerToken}`);
 
-  const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
-    ? deps.dockerImageName
-    : config.imageName;
+  const imageName = resolveWorkerImageName(config, deps.dockerImageName);
 
   let sessionNetworkName: string | undefined;
   if (config.dockerAccess) {

@@ -177,6 +177,39 @@ describe("Integration: starting a proposed cross-repo session", () => {
     });
   });
 
+  it("refuses an untrusted target before it creates a session there (docs/243)", { timeout: 30_000 }, async () => {
+    repoStore.setTrusted(TARGET_URL, false);
+    const proposed = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/propose-repo-session`,
+      payload: { repo: "acme/api", title: "Cursor pagination", prompt: PROMPT },
+    });
+    const { cardId } = proposed.json() as { cardId: string };
+    const start = () => app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/repo-session-proposals/${cardId}/start`,
+    });
+
+    const refused = await start();
+
+    expect(refused.statusCode).toBe(403);
+    const { error } = refused.json() as { error: string };
+    expect(error).toContain("acme/api");
+    expect(error).toContain("Trust this repository");
+    expect(chatHistory.findRepoSessionProposalCard(parentId, cardId)).toMatchObject({
+      state: "failed",
+      errorMessage: error,
+    });
+    const onTarget = () =>
+      sessionManager.listAllIncludingWarm().filter((s) => s.remoteUrl === TARGET_URL && !s.warm);
+    expect(onTarget()).toEqual([]);
+
+    // The card stays retryable, and the retry starts exactly one session.
+    repoStore.setTrusted(TARGET_URL, true);
+    expect((await start()).statusCode).toBe(200);
+    expect(onTarget()).toHaveLength(1);
+  });
+
   it("refuses to start the same proposal twice", { timeout: 30_000 }, async () => {
     const { cardId } = await proposeAndStart();
 

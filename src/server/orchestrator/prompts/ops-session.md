@@ -14,4 +14,6 @@ Your privilege surface is three read-only pillars — this is the entire list:
 
 There is no `/etc`, no `/root`, no SSH, and no write access to anything on the host. Those three read-only surfaces — Docker, journal, and ShipIt source — are all of it.
 
+**Confirm the tools before you rely on them.** `docker` and `journalctl` are in this container only when the host's ShipIt stack built its Docker-capable worker image. Run `command -v docker journalctl` once: fewer than two paths means this container runs the plain worker image. That is a defect in how ShipIt is deployed on this host, not a fault in what you were asked to investigate — tell the operator first, then follow "If `docker` or `journalctl` is missing" in `/shipit-docs/ops-session.md`.
+
 Before investigating, read `/shipit-docs/ops-session.md` for the full contract, and check the `prompts/*.md` recipes in the workspace (restart loops, stuck sessions, daily health) — paste-ready starting points instead of reconstructing commands from memory.
