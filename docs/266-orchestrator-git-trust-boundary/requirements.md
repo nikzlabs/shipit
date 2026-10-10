@@ -137,6 +137,22 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
     `git add -A` exit 128 with nothing staged, including every unrelated file
     the turn changed.
 
+16. Repository-controlled code that executes during an orchestrator-side git
+    operation — a hook, a `filter`/`fsmonitor`/`credential.helper`, any
+    config-driven exec — MUST NOT be able to reach the orchestrator's HTTP API
+    with the user's authority. The git child runs in the orchestrator's own
+    network namespace, which req 1's "trust context" includes. *(Decided by the
+    requester on 2026-10-10 — see Resolved questions, Q6. This is the concrete
+    form of requirements 1 and 11 for the network path, against the loopback
+    surface `plan.md` recorded as "not audited" — planning#668. The chosen
+    mechanism, and the one path it does not yet cover, are in Q6's receipt and
+    `plan.md` §2 E6 — stated there rather than here, since this is the observable
+    goal, not the design.)*
+
+    *Not a change to requirement 9.* The chosen fix is at the API boundary, not
+    at the hook suppression, so a project's own hooks keep firing on the
+    auto-commit exactly as E4 shipped them.
+
 ## Requirement provenance
 
 Separating what was asked for from what the design supplied, per `CLAUDE.md`
@@ -160,6 +176,7 @@ into one").
 | 13 | ✅ decided 2026-08-16 (Q3 → a, "Let's do that") | — |
 | 14 | ✅ requested 2026-08-16, after the requester **measured** the silent-omission behaviour this document had asserted was visible | — |
 | 15 | ✅ requested 2026-08-16, after the requester measured the unreadable-**file** case and asked whether req 14 covered it | the finding that it does **not**, so this is a new requirement rather than a widened one |
+| 16 | ✅ filed as planning#668; mechanism decided 2026-10-10 (Q6 → a) | the netns-reach framing (req 1's trust context includes the orchestrator's own namespace), and the host-forwarder residual the review surfaced |
 
 Requirements 6, 7 and 10 are the three places this document went beyond what it
 was handed. All three are load-bearing — 6 rules out the container option, 7
@@ -258,6 +275,69 @@ called out rather than folded in.
 None.
 
 ## Resolved questions
+
+**2026-10-10 — The host-forwarder residual to req 16 (raised by the review of the
+E6 implementation). → accept as a tracked residual; filed as planning#675.**
+Requester approved accept-and-track. The API-guard fix (E6) closes the direct
+loopback/own-address path, but not a git child relaying through a host-side
+forwarder (the VPS Tailscale `socat` forwarder) back to the published API port —
+the guard sees the forwarder's host peer and cannot distinguish it. Closing it
+needs a network-layer control on the orchestrator's own git child (an egress rule
+keyed on the dropped uid, or running the commit in an isolated namespace — the
+option declined on cost in Q6), which is bigger than req 16's API-guard fix. It
+is the docs/319 (planning#621) "leaves the host and comes back" shape and only
+reachable on a host running such a forwarder, so it is tracked in **planning#675**
+rather than built here. E6 ships as the direct-path fix.
+
+**2026-10-10 — Q6: planning#668 — repo-controlled git config (hooks, filters,
+`fsmonitor`, helpers) runs in the orchestrator's network namespace and reaches
+the API over loopback, where the container-origin guard trusts it as the user.
+Which fix mechanism? → (a) guard the orchestrator's own container.** Requester
+chose the recommended option: in `api-container-guard.ts`, stop treating the
+orchestrator's own container addresses (loopback and its own bridge IPs) as "the
+user", denying them like an unknown container. Recorded as **requirement 16**.
+
+Why this over the two alternatives, both of which were put to the requester:
+
+- **Run the git in an isolated network namespace** (the issue's first option)
+  covers the whole class too, but the orchestrator container holds no
+  `CAP_SYS_ADMIN` — egress uses sidecar *containers* for exactly this reason —
+  so it needs either a privilege increase on the orchestrator or a sidecar
+  container, and the latter reintroduces the req 6 availability dependency on the
+  commit path that Option C was rejected for. More mechanism than req 9's "if
+  it's easy" clause allows.
+- **Revert E4 (turn hooks off on auto-commit again)** changes requirement 9 and
+  covers **only** the hook vector: `filter.*.clean`, `core.fsmonitor` and
+  `credential.helper` execute on every orchestrator git op regardless of the
+  `core.hooksPath` override (reproduced — see `plan.md` §1 and the probe test
+  `integration_tests/git-payload-api-reach.test.ts`), and still reach the API.
+  Insufficient on its own.
+
+The chosen option covers the whole class of git-config exec — hooks, filters,
+`fsmonitor`, helpers, and any future one — on the **direct** path to the API:
+the orchestrator's own loopback and the addresses on its own interfaces (read
+fresh, since it joins session networks at runtime). It keeps req 9 (hooks keep
+firing) and adds no runtime dependency to the commit path (req 6). Its one cost,
+accepted in the same answer: a dev/local exemption so ShipIt's own
+single-container dev stack, whose in-container Vite proxy legitimately calls the
+API over loopback, keeps working (`SHIPIT_TRUST_OWN_LOOPBACK`, and `local`
+runtime mode / test mode). This matches how the security model already treats a
+developer's own machine.
+
+**One residual it does not close, found by the independent review of the
+implementation (2026-10-10) and left open for the requester.** The git child
+shares the orchestrator's netns but is not itself behind an egress firewall (only
+session containers are). On a deployment with a **host-side forwarder** — the VPS
+Tailscale `socat` forwarder — the child could reach the forwarder's address and
+be relayed to the published API port, where the guard sees the forwarder's
+(host/gateway) peer and cannot tell it from a legitimate browser. This is the
+docs/319 "a path that leaves the host and comes back" shape, not the direct
+loopback shape planning#668 names, and the guard provably cannot close it by peer
+address. Closing it needs a network-layer control on the orchestrator's own git
+child (its own egress rule, or the netns-isolation option the requester declined
+on cost) — a bigger change than req 16's API-guard fix. Its disposition —
+accept-and-track, or do the heavier work now — is an open question for the
+requester; see the Open questions entry.
 
 **2026-09-22 — Q5: should hooks run beyond the auto-commit? → no, the
 auto-commit only.** Requester: *"Autocommit only is fine for now."*

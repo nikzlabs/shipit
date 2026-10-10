@@ -316,6 +316,85 @@ describe("registerContainerOriginGuard — request gating", () => {
   });
 });
 
+// planning#668 (docs/266 req 16): a request from the orchestrator's OWN network
+// namespace — a dropped-uid git child running repo-controlled hooks/filters —
+// reaches the API over loopback. It must be refused, not trusted as the user.
+describe("registerContainerOriginGuard — the orchestrator's own container (planning#668)", () => {
+  const OWN_BRIDGE_IP = "172.18.0.2";
+
+  async function build(trustOwnContainerLoopback: boolean): Promise<FastifyInstance> {
+    const app = Fastify({ logger: false });
+    registerContainerOriginGuard(app, {
+      containerManager: {
+        getSessionByContainerIp: (ip: string) =>
+          ip === CONTAINER_IP ? { sessionId: OWN_SESSION } : undefined,
+      },
+      ownAddresses: () => [OWN_BRIDGE_IP, "::1"],
+      trustOwnContainerLoopback,
+    });
+    app.get("/api/bootstrap", async () => ({ ok: true }));
+    app.put("/api/secrets", { config: { containerAccessible: true } }, async () => ({ ok: true }));
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/services",
+      { config: { containerAccessible: true } },
+      async () => ({ ok: true }),
+    );
+    await app.ready();
+    return app;
+  }
+
+  it("refuses the orchestrator's own loopback the whole API", async () => {
+    const app = await build(false);
+    for (const ip of ["127.0.0.1", "::1", "::ffff:127.0.0.1"]) {
+      const res = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: ip });
+      expect(res.statusCode, ip).toBe(403);
+    }
+    await app.close();
+  });
+
+  it("refuses the orchestrator's own bridge address", async () => {
+    const app = await build(false);
+    const res = await app.inject({ method: "PUT", url: "/api/secrets", remoteAddress: OWN_BRIDGE_IP });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("still admits a browser and the caller's own session container", async () => {
+    const app = await build(false);
+    expect((await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "GET", url: `/api/sessions/${OWN_SESSION}/services`, remoteAddress: CONTAINER_IP,
+    })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("trusts its own loopback where the single-container dev stack serves the UI through it", async () => {
+    const app = await build(true);
+    expect((await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: "127.0.0.1" })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  // The orchestrator joins session networks at runtime, so the address set must be
+  // read fresh — a snapshot taken at startup would miss the new address (planning#668).
+  it("refuses an address the orchestrator gains after startup", async () => {
+    const LATE_IP = "172.30.0.2";
+    let current = [OWN_BRIDGE_IP];
+    const app = Fastify({ logger: false });
+    registerContainerOriginGuard(app, {
+      containerManager: { getSessionByContainerIp: () => undefined },
+      ownAddresses: () => current,
+      trustOwnContainerLoopback: false,
+    });
+    app.get("/api/bootstrap", async () => ({ ok: true }));
+    await app.ready();
+
+    expect((await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: LATE_IP })).statusCode).toBe(200);
+    current = [OWN_BRIDGE_IP, LATE_IP]; // the orchestrator joined another network
+    expect((await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: LATE_IP })).statusCode).toBe(403);
+    await app.close();
+  });
+});
+
 describe("registerContainerOriginGuard — cost of the hook", () => {
   const OPS_SERVICE_IP = "172.31.0.7";
   let app: FastifyInstance;

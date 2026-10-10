@@ -300,6 +300,12 @@ export async function registerRoutes(
     scheduleNotes,
     scheduleNotesRequests,
     containerManager: containerManager ?? undefined,
+    // planning#668: the own-container API denial is skipped only where ShipIt's own
+    // UI calls the API over the orchestrator's loopback — the single-container dev
+    // stack (SHIPIT_TRUST_OWN_LOOPBACK), local mode, and test mode.
+    trustOwnContainerLoopback:
+      deps.trustOwnContainerLoopback
+      ?? (isTestMode || runtimeMode === "local" || process.env.SHIPIT_TRUST_OWN_LOOPBACK === "1"),
     prStatusPoller,
     releaseStatusPoller,
     mergeWatchManager,
