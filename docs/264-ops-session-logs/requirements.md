@@ -26,6 +26,8 @@ hand and paste it into chat.
    the filter is applied **at the store read**, not in the renderer.
 4. Agent output, user messages, assistant text, prompts, queued messages, and
    anything from the workspace are never returned — by any flag, in any mode.
+   *(Still true of `shipit session logs`. Since 2026-10-10 a different command
+   returns a session's chat: `docs/326-ops-session-transcript`.)*
 5. The subcommand is gated on `kind: "ops"`, exactly as the rest of the ops
    surface is. An ordinary session must not gain it.
 6. Output is redacted the same way the rest of the ops surface redacts.
@@ -66,7 +68,9 @@ lines, reported `384 server line(s)` withheld, and said nothing about any push.
   read capability only.
 - Any widening of the "no reading another session's conversation" boundary
   stated in `/shipit-docs/ops-session.md`. See `plan.md` § *Why this is not the
-  boundary it looks like*.
+  boundary it looks like*. *(The operator reversed that boundary on 2026-10-10,
+  in `docs/326-ops-session-transcript`. This feature did not widen it and still
+  does not: the log read is unchanged.)*
 
 ## Open questions
 

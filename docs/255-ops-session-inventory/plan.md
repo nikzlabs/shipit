@@ -93,7 +93,10 @@ deliberately not fixed here: this surface must be safe regardless of what some
 other path chose to store.)
 
 The line is deliberately drawn at *"that a session exists and what it owns"*.
-An Ops session sees inventory; it never reads what the user said. Note what is
+Through this projection an Ops session sees inventory; it never reads what the
+user said. (Since 2026-10-10 a separate command returns a session's chat, by
+the operator's decision: `docs/326-ops-session-transcript`. This projection is
+unchanged.) Note what is
 withheld even though it is cheap to add: `latestAssistantMessage` is on the
 sibling `ChildSessionView` projection (`services/child-sessions.ts`) and is
 correct there — a parent is entitled to its own child's output — but it is

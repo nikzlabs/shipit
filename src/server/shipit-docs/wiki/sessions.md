@@ -473,7 +473,7 @@ others exist for a reason worth knowing:
 |---|---|
 | **Warm** | A prepared, empty session so "New session" is instant. Becomes ordinary on first message. |
 | **Sandbox** | An empty workspace with no repository, and its own capability switches — a scratchpad that can still clone and open pull requests. See `/shipit-docs/sandbox-session.md`. |
-| **Ops** | ShipIt's own operations session, for looking at ShipIt itself and at other sessions. Reached from a session's menu. See `/shipit-docs/ops-session.md`. |
+| **Ops** | ShipIt's own operations session, for looking at ShipIt itself and at other sessions. Its agent can read the chat of any session on the host — read-only, with credentials redacted — and cannot write to one. Reached from a session's menu. See `/shipit-docs/ops-session.md`. |
 
 ## Who does what
 
