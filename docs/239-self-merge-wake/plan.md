@@ -129,9 +129,18 @@ stays where it is. This runs on **every start**, not as a one-time migration —
 migration (`SELF_MERGE_WATCH_MIGRATION` in `shared/database.ts`) only adds the column.
 After a rollback the older code writes self-watches into `merge_watch` again, and a
 migration that already ran would leave them there to be read as a parent's watch and
-overwritten by the next parent arm. A value found there is always the newer arming (only
+overwritten by the next parent arm. A value found there is always the newer state (only
 the older code writes it, and only while this code does not run), so it replaces what the
-new column holds — the same rule as a re-arm.
+new column holds — the same rule as a re-arm. A watch counts as the session's own when it
+has `kind: "self"` or names the session as its own `parentSessionId`; the second test
+catches a watch the older code already delivered, which it stored without `kind`.
+
+**One rollback case stays open.** The older code does not know the new column. If it
+*cancels* a self-watch (or clears one on a closed PR), it sets `merge_watch` to null, and
+that is indistinguishable from never having touched the row. A self-watch that this code
+armed before the rollback then comes back after the roll-forward and can still fire. It
+needs a rollback of this exact change while a self-watch is armed; the wake it causes
+starts with the guarded `shipit branch reset-to-base`, and its arm card still has Cancel.
 
 Nothing else is copied into the watch: `mergedHeadSha` already lives on the session, and
 the delivery fields belong to docs/196's machinery.

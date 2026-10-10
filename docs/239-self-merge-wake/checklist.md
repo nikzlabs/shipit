@@ -17,7 +17,8 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] The self-watch has its own column (`self_merge_watch`); a parent's watch and the
       session's own coexist, and one merge delivers both
 - [x] Older rows that hold a self-watch in `merge_watch` are moved on every start, so a
-      rollback to the older code and back loses nothing
+      watch that the older code armed or delivered during a rollback is not read as a
+      parent's (a watch it *cancelled* is the one open case; see the plan's Storage section)
 - [x] Every arm, replacement and refusal logs with the `[merge-watch]` prefix; so does
       every watch the manager drops and every cancel that clears one
 - [x] Replacing a watch still armed on another PR appends a persisted note

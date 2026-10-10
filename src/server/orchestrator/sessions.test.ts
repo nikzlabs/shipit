@@ -1917,6 +1917,21 @@ describe("docs/239-self-merge-wake — a self-watch stored by older code moves t
     expect(afterRollForward.getMergeWatch("s")).toBeUndefined();
   });
 
+  it("also moves a watch the older code already delivered, which it stored without `kind`", () => {
+    const beforeRollback = new SessionManager(dbManager);
+    beforeRollback.track("s", "S", "/ws/s");
+    beforeRollback.setSelfMergeWatch("s", { ...SELF, state: "armed" });
+    const delivered = { parentSessionId: "s", state: "delivered" as const, registeredAt: "t0", deliveredAt: "t2" };
+    dbManager.db.prepare("UPDATE sessions SET merge_watch = ? WHERE id = 's'").run(JSON.stringify(delivered));
+
+    const afterRollForward = new SessionManager(dbManager);
+
+    // Without the move, the armed watch from before the rollback would wake the session again.
+    expect(afterRollForward.getSelfMergeWatch("s")).toEqual(delivered);
+    expect(afterRollForward.getMergeWatch("s")).toBeUndefined();
+    expect(afterRollForward.listPendingMergeWatches()).toEqual([]);
+  });
+
   it("reads JSON with any spacing, and leaves corrupt JSON where it is", () => {
     storeAsOlderCode("spaced", JSON.stringify(SELF, null, 2));
     storeAsOlderCode("corrupt", '{"kind":"self"');

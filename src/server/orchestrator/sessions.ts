@@ -285,9 +285,10 @@ export class SessionManager {
   /**
    * docs/239-self-merge-wake — a session's own watch belongs in `self_merge_watch`. Code older than
    * that column wrote it into `merge_watch`, and does so again after a rollback, so this runs on
-   * every start and not as a one-time migration. Such a value is always the newer arming (only the
+   * every start and not as a one-time migration. Such a value is always the newer state (only the
    * older code writes it, and only while this code does not run), so it replaces what the new
-   * column holds, as a re-arm does.
+   * column holds, as a re-arm does. A session is never its own parent, so `parentSessionId` also
+   * identifies a watch the older code already delivered, which it stored without `kind`.
    */
   private adoptLegacySelfMergeWatches(): void {
     const rows = this.db
@@ -295,7 +296,8 @@ export class SessionManager {
       .all() as { id: string; merge_watch: string; self_merge_watch: string | null }[];
     for (const row of rows) {
       try {
-        if ((JSON.parse(row.merge_watch) as SessionMergeWatch).kind !== "self") continue;
+        const watch = JSON.parse(row.merge_watch) as SessionMergeWatch;
+        if (watch.kind !== "self" && watch.parentSessionId !== row.id) continue;
       } catch {
         continue;
       }

@@ -308,8 +308,10 @@ delivery-failure card instead of vanishing into a server log.
   (now-archived) merged child. A watch that already **observed** its merge
   carries the merge facts itself (`SessionMergeWatch.mergedPr`, written at
   `armed → merge-observed`), and reconcile, the retry supervisor and the
-  failure card all read them from there. The child's PR snapshot is the source
-  only for a watch still `armed` (`loadPersisted` seeds it). The snapshot alone
+  failure card all read them from there. The child's PR snapshot
+  (`loadPersisted` seeds it) is the source for a watch still `armed`, and the
+  fallback for a watch that observed its merge before `mergedPr` existed. The
+  snapshot alone
   was not durable enough: a docs/202 re-arm nulls it, and a child that also
   watches its own PR resets its branch — a re-arm — in the wake turn of the very
   merge the parent is still waiting to hear about. Until `mergedPr`, the facts
