@@ -150,16 +150,25 @@ a parent card that cannot be recorded is logged, and the caller still receives t
 
 Where these rules stop:
 
-- **Inside the claim.** The removal starts when `claimService.claim` returns. A claim that
-  fails after it allocated a session is the claim service's to clean up, for every caller
-  and not only a spawn. What it can leave is an ungraduated draft, which no caller can see
-  or address; the abandoned-draft reclaim (`idle-enforcer.ts`) stops its container and the
-  startup sweep (`startup-tasks.ts`) deletes its row.
+- **Inside the claim.** The removal starts when `claimService.claim` returns, so the claim
+  must not reject after it allocated a session: no caller would hold the id. Verified at
+  `services/claim-session.ts`, `claim()`: a clone that fails deletes the row it created; the
+  refresh of a warm or reused session fails soft as a whole, its cache-freshness check
+  included; and the two steps after the allocation, the `markStarted` stamp and the standby
+  probe for the log line, cannot fail the claim. A stamp
+  that fails is logged and the session keeps the times it had before the claim, so the docs
+  viewer can count the files the clone wrote as changed by the session.
 - **Registration is not gated.** The cross-repository proposal registers and clones a
   target ShipIt has never seen before `spawnChildSession` runs, so an untrusted target is
   refused after its repository appeared in the sidebar. That is intended: this design
-  never gated a clone, the card told the user the repository would be added, and a
-  registered repository is what makes the Trust action reachable.
+  never gated a clone, the card told the user the repository would be added, and only a
+  registered repository can hold the grant.
+
+The cross-repository card is also a consent surface
+(docs/303-cross-repo-session-proposal req 12). Its button reads "Trust and start in
+owner/repo", and its start route calls `grantRepoTrust` before the spawn when the click
+carries the consent. The route is not container-accessible, so only the user can send it.
+The design is in that package's `plan.md`, "Trusting the target from the card".
 
 ### Re-checking queued and recovered work
 
@@ -239,6 +248,8 @@ This design does not invent revocation requirements. It does ensure queue drains
 
 - `integration_tests/spawn-trust-gate.test.ts`: an untrusted target answers `403 repository_untrusted`, with no claim, no child row, no checkout and no runner; the same idempotency key succeeds after the Trust action; a child whose first dispatch is refused after it was created is removed.
 - `services/child-sessions-trust-gate.test.ts`: the refusal happens before `claimService.claim`; a failure after the claim calls the discard; a discard that fails puts the child's id in the error.
+- `services/claim-session.test.ts`: a claim whose `markStarted` stamp and standby probe both fail still returns the session.
+- `integration_tests/propose-repo-session-start.test.ts`: a card start without the consent answers `403 repository_untrusted` and grants nothing; a start with it trusts the repository and starts one session.
 - `services/session-discard-spawned-child.test.ts`: the teardown order; a child with a running turn or a queued message is kept; a container that cannot be destroyed keeps the session.
 - `integration_tests/ops-fix-spawn.test.ts`: an Ops fix spawn trusts the ShipIt source repository and the child receives its prompt; a spawn that the Ops-only check or the write-access check refuses grants no trust; a pinned commit that is not in the target repository removes the child.
 
@@ -301,4 +312,4 @@ After implementation, removing any route-specific client guard should worsen UX 
 - Trust resolution: `repo-store.ts`, `sessions.ts`, trust route/services.
 - Client state and rollback: `App.tsx`, `MessageInput`, `RepoTrustBanner.tsx`, `send-user-message.ts`, `dispatch-agent-message.ts`, connection/message handlers.
 - Tests: co-located unit tests plus WS/HTTP integration tests, warm-session first-turn coverage, and all direct dispatch consumers named in the ingress inventory.
-- Spawn admission: `services/child-sessions.ts` (`spawnChildSession`, `SpawnRepositoryUntrustedError`), `services/session.ts` (`discardSpawnedChild`), `services/repos.ts` (`grantRepoTrust`), `api-routes-session-spawn.ts`, `api-routes-shipit-fix.ts`, `api-routes-propose-repo-session.ts`.
+- Spawn admission: `services/child-sessions.ts` (`spawnChildSession`, `SpawnRepositoryUntrustedError`), `services/claim-session.ts` (`claim`), `services/session.ts` (`discardSpawnedChild`), `services/repos.ts` (`grantRepoTrust`), `api-routes-session-spawn.ts`, `api-routes-shipit-fix.ts`, `api-routes-propose-repo-session.ts`.

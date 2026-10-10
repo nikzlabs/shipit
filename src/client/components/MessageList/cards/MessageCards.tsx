@@ -62,7 +62,7 @@ export interface MessageCardCallbacks {
   onScheduleProposalDecision?: (cardId: string, action: ScheduleProposalAction, timeZone?: string) => Promise<void>;
   onScheduleNotesAccessDecision?: (cardId: string, action: ScheduleNotesAccessAction) => Promise<void>;
 
-  onStartRepoSession?: (cardId: string) => Promise<void>;
+  onStartRepoSession?: (cardId: string, options?: { trust: true }) => Promise<void>;
   onDeclineRepoSession?: (cardId: string) => Promise<void>;
   onDeliverSessionMessage?: (cardId: string) => Promise<void>;
   onDeclineSessionMessage?: (cardId: string) => Promise<void>;

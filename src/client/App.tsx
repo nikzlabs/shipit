@@ -1671,10 +1671,11 @@ export default function App() {
             onUndoIssueWrite={(cardId) =>
               send({ type: "undo_issue_write", cardId })
             }
-            onStartRepoSession={async (cardId) => {
+            onStartRepoSession={async (cardId, options) => {
               if (!sessionId) return;
               const res = await apiPost<{ startedSessionId?: string; startedAt?: string }>(
                 `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/start`,
+                options,
               );
               // Same reason as the decline below: no runner, no WS update.
               if (!res?.startedSessionId || useSessionStore.getState().sessionId !== sessionId) return;

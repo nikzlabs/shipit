@@ -144,14 +144,15 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     workspaceDir: string,
     forceFetch: boolean,
   ): Promise<number> {
-    if (
-      !forceFetch &&
-      deps.shouldSkipClaimFetch?.(url) &&
-      (await isWorkspaceCloneInSyncWithCache(workspaceDir, deps.getSharedRepoDir(url)))
-    ) {
-      return 0;
-    }
+    // The caller has taken the session out of the pool by now, so this must fail soft as a whole.
     try {
+      if (
+        !forceFetch &&
+        deps.shouldSkipClaimFetch?.(url) &&
+        (await isWorkspaceCloneInSyncWithCache(workspaceDir, deps.getSharedRepoDir(url)))
+      ) {
+        return 0;
+      }
       const r = await refreshCloneToLatestMain(
         workspaceDir,
         url,
@@ -328,11 +329,18 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         return claimed;
       });
 
-      // Exclude clone-time file writes from the docs viewer's session-modified group.
-      deps.sessionManager.markStarted(result.sessionId);
+      // The session exists and no caller holds its id yet, so nothing from here on may reject.
+      try {
+        // Exclude clone-time file writes from the docs viewer's session-modified group.
+        deps.sessionManager.markStarted(result.sessionId);
+      } catch (err) {
+        console.error(`[claim-session] Could not stamp ${result.sessionId} as started:`, getErrorMessage(err));
+      }
 
       // Inspect Docker: a warm-pool pointer can survive a missed container die event.
-      const standbyRunning = await deps.containerManager?.isTrackedContainerRunning(result.sessionId);
+      const standbyRunning = await deps.containerManager
+        ?.isTrackedContainerRunning(result.sessionId)
+        .catch(() => undefined);
       const standby = standbyRunning === true ? "ready"
         : standbyRunning === false ? "missing"
         : "unknown";

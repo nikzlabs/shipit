@@ -25,6 +25,8 @@
 - [x] Remove a child whose spawn fails after the claim; name its id when the removal fails
 - [x] Trust the ShipIt source repository for an Ops `--shipit-source` spawn, after the Ops-only and write-access checks (requirement 7)
 - [x] Give a dispatch-time refusal on the spawn route its `403` and code instead of a `500`
+- [x] Keep a claim from rejecting after it allocated a session (`markStarted`, standby probe)
+- [x] Carry the consent on the cross-repository card (docs/303-cross-repo-session-proposal req 12)
 - [x] Tests for the ordering, the rollback and the grant
 
 ## Interactive ingress migration

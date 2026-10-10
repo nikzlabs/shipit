@@ -13,7 +13,11 @@ const parent = {
   agentId: "claude",
 } as SessionInfo;
 
-function harness(opts: { trusted: boolean; discard?: () => Promise<void> }) {
+function harness(opts: {
+  trusted: boolean;
+  discard?: () => Promise<void>;
+  onChildClaimed?: (sessionId: string) => void;
+}) {
   const claim = vi.fn().mockResolvedValue({
     sessionId: "child-1",
     // Not a git checkout, so the first step after the claim fails.
@@ -34,7 +38,7 @@ function harness(opts: { trusted: boolean; discard?: () => Promise<void> }) {
       { get: () => undefined, getOrCreate } as never,
       { claim },
       parent.id,
-      { prompt: "do the thing", title: "Child" },
+      { prompt: "do the thing", title: "Child", ...(opts.onChildClaimed ? { onChildClaimed: opts.onChildClaimed } : {}) },
       "claude",
       undefined,
       undefined,
@@ -95,5 +99,29 @@ describe("spawnChildSession — a failure after the child exists", () => {
     expect((err as ServiceError).statusCode).toBe(500);
     expect((err as ServiceError).message).toMatch(/Failed to read claimed branch/);
     expect((err as ServiceError).message).toMatch(/child-1 .* still\s+exists: .*database is locked/);
+  });
+
+  it("tells the caller the child's id as soon as the claim returns", async () => {
+    const onChildClaimed = vi.fn();
+    const h = harness({ trusted: true, onChildClaimed });
+
+    await h.run().catch(() => {});
+
+    expect(onChildClaimed).toHaveBeenCalledExactlyOnceWith("child-1");
+    expect(h.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("removes the child when the caller cannot record its id", async () => {
+    const h = harness({
+      trusted: true,
+      onChildClaimed: () => {
+        throw new Error("could not record the child");
+      },
+    });
+
+    const err = await h.run().catch((e: unknown) => e);
+
+    expect(h.discardChild).toHaveBeenCalledWith("child-1");
+    expect((err as Error).message).toBe("could not record the child");
   });
 });

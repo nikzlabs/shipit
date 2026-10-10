@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import type { RepoGit } from "../repo-git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
+import type { SessionContainerManager } from "../session-container.js";
 import { createClaimSessionService } from "./claim-session.js";
 
 describe("createClaimSessionService", () => {
@@ -101,5 +102,50 @@ describe("createClaimSessionService", () => {
 
     const warm = await service.claim(url, { skipReuse: true });
     expect([warm.sessionId, warm.claimPath, slowClones]).toEqual(["warm-1", "warm", 1]);
+  });
+
+  it("still returns the session when a step after the allocation fails, because no caller could remove it", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claim-session-"));
+    dbManager = new DatabaseManager(path.join(tmpDir, "test.db"));
+    const sessionManager = new SessionManager(dbManager);
+    const repoStore = new RepoStore(dbManager);
+    const url = "https://github.com/example/app.git";
+    repoStore.add(url);
+    repoStore.setReady(url);
+    const warmWorkspace = path.join(tmpDir, "sessions", "warm-1", "workspace");
+    fs.mkdirSync(warmWorkspace, { recursive: true });
+    sessionManager.track("warm-1", "Warm session", warmWorkspace);
+    repoStore.setWarmSessionId(url, "warm-1");
+    vi.spyOn(sessionManager, "markStarted").mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const service = createClaimSessionService({
+      sessionManager,
+      repoStore,
+      createGitManager: () => { throw new Error("no git here"); },
+      createRepoGit: () => { throw new Error("not reached"); },
+      githubAuthManager: { authenticated: false } as unknown as GitHubAuthManager,
+      getSharedRepoDir: () => path.join(tmpDir, "repo-cache", "app"),
+      createSessionDirFull: () => { throw new Error("not reached"); },
+      sseBroadcast: () => {},
+      shouldSkipClaimFetch: () => { throw new Error("repository store is closed"); },
+      containerManager: {
+        isTrackedContainerRunning: () => Promise.reject(new Error("docker is down")),
+      } as unknown as SessionContainerManager,
+    });
+
+    try {
+      // The pool's pointer is gone by then, so a rejection here would strand the session.
+      const claimed = await service.claim(url, { skipReuse: true });
+
+      expect([claimed.sessionId, claimed.claimPath]).toEqual(["warm-1", "warm"]);
+      expect(repoStore.get(url)!.warmSessionId).toBeUndefined();
+      expect(logged).toHaveBeenCalledWith(expect.any(String), "repository store is closed");
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining("warm-1"), "database is locked");
+    } finally {
+      logged.mockRestore();
+    }
   });
 });

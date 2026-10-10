@@ -356,8 +356,10 @@ if you need to say what it is set to.
 repository, `propose_repo_session` puts a card in the transcript naming the
 repository and showing your prompt. **Start in owner/repo** starts an
 independent session there with the prompt already sent; **Decline** closes the
-card. Either way, a `[ShipIt]` line at the start of your next turn says what the
-user did, so never ask them. Details: `/shipit-docs/sessions.md`.
+card. When the user has not trusted that repository, the card says so and the
+button reads **Trust and start in owner/repo**. Either way, a `[ShipIt]` line at
+the start of your next turn says what the user did, so never ask them. Details:
+`/shipit-docs/sessions.md`.
 
 ## Quoting and re-using what is on screen
 

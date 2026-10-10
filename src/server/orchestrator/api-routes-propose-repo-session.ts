@@ -10,12 +10,14 @@ import {
   createClaimSessionService,
   discardSpawnedChild,
   ensureRepoReady,
+  grantRepoTrust,
   listRepos,
   spawnChildSession,
   ServiceError,
+  SpawnRepositoryUntrustedError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 /**
@@ -189,11 +191,35 @@ export async function registerProposeRepoSessionRoutes(
     };
   };
 
-  // The user's click. Not container-accessible: the agent proposes, the user starts.
-  app.post<{ Params: { sessionId: string; cardId: string } }>(
+  /**
+   * The session an earlier start of this card left, when that start never reported back.
+   * `delivered`: the card's prompt is in its transcript, so it IS the started session.
+   * `starting`: work is under way there, and the prompt can still be on its way into the transcript.
+   * Anything else is not this card's to claim or to remove, and the caller starts again.
+   */
+  const unfinishedStart = (
+    card: RepoSessionProposalCard,
+  ): { sessionId: string; state: "delivered" | "starting" } | undefined => {
+    const sessionId = card.pendingSessionId;
+    if (!sessionId || !deps.sessionManager.get(sessionId)) return undefined;
+    const prompt = card.prompt.trim();
+    const delivered = deps.chatHistoryManager.load(sessionId)
+      .some((m) => m.role === "user" && m.text.trim() === prompt);
+    if (delivered) return { sessionId, state: "delivered" };
+    // Before any "not ours" verdict: the prompt can wait in the queue behind another turn.
+    const runner = deps.runnerRegistry.get(sessionId);
+    return runner?.running === true || (runner?.queueLength ?? 0) > 0
+      ? { sessionId, state: "starting" }
+      : undefined;
+  };
+
+  // The user's click. Not container-accessible: the agent proposes, the user starts —
+  // and `trust` is the user's consent (docs/303 req 12), which no agent can send.
+  app.post<{ Params: { sessionId: string; cardId: string }; Body: { trust?: unknown } | undefined }>(
     "/api/sessions/:sessionId/repo-session-proposals/:cardId/start",
     async (request, reply: FastifyReply) => {
       const { sessionId, cardId } = request.params;
+      const trustGranted = request.body?.trust === true;
 
       if (startsInFlight.has(cardId)) {
         reply.code(409).send({ error: "That session is already starting." });
@@ -221,6 +247,23 @@ export async function registerProposeRepoSessionRoutes(
       }
 
       const patch = patcher(sessionId, cardId);
+      const recordStarted = (startedSessionId: string) => {
+        const startedAt = new Date().toISOString();
+        try {
+          patch({ state: "started", startedSessionId, startedAt, pendingSessionId: undefined });
+        } catch (err) {
+          // The session runs, and the card still names it as pending: the next start finds it.
+          console.error(`[repo-session-proposal] Could not record ${startedSessionId} on card ${cardId}:`, err);
+        }
+        return { ok: true, startedSessionId, startedAt };
+      };
+
+      const unfinished = unfinishedStart(card);
+      if (unfinished?.state === "delivered") return recordStarted(unfinished.sessionId);
+      if (unfinished) {
+        reply.code(409).send({ error: "That session is already starting." });
+        return;
+      }
 
       startsInFlight.add(cardId);
       patch({ state: "starting", errorMessage: undefined });
@@ -240,6 +283,9 @@ export async function registerProposeRepoSessionRoutes(
           deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
         }
 
+        // After registration: only a registered repository can hold the grant.
+        if (trustGranted && !deps.repoStore.isTrusted(readyUrl)) grantRepoTrust(deps, readyUrl);
+
         // Detached: the new session must not nest under this one, because a nested
         // session reads as belonging to this repository (docs/303 req 6).
         const result = await spawnChildSession(
@@ -256,6 +302,18 @@ export async function registerProposeRepoSessionRoutes(
             // session would append its standing instructions to it and start the
             // target on work the user never saw (e.g. a reviewer told not to edit).
             target: { kind: "inherit", overrides: {}, noRole: true },
+            // Before the prompt is sent: from here on, a start that never reports back
+            // has left a session, and only this record lets the next click find it.
+            onChildClaimed: (childId) => {
+              persistRepoSessionProposalTransition(
+                deps, deps.runnerRegistry.get(sessionId), sessionId, cardId, { pendingSessionId: childId },
+              );
+              // Read back: a card that left the history meanwhile makes the write a silent no-op.
+              const stored = deps.chatHistoryManager.findRepoSessionProposalCard(sessionId, cardId);
+              if (stored?.pendingSessionId !== childId) {
+                throw new ServiceError(409, "That proposal is no longer in this session's history.");
+              }
+            },
           },
           deps.defaultAgentId,
           deps.credentialsDir,
@@ -265,15 +323,19 @@ export async function registerProposeRepoSessionRoutes(
           (childId) => discardSpawnedChild(deps, childId),
         );
 
-        const startedAt = new Date().toISOString();
-        patch({ state: "started", startedSessionId: result.sessionId, startedAt });
-        return { ok: true, startedSessionId: result.sessionId, startedAt };
+        return recordStarted(result.sessionId);
       } catch (err) {
-        const message = err instanceof ServiceError
-          ? err.message
-          : `Could not start a session on ${card.repo}: ${getErrorMessage(err)}`;
+        // The second class is the same refusal from the dispatch, when trust changed after the check.
+        const untrusted = err instanceof SpawnRepositoryUntrustedError || err instanceof AgentTurnAdmissionError;
+        const message = untrusted
+          ? `${card.repo} is not trusted yet, so no session was started. Use "Trust and start" on this card.`
+          : err instanceof ServiceError
+            ? err.message
+            : `Could not start a session on ${card.repo}: ${getErrorMessage(err)}`;
         patch({ state: "failed", errorMessage: message });
-        reply.code(err instanceof ServiceError ? err.statusCode : 500).send({ error: message });
+        reply
+          .code(untrusted || err instanceof ServiceError ? err.statusCode : 500)
+          .send({ error: message, ...(untrusted ? { code: err.code } : {}) });
         return;
       } finally {
         startsInFlight.delete(cardId);
@@ -308,8 +370,27 @@ export async function registerProposeRepoSessionRoutes(
         return { ok: true, declinedAt: card.declinedAt };
       }
 
+      const patch = patcher(sessionId, cardId);
+      // "No session was started" must be true: an earlier start may have left one with its prompt.
+      const unfinished = unfinishedStart(card);
+      if (unfinished?.state === "delivered") {
+        const startedAt = new Date().toISOString();
+        patch({
+          state: "started", startedSessionId: unfinished.sessionId, startedAt, pendingSessionId: undefined,
+        });
+        reply.code(409).send({
+          error: "That session was already started.",
+          startedSessionId: unfinished.sessionId,
+        });
+        return;
+      }
+      if (unfinished) {
+        reply.code(409).send({ error: "That session is already starting." });
+        return;
+      }
+
       const declinedAt = new Date().toISOString();
-      patcher(sessionId, cardId)({ state: "declined", declinedAt, errorMessage: undefined });
+      patch({ state: "declined", declinedAt, errorMessage: undefined });
       return { ok: true, declinedAt };
     },
   );
