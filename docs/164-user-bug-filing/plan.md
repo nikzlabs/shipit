@@ -127,7 +127,7 @@ secret/PII *substrings* and replace with `[REDACTED]`:
   The patterns above take such a remote only in part. The e-mail pattern takes
   `git@github.com`, or a part of the host (`git@code.acme-internal` leaves
   `-internal`), before `ssh-remote` sees it, and `ssh-remote` needs `.git`. So
-  Stage 1 has three last steps:
+  Stage 1 has three last steps for a remote:
   1. `user@host:path` becomes `[REDACTED]` when the path has a `/` in it
      (planning#682).
   2. A redaction is extended over host characters, a colon and a path that
@@ -182,10 +182,50 @@ secret/PII *substrings* and replace with `[REDACTED]`:
   with no phrase before it (`url = github.com:acme/app.git`, "cloned from
   github.com:acme/app"), `From myhost:app` (one path part; the line of a fetch
   has no `.git`), a path below a directory whose name is a number
-  (`From myhost:2024/app`), and lines of git that have no `host:path` in them:
-  `Cloning into 'app'...` (the directory, which is the name of the repository
-  by default) and, from a plain ssh git server, `fatal: 'acme/app.git' does not
-  appear to be a git repository`.
+  (`From myhost:2024/app`).
+- **Messages that name a repository with no remote in them** (planning#685).
+  These steps are last too, after the three above, and they only replace text.
+  Each rule is the phrase before the name, the name, and the phrase after it. It
+  replaces the name and keeps the phrases.
+
+  | Line | Source of the text |
+  |---|---|
+  | `Cloning into 'app'...`, `Cloning into bare repository 'app.git'...` | git 2.39.5, observed |
+  | `fatal: destination path 'app' already exists and is not an empty directory.` | git 2.39.5, observed |
+  | `fatal: 'acme/app.git' does not appear to be a git repository` | git 2.39.5 with a plain ssh server, observed |
+  | `fatal: repository '/srv/git/acme/app.git' does not exist` | git 2.39.5, observed |
+  | `Permission to user/repo denied to other-user` | the titles of two pages of GitHub's documentation |
+  | `Project 'old/app' was moved to 'new/app'.` | GitLab's source, `lib/gitlab/checks/container_moved.rb` |
+
+  In the first two lines the quoted text is a directory, which is the name of
+  the repository by default. For the last two lines, both names are replaced.
+
+  The phrase after the name is a part of a rule, because the phrase before it
+  is also in ordinary sentences: `Cloning into 'app' took 3 s` and `the
+  repository 'thing' is public` stay. One name has no phrase after it, the
+  second name of GitHub's line: it ends where the characters of a name end, so
+  that the rule does not take the rest of a JSON log line. A name does not cross
+  a line end, and it has no maximum length: with a maximum, a long name would
+  make the rule fail and the line would stay as it is.
+
+  `fatal: 'origin' does not appear to be a git repository` is a common line for
+  a wrong remote name, so there the name must have a `/` in it or end in `.git`.
+  That condition is a heuristic with a cost on each side. It hides the name of a
+  branch (`fatal: 'origin/main' does not appear to be a git repository`), and a
+  repository path of one part with no `.git` (`'app'`) stays. For GitHub's line,
+  the first name must have a `/`.
+
+  The cost, measured on 12 kinds of ordinary text: a sentence with the exact
+  words of a server is changed too (`Permission to read/write denied to guests`,
+  `Project 'Apollo' was moved to 'Q3'.`).
+
+  **These rules do not find every line that names a repository.** They know
+  seven lines of git, GitHub and GitLab. Git itself has more: `Initialized empty
+  Git repository in /srv/git/acme/app/.git/` stays as it is, because the path
+  pattern knows only `/workspace`, `/uploads`, `/home/<user>`, `/root` and
+  `/Users/<user>`. A hook, a CI log, another tool, a later version of git or a
+  sentence of the user can name a repository in a form that no rule knows.
+  Stage 2 and the user's review of the card are the protection for those.
 - Note `REDACTED_PATTERNS` / `isRedactedSourcePath` in `shipit-source.ts` match
   file *paths*, not content — they decide whether a whole file may be referenced.
   Reuse them only to *exclude* sensitive paths from the excerpt and to redact

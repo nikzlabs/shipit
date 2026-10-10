@@ -162,6 +162,58 @@ describe("redactStage1 (deterministic floor)", () => {
     }
   });
 
+  it("replaces the name of a repository in a message of git or of a git server (planning#685)", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const hidden: [string, string, number][] = [
+      ["Cloning into 'app'...", `Cloning into '${R}'...`, 1],
+      ["Cloning into bare repository 'app.git'...", `Cloning into bare repository '${R}'...`, 1],
+      ["Cloning into 'my dir'...", `Cloning into '${R}'...`, 1],
+      [`Cloning into '${"a.".repeat(150)}z'...`, `Cloning into '${R}'...`, 1],
+      // The path pattern replaced the name before, and the rule counts it again.
+      ["Cloning into '/workspace/app'...", `Cloning into '${R}'...`, 2],
+      [
+        "fatal: destination path 'app' already exists and is not an empty directory.",
+        `fatal: destination path '${R}' already exists and is not an empty directory.`,
+        1,
+      ],
+      ["fatal: 'acme/none.git' does not appear to be a git repository", `fatal: '${R}' does not appear to be a git repository`, 1],
+      ["fatal: 'app.git' does not appear to be a git repository", `fatal: '${R}' does not appear to be a git repository`, 1],
+      // A cost: a branch of a remote has a `/` in its name too.
+      ["fatal: 'origin/main' does not appear to be a git repository", `fatal: '${R}' does not appear to be a git repository`, 1],
+      ["fatal: repository '/srv/git/acme/none.git' does not exist", `fatal: repository '${R}' does not exist`, 1],
+      ["ERROR: Permission to acme/app.git denied to jane.", `ERROR: Permission to ${R} denied to ${R}`, 2],
+      [
+        String.raw`{"stderr":"ERROR: Permission to acme/app.git denied to jane.\n","code":128,"signal":null}`,
+        `${String.raw`{"stderr":"ERROR: Permission to `}${R} denied to ${R}${String.raw`\n","code":128,"signal":null}`}`,
+        2,
+      ],
+      ["Error: Permission to user/repo denied to user/other-repo", `Error: Permission to ${R} denied to ${R}`, 2],
+      ["remote: Project 'old-group/app' was moved to 'new-group/app'.", `remote: Project '${R}' was moved to '${R}'.`, 2],
+      [
+        String.raw`{"stderr":"Cloning into 'app'...\nfatal: 'acme/app.git' does not appear to be a git repository\n"}`,
+        String.raw`{"stderr":"Cloning into '` + R + String.raw`'...\nfatal: '` + R + String.raw`' does not appear to be a git repository\n"}`,
+        2,
+      ],
+    ];
+    for (const [input, expected, count] of hidden) {
+      expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: count });
+    }
+    for (const visible of [
+      // The name of a remote in most cases. A path of one part has the same form and stays.
+      "fatal: 'origin' does not appear to be a git repository",
+      "He said 'hello' and left; the file 'a.ts' was moved to 'b.ts'.",
+      "the repository 'thing' is public and the repository 'x' exists",
+      "the destination path 'out' is used",
+      "Cloning into 'app' took 3 s",
+      "Permission to write denied to guests",
+      "error: pathspec 'feature/x' did not match any file(s) known to git",
+      "Cloning into 'a\nb'...",
+      "Cloning into 'a\rb'...",
+    ]) {
+      expect(redactStage1(visible), visible).toEqual({ text: visible, redactedCount: 0 });
+    }
+  });
+
   // The three last steps of Stage 1 as scans. A path is the longest text of path characters,
   // `/` and placeholders: it must have a `/` in it, or, where `gitEnd` is set, end in `.git`
   // at a word boundary.
@@ -246,10 +298,80 @@ describe("redactStage1 (deterministic floor)", () => {
     return { text: out + text.slice(at), added };
   };
 
+  // The rules for the messages of git as scans.
+  const quotedEnd = (text: string, from: number): number => {
+    let end = from;
+    while (end < text.length && !"'\n\r".includes(text[end])) end++;
+    return end;
+  };
+  const tokenEnd = (text: string, from: number): number => {
+    let end = from;
+    while (end < text.length && !/\s/.test(text[end])) end++;
+    return end;
+  };
+  const quotedName = (text: string, from: number): number => {
+    const end = quotedEnd(text, from);
+    return end > from ? end : -1;
+  };
+  const gitMessageRules: { before: string[]; nameEnd: (text: string, from: number) => number; after: string }[] = [
+    { before: ["Cloning into '", "Cloning into bare repository '"], nameEnd: quotedName, after: "'..." },
+    { before: ["destination path '"], nameEnd: quotedName, after: "' already exists" },
+    {
+      before: ["fatal: '"],
+      nameEnd: (text, from) => {
+        const end = quotedEnd(text, from);
+        const name = text.slice(from, end);
+        return name.includes("/") || name.endsWith(".git") ? end : -1;
+      },
+      after: "' does not appear to be a git repository",
+    },
+    { before: ["repository '"], nameEnd: quotedName, after: "' does not exist" },
+    {
+      before: ["Permission to "],
+      nameEnd: (text, from) => {
+        const end = tokenEnd(text, from);
+        const slash = text.indexOf("/", from);
+        return slash > from && slash < end - 1 ? end : -1;
+      },
+      after: " denied to ",
+    },
+    {
+      before: [`Permission to ${R} denied to `],
+      nameEnd: (text, from) => {
+        let end = from;
+        while (isIn(/[A-Za-z0-9._/-]/, text, end)) end++;
+        return end > from ? end : -1;
+      },
+      after: "",
+    },
+    { before: ["Project '"], nameEnd: quotedName, after: "' was moved to '" },
+    { before: [`Project '${R}' was moved to '`], nameEnd: quotedName, after: "'" },
+  ];
+  const gitMessageNames = (input: string): { text: string; added: number } => {
+    let text = input;
+    let added = 0;
+    for (const { before, nameEnd, after } of gitMessageRules) {
+      let out = "";
+      let at = 0;
+      for (let i = 0; i < text.length; i++) {
+        const lead = before.find((words) => text.startsWith(words, i));
+        if (lead === undefined) continue;
+        const end = nameEnd(text, i + lead.length);
+        if (end < 0 || !text.startsWith(after, end)) continue;
+        out += `${text.slice(at, i + lead.length)}${R}`;
+        at = end;
+        i = end - 1;
+        added++;
+      }
+      text = out + text.slice(at);
+    }
+    return { text, added };
+  };
+
   // Each of the three shapes is tried once in a run. The expected text is from one global
-  // pattern for each, which is what Stage 1 had, and then the three last steps. The strings are
-  // shorter than 40 characters, and their parts cannot start a URL, a key, a scheme or a
-  // home path: no other step can match.
+  // pattern for each, which is what Stage 1 had, and then the last steps. The parts cannot
+  // start a URL, a key, a scheme or a home path, and a string with a run of 40 token
+  // characters is not used: no other step can match.
   it("replaces an e-mail address, an SSH remote and a JWT exactly where a global pattern matches one", () => {
     const globalPatterns = [
       /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
@@ -262,6 +384,12 @@ describe("redactStage1 (deterministic floor)", () => {
       jwt: ["eyJ", "eyJ", "abcdef", "abcdefg", "-", "-", "_", ".", ".", " ", "x", ["eyJabcdef", "ghijkl", "mnopqr"].join(".")],
       "scp path": ["a@b.cc:", "a@b.cc:", "a@b.cc-x:", "a@b.cc.:p", "a@b.cc", ":", "p/q", ".git", ".git", ".git", "a", "-", "_", ".", " ", "x1", "u@h:p.git"],
       "remote with no .git": ["u@h:", "u@h:", "u@h", "@", ":", ":", "p/q", "p", "/", "a", "-", "_", ".", " ", "x1", "a@b.cc", ".git"],
+      "git messages": [
+        "Cloning into 'app'...", "Cloning into bare repository '", "Cloning into '", "'...", "destination path 'app",
+        "' already exists", "fatal: 'a/b", "fatal: '", "' does not appear to be a git repository", "repository 'a/b",
+        "' does not exist", "Permission to a/b denied to ", "Permission to ", " denied to ", "Project 'a/b' was moved to '",
+        "Project '", "' was moved to '", "'", "'", "a/b", "app.git", "app", ".git", "/", " ", "x1", "\n", ".",
+      ],
       "git output": ["To h.x:", "From ab:", "refs to 'ab:", "Pushing to ab:", "To a:", "To ", "to ab:", "'", ":", "p/q", "p/q", "p", "/", ".git", "22/", "22", " ", "x1", "u@h:", "a@b.cc:", "h.x:", "\\n", "\\", "n"],
     };
     for (const [shape, from] of Object.entries(parts)) {
@@ -275,12 +403,15 @@ describe("redactStage1 (deterministic floor)", () => {
       let withRemote = 0;
       let withScpPath = 0;
       let withGitOutput = 0;
+      let withGitMessage = 0;
+      const limit = shape === "git messages" ? 120 : 40;
       for (let i = 0; i < 4000; i++) {
         let input = "";
         for (let n = 1 + below(12); n > 0; n--) {
           const part = from[below(from.length)];
-          if (input.length + part.length < 40) input += part;
+          if (input.length + part.length < limit) input += part;
         }
+        if (/[A-Za-z0-9_-]{40,}/.test(input)) continue;
         let shapes = input;
         let count = 0;
         for (const re of globalPatterns) {
@@ -292,21 +423,23 @@ describe("redactStage1 (deterministic floor)", () => {
         const remotes = scpRemotes(shapes);
         const extended = extendOverScpPath(remotes.text);
         const printed = gitOutputRemotes(extended);
+        const named = gitMessageNames(printed.text);
         if (count > 0) withMatch++;
         if (remotes.added > 0) withRemote++;
         if (extended !== remotes.text) withScpPath++;
         if (printed.added > 0) withGitOutput++;
+        if (named.added > 0) withGitMessage++;
         const result = redactStage1(input);
-        if (result.text !== printed.text || result.redactedCount !== count + remotes.added + printed.added) {
-          different.push(input);
-        }
+        const expectedCount = count + remotes.added + printed.added + named.added;
+        if (result.text !== named.text || result.redactedCount !== expectedCount) different.push(input);
       }
       expect(different, shape).toEqual([]);
       // A generator that makes no match compares nothing.
-      if (shape !== "git output") expect(withMatch, shape).toBeGreaterThan(500);
+      if (!shape.startsWith("git ")) expect(withMatch, shape).toBeGreaterThan(500);
       if (shape === "scp path") expect(withScpPath, shape).toBeGreaterThan(200);
       if (shape === "remote with no .git") expect(withRemote, shape).toBeGreaterThan(200);
       if (shape === "git output") expect(withGitOutput, shape).toBeGreaterThan(200);
+      if (shape === "git messages") expect(withGitMessage, shape).toBeGreaterThan(500);
     }
   });
 
@@ -355,6 +488,18 @@ describe("redactStage1 (deterministic floor)", () => {
       "git phrase, then a path of slashes": (n) => `To ab:${"c/".repeat(n / 2)}`,
       "git lines": (n) => "To ab:c/d\n".repeat(n / 10),
       "git phrases with a host and no path": (n) => "To ab: ".repeat(n / 7),
+      "clone phrases": (n) => "Cloning into '".repeat(n / 14),
+      "clone phrase, then a long name with no quote": (n) => `Cloning into '${"a ".repeat(n / 2)}`,
+      "clone lines": (n) => "Cloning into 'app'...\n".repeat(n / 22),
+      "fatal quotes": (n) => "fatal: '".repeat(n / 8),
+      "fatal quote, then a long name of slashes": (n) => `fatal: '${"a/".repeat(n / 2)}`,
+      "fatal quotes, each with a name and no phrase after it": (n) => "fatal: 'a/b' ".repeat(n / 13),
+      "permission phrases": (n) => "Permission to a/b ".repeat(n / 18),
+      "permission lines": (n) => "Permission to a/b denied to c ".repeat(n / 30),
+      "project phrases": (n) => "Project 'a' was moved to '".repeat(n / 25),
+      "clone phrases, each with a name and no end": (n) => `Cloning into '${"x ".repeat(50)}`.repeat(n / 114),
+      "permission phrase, then a long first name": (n) => `Permission to a/${"b.".repeat(n / 2)}`,
+      "permission line with a long second name": (n) => `Permission to a/b denied to ${"c.".repeat(n / 2)}`,
       "scp path of addresses": (n) => `a@b.cc:${"c@d.ee/".repeat(n / 7)}`,
       "scp path of .git that a letter follows": (n) => `a@b.cc:${".gitx".repeat(n / 5)}`,
       "addresses before a colon": (n) => "a@b.cc:".repeat(n / 7),

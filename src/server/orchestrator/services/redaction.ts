@@ -69,6 +69,30 @@ const GIT_OUTPUT_REMOTE_RE = new RegExp(
   "g",
 );
 
+// Lines of git and of git servers that name a repository and have no remote in them
+// (planning#685). The phrase after the name is a condition too: with no `...` after it,
+// `Cloning into 'x'` is also a sentence. A name ends at a quote or at white space, and each
+// phrase has one of them in it, so no name is read again from a later phrase.
+const QUOTED_NAME = String.raw`[^'\n\r]+`;
+const GIT_MESSAGE_NAME_RES = [
+  [String.raw`Cloning into (?:bare repository )?'`, QUOTED_NAME, String.raw`'\.\.\.`],
+  [String.raw`destination path '`, QUOTED_NAME, String.raw`' already exists`],
+  // With no `/` and no `.git`, the quoted text is in most cases the name of a remote:
+  // `'origin'`.
+  [
+    String.raw`fatal: '`,
+    String.raw`[^'\n\r/]*(?:\/[^'\n\r]*|\.git)`,
+    String.raw`' does not appear to be a git repository`,
+  ],
+  [String.raw`repository '`, QUOTED_NAME, String.raw`' does not exist`],
+  // GitHub and GitLab. The second name is found after the placeholder of the first one. No
+  // phrase follows GitHub's second name: it ends where the characters of a name end.
+  [String.raw`Permission to `, String.raw`[^\s/]+\/\S+`, String.raw` denied to `],
+  [String.raw`Permission to \[REDACTED\] denied to `, String.raw`[A-Za-z0-9._/-]+`, ""],
+  [String.raw`Project '`, QUOTED_NAME, String.raw`' was moved to '`],
+  [String.raw`Project '\[REDACTED\]' was moved to '`, QUOTED_NAME, "'"],
+].map(([before, name, after]) => new RegExp(`(${before})${name}(?=${after})`, "g"));
+
 export interface Stage1Result {
   text: string;
   redactedCount: number;
@@ -101,7 +125,7 @@ export function redactStage1(input: string): Stage1Result {
     return REDACTION_PLACEHOLDER;
   });
 
-  // These three are last and only replace text: they cannot make redacted text visible.
+  // The steps from here are last and only replace text: they cannot make redacted text visible.
   if (text.includes("@")) {
     text = text.replace(SCP_REMOTE_RE, (match: string, shape: unknown) => {
       if (shape === undefined) return match;
@@ -111,10 +135,12 @@ export function redactStage1(input: string): Stage1Result {
   }
   // Not counted: it makes a redaction longer.
   text = text.replace(SCP_PATH_AFTER_REDACTION_RE, REDACTION_PLACEHOLDER);
-  text = text.replace(GIT_OUTPUT_REMOTE_RE, (_match: string, phrase: string) => {
-    count++;
-    return `${phrase}${REDACTION_PLACEHOLDER}`;
-  });
+  for (const re of [GIT_OUTPUT_REMOTE_RE, ...GIT_MESSAGE_NAME_RES]) {
+    text = text.replace(re, (_match: string, phrase: string) => {
+      count++;
+      return `${phrase}${REDACTION_PLACEHOLDER}`;
+    });
+  }
 
   return { text, redactedCount: count };
 }
