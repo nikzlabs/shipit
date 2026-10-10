@@ -26,6 +26,8 @@ import {
 import { autoCommitAllowed } from "./auto-commit-gate.js";
 import { ServiceError } from "./types.js";
 import { validateString, validateStringArray } from "./validation.js";
+import { stopWarmPreview } from "../warm-preview.js";
+import type { ServiceManager } from "../service-manager.js";
 
 export { forkSession, forkReportSinks, mergeSession, type ForkReportSinks } from "./session-fork-merge.js";
 export {
@@ -35,6 +37,7 @@ export {
   DEFAULT_WAIT_FOR_CHILD_IDLE_MS,
   MAX_WAIT_FOR_CHILD_IDLE_MS,
   spawnChildSession,
+  SpawnRepositoryUntrustedError,
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
@@ -46,6 +49,7 @@ export {
 export type {
   SpawnChildSessionOptions,
   SpawnChildSessionResult,
+  DiscardSpawnedChild,
   ChildSessionView,
   ChildViewProjections,
   SendChildMessageResult,
@@ -878,4 +882,69 @@ export function deleteSession(
     presentStore?.deleteSession(sessionId);
   }
   return deleted;
+}
+
+export interface DiscardSpawnedChildDeps {
+  sessionManager: SessionManager;
+  runnerRegistry: SessionRunnerRegistry;
+  sseBroadcast: (event: string, data: unknown) => void;
+  containerManager?: { destroy(sessionId: string): Promise<void> } | null;
+  serviceManagers?: Map<string, ServiceManager>;
+  composeStopPromises?: Map<string, Promise<void>>;
+  pruneSessionVolumes?: (sessionId: string) => Promise<void>;
+  chatHistoryManager?: ChatHistoryManager;
+  usageManager?: UsageManager;
+  removeSessionLogs?: (sessionId: string) => void;
+  presentStore?: { deleteSession: (sessionId: string) => void };
+}
+
+/**
+ * Removes a session that a failed spawn created, so "failed" never describes a session
+ * that exists (docs/243). The session never ran a turn, so nothing here is work to keep.
+ * Only the row delete may throw: the caller reports the session's id when it does.
+ */
+export async function discardSpawnedChild(
+  deps: DiscardSpawnedChildDeps,
+  sessionId: string,
+): Promise<void> {
+  const session = deps.sessionManager.get(sessionId);
+
+  // A claimed warm session can have a pre-started preview that no runner owns.
+  stopWarmPreview(deps.serviceManagers, sessionId, deps.composeStopPromises);
+
+  const runner = deps.runnerRegistry.get(sessionId);
+  if (runner && "removeVolumesOnDispose" in runner) {
+    (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = true;
+  }
+  deps.runnerRegistry.dispose(sessionId, { force: true });
+
+  // Release the container's bind mount before removing the workspace directory.
+  try {
+    await deps.containerManager?.destroy(sessionId);
+  } catch (err) {
+    console.warn(`[spawn-child] Failed to destroy the container for ${sessionId}:`, String(err));
+  }
+  if (!runner) {
+    try {
+      await deps.pruneSessionVolumes?.(sessionId);
+    } catch (err) {
+      console.warn(`[spawn-child] Failed to prune volumes for ${sessionId}:`, String(err));
+    }
+  }
+
+  if (session?.workspaceDir) {
+    const { failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
+    for (const f of failed) {
+      console.warn(`[spawn-child] Session dir cleanup failed (${f.dir}):`, f.message);
+    }
+  }
+
+  deleteSession(
+    deps.sessionManager, sessionId,
+    deps.chatHistoryManager, deps.usageManager, deps.removeSessionLogs, deps.presentStore,
+  );
+  if (deps.sessionManager.get(sessionId)) {
+    throw new Error(`session ${sessionId} is still present after its delete`);
+  }
+  deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
 }

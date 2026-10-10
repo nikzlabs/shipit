@@ -236,6 +236,38 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     expect((children.json().children as unknown[]).length).toBe(0);
   });
 
+  it("removes the child when the deployed commit is not in the target repository", { timeout: 20_000 }, async () => {
+    const parentId = await createOpsParent();
+    github.setRepoWriteAccess(true);
+    // A checkout whose HEAD the fix repository has never seen: the reset to it fails,
+    // after the claim has already created the child.
+    const strayDir = path.join(tmpDir, "stray-source");
+    fs.mkdirSync(strayDir);
+    execSync(
+      "git init -q && git -c user.email=test@test.com -c user.name=Test commit -q --allow-empty -m stray",
+      { cwd: strayDir },
+    );
+    process.env.SHIPIT_SOURCE_DIR = strayDir;
+    process.env.SHIPIT_BUILD_ID = execSync("git rev-parse HEAD", { cwd: strayDir, encoding: "utf8" }).trim();
+    const markStarted = vi.spyOn(sessionManager, "markStarted");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Fix the bug", title: "Fix the bug", shipitSource: true },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Failed to reset to base/);
+    // Every claim ends in markStarted, so its argument is the session the spawn created.
+    const [childId] = markStarted.mock.calls.map(([id]) => id);
+    expect(childId).toBeDefined();
+    expect(sessionManager.get(childId)).toBeUndefined();
+    expect(app.runnerRegistry.get(childId)).toBeUndefined();
+    expect(fs.existsSync(path.join(tmpDir, "sessions", childId, "workspace"))).toBe(false);
+    expect(sessionManager.findChildren(parentId)).toEqual([]);
+  });
+
   it("refuses --shipit-source from a non-ops parent (403)", { timeout: 20_000 }, async () => {
     const res0 = await app.inject({ method: "POST", url: "/api/_test/sessions", payload: { title: "Normal" } });
     const { sessionId: normalParent } = res0.json() as { sessionId: string };

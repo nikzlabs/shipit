@@ -8,6 +8,7 @@ import { repoId, repoIdFromOwnerRepo } from "./git-utils.js";
 import { ensureBareCache } from "./repo-git.js";
 import {
   createClaimSessionService,
+  discardSpawnedChild,
   ensureRepoReady,
   listRepos,
   spawnChildSession,
@@ -261,6 +262,7 @@ export async function registerProposeRepoSessionRoutes(
           deps.credentialStore,
           deps.providerAccountManager,
           graduationDeps,
+          (childId) => discardSpawnedChild(deps, childId),
         );
 
         const startedAt = new Date().toISOString();

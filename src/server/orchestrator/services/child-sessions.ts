@@ -1,6 +1,8 @@
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
+import { REPOSITORY_UNTRUSTED_CODE } from "../session-runner.js";
+import { parseGitHubRemote, stripUrlCredentials } from "../git-utils.js";
 import type {
   SessionInfo,
   AgentId,
@@ -33,12 +35,32 @@ import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { isSessionDone } from "../../shared/session-resolution.js";
 import type { TurnAdmission } from "../turn-settlement.js";
+import { getErrorMessage } from "../../shared/utils.js";
 
 export class ResolvedChildMessageError extends ServiceError {
   constructor(public readonly child: SessionInfo) {
     super(409, `${child.title} is resolved; no message, card, or wake turn was sent.`);
   }
 }
+
+/** Refused before the claim, so no session, clone or container exists (docs/243). */
+export class SpawnRepositoryUntrustedError extends ServiceError {
+  readonly code = REPOSITORY_UNTRUSTED_CODE;
+
+  constructor(public readonly repoUrl: string) {
+    const parsed = parseGitHubRemote(repoUrl);
+    const repo = parsed ? `${parsed.owner}/${parsed.repo}` : stripUrlCredentials(repoUrl);
+    super(
+      403,
+      `ShipIt did not create the session: the repository ${repo} is not trusted, so an agent cannot `
+        + `receive a message there. Trust is the user's decision: open a session on ${repo} in ShipIt `
+        + 'and select "Trust this repository". Then try again.',
+    );
+  }
+}
+
+/** Removes a session that a failed spawn created. It must throw if the session still exists. */
+export type DiscardSpawnedChild = (sessionId: string) => Promise<void>;
 
 function hasVisibleDirectChildren(sessionManager: SessionManager, sessionId: string): boolean {
   return sessionManager.findChildren(sessionId).some(
@@ -151,6 +173,44 @@ export async function spawnChildSession(
   credentialStore: CredentialStore | undefined,
   providerAccountManager: ProviderAccountManager | undefined,
   graduationDeps: GraduateSessionDeps,
+  discardChild: DiscardSpawnedChild,
+): Promise<SpawnChildSessionResult> {
+  // Set by the claim. A failure after it would leave a session the caller was told had failed.
+  const claimed: { sessionId?: string } = {};
+  try {
+    return await claimAndStartChild(
+      sessionManager, runnerRegistry, claimService, parentSessionId, opts, defaultAgentId,
+      credentialsDir, credentialStore, providerAccountManager, graduationDeps, claimed,
+    );
+  } catch (err) {
+    const childId = claimed.sessionId;
+    if (!childId) throw err;
+    try {
+      await discardChild(childId);
+    } catch (discardErr) {
+      console.error(`[spawn-child] Could not remove ${childId} after its spawn failed:`, discardErr);
+      throw new ServiceError(
+        err instanceof ServiceError ? err.statusCode : 500,
+        `${getErrorMessage(err)}\nThe session ${childId} was created before this failure and ShipIt `
+          + "could not remove it, so it still exists.",
+      );
+    }
+    throw err;
+  }
+}
+
+async function claimAndStartChild(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  claimService: ClaimSessionService,
+  parentSessionId: string,
+  opts: SpawnChildSessionOptions,
+  defaultAgentId: AgentId,
+  credentialsDir: string | undefined,
+  credentialStore: CredentialStore | undefined,
+  providerAccountManager: ProviderAccountManager | undefined,
+  graduationDeps: GraduateSessionDeps,
+  claimed: { sessionId?: string },
 ): Promise<SpawnChildSessionResult> {
   const parent = sessionManager.get(parentSessionId);
   if (!parent) throw new ServiceError(404, "Parent session not found");
@@ -321,14 +381,20 @@ export async function spawnChildSession(
         "Give it a short, human-readable name describing what the session is for.",
     );
   }
+  // docs/243: the child's first dispatch is refused for an untrusted remote. Refuse here,
+  // before the claim creates the session, its clone and its container.
+  if (!graduationDeps.repoStore.isTrusted(claimUrl)) {
+    throw new SpawnRepositoryUntrustedError(claimUrl);
+  }
   // Fetch recent merges; exclude the parent and any draft the user is still composing.
-  const claimed = await claimService.claim(claimUrl, {
+  const claim = await claimService.claim(claimUrl, {
     forceFetch: true,
     skipReuse: true,
     excludeSessionIds: [parentSessionId],
   });
-  const newSessionId = claimed.sessionId;
-  const newWorkspaceDir = claimed.workspaceDir;
+  claimed.sessionId = claim.sessionId;
+  const newSessionId = claim.sessionId;
+  const newWorkspaceDir = claim.workspaceDir;
 
   let branchName: string;
   try {
