@@ -1249,7 +1249,7 @@ export async function registerGitHubRoutes(
           auto: request.body?.auto,
           remoteUrl,
           repoBound,
-          backgroundWork: deps.runnerRegistry.get(request.params.id)?.backgroundWorkDescriptions ?? [],
+          backgroundWork: () => deps.runnerRegistry.get(request.params.id)?.backgroundWorkDescriptions ?? [],
           ...(localHead ? { localHead } : {}),
           ...(deps.prStatusPoller && session.remoteUrl && mergeRepoKey
             ? {

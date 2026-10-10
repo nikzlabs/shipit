@@ -289,14 +289,21 @@ only when the session is idle: no runner, or a runner that is not `running`, not
 **A live background command is not idle, and that is the rule, not an accident
 of `agentBusy`.** `agentBusy` counts the resident CLI's background tasks
 (verified at `container-session-runner.ts` `agentBusy`), and a background task
-ends by starting a turn the orchestrator did not start (verified at
-`ws-handlers/agent-listeners.ts` `adoptCliStartedTurn`). That turn passes no
-admission site, so `mergeHold` cannot keep it back: a merge that began while the
-task was live could not keep the second half of req 6. It is also
-`docs/266-auto-merge-busy-guard` req 2 — the window in which the agent can still
-produce commits. The cost is real: a background `sleep 1200` started to look at
-the pull request later holds the merge for those twenty minutes, and then for
-the turn its end starts. Requirement 8 exists because that wait was silent.
+normally ends by starting a turn the orchestrator did not start — the CLI's own
+completion notice (verified at `ws-handlers/agent-listeners.ts`
+`adoptCliStartedTurn`). That turn passes no admission site, so `mergeHold`
+cannot keep it back: a merge that began while the task was live could not keep
+the second half of req 6. It is also `docs/266-auto-merge-busy-guard` req 2 —
+the window in which the agent can still produce commits. The cost is real: a
+background `sleep 1200` started to look at the pull request later holds the
+merge for those twenty minutes, and then for the turn its end starts.
+Requirement 8 exists because that wait was silent.
+
+The count is the CLI's report, not a process table. Bash tasks send no
+heartbeat, so a task is counted for at most an hour after the CLI last changed
+its task list (`BACKGROUND_TASK_TTL_MS` in `background-task-tracker.ts`), and
+only while the resident CLI is alive. A command that outlives that hour stops
+holding the merge.
 
 **A turn does not start while the merge is in progress.** A busy check cannot give
 that — `PostTurnHold.begin()` only increments a counter, and neither admission
@@ -325,11 +332,18 @@ next check read the session as busy — and the merge defers, for ever, on every
 session that has a runner at all. It shipped that way for one round and no test
 caught it, because the fake runner's `agentBusy` was a hard-coded `false`.
 
-**Under the hold, `isIdle` asks one question: did a turn start?** Everything else
-it could ask about — the lease, a queued message, the hold — is this pass's own
-effect. Nothing is lost: the full busy check ran *before* the hold was taken, and
-a turn cannot appear afterwards without setting `running`, which admission
-forbids under the hold.
+**The full busy check runs twice: before the GitHub read, and again after it,
+immediately before the hold.** The read is awaited, and a turn can start *and
+end* inside it, leaving a background command or post-turn work behind. A check
+that asks only "is a turn running?" does not see that, and it merged there until
+an independent review found it (2026-10-10). Nothing is awaited between the
+second check and the merge call, so its answer still holds when the call goes
+out.
+
+**Under the hold, `isIdle` asks one question: did a turn start?** That is the
+settlement's check. Everything else it could ask about — the lease, a queued
+message, the hold — is this pass's own effect, and a turn cannot appear without
+setting `running`, which admission forbids under the hold.
 
 **A runner is not always there to hold.** A session with no container has no
 runner at all, and the user opening it *during* the merge creates one — with
@@ -478,6 +492,10 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
   failing required check still ends it; a withdrawal during the PUT is not
   revived; a long run of such refusals says so once and keeps the row.
 - A held request (req 8): a real runner with a background command waits, says so
-  once with the command named, and merges when the command ends; the post-turn
-  work is not announced; the count starts at the end of the turn; the answer to
-  `--auto` states the rule and names live background work.
+  once with the command named, and merges when the command ends; post-turn work
+  shorter than two minutes is not announced; the count starts at the end of the
+  turn; a notice whose write fails is tried again; the log carries no text the
+  agent wrote; the answer to `--auto` states the rule and names live background
+  work.
+- A turn that starts and ends during the GitHub read, and leaves a background
+  command running, does not merge (req 6).

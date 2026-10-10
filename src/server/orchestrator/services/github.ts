@@ -367,8 +367,8 @@ export async function agentMergePullRequest(
     /** Keep the claim until reconciliation resolves the uncertain outcome. */
     onIndeterminate?: (expectedSha: string) => Promise<void>;
     onArm?: (expectedSha: string) => string | null;
-    /** What the session's agent has running in the background as it asks. */
-    backgroundWork?: string[];
+    /** What the session's agent has running in the background, read as the request is recorded. */
+    backgroundWork?: () => string[];
   },
 ): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; retryable?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
@@ -407,13 +407,14 @@ export async function agentMergePullRequest(
       + "and this session is idle. It merges that exact commit — pushing again cancels the "
       + "request, and so does withdrawing the repository's merge permission. The result appears "
       + "in this session's transcript.",
-      "Idle means no turn is running and no background command or sub-agent is still running. "
-      + "So end this turn. Do not wait for the merge in it, and do not start a background "
+      "Idle means all of: no turn is running, no background command or sub-agent is still "
+      + "running, no message is queued, and ShipIt has no work of its own in progress on the "
+      + "branch. So end this turn. Do not wait for the merge in it, and do not start a background "
       + "command (a `sleep`, a poll) to check on it: each one keeps the session busy and holds "
       + "the merge back until it ends. `shipit session notify-on-merge --self` starts a new turn "
       + "when the pull request merges.",
     ];
-    const work = opts.backgroundWork ?? [];
+    const work = opts.backgroundWork?.() ?? [];
     if (work.length > 0) {
       lines.push(
         `Background work is running in this session now (${describeBackgroundWork(work)}). `

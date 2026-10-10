@@ -238,15 +238,17 @@ async function performMerge(
   claim: AgentMergeClaim,
   target: { owner: string; repo: string },
 ): Promise<RequestOutcome> {
+  // The reads were awaited: a turn can start and end inside one, and leave work running.
+  // Nothing is awaited from here to the merge call, so this answer still holds there.
+  const blocker = idleBlocker(deps, claim.sessionId);
+  if (blocker) return { result: "waiting", reason: `the session is not idle: ${blocker.why}` };
+
   const runner = deps.runnerRegistry?.get(claim.sessionId);
   // The store mark blocks reconciliation without a runner and seeds newly created runners.
   deps.claims.markMergeInFlight(claim.sessionId);
   if (runner) runner.mergeHold = true;
   let leased = false;
   try {
-    if (!isIdle(deps, claim.sessionId, { underHold: true })) {
-      return { result: "waiting", reason: "a turn started while ShipIt was reading GitHub" };
-    }
     // Prevent disposal as well as turn admission. Take the lease after the idle
     // check because the lease itself makes agentBusy true.
     if (runner) {
@@ -479,7 +481,7 @@ function idleBlocker(deps: AgentMergeExecutorDeps, sessionId: string): IdleBlock
   if (runner.running) return { why: "a turn is running", turn: true };
   if (runner.systemTurnInProgress) return { why: "ShipIt is working on this session's branch" };
   if (runner.agentBusy) {
-    // Background work ends by starting a turn that no hold can keep back (docs/288-agent-merge-arming req 6).
+    // Background work normally ends by starting a turn that no hold can keep back (docs/288-agent-merge-arming req 6).
     const work = runner.backgroundWorkDescriptions;
     return work.length > 0
       ? { why: `background work is still running (${work.length})`, work }
@@ -544,15 +546,17 @@ function noteHold(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim, blocker:
   const now = Date.now();
   state.heldSince ??= now;
   if (state.announced || now - state.heldSince < HOLD_NOTICE_AFTER_MS) return;
-  state.announced = true;
   const why = blocker.work
     ? `background work is still running (${describeBackgroundWork(blocker.work)})`
     : blocker.why;
-  notify(
+  const notice = splitNotice(
     deps, claim,
     `ShipIt has not merged pull request #${claim.prNumber}: it merges on request only while this `
     + `session is idle, and ${why}. The request stays armed — ShipIt merges once the session is idle `
     + "and the checks have passed.",
-    "info",
   );
+  // A write that fails is tried again on the next pass, and nothing shows that history lacks.
+  notice.persist();
+  state.announced = true;
+  notice.announce();
 }

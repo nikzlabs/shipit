@@ -150,6 +150,17 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
       background wait
 - [x] The new tests proved red against the code without the change
 
+## From the independent review of req 8
+
+- [x] The full busy check runs again after the GitHub read, before the hold: a
+      turn that started and ended inside the read could leave a background
+      command running, and the merge went ahead (req 6)
+- [x] The held-request notice is persisted before it is marked as said, so a
+      write that fails is tried again
+- [x] The answer to `--auto` reads the background work as the request is
+      recorded, not before the GitHub read
+- [x] The docs say that the count is the CLI's report, with its one-hour bound
+
 ## Quality
 
 - [x] Tests as listed in plan.md

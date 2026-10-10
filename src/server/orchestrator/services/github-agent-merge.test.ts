@@ -135,12 +135,14 @@ describe("agentMergePullRequest", () => {
   });
 
   it("says what idle means when it records a repo-bound --auto request (docs/288-agent-merge-arming req 8)", async () => {
-    const arm = (backgroundWork?: string[]) => agentMergePullRequest(
+    const order: string[] = [];
+    const arm = (work?: string[]) => agentMergePullRequest(
       makeGit(), makeGitHub({}, gate({ rollupState: "PENDING" })),
       {
         number: 5, sessionId: "s1", auto: true, remoteUrl: REMOTE, repoBound: true,
-        localHead: { kind: "head", sha: HEAD_SHA }, onArm: () => null,
-        ...(backgroundWork ? { backgroundWork } : {}),
+        localHead: { kind: "head", sha: HEAD_SHA },
+        onArm: () => { order.push("armed"); return null; },
+        ...(work ? { backgroundWork: () => { order.push("read"); return work; } } : {}),
       },
     );
 
@@ -150,8 +152,11 @@ describe("agentMergePullRequest", () => {
     expect(quiet.message).toContain("no background command");
     expect(quiet.message).not.toContain("is running in this session now");
 
+    order.length = 0;
     const busy = await arm(["npm run dev"]);
     expect(busy.message).toContain('Background work is running in this session now ("npm run dev")');
+    // Read after the awaited GitHub answer, so it names what runs as the request is recorded.
+    expect(order).toEqual(["armed", "read"]);
   });
 
   it("refuses a draft PR", async () => {

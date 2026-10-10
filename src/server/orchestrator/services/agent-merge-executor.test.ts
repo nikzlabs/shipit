@@ -702,6 +702,51 @@ describe("runOneRequest — a request held by a session that is not idle says so
     expect(notices()).toHaveLength(2);
   });
 
+  it("tries the notice again when its write fails, and shows nothing that history lacks", async () => {
+    const runner = fakeRunner({ agentBusy: true });
+    const d = deps({ runnerRegistry: registry(runner) });
+    const claim = armed();
+    await runOneRequest(d, claim);
+    after(3);
+
+    const append = vi.spyOn(chatHistoryManager, "append").mockImplementationOnce(() => {
+      throw new Error("database is locked");
+    });
+    try {
+      await expect(runOneRequest(d, claim)).rejects.toThrow("database is locked");
+      expect(runner.emitted).toEqual([]);
+
+      await runOneRequest(d, claim);
+      await runOneRequest(d, claim);
+    } finally {
+      append.mockRestore();
+    }
+
+    expect(notices()).toHaveLength(1);
+    expect(runner.emitted.filter((m) => m.type === "system_notice")).toHaveLength(1);
+  });
+
+  it("keeps what the agent wrote out of the server log", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+    const real = new SessionRunner({
+      sessionId: SESSION, sessionDir: "/tmp/s1", defaultAgentId: "claude" as never,
+    });
+    try {
+      real.isStreamingActive = true;
+      real.setBackgroundTasks([{ id: "bash-1", description: "curl -H 'Authorization: token'" }]);
+      armed();
+
+      await runAgentMergeRequests(deps({ runnerRegistry: registry(real) }));
+
+      const lines = log.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((line) => line.includes("background work is still running (1)"))).toHaveLength(1);
+      expect(lines.join("\n")).not.toContain("Authorization");
+    } finally {
+      log.mockRestore();
+      real.dispose({ force: true });
+    }
+  });
+
   it("logs what a request waits for, once per reason", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
     try {
@@ -848,6 +893,39 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     expect(gh.merges).toEqual([]);
     expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
     expect(runner.mergeHold).toBe(false);
+  });
+
+  it("stands down when a turn started AND ended during the read, and left work running", async () => {
+    const real = new SessionRunner({
+      sessionId: SESSION, sessionDir: "/tmp/s1", defaultAgentId: "claude" as never,
+    });
+    try {
+      const gh = github();
+      const answer = gh.graphqlQuery as unknown as {
+        getMockImplementation: () => () => Promise<unknown>;
+        mockImplementation: (f: () => Promise<unknown>) => void;
+      };
+      const read = answer.getMockImplementation();
+      answer.mockImplementation(async () => {
+        real.isStreamingActive = true;
+        real.setBackgroundTasks([{ id: "bash-1", description: "npm run build" }]);
+        return read();
+      });
+
+      const out = await runOneRequest(
+        deps({ githubAuthManager: gh, runnerRegistry: registry(real) }),
+        armed(),
+      );
+
+      expect(real.running).toBe(false);
+      expect(out).toMatchObject({ result: "waiting" });
+      expect(gh.merges).toEqual([]);
+      expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
+      expect(real.mergeHold).toBe(false);
+      expect(claims.isMergeInFlight(SESSION)).toBe(false);
+    } finally {
+      real.dispose({ force: true });
+    }
   });
 
   it("is not resolved by reconciliation while its REST call is in flight", async () => {
