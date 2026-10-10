@@ -33,6 +33,14 @@ The tool **proposes** a report — it does **not** file anything. What happens:
 After the tool returns, tell the user a review card has been posted for them to
 confirm. Don't claim the bug was filed — it isn't, until they submit.
 
+## Length limits
+
+The title can have at most 256 characters and the body at most 60,000. ShipIt
+refuses a longer report: no card is posted, and the error gives the length and
+the limit. Shorten the report and call the tool again. Keep what happened and
+the steps to reproduce it, and quote only the log lines that show the problem,
+not a whole log.
+
 ## You are told the outcome — don't guess, and don't ask
 
 The consent gate decides *whether* the report is filed; it does not hide *what

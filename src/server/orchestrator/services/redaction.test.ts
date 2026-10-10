@@ -80,9 +80,298 @@ describe("redactStage1 (deterministic floor)", () => {
     }
   });
 
+  it("replaces an scp-style remote that the e-mail pattern takes in part, or that has no .git (planning#681, planning#682)", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const cases: [string, string, number][] = [
+      ["git@github.com:acme/app.git", R, 1],
+      ["origin\tgit@github.com:acme/app.git (fetch)", `origin\t${R} (fetch)`, 1],
+      ["git clone git@gitlab.example.org:group/sub/app.git into x", `git clone ${R} into x`, 1],
+      // With `ssh-remote` before `email`, `jane+` stays.
+      ["jane+work@github.com:acme/app.git", R, 1],
+      // The generic sweep takes a long name first.
+      [`git@github.com:acme/${"a".repeat(45)}.git`, R, 2],
+      [`git@myhost:acme/${"a".repeat(45)}`, R, 2],
+      // The e-mail pattern takes only a part of these hosts.
+      ["git@github.com.:acme/app.git", R, 1],
+      ["git@code.acme-internal:team/app.git", R, 1],
+      ["git@example.xn--p1ai:acme/app.git", R, 1],
+      ["git clone git@github.com:acme/app", `git clone ${R}`, 1],
+      ["origin\tgit@myhost:acme/app (fetch)", `origin\t${R} (fetch)`, 1],
+      ["scp build.tar deploy@prod-1:/srv/app/releases/", `scp build.tar ${R}`, 1],
+      // A shell prompt has the same shape.
+      ["user@host:/srv/app$ npm test", `${R}$ npm test`, 1],
+      ["git@github.com:acme/app.git/info/refs", R, 1],
+      ["git@myhost:app.git", R, 1],
+    ];
+    for (const [input, expected, count] of cases) {
+      expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: count });
+    }
+  });
+
+  it("leaves a port, a time and a word after a colon, which are not the path of a remote", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const commit = "a090492d".repeat(5);
+    const cases: [string, string][] = [
+      ["ssh root@10.0.0.5:22 failed", "ssh root@10.0.0.5:22 failed"],
+      ["relay jane@example.com:587 refused", `relay ${R}:587 refused`],
+      ["mail from jane@example.com:10:42:07", `mail from ${R}:10:42:07`],
+      ["jane@example.com:thanks and root@box:ok", `${R}:thanks and root@box:ok`],
+      ["write to jane@example.com: the file a/app.git", `write to ${R}: the file a/app.git`],
+      ["jane@example.com and repo:acme/app.git", `${R} and repo:acme/app.git`],
+      [`git show ${commit}:README.md`, `git show ${R}:README.md`],
+      [`ghcr.io/acme/app@sha256:${"ab12".repeat(16)}`, `ghcr.io/acme/app@sha256:${R}`],
+      ["listening on db.internal:5432, see src/index.ts:12:3", "listening on db.internal:5432, see src/index.ts:12:3"],
+      ["git@myhost:app", "git@myhost:app"],
+      ["root@box:~/project$ npm test", "root@box:~/project$ npm test"],
+    ];
+    for (const [input, expected] of cases) expect(redactStage1(input).text, input).toBe(expected);
+  });
+
+  it("replaces the remote in a line that git prints, which has no user (planning#684)", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const hidden: [string, string][] = [
+      ["To github.com:acme/app.git\n ! [rejected]        main -> main", `To ${R}\n ! [rejected]        main -> main`],
+      ["From github.com:acme/app\n * branch            main       -> FETCH_HEAD", `From ${R}\n * branch            main       -> FETCH_HEAD`],
+      ["Pushing to github.com:acme/app.git", `Pushing to ${R}`],
+      ["error: failed to push some refs to 'github.com:acme/app.git'", `error: failed to push some refs to '${R}'`],
+      ["To work:acme/app.git", `To ${R}`],
+      ["From git.corp.example:/srv/git/team/app", `From ${R}`],
+      ["To myhost:app.git", `To ${R}`],
+      ["From git.example.org:2fa/app", `From ${R}`],
+      [String.raw`{"stderr":"To github.com:acme/app.git\n ! [rejected]"}`, String.raw`{"stderr":"To ` + R + String.raw`\n ! [rejected]"}`],
+      // In JSON, a written `\n` is before the phrase: the letter `n` and no word boundary.
+      [String.raw`{"stderr":"Counting objects: 5\nTo github.com:acme/app.git\nDone"}`, String.raw`{"stderr":"Counting objects: 5\nTo ` + R + String.raw`\nDone"}`],
+      [String.raw`"remote: done\r\nFrom github.com:acme/app\n * branch"`, String.raw`"remote: done\r\nFrom ` + R + String.raw`\n * branch"`],
+      ["> To github.com:acme/app.git", `> To ${R}`],
+    ];
+    for (const [input, expected] of hidden) {
+      expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: 1 });
+    }
+    for (const visible of [
+      "To localhost:3000/api/x the request fails",
+      "pull registry.example.com:5000/team/app:1.2",
+      "package.json:scripts/build and README.md:intro/usage",
+      "From: jane and To: ops",
+      "From src/server/index.ts:12:3",
+      "From myhost:app",
+      "To D:/proj/x and From v:a/b",
+      "UpTo github.com:acme/app and xnTo github.com:acme/app",
+      "the path to data:image/png and from gs:bucket/dir/file",
+    ]) {
+      expect(redactStage1(visible), visible).toEqual({ text: visible, redactedCount: 0 });
+    }
+  });
+
+  it("replaces the name of a repository in a message of git or of a git server (planning#685)", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const hidden: [string, string, number][] = [
+      ["Cloning into 'app'...", `Cloning into '${R}'...`, 1],
+      ["Cloning into bare repository 'app.git'...", `Cloning into bare repository '${R}'...`, 1],
+      ["Cloning into 'my dir'...", `Cloning into '${R}'...`, 1],
+      [`Cloning into '${"a.".repeat(150)}z'...`, `Cloning into '${R}'...`, 1],
+      // The path pattern replaced the name before, and the rule counts it again.
+      ["Cloning into '/workspace/app'...", `Cloning into '${R}'...`, 2],
+      [
+        "fatal: destination path 'app' already exists and is not an empty directory.",
+        `fatal: destination path '${R}' already exists and is not an empty directory.`,
+        1,
+      ],
+      ["fatal: 'acme/none.git' does not appear to be a git repository", `fatal: '${R}' does not appear to be a git repository`, 1],
+      ["fatal: 'app.git' does not appear to be a git repository", `fatal: '${R}' does not appear to be a git repository`, 1],
+      // A cost: a branch of a remote has a `/` in its name too.
+      ["fatal: 'origin/main' does not appear to be a git repository", `fatal: '${R}' does not appear to be a git repository`, 1],
+      ["fatal: repository '/srv/git/acme/none.git' does not exist", `fatal: repository '${R}' does not exist`, 1],
+      ["ERROR: Permission to acme/app.git denied to jane.", `ERROR: Permission to ${R} denied to ${R}`, 2],
+      [
+        String.raw`{"stderr":"ERROR: Permission to acme/app.git denied to jane.\n","code":128,"signal":null}`,
+        `${String.raw`{"stderr":"ERROR: Permission to `}${R} denied to ${R}${String.raw`\n","code":128,"signal":null}`}`,
+        2,
+      ],
+      ["Error: Permission to user/repo denied to user/other-repo", `Error: Permission to ${R} denied to ${R}`, 2],
+      ["remote: Project 'old-group/app' was moved to 'new-group/app'.", `remote: Project '${R}' was moved to '${R}'.`, 2],
+      [
+        String.raw`{"stderr":"Cloning into 'app'...\nfatal: 'acme/app.git' does not appear to be a git repository\n"}`,
+        String.raw`{"stderr":"Cloning into '` + R + String.raw`'...\nfatal: '` + R + String.raw`' does not appear to be a git repository\n"}`,
+        2,
+      ],
+    ];
+    for (const [input, expected, count] of hidden) {
+      expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: count });
+    }
+    for (const visible of [
+      // The name of a remote in most cases. A path of one part has the same form and stays.
+      "fatal: 'origin' does not appear to be a git repository",
+      "He said 'hello' and left; the file 'a.ts' was moved to 'b.ts'.",
+      "the repository 'thing' is public and the repository 'x' exists",
+      "the destination path 'out' is used",
+      "Cloning into 'app' took 3 s",
+      "Permission to write denied to guests",
+      "error: pathspec 'feature/x' did not match any file(s) known to git",
+      "Cloning into 'a\nb'...",
+      "Cloning into 'a\rb'...",
+    ]) {
+      expect(redactStage1(visible), visible).toEqual({ text: visible, redactedCount: 0 });
+    }
+  });
+
+  // The three last steps of Stage 1 as scans. A path is the longest text of path characters,
+  // `/` and placeholders: it must have a `/` in it, or, where `gitEnd` is set, end in `.git`
+  // at a word boundary.
+  const R = REDACTION_PLACEHOLDER;
+  const isIn = (set: RegExp, text: string, at: number): boolean => at < text.length && set.test(text[at]);
+  const pathEnd = (text: string, from: number, gitEnd: boolean): number => {
+    let end = from;
+    let slash = false;
+    let git = -1;
+    for (let items = 1; ; items++) {
+      if (text.startsWith(R, end)) end += R.length;
+      else if (isIn(/[A-Za-z0-9._/-]/, text, end)) {
+        if (text[end] === "/") slash = true;
+        end++;
+      } else break;
+      if (items > 4 && text.slice(end - 4, end) === ".git" && !isIn(/\w/, text, end)) git = end;
+    }
+    if (slash) return end;
+    return gitEnd ? git : -1;
+  };
+  const scpRemotes = (text: string): { text: string; added: number } => {
+    let out = "";
+    let at = 0;
+    let added = 0;
+    for (let i = 0; i < text.length; ) {
+      const atBoundary = isIn(/\w/, text, i) !== (i > 0 && isIn(/\w/, text, i - 1));
+      if (!atBoundary || !isIn(/[A-Za-z0-9._-]/, text, i)) {
+        i++;
+        continue;
+      }
+      let run = i;
+      while (isIn(/[A-Za-z0-9._-]/, text, run)) run++;
+      let host = run + 1;
+      while (text[run] === "@" && isIn(/[A-Za-z0-9.-]/, text, host)) host++;
+      const end = text[run] === "@" && host > run + 1 && text[host] === ":" ? pathEnd(text, host + 1, false) : -1;
+      if (end < 0) {
+        i = run;
+        continue;
+      }
+      out += `${text.slice(at, i)}${R}`;
+      at = i = end;
+      added++;
+    }
+    return { text: out + text.slice(at), added };
+  };
+  const extendOverScpPath = (text: string): string => {
+    let out = "";
+    let at = 0;
+    for (let start = text.indexOf(R); start >= 0; start = text.indexOf(R, at)) {
+      let host = start + R.length;
+      while (isIn(/[A-Za-z0-9.-]/, text, host)) host++;
+      const end = text[host] === ":" ? pathEnd(text, host + 1, true) : -1;
+      out += end < 0 ? text.slice(at, start + R.length) : `${text.slice(at, start)}${R}`;
+      at = end < 0 ? start + R.length : end;
+    }
+    return out + text.slice(at);
+  };
+
+  const gitOutputRemotes = (text: string): { text: string; added: number } => {
+    let out = "";
+    let at = 0;
+    let added = 0;
+    for (let i = 0; i < text.length; i++) {
+      const afterWrittenLineEnd = i > 1 && text[i - 2] === "\\" && "nrt".includes(text[i - 1]);
+      if (i > 0 && isIn(/\w/, text, i - 1) && !afterWrittenLineEnd) continue;
+      const phrase = ["To ", "From ", "Pushing to ", "refs to "].find((words) => text.startsWith(words, i));
+      if (phrase === undefined) continue;
+      const host = i + phrase.length + (text[i + phrase.length] === "'" ? 1 : 0);
+      let colon = host;
+      while (isIn(/[A-Za-z0-9.-]/, text, colon)) colon++;
+      if (colon - host < 2 || text[colon] !== ":") continue;
+      let digits = colon + 1;
+      while (isIn(/[0-9]/, text, digits)) digits++;
+      if (digits > colon + 1 && text[digits] === "/") continue;
+      const end = pathEnd(text, colon + 1, true);
+      if (end < 0) continue;
+      out += `${text.slice(at, host)}${R}`;
+      at = end;
+      i = end - 1;
+      added++;
+    }
+    return { text: out + text.slice(at), added };
+  };
+
+  // The rules for the messages of git as scans.
+  const quotedEnd = (text: string, from: number): number => {
+    let end = from;
+    while (end < text.length && !"'\n\r".includes(text[end])) end++;
+    return end;
+  };
+  const tokenEnd = (text: string, from: number): number => {
+    let end = from;
+    while (end < text.length && !/\s/.test(text[end])) end++;
+    return end;
+  };
+  const quotedName = (text: string, from: number): number => {
+    const end = quotedEnd(text, from);
+    return end > from ? end : -1;
+  };
+  const gitMessageRules: { before: string[]; nameEnd: (text: string, from: number) => number; after: string }[] = [
+    { before: ["Cloning into '", "Cloning into bare repository '"], nameEnd: quotedName, after: "'..." },
+    { before: ["destination path '"], nameEnd: quotedName, after: "' already exists" },
+    {
+      before: ["fatal: '"],
+      nameEnd: (text, from) => {
+        const end = quotedEnd(text, from);
+        const name = text.slice(from, end);
+        return name.includes("/") || name.endsWith(".git") ? end : -1;
+      },
+      after: "' does not appear to be a git repository",
+    },
+    { before: ["repository '"], nameEnd: quotedName, after: "' does not exist" },
+    {
+      before: ["Permission to "],
+      nameEnd: (text, from) => {
+        const end = tokenEnd(text, from);
+        const slash = text.indexOf("/", from);
+        return slash > from && slash < end - 1 ? end : -1;
+      },
+      after: " denied to ",
+    },
+    {
+      before: [`Permission to ${R} denied to `],
+      nameEnd: (text, from) => {
+        let end = from;
+        while (isIn(/[A-Za-z0-9._/-]/, text, end)) end++;
+        return end > from ? end : -1;
+      },
+      after: "",
+    },
+    { before: ["Project '"], nameEnd: quotedName, after: "' was moved to '" },
+    { before: [`Project '${R}' was moved to '`], nameEnd: quotedName, after: "'" },
+  ];
+  const gitMessageNames = (input: string): { text: string; added: number } => {
+    let text = input;
+    let added = 0;
+    for (const { before, nameEnd, after } of gitMessageRules) {
+      let out = "";
+      let at = 0;
+      for (let i = 0; i < text.length; i++) {
+        const lead = before.find((words) => text.startsWith(words, i));
+        if (lead === undefined) continue;
+        const end = nameEnd(text, i + lead.length);
+        if (end < 0 || !text.startsWith(after, end)) continue;
+        out += `${text.slice(at, i + lead.length)}${R}`;
+        at = end;
+        i = end - 1;
+        added++;
+      }
+      text = out + text.slice(at);
+    }
+    return { text, added };
+  };
+
   // Each of the three shapes is tried once in a run. The expected text is from one global
-  // pattern for each, which is what Stage 1 had. The strings are shorter than 40 characters,
-  // and their parts cannot start a URL, a key, a scheme or a path: no other step can match.
+  // pattern for each, which is what Stage 1 had, and then the last steps. The parts cannot
+  // start a URL, a key, a scheme or a home path, and a string with a run of 40 token
+  // characters is not used: no other step can match.
   it("replaces an e-mail address, an SSH remote and a JWT exactly where a global pattern matches one", () => {
     const globalPatterns = [
       /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
@@ -93,6 +382,15 @@ describe("redactStage1 (deterministic floor)", () => {
       "e-mail": ["a", "bc", "x1", "_", ".", "-", "%", "+", "@", "@", " ", "cc", ".cc", "a@b.cc", "["],
       "ssh remote": ["a", "git", ".git", ".git", ".", "-", "_", "@", "@", ":", ":", "p/q", " ", "h", "u@h:p.git", "x1"],
       jwt: ["eyJ", "eyJ", "abcdef", "abcdefg", "-", "-", "_", ".", ".", " ", "x", ["eyJabcdef", "ghijkl", "mnopqr"].join(".")],
+      "scp path": ["a@b.cc:", "a@b.cc:", "a@b.cc-x:", "a@b.cc.:p", "a@b.cc", ":", "p/q", ".git", ".git", ".git", "a", "-", "_", ".", " ", "x1", "u@h:p.git"],
+      "remote with no .git": ["u@h:", "u@h:", "u@h", "@", ":", ":", "p/q", "p", "/", "a", "-", "_", ".", " ", "x1", "a@b.cc", ".git"],
+      "git messages": [
+        "Cloning into 'app'...", "Cloning into bare repository '", "Cloning into '", "'...", "destination path 'app",
+        "' already exists", "fatal: 'a/b", "fatal: '", "' does not appear to be a git repository", "repository 'a/b",
+        "' does not exist", "Permission to a/b denied to ", "Permission to ", " denied to ", "Project 'a/b' was moved to '",
+        "Project '", "' was moved to '", "'", "'", "a/b", "app.git", "app", ".git", "/", " ", "x1", "\n", ".",
+      ],
+      "git output": ["To h.x:", "From ab:", "refs to 'ab:", "Pushing to ab:", "To a:", "To ", "to ab:", "'", ":", "p/q", "p/q", "p", "/", ".git", "22/", "22", " ", "x1", "u@h:", "a@b.cc:", "h.x:", "\\n", "\\", "n"],
     };
     for (const [shape, from] of Object.entries(parts)) {
       let seed = 1;
@@ -102,27 +400,46 @@ describe("redactStage1 (deterministic floor)", () => {
       };
       const different: string[] = [];
       let withMatch = 0;
+      let withRemote = 0;
+      let withScpPath = 0;
+      let withGitOutput = 0;
+      let withGitMessage = 0;
+      const limit = shape === "git messages" ? 120 : 40;
       for (let i = 0; i < 4000; i++) {
         let input = "";
         for (let n = 1 + below(12); n > 0; n--) {
           const part = from[below(from.length)];
-          if (input.length + part.length < 40) input += part;
+          if (input.length + part.length < limit) input += part;
         }
-        let expected = input;
+        if (/[A-Za-z0-9_-]{40,}/.test(input)) continue;
+        let shapes = input;
         let count = 0;
         for (const re of globalPatterns) {
-          expected = expected.replace(re, () => {
+          shapes = shapes.replace(re, () => {
             count++;
             return REDACTION_PLACEHOLDER;
           });
         }
+        const remotes = scpRemotes(shapes);
+        const extended = extendOverScpPath(remotes.text);
+        const printed = gitOutputRemotes(extended);
+        const named = gitMessageNames(printed.text);
         if (count > 0) withMatch++;
+        if (remotes.added > 0) withRemote++;
+        if (extended !== remotes.text) withScpPath++;
+        if (printed.added > 0) withGitOutput++;
+        if (named.added > 0) withGitMessage++;
         const result = redactStage1(input);
-        if (result.text !== expected || result.redactedCount !== count) different.push(input);
+        const expectedCount = count + remotes.added + printed.added + named.added;
+        if (result.text !== named.text || result.redactedCount !== expectedCount) different.push(input);
       }
       expect(different, shape).toEqual([]);
       // A generator that makes no match compares nothing.
-      expect(withMatch, shape).toBeGreaterThan(500);
+      if (!shape.startsWith("git ")) expect(withMatch, shape).toBeGreaterThan(500);
+      if (shape === "scp path") expect(withScpPath, shape).toBeGreaterThan(200);
+      if (shape === "remote with no .git") expect(withRemote, shape).toBeGreaterThan(200);
+      if (shape === "git output") expect(withGitOutput, shape).toBeGreaterThan(200);
+      if (shape === "git messages") expect(withGitMessage, shape).toBeGreaterThan(500);
     }
   });
 
@@ -155,11 +472,57 @@ describe("redactStage1 (deterministic floor)", () => {
       "url long host": (n) => `http://${"a.".repeat(n / 2)}`,
       "url host of many different characters": (n) =>
         `http://${Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + (i % 20_000))).join("")}`,
+      "scp path of slashes": (n) => `a@b.cc:${"c/".repeat(n / 2)}`,
+      "scp path with no slash and no .git": (n) => `a@b.cc:${"c.".repeat(n / 2)}`,
+      "scp path with no slash, then a real tail": (n) => `a@b.cc:${"c.".repeat(n / 2)}git`,
+      "remote path with no slash": (n) => `a@b:${"c.".repeat(n / 2)}`,
+      "remote path of written placeholders": (n) => `a@b:${REDACTION_PLACEHOLDER.repeat(n / 10)}`,
+      "remotes with no slash in one run": (n) => "a@b:c.".repeat(n / 6),
+      "remotes with a slash": (n) => "a@b:c/d ".repeat(n / 8),
+      "remote starts, then a real tail": (n) => `${"a.".repeat(n / 2)}u@h:p/q`,
+      "git phrases": (n) => "To From refs to 'Pushing to ".repeat(n / 28),
+      "git phrase, then a long host with no colon": (n) => `To ${"a.".repeat(n / 2)}`,
+      "git phrase, then a path with no slash": (n) => `To ab:${"c.".repeat(n / 2)}`,
+      "git phrases, each with a port": (n) => "From ab:123/x ".repeat(n / 14),
+      "git phrases after a written line end": (n) => String.raw`\nTo ab:c `.repeat(n / 10),
+      "git phrase, then a path of slashes": (n) => `To ab:${"c/".repeat(n / 2)}`,
+      "git lines": (n) => "To ab:c/d\n".repeat(n / 10),
+      "git phrases with a host and no path": (n) => "To ab: ".repeat(n / 7),
+      "clone phrases": (n) => "Cloning into '".repeat(n / 14),
+      "clone phrase, then a long name with no quote": (n) => `Cloning into '${"a ".repeat(n / 2)}`,
+      "clone lines": (n) => "Cloning into 'app'...\n".repeat(n / 22),
+      "fatal quotes": (n) => "fatal: '".repeat(n / 8),
+      "fatal quote, then a long name of slashes": (n) => `fatal: '${"a/".repeat(n / 2)}`,
+      "fatal quotes, each with a name and no phrase after it": (n) => "fatal: 'a/b' ".repeat(n / 13),
+      "permission phrases": (n) => "Permission to a/b ".repeat(n / 18),
+      "permission lines": (n) => "Permission to a/b denied to c ".repeat(n / 30),
+      "project phrases": (n) => "Project 'a' was moved to '".repeat(n / 25),
+      "clone phrases, each with a name and no end": (n) => `Cloning into '${"x ".repeat(50)}`.repeat(n / 114),
+      "permission phrase, then a long first name": (n) => `Permission to a/${"b.".repeat(n / 2)}`,
+      "permission line with a long second name": (n) => `Permission to a/b denied to ${"c.".repeat(n / 2)}`,
+      "scp path of addresses": (n) => `a@b.cc:${"c@d.ee/".repeat(n / 7)}`,
+      "scp path of .git that a letter follows": (n) => `a@b.cc:${".gitx".repeat(n / 5)}`,
+      "addresses before a colon": (n) => "a@b.cc:".repeat(n / 7),
+      "address, then a long host with no colon": (n) => `a@b.cc${"-a".repeat(n / 2)}`,
+      "addresses with a host tail before a colon": (n) => "a@b.cc-x:".repeat(n / 9),
+      "written placeholders with a host tail": (n) => `${REDACTION_PLACEHOLDER}a`.repeat(n / 11),
+      "addresses before a colon and a letter": (n) => "a@b.cc:x".repeat(n / 8),
+      "written placeholders before a colon": (n) => `${REDACTION_PLACEHOLDER}:`.repeat(n / 11),
+      "written placeholder starts": (n) => "[REDACTED".repeat(n / 9),
     };
     // One match is all of the text: a limit on the length of a shape would show here.
-    const whole = ["e-mail starts, then a real tail", "ssh starts, then a real tail", "jwt starts, then a real tail"];
+    const whole = [
+      "e-mail starts, then a real tail",
+      "ssh starts, then a real tail",
+      "jwt starts, then a real tail",
+      "ssh long path with no .git",
+      "scp path of slashes",
+      "scp path with no slash, then a real tail",
+      "remote starts, then a real tail",
+    ];
     for (const [name, make] of Object.entries(hostile)) {
-      // The body of a bug report has the size limit of an HTTP request, 1 MiB, and no other.
+      // Up to the size limit of an HTTP request, 1 MiB. The route refuses a report body above
+      // 60,000 characters, but that is a second protection and not what makes Stage 1 safe.
       // Smallest first: a quadratic pattern fails at a small size, after seconds. At the full
       // size it needs many minutes, and no timeout can stop a synchronous call.
       for (const size of [16_000, 64_000, 256_000, 1_024_000]) {

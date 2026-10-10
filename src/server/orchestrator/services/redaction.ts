@@ -42,6 +42,57 @@ const STAGE1_PATTERNS: { name: string; re: RegExp; orRun?: string }[] = [
 // Plain URLs can disclose private project remotes too.
 const URL_RE = /\b(?:https?|git|ssh):\/\/[^\s)'"`]+/gi;
 
+// The last steps take an scp-style remote that the patterns above took in part or not at
+// all. Those patterns stay as they are: a change there shows text that a later step hides
+// (docs/164-user-bug-filing/plan.md). A path can hold placeholders of earlier steps, and it
+// needs a `/` or `.git`: a port, a time or a word after a colon stays.
+const SCP_PATH_PART = String.raw`(?:[A-Za-z0-9._-]|\[REDACTED\])`;
+const SCP_PATH = String.raw`${SCP_PATH_PART}*\/(?:${SCP_PATH_PART}|\/)*`;
+// `(shape)|rest of the run`, as in `STAGE1_PATTERNS`.
+const SCP_REMOTE_RE = new RegExp(
+  String.raw`(\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:${SCP_PATH})|\b[A-Za-z0-9._-]+`,
+  "g",
+);
+// A host has no `[` in it and a path has no colon in it: no text is read again from each
+// placeholder.
+const SCP_PATH_AFTER_REDACTION_RE = new RegExp(
+  String.raw`\[REDACTED\][A-Za-z0-9.-]*:(?:${SCP_PATH}|${SCP_PATH_PART}+\.git\b)`,
+  "g",
+);
+
+// Git prints a remote with no user: `To github.com:acme/app.git`. The phrases are git's.
+// With no phrase before it, `host:path` is also an image, a file with a key path and a
+// bucket; a first path part that is a number is read as a port (planning#684). In a JSON log
+// line, the phrase follows a written `\n`, which has no word boundary after it.
+const GIT_OUTPUT_REMOTE_RE = new RegExp(
+  String.raw`(?<=^|\W|\\[nrt])((?:To|From|Pushing to|refs to) '?)[A-Za-z0-9.-]{2,}:(?![0-9]+\/)(?:${SCP_PATH}|${SCP_PATH_PART}+\.git\b)`,
+  "g",
+);
+
+// Lines of git and of git servers that name a repository and have no remote in them
+// (planning#685). The phrase after the name is a condition too: with no `...` after it,
+// `Cloning into 'x'` is also a sentence. A name ends at a quote or at white space, and each
+// phrase has one of them in it, so no name is read again from a later phrase.
+const QUOTED_NAME = String.raw`[^'\n\r]+`;
+const GIT_MESSAGE_NAME_RES = [
+  [String.raw`Cloning into (?:bare repository )?'`, QUOTED_NAME, String.raw`'\.\.\.`],
+  [String.raw`destination path '`, QUOTED_NAME, String.raw`' already exists`],
+  // With no `/` and no `.git`, the quoted text is in most cases the name of a remote:
+  // `'origin'`.
+  [
+    String.raw`fatal: '`,
+    String.raw`[^'\n\r/]*(?:\/[^'\n\r]*|\.git)`,
+    String.raw`' does not appear to be a git repository`,
+  ],
+  [String.raw`repository '`, QUOTED_NAME, String.raw`' does not exist`],
+  // GitHub and GitLab. The second name is found after the placeholder of the first one. No
+  // phrase follows GitHub's second name: it ends where the characters of a name end.
+  [String.raw`Permission to `, String.raw`[^\s/]+\/\S+`, String.raw` denied to `],
+  [String.raw`Permission to \[REDACTED\] denied to `, String.raw`[A-Za-z0-9._/-]+`, ""],
+  [String.raw`Project '`, QUOTED_NAME, String.raw`' was moved to '`],
+  [String.raw`Project '\[REDACTED\]' was moved to '`, QUOTED_NAME, "'"],
+].map(([before, name, after]) => new RegExp(`(${before})${name}(?=${after})`, "g"));
+
 export interface Stage1Result {
   text: string;
   redactedCount: number;
@@ -73,6 +124,23 @@ export function redactStage1(input: string): Stage1Result {
     count++;
     return REDACTION_PLACEHOLDER;
   });
+
+  // The steps from here are last and only replace text: they cannot make redacted text visible.
+  if (text.includes("@")) {
+    text = text.replace(SCP_REMOTE_RE, (match: string, shape: unknown) => {
+      if (shape === undefined) return match;
+      count++;
+      return REDACTION_PLACEHOLDER;
+    });
+  }
+  // Not counted: it makes a redaction longer.
+  text = text.replace(SCP_PATH_AFTER_REDACTION_RE, REDACTION_PLACEHOLDER);
+  for (const re of [GIT_OUTPUT_REMOTE_RE, ...GIT_MESSAGE_NAME_RES]) {
+    text = text.replace(re, (_match: string, phrase: string) => {
+      count++;
+      return `${phrase}${REDACTION_PLACEHOLDER}`;
+    });
+  }
 
   return { text, redactedCount: count };
 }

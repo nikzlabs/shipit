@@ -182,7 +182,7 @@ Rows are loaded one at a time, newest first. A page of large rows is thus never
 in memory together.
 
 `redactStage1` was quadratic in four places (planning#677), and the bug report
-flow passes it a body of up to 1 MiB. Three were shapes that were tried from
+flow passed it a body of up to 1 MiB. Three were shapes that were tried from
 each start in a run: e-mail, ssh-remote and JWT. Each of those patterns now has
 a second alternative: when the shape fails at a start, that alternative takes
 the rest of the run, and the search goes on after it. A later start in the same
@@ -193,10 +193,12 @@ run, and the next match starts at that position: `a@b.cc.d@e.ff` is two
 matches, and a look-behind for the start of a run finds only the first. The
 fourth place was a call that parsed each URL and did not use the result:
 `new URL` is quadratic in a host name of many different non-ASCII characters.
-The call is removed. The text and the count that `redactStage1` returns are
-the same as before. `redaction.test.ts` compares the three patterns with the
+The call is removed. That change left the text and the count that
+`redactStage1` returns as they were. `redaction.test.ts` compares the three patterns with the
 shapes alone, and times `redactStage1` on hostile inputs of 16 KB to 1 MB,
-smallest first. The body of a bug report still has no length limit of its own.
+smallest first. The body of a bug report now has a length limit of its own,
+60,000 characters (`docs/164-user-bug-filing/plan.md`, "Length limits"). It is a
+second protection: `redactStage1` stays linear without it.
 
 ### Cuts and paging (req 2)
 
