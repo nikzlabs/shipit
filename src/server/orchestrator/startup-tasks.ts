@@ -481,7 +481,7 @@ export function setupContainerHealthMonitoring(
       broadcastLog(
         sessionId,
         "server",
-        `${msg} Orchestrator is in a destroy/recreate loop — check journalctl for destroyContainer/dispose stack traces around this timestamp.`,
+        `${msg} Orchestrator is in a destroy/recreate loop — check the orchestrator's own log for destroyContainer/dispose stack traces around this timestamp.`,
       );
     }
     if (oomBreaker) {

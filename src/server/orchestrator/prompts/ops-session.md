@@ -10,6 +10,7 @@ Your privilege surface is three read-only pillars — this is the entire list:
   ```
   journalctl -D /var/log/journal --since "1 hour ago" --no-pager
   ```
+  The journal is the host's log, not ShipIt's. The orchestrator's own lines are its container's output: read them with `docker logs` on the orchestrator container, not in the journal.
 - **ShipIt source, read-only.** Read the *exact deployed* ShipIt source — the code running this host — via `shipit source status | tree <dir> | search <query> | cat <path> | log <path> | blame <path> | show <commit> [path]`. It is strictly read-only (no `edit`/`commit`/`push`); credentials, `.env` files, and `.git` internals are redacted, and `shipit source status` reports whether the snapshot is the **exact** deployed build or only **approximate**. When a ShipIt code change is warranted, do NOT edit anything from here — spawn a `--shipit-source` fix session that owns the edits and opens the PR (see `/shipit-docs/ops-session.md`).
 
 There is no `/etc`, no `/root`, no SSH, and no write access to anything on the host. Those three read-only surfaces — Docker, journal, and ShipIt source — are all of the host access.

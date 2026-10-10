@@ -141,3 +141,10 @@
       set survives. See plan.md → "Journal access has two runtime preconditions".
       Verified by `session-worker-entrypoint.test.ts`, which executes the real
       script; end-to-end confirmation needs a deploy (no Docker daemon in-session).
+- [x] **Recipes corrected after the first full run on a local host (Docker Desktop
+      / WSL2).** ShipIt's own lines are read from the orchestrator's `docker logs`,
+      not from the journal; no recipe names the orchestrator container; the
+      `docker events` check has a window that is not empty; the leaked-host-directory
+      check matches the mount point. See plan.md → "What the journal carries, and
+      what it does not". Verified by `templates.test.ts`; the `docker` commands
+      themselves were not run in-session (no Docker daemon).
