@@ -730,8 +730,9 @@ browser starts with it, so it reports the card or SwiftShader, never
 When the built-in browser reports `SwiftShader` in a `granted` container, or
 your own Chrome does with `--use-angle=gl-egl`, find the cause in this order:
 
-1. **`libEGL.so.1` is not in the image** (`ldconfig -p | grep libEGL` prints
-   nothing). The container is older than this feature. A restart of the
+1. **`libEGL.so.1` is not in the image** (`/sbin/ldconfig -p | grep libEGL`
+   prints nothing; give the full path, because not every shell has `/sbin` in
+   its `PATH`). The container is older than this feature. A restart of the
    container gets the new image (see "Restarting your agent container" above).
 2. **Mesa could not use the GPU.** Start your own Chrome with
    `--use-angle=gl-egl --ignore-gpu-blocklist` and no `GALLIUM_DRIVER`. It then
