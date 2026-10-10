@@ -1584,6 +1584,48 @@ describe("shipit session rename (docs/250)", () => {
   });
 });
 
+describe("shipit session notify-on-merge <child> (docs/196-session-notify-on-merge)", () => {
+  const ROUTE = "POST /agent-ops/session/notify-on-merge/ses_child";
+  const armWith = async (body: Record<string, unknown>) => {
+    const { run } = makeRunner();
+    return run(["session", "notify-on-merge", "ses_child"], { [ROUTE]: { status: 200, body } });
+  };
+
+  it("reports a first arm and a repeated arm", async () => {
+    const armed = await armWith({ armed: true, state: "armed", alreadyArmed: false });
+    expect(armed.exitCode).toBe(0);
+    expect(armed.stdout).toContain("notify-on-merge: armed\n");
+
+    const again = await armWith({ armed: true, state: "armed", alreadyArmed: true });
+    expect(again.stdout).toContain("notify-on-merge: already armed\n");
+  });
+
+  it("req 3: says that an arm made during a wake applies to the next pull request", async () => {
+    const out = await armWith({ armed: true, state: "merge-observed", alreadyArmed: false, skipsPr: 12 });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain(
+      "notify-on-merge: armed for the next PR; the wake for PR #12 is still in delivery\n",
+    );
+
+    const again = await armWith({ armed: true, state: "merge-observed", alreadyArmed: true, skipsPr: 12 });
+    expect(again.stdout).toContain("notify-on-merge: already armed for the next PR; the wake for PR #12");
+  });
+
+  it("req 4: names the pull request that the watch does not report again", async () => {
+    const out = await armWith({ armed: true, state: "armed", alreadyArmed: false, skipsPr: 12 });
+    expect(out.stdout).toContain(
+      "notify-on-merge: armed for the next PR; PR #12 was already reported to this session\n",
+    );
+  });
+
+  it("--json passes the response through", async () => {
+    const { run } = makeRunner();
+    const body = { armed: true, state: "armed", alreadyArmed: false, skipsPr: 12 };
+    const out = await run(["session", "notify-on-merge", "ses_child", "--json"], { [ROUTE]: { status: 200, body } });
+    expect(JSON.parse(out.stdout)).toEqual(body);
+  });
+});
+
 describe("shipit session continue-after-rebase (docs/303)", () => {
   const ARMED = { status: 200, body: { armed: true, notes: 1 } };
 

@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import { isLiveMergeWatch, type SessionManager } from "../sessions.js";
+import { addUnreportedPr, unreportedPrs, withUnreportedPrs } from "../merge-watch-prs.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import { REPOSITORY_UNTRUSTED_CODE } from "../session-runner.js";
 import { parseGitHubRemote, stripUrlCredentials } from "../git-utils.js";
@@ -825,10 +827,12 @@ export interface RegisterMergeWatchResult {
   childId: string;
   state: SessionMergeWatch["state"];
   alreadyArmed: boolean;
+  /** The parent already knows about this PR, or its wake is in delivery: the watch does not fire for it. */
+  skipsPr?: number;
 }
 
-// Terminal watches can be explicitly re-armed, including a failed delivery.
-// The child's own `--self` watch is stored apart (`selfMergeWatch`); this never reads or writes it.
+// The child's own `--self` watch is stored apart (`selfMergeWatch`); this never writes it, and
+// reads it only for the log line.
 export function registerMergeWatch(
   sessionManager: SessionManager,
   parentSessionId: string,
@@ -843,26 +847,73 @@ export function registerMergeWatch(
     throw new ServiceError(400, "Parent session is archived");
   }
   const existing = child.mergeWatch;
-  if (existing?.parentSessionId === parentSessionId && isLiveMergeWatch(existing)) {
+  const own = existing?.parentSessionId === parentSessionId ? existing : undefined;
+  if (own?.state === "armed") {
     console.log(
       `[merge-watch] parent ${parentSessionId} armed its watch on ${childSessionId} again: `
-      + `already ${existing.state}, nothing changed`,
+      + "already armed, nothing changed",
     );
-    return { childId: childSessionId, state: existing.state, alreadyArmed: true };
+    return {
+      childId: childSessionId,
+      state: "armed",
+      alreadyArmed: true,
+      ...(own.reportedPr ? { skipsPr: own.reportedPr.prNumber } : {}),
+    };
   }
-  const watch: SessionMergeWatch = {
-    parentSessionId,
-    state: "armed",
-    registeredAt: new Date().toISOString(),
-  };
+  if (own?.state === "merge-observed") {
+    // docs/196-session-notify-on-merge req 3 — the wake in delivery keeps its watch, and so its
+    // retries. The manager arms the watch that follows when this one ends.
+    const deliveringPr = own.mergedPr?.prNumber;
+    const alreadyQueued = own.rearmedAt !== undefined;
+    if (!alreadyQueued) {
+      sessionManager.setMergeWatch(childSessionId, { ...own, rearmedAt: new Date().toISOString() });
+    }
+    const result = alreadyQueued ? "an arm for the next PR was already queued" : "armed for the next PR";
+    console.log(
+      `[merge-watch] parent ${parentSessionId} armed its watch on ${childSessionId} during the wake `
+      + `for PR #${deliveringPr ?? "?"}: ${result}`,
+    );
+    return {
+      childId: childSessionId,
+      state: "merge-observed",
+      alreadyArmed: alreadyQueued,
+      ...(deliveringPr !== undefined ? { skipsPr: deliveringPr } : {}),
+    };
+  }
+  // A terminal watch can be armed again. It hands over the PR that its parent already knows
+  // (req 4) and the ones that it kept for this arm (req 2). A watch whose delivery failed told
+  // nobody, so its own merge goes in front of them.
+  const reportedPr = own?.reportedPr;
+  let owed = own ? unreportedPrs(own) : [];
+  if (own?.state === "delivery-failed" && own.mergedPr) {
+    owed = addUnreportedPr(owed, { outcome: "merged", ...own.mergedPr }, "first");
+  }
+  const watch = withUnreportedPrs(
+    {
+      parentSessionId,
+      watchId: randomUUID(),
+      state: "armed",
+      registeredAt: new Date().toISOString(),
+      ...(reportedPr ? { reportedPr } : {}),
+    },
+    owed,
+  );
   sessionManager.setMergeWatch(childSessionId, watch);
   const self = child.selfMergeWatch;
   const replaces = existing ? ` (replaces its ${existing.state} watch)` : "";
+  const skips = reportedPr ? `; PR #${reportedPr.prNumber} was already reported` : "";
   const beside = self && isLiveMergeWatch(self)
     ? `; the child also watches its own PR #${self.prNumber ?? "?"}`
     : "";
-  console.log(`[merge-watch] parent ${parentSessionId} armed a watch on ${childSessionId}${replaces}${beside}`);
-  return { childId: childSessionId, state: "armed", alreadyArmed: false };
+  console.log(
+    `[merge-watch] parent ${parentSessionId} armed a watch on ${childSessionId}${replaces}${skips}${beside}`,
+  );
+  return {
+    childId: childSessionId,
+    state: "armed",
+    alreadyArmed: false,
+    ...(reportedPr ? { skipsPr: reportedPr.prNumber } : {}),
+  };
 }
 
 function isRunnerIdle(runner: SessionRunnerInterface | undefined): boolean {

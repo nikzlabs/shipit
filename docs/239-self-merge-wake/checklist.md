@@ -1,7 +1,7 @@
 # Self-merge wake — checklist
 
 The existing merge-watch pointed back at the same session. No parallel manager, no chain
-object, no card lifecycle. If an item here looks like a subsystem,
+object, no family of cards. If an item here looks like a subsystem,
 it has been cut — see the plan's "Resolved decisions".
 
 ## Prerequisite
@@ -60,11 +60,16 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] `orchestrator/prompts/self-merge-wake.md`: merged; run reset first; stop if it refuses; continue the earlier request unless redirected; re-arm if work remains
 - [x] Arm card via `emitChatCard`, with Cancel
 - [x] Notes (not cards) for closed / mismatch / delivery failure
+- [x] The arm card records why its watch is gone (`ended`: merged, wake-failed, closed,
+      other-pr-merged, cancelled, replaced), shows it, and offers no Cancel — live and
+      after a reload
 
 ## Tests
 
 - [x] Arm refused with no open PR; live lookup after `gh pr create` anchors to the new PR
 - [x] Arm card persists and round-trips; stale-`watchId` Cancel doesn't cancel a newer watch
+- [x] Arm card end: each end is written, sent to live viewers and read back from history;
+      a card ended inside its own turn keeps the end; a failed card update stops nothing
 - [x] Fires after merge bookkeeping
 - [x] Anchor mismatch → note, no turn
 - [x] Closed-without-merge → note, no turn

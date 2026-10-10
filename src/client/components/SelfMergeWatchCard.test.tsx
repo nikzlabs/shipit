@@ -71,4 +71,31 @@ describe("SelfMergeWatchCard", () => {
     await screen.findByText(/No longer armed/);
     expect(screen.getByTestId("self-merge-watch-card").getAttribute("data-phase")).toBe("stale");
   });
+
+  it.each([
+    ["merged", "This PR merged", /wakes this session/],
+    ["closed", "PR closed — not merged", /closed without merging/],
+    ["cancelled", "Merge watch cancelled", /will not be woken when the PR merges/],
+    ["replaced", "Merge watch replaced", /newer watch replaced this one/],
+    ["other-pr-merged", "Merge watch cleared", /different PR merged first/],
+    ["wake-failed", "Couldn't continue after the merge", /Send a message to continue/],
+  ] as const)("an ended card (%s) says so and offers no Cancel", (ended, label, text) => {
+    render(<SelfMergeWatchCard card={{ ...CARD, ended }} sessionId="s1" />);
+
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByText(text)).toBeTruthy();
+    expect(screen.getByText("PR #43")).toBeTruthy();
+    expect(screen.queryByText("Waiting on PR #43")).toBeNull();
+    expect(screen.queryByRole("button", { name: /cancel the merge watch/i })).toBeNull();
+    expect(screen.getByTestId("self-merge-watch-card").getAttribute("data-ended")).toBe(ended);
+  });
+
+  it("a card that ends while it is on screen drops its Cancel", () => {
+    const { rerender } = render(<SelfMergeWatchCard card={CARD} sessionId="s1" />);
+    expect(screen.getByRole("button", { name: /cancel the merge watch/i })).toBeTruthy();
+
+    rerender(<SelfMergeWatchCard card={{ ...CARD, ended: "merged" }} sessionId="s1" />);
+    expect(screen.queryByRole("button", { name: /cancel the merge watch/i })).toBeNull();
+    expect(screen.getByText("This PR merged")).toBeTruthy();
+  });
 });
