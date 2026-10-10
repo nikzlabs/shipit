@@ -55,14 +55,14 @@ describe("the plugin exec routes — stdin", () => {
   it("gives a running command the input its caller sends after the call", async () => {
     const running = exec({ stdinId: "call-1" });
 
-    expect((await part({ id: "call-1", data: "one\n" })).json()).toEqual({ accepted: true });
-    expect((await part({ id: "call-1", data: "two\n", end: true })).json()).toEqual({ accepted: true });
+    expect((await part({ id: "call-1", seq: 0, data: "one\n" })).json()).toEqual({ accepted: true });
+    expect((await part({ id: "call-1", seq: 1, data: "two\n", end: true })).json()).toEqual({ accepted: true });
 
     expect((await running).json()).toMatchObject({ exitCode: 0, stdout: "one\ntwo\n" });
   });
 
   it("gives the command a part that arrived before the call", async () => {
-    const early = part({ id: "call-2", data: "early\n", end: true });
+    const early = part({ id: "call-2", seq: 0, data: "early\n", end: true });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const res = await exec({ stdinId: "call-2" });
@@ -78,7 +78,7 @@ describe("the plugin exec routes — stdin", () => {
       return { exitCode: 0, stdout: "did not read\n", stderr: "" };
     };
     const running = exec({ stdinId: "call-3" });
-    const unread = part({ id: "call-3", data: LARGE });
+    const unread = part({ id: "call-3", seq: 0, data: LARGE });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     exit();
@@ -87,11 +87,42 @@ describe("the plugin exec routes — stdin", () => {
     expect((await unread).json()).toEqual({ accepted: false });
   });
 
-  it("answers for a session that does not exist, and for a part with no id", async () => {
-    const missing = await part({ id: "call-4", data: "x" }, "/api/sessions/nope/plugin/exec/stdin");
+  it("answers an error, not an end of input, for a part that it did not deliver", async () => {
+    const running = exec({ stdinId: "call-4" });
+
+    const skipped = await part({ id: "call-4", seq: 3, data: "not the next part\n" });
+    expect(skipped.statusCode).toBe(409);
+    expect(skipped.json()).toEqual({ error: "Part 3 of this input arrived before part 0." });
+
+    await part({ id: "call-4", seq: 0, data: "", end: true });
+    expect((await running).json()).toMatchObject({ stdout: "" });
+  });
+
+  it("does not run a call again that it has, while the command runs and after, and leaves the first its input", async () => {
+    const running = exec({ stdinId: "call-5" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const second = await exec({ stdinId: "call-5" });
+    expect(second.statusCode).toBe(409);
+
+    await part({ id: "call-5", seq: 0, data: "for the first\n", end: true });
+    expect((await running).json()).toMatchObject({ stdout: "for the first\n" });
+
+    let runs = 0;
+    run = async () => {
+      runs += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    expect((await exec({ stdinId: "call-5" })).statusCode).toBe(409);
+    expect(runs).toBe(0);
+  });
+
+  it("answers for a session that does not exist, and for a part with no id or no number", async () => {
+    const missing = await part({ id: "call-6", seq: 0, data: "x" }, "/api/sessions/nope/plugin/exec/stdin");
     expect(missing.statusCode).toBe(404);
 
-    const unnamed = await part({ data: "x" });
-    expect(unnamed.statusCode).toBe(400);
+    expect((await part({ seq: 0, data: "x" })).statusCode).toBe(400);
+    expect((await part({ id: "call-6", data: "x" })).statusCode).toBe(400);
+    expect((await part({ id: "call-6", seq: -1, data: "x" })).statusCode).toBe(400);
   });
 });

@@ -165,7 +165,13 @@ export async function registerPluginRepoRoutes(
       const inline = typeof request.body?.stdin === "string" ? request.body.stdin : undefined;
       const stdinId = typeof request.body?.stdinId === "string" ? request.body.stdinId : "";
       // Claimed before anything is awaited: a part waits only a short time for its call.
-      const sent = inline === undefined && stdinId ? claimPluginStdin(request.params.id, stdinId) : null;
+      const sent = inline === undefined && stdinId ? claimPluginStdin(request.params.id, stdinId) : undefined;
+      if (sent === null) {
+        reply.code(409).send({
+          error: "This call reached ShipIt before, and its command runs or ran. ShipIt does not run it again.",
+        });
+        return;
+      }
       const stdin: PluginCliRequest["stdin"] = sent?.stream ?? inline;
       try {
         return await deps.runPluginCommandForSession(request.params.id, session.workspaceDir, {
@@ -181,7 +187,7 @@ export async function registerPluginRepoRoutes(
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { id?: string; data?: string; end?: boolean } }>(
+  app.post<{ Params: { id: string }; Body: { id?: string; seq?: number; data?: string; end?: boolean } }>(
     "/api/sessions/:id/plugin/exec/stdin",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -190,14 +196,19 @@ export async function registerPluginRepoRoutes(
         return;
       }
       const id = typeof request.body?.id === "string" ? request.body.id : "";
-      if (!id) {
-        reply.code(400).send({ error: "`id` is required." });
+      const seq = request.body?.seq;
+      if (!id || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0) {
+        reply.code(400).send({ error: "`id` and a part number `seq` are required." });
         return;
       }
-      const data = typeof request.body?.data === "string" ? request.body.data : "";
-      return {
-        accepted: await writePluginStdin(request.params.id, id, data, request.body?.end === true),
-      };
+      const answer = await writePluginStdin(request.params.id, id, {
+        seq,
+        data: typeof request.body?.data === "string" ? request.body.data : "",
+        end: request.body?.end === true,
+      });
+      // An error is input that did not reach the command, and the caller must not take it for an end.
+      if ("error" in answer) reply.code(409);
+      return answer;
     },
   );
 

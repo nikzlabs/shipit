@@ -174,8 +174,8 @@ on its way: it is false on every call.
 
 - **Read stdin when an argument asks for it** (`-`, `--stdin`), and not
   otherwise. An agent's shell can give a call a stdin that stays open and
-  sends nothing. A command that reads stdin on every call then waits for an
-  end that does not come, until its time limit.
+  sends nothing. A command that reads stdin to its end on every call then
+  waits for an end that does not come, until its time limit.
 - **Read to the end of the input.** It can arrive slowly, and it can be larger
   than one read.
 

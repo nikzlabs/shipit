@@ -184,6 +184,7 @@ function fakeDocker(opts: {
   };
   let stdinChunks: Buffer[] = [];
   let stdinEnded = false;
+  let stdinWrites = 0;
   let attached: Duplex | undefined;
   // As the daemon's connection: what is written is the command's stdin, and the output side ends
   // when the command exits, whatever its stdin did.
@@ -193,6 +194,7 @@ function fakeDocker(opts: {
     return new Duplex({
       read() { /* output is faked in demuxStream */ },
       write(chunk: Buffer, _encoding, done) {
+        stdinWrites += 1;
         if (opts.stdinClosed) {
           done(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
           return;
@@ -289,6 +291,7 @@ function fakeDocker(opts: {
     containers, networks, volumes, volumeLabels, connected, started, removedContainers,
     stdin: () => Buffer.concat(stdinChunks).toString(),
     stdinEnded: () => stdinEnded,
+    stdinWrites: () => stdinWrites,
   };
 }
 
@@ -1218,6 +1221,7 @@ describe("runPluginCommand — the command's stdin", () => {
       const result = await runPluginCommand(deps(fake.docker), { ...call, stdin: stdin() });
 
       expect(result).toMatchObject({ exitCode: 0, stdout: "done\n" });
+      expect(fake.stdinWrites()).toBeGreaterThan(0);
       expect(unhandled).toEqual([]);
     } finally {
       process.off("uncaughtException", record);

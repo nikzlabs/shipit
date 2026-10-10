@@ -1,6 +1,6 @@
 
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { PassThrough } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { runShim, type ShimIO } from "./shipit.js";
 
 interface RecordedCall {
@@ -310,12 +310,19 @@ describe("shipit plugin exec", () => {
     expect(stdin.readableFlowing).toBeNull();
   });
 
-  it("sends the call at once when stdin is open and sends nothing", async () => {
+  it("sends the call after a wait too short to notice when stdin is open and sends nothing", async () => {
     useStdin();
     const { run } = makeRunner();
+    const waits: number[] = [];
+    const sleep = (ms: number): Promise<void> => {
+      waits.push(ms);
+      return Promise.resolve();
+    };
 
-    const res = await run(ARGV, { [EXEC]: { status: 200, body: { exitCode: 4, stdout: "out", stderr: "" } } }, noWait);
+    const res = await run(ARGV, { [EXEC]: { status: 200, body: { exitCode: 4, stdout: "out", stderr: "" } } }, { sleep });
 
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeLessThanOrEqual(100);
     expect(res.calls).toHaveLength(1);
     expect(res.calls[0].body).not.toHaveProperty("stdin");
     expect((res.calls[0].body as { stdinId: string }).stdinId).toMatch(/\S/);
@@ -339,9 +346,9 @@ describe("shipit plugin exec", () => {
 
     const id = (res.calls[0].body as { stdinId: string }).stdinId;
     expect(stdinParts(res.calls)).toEqual([
-      { id, data: "late one\n", end: false },
-      { id, data: "late two\n", end: false },
-      { id, data: "", end: true },
+      { id, seq: 0, data: "late one\n", end: false },
+      { id, seq: 1, data: "late two\n", end: false },
+      { id, seq: 2, data: "", end: true },
     ]);
     expect(res.calls.every((c) => c.timeoutMs === 0)).toBe(true);
     expect(res.exitCode).toBe(0);
@@ -358,10 +365,65 @@ describe("shipit plugin exec", () => {
     exec.finish();
     const res = await running;
 
-    const parts = stdinParts(res.calls) as { data: string }[];
+    const parts = stdinParts(res.calls) as { seq: number; data: string }[];
     expect(parts.length).toBeGreaterThan(2);
     expect(parts.map((p) => p.data).join("")).toBe(large);
+    expect(Math.max(...parts.map((p) => p.data.length))).toBeLessThanOrEqual(128 * 1024);
+    expect(parts.map((p) => p.seq)).toEqual(parts.map((_, i) => i));
     expect(res.calls[0].body).not.toHaveProperty("stdin");
+  });
+
+  it("reads little more input than one request holds before it sends the call", async () => {
+    // A producer that does not stop, in chunks of 64 Ki characters, as a pipe gives them.
+    const CHUNK = 64 * 1024;
+    let produced = 0;
+    const stdin = new Readable({
+      read() {
+        produced += CHUNK;
+        this.push("x".repeat(CHUNK));
+      },
+    });
+    vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
+    const { run } = makeRunner();
+    // A wait that never ends: only the size of the input can send the call.
+    const sleep = (): Promise<void> => new Promise(() => undefined);
+    let producedAtCall = -1;
+
+    const res = await run(ARGV, {
+      [EXEC]: () => {
+        producedAtCall = produced;
+        return DONE;
+      },
+      [EXEC_STDIN]: { status: 200, body: { accepted: false } },
+    }, { sleep });
+    stdin.destroy();
+
+    expect(res.calls[0]).toMatchObject({ path: "/agent-ops/plugin/exec" });
+    expect(res.calls[0].body).not.toHaveProperty("stdin");
+    // One request holds 128 Ki; the read that passes it and what the stream reads ahead are the rest.
+    expect(producedAtCall).toBeGreaterThan(128 * 1024);
+    expect(producedAtCall).toBeLessThanOrEqual(128 * 1024 + 3 * CHUNK);
+  });
+
+  it("sends the next part only when the last one was answered", async () => {
+    const stdin = useStdin();
+    const { run, calls } = makeRunner();
+    const exec = pendingExec();
+    let answer: () => void = () => undefined;
+    const held = new Promise<BrokerResponse>((resolve) => { answer = () => resolve(ACCEPTED); });
+
+    const running = run(ARGV, { [EXEC]: exec.response, [EXEC_STDIN]: () => held }, noWait);
+    await vi.waitFor(() => { expect(calls).toHaveLength(1); });
+    stdin.write("first\n");
+    await vi.waitFor(() => { expect(calls).toHaveLength(2); });
+    stdin.write("second\n");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(stdinParts(calls)).toHaveLength(1);
+
+    answer();
+    await vi.waitFor(() => { expect(stdinParts(calls)).toHaveLength(2); });
+    exec.finish();
+    await running;
   });
 
   it("does not cut a character in two between parts", async () => {
@@ -418,7 +480,7 @@ describe("shipit plugin exec", () => {
     stdin.write("lost\n");
     const res = await running;
 
-    expect(res.exitCode).not.toBe(0);
+    expect(res.exitCode).toBe(2);
     expect(res.stderr).toContain("Could not deliver stdin to `reqs`");
     expect(res.stderr).toContain("the orchestrator is restarting");
   });

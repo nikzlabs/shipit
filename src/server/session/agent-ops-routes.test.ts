@@ -8,6 +8,7 @@ interface RecordedCall {
   method: string;
   path: string;
   body?: unknown;
+  timeoutMs?: number;
 }
 
 interface FakeResponse {
@@ -28,8 +29,9 @@ class FakeOrchestratorClient {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
     body?: unknown,
+    opts?: { timeoutMs?: number },
   ): Promise<FakeResponse> {
-    this.calls.push({ method, path: suffix, body });
+    this.calls.push({ method, path: suffix, body, timeoutMs: opts?.timeoutMs });
     const key = `${method} ${suffix.split("?")[0]}`;
     return this.responses[key] ?? { ok: true, status: 200, body: {} };
   }
@@ -939,24 +941,41 @@ describe("agent-ops routes", () => {
       method: "POST",
       path: "/plugin/exec",
       body: { alias: "reqs", command: "reqs", args: ["list"], cwd: "/workspace", stdinId: "call-1" },
+      timeoutMs: 0,
     });
   });
 
-  it("POST /agent-ops/plugin/exec/stdin relays one part of a call's stdin, and the answer", async () => {
+  it("POST /agent-ops/plugin/exec/stdin relays one part of a call's stdin with no time limit, and the answer", async () => {
     client.setResponse("POST", "/plugin/exec/stdin", { ok: true, status: 200, body: { accepted: false } });
 
     const res = await app.inject({
       method: "POST",
       url: "/agent-ops/plugin/exec/stdin",
-      payload: { id: "call-1", data: "one\n", end: "yes" },
+      payload: { id: "call-1", seq: 4, data: "one\n", end: "yes" },
     });
 
     expect(res.json()).toEqual({ accepted: false });
     expect(client.calls[0]).toMatchObject({
       method: "POST",
       path: "/plugin/exec/stdin",
-      body: { id: "call-1", data: "one\n", end: false },
+      body: { id: "call-1", seq: 4, data: "one\n", end: false },
+      timeoutMs: 0,
     });
+  });
+
+  it("POST /agent-ops/plugin/exec/stdin relays an input that was not delivered as an error", async () => {
+    client.setResponse("POST", "/plugin/exec/stdin", {
+      ok: false, status: 409, body: { error: "The call that this input belongs to did not arrive." },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/exec/stdin",
+      payload: { id: "call-1", seq: 0, data: "one\n" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "The call that this input belongs to did not arrive." });
   });
 
   it("GET /agent-ops/settings/list relays to the session's settings index", async () => {

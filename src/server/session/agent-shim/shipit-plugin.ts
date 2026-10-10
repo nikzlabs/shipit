@@ -90,8 +90,8 @@ type this: each surfaced command has a generated wrapper on PATH that calls it,
 and the wrapper's name is what a plugin's docs tell you to run.
 
 The command gets this call's stdin as it arrives, and its end when it ends. A
-command that reads stdin waits for that end, as a local program does: when you
-pass no input, give the call \`</dev/null\`.
+command that reads stdin to its end waits for that end, as a local program
+does: when you pass no input, give the call \`</dev/null\`.
 
 Set SHIPIT_PLUGIN_TIMING=1 on a call to see, on stderr, where its time went:
 \`command\` is the container's start to its exit — the plugin's own program —
@@ -143,11 +143,8 @@ async function exec(args: string[], deps: RunDeps): Promise<void> {
   const head = process.stdin.isTTY
     ? { parts: [], rest: null }
     : await readStdinHead(process.stdin, deps.sleep(STDIN_INLINE_WAIT_MS));
-  const early = head.parts.join("");
   // Input that did not end at once, or is too large for one request, follows the call in parts.
-  const stdinId = head.rest === null && early.length <= STDIN_REQUEST_MAX_CHARS
-    ? undefined
-    : crypto.randomUUID();
+  const stdinId = head.rest === null ? undefined : crypto.randomUUID();
 
   const call = deps.call(
     "POST",
@@ -157,7 +154,7 @@ async function exec(args: string[], deps: RunDeps): Promise<void> {
       command: values.command,
       args: passthrough,
       cwd: process.cwd(),
-      ...(stdinId ? { stdinId } : { stdin: early }),
+      ...(stdinId ? { stdinId } : { stdin: head.parts.join("") }),
     },
     deps.env,
     // No transport deadline while the plugin command is still running.
@@ -209,12 +206,12 @@ type BrokerResponse = Awaited<ReturnType<RunDeps["call"]>>;
 // Long enough for a stdin that is already at its end to say so. It is not a limit on the input:
 // a stdin that is still open after it loses nothing, and the call does not wait for it.
 const STDIN_INLINE_WAIT_MS = 50;
-// A request body is limited to 1 MiB, and JSON can write one character as six bytes.
+// In UTF-16 code units. A request body is limited to 1 MiB, and JSON can write one unit as six bytes.
 const STDIN_REQUEST_MAX_CHARS = 128 * 1024;
 
 interface StdinHead {
   parts: string[];
-  /** Null when stdin ended; otherwise the read that was pending when the wait ended. */
+  /** Null when stdin ended within the wait and fits one request; otherwise the read that was pending. */
   rest: { pending: Promise<IteratorResult<string>>; source: AsyncIterator<string> } | null;
 }
 
@@ -226,30 +223,37 @@ async function readStdinHead(stdin: NodeJS.ReadStream, wait: Promise<void>): Pro
     return null;
   })();
   const parts: string[] = [];
+  let size = 0;
   let pending = source.next();
   try {
-    for (;;) {
+    // Input that is already too large for the one request is not read further here.
+    while (size <= STDIN_REQUEST_MAX_CHARS) {
       const part = await Promise.race([pending, waited]);
-      if (part === null) return { parts, rest: { pending, source } };
+      if (part === null) break;
       if (part.done) return { parts, rest: null };
       parts.push(part.value);
+      size += part.value.length;
       pending = source.next();
     }
   } catch {
     return { parts, rest: null };
   }
+  return { parts, rest: { pending, source } };
 }
 
-// One part at a time, each answered when the command took it: a command that reads slowly slows
-// the producer down, as a pipe does. `onFailure` is for a part ShipIt could not deliver.
+// One part at a time, each answered when ShipIt's stream to the command had room for it: a command
+// that reads slowly slows the producer down, as a pipe does. `onFailure` is for a part that was
+// not delivered.
 async function forwardStdin(
   deps: RunDeps,
   id: string,
   head: StdinHead,
   onFailure: (res: BrokerResponse) => void,
 ): Promise<void> {
+  let seq = 0;
   const send = async (data: string, end: boolean): Promise<boolean> => {
-    const res = await deps.call("POST", "/agent-ops/plugin/exec/stdin", { id, data, end }, deps.env, 0);
+    const res = await deps.call("POST", "/agent-ops/plugin/exec/stdin", { id, seq, data, end }, deps.env, 0);
+    seq += 1;
     if (res.status < 200 || res.status >= 300) {
       onFailure(res);
       return false;

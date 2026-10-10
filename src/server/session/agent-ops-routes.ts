@@ -277,11 +277,12 @@ export function registerAgentOpsRoutes(
     }, reply, { timeoutMs: 0 }));
 
   // Unbounded: a part is answered when the command takes it, and a command reads when it wants to.
-  app.post<{ Body: { id?: string; data?: string; end?: boolean } }>(
+  app.post<{ Body: { id?: string; seq?: number; data?: string; end?: boolean } }>(
     "/agent-ops/plugin/exec/stdin",
     async (request, reply) =>
       relay("POST", "/plugin/exec/stdin", {
         id: request.body?.id,
+        seq: request.body?.seq,
         data: request.body?.data,
         end: request.body?.end === true,
       }, reply, { timeoutMs: 0 }));

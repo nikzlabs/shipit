@@ -574,8 +574,8 @@ async function runCreated(
   });
   if (code === "timeout") {
     const stdinNote = typeof spec.stdin !== "string" && !spec.stdin.readableEnded
-      ? " Its stdin had not ended: a command that reads stdin waits until the caller's stdin ends "
-        + "(for no input, run it with `</dev/null`)."
+      ? " Its stdin had not ended: a command that reads stdin to its end waits until the caller's stdin "
+        + "ends (for no input, run it with `</dev/null`)."
       : "";
     return timed({
       error: `\`${path.posix.basename(spec.entry)}\` did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.${stdinNote}`,
