@@ -156,6 +156,11 @@ export async function startStartupMonitors(
   const coldArtifactRetentionDays = Number.isFinite(coldArtifactRetentionRaw)
     ? coldArtifactRetentionRaw
     : COLD_ARTIFACT_RETENTION_DAYS;
+  const sessionIsLive = (sid: string): boolean =>
+    runnerRegistry.get(sid) !== undefined
+    || serviceManagers.has(sid)
+    || containerManager?.get(sid) !== undefined
+    || isRestoreInFlight(sid);
   if (!isTestMode) {
     const janitorPaceMs = parseFloat(process.env.DISK_JANITOR_PACE_MS ?? "");
     // Recover failed teardown at boot; ongoing cache growth is handled below.
@@ -173,6 +178,7 @@ export async function startStartupMonitors(
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
       stackName: process.env.DOCKER_STACK,
+      isSessionLive: sessionIsLive,
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),
     });
   }
@@ -259,11 +265,7 @@ export async function startStartupMonitors(
           sessionManager,
           chatHistory: chatHistoryManager,
           sessionsRoot: rt.sessionsRoot,
-          isSessionLive: (sid) =>
-            runnerRegistry.get(sid) !== undefined
-            || serviceManagers.has(sid)
-            || containerManager.get(sid) !== undefined
-            || isRestoreInFlight(sid),
+          isSessionLive: sessionIsLive,
           stopComposeStack: (sid) => serializeStackOp(
             sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
           ),

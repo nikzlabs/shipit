@@ -24,6 +24,9 @@ import { serializeStackOp } from "./stack-op-queue.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import { markPreviewReachable, forgetStackUp } from "./preview-timing.js";
 import { recordedOverride, testServiceManager } from "./compose-test-helpers.js";
+import { joinSessionNetworkEndpoints } from "./service-manager-setup.js";
+import { releaseSessionNetworkQueued } from "./session-network-release.js";
+import { fakeNetworkDocker } from "./session-network-test-helpers.js";
 
 function makeSessionDir(prefix: string): string {
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -496,6 +499,157 @@ services:
     // Once from the recovery's hand-back, once from startService's own join.
     expect(networkJoinCalls).toEqual([network, network]);
     expect(ups).toBe(2);
+  });
+
+  describe("session network at stop", () => {
+    const SESSION = "test-session";
+    const NETWORK = `shipit-session-${SESSION}`;
+    const AGENT = "agent-test-session";
+    const ORCHESTRATOR = os.hostname();
+    const flushStackQueue = () => serializeStackOp(SESSION, async () => {});
+
+    function harness(dir: string, hooks: { beforeDown?: () => Promise<void>; duringUp?: () => Promise<void> } = {}) {
+      writeCompose(dir, "services:\n  web:\n    image: node:22\n    ports: ['3000:3000']\n");
+      const net = fakeNetworkDocker();
+      let agentRuns = true;
+      const releaseRequests: string[] = [];
+      // The stop paths take the manager out of the registry before they stop it.
+      const registered = new Set<unknown>();
+      const composeRunner: ComposeRunner = async (args) => {
+        if (args.includes("up")) {
+          // Compose finds or creates the network, then creates its containers, then starts them.
+          net.seed(NETWORK);
+          await hooks.duringUp?.();
+          net.createContainers(NETWORK, ["web-1"]);
+          net.composeStart(["web-1"]);
+        }
+        if (args.includes("down")) {
+          await hooks.beforeDown?.();
+          net.composeDown(NETWORK, ["web-1"]);
+        }
+      };
+      const joiner = {
+        connectToNetwork: async (_sessionId: string, name: string) => {
+          if (!agentRuns) throw new Error(`No container found for session ${SESSION}`);
+          if (!net.attached(name).includes(AGENT)) await net.docker.getNetwork(name).connect({ Container: AGENT });
+        },
+        getDockerClient: () => net.docker,
+      };
+      // Activation builds a manager for each start, as this does.
+      const manager = (runner: ComposeRunner = composeRunner) => testServiceManager({
+        sessionId: SESSION,
+        workspaceDir: dir,
+        serviceEnvDir: serviceEnvOf(dir),
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+        composeRunner: runner,
+        composeQuery: emptyComposeQuery,
+        pollIntervalMs: 0,
+        networkJoinFn: (name) => joinSessionNetworkEndpoints(joiner, SESSION, name),
+        networkReleaseFn: () => {
+          releaseRequests.push(SESSION);
+          releaseSessionNetworkQueued(net.docker, SESSION, () => registered.size > 0);
+        },
+      });
+      return {
+        net,
+        manager,
+        releaseRequests,
+        registered,
+        destroyAgent: () => { agentRuns = false; net.removeContainer(AGENT); },
+        createAgent: () => { agentRuns = true; },
+      };
+    }
+
+    it("removes the network when the stack stops after the agent container is gone, and a resume gets it back", async () => {
+      const h = harness(setup());
+      const first = h.manager();
+      await first.start();
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+
+      h.destroyAgent();
+      await first.stop();
+      await flushStackQueue();
+
+      expect(h.net.has(NETWORK)).toBe(false);
+
+      h.createAgent();
+      const resumed = h.manager();
+      await resumed.start();
+
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      expect(resumed.getService("web")?.status).not.toBe("error");
+    });
+
+    it("keeps the network, and the orchestrator on it, while the agent container is attached", async () => {
+      const h = harness(setup());
+      const mgr = h.manager();
+      await mgr.start();
+
+      await mgr.stop();
+      await flushStackQueue();
+
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR].sort());
+    });
+
+    // The manager can start a service outside the stack queue, and refreshSecrets does not join again.
+    it("keeps the network of a manager that is still registered when it stops", async () => {
+      const h = harness(setup());
+      const mgr = h.manager();
+      h.registered.add(mgr);
+      await mgr.start();
+      h.destroyAgent();
+
+      await mgr.stop();
+      await flushStackQueue();
+
+      expect(h.net.attached(NETWORK)).toEqual([ORCHESTRATOR]);
+    });
+
+    it("does not ask for the release when the down failed", async () => {
+      const h = harness(setup());
+      const mgr = h.manager((args) =>
+        args.includes("down") ? Promise.reject(new Error("daemon unreachable")) : Promise.resolve());
+
+      await mgr.stop();
+
+      expect(h.releaseRequests).toEqual([]);
+    });
+
+    // A down that outlasts awaitComposeStop ends while the next start is between finding the
+    // network and creating its first container.
+    it("lands behind a start that is already in the stack queue, and keeps that start's network", async () => {
+      let finishDown: (() => void) | undefined;
+      let finishUp: (() => void) | undefined;
+      let holdNextUp = false;
+      const h = harness(setup(), {
+        beforeDown: () => new Promise<void>((resolve) => { finishDown = resolve; }),
+        duringUp: () => (holdNextUp ? new Promise<void>((resolve) => { finishUp = resolve; }) : Promise.resolve()),
+      });
+      const first = h.manager();
+      await first.start();
+      h.destroyAgent();
+
+      const stopping = first.stop();
+      await vi.waitFor(() => expect(finishDown).toBeDefined());
+      holdNextUp = true;
+      h.createAgent();
+      const resumed = h.manager();
+      const starting = serializeStackOp(SESSION, () => resumed.start());
+      await vi.waitFor(() => expect(finishUp).toBeDefined());
+
+      finishDown?.();
+      await stopping;
+      expect(h.releaseRequests).toHaveLength(1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(h.net.has(NETWORK)).toBe(true);
+
+      finishUp?.();
+      await starting;
+      await flushStackQueue();
+
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      expect(resumed.getService("web")?.status).not.toBe("error");
+    });
   });
 
   it("throws for unknown service in startService", async () => {

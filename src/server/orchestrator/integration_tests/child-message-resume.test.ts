@@ -36,7 +36,10 @@ function createFakeDocker(opts: { failCreateAfter?: number } = {}) {
 
     ping: async () => "OK",
     createNetwork: async () => ({ id: "net-fake" }),
-    getNetwork: () => ({ inspect: async () => { throw new Error("not found"); } }),
+    getNetwork: () => ({
+      inspect: async () => { throw new Error("not found"); },
+      remove: async () => { throw Object.assign(new Error("not found"), { statusCode: 404 }); },
+    }),
 
     createContainer: async (createOpts: any) => {
       containerCounter++;

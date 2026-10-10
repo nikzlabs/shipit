@@ -122,6 +122,7 @@ Dev servers and other services are managed by Docker Compose, not the session wo
 
 - `ServiceManager` (`src/server/orchestrator/service-manager.ts`) — per-session compose lifecycle: start/stop, status polling, log streaming, IP resolution
 - `compose-generator.ts` — generates override files with ShipIt labels, session network, volume rewrites, port stripping
+- `session-network-release.ts` — removes `shipit-session-<id>` when a stack or its agent container stops, no `ServiceManager` is registered for the session, and no container but the orchestrator names it; `compose down` leaves such a network (docs/091)
 
 Services are defined in `docker-compose.yml` at the workspace root. `shipit.yaml` references the compose file and configures the agent container (install commands, resource limits).
 

@@ -445,6 +445,19 @@ first start may pull a large image or run a `build:` and take minutes — a
 Changing the *shape* of the stack is always an edit to `docker-compose.yml`;
 there is no create or delete command. `/shipit-docs/compose.md`.
 
+One start failure is not the service's fault: **"all predefined address pools
+have been fully subnetted"**. Docker on the host has no network left to give.
+ShipIt takes up to two for each session with a preview, and a daemon with the
+default configuration holds about thirty. A stopped session gives its networks
+back, so the error means that many previews run at the same time, or that the
+host also runs other Compose projects. Nothing inside a session changes it. The
+fix is the user's to make on the host, and the preview's error shows it: add a
+wider `default-address-pools` entry to the Docker daemon configuration —
+**Settings → Docker Engine** in Docker Desktop, the file
+`/etc/docker/daemon.json` for Docker Engine on Linux — and restart Docker. The
+VPS setup script does this already; a local install has the daemon's default
+unless its user changed it.
+
 ## "Dictation isn't working"
 
 The voice panel replaces itself with the failure's own message and offers

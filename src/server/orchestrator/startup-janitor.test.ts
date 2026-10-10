@@ -1,4 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import type Docker from "dockerode";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -14,6 +15,8 @@ import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import { CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import { COMPOSE_HELPER_LABEL } from "./compose-helper.js";
+import { serializeStackOp } from "./stack-op-queue.js";
+import { fakeNetworkDocker } from "./session-network-test-helpers.js";
 
 /** Applies the `--filter label=key[=value]` pairs of a `docker … ls` argv the way the CLI would. */
 function matchesLabelFilterArgs(labels: Record<string, string>, args: string[]): boolean {
@@ -398,6 +401,129 @@ describe("runDiskJanitor", () => {
 
     expect(rmRequests).toEqual(["shipit-session-aaaa11112222"]);
     expect(result.orphanNetworksRemoved).toBe(1);
+  });
+
+  describe("the Compose network of a stored session", () => {
+    const SID = "abc123def456-aaaa-bbbb-cccc-dddddddddddd";
+    const COMPOSE_NETWORK = `shipit-session-${SID}`;
+    const DOCKER_ACCESS_NETWORK = `shipit-session-${SID.slice(0, 12)}`;
+    const EGRESS_NETWORK = `shipit-egress-${SID}`;
+    const ALL = [COMPOSE_NETWORK, DOCKER_ACCESS_NETWORK, EGRESS_NETWORK];
+
+    function storedSession(): { sessionManager: SessionManager; repoStore: RepoStore } {
+      setup();
+      underlyingDb!.prepare(
+        "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+      ).run(SID, "Stopped", "2026-10-08", "2026-10-08", "https://github.com/example/repo.git");
+      return { sessionManager: new SessionManager(dbManager!), repoStore: new RepoStore(dbManager!) };
+    }
+
+    // Three dangling networks: none has an endpoint.
+    function danglingNetworks() {
+      const net = fakeNetworkDocker();
+      for (const name of ALL) net.seed(name);
+      const cliRemovals: string[] = [];
+      const runDocker = (args: string[]): Promise<string> => {
+        if (args[0] === "network" && args[1] === "ls") return Promise.resolve(ALL.join("\n"));
+        if (args[0] === "network" && args[1] === "rm") cliRemovals.push(args[2]);
+        return Promise.resolve("");
+      };
+      return { net, runDocker, cliRemovals, docker: net.docker as unknown as Docker };
+    }
+
+    it("is removed when the session holds no container and no stack", async () => {
+      const { sessionManager, repoStore } = storedSession();
+      const { net, runDocker, cliRemovals, docker } = danglingNetworks();
+
+      const result = await runDiskJanitor({
+        sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: () => false,
+      });
+
+      // The other two are created before the session's container record exists.
+      expect(ALL.filter((name) => !net.has(name))).toEqual([COMPOSE_NETWORK]);
+      expect(cliRemovals).toEqual([]);
+      expect(result.orphanNetworksRemoved).toBe(1);
+    });
+
+    it("is kept while the session is live", async () => {
+      const { sessionManager, repoStore } = storedSession();
+      const { net, runDocker, docker } = danglingNetworks();
+
+      await runDiskJanitor({
+        sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: (id) => id === SID,
+      });
+
+      expect(net.has(COMPOSE_NETWORK)).toBe(true);
+    });
+
+    // `dangling` means no endpoint. A container that does not run has none, and still names the network.
+    it("is kept while a stopped container still names it", async () => {
+      const { sessionManager, repoStore } = storedSession();
+      const { net, runDocker, docker } = danglingNetworks();
+      net.seed(COMPOSE_NETWORK, ["web-1"]);
+      net.stopContainer("web-1");
+
+      const result = await runDiskJanitor({
+        sessionManager, repoStore, stateDir: tmpDir, runDocker, docker, isSessionLive: () => false,
+      });
+
+      expect(net.has(COMPOSE_NETWORK)).toBe(true);
+      expect(result.orphanNetworksRemoved).toBe(0);
+    });
+
+    it("is kept when the session becomes live between the listing and the removal", async () => {
+      const { sessionManager, repoStore } = storedSession();
+      const { net, runDocker, docker } = danglingNetworks();
+      let asked = 0;
+
+      await runDiskJanitor({
+        sessionManager, repoStore, stateDir: tmpDir, runDocker, docker,
+        // Not live at the listing; a stack start registered its manager before the removal.
+        isSessionLive: () => asked++ > 0,
+      });
+
+      expect(net.has(COMPOSE_NETWORK)).toBe(true);
+    });
+
+    // Registering a manager cannot call back a removal that Docker already has.
+    it("is removed in the session's stack queue, so a start that is already running there decides first", async () => {
+      const { sessionManager, repoStore } = storedSession();
+      const { net, runDocker, docker } = danglingNetworks();
+      let finishStart: (() => void) | undefined;
+      let startDone = false;
+      const starting = serializeStackOp(SID, async () => {
+        await new Promise<void>((resolve) => { finishStart = resolve; });
+        startDone = true;
+      });
+      // The second and third answers are the two checks before the queue.
+      let asked = 0;
+
+      const sweep = runDiskJanitor({
+        sessionManager, repoStore, stateDir: tmpDir, runDocker, docker,
+        isSessionLive: () => (asked++ < 2 ? false : startDone),
+      });
+      await vi.waitFor(() => expect(asked).toBeGreaterThanOrEqual(2));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(net.has(COMPOSE_NETWORK)).toBe(true);
+
+      finishStart?.();
+      await starting;
+      await sweep;
+
+      expect(net.has(COMPOSE_NETWORK)).toBe(true);
+    });
+
+    it("is kept when the janitor has no Docker client to list its containers with", async () => {
+      const { sessionManager, repoStore } = storedSession();
+      const { net, runDocker, cliRemovals } = danglingNetworks();
+
+      await runDiskJanitor({
+        sessionManager, repoStore, stateDir: tmpDir, runDocker, isSessionLive: () => false,
+      });
+
+      expect(net.has(COMPOSE_NETWORK)).toBe(true);
+      expect(cliRemovals).toEqual([]);
+    });
   });
 
   it("orphan network sweep ignores rm failures (network reattached / already gone)", async () => {
