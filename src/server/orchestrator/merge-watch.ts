@@ -137,6 +137,7 @@ export class MergeWatchManager {
     // for the arm that follows it. An archived parent is told nothing, so nothing is kept for it.
     if (isTerminalWatchState(found.state)) {
       if (!parentGone) this.keepForNextArm(event.sessionId, found, event);
+      else if (found.unreportedPrs) this.deps.sessionManager.setMergeWatch(event.sessionId, withUnreportedPrs(found, []));
       return;
     }
     if (parentGone) {
@@ -215,13 +216,21 @@ export class MergeWatchManager {
           ...(watch.reportedPr ? { reportedPr: watch.reportedPr } : {}),
           lastDeliveryError: message,
         };
-        this.deps.sessionManager.setMergeWatch(
-          info.sessionId,
-          withUnreportedPrs(untold, addUnreportedPr(unreportedPrs(untold), prOf(info), "first")),
-        );
+        // The parent can have been archived while the dispatch ran.
+        const owed = this.isParentGone(watch.parentSessionId)
+          ? []
+          : addUnreportedPr(unreportedPrs(untold), prOf(info), "first");
+        this.deps.sessionManager.setMergeWatch(info.sessionId, withUnreportedPrs(untold, owed));
       }
-      this.surfaceCard(parent.id, child, info, cardOutcome, { attempts: 1, error: message });
+      if (!this.isParentGone(parent.id)) {
+        this.surfaceCard(parent.id, child, info, cardOutcome, { attempts: 1, error: message });
+      }
     }
+  }
+
+  private isParentGone(parentSessionId: string): boolean {
+    const parent = this.deps.sessionManager.get(parentSessionId);
+    return !parent || parent.archived === true || parent.userArchived === true;
   }
 
   private keepForNextArm(childSessionId: string, watch: SessionMergeWatch, info: PrTerminalStateInfo): void {
@@ -554,9 +563,7 @@ export class MergeWatchManager {
     ended: SessionMergeWatch,
     reportedPr: SessionMergeWatch["reportedPr"],
   ): boolean {
-    if (!ended.rearmedAt) return false;
-    const parent = this.deps.sessionManager.get(ended.parentSessionId);
-    if (!parent || parent.archived || parent.userArchived) return false;
+    if (!ended.rearmedAt || this.isParentGone(ended.parentSessionId)) return false;
     const following: SessionMergeWatch = {
       parentSessionId: ended.parentSessionId,
       watchId: randomUUID(),
@@ -564,7 +571,8 @@ export class MergeWatchManager {
       registeredAt: ended.rearmedAt,
       ...(reportedPr ? { reportedPr } : {}),
     };
-    this.deps.sessionManager.setMergeWatch(childSessionId, withUnreportedPrs(following, ended.unreportedPrs ?? []));
+    // Read through the watch that ends: its own `reportedPr` has left some entries out already.
+    this.deps.sessionManager.setMergeWatch(childSessionId, withUnreportedPrs(following, unreportedPrs(ended)));
     console.log(
       `[merge-watch] parent ${ended.parentSessionId}'s watch on ${childSessionId} is armed for the next PR: `
       + `the parent armed again during the wake for PR #${ended.mergedPr?.prNumber ?? "?"}`,
@@ -656,7 +664,7 @@ export class MergeWatchManager {
       ...(watch.lastAttemptAt !== undefined ? { lastAttemptAt: watch.lastAttemptAt } : {}),
       ...(reportedPr ? { reportedPr } : {}),
     };
-    this.writeWatch(childSessionId, slot, withUnreportedPrs(delivered, watch.unreportedPrs ?? []));
+    this.writeWatch(childSessionId, slot, withUnreportedPrs(delivered, unreportedPrs(watch)));
     this.stopRetryLoopIfIdle();
   }
 

@@ -1,6 +1,8 @@
 import type { SessionMergeWatch, SessionMergeWatchPr } from "../shared/types.js";
 
 // Past this many, a new PR is not kept; the child's PR snapshot still shows the latest one.
+// A PR that was not delivered goes back in front without this limit, so that it takes the
+// place of no PR that the watch already accepted.
 export const MAX_UNREPORTED_PRS = 20;
 
 interface PrOutcome {
@@ -23,7 +25,7 @@ export function addUnreportedPr(
   where: "first" | "last",
 ): SessionMergeWatchPr[] {
   const others = prs.filter((kept) => !samePrOutcome(kept, pr));
-  if (where === "first") return [pr, ...others].slice(0, MAX_UNREPORTED_PRS);
+  if (where === "first") return [pr, ...others];
   if (others.length < prs.length || prs.length >= MAX_UNREPORTED_PRS) return prs;
   return [...prs, pr];
 }

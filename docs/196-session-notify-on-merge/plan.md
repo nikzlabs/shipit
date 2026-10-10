@@ -161,15 +161,23 @@ second wake from one arm.) The next arm inherits the list — through
 `registerMergeWatch`, or through `armFollowingWatch` — and reports its first
 entry. "First" holds against the poller too: a live event that reaches an armed
 watch is appended, and the watch reports the head of the list, which is that event
-only when nothing older is owed. Nothing is kept for a parent that is archived,
-and its watch is dropped at the next event, as before.
+only when nothing older is owed.
+
+An archived parent is told nothing, so nothing is kept for it. At the next event a
+live watch of an archived parent is dropped, as before, and a watch that already
+fired loses its list (it keeps `reportedPr`). A close whose dispatch fails after
+the parent was archived does not go back on the list and adds no failure card.
 
 Keeping the events on the watch is what makes this hold for a chaining child. The
 child's PR snapshot is not enough: the child resets its branch at the start of its
 own wake, and that docs/202 re-arm clears the snapshot within seconds of the
-merge. The list helpers are in `merge-watch-prs.ts`; the list holds at most
-`MAX_UNREPORTED_PRS` entries, and past that a new PR is not kept (the snapshot
-still shows the latest).
+merge. The list helpers are in `merge-watch-prs.ts`. The list is read through
+`unreportedPrs(watch)`, which leaves out the PR that the parent already knows, and
+every write that carries it to another record reads it that way first. It holds at
+most `MAX_UNREPORTED_PRS` entries, and past that a new PR is not kept (the
+snapshot still shows the latest). A PR that goes back to the front after a failed
+delivery is exempt from that limit, so that it takes the place of no PR that the
+watch already accepted.
 
 For a PR that resolved while no watch record could keep it — a record that older
 code wrote, or an event lost in a crash between the poller's write and its hook —
@@ -514,7 +522,8 @@ PR poller detects terminal PR state (verifyMissingPr)
   (arms the watch, reuses `assertChildOfParent`; hands `reportedPr` and
   `unreportedPrs` to the new watch, or records `rearmedAt` on a watch in delivery).
 - `src/server/orchestrator/merge-watch-prs.ts` — the list of PRs that a watch
-  still owes its parent: read, append, put first, write.
+  still owes its parent: read, append, put first, write
+  (`merge-watch-prs.test.ts`).
 - `src/server/orchestrator/sessions.ts` — `merge_watch` column,
   `setMergeWatch` / `getMergeWatch` / `listPendingMergeWatches` (non-terminal
   only, so a `delivery-failed` watch stops holding the polling gate open). The
@@ -598,8 +607,10 @@ PR poller detects terminal PR state (verifyMissingPr)
   snapshot, oldest first, and a live event does not overtake it; a failed merge
   and a close that could not be dispatched are reported before the PRs kept in
   the meantime, and those are still reported after it; an archived parent gets
-  nothing kept and loses its watch at a repeated event; a PR reported as closed
-  and then merged is reported; a
+  nothing kept, loses its watch at a repeated event and its kept list at the next
+  one, and gets neither the close nor the failure card of a dispatch that fails
+  after the archive; a kept PR that the parent already knows does not come back
+  when the next PR settles; a PR reported as closed and then merged is reported; a
   first arm does not read `previousMergedPr`; a wake that was never delivered is
   reported again; and a close whose dispatch fails late does not overwrite the
   watch that followed it.

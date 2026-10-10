@@ -265,6 +265,18 @@ describe("registerMergeWatch — arming again (docs/196-session-notify-on-merge)
     expect(armed?.unreportedPrs).toEqual([{ outcome: "merged", ...MERGED_PR }, later]);
   });
 
+  it("a failed merge that goes in front takes the place of no PR in a full list", () => {
+    const kept = Array.from({ length: 20 }, (_, i) => ({
+      outcome: "closed" as const, prNumber: 13 + i, prUrl: `https://github.com/o/r/pull/${13 + i}`, prTitle: "Later", branch: "b",
+    }));
+    sessionManager.setMergeWatch(CHILD, {
+      parentSessionId: PARENT, state: "delivery-failed", registeredAt: "t0", mergedPr: MERGED_PR, unreportedPrs: kept,
+    });
+    registerMergeWatch(sessionManager, PARENT, CHILD);
+    expect(sessionManager.getMergeWatch(CHILD)?.unreportedPrs?.map((p) => p.prNumber))
+      .toEqual([12, ...kept.map((p) => p.prNumber)]);
+  });
+
   it("logs which case an arm was", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {

@@ -26,7 +26,12 @@ describe("the PRs that a parent's watch still owes (docs/196-session-notify-on-m
   it("does not keep a new PR past the cap", () => {
     const full = Array.from({ length: MAX_UNREPORTED_PRS }, (_, i) => pr(i + 1));
     expect(addUnreportedPr(full, pr(999), "last")).toBe(full);
-    expect(addUnreportedPr(full, pr(999), "first")).toHaveLength(MAX_UNREPORTED_PRS);
+  });
+
+  it("a PR that goes back in front takes the place of no PR that was kept", () => {
+    const full = Array.from({ length: MAX_UNREPORTED_PRS }, (_, i) => pr(i + 100));
+    const restored = addUnreportedPr(full, pr(99), "first");
+    expect(restored.map((p) => p.prNumber)).toEqual([99, ...full.map((p) => p.prNumber)]);
   });
 
   it("leaves out the PR that the parent already knows, when it reads and when it writes", () => {

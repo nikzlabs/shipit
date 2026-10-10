@@ -1361,6 +1361,65 @@ describe("a parent that follows a child across several PRs (docs/196-session-not
     expect(watch()?.unreportedPrs).toBeUndefined();
   });
 
+  it("the next event drops what a fired watch kept before its parent was archived", async () => {
+    await armAsParent();
+    await ctx.manager.handleChildPrTerminal(pr(7));
+    await ctx.manager.handleChildPrTerminal(pr(8));
+    expect(watch()?.unreportedPrs).toHaveLength(1);
+    ctx.sessionManager.archive("parent");
+
+    await ctx.manager.handleChildPrTerminal(pr(9));
+    expect(watch()).toMatchObject({ state: "delivered", reportedPr: { prNumber: 7 } });
+    expect(watch()?.unreportedPrs).toBeUndefined();
+  });
+
+  it("a close whose dispatch fails after the parent was archived keeps nothing, and adds no card", async () => {
+    await armAsParent();
+    await ctx.manager.handleChildPrTerminal(pr(7));
+    await ctx.manager.handleChildPrTerminal(pr(8, "closed"));
+    await ctx.manager.handleChildPrTerminal(pr(9));
+    registerMergeWatch(ctx.sessionManager, "parent", "child");
+    expect(watch()?.unreportedPrs?.map((p) => p.prNumber)).toEqual([8, 9]);
+
+    // The wake for #8 is rejected; the parent is archived before that rejection is handled.
+    ctx.control.failWake = true;
+    const dispatch = ctx.manager.checkAndFireNow("child");
+    ctx.sessionManager.archive("parent");
+    await dispatch;
+
+    expect(watch()).toMatchObject({ state: "closed-unmerged", reportedPr: { prNumber: 7 } });
+    expect(watch()?.unreportedPrs).toBeUndefined();
+    expect(cards().filter((c) => c.deliveryFailure)).toHaveLength(0);
+  });
+
+  it("a kept PR that the parent already knows does not come back when the next PR settles", async () => {
+    const keptPr = (prNumber: number) => {
+      const { sessionId: _session, ...kept } = pr(prNumber);
+      return kept;
+    };
+    await armAsParent();
+    const parent = heldParent();
+    await ctx.manager.handleChildPrTerminal(pr(7));
+    parent.completeTurn();
+    await armAsParent();
+    await ctx.manager.handleChildPrTerminal(pr(8));
+    // A list that still holds the PR already reported, as an earlier write could have left it.
+    ctx.sessionManager.setMergeWatch("child", { ...watch()!, unreportedPrs: [keptPr(7), keptPr(9)] });
+
+    parent.completeTurn();
+    expect(watch()).toMatchObject({ state: "delivered", reportedPr: { prNumber: 8 } });
+    expect(watch()?.unreportedPrs?.map((p) => p.prNumber)).toEqual([9]);
+
+    // The same through the watch that follows a queued arm.
+    await armAsParent();
+    ctx.sessionManager.setMergeWatch("child", { ...watch()!, unreportedPrs: [keptPr(8), keptPr(10)] });
+    await armAsParent();
+    parent.completeTurn();
+    await flush();
+    parent.completeTurn();
+    expect(wakes().map((w) => /Child PR #(\d+)/.exec(w.text)?.[1])).toEqual(["7", "8", "9", "10"]);
+  });
+
   it("a watch that older code armed, with no id, still settles and hands over what it reported", async () => {
     arm(ctx.sessionManager);
     const parent = heldParent();
