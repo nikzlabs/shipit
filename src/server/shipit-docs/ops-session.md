@@ -169,7 +169,7 @@ dropped unless the session was created as an ops session.
   shipit session transcript 7bc72326 --last 100
   shipit session transcript 7bc72326 --before 173             # the page before
   shipit session transcript 7bc72326 --since 2h --until 30m
-  shipit session transcript 7bc72326 --before 143 --last 1 --full
+  shipit session transcript 7bc72326 --before 143 --last 1 --full   # message #142 alone
   shipit session transcript 7bc72326 --json > /tmp/transcript.json
   ```
   It returns what the chat shows: the user's messages, the assistant's text,
@@ -194,6 +194,7 @@ dropped unless the session was created as an ops session.
   - **Paging.** You get the newest 40 messages. `--last N` changes the number
     (400 at most). Each message has its position, `#N`. When older messages
     exist, the `older:` line gives the exact `--before N` for the page before.
+    `--before N` returns the messages before `#N`, and not `#N`.
     `--lines` is not a flag here: the unit is messages. While that session's
     agent is working, the positions of its newest messages can move.
   - **Time.** `--since` / `--until` take an ISO-8601 instant or an age (`90s`,
@@ -201,14 +202,16 @@ dropped unless the session was created as an ops session.
     rejected. They filter on `stored`: the time ShipIt inserted the stored row.
     That is not always the time the message was said. The assistant messages of
     one turn are inserted again each time the turn advances, so those of a
-    finished turn all carry about the time the turn ended, and a rewind inserts
-    every message again. A later change to a card does not move the time. For
-    an exact time use the `started` time on a tool call, or `createdAt` on a
-    card.
+    finished turn all carry about the time the turn ended. A rewind of the chat
+    inserts again every message that it keeps; a rewind of the code only does
+    not move the times, and neither does a later change to a card. Where a
+    tool call has a `started` time, or a card has a time field (`createdAt`,
+    `spawnedAt`, `failedAt`), that time is nearer to the event.
   - **Cuts.** A text longer than 4,000 characters is cut in the middle, with
     `[… ShipIt cut N characters …]` where the cut is; its start and its end
     stay. The `cut:` line counts them. `--full` raises the limit to 200,000
-    characters — combine it with `--before N --last 1` to read one message. A
+    characters — to read message `#N` alone, combine it with
+    `--before <N+1> --last 1`. A
     page that is too large loses its oldest messages, and the `older:` line
     tells you how to get them. One message has limits too: in a message of
     more than 8,000,000 stored characters, or more than 2,000,000 returned
@@ -400,6 +403,10 @@ apply here.
   session that produced it.
 - `prompts/read-session-logs.md` — when the orchestrator log shows nothing:
   read a session's own server-source log lines, then its transcript.
+- `prompts/read-session-transcript.md` — when the answer is in a session's
+  chat: a tool result, a card, or what the user asked for. An ops workspace
+  that was created before this recipe existed does not have the file. Use the
+  section "Read-only session transcript" above then: it has the same content.
 - `prompts/investigate-loop.md` — a container stuck in a SIGTERM/recreate loop.
 - `prompts/diagnose-stuck-session.md` — one misbehaving session container.
 - `prompts/daily-health.md` — a quick host-health snapshot.

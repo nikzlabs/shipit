@@ -41,7 +41,8 @@ export interface HostSessionTranscriptEntry {
   position: number;
   /**
    * When ShipIt inserted the row. A turn's rows are inserted again as the turn advances, and a
-   * rewind inserts every row again; a later change to a card in the row does not move it.
+   * chat rewind inserts the kept rows again; an update in place (a card that changes, a
+   * code-only rewind) does not move it.
    */
   storedAt: string;
   message: PersistedMessage;

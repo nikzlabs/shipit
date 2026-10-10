@@ -120,6 +120,7 @@ describe("getTemplate", () => {
         "prompts/verify-ops-access.md",
         "prompts/remediate-shipit-bug.md",
         "prompts/read-session-logs.md",
+        "prompts/read-session-transcript.md",
       ]),
     );
     expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("shipit source status");
@@ -129,8 +130,12 @@ describe("getTemplate", () => {
     expect(ops.files["prompts/diagnose-stuck-session.md"]).toContain("shipit session logs");
     expect(ops.files["prompts/trace-a-pr.md"]).toContain("shipit session logs");
     expect(ops.files["README.md"]).toContain("shipit session logs");
-    for (const file of ["README.md", "prompts/trace-a-pr.md", "prompts/read-session-logs.md"]) {
+    const pointToTranscriptRecipe = ["README.md", "prompts/trace-a-pr.md", "prompts/read-session-logs.md"];
+    for (const file of [...pointToTranscriptRecipe, "prompts/read-session-transcript.md"]) {
       expect(ops.files[file], file).toContain("shipit session transcript");
+    }
+    for (const file of pointToTranscriptRecipe) {
+      expect(ops.files[file], file).toContain("prompts/read-session-transcript.md");
     }
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
     expect(ops.files["docker-compose.yml"]).toContain(`image: ${TRUSTED_OPS_PROXY_IMAGE}\n`);
