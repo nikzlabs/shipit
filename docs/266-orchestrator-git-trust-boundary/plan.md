@@ -919,24 +919,47 @@ path, its owner, and the service that most likely wrote it, not a bare errno.
 
   **The fix is E6 (req 16): the guard no longer treats the orchestrator's own
   container as the user.** A request whose peer is the orchestrator's loopback or
-  one of its own container addresses is refused the whole API, exactly as an
-  unknown container is. A legitimate caller never sources from the orchestrator
-  itself — the browser arrives through the published port (translated to a host
-  or gateway address) and a session worker from its own container IP. The one
-  place ShipIt's own UI dials the API over the orchestrator's loopback is the
-  single-container dev stack (in-container Vite proxy) and local mode; those are
-  exempted by `SHIPIT_TRUST_OWN_LOOPBACK` / `runtime === "local"` / test mode,
-  which is the developer's-own-machine trust the security model already grants.
-  Key files: `api-container-guard.ts` (the denial + the `trustOwnContainerLoopback`
-  exemption), `SessionContainerManager.ownContainerAddresses` (the own-address
-  set), `route-registry.ts` (where the exemption is computed). Regression:
-  `integration_tests/git-payload-api-reach.test.ts` (real git + real listener)
-  and `api-container-guard.test.ts` (the loopback/own-address/exemption cases).
+  one of the addresses on its own interfaces is refused the whole API, exactly as
+  an unknown container is. A legitimate caller never sources from the
+  orchestrator itself — the browser arrives through the published port
+  (translated to a host or gateway address) and a session worker from its own
+  container IP. The one place ShipIt's own UI dials the API over the
+  orchestrator's loopback is the single-container dev stack (in-container Vite
+  proxy) and local mode; those are exempted by `SHIPIT_TRUST_OWN_LOOPBACK` /
+  `runtime === "local"` / test mode, which is the developer's-own-machine trust
+  the security model already grants.
 
-  **Residual, narrow:** if the own-address enumeration (one Docker inspect) fails,
-  loopback is still denied but a pivot to the orchestrator's own *bridge* IP is
-  reopened until it next resolves. It is primed once at registration and cached.
-  The cross-session workspace residual above is unchanged and separate.
+  **The own-address set is read FRESH from `os.networkInterfaces()` on each
+  request, never cached — this was a review finding.** The orchestrator joins
+  session networks at runtime (`service-manager-setup.ts` connects it so the
+  preview proxy can reach a service), so a set snapshotted at startup misses the
+  addresses it later gains, and the review reproduced a **403 for the initial
+  address, 200 for one added afterward**. `os.networkInterfaces()` is the
+  orchestrator's own netns — exactly the addresses the git child (same netns)
+  could aim at — and reading it live costs a syscall, removes the Docker-inspect
+  dependency the first draft had (whose failure cached an empty set forever, a
+  second review finding), and has no staleness window. Key files:
+  `api-container-guard.ts` (`isLoopbackAddress`, `orchestratorOwnAddresses`, the
+  per-request `isOrchestratorOwnAddress` check, and the `trustOwnContainerLoopback`
+  exemption), `route-registry.ts` (where the exemption is computed). Regression:
+  `integration_tests/git-payload-api-reach.test.ts` (real git + real listener;
+  each payload must record a 403, so a probe that never ran cannot pass it) and
+  `api-container-guard.test.ts` (loopback / own-address / exemption, and the
+  address-added-after-startup case).
+
+  **The residual E6 does NOT close, surfaced by the review and left as an open
+  question (req 16, Open questions).** The git child shares the orchestrator's
+  netns but is not behind an egress firewall (only session containers are). On a
+  host with a **forwarder** — the VPS Tailscale `socat` forwarder
+  (`deployment/vps/tailscale.sh`) — the child can reach the forwarder's address
+  and be relayed to the published API port, where the guard sees the forwarder's
+  host/gateway peer and cannot tell it from a legitimate browser. This is the
+  docs/319 "a path that leaves the host and comes back" shape, not the direct
+  loopback shape planning#668 names, and no peer-address guard can close it.
+  Closing it needs a network-layer control on the orchestrator's own git child
+  (an egress rule keyed on the dropped uid, or the netns-isolation option
+  declined on cost in Q6). The cross-session workspace residual above is
+  unchanged and separate.
 - **Root writes into `.git` must drop too.** `github-auth.ts:393` writes
   `credential.helper` into the workspace config with `execFileSync` as root. Left
   as-is it creates a root-owned `config` inside a 1000-owned `.git`, breaking the
@@ -1049,15 +1072,16 @@ inherited guarantee at the source").
   cache is therefore not a second instance of this bug. *(One thing that mount
   list does show and this design does not address: `perSessionCredentialsDir` is
   bound `rw` into the session container.)*
-- **Audited and closed (2026-10-10, planning#668): the orchestrator HTTP API
-  authorized on "came from loopback".** `api-container-guard.ts` trusted every
-  source that was not a known container IP — loopback and the orchestrator's own
-  addresses included — as the user, so a payload in the orchestrator's netns
-  reached `PUT /api/secrets` (reproduced). E6 refuses the orchestrator's own
-  container at the guard (req 16); see §2's "Loopback surface" residual, now
-  marked closed. The separate `/agent-ops/*` surface is a worker-side concern
-  governed by docs/251 (loopback-pinned there, the opposite direction) and was
-  not re-audited here.
+- **Audited (2026-10-10, planning#668): the orchestrator HTTP API authorized on
+  "came from loopback".** `api-container-guard.ts` trusted every source that was
+  not a known container IP — loopback and the orchestrator's own addresses
+  included — as the user, so a payload in the orchestrator's netns reached
+  `PUT /api/secrets` (reproduced). E6 refuses the orchestrator's own container at
+  the guard (req 16) on the **direct** path; the one path it cannot close — a
+  host-side forwarder relaying to the published port — is recorded as the open
+  residual in §2's "Loopback surface" and in req 16's Open questions. The
+  separate `/agent-ops/*` surface is a worker-side concern governed by docs/251
+  (loopback-pinned there, the opposite direction) and was not re-audited here.
 - **The simple-git rejection is exercised, not inferred.** The parent session
   flagged its own claim here as an inference from "no try/catch plus documented
   behaviour". It was run: `add("-A")` against a case-D tree rejects with a

@@ -50,12 +50,25 @@ describe("planning#668: a git payload cannot reach the API over the orchestrator
     });
   }
 
-  // A curl of PUT /api/secrets; -s keeps curl's exit 0 on an HTTP error, so the
-  // hook does not fail the commit — the test asserts only that the write did not land.
+  // A curl of PUT /api/secrets that records the HTTP status it received, so the
+  // test can assert the request actually ran and was refused — not merely that no
+  // secret exists (which would also pass if curl never ran). -s keeps curl's exit 0
+  // on an HTTP error, so the hook does not fail the commit.
+  function statusFile(marker: string): string {
+    return path.join(tmpDir, `status-${marker}`);
+  }
   function payload(marker: string): string {
     const body = JSON.stringify({ repoUrl: REPO_URL, set: { [marker]: "planted" } });
-    return `curl -s -m 5 -X PUT http://127.0.0.1:${port}/api/secrets `
-      + `-H 'content-type: application/json' -d '${body}' >/dev/null 2>&1 || true`;
+    return `curl -s -o /dev/null -w '%{http_code}' -m 5 -X PUT http://127.0.0.1:${port}/api/secrets `
+      + `-H 'content-type: application/json' -d '${body}' > '${statusFile(marker)}' 2>/dev/null `
+      + `|| echo NO_REQUEST > '${statusFile(marker)}'`;
+  }
+  function requestStatus(marker: string): string {
+    try {
+      return fs.readFileSync(statusFile(marker), "utf-8").trim();
+    } catch {
+      return "NO_FILE";
+    }
   }
 
   // Read the store directly: under the denial every app.inject() is loopback too,
@@ -107,6 +120,7 @@ describe("planning#668: a git payload cannot reach the API over the orchestrator
     const result = await new GitManager(repo).autoCommit("a turn");
 
     expect(result.commitHash).toBeTruthy();
+    expect(requestStatus("FROM_HOOK")).toBe("403"); // the request ran and was refused
     expect(secretNames()).toEqual([]);
   });
 
@@ -119,6 +133,7 @@ describe("planning#668: a git payload cannot reach the API over the orchestrator
     const result = await new GitManager(repo).autoCommit("a turn");
 
     expect(result.commitHash).toBeNull();
+    expect(requestStatus("FROM_FSMONITOR")).toBe("403");
     expect(secretNames()).toEqual([]);
   });
 
@@ -129,6 +144,7 @@ describe("planning#668: a git payload cannot reach the API over the orchestrator
 
     await new GitManager(repo).autoCommit("a turn");
 
+    expect(requestStatus("FROM_FILTER")).toBe("403");
     expect(secretNames()).toEqual([]);
   });
 });

@@ -141,20 +141,17 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
     operation — a hook, a `filter`/`fsmonitor`/`credential.helper`, any
     config-driven exec — MUST NOT be able to reach the orchestrator's HTTP API
     with the user's authority. The git child runs in the orchestrator's own
-    network namespace (req 1's "trust context" includes that namespace), so the
-    API's container-origin guard MUST NOT treat the orchestrator's own container
-    — its loopback and its own addresses — as "the user". *(Decided by the
+    network namespace, which req 1's "trust context" includes. *(Decided by the
     requester on 2026-10-10 — see Resolved questions, Q6. This is the concrete
-    form of requirements 1 and 11 for the network path, and it closes the
-    loopback surface `plan.md` recorded as "not audited" — planning#668.)*
+    form of requirements 1 and 11 for the network path, against the loopback
+    surface `plan.md` recorded as "not audited" — planning#668. The chosen
+    mechanism, and the one path it does not yet cover, are in Q6's receipt and
+    `plan.md` §2 E6 — stated there rather than here, since this is the observable
+    goal, not the design.)*
 
     *Not a change to requirement 9.* The chosen fix is at the API boundary, not
     at the hook suppression, so a project's own hooks keep firing on the
-    auto-commit exactly as E4 shipped them. The alternatives that would have
-    touched req 9 — running git in an isolated namespace (needs mechanism req 9's
-    "if it's easy" clause rules out) or reverting E4 (changes req 9, and covers
-    only hooks while filters/fsmonitor/helpers keep reaching the API) — were
-    rejected for the reasons in Q6's receipt.
+    auto-commit exactly as E4 shipped them.
 
 ## Requirement provenance
 
@@ -179,6 +176,7 @@ into one").
 | 13 | ✅ decided 2026-08-16 (Q3 → a, "Let's do that") | — |
 | 14 | ✅ requested 2026-08-16, after the requester **measured** the silent-omission behaviour this document had asserted was visible | — |
 | 15 | ✅ requested 2026-08-16, after the requester measured the unreadable-**file** case and asked whether req 14 covered it | the finding that it does **not**, so this is a new requirement rather than a widened one |
+| 16 | ✅ filed as planning#668; mechanism decided 2026-10-10 (Q6 → a) | the netns-reach framing (req 1's trust context includes the orchestrator's own namespace), and the host-forwarder residual the review surfaced |
 
 Requirements 6, 7 and 10 are the three places this document went beyond what it
 was handed. All three are load-bearing — 6 rules out the container option, 7
@@ -274,7 +272,18 @@ called out rather than folded in.
 
 ## Open questions
 
-None.
+- **The host-forwarder residual to req 16 (raised 2026-10-10 by the review of the
+  E6 implementation).** The API-guard fix closes the direct loopback/own-address
+  path, but not a git child relaying through a host-side forwarder (the VPS
+  Tailscale `socat` forwarder) back to the published API port — the guard sees the
+  forwarder's host peer and cannot distinguish it. Closing it needs a
+  network-layer control on the orchestrator's own git child (an egress rule
+  keyed on the dropped uid, or running the commit in an isolated namespace — the
+  option declined on cost in Q6). Decision for the requester: accept it as a
+  tracked residual (it is the docs/319 "leaves the host and comes back" shape, and
+  only reachable on a host running such a forwarder), or do the heavier work now.
+  Until decided, E6 ships as the direct-path fix and the residual is stated, not
+  hidden.
 
 ## Resolved questions
 
@@ -302,14 +311,31 @@ Why this over the two alternatives, both of which were put to the requester:
   `integration_tests/git-payload-api-reach.test.ts`), and still reach the API.
   Insufficient on its own.
 
-The chosen option covers the whole class — hooks, filters, `fsmonitor`, helpers,
-and any future config-driven exec — at one choke point, keeps req 9 (hooks keep
-firing), and adds no runtime dependency to the commit path (req 6). Its one cost,
+The chosen option covers the whole class of git-config exec — hooks, filters,
+`fsmonitor`, helpers, and any future one — on the **direct** path to the API:
+the orchestrator's own loopback and the addresses on its own interfaces (read
+fresh, since it joins session networks at runtime). It keeps req 9 (hooks keep
+firing) and adds no runtime dependency to the commit path (req 6). Its one cost,
 accepted in the same answer: a dev/local exemption so ShipIt's own
 single-container dev stack, whose in-container Vite proxy legitimately calls the
 API over loopback, keeps working (`SHIPIT_TRUST_OWN_LOOPBACK`, and `local`
 runtime mode / test mode). This matches how the security model already treats a
 developer's own machine.
+
+**One residual it does not close, found by the independent review of the
+implementation (2026-10-10) and left open for the requester.** The git child
+shares the orchestrator's netns but is not itself behind an egress firewall (only
+session containers are). On a deployment with a **host-side forwarder** — the VPS
+Tailscale `socat` forwarder — the child could reach the forwarder's address and
+be relayed to the published API port, where the guard sees the forwarder's
+(host/gateway) peer and cannot tell it from a legitimate browser. This is the
+docs/319 "a path that leaves the host and comes back" shape, not the direct
+loopback shape planning#668 names, and the guard provably cannot close it by peer
+address. Closing it needs a network-layer control on the orchestrator's own git
+child (its own egress rule, or the netns-isolation option the requester declined
+on cost) — a bigger change than req 16's API-guard fix. Its disposition —
+accept-and-track, or do the heavier work now — is an open question for the
+requester; see the Open questions entry.
 
 **2026-09-22 — Q5: should hooks run beyond the auto-commit? → no, the
 auto-commit only.** Requester: *"Autocommit only is fine for now."*

@@ -208,12 +208,15 @@ be hostile.
   child shares the orchestrator's network namespace, and the API's container-origin guard
   trusted *any* caller that was not a known container — loopback included — as the user,
   so a payload could `PUT /api/secrets` over the orchestrator's own loopback. The guard
-  now refuses the orchestrator's own container (its loopback and its own addresses) the
-  same way it refuses an unknown container; a legitimate caller never sources from the
-  orchestrator itself. The single-container dev stack and local mode, where ShipIt's own
-  UI proxies the API over that loopback, are the documented exception
-  (`SHIPIT_TRUST_OWN_LOOPBACK`). Cross-session workspace access at the shared uid is a
-  separate, still-open residual (per-session uids, planning#405).
+  now refuses the orchestrator's own container (its loopback and the addresses on its own
+  interfaces, read live) the same way it refuses an unknown container; a legitimate caller
+  never sources from the orchestrator itself. The single-container dev stack and local
+  mode, where ShipIt's own UI proxies the API over that loopback, are the documented
+  exception (`SHIPIT_TRUST_OWN_LOOPBACK`). Two residuals remain, both tracked rather than
+  hidden: a git child could still reach the API by relaying through a **host-side
+  forwarder** (e.g. the VPS Tailscale forwarder), which a peer-address guard cannot
+  distinguish from a real browser (docs/266 req 16 open question); and cross-session
+  workspace access at the shared uid (per-session uids, planning#405).
 
   Git inside the *session* container is deliberately unchanged: the agent is already
   inside the trust boundary, and a project's own hooks running when the agent commits is

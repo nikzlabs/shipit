@@ -9,15 +9,24 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       repo-controlled hooks/filters/`fsmonitor` in the orchestrator's own netns,
       so it reached `PUT /api/secrets` over loopback, where
       `api-container-guard.ts` trusted any non-container source as the user.
-      The guard now refuses the orchestrator's own loopback and own container
-      addresses (`isLoopbackAddress` + `SessionContainerManager.ownContainerAddresses`),
-      with a `trustOwnContainerLoopback` exemption for the single-container dev
-      stack (`SHIPIT_TRUST_OWN_LOOPBACK` in `docker/local/dev/compose.yml`),
-      local mode and test mode. Reproduced and pinned by
-      `integration_tests/git-payload-api-reach.test.ts` (real git + real
-      listener: hook, `fsmonitor` and `filter.clean` all refused) and
-      `api-container-guard.test.ts` (loopback / own-address / exemption cases).
-      The Docker proxy was already fail-closed on an unknown source IP.
+      The guard now refuses the orchestrator's own loopback and the addresses on
+      its own interfaces — read **fresh** from `os.networkInterfaces()` per
+      request (`orchestratorOwnAddresses`), because the orchestrator joins session
+      networks at runtime so a cached set goes stale (review finding). A
+      `trustOwnContainerLoopback` exemption covers the single-container dev stack
+      (`SHIPIT_TRUST_OWN_LOOPBACK` in `docker/local/dev/compose.yml`), local mode
+      and test mode. Reproduced and pinned by
+      `integration_tests/git-payload-api-reach.test.ts` (real git + real listener:
+      hook, `fsmonitor` and `filter.clean` each must record a 403) and
+      `api-container-guard.test.ts` (loopback / own-address / exemption, and an
+      address gained after startup). The Docker proxy was already fail-closed on
+      an unknown source IP.
+- [ ] **E6 residual (req 16 Open questions): a host-side forwarder relay.** The
+      git child is in the orchestrator's netns but behind no egress firewall, so
+      on a host with the VPS Tailscale `socat` forwarder it can relay to the
+      published API port and the guard sees a trusted host peer. Open question for
+      the requester: accept-and-track, or add a network-layer control on the git
+      child (uid-keyed egress rule, or netns isolation). Found by the E6 review.
 - [x] **E1 — orchestrator git on a session workspace runs as the tree's owner**
       (reqs 1, 2, 3, 11). `shared/git-tree-uid.ts` decides by **ownership**, the
       same fact git's own CVE-2022-24765 check tests, applied inside

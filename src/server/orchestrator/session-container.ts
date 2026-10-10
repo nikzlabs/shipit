@@ -1210,22 +1210,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return getSessionByContainerIp(this.containers, ip);
   }
 
-  // Every address on the orchestrator's own container, so the API guard can refuse
-  // a caller sharing its network namespace (a dropped-uid git child — planning#668).
-  async ownContainerAddresses(): Promise<string[]> {
-    const info = (await this.docker.getContainer(await this.readOwnContainerId()).inspect()) as {
-      NetworkSettings?: {
-        Networks?: Record<string, { IPAddress?: string; GlobalIPv6Address?: string } | null>;
-      };
-    };
-    const out = new Set<string>();
-    for (const net of Object.values(info.NetworkSettings?.Networks ?? {})) {
-      if (net?.IPAddress) out.add(net.IPAddress);
-      if (net?.GlobalIPv6Address) out.add(net.GlobalIPv6Address);
-    }
-    return [...out];
-  }
-
   async getSessionByAnyContainerIp(ip: string): Promise<{ sessionId: string } | undefined> {
     const agent = this.getSessionByContainerIp(ip);
     if (agent) return { sessionId: agent.sessionId };
