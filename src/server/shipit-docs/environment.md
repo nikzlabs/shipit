@@ -667,23 +667,45 @@ On a WSL2 host, ShipIt also mounts the host's DirectX libraries
 a `granted` container, read-only. Mesa's OpenGL needs both to draw on the GPU,
 through its Direct3D 12 driver. Without them it draws on the CPU (`llvmpipe`).
 
-A Chrome **you start yourself** — a Playwright or Puppeteer script, a test run,
-a benchmark — must start with both of these. When one is missing, WebGL can
-run on SwiftShader, Chrome's own software renderer, and Chrome says nothing. So
-read the renderer in the page before you call a result GPU-drawn:
+**The built-in browser** — the one behind `browser_navigate` and the
+screenshots — draws WebGL on the GPU in such a container. No setting turns that
+on or off. It uses the GPU for WebGL only: its picture of a page that has no
+WebGL is the same as in a session with no GPU. Its picture of WebGL content is
+not the same, because the GPU and a software renderer do not give identical
+pixels. So:
 
-- **An X display.** Chrome reaches Mesa through GLX and this container has no
-  display, so start the command under `xvfb-run -a`. Full Chrome, headless or
-  headed, and the headless shell all work there.
-- **The flags `--use-angle=gl --ignore-gpu-blocklist`.** The first selects
-  Mesa; headless Chrome stays on SwiftShader without it, and headed Chrome
-  selects Mesa by itself. The second matters when Mesa is on the CPU: without
-  it Chrome then gives no WebGL context, or goes back to SwiftShader, and you
-  cannot read why. Give both each time.
+- When a result depends on the renderer — a benchmark, a screenshot that you
+  commit or compare — read the renderer in the page (below) and say which one
+  it was.
+- For a software picture of WebGL content in a GPU session, start your own
+  headless Chrome with none of the flags below: it then draws on SwiftShader.
+  For the built-in browser, the only switch is GPU access itself, and that is
+  the user's.
+- When the built-in browser reports `SwiftShader` in a `granted` container, the
+  GPU path did not start and the browser went back to software. See the causes
+  below.
+
+A Chrome **you start yourself** — a Playwright or Puppeteer script, a test run,
+a benchmark — reaches the GPU in one of these two ways. When a part is missing,
+headless Chrome draws WebGL on SwiftShader, Chrome's own software renderer, and
+says nothing. So read the renderer in the page before you call a result
+GPU-drawn:
+
+- **With no display: `--use-angle=gl-egl --ignore-gpu-blocklist`.** Headless
+  Chrome and the headless shell reach Mesa through EGL. This is the usual way.
+- **On an X display: `xvfb-run -a` and `--use-angle=gl --ignore-gpu-blocklist`.**
+  For headed Chrome, or a tool that needs a display. Chrome reaches Mesa
+  through GLX there. Headed Chrome selects Mesa by itself, so it draws on the
+  GPU with no flag; headless Chrome needs `--use-angle=gl`. With no display,
+  `--use-angle=gl` stays on SwiftShader.
+
+`--ignore-gpu-blocklist` matters when Mesa is on the CPU: without it Chrome
+then gives no WebGL context, or goes back to SwiftShader, and you cannot read
+why. Give it each time.
 
 ```bash
-# In the script: chromium.launch({ args: ["--use-angle=gl", "--ignore-gpu-blocklist"] })
-xvfb-run -a node render-check.mjs
+# In the script: chromium.launch({ args: ["--use-angle=gl-egl", "--ignore-gpu-blocklist"] })
+node render-check.mjs
 ```
 
 Read the renderer in the page:
@@ -697,8 +719,23 @@ gl.getParameter(gl.getExtension("WEBGL_debug_renderer_info").UNMASKED_RENDERER_W
 |---|---|
 | `D3D12 (…)` with the card's name | Chrome draws on the GPU. If it names another adapter of the machine, an integrated one for example, set `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`. |
 | `llvmpipe` | Chrome uses Mesa, but Mesa draws on the CPU. See the causes below. |
-| `SwiftShader` | Chrome does not use Mesa. The usual cause is that the display or a flag is missing. |
+| `SwiftShader` | Chrome does not use Mesa. For your own Chrome, the usual cause is that a flag or the display is missing. With `--use-angle=gl-egl`, and for the built-in browser, see the causes below. |
 | nothing — `getContext` returns `null` | Chrome gave no WebGL. If nothing in the script turns WebGL off, the usual cause is that Mesa draws on the CPU and `--ignore-gpu-blocklist` is missing. Add the flag, then follow the `llvmpipe` row. |
+
+`GALLIUM_DRIVER=d3d12` in a browser's environment makes Mesa use the GPU or
+nothing: a GPU fault then ends in SwiftShader, not in `llvmpipe`. The built-in
+browser starts with it, so it reports the card or SwiftShader, never
+`llvmpipe`.
+
+When the built-in browser reports `SwiftShader` in a `granted` container, or
+your own Chrome does with `--use-angle=gl-egl`, find the cause in this order:
+
+1. **`libEGL.so.1` is not in the image** (`ldconfig -p | grep libEGL` prints
+   nothing). The container is older than this feature. A restart of the
+   container gets the new image (see "Restarting your agent container" above).
+2. **Mesa could not use the GPU.** Start your own Chrome with
+   `--use-angle=gl-egl --ignore-gpu-blocklist` and no `GALLIUM_DRIVER`. It then
+   reports `llvmpipe`; follow the list below.
 
 When the renderer is `llvmpipe`, find which part is missing, in this order:
 
@@ -720,9 +757,6 @@ When the renderer is `llvmpipe`, find which part is missing, in this order:
 What this does not cover:
 
 - **WebGPU.** It needs Vulkan, and this image has no Vulkan driver for the card.
-- **The browser tools.** `browser_navigate` and the screenshots use ShipIt's
-  built-in browser, which draws in software. To look at a page on the GPU, start
-  your own Chrome as above and take the screenshot from that script.
 - **Other containers.** Compose services and containers you start through Docker
   get the GPU for CUDA, but not these two directories.
 - **A native Linux host.** There the GPU is for CUDA only.
@@ -731,6 +765,11 @@ With the mounts in place, every OpenGL program that uses Mesa in this container
 draws on the GPU, not only Chrome. Set `LIBGL_ALWAYS_SOFTWARE=1` for a run that
 must draw on the CPU — a pixel comparison against software-rendered snapshots,
 for example: the GPU and the CPU do not give identical pixels.
+
+In a session with no GPU, the built-in browser and a Chrome with default flags
+draw on SwiftShader. A Chrome that you start with `--use-angle=gl-egl` gets
+Mesa on the CPU there (`llvmpipe`), and no WebGL context when
+`--ignore-gpu-blocklist` is absent.
 
 This was measured on Docker Desktop with the WSL 2 backend. Docker Engine with
 the NVIDIA Container Toolkit in WSL2 is not yet measured.

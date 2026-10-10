@@ -15,3 +15,8 @@
 - [x] After that check: remove "not yet confirmed" from `environment.md` and the wiki, or correct the steps
 - [ ] Verify on Docker Engine + toolkit in WSL2 and on native Linux, and with `SESSION_READONLY_ROOTFS=1` / `SESSION_SECCOMP=1`
 - [ ] Verify what `docker compose config` writes for `gpus: all`
+- [x] Worker images: `libegl1`, so that Chrome reaches Mesa with no display (req 9)
+- [x] Built-in browser: the GPU start command, only with a granted GPU and the DirectX link (req 8, 10, 11)
+- [x] Docs for req 8 to 11: environment.md, the agent's prompt, wiki, deployment README, the setting's description
+- [ ] Verify on the WSL2 host, after the update: the built-in browser reports `D3D12 (…)` on `about:blank`, and a Chrome with no display does so with `--use-angle=gl-egl --ignore-gpu-blocklist` (req 8, 9)
+- [ ] Verify after the update: with GPU access off, the built-in browser reports SwiftShader, and its screenshot of a page with no WebGL is the same with GPU access on (req 10, 11)

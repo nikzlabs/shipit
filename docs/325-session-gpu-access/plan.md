@@ -1,7 +1,7 @@
 ---
 issue: planning#664
 title: GPU access for session containers — design
-description: How an install-wide switch gives the machine's NVIDIA GPU to a session's agent container, its Compose services and the containers the agent starts, and how Chrome draws with it on WSL2.
+description: How an install-wide switch gives the machine's NVIDIA GPU to a session's agent container, its Compose services and the containers the agent starts, and how Chrome and the built-in browser draw with it on WSL2.
 ---
 
 # 325 — GPU access for session containers: design
@@ -95,7 +95,7 @@ So a container needs the DirectX runtime in `/usr/lib/wsl/lib` and the whole dri
 1. **Two read-only binds** — `gpuGraphicsBinds()` (`session-gpu.ts`) gives those two directories at their own paths, where D3D12 looks for them. No setting and no GPU state is new (req 5): the binds follow the request.
 2. **Two links in the worker images** — `libd3d12.so` and `libd3d12core.so`, from `/usr/lib/wsl/lib` into `/usr/lib`. Mesa and DirectX open them by bare name. `/usr/lib` is in the loader's built-in path, and it is not the multiarch directory the hook mounts into, so a later hook that mounts one of them cannot meet a link there. Off WSL2 the links dangle and Mesa falls back to `llvmpipe`, as before.
 3. **Xvfb and xauth, installed by name** — they were in the image only as dependencies of Playwright, and the documented way to start Chrome now depends on them.
-4. **A pointer in the agent's prompt** — `prompts/skeleton.md`, in "Browser access": the built-in browser draws in software, and the steps for a Chrome on the GPU are in `environment.md`. Before it, the prompt named only the built-in browser, and it listed `environment.md` with no word about the GPU. The text is the same in every session, so no prompt variant is new; the agent reads `$SHIPIT_GPU` when it needs to know. A notice at each start of a granted container was rejected: most tasks do not use the GPU.
+4. **A pointer in the agent's prompt** — `prompts/skeleton.md`, in "Browser access": when the built-in browser draws on the GPU, and that the steps for a Chrome on the GPU are in `environment.md`. Before it, the prompt named only the built-in browser, and it listed `environment.md` with no word about the GPU. The text is the same in every session, so no prompt variant is new; the agent reads `$SHIPIT_GPU` when it needs to know. A notice at each start of a granted container was rejected: most tasks do not use the GPU.
 
 **The binds are an attempt of their own** (`startWithGpu`, `container-lifecycle.ts`). A container that has the GPU must not lose it to two mounts, and they are measured on one kind of host only ([Measured on the host](#measured-on-the-host)). So the order is: the request with the binds; if that create or start fails, the request alone; if that fails too, no request — the fallback of req 6, unchanged, and with the second failure as its reason. A container that started on the middle step is `granted`, and `SHIPIT_GPU_GRAPHICS_REASON` in its environment holds Docker's error for the first, so the agent can say why Chrome is on the CPU. The cost is one more failed attempt at each container start on a WSL2 host whose GPU does not work at all.
 
@@ -107,7 +107,7 @@ Rejected for the loader path: `LD_LIBRARY_PATH` in the container's environment, 
 
 The resolved questions of 2026-10-08 keep req 7 to a Chrome the agent starts, WebGL, and the agent's container on WSL2. So:
 
-- **The built-in browser** (`playwright-mcp.ts`) is unchanged and draws in software. It has no display, and a fault in the GPU path would reach every browser check of every GPU session.
+- **The built-in browser** was left out, and drew in software, until the user asked for it on 2026-10-10: see [The built-in browser, and a browser with no display](#the-built-in-browser-and-a-browser-with-no-display-req-8-to-11).
 - **Compose services and containers the agent starts** get no binds. The Compose rewrite and the proxy would each have to add a host path to a container they do not own the image of.
 - **Native Linux** is unchanged: the request names `gpu` only, so the hook mounts no graphics libraries.
 - **WebGPU** needs Vulkan, and the image has no Vulkan driver for the card.
@@ -122,7 +122,7 @@ Measured on 2026-10-09 in a session container created after the update, on the h
 - **The links resolve, with no `LD_LIBRARY_PATH`.** A GLX program under Xvfb reports `D3D12 (NVIDIA GeForce RTX 4090)`. `LD_DEBUG=files` shows `libd3d12.so` and `libd3d12core.so` from `/usr/lib`, `libdxcore.so` from the hook's mount, and `libnvwgf2umx.so` from the driver store.
 - **Chrome reports `ANGLE (Microsoft Corporation, D3D12 (NVIDIA GeForce RTX 4090), OpenGL 4.2)`** under Xvfb with the two flags: full Chrome headless and headed, and the headless shell. Three at one time all got it.
 - **The GPU does the work.** A 1024×1024 fragment shader with 400 loop iterations for each pixel took 1.2 ms for each frame on D3D12, 16 ms on `llvmpipe` and 123 ms on SwiftShader. The pictures are not identical: the shape covers 235,114 pixels on the GPU and 235,160 on each CPU renderer, and the three checksums differ. So a pixel comparison across renderers is not exact.
-- **The built-in browser reports SwiftShader** in that container, as intended.
+- **The built-in browser reported SwiftShader** in that container. Req 8 changed that later.
 
 What each part of the start command does, from the same runs:
 
@@ -138,18 +138,88 @@ What each part of the start command does, from the same runs:
 
 A dash is a case that was not run. Headed Chrome selects Mesa by itself; headless Chrome needs `--use-angle=gl`. The rows with `LIBGL_ALWAYS_SOFTWARE=1` are why `environment.md` gives both flags for each start: Chrome's blocklist refuses `llvmpipe`, so without the second flag a container that lost the mounts shows no WebGL or SwiftShader, and not the renderer that says why.
 
+## The built-in browser, and a browser with no display (req 8 to 11)
+
+### One library gives both
+
+Chrome with no display stayed on SwiftShader for one reason. Its route to Mesa with no display is EGL, and the image had only Mesa's GLX, which came with Xvfb. `libegl1` adds Mesa's EGL over the same Direct3D 12 driver: three small packages (`libegl1`, `libegl-mesa0`, `libwayland-client0`). With it, `--use-angle=gl-egl` reaches the card with no display and no environment variable (req 9). The built-in browser uses the same library (req 8), so it needs no virtual display.
+
+The library is in the loader's normal path, so that the flags are sufficient. That is the user's choice, and it makes the one exception of req 10: see [A session with no GPU](#a-session-with-no-gpu-req-10).
+
+### The built-in browser's start
+
+`builtInBrowserUsesGpu` (`playwright-mcp.ts`) decides once for the container, when the module loads: `$SHIPIT_GPU` is `granted`, and `/usr/lib/libd3d12.so` resolves. That is the image's link, and it resolves only where `gpuGraphicsBinds` mounted DirectX. No setting is read (req 8). A container keeps its GPU state and its mounts for life, so the answer cannot become stale.
+
+When both hold, the start command gets two additions:
+
+- **`--config playwright-mcp-gpu.json`** — the server takes browser flags from a config file only. The file holds three:
+  - `--use-angle=gl-egl` selects Mesa through EGL.
+  - `--disable-gpu-compositing` keeps the page's composition in software, as it was. The GPU then draws WebGL and nothing else (req 11).
+  - `--ignore-gpu-blocklist` — without it, a renderer that Chromium's blocklist refuses gives no WebGL context at all, not software.
+- **`GALLIUM_DRIVER=d3d12`** in the server's environment. Mesa then tries Direct3D 12 and nothing else. Without the pin, a GPU fault makes Mesa draw on the CPU (`llvmpipe`), a third kind of picture. With it, EGL fails to start and Chromium goes back to SwiftShader, with pictures identical to those of a session with no GPU.
+
+In each other container, the command is the one from before this change, byte for byte (req 10). A test holds it to that.
+
+| The container has | Renderer of the built-in browser | Its pictures |
+|---|---|---|
+| The GPU, the DirectX mounts, the EGL library | D3D12 (the card) | A page with no WebGL: identical to software. WebGL: drawn by the GPU |
+| The same, but the card's driver cannot start | SwiftShader | Identical to software |
+| The same, but no EGL library — a container of an image older than this change | SwiftShader | Identical to software |
+| No GPU, or a host that is not WSL2 | SwiftShader, from the old command | Identical to software |
+
+The server is still the process that `sh` becomes, and Chromium is still its child, so `browser-reclaim.ts` finds the browser as before.
+
+Rejected:
+
+- **A virtual display for the built-in browser.** It works (D3D12 through GLX). But each server gets one more process, an Xvfb of 64 to 90 MB, and a display that is not there gives no WebGL context at all, so the start would need a fallback of its own.
+- **The library in a private directory.** It makes no exception to req 10, but each browser then needs two environment variables, and the build must keep the extracted versions equal to Mesa's.
+- **A setting**, for the install or for a repository, and **the GPU for the whole page**: the user's decisions (resolved questions of 2026-10-10). With the GPU for the whole page, 51 % of the pixels of a page with no WebGL changed.
+
+### A session with no GPU (req 10)
+
+The built-in browser of such a session starts with the old command. The library is in its image, though. Measured in an imitation of a container with no GPU — DirectX libraries that cannot load — with and without the library:
+
+| Chromium started with | Without the library | With the library |
+|---|---|---|
+| Default flags, `--use-gl=egl`, `--enable-gpu --ignore-gpu-blocklist`, or `--use-angle=vulkan` | SwiftShader | SwiftShader |
+| `--use-angle=gl-egl --ignore-gpu-blocklist` | SwiftShader | `llvmpipe` |
+| `--use-angle=gl-egl` | SwiftShader | No WebGL context |
+
+The last two rows are the exception that the user accepted. `--use-angle=gl` on an X display already behaves like this. Other programs that use EGL now find Mesa where they found no library.
+
+### Known limits
+
+- **Pictures of WebGL content change.** In the test page, 21 % of the pixels differed from SwiftShader's, 87 of them by more than 16 levels of 255. The way back for the built-in browser is the GPU access switch. For one software picture in a GPU session, the agent starts its own Chrome with default flags; `environment.md` says so.
+- **The reclaim of a browser that still renders measures CPU** (docs/315-browser-cpu-between-turns). On the GPU a WebGL page uses much less of it, so a light page can stay below the threshold and continue to draw on the GPU between turns. The page of the measurement stayed above it.
+- **The first WebGL context is slower:** 55 to 83 ms, against 7 to 9 ms in software.
+- **Each built-in browser uses about 80 MB more memory:** 313 MB against 233 MB for its process tree on `about:blank`, with or without a WebGL context. The browser's GPU process loads the card's driver when it starts.
+
+### Measured for req 8 to 11
+
+Measured on 2026-10-10 in a `granted` session container on the host of the earlier measurements: Docker Desktop/WSL2, an RTX 4090, Mesa 22.3.6, Chromium 153. The container's image had no EGL library, and the session had no root. So the three Debian packages (`libegl1` 1.6.0-1, `libegl-mesa0` 22.3.6-1+deb12u2, `libwayland-client0` 1.21.0-1) were extracted into scratch space and named with `LD_LIBRARY_PATH` and `__EGL_VENDOR_LIBRARY_DIRS`. "With the library" below means that.
+
+- **A real `playwright-mcp`, started with the command that `playwright-mcp.ts` gives in that container, reports `ANGLE (Microsoft Corporation, D3D12 (NVIDIA GeForce RTX 4090), OpenGL ES 3.1)` on `about:blank`** with the library. Without the library it reports SwiftShader. In both cases its screenshot of a page with no WebGL (text, gradients, shadows, SVG, a 2D canvas, a blur filter) is byte-identical to the screenshot from the old command.
+- **A Chromium with no display reports the card** with `--use-angle=gl-egl`, as full Chrome and as the headless shell. `--use-angle=gl` with no display stays on SwiftShader. `libgles2` is not necessary.
+- **The pictures:** each renderer gave the same picture in two runs. The GPU's WebGL picture is the same through EGL and through GLX.
+- **A page that draws WebGL frames continuously** (1024×768, 60 loop iterations for each pixel): SwiftShader 37 frames/s on 9.2 CPU cores; the GPU for WebGL only 60 frames/s on 0.33 cores; the GPU for the whole page 60 frames/s on 0.21 cores.
+- **A driver that cannot start:** SwiftShader, and both pictures byte-identical to software. Two cases gave this: DirectX libraries that cannot load, with the pin, and `GALLIUM_DRIVER` set to a name that Mesa does not have.
+- **Mesa on the CPU, without the pin:** `llvmpipe` with `--ignore-gpu-blocklist`, and no WebGL context without it.
+
 ## What is not verified here
 
 The tests drive fakes. One real host was observed, Docker Desktop with the WSL 2 backend: a session container created with the switch on has `SHIPIT_GPU=granted`, `nvidia-smi` lists the card, and req 7 holds ([Measured on the host](#measured-on-the-host)). Not yet checked: Docker Engine + the toolkit in WSL2, and native Linux; `SESSION_READONLY_ROOTFS=1` and `SESSION_SECCOMP=1`; and what `docker compose config` writes for `gpus: all` (the check accepts both the string and the list form). The fallback means a failure on any of these leaves a session without the GPU, not a session that cannot start.
 
 For req 7, two cases are not checked. Docker Engine + the toolkit in WSL2 can treat the two binds differently from Docker Desktop: if the start fails there, the container starts with the GPU alone and `SHIPIT_GPU_GRAPHICS_REASON` says why. And no machine with a second adapter was tried: the image's Mesa has `MESA_D3D12_DEFAULT_ADAPTER_NAME`, but its effect was not seen, because this machine gives Mesa one adapter.
 
+For req 8 to 11, nothing ran on an image that has `libegl1`: the session could not build one, and the library was imitated as [Measured for req 8 to 11](#measured-for-req-8-to-11) says. Also not seen: the built-in browser of a real session after the update, a real container with no GPU, and a native Linux host — the last two were imitated. The claim that a page with no WebGL keeps its picture comes from two test pages: the one above, and a second one with more 2D canvas and `OffscreenCanvas` drawing that the independent review ran.
+
 ## Key files
 
 - `src/server/shared/settings-catalogue/global-settings.ts` — `advanced.sessionGpu`.
 - `src/server/orchestrator/session-gpu.ts` — the request, the state type, env, adoption read-back, the GPU-request check shared by Compose and the proxy, the WSL2 graphics binds.
 - `src/server/orchestrator/container-lifecycle.ts` — request, fallback, state, the graphics attempt.
-- `docker/Dockerfile.session-worker.prod`, `Dockerfile.session-worker.dev` — the DirectX links, Xvfb; `session-gpu-dockerfiles.test.ts` keeps them on the bound directory.
+- `docker/Dockerfile.session-worker.prod`, `Dockerfile.session-worker.dev` — the DirectX links, Xvfb, the EGL library; `session-gpu-dockerfiles.test.ts` keeps them on the bound directory.
+- `src/server/session/agents/playwright-mcp.ts`, `playwright-mcp-gpu.json` — when the built-in browser draws on the GPU, and its start command and flags.
 - `src/server/orchestrator/session-container.ts` — `gpuAccess` option, `standbyGpuOutOfDate`, `gpuDecision`.
 - `src/server/orchestrator/container-discovery.ts` — state on adoption.
 - `src/server/orchestrator/app-lifecycle.ts` — standby mismatch; proxy `SessionInfo.gpu`.
