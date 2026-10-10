@@ -389,6 +389,42 @@ independently.)
       ordinary `capabilities.docker` sessions, which shared the same gap. A redeploy
       must run `deploy.sh` (not the no-rebuild `restart.sh`) to build the new image.
 
+    - **The local stacks had the same gap, and the fallback said nothing.** Found
+      2026-10-10 from an ops session on a local prod stack: `command -v docker
+      journalctl` printed nothing, while `DOCKER_HOST`, the proxy and the journal
+      mount all worked. The fix above reached only `deployment/vps/`; neither
+      `docker/local/prod/compose.yml` nor `docker/local/dev/compose.yml` built the
+      image or set `SESSION_WORKER_DOCKER_IMAGE`. Three parts:
+
+      - *Every stack builds and names the image.* Both local compose files have
+        the `session-worker-docker` build-only service and the env var, and
+        `docker/local/prod.sh`, `docker/local/dev.sh` and `deployment/local/lib.sh`
+        (`shipit_build_and_up`, which `update.sh` runs) build it right after the
+        worker image, in a separate step with no `--pull`. The dev stack tags it
+        `shipit-session-worker:docker-dev`: dev and prod stacks can share one
+        daemon, and one tag on two different bases would be rebuilt by whichever
+        stack built last. Local prod and the VPS stack share
+        `shipit-session-worker:docker` because they share its base tag.
+      - *The fallback is logged.* `resolveWorkerImageName`
+        (`container-lifecycle.ts`) warns with the session id when an ops or
+        Docker-access session starts on the base image, and the orchestrator warns
+        once at boot when `SESSION_WORKER_DOCKER_IMAGE` is unset. The image name
+        now also reaches the container manager at construction, not only through
+        `setDockerProxy`: an ops session does not use that read-write proxy, so
+        its image must not depend on the proxy having started.
+      - *The agent is not told it has tools it lacks.* The ops system-prompt
+        overlay, `shipit-docs/ops-session.md` and check 0 of
+        `prompts/verify-ops-access.md` all make `command -v docker journalctl` the
+        first step and name a miss as one deployment defect. The doc gives the
+        Docker Engine HTTP API through the proxy as the Docker fallback; the
+        journal has none. This is prompt text, not a new prompt variant — the
+        orchestrator does not thread "image configured" into the system prompt.
+
+      `orchestrator-compose.test.ts` holds the stacks together: every compose file
+      that names a worker image must name and build the Docker-capable one on that
+      same base, and every script that builds the stack must build it after the
+      worker image and without `--pull`.
+
     - **Warm-standby bypass — checked, does not exist.** A natural worry is that an
       ops session could be handed a pre-booted *warm standby*, which is built from
       the base image (the warm pool calls `buildConfigForWorkspace` without

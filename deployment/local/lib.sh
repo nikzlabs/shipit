@@ -222,6 +222,8 @@ shipit_build_and_up() {
   export SHIPIT_BUILD_ID
   echo "==> Building ShipIt images..."
   docker compose -f "$COMPOSE_FILE" build --pull session-worker shipit egress-sidecar compose-helper
+  # The Docker-capable image builds on the worker image above, which no registry has.
+  docker compose -f "$COMPOSE_FILE" build session-worker-docker
   # The probe runs the sidecar image just built, and decides the bindings below.
   shipit_apply_local_block
   shipit_refresh_tailnet_bind

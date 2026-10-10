@@ -14,9 +14,21 @@ const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const SEARCH_DIRS = ["deployment", "docker"];
 const ORCHESTRATOR_DOCKERFILES = ["docker/Dockerfile.prod", "docker/Dockerfile.dev"];
 
+// Each compose file that runs the orchestrator, with every script that builds its images.
+const DEPLOYMENTS = [
+  { compose: "deployment/vps/docker-compose.yml", script: "deployment/vps/deploy.sh" },
+  { compose: "docker/local/dev/compose.yml", script: "docker/local/dev.sh" },
+  { compose: "docker/local/prod/compose.yml", script: "docker/local/prod.sh" },
+  { compose: "docker/local/prod/compose.yml", script: "deployment/local/lib.sh" },
+];
+
 interface ComposeDoc {
   services?: Record<string, { init?: boolean; build?: { dockerfile?: string } | string }>;
 }
+
+/** A compose `environment:` or build `args:` value, in the list form or the map form. */
+const composeValue = (entries: Record<string, string> | string[] | undefined, name: string): string | undefined =>
+  Array.isArray(entries) ? entries.find((e) => e.startsWith(`${name}=`))?.slice(name.length + 1) : entries?.[name];
 
 function composeFiles(): string[] {
   const found: string[] = [];
@@ -87,13 +99,6 @@ describe("an update starts the orchestrator with every image it built", () => {
 
 // Confined Compose runs need the helper image wherever ShipIt ships (docs/318 req 4).
 describe("every deployment builds the Compose helper image (docs/318)", () => {
-  const DEPLOYMENTS = [
-    { compose: "deployment/vps/docker-compose.yml", script: "deployment/vps/deploy.sh" },
-    { compose: "docker/local/dev/compose.yml", script: "docker/local/dev.sh" },
-    { compose: "docker/local/prod/compose.yml", script: "docker/local/prod.sh" },
-    { compose: "docker/local/prod/compose.yml", script: "deployment/local/lib.sh" },
-  ];
-
   interface Service { build?: { dockerfile?: string } | string; image?: string; environment?: string[] }
 
   it("covers every orchestrator compose file", () => {
@@ -121,19 +126,9 @@ describe("every deployment builds the Compose helper image (docs/318)", () => {
 // A worker whose image has no build id reads as "unknown", never "stale", so an update never
 // replaces it while idle (docs/242). A local install once built its worker without one.
 describe("every deployment stamps its images with the build id", () => {
-  const DEPLOYMENTS = [
-    { compose: "deployment/vps/docker-compose.yml", script: "deployment/vps/deploy.sh" },
-    { compose: "docker/local/dev/compose.yml", script: "docker/local/dev.sh" },
-    { compose: "docker/local/prod/compose.yml", script: "docker/local/prod.sh" },
-    { compose: "docker/local/prod/compose.yml", script: "deployment/local/lib.sh" },
-  ];
-
   interface Service {
     build?: { context?: string; dockerfile?: string; args?: Record<string, string> | string[] } | string;
   }
-
-  const composeArg = (args: Record<string, string> | string[] | undefined, name: string): string | undefined =>
-    Array.isArray(args) ? args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1) : args?.[name];
 
   const cases = DEPLOYMENTS.flatMap(({ compose, script }) => {
     const composePath = path.join(REPO_ROOT, compose);
@@ -155,7 +150,7 @@ describe("every deployment stamps its images with the build id", () => {
         service,
         lines,
         dockerfile: path.relative(REPO_ROOT, dockerfile),
-        arg: composeArg(def.build.args, "SHIPIT_BUILD_ID"),
+        arg: composeValue(def.build.args, "SHIPIT_BUILD_ID"),
       }];
     });
   });
@@ -190,5 +185,88 @@ describe("every deployment stamps its images with the build id", () => {
     if (onCommandLine) return;
     expect(arg, "compose build arg SHIPIT_BUILD_ID").toMatch(/\$\{SHIPIT_BUILD_ID\b/);
     expect(src, `${script} must export SHIPIT_BUILD_ID for compose to read it`).toMatch(/^\s*export SHIPIT_BUILD_ID\b/m);
+  });
+});
+
+// The base worker image has no docker CLI and no journalctl, so on a stack that does not build
+// this image an ops or Docker-access session starts without them. The local stacks once did (docs/128).
+describe("every deployment builds the Docker-capable worker image (docs/128)", () => {
+  const DOCKERFILE = "docker/Dockerfile.session-worker.docker";
+
+  interface Service {
+    build?: { dockerfile?: string; args?: Record<string, string> | string[] } | string;
+    image?: string;
+    environment?: Record<string, string> | string[];
+  }
+
+  const read = (compose: string): Record<string, Service> => {
+    try {
+      return (parseYaml(fs.readFileSync(path.join(REPO_ROOT, compose), "utf-8")) as {
+        services?: Record<string, Service>;
+      } | null)?.services ?? {};
+    } catch {
+      return {};
+    }
+  };
+
+  const stack = (compose: string) => {
+    const services = read(compose);
+    const orchestrator = Object.values(services).find((svc) => composeValue(svc.environment, "SESSION_WORKER_IMAGE"));
+    const [service, def] = Object.entries(services).find(([, svc]) =>
+      typeof svc.build === "object" && svc.build.dockerfile === DOCKERFILE) ?? [];
+    return {
+      services,
+      baseImage: composeValue(orchestrator?.environment, "SESSION_WORKER_IMAGE"),
+      dockerImage: composeValue(orchestrator?.environment, "SESSION_WORKER_DOCKER_IMAGE"),
+      service,
+      def,
+    };
+  };
+
+  // Discovered from the setting, so a stack that names a worker image cannot ship without this one.
+  it("covers every compose file that names a worker image", () => {
+    const naming = composeFiles()
+      .map((file) => path.relative(REPO_ROOT, file))
+      .filter((file) => stack(file).baseImage);
+    expect(new Set(naming)).toEqual(new Set(DEPLOYMENTS.map((d) => d.compose)));
+  });
+
+  it.each([...new Set(DEPLOYMENTS.map((d) => d.compose))])("%s builds the image it names, on its own worker image", (compose) => {
+    const { services, baseImage, dockerImage, def } = stack(compose);
+    expect(dockerImage, "SESSION_WORKER_DOCKER_IMAGE").toBeTruthy();
+    expect(dockerImage).not.toBe(baseImage);
+    expect(def?.image).toBe(dockerImage);
+    expect(typeof def?.build === "object" && composeValue(def.build.args, "BASE_IMAGE")).toBe(baseImage);
+    expect(Object.values(services).some((svc) => svc.image === baseImage && svc.build)).toBe(true);
+  });
+
+  it.each(DEPLOYMENTS)("$script builds it after the worker image, from the local base", ({ compose, script }) => {
+    const { services, baseImage, service } = stack(compose);
+    const worker = Object.entries(services).find(([, svc]) => svc.image === baseImage)?.[0];
+    const src = fs.readFileSync(path.join(REPO_ROOT, script), "utf-8");
+    const lines = src.split("\n");
+    const buildLine = (name: string | undefined): number => lines.findIndex((line) =>
+      /docker compose\b.*\sbuild\s/.test(line) && new RegExp(`\\s${name}(\\s|$)`).test(line));
+
+    const base = buildLine(worker);
+    const at = buildLine(service);
+    expect(base, `${script} does not build ${worker}`).toBeGreaterThan(-1);
+    expect(at, `${script} does not build ${service}`).toBeGreaterThan(base);
+    // No registry has the base, so --pull fails the build. Checked on the line and in any array it expands.
+    expect(lines[at]).not.toMatch(/--pull\b/);
+    for (const [, array] of lines[at].matchAll(/\$\{(\w+)\[@\]\}/g)) {
+      expect(src).not.toMatch(new RegExp(`^\\s*${array}\\+?=\\(.*--pull\\b`, "m"));
+    }
+  });
+
+  // Stacks can share one Docker daemon, and a shared tag is rebuilt by whichever stack built last.
+  it("shares a tag between stacks only when they build it on the same worker image", () => {
+    const bases = new Map<string, Set<string>>();
+    for (const compose of new Set(DEPLOYMENTS.map((d) => d.compose))) {
+      const { baseImage, dockerImage } = stack(compose);
+      if (!baseImage || !dockerImage) continue;
+      bases.set(dockerImage, (bases.get(dockerImage) ?? new Set()).add(baseImage));
+    }
+    for (const [tag, set] of bases) expect([...set], `bases of ${tag}`).toHaveLength(1);
   });
 });
