@@ -67,7 +67,12 @@ the same key without the caller holding state (`requirements.md`, resolved
 The claim is registered **synchronously, before the spawn is awaited**, and
 holds a promise rather than a result — two concurrent requests with one key
 must not both pass a check-then-act gap. A failed spawn drops its entry, so a
-retry after a genuine error is a real retry and not a replayed failure.
+retry after a genuine error is a real retry and not a replayed failure. That is
+safe only because a failed spawn leaves no session: `spawnChildSession` removes a
+child it created before it rethrows (verified at `services/child-sessions.ts`;
+docs/243-agent-messaging-trust-gate `plan.md`, "Spawned sessions"). Before that
+rule, a spawn that failed after the claim left a child and dropped the key, so
+each retry made another.
 
 Ten minutes is what keeps req 4 intact. Two deliberate identical spawns further
 apart both succeed; inside the window they collapse, and varying the title is

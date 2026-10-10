@@ -909,14 +909,13 @@ export async function discardSpawnedChild(
 ): Promise<void> {
   const session = deps.sessionManager.get(sessionId);
 
-  // A claimed warm session can have a pre-started preview that no runner owns.
-  stopWarmPreview(deps.serviceManagers, sessionId, deps.composeStopPromises);
-
   const runner = deps.runnerRegistry.get(sessionId);
   if (runner && "removeVolumesOnDispose" in runner) {
     (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = true;
   }
   deps.runnerRegistry.dispose(sessionId, { force: true });
+  // A claimed warm session can have a pre-started preview that no runner owned.
+  stopWarmPreview(deps.serviceManagers, sessionId, deps.composeStopPromises);
 
   // Release the container's bind mount before removing the workspace directory.
   try {

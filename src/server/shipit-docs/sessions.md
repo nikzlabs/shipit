@@ -36,7 +36,7 @@ propose_repo_session({
 })
 ```
 
-Five things to know:
+Six things to know:
 
 - **You name the repository, and ShipIt verifies it before the card exists.**
   The call is refused — to you, in the same turn — if the name is not a GitHub
@@ -60,6 +60,11 @@ Five things to know:
   started (with the new session's id), declined, or a start that failed. That
   line is from ShipIt, not the user. A card you have heard nothing about is
   still waiting for the user.
+- **A start can fail because the target is not trusted.** A repository ShipIt
+  has never seen starts untrusted, and no agent turn can start there. The
+  failure reason names the repository. The user opens a session on it, selects
+  **Trust this repository**, and retries the card; nothing was created by the
+  failed start.
 
 If the repository is one ShipIt has never seen, that is fine — the card says so,
 and starting it registers the repository. Nothing is added until the user clicks.
@@ -399,6 +404,23 @@ explicitly declined to ship in v1:
 
 If you try one, the shim exits non-zero with an error pointing back to this
 file.
+
+### When a spawn is refused
+
+A refusal is an answer from ShipIt with an error message: a missing title, a
+quota, an unknown role. **A refused or failed create leaves no session.** There
+is nothing to list, wait on or message, and you can run the command again after
+you correct the cause. If the create failed after ShipIt had made the child,
+ShipIt removes that child before it answers; in the rare case where it could
+not, the error gives the child's id.
+
+One refusal is not yours to correct. **`repository_untrusted` (403)** means the
+target repository is not trusted, so no agent can receive a message there. The
+message names the repository. Trust is the user's decision: tell them to open a
+session on that repository and select **Trust this repository**, then run the
+command again. Do not look for another way in. An Ops `--shipit-source` spawn
+does not meet this refusal, because ShipIt trusts its own source repository for
+it (see [ops-session.md](ops-session.md)).
 
 ### When a spawn fails to answer
 
