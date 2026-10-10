@@ -1343,6 +1343,70 @@ describe("runDiskJanitor", () => {
     expect(prPage).toBe(2);
   });
 
+  it("deletes no branch when a page of pull requests gets no answer", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    let prPage = 0;
+    const githubAuthManager = {
+      authenticated: true,
+      ...CREDENTIAL_FIELDS,
+      async graphqlQuery(query: string) {
+        if (query.includes("pullRequests(states:")) {
+          prPage += 1;
+          // The second page, which holds the branch's open pull request, is never answered.
+          if (prPage > 1) return null;
+          return {
+            data: {
+              repository: {
+                pullRequests: {
+                  pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+                  nodes: [{ state: "MERGED", headRefName: "shipit/reused" }],
+                },
+              },
+            },
+          };
+        }
+        return {
+          data: {
+            repository: {
+              refs: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [{ name: "reused" }],
+              },
+            },
+          },
+        };
+      },
+    } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
+
+    const { factory, deleted } = buildRepoGitFactory();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => { /* silence */ });
+
+    try {
+      const result = await runDiskJanitor({
+        sessionManager,
+        repoStore,
+        stateDir: tmpDir,
+        runDocker: () => Promise.resolve(""),
+        githubAuthManager,
+        createRepoGit: factory,
+        getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+      });
+
+      expect(prPage).toBe(2);
+      expect(deleted).toEqual([]);
+      expect(result.orphanBranchesRemoved).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("sweeps per-session credential dirs for archived / untracked sessions only", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);

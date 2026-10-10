@@ -6,6 +6,7 @@ import {
   followWorkerTurn,
   reattachInFlightTurns,
   stopWorkerAgent,
+  unprobedAfterRestart,
   workerHasLiveWork,
 } from "./restart-turn-reattach.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -182,6 +183,23 @@ describe("followReportedTurn", () => {
     expect(await followReportedTurn(h.deps, "s1")).toBe(false);
     expect(await followReportedTurn(h.deps, "other")).toBe(false);
     expect(h.created).toEqual([]);
+  });
+
+  // The worker's status cannot say that no work is left, and a missing container is not proof
+  // that it ended (docs/288-agent-merge-arming plan.md, "Nothing clears that mark").
+  it("keeps the mark of a failed boot probe when the worker then reports no turn, or has no container", async () => {
+    unprobedAfterRestart.add("s1").add("other");
+    try {
+      const h = await reported({ running: true, turnActive: false });
+
+      await followReportedTurn(h.deps, "s1");
+      await followReportedTurn(h.deps, "other");
+
+      expect([...unprobedAfterRestart].sort()).toEqual(["other", "s1"]);
+    } finally {
+      unprobedAfterRestart.delete("s1");
+      unprobedAfterRestart.delete("other");
+    }
   });
 });
 

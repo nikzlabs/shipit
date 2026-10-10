@@ -10,6 +10,9 @@ export function githubHeaders(token: string): {
   };
 }
 
+// The HTTP client's own limit is five minutes, and the loops that read GitHub do one read at a time.
+export const GITHUB_READ_TIMEOUT_MS = 30_000;
+
 export function fetchGitHub(
   url: string,
   token: string,

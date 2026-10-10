@@ -5,6 +5,7 @@ import type { CredentialStore } from "./credential-store.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 import { GitHubAppTokenMinter, type AppTokenMintResult } from "./github-app-token.js";
+import { GITHUB_READ_TIMEOUT_MS } from "./github-api.js";
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import type { GitHubRepoSummary } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, mergePullRequestAttempt as mergePullRequestAttemptImpl, findPullRequestByNumber as findPullRequestByNumberImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
@@ -682,6 +683,7 @@ export class GitHubAuthManager extends EventEmitter {
           "User-Agent": "ShipIt",
         },
         body: JSON.stringify({ query, variables }),
+        signal: AbortSignal.timeout(GITHUB_READ_TIMEOUT_MS),
       });
     } catch (err) {
       console.warn("[github-auth] graphqlQuery network error:", err instanceof Error ? err.message : err);

@@ -11,7 +11,8 @@ import { reconcileAgentMergeClaims, settleAgentMerge } from "./agent-merge-settl
 import type { MergeObservation } from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
-import { SessionRunner, type SessionRunnerRegistry } from "../session-runner.js";
+import { SessionRunner, resetRunnerTurnState, type SessionRunnerRegistry } from "../session-runner.js";
+import { finalizeTurnRows, persistTurnInProgress } from "../chat-card-persistence.js";
 import { unprobedAfterRestart } from "../restart-turn-reattach.js";
 import type { MergeAttempt } from "../github-auth-prs.js";
 import type { TerminalPrFacts } from "../github-auth-prs.js";
@@ -672,7 +673,7 @@ describe("runOneRequest — a request held by a session that is not idle says so
     const claim = armed();
 
     await runOneRequest(d, claim);
-    after(10);
+    after(9);
     await runOneRequest(d, claim);
     expect(notices()).toEqual([]);
 
@@ -681,11 +682,190 @@ describe("runOneRequest — a request held by a session that is not idle says so
     await runOneRequest(d, claim);
     expect(notices()).toEqual([]);
 
-    after(13);
+    after(12);
     await runOneRequest(d, claim);
     expect(notices()).toHaveLength(1);
     expect(notices()[0]).toContain("ShipIt still has work in progress on this session");
     expect(runner.emitted.filter((m) => m.type === "system_notice")).toHaveLength(1);
+  });
+
+  describe("while a turn runs", () => {
+    let real: SessionRunner;
+    let emitted: { type?: string; id?: string }[];
+
+    beforeEach(() => {
+      real = new SessionRunner({
+        sessionId: SESSION, sessionDir: "/tmp/s1", defaultAgentId: "claude" as never,
+      });
+      resetRunnerTurnState(real);
+      real.running = true;
+      real.chatMessageGroups = [{ text: "Asked ShipIt to merge.", toolUse: [] }];
+      emitted = [];
+      real.on("message", (m: { type?: string; id?: string }) => { emitted.push(m); });
+    });
+
+    afterEach(() => {
+      real.dispose({ force: true });
+    });
+
+    const noticeRows = () => chatHistoryManager.load(SESSION).filter((m) => m.notice);
+
+    it("says once that the turn holds the merge, at its place in the turn", async () => {
+      const d = deps({ runnerRegistry: registry(real) });
+      const claim = armed();
+
+      await runOneRequest(d, claim);
+      after(9);
+      await runOneRequest(d, claim);
+      expect(noticeRows()).toEqual([]);
+
+      after(11);
+      await runOneRequest(d, claim);
+      after(40);
+      await runOneRequest(d, claim);
+
+      const rows = chatHistoryManager.load(SESSION);
+      expect(rows.map((m) => m.notice === true)).toEqual([false, true]);
+      expect(rows[1]).toMatchObject({ inProgress: true });
+      expect(rows[1].text).toContain("only while this session is idle, and a turn is running");
+      const shown = emitted.filter((m) => m.type === "system_notice");
+      expect(shown.map((m) => m.id)).toEqual([rows[1].noticeId]);
+    });
+
+    it("is in history once after the turn ends, and the hold that follows adds no second notice", async () => {
+      const d = deps({ runnerRegistry: registry(real) });
+      const claim = armed();
+      await runOneRequest(d, claim);
+      after(11);
+      await runOneRequest(d, claim);
+      expect(noticeRows()).toHaveLength(1);
+
+      real.chatMessageGroups = [...real.chatMessageGroups, { text: "Still here.", toolUse: [] }];
+      persistTurnInProgress(chatHistoryManager, real, SESSION);
+      finalizeTurnRows(chatHistoryManager, real, SESSION);
+      real.running = false;
+      real.isStreamingActive = true;
+      real.setBackgroundTasks([{ id: "bash-1", description: "sleep 1200" }]);
+      await runOneRequest(d, claim);
+      after(20);
+      await runOneRequest(d, claim);
+
+      const rows = chatHistoryManager.load(SESSION);
+      expect(rows.map((m) => m.notice === true)).toEqual([false, true, false]);
+      expect(rows.some((m) => m.inProgress)).toBe(false);
+    });
+
+    it("does not count an earlier turn's time for the turn that follows it", async () => {
+      const d = deps({ runnerRegistry: registry(real) });
+      const claim = armed();
+      await runOneRequest(d, claim);
+      after(9.9);
+      await runOneRequest(d, claim);
+
+      // The first turn ends and the next one starts between two passes.
+      resetRunnerTurnState(real);
+      after(10.1);
+      await runOneRequest(d, claim);
+      after(19);
+      await runOneRequest(d, claim);
+      expect(noticeRows()).toEqual([]);
+
+      after(20.2);
+      await runOneRequest(d, claim);
+      expect(noticeRows()).toHaveLength(1);
+    });
+
+    it("does not count the turn of an earlier runner for the turn of the runner that replaced it", async () => {
+      const claim = armed();
+      await runOneRequest(deps({ runnerRegistry: registry(real) }), claim);
+      after(9.9);
+      await runOneRequest(deps({ runnerRegistry: registry(real) }), claim);
+
+      const replacement = new SessionRunner({
+        sessionId: SESSION, sessionDir: "/tmp/s1", defaultAgentId: "claude" as never,
+      });
+      try {
+        resetRunnerTurnState(replacement);
+        replacement.running = true;
+        expect(replacement.turnEpoch).toBe(real.turnEpoch);
+        after(10.1);
+        await runOneRequest(deps({ runnerRegistry: registry(replacement) }), claim);
+        expect(noticeRows()).toEqual([]);
+      } finally {
+        replacement.dispose({ force: true });
+      }
+    });
+
+    it("writes a final row, once, for a turn that has not started its rows yet", async () => {
+      const d = deps({ runnerRegistry: registry(real) });
+      const claim = armed();
+      await runOneRequest(d, claim);
+      after(11);
+      // The rows of the turn before are final, and the next turn has not reset them yet.
+      finalizeTurnRows(chatHistoryManager, real, SESSION);
+
+      const append = vi.spyOn(chatHistoryManager, "append").mockImplementationOnce(() => {
+        throw new Error("database is locked");
+      });
+      try {
+        await expect(runOneRequest(d, claim)).rejects.toThrow("database is locked");
+        expect(emitted.filter((m) => m.type === "system_notice")).toEqual([]);
+        await runOneRequest(d, claim);
+        await runOneRequest(d, claim);
+      } finally {
+        append.mockRestore();
+      }
+
+      expect(noticeRows()).toHaveLength(1);
+      expect(noticeRows()[0].inProgress).toBeFalsy();
+      expect(emitted.filter((m) => m.type === "system_notice")).toHaveLength(1);
+    });
+
+    it("does not say it twice when the write of the notice fails", async () => {
+      const d = deps({ runnerRegistry: registry(real) });
+      const claim = armed();
+      await runOneRequest(d, claim);
+      after(11);
+
+      const write = vi.spyOn(chatHistoryManager, "replaceInProgress").mockImplementationOnce(() => {
+        throw new Error("database is locked");
+      });
+      try {
+        await expect(runOneRequest(d, claim)).rejects.toThrow("database is locked");
+        expect(noticeRows()).toEqual([]);
+
+        after(12);
+        await runOneRequest(d, claim);
+        after(30);
+        await runOneRequest(d, claim);
+      } finally {
+        write.mockRestore();
+      }
+
+      persistTurnInProgress(chatHistoryManager, real, SESSION);
+      finalizeTurnRows(chatHistoryManager, real, SESSION);
+      expect(noticeRows()).toHaveLength(1);
+      expect(emitted.filter((m) => m.type === "system_notice")).toHaveLength(1);
+    });
+
+    it("does not count a turn that starts while other work holds the session", async () => {
+      const d = deps({ runnerRegistry: registry(real) });
+      const claim = armed();
+      real.running = false;
+      real.beginPostTurnWork();
+      await runOneRequest(d, claim);
+      after(1);
+      real.endPostTurnWork();
+      real.running = true;
+      await runOneRequest(d, claim);
+      after(10);
+      await runOneRequest(d, claim);
+      expect(noticeRows()).toEqual([]);
+
+      after(12);
+      await runOneRequest(d, claim);
+      expect(noticeRows()).toHaveLength(1);
+    });
   });
 
   it("says so again for a request armed again", async () => {

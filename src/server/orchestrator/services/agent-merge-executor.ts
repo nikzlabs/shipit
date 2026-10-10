@@ -7,7 +7,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { MergeAttempt } from "../github-auth-prs.js";
 import type { AgentMergeClaim, AgentMergeClaimStore } from "../agent-merge-claims.js";
 import {
-  persistNoticeUnattached, emitNoticePostTurn, buildSystemNotice,
+  persistNoticeUnattached, emitNoticePostTurn, emitNoticeInTurn, buildSystemNotice, turnRowsFinalized,
 } from "../chat-card-persistence.js";
 import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
 import { mergeDisposition } from "../pr-target.js";
@@ -466,7 +466,13 @@ interface IdleBlocker {
   /** Completes "…, and <why>" in a notice. It is also logged, so it carries no agent text. */
   why: string;
   work?: string[];
-  turn?: true;
+  /** Set while a turn runs. Epochs start again on a new runner, so the pair names the turn. */
+  turn?: HoldingTurn;
+}
+
+interface HoldingTurn {
+  runner: object;
+  epoch: number;
 }
 
 function idleBlocker(deps: AgentMergeExecutorDeps, sessionId: string): IdleBlocker | null {
@@ -478,7 +484,7 @@ function idleBlocker(deps: AgentMergeExecutorDeps, sessionId: string): IdleBlock
       : null;
   }
   unprobedAfterRestart.delete(sessionId);
-  if (runner.running) return { why: "a turn is running", turn: true };
+  if (runner.running) return { why: "a turn is running", turn: { runner, epoch: runner.turnEpoch ?? 0 } };
   if (runner.systemTurnInProgress) return { why: "ShipIt is working on this session's branch" };
   if (runner.agentBusy) {
     // Background work normally ends by starting a turn that no hold can keep back (docs/288-agent-merge-arming req 6).
@@ -509,6 +515,8 @@ interface WaitState {
   request: string;
   logged: string | null;
   heldSince: number | null;
+  /** The turn that holds the request, or null when no turn runs. */
+  heldByTurn: HoldingTurn | null;
   announced: boolean;
 }
 
@@ -519,7 +527,7 @@ function waitState(claim: AgentMergeClaim): WaitState {
   const request = `${claim.prNumber}@${claim.expectedSha}@${claim.createdAt}`;
   let state = waits.get(claim.sessionId);
   if (state?.request !== request) {
-    state = { request, logged: null, heldSince: null, announced: false };
+    state = { request, logged: null, heldSince: null, heldByTurn: null, announced: false };
     waits.set(claim.sessionId, state);
   }
   return state;
@@ -534,27 +542,45 @@ function logWaitOnce(claim: AgentMergeClaim, reason: string): void {
 
 // Longer than the commit and push that follow every turn, which hold the session too.
 const HOLD_NOTICE_AFTER_MS = 120_000;
+// A turn that asks for the merge usually ends soon after; only one that goes on is news.
+const TURN_HOLD_NOTICE_AFTER_MS = 600_000;
 
-/** Say once per request what holds it, when nothing else in the transcript shows the wait. */
+/** Say once per request what holds it, after the hold has lasted longer than the usual one. */
 function noteHold(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim, blocker: IdleBlocker): void {
   const state = waitState(claim);
-  // A running turn shows in the transcript, and its end restarts the count.
-  if (blocker.turn) {
-    state.heldSince = null;
-    return;
-  }
   const now = Date.now();
-  state.heldSince ??= now;
-  if (state.announced || now - state.heldSince < HOLD_NOTICE_AFTER_MS) return;
+  const turn = blocker.turn ?? null;
+  // The count is for one turn, or for the time with no turn: the commit and push after a long
+  // turn are not announced, and a turn that has just started is not either.
+  const sameHold = state.heldByTurn?.runner === turn?.runner && state.heldByTurn?.epoch === turn?.epoch;
+  if (state.heldSince === null || !sameHold) {
+    state.heldSince = now;
+    state.heldByTurn = turn;
+  }
+  const delay = turn === null ? HOLD_NOTICE_AFTER_MS : TURN_HOLD_NOTICE_AFTER_MS;
+  if (state.announced || now - state.heldSince < delay) return;
   const why = blocker.work
     ? `background work is still running (${describeBackgroundWork(blocker.work)})`
     : blocker.why;
-  const notice = splitNotice(
-    deps, claim,
-    `ShipIt has not merged pull request #${claim.prNumber}: it merges on request only while this `
+  const message = `ShipIt has not merged pull request #${claim.prNumber}: it merges on request only while this `
     + `session is idle, and ${why}. The request stays armed — ShipIt merges once the session is idle `
-    + "and the checks have passed.",
-  );
+    + "and the checks have passed.";
+  const runner = turn === null ? undefined : deps.runnerRegistry?.get(claim.sessionId);
+  // A turn that has not started its rows yet takes the notice as a final row, like no turn.
+  if (runner && !turnRowsFinalized(runner)) {
+    const recorded = runner.recordedCards;
+    try {
+      // The turn rebuilds its rows from the runner, so the notice is recorded there.
+      emitNoticeInTurn(runner, claim.sessionId, message, deps.chatHistoryManager);
+    } catch (err) {
+      // A notice already on the runner is written with the turn's next rows; another would double it.
+      if (runner.recordedCards !== recorded) state.announced = true;
+      throw err;
+    }
+    state.announced = true;
+    return;
+  }
+  const notice = splitNotice(deps, claim, message);
   // A write that fails is tried again on the next pass, and nothing shows that history lacks.
   notice.persist();
   state.announced = true;
