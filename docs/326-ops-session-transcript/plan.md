@@ -36,6 +36,7 @@ route and not in the shim:
 | Worker relay | `session/agent-ops-routes.ts` |
 | Shim (flags, rendering, envelope) | `session/agent-shim/shipit-session-transcript.ts` |
 | Envelope source | `shared/untrusted-input.ts` (`transcript`) |
+| Seeded recipe | `orchestrator/templates-ops.ts` (`prompts/read-session-transcript.md`) |
 
 ## Decisions
 
@@ -179,9 +180,10 @@ runs on the orchestrator's main thread, which also serves the UI.
 Rows are loaded one at a time, newest first. A page of large rows is thus never
 in memory together.
 
-`redactStage1` keeps patterns that are quadratic (its e-mail pattern needs 9 s
-for 80 KB of `a.a.a.…`). Its callers pass short text, so that is not changed
-here.
+`redactStage1` keeps three patterns that are quadratic: e-mail, ssh-remote and
+JWT. The function needs approximately 10 s for 80 KB of `a.a.a.…`. It is not
+changed here. Two of its callers pass short text. The third, the bug report
+flow, passes a body of up to 1 MiB (planning#677).
 
 ### Cuts and paging (req 2)
 
@@ -192,8 +194,9 @@ here.
   the cuts. `--full` raises the limit to 200,000.
 - The read returns the newest 40 messages; `--last` changes that, to 400 at
   most. Each message has its 1-based position in the stored transcript, and
-  `--before N` returns the messages before position N. The output names the
-  value for the page before, so the whole transcript can be read.
+  `--before N` returns the messages before position N, and not message N: the
+  documents give `--before <N+1> --last 1` for message N alone. The output
+  names the value for the page before, so the whole transcript can be read.
 - A page whose messages total more than 2,000,000 characters, or that passes
   the scan limit, loses its oldest messages, and the same cursor continues. The
   newest message is always returned; the same two limits then apply inside it.
@@ -207,11 +210,13 @@ here.
 **inserted** the row. A turn's rows are deleted and inserted again each time
 the turn is persisted (`replaceInProgress`; `finalizeInProgress` then only
 clears a flag — verified at `chat-card-persistence.ts` and `chat-history.ts`),
-and a rewind inserts every row again (`saveMessages`). An in-place update of a
-row, such as a card that changes state, does not move it (`UPDATE_SQL` does not
-set `created_at`). So the output names the time `stored`, and the documents
-send the reader to a tool call's `startedAt` or a card's `createdAt` for an
-exact time.
+and a rewind of the chat inserts again every row that it keeps
+(`saveMessages`, verified at `rollback-handlers.ts`). An in-place update of a
+row does not move it: a card that changes state (`UPDATE_SQL` does not set
+`created_at`), or a rewind of the code only (`markRolledBackFromIndex`). So the
+output names the time `stored`, and the documents send the reader to a tool
+call's `startedAt` or a card's time field, where there is one, for a time that
+is nearer to the event.
 
 ### The text is untrusted, and it enters a privileged session
 
@@ -278,5 +283,6 @@ route with another method.
 - While the target session's agent is working, the positions of its newest
   messages can move between two reads.
 - An ops workspace that was seeded before this change keeps its old recipes in
-  `prompts/`. `/shipit-docs/ops-session.md` says that it is the current
-  contract.
+  `prompts/`, and does not get `prompts/read-session-transcript.md`.
+  `/shipit-docs/ops-session.md` says that it is the current contract, and it
+  has the content of that recipe.

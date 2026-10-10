@@ -519,7 +519,7 @@ export class ChatHistoryManager {
     return rows.map((r) => this.fromRow(r));
   }
 
-  /** Transcript order. `createdAt` is when the row was last written: a rewind rewrites every row. */
+  /** Transcript order. `createdAt` is when the row was inserted: a chat rewind inserts the kept rows again. */
   listRowTimes(sessionId: string): { id: number; createdAt: string | null }[] {
     return this.db.prepare(
       "SELECT id, created_at AS createdAt FROM messages WHERE session_id = ? ORDER BY id",
