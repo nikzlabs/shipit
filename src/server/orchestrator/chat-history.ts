@@ -282,6 +282,7 @@ export class ChatHistoryManager {
   private stmtLoadDecisionCardRows;
   private stmtLoadRepoSessionProposalRows;
   private stmtLoadSessionMessageProposalRows;
+  private stmtLoadSelfMergeWatchRows;
   private stmtLoadPermissionRows;
   private stmtLoadById;
   private stmtLoadSubAgentCards;
@@ -324,6 +325,9 @@ export class ChatHistoryManager {
     );
     this.stmtLoadSessionMessageProposalRows = this.db.prepare(
       "SELECT id, session_message_proposal FROM messages WHERE session_id = ? AND session_message_proposal IS NOT NULL ORDER BY id",
+    );
+    this.stmtLoadSelfMergeWatchRows = this.db.prepare(
+      "SELECT * FROM messages WHERE session_id = ? AND self_merge_watch IS NOT NULL ORDER BY id",
     );
     this.stmtLoadPermissionRows = this.db.prepare(
       "SELECT id, permission_prompt FROM messages WHERE session_id = ? AND permission_prompt IS NOT NULL ORDER BY id",
@@ -968,6 +972,35 @@ export class ChatHistoryManager {
         if (card.cardId !== cardId) continue;
         const msg = this.fromRow(row);
         msg.sessionMessageProposal = { ...card, ...patch };
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  /** The arm card of one arming; a session keeps the cards of its earlier watches too. */
+  findSelfMergeWatchCard(sessionId: string, watchId: string): SelfMergeWatchCard | null {
+    const rows = this.stmtLoadSelfMergeWatchRows.all(sessionId) as MessageRow[];
+    for (const row of rows) {
+      const card = JSON.parse(row.self_merge_watch!) as SelfMergeWatchCard;
+      if (card.watchId === watchId) return card;
+    }
+    return null;
+  }
+
+  updateSelfMergeWatchCard(
+    sessionId: string,
+    watchId: string,
+    patch: Partial<SelfMergeWatchCard>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadSelfMergeWatchRows.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        const card = JSON.parse(row.self_merge_watch!) as SelfMergeWatchCard;
+        if (card.watchId !== watchId) continue;
+        const msg = this.fromRow(row);
+        msg.selfMergeWatch = { ...card, ...patch };
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }

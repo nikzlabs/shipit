@@ -363,7 +363,12 @@ Four things users ask about children:
 - **Being told about a merge** does not need watching. `shipit session
   notify-on-merge` wakes the session when the pull request lands. A parent's
   watch on a child and that child's own `--self` watch are independent: one
-  merge wakes both.
+  merge wakes both. A watch gives one wake; a parent that follows a child across
+  several pull requests arms again after each one, and is not told twice about
+  the same pull request. A session's own watch posts a card with Cancel, and
+  that card changes when its watch is gone — merged, replaced by a newer watch,
+  cancelled, or closed without a merge — so an older card does not read as
+  still waiting.
 - A child sees the repository as of **main**, not the parent's uncommitted or
   unmerged work. Work it must build on has to be merged first, or carried in
   the prompt.

@@ -75,6 +75,20 @@ self-watch (see *Storage*), not by the original conversation:
 | **No watch is dropped silently** | "Never drop a watch silently" |
 | **Arm calls are visible in the log** | "Log every arm, replacement and refusal with the `[merge-watch]` prefix, on both arm routes" |
 
+### Decided later — 2026-10-10, after PR #3136
+
+PR #3136 left the arm card as it was and added only a note. The follow-up offered to the
+user was to change the card itself, and the user's answer was "fix both after this pr is
+merged" (the other item is the parent re-arm rule of `docs/196-session-notify-on-merge`):
+
+| Requirement | What was said |
+|---|---|
+| **The arm card shows that its watch is gone** | "Make a replaced or ended `--self` arm card show that its watch is gone" |
+| **A card whose watch is gone does not offer Cancel, also after a reload** | "Adds a persisted state to the self-watch arm card, so an old card does not show 'Waiting on PR' with Cancel after its watch was replaced, delivered or cancelled." |
+
+This reverses one earlier decision, "no in-place transitions" (see *Cards*). The other
+exclusions there stay.
+
 ### Derived — implementation constraints, not requirements
 
 The reset safety gate; `merge-observed`, the retry supervisor and startup reconcile
@@ -174,10 +188,10 @@ session is in the other column and is never read or written here.
 
 **A replacement that loses something says so in the transcript.** When the replaced watch
 was still `armed` on a *different* PR, the arm appends a persisted note ("the merge-watch
-on PR #A was replaced by a watch on PR #B"), because the older arm card stays in the
-scrollback and would otherwise go on naming a watch that no longer exists. A re-arm on the
-same PR, or over a watch that already saw its merge — the ordinary chain — loses nothing
-and adds no note.
+on PR #A was replaced by a watch on PR #B"): the session will not be woken for PR #A, and
+the user should know. A re-arm on the same PR, or over a watch that already saw its merge
+— the ordinary chain — loses nothing and adds no note. In every case the older arm card
+itself records that its watch is gone (see *Cards*).
 
 **Every arm, replacement and refusal writes a `[merge-watch]` log line**, on this route
 and on docs/196's, and so does every watch the manager drops and every cancel that clears
@@ -396,11 +410,50 @@ by the prompt's "unless the user has since redirected you".
   Cancel carries `watchId` so a stale card cannot cancel the next PR's watch.
 - **Closed-without-merge, anchor mismatch, delivery failure, a re-arm that replaces a
   watch still waiting on another PR:** append a plain persisted note.
-- **Merged:** no card — the wake turn itself is the visible signal.
+- **Merged:** no new card — the wake turn itself is the visible signal.
 
-No terminal-state card family, no in-place transitions, no runner-less
-`persistCardTransition`, no card repair, no archive-time transition. Archiving clears the
-watch silently; the user froze that transcript deliberately.
+**The arm card records why its watch is gone** (decided 2026-10-10, see *Requirement
+provenance*). A chained session leaves one arm card per link in the scrollback. Each of
+them kept reading "Waiting on PR #N" with a Cancel button, also after its PR had merged
+and the chain had moved on, and only a click on Cancel said otherwise. The card now has
+an optional `ended`, stored inside the card's existing JSON (no new column), and a card
+with it shows that state and offers no Cancel:
+
+| `ended` | Written when | Where |
+|---|---|---|
+| `merged` | the watch observes its merge and requests the wake | `handleSelfMerge` |
+| `wake-failed` | the wake is given up after its attempts | `failWatch` |
+| `closed` | the PR closes without a merge | `handleSelfPrClosed` |
+| `other-pr-merged` | a different PR merged (anchor mismatch) | `handleSelfMerge` |
+| `cancelled` | the user presses Cancel | `cancelSelfMergeWatch` |
+| `replaced` | a new arm replaces a watch that still waited | `armSelfMergeWatch` |
+
+`merged` is written when the merge is observed and not when the wake settles: from that
+moment the watch waits for nothing, and the re-arm inside the wake turn then replaces a
+watch whose card already has its end. The wake can still be queued, held for an answer,
+or in a retry at that point, so the card says that the PR merged and that ShipIt wakes
+the session — not that the session has continued. It also removes Cancel for the time the wake is in
+delivery, where it could only stop the retries of a wake that had started. The first end
+stays, with one exception — a wake that started can still fail, so `merged` can become
+`wake-failed`. The notes above stay: the
+card says that the watch is gone, the note says what the user should do.
+
+`armSelfMergeWatch` reads the watch that it replaces *after* its PR lookup. Two arms of
+one session can overlap on that lookup, and the second must end the card of the watch
+that the first one installed in the meantime.
+
+One helper does every transition, `endSelfMergeWatchCard` (`self-merge-watch-card.ts`).
+It finds the card by `watchId`, writes it through `persistCardTransition` — so a card
+armed and ended inside one running turn keeps its end when that turn's rows are rebuilt
+— or straight to the database when the session has no runner, and sends the updated card
+to live viewers as the same `self_merge_watch_card` message, which the client handler
+applies in place. It never throws: a card that stays as it was must not stop an arm, a
+cancel or a wake.
+
+Still excluded: a card family for terminal states, card repair for cards stored before
+`ended` existed (their Cancel answers "no longer armed", as before), and an archive-time
+transition. Archiving clears the watch silently; the user froze that transcript
+deliberately.
 
 ## Prerequisite — done
 
@@ -432,7 +485,7 @@ reordered call site.
 | Wake | `wake-session.ts` | Restore the checkout if missing |
 | Reset | `services/pre-turn-reset.ts` | Explicit mode: setting-blind, idempotent, strict push failure, ownership handback |
 | Prompt | `orchestrator/prompts/self-merge-wake.md` | Co-located template |
-| Card | client card + handler | Arm card with Cancel |
+| Card | client card + handler, `self-merge-watch-card.ts`, `chat-history.ts` | Arm card with Cancel; `ended` on the card when its watch is gone (`endSelfMergeWatchCard`, `updateSelfMergeWatchCard`) |
 | Agent docs | `shipit-docs/sessions.md` | `--self`, re-arming, the reset command |
 
 ## Testing
@@ -443,6 +496,14 @@ One test each, not a matrix:
   **new** PR, not the stale snapshot.
 - Card: the arm card persists and round-trips; Cancel with a stale `watchId` does not
   cancel a newer watch.
+- Card end: each of the six ends is written by its path and reaches live viewers
+  (`self-merge-watch.test.ts`); a card armed and replaced inside one running turn keeps
+  its end; a session with no runner still gets it; a card that cannot be updated does
+  not stop the wake; replaced, cancelled and merged are in the history that a reload
+  reads, through a fully-wired `buildApp`
+  (`integration_tests/session-notify-on-merge.test.ts`); the client shows the end with
+  no Cancel, and a replayed arm does not undo it (`SelfMergeWatchCard.test.tsx`,
+  `message-handlers/self-merge-watch.test.ts`).
 - Delivery: fires after merge bookkeeping; anchor mismatch appends a note and wakes
   nothing; closed-without-merge appends a note and wakes nothing; an old settlement does
   not mark a newly-armed watch delivered; a re-arm that clears the PR snapshot before the
@@ -472,7 +533,8 @@ One test each, not a matrix:
 - **Explicit mode over the existing reset core**, not a new service; setting-blind,
   idempotent, strict about push failure, hands the workspace back.
 - **Chaining is agent-level**; ShipIt models no chain.
-- **Notes, not a card lifecycle**, for terminal outcomes.
+- **Notes, not a card lifecycle**, for terminal outcomes. Since 2026-10-10 the arm card
+  also records its own end (see *Cards*); no further card was added.
 - **No docs/218 `resetEligible` suppression** — the idempotent command already resolves the
   overlap, and suppressing would leave a user's own next turn on the stale merged tip.
 - **No eviction exemption** — restore at delivery instead.

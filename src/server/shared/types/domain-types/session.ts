@@ -277,8 +277,26 @@ export interface SessionMergeWatch {
   deliveryId?: string;
   /** The merge this watch fires for. Kept here because a branch re-arm clears the session's PR snapshot. */
   mergedPr?: { prNumber: number; prUrl: string; prTitle: string; branch: string; mergeSha?: string };
+  /** Parent's watch: the parent was already told about this PR. A later arm inherits it and does not fire for it again. */
+  reportedPr?: { prNumber: number; outcome: "merged" | "closed" };
+  /** Parent's watch: the parent armed again while this watch was in delivery. A new watch follows when this one ends. */
+  rearmedAt?: string;
+  /**
+   * Parent's watch: the PRs that resolved while this watch could not report them (it was
+   * delivering another PR, or had fired), oldest first. The next arm inherits them and reports the first.
+   */
+  unreportedPrs?: SessionMergeWatchPr[];
   lastDeliveryError?: string;
   failedAt?: string;
+}
+
+export interface SessionMergeWatchPr {
+  outcome: "merged" | "closed";
+  prNumber: number;
+  prUrl: string;
+  prTitle: string;
+  branch: string;
+  mergeSha?: string;
 }
 
 export interface ChildMergedCard {
@@ -298,6 +316,14 @@ export interface ChildMergedCard {
   createdAt: string;
 }
 
+export type SelfMergeWatchEnd =
+  | "merged"
+  | "closed"
+  | "cancelled"
+  | "replaced"
+  | "other-pr-merged"
+  | "wake-failed";
+
 export interface SelfMergeWatchCard {
   cardId: string;
   watchId: string;
@@ -306,6 +332,8 @@ export interface SelfMergeWatchCard {
   prTitle?: string;
   branch?: string;
   createdAt: string;
+  /** Why this card's watch is gone. Absent while the watch can still fire. */
+  ended?: SelfMergeWatchEnd;
 }
 
 export type SessionReportSeverity = "fyi" | "warn" | "blocker";

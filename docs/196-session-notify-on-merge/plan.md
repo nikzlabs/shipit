@@ -6,6 +6,10 @@ description: A parent session arms a watch and is woken by a queued system turn 
 
 # Notify-on-merge (`shipit session notify-on-merge`)
 
+**Requirements:** [`requirements.md`](./requirements.md). It starts with the rework of
+2026-10-10 (arming again), and numbers like (req 3) refer to entries there. The rest of
+this document describes behaviour that shipped before requirements were recorded.
+
 ## Problem
 
 A parent session that spawns a child for foundation work it depends on has no
@@ -51,8 +55,9 @@ the poller has the child in scope at fire time.
 > `onMergeDetectedCb` (after `markMergedAndPruneExcess`, so the wake can't race
 > the remote-branch deletion) instead of `onPrTerminalState`; arming always
 > replaces (an idempotent "already armed" would make chaining impossible), so
-> settlements carry an expected `watchId`; and terminal outcomes append plain
-> notes instead of a card.
+> settlements carry an expected `watchId` (every watch has one since the
+> 2026-10-10 rework); and terminal outcomes append plain notes instead of a new
+> card, while the arm card records its own end.
 >
 > **The two watches are stored apart and coexist.** The parent's watch is the
 > row's `merge_watch` column (`SessionInfo.mergeWatch`); the session's own is
@@ -83,9 +88,11 @@ armed ──merge observed──▶ merge-observed ──wake-turn RAN──▶ 
   reconcile and the retry supervisor both re-fire from here (the card-surface
   guard makes the re-entry skip the duplicate card and just retry the wake-turn).
 - **`delivered`** — the merge wake-turn has **actually run to completion** (not
-  merely been enqueued). Terminal, **fire-once**.
+  merely been enqueued). Terminal, **fire-once**. The record keeps the PR it
+  reported (`reportedPr`) for the next arm.
 - **`closed-unmerged`** — the PR closed without merging; a *distinct* wake-turn
   was enqueued so the parent doesn't proceed as if the work shipped. Terminal.
+  It keeps `reportedPr` too, unless that wake could not be dispatched.
 - **`delivery-failed`** — delivery threw `MAX_DELIVERY_ATTEMPTS` times; the watch
   gives up, surfaces a failure card into the parent, and stops holding the poll
   loop open (planning#260). Terminal.
@@ -96,22 +103,113 @@ fire-once guard: a re-poll or a restart re-observation is a no-op. Re-arming a
 recovery path is deliberately the user's / agent's call, not an automatic
 resurrection of a watch that already reported it gave up.
 
-**Known limits — a parent that follows a child across several PRs.** The watch is
-fire-once and carries no PR number, which leaves two gaps for a coordinator that
-re-arms after each merge of a chaining child:
+### Arming again — a parent that follows a child across several PRs
 
-- A re-arm made **while the wake for the previous merge is still being
-  delivered** — which includes the wake turn itself — is the idempotent
-  `alreadyArmed` no-op: the watch is still `merge-observed`. It then settles to
-  `delivered`, and the child's next merge wakes nobody.
-- A re-arm made **after** `delivered`, while the child's PR snapshot still names
-  the PR that already merged, fires again at once for that same PR (the
-  register-time `checkAndFireNow`).
+One arm gives one wake (req 1). A coordinator that does work for each merged PR of
+a chaining child arms again after each wake, most often inside the wake turn
+itself. Until 2026-10-10 the watch carried no PR number, and both natural places
+to arm again were wrong: an arm during the wake was the idempotent "already
+armed" no-op, so the watch settled to `delivered` and the child's next merge woke
+nobody; an arm after the wake fired again at once for the PR already reported,
+because the register-time check found it still in the child's PR snapshot.
 
-Arming in a **later turn** — after the wake turn for the previous merge has
-ended, and after the child has opened its next PR — avoids both, and
-`shipit-docs/sessions.md` tells the parent agent so. Every arm writes a
-`[merge-watch]` log line that names which of these cases it was.
+**The watch remembers what its parent was told (req 4).** `reportedPr` holds the PR
+number and outcome that the parent last heard about. `markDelivered` writes it for
+a merge, the closed path writes it for a close, and `registerMergeWatch` copies it
+from the watch it replaces into the new one. An armed watch does not fire for
+exactly that PR and outcome, wherever the event comes from: the register-time
+check (`checkAndFireNow`), the startup reconcile, or the poller. The poller is in
+that list because it can repeat a terminal event — merge-claim recovery promotes a
+merged PR again with `force` (verified at `pr-status-poller.ts:
+promoteMergedPrByNumber`). The outcome is part of the comparison, so a PR that was
+reported as closed, then reopened and merged, is news.
+
+A watch whose wake never reached the parent reported nothing. `delivery-failed`
+keeps the `reportedPr` it inherited, not its own PR, and a closed wake that could
+not be dispatched puts the inherited value back — only on its own record, because
+the dispatch is awaited and a newer watch can hold the slot by then. The next arm
+then reports that PR again, which keeps "arm again" as the recovery path it was.
+For both, the PR that was not delivered goes to the front of the list of PRs that
+the watch still owes (`unreportedPrs`, below) — the closed path does it when the
+dispatch throws, `registerMergeWatch` does it for a `delivery-failed` watch — so
+the recovery does not depend on the child's PR snapshot and is not displaced by a
+PR that resolved in the meantime.
+
+**An arm during a delivery is recorded on the watch in delivery (req 3).** The
+watch is not replaced: it owns the wake that is queued or running, and replacing
+it would take that wake away from the retry supervisor. `registerMergeWatch` sets
+`rearmedAt` on it. When the watch ends — `markDelivered`, or `failWatch` after the
+attempts are used up — `armFollowingWatch` writes a fresh `armed` watch in its
+place, with the PR just delivered as its `reportedPr`, and runs the register-time
+check on the next tick (it is called from the old wake's settlement, and a restart
+before that tick is covered by the startup reconcile). After a failed delivery the
+failure card has told the user about that PR, so the watch that follows waits for
+the next one. No watch follows for a parent that was archived in the meantime.
+
+**Every watch armed now has a `watchId`,** as the self-watch always had. The watch
+that follows is written in the same slot while the old wake's settlement can still
+arrive, and `isCurrentWatch` compares ids strictly, so that settlement cannot mark
+the new watch delivered. A watch armed by older code has no id and neither has its
+settlement, so the two still match.
+
+**A later PR is not lost between two arms (req 2).** One arm reports one PR, so a
+watch that already fired, or that is delivering PR #A, does nothing with a
+terminal event for PR #B — except keep it: the event is appended to the watch's
+`unreportedPrs` (`keepForNextArm`), oldest first, without duplicates. (Before, a
+*closed* event that arrived during a merge delivery overwrote the watch and sent a
+second wake from one arm.) The next arm inherits the list — through
+`registerMergeWatch`, or through `armFollowingWatch` — and reports its first
+entry. "First" holds against the poller too: a live event that reaches an armed
+watch is appended, and the watch reports the head of the list, which is that event
+only when nothing older is owed.
+
+An archived parent is told nothing, so nothing is kept for it. At the next event a
+live watch of an archived parent is dropped, as before, and a watch that already
+fired loses its list (it keeps `reportedPr`). A close whose dispatch fails after
+the parent was archived does not go back on the list and adds no failure card.
+
+Keeping the events on the watch is what makes this hold for a chaining child. The
+child's PR snapshot is not enough: the child resets its branch at the start of its
+own wake, and that docs/202 re-arm clears the snapshot within seconds of the
+merge. The list helpers are in `merge-watch-prs.ts`. The list is read through
+`unreportedPrs(watch)`, which leaves out the PR that the parent already knows, and
+every write that carries it to another record reads it that way first. It holds at
+most `MAX_UNREPORTED_PRS` entries, and past that a new PR is not kept (the
+snapshot still shows the latest). A PR that goes back to the front after a failed
+delivery is exempt from that limit, so that it takes the place of no PR that the
+watch already accepted.
+
+For a PR that resolved while no watch record could keep it — a record that older
+code wrote, or an event lost in a crash between the poller's write and its hook —
+`unreportedPrFor` reads the child's stored state after the list, oldest first:
+
+1. `previousMergedPr` — the merge that the docs/202 re-arm recorded when it
+   cleared the snapshot. It is database-backed (verified at
+   `services/pr-rearm.ts`: both re-arm functions call `clearMerged` with the
+   merged PR before `PrStatusPoller.reArm`; the release-branch adoption in
+   `services/release-branch-adopt.ts` re-arms without it). It counts only for a
+   watch that has a `reportedPr`, and only when it is newer than that report: a
+   higher PR number (one branch has one PR at a time, so its PRs are numbered in
+   order), or the same number when the report was a close. A first arm does not
+   read it and waits, as before: the child's last merge can be work that the
+   parent never asked about.
+2. The PR snapshot, when it is terminal and not the PR already reported.
+
+**Limits that stay.**
+
+- A `delivered` record that older code wrote has no `reportedPr`. The first arm
+  after it behaves as before this rework, and can fire once more for that PR.
+- A close is still attempted once (see *Not retried: the closed-unmerged path*).
+  Its `reportedPr` is set before the dispatch, so that an arm made inside the
+  closed wake turn does not fire again for the same close — before, that arm
+  fired at once, each time. The cost: a closed wake that was queued and then lost
+  in an orchestrator restart is not reported again by a later arm. The "Child PR
+  closed" card in the parent's transcript is then the only record.
+
+The CLI says which case an arm was: `armed`, `already armed`, `armed for the next
+PR; the wake for PR #N is still in delivery`, or `armed for the next PR; PR #N was
+already reported to this session`. The `[merge-watch]` log line of each arm says
+the same.
 
 **Why `delivered` means "ran", not "enqueued" (the docs/196 restart fix).** The
 dispatched turn lives only in the parent runner's **in-memory** queue until it
@@ -364,7 +462,10 @@ delivery-failure card instead of vanishing into a server log.
   only; the startup reconcile takes each of the two down its own path.
 - **PR already resolved when the watch is armed** (the poller won't re-observe an
   already-promoted session) → the register route fires a one-shot
-  `checkAndFireNow` off the response path.
+  `checkAndFireNow` off the response path. It does not fire for the PR that an
+  earlier arm of the same parent already reported (req 4); see *Arming again*.
+- **Armed again while the previous wake is in delivery** → the arm is recorded on
+  that watch, and a new watch follows when the delivery ends (req 3).
 - **Only the parent that spawned the child may watch it** — reuses the
   `assertChildOfParent` cross-tenancy guard (404, never "wrong parent").
 
@@ -418,14 +519,19 @@ PR poller detects terminal PR state (verifyMissingPr)
   `PrTerminalStateInfo`, fired at the terminal site in `verifyMissingPr` (merged
   AND closed).
 - `src/server/orchestrator/services/child-sessions.ts` — `registerMergeWatch`
-  (arms the watch, reuses `assertChildOfParent`).
+  (arms the watch, reuses `assertChildOfParent`; hands `reportedPr` and
+  `unreportedPrs` to the new watch, or records `rearmedAt` on a watch in delivery).
+- `src/server/orchestrator/merge-watch-prs.ts` — the list of PRs that a watch
+  still owes its parent: read, append, put first, write
+  (`merge-watch-prs.test.ts`).
 - `src/server/orchestrator/sessions.ts` — `merge_watch` column,
   `setMergeWatch` / `getMergeWatch` / `listPendingMergeWatches` (non-terminal
   only, so a `delivery-failed` watch stops holding the polling gate open). The
   list also returns each session's own docs/239 watch from `self_merge_watch`
   (`setSelfMergeWatch` / `getSelfMergeWatch`).
 - `src/server/shared/types/domain-types/session.ts` — `SessionMergeWatch`,
-  including `mergedPr`, the watch's own record of the merge it fires for.
+  including `mergedPr`, the watch's own record of the merge it fires for, and
+  `reportedPr` / `rearmedAt` / `unreportedPrs` for arming again.
 - `src/server/orchestrator/session-runner.ts` +
   `src/server/orchestrator/dispatched-turn.ts` — `onTurnComplete` is carried
   through the in-memory queue (`QueuedMessage` / `toQueuedMessage` /
@@ -489,6 +595,25 @@ PR poller detects terminal PR state (verifyMissingPr)
   child's own wake cleared the snapshot).
 - `ChildMergedCard.test.tsx` — the three card variants (merged, closed-unmerged,
   delivery-failure), including that the failure copy replaces the success copy.
+- `merge-watch.test.ts`, "a parent that follows a child across several PRs" —
+  the requirements one by one: an arm inside the wake turn is honoured at the
+  next PR, a second one changes nothing, and the old settlement cannot deliver
+  the watch that follows; a PR that resolves during a delivery is reported by
+  the queued arm from the watch's own copy, and a close in that window does not
+  replace the wake; two later PRs in one window are reported in order; a queued
+  arm survives a restart, by rebind and by reconcile; an arm after the wake does
+  not repeat the PR, nor does a terminal event that the poller repeats; a PR
+  that merged in between is found on the watch, in `previousMergedPr` and in the
+  snapshot, oldest first, and a live event does not overtake it; a failed merge
+  and a close that could not be dispatched are reported before the PRs kept in
+  the meantime, and those are still reported after it; an archived parent gets
+  nothing kept, loses its watch at a repeated event and its kept list at the next
+  one, and gets neither the close nor the failure card of a dispatch that fails
+  after the archive; a kept PR that the parent already knows does not come back
+  when the next PR settles; a PR reported as closed and then merged is reported; a
+  first arm does not read `previousMergedPr`; a wake that was never delivered is
+  reported again; and a close whose dispatch fails late does not overwrite the
+  watch that followed it.
 - `services/child-sessions-wait.test.ts` — `registerMergeWatch` arm-time guards:
   arms when active, rejects (400) an archived parent (no watch persisted) and an
   archived child. Against a child that holds its own live self-watch: arms
@@ -509,7 +634,9 @@ PR poller detects terminal PR state (verifyMissingPr)
   retried in-process to a real completed wake-turn with still one card, and a
   permanently-failing one reaches `delivery-failed`, empties the pending list, and
   serves its failure card back over `GET /history` — proving the card is
-  persisted, not emit-only. And the docs/239 pair: the parent's arm and the
+  persisted, not emit-only. The chain: merges seen by the real poller, the
+  parent arming inside each wake turn, one wake for each PR and none twice. And
+  the docs/239 pair: the parent's arm and the
   child's self-arm leave each other in place in both orders, and one merge seen
   by the real poller (`forceVerifySessionPrState`) starts a wake turn in the
   parent and in the child, each reaching `delivered`.

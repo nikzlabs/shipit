@@ -980,10 +980,14 @@ export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps):
     return;
   }
   const already = res.body.alreadyArmed === true;
-  success(
-    deps.io,
-    `session-id:      ${id}\nnotify-on-merge: ${already ? "already armed" : "armed"}`,
-  );
+  const skipsPr = typeof res.body.skipsPr === "number" ? `PR #${res.body.skipsPr}` : undefined;
+  let state = already ? "already armed" : "armed";
+  if (res.body.state === "merge-observed") {
+    state = `${state} for the next PR; the wake for ${skipsPr ?? "the previous PR"} is still in delivery`;
+  } else if (skipsPr) {
+    state = `${state} for the next PR; ${skipsPr} was already reported to this session`;
+  }
+  success(deps.io, `session-id:      ${id}\nnotify-on-merge: ${state}`);
 }
 
 async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
