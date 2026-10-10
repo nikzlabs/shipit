@@ -37,7 +37,8 @@ import type { ProjectComposeAccess } from "./services/plugin-services.js";
  */
 export function sessionNetworkMissing(err: unknown, networkName: string): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return msg.includes(`network ${networkName} not found`) || /no such network/i.test(msg);
+  return msg.includes(`network ${networkName} not found`)
+    || (/no such network/i.test(msg) && msg.includes(networkName));
 }
 
 export function handleStackError(
@@ -419,12 +420,18 @@ export interface SessionNetworkJoiner {
  * purpose: a failed agent join must not cost the orchestrator its own, or the session runs
  * healthy services behind a preview nothing can route to — and only the agent's attachment is
  * repaired afterwards, by the poller's heal.
+ *
+ * `networkExpected: false` is a join that follows no `up`. Compose creates the network with the
+ * first service, so its absence is not reported there; every other error is.
  */
 export async function joinSessionNetworkEndpoints(
   containerManager: SessionNetworkJoiner,
   sessionId: string,
   networkName: string,
+  opts: { networkExpected: boolean } = { networkExpected: true },
 ): Promise<void> {
+  const notCreatedYet = (err: unknown): boolean =>
+    !opts.networkExpected && sessionNetworkMissing(err, networkName);
   const [agentJoin] = await Promise.allSettled([
     containerManager.connectToNetwork(sessionId, networkName),
     // The preview proxy needs the orchestrator on this network too.
@@ -435,7 +442,7 @@ export async function joinSessionNetworkEndpoints(
         await docker.getNetwork(networkName).connect({ Container: orchestratorId });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("already exists")) {
+        if (!msg.includes("already exists") && !notCreatedYet(err)) {
           console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
         }
       }
@@ -443,6 +450,7 @@ export async function joinSessionNetworkEndpoints(
   ]);
   if (agentJoin.status === "rejected") {
     const reason: unknown = agentJoin.reason;
+    if (notCreatedYet(reason)) return;
     throw reason instanceof Error ? reason : new Error(String(reason));
   }
 }
@@ -499,7 +507,8 @@ export function buildServiceManager(args: {
     confinedCompose: helper.confined,
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
-      ? (networkName: string) => joinSessionNetworkEndpoints(containerManager, sessionId, networkName)
+      ? (networkName: string, opts: { networkExpected: boolean }) =>
+          joinSessionNetworkEndpoints(containerManager, sessionId, networkName, opts)
       : undefined,
     networkReleaseFn: containerManager
       ? () => releaseSessionNetworkQueued(
