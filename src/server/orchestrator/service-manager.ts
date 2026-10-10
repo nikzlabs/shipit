@@ -9,7 +9,7 @@ import { parse as parseYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { ComposeServiceOriginView } from "../shared/types/ws-server-messages/service.js";
 import { killChild } from "../shared/kill-child.js";
-import { truncateTerminalBuffer } from "./terminal-buffer.js";
+import { tailLines, truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
   classifyComposeFailure,
@@ -697,16 +697,21 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     return this.logBuffers.get(name) ?? "";
   }
 
-  async snapshotLogs(name: string, lines = 2000): Promise<string> {
+  async snapshotLogs(name: string, lines?: number): Promise<string> {
     if (!this.services.has(name)) return "";
+    const maxLines = lines !== undefined && Number.isFinite(lines) && lines >= 1
+      ? Math.floor(lines)
+      : undefined;
 
     // Prefer persisted history: Docker only retains logs for the current container.
     const channel = `service:${name}`;
     if (this.logStore?.hasChannel(this.sessionId, channel)) {
-      return this.logStore.snapshotText(this.sessionId, channel, ServiceManager.MAX_LOG_SNAPSHOT);
+      const stored = this.logStore.snapshotText(this.sessionId, channel, ServiceManager.MAX_LOG_SNAPSHOT);
+      // With no `lines`, the whole retained history is the answer: the Logs drawer reads it.
+      return maxLines === undefined ? stored : tailLines(stored, maxLines);
     }
 
-    const tail = Number.isFinite(lines) && lines > 0 ? String(Math.floor(lines)) : "2000";
+    const tail = String(maxLines ?? 2000);
     const args = this.compose.modelFreeArgs("logs", "--no-log-prefix", "--tail", tail, name);
 
     return new Promise<string>((resolve) => {
@@ -717,7 +722,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         const out = val.length > ServiceManager.MAX_LOG_SNAPSHOT
           ? truncateTerminalBuffer(val, ServiceManager.MAX_LOG_SNAPSHOT)
           : val;
-        resolve(out.length > 0 ? out : this.getLogBuffer(name));
+        const text = out.length > 0 ? out : this.getLogBuffer(name);
+        resolve(maxLines === undefined ? text : tailLines(text, maxLines));
       };
       try {
         const proc = spawn("docker", args, {
