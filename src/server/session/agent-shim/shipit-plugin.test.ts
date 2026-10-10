@@ -276,11 +276,16 @@ describe("shipit plugin exec", () => {
   });
 
   it("adds nothing to the command's streams without it", async () => {
-    const { run } = makeRunner();
-    const res = await run(["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--"], { [EXEC]: TIMED });
+    vi.stubEnv("SHIPIT_PLUGIN_TIMING", "");
+    try {
+      const { run } = makeRunner();
+      const res = await run(["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--"], { [EXEC]: TIMED });
 
-    expect(res.stdout).toBe("out");
-    expect(res.stderr).toBe("");
+      expect(res.stdout).toBe("out");
+      expect(res.stderr).toBe("");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

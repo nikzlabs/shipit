@@ -75,8 +75,9 @@ export interface PreparePluginNetnsOptions {
 }
 
 /**
- * Every policy input a namespace is built from. `buildPluginNetns` takes the plan
- * and no policy, so two equal plans give namespaces that allow the same traffic.
+ * Every policy input a namespace is built from: `buildPluginNetns` takes the plan
+ * and no policy. It does not hold what a namespace learns while it lives — the
+ * addresses its firewall and resolver find for an allowed name.
  */
 export interface PluginNetnsPlan {
   network: string;
@@ -97,7 +98,7 @@ export interface PluginNetnsPlan {
 
 /** Null when the session needs no namespace of ShipIt's making. */
 export async function resolvePluginNetnsPlan(
-  opts: Pick<PreparePluginNetnsOptions, "network" | "holderImage" | "policy">,
+  opts: Pick<PreparePluginNetnsOptions, "network" | "holderImage" | "policy" | "setupTimeoutMs">,
 ): Promise<PluginNetnsPlan | null> {
   const { policy } = opts;
   if (!policy.contained && !policy.blockLocal) return null;
@@ -112,7 +113,8 @@ export async function resolvePluginNetnsPlan(
   const allowed = allowedHosts(policy);
   const withResolver = contained && policy.dnsEnabled;
   const withProxy = contained && policy.proxyEnabled;
-  return {
+  // Reading the host's addresses runs a helper container, which a stalled daemon never finishes.
+  return await withDeadline(opts.setupTimeoutMs ?? DEFAULT_SETUP_TIMEOUT_MS, async () => ({
     network: opts.network,
     holderImage: opts.holderImage,
     sidecarImage,
@@ -145,7 +147,7 @@ export async function resolvePluginNetnsPlan(
         },
       }
       : {}),
-  };
+  }));
 }
 
 // Contain a separate holder before starting plugin code. Sharing the session netns exposes its broker.
@@ -252,7 +254,7 @@ export async function buildPluginNetns(
 }
 
 // Timing out does not cancel work; the caller must release the holder and sidecars.
-async function withDeadline<T>(ms: number, work: () => Promise<T>): Promise<T> {
+export async function withDeadline<T>(ms: number, work: () => Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([

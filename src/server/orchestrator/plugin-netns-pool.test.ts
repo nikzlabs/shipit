@@ -26,6 +26,7 @@ function fakeDocker() {
   const live = new Map<string, { opts: Record<string, unknown>; running: boolean }>();
   const created: { id: string; opts: Record<string, unknown> }[] = [];
   const removed: string[] = [];
+  let stalled = false;
   const handle = (id: string) => ({
     id,
     start: async () => { live.get(id)!.running = true; },
@@ -42,9 +43,12 @@ function fakeDocker() {
       return handle(id);
     },
     getContainer: handle,
-    listContainers: async () => [...live]
-      .filter(([, c]) => c.running)
-      .map(([Id, c]) => ({ Id, Labels: c.opts.Labels ?? {} })),
+    listContainers: async () => {
+      if (stalled) await new Promise<never>(() => { /* a daemon that never answers */ });
+      return [...live]
+        .filter(([, c]) => c.running)
+        .map(([Id, c]) => ({ Id, Labels: c.opts.Labels ?? {} }));
+    },
   };
   const holders = (): string[] => created
     .filter((c) => (c.opts.HostConfig as { NetworkMode: string }).NetworkMode === NETWORK)
@@ -54,6 +58,7 @@ function fakeDocker() {
     holders,
     removed,
     stop: (id: string) => { live.get(id)!.running = false; },
+    stallListing: () => { stalled = true; },
     resolverOf: (holderId: string): string => created.find((c) => {
       const labels = (c.opts.Labels ?? {}) as Record<string, string>;
       return EGRESS_RESOLVER_LABEL in labels
@@ -76,10 +81,10 @@ function contained(over: Partial<PluginEgressPolicy> = {}): PluginEgressPolicy {
   };
 }
 
-function acquire(docker: Docker, policy: PluginEgressPolicy, sessionId = SESSION, idleMs?: number) {
+function acquire(docker: Docker, policy: PluginEgressPolicy, sessionId = SESSION, lifetimeMs?: number) {
   return acquirePluginNetns({
     docker, sessionId, network: NETWORK, holderImage: "worker:test", policy,
-    ...(idleMs !== undefined ? { idleMs } : {}),
+    ...(lifetimeMs !== undefined ? { lifetimeMs } : {}),
   });
 }
 
@@ -119,6 +124,16 @@ describe("acquirePluginNetns — reuse", () => {
     expect(b.networkMode).not.toBe(a.networkMode);
   });
 
+  it("gives two calls that arrive together one namespace each", async () => {
+    const fake = fakeDocker();
+    await useOnce(fake.docker, contained());
+
+    const [a, b] = await Promise.all([acquire(fake.docker, contained()), acquire(fake.docker, contained())]);
+
+    expect([a.reused, b.reused].sort()).toEqual([false, true]);
+    expect(b.networkMode).not.toBe(a.networkMode);
+  });
+
   it("does not hand one session's namespace to another session", async () => {
     const fake = fakeDocker();
     const first = await useOnce(fake.docker, contained(), "s-1");
@@ -149,7 +164,7 @@ describe("acquirePluginNetns — when the policy changed between calls", () => {
     ["a new identity rule", { config: { contained: true, base: ["base.example"], extraHosts: ["extra.example"], identityRules: "rules" } }],
     ["a new host address", { hostAddresses: async () => ["203.0.113.7", "203.0.113.8"] }],
     ["the proxy turned off", { proxyEnabled: false }],
-    ["the resolver turned off", { dnsEnabled: false, proxyEnabled: false }],
+    ["the resolver turned off", { dnsEnabled: false }],
     ["containment turned off", { contained: false }],
     ["a new sidecar image", { sidecarImage: "egress-sidecar:next" }],
   ];
@@ -202,10 +217,22 @@ describe("acquirePluginNetns — a namespace that is not safe to reuse", () => {
     expect(next.reused).toBe(false);
     expect(next.networkMode).not.toBe(`container:${oldHolder}`);
   });
+
+  it("builds again, and does not wait for ever, when the daemon does not answer the check", async () => {
+    vi.useFakeTimers();
+    const fake = fakeDocker();
+    await useOnce(fake.docker, contained());
+    fake.stallListing();
+
+    const pending = acquire(fake.docker, contained());
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect((await pending).reused).toBe(false);
+  });
 });
 
-describe("acquirePluginNetns — what an idle namespace costs", () => {
-  it("removes a namespace that no command used for the idle time", async () => {
+describe("acquirePluginNetns — how long a namespace is kept", () => {
+  it("removes an idle namespace when its lifetime ends", async () => {
     vi.useFakeTimers();
     const fake = fakeDocker();
     const lease = await acquire(fake.docker, contained(), SESSION, 1_000);
@@ -215,6 +242,23 @@ describe("acquirePluginNetns — what an idle namespace costs", () => {
     await vi.advanceTimersByTimeAsync(999);
     expect(fake.removed).not.toContain(holder);
     await vi.advanceTimersByTimeAsync(1);
+
+    expect(fake.removed).toContain(holder);
+    expect(idlePluginNetnsCount(SESSION)).toBe(0);
+  });
+
+  it("counts the lifetime from the build, so use does not extend it", async () => {
+    vi.useFakeTimers();
+    const fake = fakeDocker();
+    const first = await acquire(fake.docker, contained(), SESSION, 1_000);
+    await first.release({ reusable: true });
+    const [holder] = fake.holders();
+
+    await vi.advanceTimersByTimeAsync(600);
+    const second = await acquire(fake.docker, contained(), SESSION, 1_000);
+    expect(second.reused).toBe(true);
+    await vi.advanceTimersByTimeAsync(600);
+    await second.release({ reusable: true });
 
     expect(fake.removed).toContain(holder);
     expect(idlePluginNetnsCount(SESSION)).toBe(0);

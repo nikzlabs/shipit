@@ -97,7 +97,7 @@ export interface PluginCliResult {
   timings?: PluginCliTimings;
 }
 
-/** Where one call's time went. `commandMs` is the plugin's own program; the rest is ShipIt's. */
+/** Where one call's time went. `commandMs` runs from the container's start to its exit; the rest is ShipIt's. */
 export interface PluginCliTimings {
   prepareMs: number;
   networkMs: number;
@@ -347,7 +347,6 @@ async function runHeldPluginCommand(
   } catch (err) {
     failure = message(err);
   }
-  const releasingAt = performance.now();
   // A container that outlived its removal is still in the namespace.
   await netns.release({ reusable: executed?.containerRemoved ?? false });
   if (!executed) {
@@ -362,7 +361,7 @@ async function runHeldPluginCommand(
       createMs: Math.round(executed.createMs),
       startMs: Math.round(executed.startMs),
       commandMs: Math.round(executed.commandMs),
-      cleanupMs: Math.round(executed.removeMs + (performance.now() - releasingAt)),
+      cleanupMs: Math.round(performance.now() - executed.exitedAt),
     },
   };
 }
@@ -477,11 +476,11 @@ interface Ran {
   createMs: number;
   startMs: number;
   commandMs: number;
+  exitedAt: number;
 }
 
 interface Executed extends Ran {
   containerRemoved: boolean;
-  removeMs: number;
 }
 
 async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<Executed> {
@@ -517,11 +516,9 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<Executed
 
   let ran: Ran;
   let containerRemoved = false;
-  let removeMs: number;
   try {
     ran = await runCreated(deps, spec, container, createdAt);
   } finally {
-    const removingAt = performance.now();
     try {
       await container.remove({ force: true });
       containerRemoved = true;
@@ -532,9 +529,8 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<Executed
         message(err),
       );
     }
-    removeMs = performance.now() - removingAt;
   }
-  return { ...ran, containerRemoved, removeMs };
+  return { ...ran, containerRemoved };
 }
 
 async function runCreated(
@@ -561,13 +557,16 @@ async function runCreated(
   stream.end(spec.stdin);
 
   const code = await waitForContainerExit(container, timeoutMs, deps.isCancelled);
+  // Stop the command's clock here: the drain and the OOM inspection below are ShipIt's time.
+  const exitedAt = performance.now();
   // Container exit can precede the last output chunk.
   await streamSettled(stream);
   const timed = (result: PluginCliResult): Ran => ({
     result,
     createMs: startingAt - createdAt,
     startMs: runningAt - startingAt,
-    commandMs: performance.now() - runningAt,
+    commandMs: exitedAt - runningAt,
+    exitedAt,
   });
   if (code === "timeout") {
     return timed({

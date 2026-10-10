@@ -1356,12 +1356,22 @@ instead of a repeat.
     two commands that run at the same time never share a loopback; the second
     one builds its own.
   - **Reuse needs an identical plan.** `resolvePluginNetnsPlan` resolves every
-    input a namespace is built from — the allowlist, the allow-once hosts, the
-    identity rules, which tiers run, the host's addresses, both images — and
-    `buildPluginNetns` receives the plan and nothing else of the policy. So an
-    input cannot reach the build without also deciding reuse, and a grant still
-    takes effect on the next call: the next call's plan differs, the old
-    namespace is removed, and a new one is built.
+    policy input a namespace is built from — the allowlist, the allow-once
+    hosts, the identity rules, which tiers run, the host's addresses, both
+    images — and `buildPluginNetns` receives the plan and nothing else of the
+    policy. So an input cannot reach the build without also deciding reuse, and
+    a grant still takes effect on the next call: the next call's plan differs,
+    the old namespace is removed, and a new one is built.
+  - **The plan is not everything a namespace allows, so a namespace has a fixed
+    lifetime.** A namespace also holds what it learned while it lived: the
+    addresses its firewall resolved for the Tier A names at build time, and the
+    addresses its resolver added when a command looked up an allowed name. A
+    reused namespace keeps those; a new one would resolve them again. The
+    session's own container keeps the same kind of state for its whole life, so
+    this is req 24's bar ("what equivalent same-repo code could reach") and not
+    a wider one — but it is why `PLUGIN_NETNS_LIFETIME_MS` runs from the
+    **build** and use does not extend it. Calls that never stop cannot keep one
+    namespace, and an old address in it, for ever.
   - **A namespace returns to the pool only when the command's container was
     removed.** A container ShipIt could not remove is still in the namespace,
     and a call that failed to start may have failed *because* of the namespace;
@@ -1371,11 +1381,13 @@ instead of a repeat.
     or proxy that died fails closed, so without the check every later call in
     that namespace would fail until it expired.
 
-  An idle namespace is removed after `PLUGIN_NETNS_IDLE_MS`, when the session's
-  runner is disposed, and by the boot reap that already covered a holder a dead
-  process left. A session keeps at most
-  `MAX_IDLE_PLUGIN_NETNS_PER_SESSION` of them. `install` is not pooled: it
-  already shares one namespace across all of a job's commands.
+  A namespace is removed when its lifetime ends, and a session keeps at most
+  `MAX_IDLE_PLUGIN_NETNS_PER_SESSION` idle ones. The idle ones are also removed
+  when the session's runner is disposed; one that a running command holds at
+  that moment returns to the pool and ends with its lifetime. The boot reap
+  that already covered a holder a dead process left covers these too.
+  `install` is not pooled: it already shares one namespace across all of a
+  job's commands.
 
   What is **not** reused is the command's own container. Each call still gets a
   new one, so its filesystem, `/tmp`, process tree, mounts, environment and
@@ -1384,10 +1396,12 @@ instead of a repeat.
   and give up every one of those properties, so it was not taken.
 
   A call reports where its time went (`PluginCliResult.timings`), and the shim
-  prints it on stderr when `SHIPIT_PLUGIN_TIMING` is set. `command` is the
-  plugin's own program; every other phase is ShipIt's. That is the question a
-  session could not answer before, because it cannot run anything inside the
-  plugin's container except the plugin's commands.
+  prints it on stderr when `SHIPIT_PLUGIN_TIMING` is set. `command` runs from
+  the moment Docker reports the container started to the moment it exits, so
+  it is the plugin's own program, less whatever part of it ran before Docker
+  answered; the output drain and everything else is in ShipIt's phases. That is
+  the question a session could not answer before, because it cannot run
+  anything inside the plugin's container except the plugin's commands.
 
   One thing this slice does **not** settle, found by the independent review and
   cross-slice. (The other — a refresh deleting a generation out from under a
@@ -1403,6 +1417,9 @@ instead of a repeat.
   surfaces rather than two, and it stays one decision, not three. Joining a
   plugin container to the agent's network namespace is **not** the fix: it
   re-exposes the worker's loopback credential broker and breaks req 19.
+  *(No longer open for the invocation and install containers: each now runs in
+  a namespace that carries the session's own egress policy — `plugin-egress.ts`,
+  and "What a call costs to start" above.)*
 
   And one accepted limitation, not a gap: output is buffered, so a long-running
   command shows nothing until it exits.

@@ -164,6 +164,7 @@ function fakeDocker(opts: {
   /** Fails the removal of the command's own container. */
   removeError?: string;
   startError?: string;
+  runMs?: number;
   oomKilled?: boolean;
 } = {}) {
   const containers: Created[] = [];
@@ -235,7 +236,10 @@ function fakeDocker(opts: {
           if (opts.startError && isCommand) throw new Error(opts.startError);
           started.push(id);
         },
-        wait: async () => ({ StatusCode: opts.exit ?? 0 }),
+        wait: async () => {
+          if (opts.runMs && isCommand) await new Promise((resolve) => setTimeout(resolve, opts.runMs));
+          return { StatusCode: opts.exit ?? 0 };
+        },
         inspect: async () => {
           if (removedContainers.includes(id)) notFound();
           return { State: { OOMKilled: opts.oomKilled ?? false } };
@@ -1099,10 +1103,10 @@ describe("runPluginCommand — the network namespace between calls", () => {
     expect(fake.removedContainers).toEqual([command.id, holder.id]);
   });
 
-  it("says where the time of a call went", async () => {
+  it("says where the time of a call went, with the command's run in `commandMs`", async () => {
     declareConsumer();
     publishGeneration();
-    const fake = fakeDocker();
+    const fake = fakeDocker({ runMs: 60 });
 
     const result = await runPluginCommand(deps(fake.docker), call);
 
@@ -1115,6 +1119,7 @@ describe("runPluginCommand — the network namespace between calls", () => {
       commandMs: expect.any(Number),
       cleanupMs: expect.any(Number),
     });
+    expect(result.timings!.commandMs).toBeGreaterThanOrEqual(50);
   });
 });
 

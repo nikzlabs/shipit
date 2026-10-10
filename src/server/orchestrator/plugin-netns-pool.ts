@@ -5,14 +5,18 @@ import {
   PLUGIN_NETNS_LABEL,
   PLUGIN_NETNS_PARENT_LABEL,
   resolvePluginNetnsPlan,
+  withDeadline,
   type BuiltPluginNetns,
   type PreparePluginNetnsOptions,
 } from "./plugin-egress.js";
 
 // Building a namespace is most of what a plugin command costs to start
-// (docs/262-plugins plan.md, "What a call costs to start").
-export const PLUGIN_NETNS_IDLE_MS = 5 * 60_000;
+// (docs/262-plugins plan.md, "What a call costs to start"). The lifetime runs
+// from the build, not from the last use: it also bounds how old the addresses
+// a namespace resolved for an allowed name can be.
+export const PLUGIN_NETNS_LIFETIME_MS = 10 * 60_000;
 export const MAX_IDLE_PLUGIN_NETNS_PER_SESSION = 4;
+const LIVENESS_TIMEOUT_MS = 5_000;
 
 export interface PluginNetnsLease {
   networkMode: string;
@@ -25,6 +29,7 @@ export interface PluginNetnsLease {
 interface IdleNetns {
   fingerprint: string;
   netns: BuiltPluginNetns;
+  expiresAt: number;
   timer: NodeJS.Timeout;
 }
 
@@ -33,10 +38,10 @@ const idle = new Map<string, IdleNetns[]>();
 /**
  * A namespace for one plugin command. One lease is one command: a namespace is
  * never shared by two running commands, only handed to the next one, and only
- * while the session's policy would build the same namespace again.
+ * while the session's policy would build a namespace from the same plan.
  */
 export async function acquirePluginNetns(
-  opts: PreparePluginNetnsOptions & { idleMs?: number },
+  opts: PreparePluginNetnsOptions & { lifetimeMs?: number },
 ): Promise<PluginNetnsLease> {
   const plan = await resolvePluginNetnsPlan(opts);
   if (!plan) {
@@ -44,30 +49,32 @@ export async function acquirePluginNetns(
   }
   const fingerprint = crypto.createHash("sha256").update(JSON.stringify(plan)).digest("hex");
 
-  let netns: BuiltPluginNetns | null = null;
+  let kept: IdleNetns | null = null;
   for (let taken = takeIdle(opts.sessionId, fingerprint); taken; taken = takeIdle(opts.sessionId, fingerprint)) {
-    if (await isIntact(opts.docker, opts.sessionId, taken)) {
-      netns = taken;
+    if (await isIntact(opts.docker, opts.sessionId, taken.netns)) {
+      kept = taken;
       break;
     }
-    void taken.release();
+    void taken.netns.release();
   }
-  const reused = netns !== null;
-  const leased = netns ?? await buildPluginNetns(opts, plan);
+  const netns = kept?.netns ?? await buildPluginNetns(opts, plan);
+  const expiresAt = kept?.expiresAt ?? Date.now() + (opts.lifetimeMs ?? PLUGIN_NETNS_LIFETIME_MS);
 
   return {
-    networkMode: leased.networkMode,
-    reused,
+    networkMode: netns.networkMode,
+    reused: kept !== null,
     release: async ({ reusable }) => {
       const entries = idle.get(opts.sessionId) ?? [];
-      if (!reusable || entries.length >= MAX_IDLE_PLUGIN_NETNS_PER_SESSION) {
-        await leased.release();
+      const remainingMs = expiresAt - Date.now();
+      if (!reusable || remainingMs <= 0 || entries.length >= MAX_IDLE_PLUGIN_NETNS_PER_SESSION) {
+        await netns.release();
         return;
       }
       const entry: IdleNetns = {
         fingerprint,
-        netns: leased,
-        timer: setTimeout(() => expire(opts.sessionId, entry), opts.idleMs ?? PLUGIN_NETNS_IDLE_MS),
+        netns,
+        expiresAt,
+        timer: setTimeout(() => expire(opts.sessionId, entry), remainingMs),
       };
       entry.timer.unref?.();
       idle.set(opts.sessionId, [...entries, entry]);
@@ -76,7 +83,7 @@ export async function acquirePluginNetns(
 }
 
 // Synchronous, so two concurrent calls can never take the same namespace.
-function takeIdle(sessionId: string, fingerprint: string): BuiltPluginNetns | null {
+function takeIdle(sessionId: string, fingerprint: string): IdleNetns | null {
   const entries = idle.get(sessionId) ?? [];
   const current = entries.filter((e) => e.fingerprint === fingerprint);
   // The policy changed: what the others allow is no longer what the session allows.
@@ -86,7 +93,7 @@ function takeIdle(sessionId: string, fingerprint: string): BuiltPluginNetns | nu
   else idle.delete(sessionId);
   if (!taken) return null;
   clearTimeout(taken.timer);
-  return taken.netns;
+  return taken;
 }
 
 // A dead resolver or proxy fails closed, so reusing its namespace would fail every later call.
@@ -96,9 +103,9 @@ async function isIntact(
   netns: BuiltPluginNetns,
 ): Promise<boolean> {
   try {
-    const running = await docker.listContainers({
+    const running = await withDeadline(LIVENESS_TIMEOUT_MS, () => docker.listContainers({
       filters: { label: [`${PLUGIN_NETNS_LABEL}=${sessionId}`], status: ["running"] },
-    });
+    }));
     const sidecars = running.filter((c) => c.Labels?.[PLUGIN_NETNS_PARENT_LABEL] === netns.holderId);
     return running.some((c) => c.Id === netns.holderId) && sidecars.length === netns.sidecars;
   } catch {
@@ -118,7 +125,10 @@ function discard(entry: IdleNetns): void {
   void entry.netns.release();
 }
 
-/** The session's container is gone, so nothing will call a plugin command for it soon. */
+/**
+ * The session's container is gone, so no command will ask for these soon. A
+ * namespace a running command still holds is not here; it expires on its own.
+ */
 export function dropIdlePluginNetns(sessionId: string): void {
   const entries = idle.get(sessionId) ?? [];
   idle.delete(sessionId);

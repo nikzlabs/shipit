@@ -89,7 +89,8 @@ type this: each surfaced command has a generated wrapper on PATH that calls it,
 and the wrapper's name is what a plugin's docs tell you to run.
 
 Set SHIPIT_PLUGIN_TIMING=1 on a call to see, on stderr, where its time went:
-\`command\` is the plugin's own program, and every other part is ShipIt's.
+\`command\` is the container's start to its exit — the plugin's own program —
+and every other part is ShipIt's.
 
 See /shipit-docs/plugins.md for using a plugin repository — declaring one, the
 read-only checkout, install, and what to read when a plugin is live but broken.
