@@ -71,8 +71,9 @@ RUN curl -fsSL --retry 3 --retry-all-errors -o /tmp/gradle.zip "https://services
 ENV PATH="/opt/gradle/bin:${PATH}"
 
 # Mesa's D3D12 driver loads these two by bare name, and ShipIt mounts their directory only into a GPU
-# container on WSL2. Chrome reaches Mesa through an X display (docs/325-session-gpu-access req 7).
-RUN apt-get update && apt-get install -y xvfb xauth && rm -rf /var/lib/apt/lists/* \
+# container on WSL2. Chrome reaches Mesa through EGL with no display, or through GLX on an X display
+# (docs/325-session-gpu-access req 7, 9).
+RUN apt-get update && apt-get install -y xvfb xauth libegl1 && rm -rf /var/lib/apt/lists/* \
  && ln -s /usr/lib/wsl/lib/libd3d12.so /usr/lib/wsl/lib/libd3d12core.so /usr/lib/
 
 WORKDIR /app

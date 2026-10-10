@@ -126,13 +126,17 @@ Docker cannot give the GPU, the session starts without it and the transcript
 says why — that is a host problem from step 1. Inside a session,
 `$SHIPIT_GPU` says what the container got (`/shipit-docs/environment.md`).
 
-On WSL2, your container is also set up so that a Chrome you start yourself can
-draw WebGL on the GPU — for a rendering test or a benchmark. When the user asks
-for that, do it: `/shipit-docs/environment.md` has the display and the flags
-Chrome needs. Chrome falls back to software drawing without a message, so run
-the check it gives and tell the user which renderer Chrome reported. It does
-not reach the built-in browser behind your browser tools, which draws in
-software, nor WebGPU, Compose services, or a native Linux host.
+On WSL2, your container is also set up so that Chrome draws WebGL on the GPU.
+The built-in browser behind your browser tools does so by itself in a session
+that has the GPU, and for WebGL only. Its pictures of WebGL content are then
+not pixel-identical to software-drawn ones, and its picture of a page with no
+WebGL does not change. There is no separate switch for this: it follows **GPU
+access**. A Chrome you start yourself — for a rendering test or a benchmark —
+needs the flags that `/shipit-docs/environment.md` gives; when the user asks
+for that, do it. Chrome falls back to software drawing without a message, so
+run the check that page gives and tell the user which renderer Chrome
+reported. None of this reaches WebGPU, Compose services, or a native Linux
+host.
 
 ## Updating
 

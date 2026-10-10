@@ -305,10 +305,12 @@ Use browser tools proactively after UI changes to catch issues early.
 
 **A page left rendering does not survive the turn.** At the end of a turn ShipIt measures
 the browser's CPU, and tears it down when it is still rendering — an animation, a canvas
-loop, a WebGL scene. Headless Chromium rasterizes those in software across a thread per
-core, so one abandoned WebGL page can consume a session's entire CPU quota for hours.
+loop, a WebGL scene. Without the GPU, headless Chromium rasterizes those in software across
+a thread per core, so one abandoned WebGL page can consume a session's entire CPU quota for hours.
 A page sitting still costs nothing and is left alone, so navigate-in-one-turn,
-look-in-the-next keeps working.
+look-in-the-next keeps working. The measure is CPU only: where the built-in browser draws
+WebGL on the GPU ([environment.md](environment.md) → "Chrome on the GPU (WSL2)"), a light
+WebGL page can stay under it and continue to draw between turns.
 
 Nothing is required of you: the next browser call launches a fresh browser by itself. The
 one consequence to plan around is that a reclaimed browser loses its in-memory profile —

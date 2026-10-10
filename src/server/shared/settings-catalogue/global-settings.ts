@@ -207,7 +207,9 @@ export const GLOBAL_SETTINGS = {
       + "services that declare a GPU, and containers the agent starts through Docker. Docker on "
       + "this machine must support GPUs — Docker Desktop with the WSL 2 backend, or Docker Engine "
       + "with the NVIDIA Container Toolkit. When Docker cannot give the GPU, the session starts "
-      + "without it and says why. A running session gets the change when its container next starts.",
+      + "without it and says why. On WSL2 the agent's built-in browser then draws WebGL on the GPU, "
+      + "so its screenshots of WebGL content are not pixel-identical to software-drawn ones. "
+      + "A running session gets the change when its container next starts.",
     type: bool({ default: false }),
     store: { kind: "credential-store", field: "sessionGpu" },
     wire: "sessionGpu",

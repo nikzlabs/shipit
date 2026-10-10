@@ -35,7 +35,7 @@ Prefer a page snapshot (the accessibility tree) for reading page content and str
 
 If you get a connection error, the dev server may still be starting — wait a moment and retry.
 
-**The built-in browser draws in software.** When a task needs WebGL on the GPU — a rendering benchmark, for example — and `$SHIPIT_GPU` is `granted`, start your own Chrome as /shipit-docs/environment.md → "Chrome on the GPU (WSL2)" describes. That path is for a WSL2 host only, and Chrome can fall back to software drawing without a message, so say which renderer it reported.
+**The built-in browser draws WebGL on the GPU when `$SHIPIT_GPU` is `granted` on a WSL2 host, and in software in every other session.** It uses the GPU for WebGL only, and a GPU picture of WebGL content is not pixel-identical to a software one. When a result depends on the renderer — a benchmark, a screenshot you commit or compare — read the renderer in the page and say which one it reported: Chrome can fall back to software drawing without a message. To start your own Chrome on the GPU, or to get a software picture in a GPU session, see /shipit-docs/environment.md → "Chrome on the GPU (WSL2)".
 
 ## Showing visual work
 
