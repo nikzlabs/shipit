@@ -123,6 +123,18 @@ secret/PII *substrings* and replace with `[REDACTED]`:
 - The patterns from `docs/023` (`sk-…`, `ghp_…`, `Bearer …`, generic long-token
   heuristics), **email addresses**, and **git/remote URLs** (the whole URL is
   replaced, so embedded creds, host and path all go; it is not parsed).
+- **scp-style remotes** (`git@github.com:acme/app.git`). The e-mail pattern takes
+  `git@github.com` first, so the `ssh-remote` pattern matches only a host that
+  has no top-level domain. The last step of Stage 1 thus extends a redaction over
+  an scp path that follows it: `[REDACTED]:acme/app.git` becomes `[REDACTED]`
+  (planning#681). The e-mail pattern can take only a part of the host
+  (`git@code.acme-internal` leaves `-internal`), so the step accepts host
+  characters between the placeholder and the colon. The step is last and it only
+  replaces text, so it cannot make text visible that an earlier step hid.
+  `ssh-remote` before `email` can: `jane+work@github.com:acme/app.git` then keeps
+  `jane+`. As in the `ssh-remote` pattern, the path must have `.git` at a word
+  boundary, and the match ends there: a remote with no `.git` keeps its path,
+  and `git@github.com:repo.git/private` becomes `[REDACTED]/private`.
 - Note `REDACTED_PATTERNS` / `isRedactedSourcePath` in `shipit-source.ts` match
   file *paths*, not content — they decide whether a whole file may be referenced.
   Reuse them only to *exclude* sensitive paths from the excerpt and to redact
@@ -132,9 +144,10 @@ secret/PII *substrings* and replace with `[REDACTED]`:
 This stage is fully deterministic and unit-testable, and it is the **guaranteed
 floor**: whatever happens next, known-shape secrets are already gone.
 
-Stage 1 runs synchronously on the orchestrator's main thread, and the body of a
-report can be as long as one HTTP request (1 MiB), so each pattern must be
-linear in the length of the text. A shape that can start at many positions of
+Stage 1 runs synchronously on the orchestrator's main thread, so each pattern
+must be linear in the length of the text. The route limits the length of a
+report ([Length limits](#length-limits)), but Stage 1 does not rely on that
+limit: it is a second protection, and Stage 1 has other callers. A shape that can start at many positions of
 one run, and that reads the rest of the run from each of them, is quadratic. The
 e-mail, ssh-remote and JWT patterns have a second alternative that takes the
 rest of the run for that reason, and no step parses a URL (planning#677; the
@@ -257,6 +270,29 @@ user's NEXT turn (typed OR dispatched — SDK / `shipit session message`)
       → consumeUnreportedBugOutcomes() reads-and-marks the terminal cards
       → buildBugOutcomeNotice() prefixes "#N + url" / "declined" onto the prompt
 ```
+
+### Length limits
+
+`POST /api/sessions/:sessionId/bug-report` refuses a title above 256 characters
+and a body above 60,000 characters with HTTP 413. It does that before it
+compiles the report: no redaction runs on a text that is refused, and no card is
+posted. The message gives the length and the limit, and tells the agent to
+shorten the report and to call the tool again. The limits are
+`MAX_BUG_REPORT_TITLE_LENGTH` and `MAX_BUG_REPORT_BODY_LENGTH` in
+`src/server/shared/bug-report-limits.ts`. The schema and the description of
+`report_shipit_bug` state them too.
+
+The limits come from the destination. GitHub refuses an issue title above 256
+characters and an issue body above 65,536 (`body is too long (maximum is 65536
+characters)`). `parseGitHubError` keeps only the top-level message of that
+answer, so the card shows "Validation Failed" and no cause. 60,000 leaves room
+for the footer. A character is a code point, for GitHub, for the schema of the
+tool and for the route.
+
+Two cases stay with GitHub's limit. The user can make the text longer in the
+card. And redaction can make a text longer: a match of six characters becomes a
+placeholder of ten, so a body with thousands of short matches can pass the route
+and fail at the filing step.
 
 ### The consent gate must not swallow its own result (nikzlabs/shipit#2350)
 
@@ -544,6 +580,8 @@ agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
 - `src/server/orchestrator/services/redaction.ts` (new) + test — shared redaction.
 - `src/server/orchestrator/services/bug-report.ts` (new) — compile draft, redact,
   stamp platform version, dispatch to `GitHubAuthManager`.
+- `src/server/shared/bug-report-limits.ts` — the maximum length of a title and
+  of a body, for the route and for the tool.
 - `src/server/orchestrator/github-auth.ts` (+ `github-auth-*.ts`) — new
   `createIssue(repo, { title, body })` method against the fixed upstream repo,
   using the user's existing token; no scope pre-check — surfaces the GitHub

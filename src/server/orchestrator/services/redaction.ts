@@ -42,6 +42,13 @@ const STAGE1_PATTERNS: { name: string; re: RegExp; orRun?: string }[] = [
 // Plain URLs can disclose private project remotes too.
 const URL_RE = /\b(?:https?|git|ssh):\/\/[^\s)'"`]+/gi;
 
+// The e-mail pattern takes `git@github.com`, or a part of the host, before `ssh-remote` sees
+// it, and the path of the remote stays. `ssh-remote` cannot go first (planning#681,
+// docs/164-user-bug-filing/plan.md). A host has no `[` in it and a path has no colon in it:
+// no text is read again from each placeholder.
+const SCP_PATH_AFTER_REDACTION_RE =
+  /\[REDACTED\][A-Za-z0-9.-]*:(?:[A-Za-z0-9._/-]|\[REDACTED\])+\.git\b/g;
+
 export interface Stage1Result {
   text: string;
   redactedCount: number;
@@ -73,6 +80,10 @@ export function redactStage1(input: string): Stage1Result {
     count++;
     return REDACTION_PLACEHOLDER;
   });
+
+  // Last, and it only replaces text: it cannot make redacted text visible. Not counted: it
+  // makes a redaction longer.
+  text = text.replace(SCP_PATH_AFTER_REDACTION_RE, REDACTION_PLACEHOLDER);
 
   return { text, redactedCount: count };
 }

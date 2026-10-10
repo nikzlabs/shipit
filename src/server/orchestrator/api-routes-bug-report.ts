@@ -8,6 +8,17 @@ import { compileBugReport, type BugReportProducer } from "./services/bug-report.
 import { emitChatCard } from "./chat-card-persistence.js";
 import type { PersistedBugReport } from "./chat-history.js";
 import { runnerForContainerCall } from "./restart-turn-reattach.js";
+import { MAX_BUG_REPORT_BODY_LENGTH, MAX_BUG_REPORT_TITLE_LENGTH } from "../shared/bug-report-limits.js";
+
+// Code points, as GitHub and the schema of the tool count them: a surrogate pair is one.
+function characters(text: string): number {
+  return text.replace(/[\u{10000}-\u{10FFFF}]/gu, "_").length;
+}
+
+function tooLong(field: "title" | "body", length: number, max: number, advice: string): string {
+  const n = (value: number): string => value.toLocaleString("en-US");
+  return `The ${field} of the report is ${n(length)} characters; the maximum is ${n(max)}. ${advice} Then call report_shipit_bug again.`;
+}
 
 export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   app.post<{
@@ -26,6 +37,26 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
       }
       if (!body.trim()) {
         reply.code(400).send({ error: "body is required" });
+        return;
+      }
+      // Before the report is compiled: no redaction runs on a text that is refused.
+      const titleLength = characters(title);
+      if (titleLength > MAX_BUG_REPORT_TITLE_LENGTH) {
+        reply.code(413).send({
+          error: tooLong("title", titleLength, MAX_BUG_REPORT_TITLE_LENGTH, "Shorten it."),
+        });
+        return;
+      }
+      const bodyLength = characters(body);
+      if (bodyLength > MAX_BUG_REPORT_BODY_LENGTH) {
+        reply.code(413).send({
+          error: tooLong(
+            "body",
+            bodyLength,
+            MAX_BUG_REPORT_BODY_LENGTH,
+            "Shorten it: keep what happened and the steps to reproduce it, and quote only the log lines that show the problem.",
+          ),
+        });
         return;
       }
 

@@ -80,9 +80,57 @@ describe("redactStage1 (deterministic floor)", () => {
     }
   });
 
+  it("replaces the path of an scp-style remote whose user@host is an e-mail address (planning#681)", () => {
+    const R = REDACTION_PLACEHOLDER;
+    const cases: [string, string, number][] = [
+      ["git@github.com:acme/app.git", R, 1],
+      ["origin\tgit@github.com:acme/app.git (fetch)", `origin\t${R} (fetch)`, 1],
+      ["git clone git@gitlab.example.org:group/sub/app.git into x", `git clone ${R} into x`, 1],
+      // With `ssh-remote` before `email`, `jane+` stays.
+      ["jane+work@github.com:acme/app.git", R, 1],
+      // The generic sweep takes a long name first.
+      [`git@github.com:acme/${"a".repeat(45)}.git`, R, 2],
+      // The e-mail pattern takes only a part of these hosts.
+      ["git@github.com.:acme/app.git", R, 1],
+      ["git@code.acme-internal:team/app.git", R, 1],
+      ["git@example.xn--p1ai:acme/app.git", R, 1],
+      ["write to jane@example.com: the file app.git", `write to ${R}: the file app.git`, 1],
+      ["jane@example.com and repo:acme/app.git", `${R} and repo:acme/app.git`, 1],
+    ];
+    for (const [input, expected, count] of cases) {
+      expect(redactStage1(input), input).toEqual({ text: expected, redactedCount: count });
+    }
+  });
+
+  // The last step of Stage 1 as a scan: a placeholder, host characters, a colon, then the
+  // longest text of path characters and placeholders that ends in `.git` at a word boundary.
+  const extendOverScpPath = (text: string): string => {
+    const R = REDACTION_PLACEHOLDER;
+    let out = "";
+    let at = 0;
+    for (let start = text.indexOf(R); start >= 0; start = text.indexOf(R, at)) {
+      let end = start + R.length;
+      while (/^[A-Za-z0-9.-]$/.test(text.charAt(end))) end++;
+      let matchEnd = -1;
+      if (text.charAt(end) === ":") {
+        end++;
+        for (let items = 1; ; items++) {
+          if (text.startsWith(R, end)) end += R.length;
+          else if (/^[A-Za-z0-9._/-]$/.test(text.charAt(end))) end++;
+          else break;
+          if (items > 4 && text.slice(end - 4, end) === ".git" && !/^\w$/.test(text.charAt(end))) matchEnd = end;
+        }
+      }
+      out += matchEnd < 0 ? text.slice(at, start + R.length) : `${text.slice(at, start)}${R}`;
+      at = matchEnd < 0 ? start + R.length : matchEnd;
+    }
+    return out + text.slice(at);
+  };
+
   // Each of the three shapes is tried once in a run. The expected text is from one global
-  // pattern for each, which is what Stage 1 had. The strings are shorter than 40 characters,
-  // and their parts cannot start a URL, a key, a scheme or a path: no other step can match.
+  // pattern for each, which is what Stage 1 had, and then the last step. The strings are
+  // shorter than 40 characters, and their parts cannot start a URL, a key, a scheme or a
+  // path: no other step can match.
   it("replaces an e-mail address, an SSH remote and a JWT exactly where a global pattern matches one", () => {
     const globalPatterns = [
       /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
@@ -93,6 +141,7 @@ describe("redactStage1 (deterministic floor)", () => {
       "e-mail": ["a", "bc", "x1", "_", ".", "-", "%", "+", "@", "@", " ", "cc", ".cc", "a@b.cc", "["],
       "ssh remote": ["a", "git", ".git", ".git", ".", "-", "_", "@", "@", ":", ":", "p/q", " ", "h", "u@h:p.git", "x1"],
       jwt: ["eyJ", "eyJ", "abcdef", "abcdefg", "-", "-", "_", ".", ".", " ", "x", ["eyJabcdef", "ghijkl", "mnopqr"].join(".")],
+      "scp path": ["a@b.cc:", "a@b.cc:", "a@b.cc-x:", "a@b.cc.:p", "a@b.cc", ":", "p/q", ".git", ".git", ".git", "a", "-", "_", ".", " ", "x1", "u@h:p.git"],
     };
     for (const [shape, from] of Object.entries(parts)) {
       let seed = 1;
@@ -102,27 +151,31 @@ describe("redactStage1 (deterministic floor)", () => {
       };
       const different: string[] = [];
       let withMatch = 0;
+      let withScpPath = 0;
       for (let i = 0; i < 4000; i++) {
         let input = "";
         for (let n = 1 + below(12); n > 0; n--) {
           const part = from[below(from.length)];
           if (input.length + part.length < 40) input += part;
         }
-        let expected = input;
+        let shapes = input;
         let count = 0;
         for (const re of globalPatterns) {
-          expected = expected.replace(re, () => {
+          shapes = shapes.replace(re, () => {
             count++;
             return REDACTION_PLACEHOLDER;
           });
         }
+        const expected = extendOverScpPath(shapes);
         if (count > 0) withMatch++;
+        if (expected !== shapes) withScpPath++;
         const result = redactStage1(input);
         if (result.text !== expected || result.redactedCount !== count) different.push(input);
       }
       expect(different, shape).toEqual([]);
       // A generator that makes no match compares nothing.
       expect(withMatch, shape).toBeGreaterThan(500);
+      if (shape === "scp path") expect(withScpPath, shape).toBeGreaterThan(200);
     }
   });
 
@@ -155,11 +208,28 @@ describe("redactStage1 (deterministic floor)", () => {
       "url long host": (n) => `http://${"a.".repeat(n / 2)}`,
       "url host of many different characters": (n) =>
         `http://${Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + (i % 20_000))).join("")}`,
+      "scp path with no .git": (n) => `a@b.cc:${"c/".repeat(n / 2)}`,
+      "scp path, then a real tail": (n) => `a@b.cc:${"c/".repeat(n / 2)}p.git`,
+      "scp path of addresses": (n) => `a@b.cc:${"c@d.ee/".repeat(n / 7)}`,
+      "scp path of .git that a letter follows": (n) => `a@b.cc:${".gitx".repeat(n / 5)}`,
+      "addresses before a colon": (n) => "a@b.cc:".repeat(n / 7),
+      "address, then a long host with no colon": (n) => `a@b.cc${"-a".repeat(n / 2)}`,
+      "addresses with a host tail before a colon": (n) => "a@b.cc-x:".repeat(n / 9),
+      "written placeholders with a host tail": (n) => `${REDACTION_PLACEHOLDER}a`.repeat(n / 11),
+      "addresses before a colon and a letter": (n) => "a@b.cc:x".repeat(n / 8),
+      "written placeholders before a colon": (n) => `${REDACTION_PLACEHOLDER}:`.repeat(n / 11),
+      "written placeholder starts": (n) => "[REDACTED".repeat(n / 9),
     };
     // One match is all of the text: a limit on the length of a shape would show here.
-    const whole = ["e-mail starts, then a real tail", "ssh starts, then a real tail", "jwt starts, then a real tail"];
+    const whole = [
+      "e-mail starts, then a real tail",
+      "ssh starts, then a real tail",
+      "jwt starts, then a real tail",
+      "scp path, then a real tail",
+    ];
     for (const [name, make] of Object.entries(hostile)) {
-      // The body of a bug report has the size limit of an HTTP request, 1 MiB, and no other.
+      // Up to the size limit of an HTTP request, 1 MiB. The route refuses a report body above
+      // 60,000 characters, but that is a second protection and not what makes Stage 1 safe.
       // Smallest first: a quadratic pattern fails at a small size, after seconds. At the full
       // size it needs many minutes, and no timeout can stop a synchronous call.
       for (const size of [16_000, 64_000, 256_000, 1_024_000]) {

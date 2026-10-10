@@ -292,11 +292,13 @@ dropped unless the session was created as an ops session.
   don't dead-end as a text report — file it through the bug-filing flow with the
   `report_shipit_bug` tool. As an ops session you're the highest-quality producer:
   attach your root-cause summary, the suspected files, and the **redacted**
-  Docker/journal evidence you gathered. ShipIt redacts the body server-side, posts
+  Docker/journal evidence you gathered. Quote the lines that show the problem,
+  not a whole log: a report has a length limit. ShipIt redacts the body server-side, posts
   an inline consent card the operator confirms, and only then opens an issue on the
   upstream repo under their own GitHub identity (marked `source:ops`). Downstream, a
   developer with push access can pick the issue up as a fix session. See
-  `bug-filing.md` for the tool contract and what never goes in the body.
+  `bug-filing.md` for the tool contract, the length limits and what never goes
+  in the body.
 
 ## If `docker` or `journalctl` is missing
 
