@@ -60,11 +60,12 @@ Six things to know:
   started (with the new session's id), declined, or a start that failed. That
   line is from ShipIt, not the user. A card you have heard nothing about is
   still waiting for the user.
-- **A start can fail because the target is not trusted.** A repository ShipIt
-  has never seen starts untrusted, and no agent turn can start there. The
-  failure reason names the repository. The user opens a session on it, selects
-  **Trust this repository**, and retries the card; nothing was created by the
-  failed start.
+- **An untrusted target is the user's to trust, on the card.** A repository
+  ShipIt has never seen starts untrusted, and no agent turn can start there. The
+  card says so, and its button reads **Trust and start in owner/repo**: one
+  click gives the consent and starts the session. You cannot give that consent
+  and you do not need to ask for it; do not send the user to the other
+  repository to trust it first.
 
 If the repository is one ShipIt has never seen, that is fine — the card says so,
 and starting it registers the repository. Nothing is added until the user clicks.

@@ -32,3 +32,16 @@
 - [x] lint:dev + typecheck clean
 - [x] Independent review against reqs 10 and 11 (applied: persist before emit;
       the start response updates a card with no runner; dropped an unused field)
+
+## Trusting the target from the card (req 12)
+
+- [x] Start route: `{ trust: true }` grants trust after registration, before the spawn
+- [x] Start route: the trust refusal carries `code: repository_untrusted` and a reason that points at the card
+- [x] Card: trust notice and "Trust and start in owner/repo"; the server's refusal code overrides the repository list
+- [x] `ApiError.code`; `useRepoTrust().known`
+- [x] `shipit-docs/sessions.md`, wiki `chat.md` and `repos-and-sandboxes.md`
+- [x] Tests: start route with and without the consent, card, `useApi`
+- [x] lint:dev + typecheck clean
+- [x] Independent review against req 12 (applied: a target the list does not have
+      needs the consent, also when the card was written for a registered one; the
+      refusal override ends when the next start settles)

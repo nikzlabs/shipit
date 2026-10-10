@@ -177,37 +177,66 @@ describe("Integration: starting a proposed cross-repo session", () => {
     });
   });
 
-  it("refuses an untrusted target before it creates a session there (docs/243)", { timeout: 30_000 }, async () => {
-    repoStore.setTrusted(TARGET_URL, false);
-    const proposed = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${parentId}/propose-repo-session`,
-      payload: { repo: "acme/api", title: "Cursor pagination", prompt: PROMPT },
-    });
-    const { cardId } = proposed.json() as { cardId: string };
-    const start = () => app.inject({
+  describe("an untrusted target (docs/243, docs/303 req 12)", () => {
+    let cardId: string;
+    const start = (payload?: Record<string, unknown>) => app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/repo-session-proposals/${cardId}/start`,
-    });
-
-    const refused = await start();
-
-    expect(refused.statusCode).toBe(403);
-    const { error } = refused.json() as { error: string };
-    expect(error).toContain("acme/api");
-    expect(error).toContain("Trust this repository");
-    expect(chatHistory.findRepoSessionProposalCard(parentId, cardId)).toMatchObject({
-      state: "failed",
-      errorMessage: error,
+      ...(payload ? { payload } : {}),
     });
     const onTarget = () =>
       sessionManager.listAllIncludingWarm().filter((s) => s.remoteUrl === TARGET_URL && !s.warm);
-    expect(onTarget()).toEqual([]);
 
-    // The card stays retryable, and the retry starts exactly one session.
-    repoStore.setTrusted(TARGET_URL, true);
-    expect((await start()).statusCode).toBe(200);
-    expect(onTarget()).toHaveLength(1);
+    beforeEach(async () => {
+      repoStore.setTrusted(TARGET_URL, false);
+      const proposed = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/propose-repo-session`,
+        payload: { repo: "acme/api", title: "Cursor pagination", prompt: PROMPT },
+      });
+      cardId = (proposed.json() as { cardId: string }).cardId;
+    });
+
+    it("refuses a start without the consent, before it creates a session there", { timeout: 30_000 }, async () => {
+      const refused = await start();
+
+      expect(refused.statusCode).toBe(403);
+      const { error, code } = refused.json() as { error: string; code?: string };
+      expect(code).toBe("repository_untrusted");
+      expect(error).toContain("acme/api");
+      // The card carries the Trust action, so the reason must not send the user elsewhere.
+      expect(error).toContain("on this card");
+      expect(error).not.toMatch(/open a session/i);
+      expect(chatHistory.findRepoSessionProposalCard(parentId, cardId)).toMatchObject({
+        state: "failed",
+        errorMessage: error,
+      });
+      expect(onTarget()).toEqual([]);
+      expect(repoStore.isTrusted(TARGET_URL)).toBe(false);
+    });
+
+    it("takes only a literal true as the consent", { timeout: 30_000 }, async () => {
+      expect((await start({ trust: "true" })).statusCode).toBe(403);
+      expect(repoStore.isTrusted(TARGET_URL)).toBe(false);
+    });
+
+    it("trusts the repository and starts the session on the click that carries the consent", { timeout: 30_000 }, async () => {
+      // A refused attempt first: the card stays retryable, and the retry starts exactly one session.
+      expect((await start()).statusCode).toBe(403);
+
+      const started = await start({ trust: true });
+
+      expect(started.statusCode).toBe(200);
+      expect(repoStore.isTrusted(TARGET_URL)).toBe(true);
+      expect(onTarget()).toHaveLength(1);
+      const { startedSessionId } = started.json() as { startedSessionId: string };
+      expect(chatHistory.findRepoSessionProposalCard(parentId, cardId)).toMatchObject({
+        state: "started",
+        startedSessionId,
+      });
+      await waitFor(() => agents.some((a) => a.runCalled), "target agent started");
+      expect(agents.find((a) => a.runCalled)!.lastPrompt).toBe(PROMPT);
+    });
   });
 
   it("refuses to start the same proposal twice", { timeout: 30_000 }, async () => {

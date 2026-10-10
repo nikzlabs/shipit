@@ -10,12 +10,14 @@ import {
   createClaimSessionService,
   discardSpawnedChild,
   ensureRepoReady,
+  grantRepoTrust,
   listRepos,
   spawnChildSession,
   ServiceError,
+  SpawnRepositoryUntrustedError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
 /**
@@ -189,11 +191,13 @@ export async function registerProposeRepoSessionRoutes(
     };
   };
 
-  // The user's click. Not container-accessible: the agent proposes, the user starts.
-  app.post<{ Params: { sessionId: string; cardId: string } }>(
+  // The user's click. Not container-accessible: the agent proposes, the user starts —
+  // and `trust` is the user's consent (docs/303 req 12), which no agent can send.
+  app.post<{ Params: { sessionId: string; cardId: string }; Body: { trust?: unknown } | undefined }>(
     "/api/sessions/:sessionId/repo-session-proposals/:cardId/start",
     async (request, reply: FastifyReply) => {
       const { sessionId, cardId } = request.params;
+      const trustGranted = request.body?.trust === true;
 
       if (startsInFlight.has(cardId)) {
         reply.code(409).send({ error: "That session is already starting." });
@@ -240,6 +244,9 @@ export async function registerProposeRepoSessionRoutes(
           deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
         }
 
+        // After registration: only a registered repository can hold the grant.
+        if (trustGranted && !deps.repoStore.isTrusted(readyUrl)) grantRepoTrust(deps, readyUrl);
+
         // Detached: the new session must not nest under this one, because a nested
         // session reads as belonging to this repository (docs/303 req 6).
         const result = await spawnChildSession(
@@ -269,11 +276,17 @@ export async function registerProposeRepoSessionRoutes(
         patch({ state: "started", startedSessionId: result.sessionId, startedAt });
         return { ok: true, startedSessionId: result.sessionId, startedAt };
       } catch (err) {
-        const message = err instanceof ServiceError
-          ? err.message
-          : `Could not start a session on ${card.repo}: ${getErrorMessage(err)}`;
+        // The second class is the same refusal from the dispatch, when trust changed after the check.
+        const untrusted = err instanceof SpawnRepositoryUntrustedError || err instanceof AgentTurnAdmissionError;
+        const message = untrusted
+          ? `${card.repo} is not trusted yet, so no session was started. Use "Trust and start" on this card.`
+          : err instanceof ServiceError
+            ? err.message
+            : `Could not start a session on ${card.repo}: ${getErrorMessage(err)}`;
         patch({ state: "failed", errorMessage: message });
-        reply.code(err instanceof ServiceError ? err.statusCode : 500).send({ error: message });
+        reply
+          .code(untrusted || err instanceof ServiceError ? err.statusCode : 500)
+          .send({ error: message, ...(untrusted ? { code: err.code } : {}) });
         return;
       } finally {
         startsInFlight.delete(cardId);

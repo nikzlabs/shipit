@@ -6,6 +6,8 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The server's stable machine code, where the route sends one. */
+    public code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -15,13 +17,15 @@ export class ApiError extends Error {
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = res.statusText;
+    let code: string | undefined;
     try {
-      const body = await res.json() as { error?: string };
+      const body = await res.json() as { error?: string; code?: unknown };
       if (body.error) message = body.error;
+      if (typeof body.code === "string") code = body.code;
     } catch {
       // couldn't parse error body — use statusText
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, code);
   }
   return res.json() as Promise<T>;
 }

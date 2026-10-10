@@ -74,7 +74,8 @@ That first row is the one that brings the user to you, and they usually describe
 it as the app being broken rather than as a permission. It is not: it is a
 one-time consent, and it is the same shape as VS Code's Restricted Mode.
 
-Two places carry the grant, and both say **"Trust this repository"**:
+In a session on the repository, two places carry the grant, and both say
+**"Trust this repository"**:
 
 - **Above the composer**, as a notice explaining why messages are blocked. This
   is the reliable one — it renders in every mode. One caveat: the *button* needs
@@ -93,10 +94,14 @@ does ShipIt's own source repository once an Ops session has started a fix
 session on it: the host already runs that code, so ShipIt trusts it then.
 
 An agent cannot start a session on an untrusted repository either. A
-`shipit session create` or a "start in another repository" card that targets
-one is refused before anything is created, and the refusal names the
-repository. The answer is the same grant: the user opens a session on that
-repository and selects **Trust this repository**.
+`shipit session create` that targets one is refused before anything is created,
+and the refusal names the repository. The answer is the same grant: the user
+opens a session on that repository and selects **Trust this repository**.
+
+A card for work in another repository is the third place that carries the grant.
+When its target is untrusted, the card says so and its button reads **Trust and
+start in owner/repo**; that one click trusts the repository and starts the
+session. Never send the user to the other repository first.
 
 One limit worth knowing before recommending a clean-up: trust is stored **on the
 repository's entry**, so *removing* a repository discards it. Add the same
@@ -405,7 +410,7 @@ access to it; it destroys nothing you already made.
 | The user does | You do |
 |---|---|
 | Adds, hides and removes repositories; creates one from a template | Everything inside the checkout |
-| **Trusts a repository once**, from the notice above the composer or the Preview tab | Say plainly that this is why messages are blocked, and name the control |
+| **Trusts a repository once**, from the notice above the composer, the Preview tab, or a card for work in that repository | Say plainly that this is why messages are blocked, and name the control |
 | Types secret **values** in Project Settings → Secrets | Declare the names in `x-shipit-secrets`, and name the exact missing one when it blocks you |
 | Turns on "Allow agents to merge their own pull requests" | Ask for it when merging is the ask; never route around it |
 | Turns on "Give this project's services the Docker socket" | Propose it when a service needs the socket; never route around it |

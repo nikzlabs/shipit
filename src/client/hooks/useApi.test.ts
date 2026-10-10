@@ -81,6 +81,16 @@ describe("useApi", () => {
     });
   });
 
+  it("carries the server's machine code on the ApiError, so a caller need not read the prose", async () => {
+    mockFetch(403, { error: "acme/api is not trusted yet", code: "repository_untrusted" });
+    const { result } = renderHook(() => useApi());
+
+    const err = await result.current.post("/api/test").catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 403, code: "repository_untrusted" });
+  });
+
   it("throws ApiError with statusText when body has no error field", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: false,
