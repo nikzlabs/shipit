@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import type { AgentId } from "../../shared/types.js";
-import { stripUrlCredentials } from "../git-utils.js";
 
 export const REDACTION_PLACEHOLDER = "[REDACTED]";
 
@@ -13,12 +12,30 @@ const KEY_PATTERNS: { name: string; re: RegExp }[] = [
   { name: "slack-token", re: /\bxox[baprs]-[A-Za-z0-9-]{8,}/g },
 ];
 
-const STAGE1_PATTERNS: { name: string; re: RegExp }[] = [
+// A pattern with `orRun` is `(shape)|rest of the run`. A shape that fails at one start fails at
+// every later start in the same run, so the second alternative takes the run and the shape is
+// tried once in it. With the shape alone, 80 KB of `a.a.a.…` needed 10 s (planning#677). A
+// look-behind for the start of a run is not equal: a match can end in the middle of a run, and
+// `a@b.cc.d@e.ff` is two matches. `orRun` is text that each match has in it: the second
+// alternative costs a call for each run, so text with none of it is not scanned.
+const STAGE1_PATTERNS: { name: string; re: RegExp; orRun?: string }[] = [
   ...KEY_PATTERNS,
-  { name: "jwt", re: /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g },
+  {
+    name: "jwt",
+    re: /(\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,})|\beyJ[A-Za-z0-9_-]*/g,
+    orRun: "eyJ",
+  },
   { name: "bearer", re: /\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}/gi },
-  { name: "email", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
-  { name: "ssh-remote", re: /\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+\.git\b/g },
+  {
+    name: "email",
+    re: /(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)|\b[A-Za-z0-9._%+-]+/g,
+    orRun: "@",
+  },
+  {
+    name: "ssh-remote",
+    re: /(\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+\.git\b)|\b[A-Za-z0-9._-]+/g,
+    orRun: "@",
+  },
   { name: "workspace-path", re: /(?:\/workspace|\/uploads|\/home\/[^\s/]+|\/root|\/Users\/[^\s/]+)\/[^\s)'"`]*/g },
 ];
 
@@ -34,14 +51,17 @@ export function redactStage1(input: string): Stage1Result {
   let count = 0;
   let text = input;
 
-  text = text.replace(URL_RE, (match) => {
-    void stripUrlCredentials(match);
+  // The URL is not parsed: `new URL` is quadratic in a host of many different non-ASCII
+  // characters.
+  text = text.replace(URL_RE, () => {
     count++;
     return REDACTION_PLACEHOLDER;
   });
 
-  for (const { re } of STAGE1_PATTERNS) {
-    text = text.replace(re, () => {
+  for (const { re, orRun } of STAGE1_PATTERNS) {
+    if (orRun !== undefined && !text.includes(orRun)) continue;
+    text = text.replace(re, (match: string, shape: unknown) => {
+      if (orRun !== undefined && shape === undefined) return match;
       count++;
       return REDACTION_PLACEHOLDER;
     });
@@ -65,9 +85,9 @@ type Span = [start: number, end: number];
 const PRIVATE_KEY_BLOCK_RE =
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\s|\\[nr])+(?=(?:[A-Za-z0-9+/=](?:\r?\n|\\[nr])*){16}|Proc-Type:)[A-Za-z0-9+/=\s\\:,-]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|(?![A-Za-z0-9+/=\s\\:,-]))/g;
 
-// The Stage 1 JWT pattern needs seconds for 80 KB of `eyJ-eyJ-…`: it scans the run again from
-// each `eyJ`. This one matches the same text. It looks at a run of token characters once, from
-// its start, and takes the first `eyJ` in it that follows a word boundary.
+// The JWT shape of Stage 1 with no second alternative: group 1 of each match is a credential.
+// It looks at a run of token characters once, from its start, and takes the first `eyJ` in it
+// that follows a word boundary.
 const JWT_LINEAR_RE =
   /(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6})(?:[A-Za-z0-9_]*-)*?(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,})/dg;
 

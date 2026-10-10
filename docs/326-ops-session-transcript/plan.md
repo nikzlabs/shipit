@@ -155,7 +155,8 @@ runs on the orchestrator's main thread, which also serves the UI.
 
 - **Each pattern is linear.** A pattern that can start a match at each position
   of a long run, and scan the rest of the run each time, is quadratic. The
-  Stage 1 JWT pattern is one: it needs 3.1 s for 80 KB of `eyJ-eyJ-…`.
+  JWT shape of Stage 1, as one global pattern, is one: it needs 3.1 s for
+  80 KB of `eyJ-eyJ-…`.
   `JWT_LINEAR_RE` looks at a run of token characters once, from its start: a
   look-ahead first checks that two more dotted runs follow, and then the first
   `eyJ` after a word boundary is the match. The other patterns start only at
@@ -180,10 +181,22 @@ runs on the orchestrator's main thread, which also serves the UI.
 Rows are loaded one at a time, newest first. A page of large rows is thus never
 in memory together.
 
-`redactStage1` keeps three patterns that are quadratic: e-mail, ssh-remote and
-JWT. The function needs approximately 10 s for 80 KB of `a.a.a.…`. It is not
-changed here. Two of its callers pass short text. The third, the bug report
-flow, passes a body of up to 1 MiB (planning#677).
+`redactStage1` was quadratic in four places (planning#677), and the bug report
+flow passes it a body of up to 1 MiB. Three were shapes that were tried from
+each start in a run: e-mail, ssh-remote and JWT. Each of those patterns now has
+a second alternative: when the shape fails at a start, that alternative takes
+the rest of the run, and the search goes on after it. A later start in the same
+run reads the run to the same end and then the same text, so it cannot match
+where the first one failed. The look-behind of `JWT_LINEAR_RE` is not used
+there. A match of the e-mail or the ssh-remote shape can end in the middle of a
+run, and the next match starts at that position: `a@b.cc.d@e.ff` is two
+matches, and a look-behind for the start of a run finds only the first. The
+fourth place was a call that parsed each URL and did not use the result:
+`new URL` is quadratic in a host name of many different non-ASCII characters.
+The call is removed. The text and the count that `redactStage1` returns are
+the same as before. `redaction.test.ts` compares the three patterns with the
+shapes alone, and times `redactStage1` on hostile inputs of 16 KB to 1 MB,
+smallest first. The body of a bug report still has no length limit of its own.
 
 ### Cuts and paging (req 2)
 

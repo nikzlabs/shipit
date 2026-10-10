@@ -121,9 +121,8 @@ deterministic floor, the second is a semantic net for what the first can't see.
 secret/PII *substrings* and replace with `[REDACTED]`:
 
 - The patterns from `docs/023` (`sk-…`, `ghp_…`, `Bearer …`, generic long-token
-  heuristics), **email addresses**, and **git/remote URLs** (reuse
-  `stripUrlCredentials` from `git-utils.ts` to strip embedded creds, then drop
-  host/path).
+  heuristics), **email addresses**, and **git/remote URLs** (the whole URL is
+  replaced, so embedded creds, host and path all go; it is not parsed).
 - Note `REDACTED_PATTERNS` / `isRedactedSourcePath` in `shipit-source.ts` match
   file *paths*, not content — they decide whether a whole file may be referenced.
   Reuse them only to *exclude* sensitive paths from the excerpt and to redact
@@ -132,6 +131,16 @@ secret/PII *substrings* and replace with `[REDACTED]`:
 
 This stage is fully deterministic and unit-testable, and it is the **guaranteed
 floor**: whatever happens next, known-shape secrets are already gone.
+
+Stage 1 runs synchronously on the orchestrator's main thread, and the body of a
+report can be as long as one HTTP request (1 MiB), so each pattern must be
+linear in the length of the text. A shape that can start at many positions of
+one run, and that reads the rest of the run from each of them, is quadratic. The
+e-mail, ssh-remote and JWT patterns have a second alternative that takes the
+rest of the run for that reason, and no step parses a URL (planning#677; the
+argument is in `docs/326-ops-session-transcript/plan.md`, "Redaction must not
+stall the orchestrator"). `redaction.test.ts` times `redactStage1` on hostile
+inputs of up to 1 MB: a new pattern gets an input there.
 
 **Stage 2 — LLM redaction pass (last step, best-effort).** Heuristics miss the
 unstructured stuff: a person's name, an internal hostname, a customer's data quoted
