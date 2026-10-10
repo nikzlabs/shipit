@@ -13,16 +13,14 @@ description: Let a ShipIt install on WSL2 or Linux give the machine's NVIDIA GPU
 5. One install-wide switch in ShipIt's Settings turns GPU access on and off. It is off by default. When it is on, every new session gets the GPU.
 6. When the switch is on but Docker cannot give a GPU, a new session starts as normal without the GPU, and ShipIt tells the user and the agent that the GPU is not available, and why.
 7. With GPU access on WSL2, a Chrome that the agent starts in its own container can draw WebGL with the GPU: a page that asks Chrome for its WebGL renderer gets the machine's GPU, not a software renderer.
-
-8. With GPU access on WSL2, ShipIt's built-in browser — the one the agent's browser tools use — can draw WebGL with the GPU: on `about:blank`, a page that asks it for its WebGL renderer gets the machine's GPU, not a software renderer.
+8. With GPU access on WSL2, ShipIt's built-in browser — the one the agent's browser tools use — draws WebGL with the GPU: on `about:blank`, a page that asks it for its WebGL renderer gets the machine's GPU, not a software renderer. No setting turns this on or off: it follows GPU access.
 9. With GPU access on WSL2, a headless browser that the agent starts in its own container with no display has a way to draw WebGL with the GPU.
 10. A session with no GPU, and a session on a host that is not WSL2, behave as they did before requirements 8 and 9: the built-in browser draws in software.
+11. The built-in browser uses the GPU for WebGL only. Its picture of a page that has no WebGL is the same as the picture it drew in software.
 
 ## Open questions
 
-- Is GPU drawing in the built-in browser the default for a session that has the GPU, or a setting? If it is a setting, is it for the install or for a repository, and is it on or off at the start? The user said on 2026-10-10 that this decision is theirs: a picture drawn on a GPU is not the same as one drawn in software, and some sessions commit pictures that a browser draws.
-- Does the built-in browser use the GPU for WebGL only, or for the whole page? Req 8 names WebGL. The answer decides which pictures change.
-- Which way does a browser with no display get (req 9): an EGL library in the session image, so that the browser's flags are sufficient, or the documented `xvfb-run -a`? The EGL way is not measured yet.
+- Which way does a browser with no display get (req 9): an EGL library in the session image, so that the browser's flags are sufficient, or the documented `xvfb-run -a`? The user chose on 2026-10-10 to measure the EGL way first. The decision follows that measurement.
 
 ## Resolved questions
 
@@ -33,3 +31,5 @@ description: Let a ShipIt install on WSL2 or Linux give the machine's NVIDIA GPU
 - 2026-10-08 — Which Chrome must draw with the GPU? The user chose a Chrome that the agent starts itself, for example for a test, a benchmark or a script (req 7). ShipIt's built-in browser, which the agent's browser tools use, is not part of this requirement.
 - 2026-10-08 — Which graphics must run on the GPU in Chrome? The user chose WebGL (req 7). WebGPU is not part of this requirement.
 - 2026-10-08 — Where must Chrome on the GPU work? The user chose the agent's own container on WSL2 (req 7). A native Linux install, Compose services, and containers that the agent starts through Docker are not part of this requirement.
+- 2026-10-10 — Is GPU drawing in the built-in browser the default, or a setting? The user chose: each session that has the GPU on WSL2 gets it, and there is no setting (req 8). The way back to software drawing is to turn GPU access off. Rejected: an install-wide setting, off or on at the start, and a key for each repository in `shipit.yaml`. This replaces the part of the 2026-10-08 answer that kept the built-in browser out.
+- 2026-10-10 — Does the built-in browser use the GPU for WebGL only, or for the whole page? The user chose WebGL only (req 11). Rejected: the whole page, which changes the picture of a page that has no WebGL.
