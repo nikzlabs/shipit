@@ -652,6 +652,135 @@ services:
     });
   });
 
+  describe("session network join when Compose has not created the network", () => {
+    const SESSION = "test-session";
+    const NETWORK = `shipit-session-${SESSION}`;
+    const MANUAL = "services:\n  dev:\n    image: node:22\n    ports: ['3000:3000']\n    x-shipit-preview: manual\n";
+    const AUTO = "services:\n  web:\n    image: node:22\n    ports: ['3000:3000']\n";
+
+    // `up` succeeds and no network appears, which is what a join sees when the network is gone.
+    function harness(dir: string, compose: string) {
+      writeCompose(dir, compose);
+      const net = fakeNetworkDocker();
+      const joiner = {
+        connectToNetwork: async (_sessionId: string, name: string) => {
+          await net.docker.getNetwork(name).connect({ Container: "agent-test-session" });
+        },
+        getDockerClient: () => net.docker,
+      };
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      let ups = 0;
+      const hooks: { whileStartResolves?: () => void } = {};
+      const mgr = testServiceManager({
+        sessionId: SESSION,
+        workspaceDir: dir,
+        serviceEnvDir: serviceEnvOf(dir),
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+        composeRunner: (args) => {
+          if (args.includes("up")) ups += 1;
+          return Promise.resolve();
+        },
+        composeQuery: emptyComposeQuery,
+        pollIntervalMs: 0,
+        resolveWorkspaceDevice: () => {
+          hooks.whileStartResolves?.();
+          return Promise.resolve(dir);
+        },
+        networkJoinFn: (name, opts) => joinSessionNetworkEndpoints(joiner, SESSION, name, opts),
+      });
+      const joinWarnings = () =>
+        warn.mock.calls.map((call) => call.join(" ")).filter((line) => line.includes(NETWORK));
+      return { mgr, net, joinWarnings, hooks, ups: () => ups };
+    }
+
+    // A Stop that lands while the start resolves leaves nothing for `up` to start.
+    function stopWhileStartResolves(h: ReturnType<typeof harness>, name: string): () => Promise<void> {
+      let stopped: Promise<void> | undefined;
+      h.hooks.whileStartResolves = () => { stopped ??= h.mgr.stopService(name); };
+      return async () => { await stopped; };
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("does not warn when an all-manual stack starts", async () => {
+      const h = harness(setup(), MANUAL);
+
+      await h.mgr.start();
+
+      expect(h.net.calls).toContain(`connect:${NETWORK}:${os.hostname()}`);
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("does not warn while the install gate holds every auto service", async () => {
+      const h = harness(setup(), AUTO);
+      h.mgr.setInstallRunning(true);
+
+      await h.mgr.start();
+
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("does not warn when a Stop cancels start()'s only up", async () => {
+      const h = harness(setup(), AUTO);
+      const stopSettled = stopWhileStartResolves(h, "web");
+
+      await h.mgr.start();
+      await stopSettled();
+
+      expect(h.ups()).toBe(0);
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("does not warn when a Stop cancels the gated batch's only up", async () => {
+      const h = harness(setup(), AUTO);
+      h.mgr.setInstallRunning(true);
+      await h.mgr.start();
+      const stopSettled = stopWhileStartResolves(h, "web");
+
+      h.mgr.setInstallRunning(false);
+      await serializeStackOp(SESSION, async () => {});
+      await stopSettled();
+
+      expect(h.net.calls.filter((call) => call.startsWith("connect:"))).toHaveLength(4);
+      expect(h.ups()).toBe(0);
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("still joins a network that an all-manual stack kept", async () => {
+      const h = harness(setup(), MANUAL);
+      h.net.seed(NETWORK, ["dev-1"]);
+
+      await h.mgr.start();
+
+      expect(h.net.attached(NETWORK)).toEqual(["agent-test-session", os.hostname(), "dev-1"].sort());
+    });
+
+    it("warns on both endpoints when the network is missing after start() brought a service up", async () => {
+      const h = harness(setup(), AUTO);
+
+      await h.mgr.start();
+
+      expect(h.joinWarnings()).toEqual([
+        expect.stringContaining("Failed to connect orchestrator to"),
+        expect.stringContaining("joinSessionNetwork failed:"),
+      ]);
+    });
+
+    it("warns on both endpoints when the network is missing after a manual service started", async () => {
+      const h = harness(setup(), MANUAL);
+      await h.mgr.start();
+
+      await h.mgr.startService("dev");
+
+      expect(h.joinWarnings()).toEqual([
+        expect.stringContaining("Failed to connect orchestrator to"),
+        expect.stringContaining("joinSessionNetwork failed:"),
+      ]);
+    });
+  });
+
   it("throws for unknown service in startService", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
@@ -3515,10 +3644,16 @@ describe("ServiceManager stuck-starting recovery (#2044)", () => {
     const { mgr, setPsResponse } = makeManager(dir, {
       networkJoinFn: () => new Promise<void>(() => { /* never settles */ }),
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const stackPromise = mgr.start();
     await vi.advanceTimersByTimeAsync(NETWORK_JOIN_TIMEOUT_MS + 1_000);
     await stackPromise;
+    // No `up` ran for this all-manual stack, and a join that hangs is reported all the same.
+    expect(warn.mock.calls.map((call) => call.join(" "))).toContainEqual(
+      expect.stringMatching(/joinSessionNetwork failed: .* did not complete within/),
+    );
+    warn.mockRestore();
 
     setPsResponse(runningPs);
     const startPromise = mgr.startService("web");

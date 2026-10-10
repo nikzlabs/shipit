@@ -753,6 +753,58 @@ describe("joinSessionNetworkEndpoints", () => {
     warn.mockRestore();
     expect(joined).toEqual([`agent:${NETWORK}`]);
   });
+
+  describe("when Compose has not created the network", () => {
+    const missing = () => {
+      throw new Error(`(HTTP code 404) network or container is not found - network ${NETWORK} not found`);
+    };
+    const joiner = {
+      connectToNetwork: async () => missing(),
+      getDockerClient: () => ({ getNetwork: () => ({ connect: async () => missing() }) }),
+    };
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("is not a failure for a join that follows no up", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(
+        joinSessionNetworkEndpoints(joiner, "abc", NETWORK, { networkExpected: false }),
+      ).resolves.toBeUndefined();
+
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("is a failure on both endpoints for a join that follows an up", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(joinSessionNetworkEndpoints(joiner, "abc", NETWORK)).rejects.toThrow(
+        `network ${NETWORK} not found`,
+      );
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain("Failed to connect orchestrator to");
+    });
+
+    it("still reports a different failure of a join that follows no up", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const noContainer = {
+        connectToNetwork: async () => { throw new Error("No container found for session abc"); },
+        getDockerClient: () => ({
+          getNetwork: () => ({ connect: async () => { throw new Error("connect ECONNREFUSED /var/run/docker.sock"); } }),
+        }),
+      };
+
+      await expect(
+        joinSessionNetworkEndpoints(noContainer, "abc", NETWORK, { networkExpected: false }),
+      ).rejects.toThrow("No container found");
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[1]).toContain("ECONNREFUSED");
+    });
+  });
 });
 
 // A session that had a verified base can become one with no overlay at all — a selection gate

@@ -217,7 +217,8 @@ export interface ServiceManagerOptions {
    * can start before the container decides it (docs/325-session-gpu-access req 3).
    */
   sessionGpu?: () => Promise<SessionGpu | undefined>;
-  networkJoinFn?: (networkName: string) => Promise<void>;
+  /** `networkExpected` is false for a join that follows no `up`: the network can be absent. */
+  networkJoinFn?: (networkName: string, opts: { networkExpected: boolean }) => Promise<void>;
   /** Queues the removal of the session network after a `down`; not awaited (docs/091). */
   networkReleaseFn?: () => void;
   networkHealFn?: (networkName: string) => Promise<void>;
@@ -291,7 +292,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   // The services the last snapshot started without the GPU they asked for, with why.
   private gpuRemovals = new Map<string, string>();
   private noProjectCompose: boolean;
-  private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  private readonly networkJoinFn?: (networkName: string, opts: { networkExpected: boolean }) => Promise<void>;
   private readonly networkReleaseFn?: () => void;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   private containServicesFn?: (serviceNames: string[]) => Promise<void>;
@@ -967,8 +968,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     try {
       // Compose starts every service when given no names; skip an empty batch.
       const autoNames = startNow.map(s => s.name);
+      let upRan = false;
       if (autoNames.length > 0) {
-        await this.withUpInFlight(autoNames, async (start, names) => {
+        upRan = await this.withUpInFlight(autoNames, async (start, names) => {
           await this.prepareContainedStartFn?.(names);
           this.armLogFollowerSince(names);
           await this.buildAndUp(start, names);
@@ -978,7 +980,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
       this._started = true;
 
-      await this.joinSessionNetwork();
+      // Still join when no `up` ran: a manual service can run from before this start.
+      await this.joinSessionNetwork({ networkExpected: upRan });
 
       await this.poller.pollOnce();
 
@@ -1590,12 +1593,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   /**
    * Resolves the start before counting it as in flight, so a refused start gets no polling
    * exemption; registers it with `upSettled` first, so a Stop during the resolve follows it.
+   * False when such a Stop left nothing to start, so no `up` ran.
    */
   private async withUpInFlight(
     names: string[],
     fn: (start: PreparedStart, names: string[]) => Promise<void>,
     opts: { removeOrphans?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     let settle!: () => void;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
     for (const name of names) {
@@ -1610,7 +1614,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       const live = names.filter((name) => !this.stoppedByUser.has(name));
       if (live.length === 0) {
         console.log(`[compose:${this.sessionId}] ${names.join(", ")} stopped while the start resolved — not starting`);
-        return;
+        return false;
       }
       for (const name of live) {
         this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
@@ -1628,6 +1632,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         }
       }
       await fn(start, live);
+      return true;
     } finally {
       for (const name of counted) {
         const next = (this.upInFlight.get(name) ?? 1) - 1;
@@ -1744,13 +1749,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (!svc) return;
     if (this.stoppedByUser.has(name)) return;
     try {
-      await this.withUpInFlight([name], async (start, names) => {
+      const upRan = await this.withUpInFlight([name], async (start, names) => {
         await this.prepareContainedStartFn?.(names);
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
       });
-      await this.joinSessionNetwork();
+      await this.joinSessionNetwork({ networkExpected: upRan });
       await this.poller.pollOnce();
       this.disarmLogFollowerSince([name]);
       this.reportGpuRemovals([name]);
@@ -1868,14 +1873,14 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const names = requested.filter(n => this.services.has(n) && !this.stoppedByUser.has(n));
     if (names.length === 0) return;
     try {
-      await this.withUpInFlight(names, async (start, live) => {
+      const upRan = await this.withUpInFlight(names, async (start, live) => {
         await this.prepareContainedStartFn?.(live);
         this.armLogFollowerSince(live);
         await this.buildAndUp(start, live);
         markStackUp(this.sessionId, live.flatMap(n => this.services.get(n) ?? []));
         await this.containServicesFn?.([...this.services.keys()]);
       }, { removeOrphans: true });
-      await this.joinSessionNetwork();
+      await this.joinSessionNetwork({ networkExpected: upRan });
       await this.poller.pollOnce();
       this.disarmLogFollowerSince(names);
       this.reportGpuRemovals(names);
@@ -1961,12 +1966,14 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   // Retry after each up: an all-manual stack has no network until its first service starts.
   // Bound the wait so a hung join does not block status and address polling.
-  private async joinSessionNetwork(): Promise<void> {
+  private async joinSessionNetwork(
+    opts: { networkExpected: boolean } = { networkExpected: true },
+  ): Promise<void> {
     if (!this.networkJoinFn) return;
     const networkName = `shipit-session-${this.sessionId}`;
     try {
       await withTimeout(
-        this.networkJoinFn(networkName),
+        this.networkJoinFn(networkName, opts),
         NETWORK_JOIN_TIMEOUT_MS,
         `network join for ${networkName} did not complete within ${NETWORK_JOIN_TIMEOUT_MS}ms`,
       );
