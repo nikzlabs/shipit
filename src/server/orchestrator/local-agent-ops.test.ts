@@ -37,6 +37,7 @@ describe("mapAgentOpsPath", () => {
   it("maps the plugin routes the `shipit plugin` shim emits", () => {
     expect(mapAgentOpsPath("/agent-ops/plugin/refresh")).toBe("plugin/refresh");
     expect(mapAgentOpsPath("/agent-ops/plugin/exec")).toBe("plugin/exec");
+    expect(mapAgentOpsPath("/agent-ops/plugin/exec/stdin")).toBe("plugin/exec/stdin");
   });
 
   it("still denies the CI verbs the shim never emits", () => {

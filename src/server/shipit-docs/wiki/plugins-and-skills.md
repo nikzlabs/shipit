@@ -127,7 +127,9 @@ What an activated plugin gives this project, all from its manifest:
   own value, higher or lower, for one command in its `plugins.use` entry —
   when a heavy command is killed for
   memory, that edit is yours to make here, without waiting for the plugin's
-  author.
+  author. A command takes piped input as a local program does, when it arrives;
+  one that reads its stdin waits until yours ends, so give it `</dev/null`
+  when you pass no input.
 - **Skills**, which reach you and not the composer's menu.
 - **Settings** the consuming project sets, and a state directory of the
   plugin's own.

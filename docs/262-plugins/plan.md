@@ -1336,7 +1336,8 @@ instead of a repeat.
   unchecked writes a stray directory into the user's repository. Output is
   **buffered, not streamed**, with an 8 MiB per-stream cap that announces its
   own truncation; streaming through two relay hops is real machinery and the
-  plan already accepts per-call latency here. And the **trust gate** (docs/178)
+  plan already accepts per-call latency here. (Stdin is not buffered any more:
+  "Stdin is delivered when it arrives", below.) And the **trust gate** (docs/178)
   is re-read on every call, not at wrapper-generation time: a repository
   un-trusted since the wrapper was written must stop executing, and this is the
   only place that can notice.
@@ -1402,6 +1403,49 @@ instead of a repeat.
   answered; the output drain and everything else is in ShipIt's phases. That is
   the question a session could not answer before, because it cannot run
   anything inside the plugin's container except the plugin's commands.
+
+  **Stdin is delivered when it arrives.** The request used to carry stdin as
+  one string, so the shim read all of it before it sent the call. It cannot
+  tell an inherited stdin that is open and idle from a producer that has not
+  written yet, so it waited 2 s for a first byte. That cost 2 s on every call
+  whose stdin was open and idle, and it dropped input whose first byte came
+  later, with no message (planning#678). No time limit separates those two
+  cases, so the limit is gone:
+
+  - **Input that ended at once goes with the call.** The shim waits
+    `STDIN_INLINE_WAIT_MS` (50 ms) for stdin to *end*. `/dev/null`, a file, a
+    here-document and `echo x |` are at their end in a few milliseconds, and
+    they travel in the one request, as before. The wait is not a limit on the
+    input: when it passes, nothing is lost.
+  - **Other input follows the call.** The shim sends the call with a
+    `stdinId` and no stdin, and the command starts. The shim then sends each
+    part of stdin as it arrives (`POST plugin/exec/stdin`), one part at a
+    time, and then the end. `plugin-cli-stdin.ts` holds one stream for each
+    running call; `runCreated` pipes it into the container's attach
+    connection, and its end closes the command's stdin.
+  - **A part is answered when the command's side took it.** So a command that
+    reads slowly slows the producer down, as a pipe does, and ShipIt holds one
+    part and not the whole input. Input larger than one request body, which
+    was refused before, arrives in parts of at most 128 KiB.
+  - **A part can arrive before its call**, because the two travel on two
+    connections. It waits `PLUGIN_STDIN_CLAIM_WAIT_MS` for the call and is
+    refused after that. When the command exits, its stream is destroyed, each
+    part that still waits is answered `accepted: false`, and the shim stops.
+
+  These are the semantics of a local program, including the one that has a
+  cost: **a command that reads stdin to its end waits until the caller's stdin
+  ends.** Before, an open and idle stdin became an empty one after 2 s. Now it
+  stays open, and such a command runs until its time limit; the timeout message
+  says that its stdin had not ended. Two alternatives were not taken. A shorter
+  wait drops more input. One streamed request body through both relay hops
+  needs a raw body parser and an early response at each hop, while a second
+  JSON route uses both hops as they are.
+
+  The attach connection now has an error handler. A command that exits before
+  it takes its stdin breaks the connection under a write, and the orchestrator
+  has no handler of last resort: an error that nothing handles there ends the
+  process, not the call. A large stdin that came with the call could do this
+  before.
 
   One thing this slice does **not** settle, found by the independent review and
   cross-slice. (The other — a refresh deleting a generation out from under a

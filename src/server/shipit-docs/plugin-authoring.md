@@ -166,6 +166,22 @@ Two things follow for a command you write:
   accept all of them. `SHIPIT_PLUGIN_TIMING=1` on a call shows the two apart —
   see [plugins.md → Plugin code does not run in your container](plugins.md#plugin-code-does-not-run-in-your-container).
 
+### Read stdin only when the call asks for it
+
+Your command's stdin is the caller's stdin, sent through ShipIt as it arrives.
+It is never a terminal. So `isatty(0)` cannot tell your command that input is
+on its way: it is false on every call.
+
+- **Read stdin when an argument asks for it** (`-`, `--stdin`), and not
+  otherwise. An agent's shell can give a call a stdin that stays open and
+  sends nothing. A command that reads stdin on every call then waits for an
+  end that does not come, until its time limit.
+- **Read to the end of the input.** It can arrive slowly, and it can be larger
+  than one read.
+
+Output is not sent as it arrives. The caller sees what your command printed
+when it exits, so a long command shows nothing while it runs.
+
 ### Your service does not choose its port
 
 An exported compose fragment **must not declare `ports:`**. A fragment that does

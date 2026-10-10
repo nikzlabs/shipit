@@ -17,6 +17,7 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   "workflow/view": "actions/workflows/view",
   "plugin/refresh": "plugin/refresh",
   "plugin/exec": "plugin/exec",
+  "plugin/exec/stdin": "plugin/exec/stdin",
   "plugin/status": "plugin/status",
 };
 

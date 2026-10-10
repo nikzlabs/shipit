@@ -265,7 +265,7 @@ export function registerAgentOpsRoutes(
     });
 
   app.post<{
-    Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string };
+    Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string; stdinId?: string };
   }>("/agent-ops/plugin/exec", async (request, reply) =>
     relay("POST", "/plugin/exec", {
       alias: request.body?.alias,
@@ -273,7 +273,18 @@ export function registerAgentOpsRoutes(
       args: request.body?.args,
       cwd: request.body?.cwd,
       stdin: request.body?.stdin,
+      stdinId: request.body?.stdinId,
     }, reply, { timeoutMs: 0 }));
+
+  // Unbounded: a part is answered when the command takes it, and a command reads when it wants to.
+  app.post<{ Body: { id?: string; data?: string; end?: boolean } }>(
+    "/agent-ops/plugin/exec/stdin",
+    async (request, reply) =>
+      relay("POST", "/plugin/exec/stdin", {
+        id: request.body?.id,
+        data: request.body?.data,
+        end: request.body?.end === true,
+      }, reply, { timeoutMs: 0 }));
 
   app.get("/agent-ops/issue/trackers", async (_request, reply) => relay("GET", "/issue/trackers", undefined, reply));
 

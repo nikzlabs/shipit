@@ -927,6 +927,38 @@ describe("agent-ops routes", () => {
     });
     expect(client.calls[1]).toMatchObject({ body: { repo: "tools", force: true } });
   });
+
+  it("POST /agent-ops/plugin/exec forwards the id that the call's later stdin carries", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/exec",
+      payload: { alias: "reqs", command: "reqs", args: ["list"], cwd: "/workspace", stdinId: "call-1" },
+    });
+
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/plugin/exec",
+      body: { alias: "reqs", command: "reqs", args: ["list"], cwd: "/workspace", stdinId: "call-1" },
+    });
+  });
+
+  it("POST /agent-ops/plugin/exec/stdin relays one part of a call's stdin, and the answer", async () => {
+    client.setResponse("POST", "/plugin/exec/stdin", { ok: true, status: 200, body: { accepted: false } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/exec/stdin",
+      payload: { id: "call-1", data: "one\n", end: "yes" },
+    });
+
+    expect(res.json()).toEqual({ accepted: false });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/plugin/exec/stdin",
+      body: { id: "call-1", data: "one\n", end: false },
+    });
+  });
+
   it("GET /agent-ops/settings/list relays to the session's settings index", async () => {
     client.setResponse("GET", "/settings", {
       ok: true, status: 200,
