@@ -272,20 +272,22 @@ called out rather than folded in.
 
 ## Open questions
 
-- **The host-forwarder residual to req 16 (raised 2026-10-10 by the review of the
-  E6 implementation).** The API-guard fix closes the direct loopback/own-address
-  path, but not a git child relaying through a host-side forwarder (the VPS
-  Tailscale `socat` forwarder) back to the published API port — the guard sees the
-  forwarder's host peer and cannot distinguish it. Closing it needs a
-  network-layer control on the orchestrator's own git child (an egress rule
-  keyed on the dropped uid, or running the commit in an isolated namespace — the
-  option declined on cost in Q6). Decision for the requester: accept it as a
-  tracked residual (it is the docs/319 "leaves the host and comes back" shape, and
-  only reachable on a host running such a forwarder), or do the heavier work now.
-  Until decided, E6 ships as the direct-path fix and the residual is stated, not
-  hidden.
+None.
 
 ## Resolved questions
+
+**2026-10-10 — The host-forwarder residual to req 16 (raised by the review of the
+E6 implementation). → accept as a tracked residual; filed as planning#675.**
+Requester approved accept-and-track. The API-guard fix (E6) closes the direct
+loopback/own-address path, but not a git child relaying through a host-side
+forwarder (the VPS Tailscale `socat` forwarder) back to the published API port —
+the guard sees the forwarder's host peer and cannot distinguish it. Closing it
+needs a network-layer control on the orchestrator's own git child (an egress rule
+keyed on the dropped uid, or running the commit in an isolated namespace — the
+option declined on cost in Q6), which is bigger than req 16's API-guard fix. It
+is the docs/319 (planning#621) "leaves the host and comes back" shape and only
+reachable on a host running such a forwarder, so it is tracked in **planning#675**
+rather than built here. E6 ships as the direct-path fix.
 
 **2026-10-10 — Q6: planning#668 — repo-controlled git config (hooks, filters,
 `fsmonitor`, helpers) runs in the orchestrator's network namespace and reaches
