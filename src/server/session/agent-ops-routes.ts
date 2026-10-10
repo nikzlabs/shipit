@@ -50,7 +50,7 @@ export function registerAgentOpsRoutes(
     suffix: string,
     body: unknown,
     reply: FastifyReply,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<unknown> {
     const client = getClient();
     if ("error" in client) {
@@ -266,15 +266,22 @@ export function registerAgentOpsRoutes(
 
   app.post<{
     Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string; stdinId?: string };
-  }>("/agent-ops/plugin/exec", async (request, reply) =>
-    relay("POST", "/plugin/exec", {
+  }>("/agent-ops/plugin/exec", async (request, reply) => {
+    // A caller that goes away must reach the orchestrator, which then stops the command
+    // (docs/262-plugins req 32). Not `request.raw`: its `close` comes when the body was read.
+    const callerGone = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableFinished) callerGone.abort();
+    });
+    return relay("POST", "/plugin/exec", {
       alias: request.body?.alias,
       command: request.body?.command,
       args: request.body?.args,
       cwd: request.body?.cwd,
       stdin: request.body?.stdin,
       stdinId: request.body?.stdinId,
-    }, reply, { timeoutMs: 0 }));
+    }, reply, { timeoutMs: 0, signal: callerGone.signal });
+  });
 
   // Unbounded: a part is answered when the command takes it, and a command reads when it wants to.
   app.post<{ Body: { id?: string; seq?: number; data?: string; end?: boolean } }>(

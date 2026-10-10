@@ -182,6 +182,25 @@ on its way: it is false on every call.
 Output is not sent as it arrives. The caller sees what your command printed
 when it exits, so a long command shows nothing while it runs.
 
+### Your command can be killed at any moment
+
+ShipIt kills your command's container at its time limit (15 minutes), when
+its session is archived or deleted, and when its caller goes away before the
+command has its result. The last one is frequent: an agent's shell tool has a
+time limit for each call, and a call that hits it takes your command with it
+some seconds later.
+
+The kill is a SIGKILL to the whole container. No signal handler and no
+`finally` block runs, and the caller gets no output.
+
+- **Write state so that a kill leaves it usable.** Write a new file beside the
+  old one and rename it, or use a store that does this for you. Do not leave
+  the only copy half-written.
+- **Make a second run safe.** The caller sees a call that ended with no
+  result, and will often run the command again.
+- **Say in your skill how long a slow command takes**, so that an agent gives
+  the call enough time or runs it in the background.
+
 ### Your service does not choose its port
 
 An exported compose fragment **must not declare `ports:`**. A fragment that does

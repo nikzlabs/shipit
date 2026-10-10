@@ -64,19 +64,23 @@ export class OrchestratorClient {
 
   // timeoutMs: 0 is no limit. A request that is not a read goes to the next host only
   // while it cannot have arrived (docs/306-spawn-retry-safety req 6).
+  // signal: its abort closes the connection, which is how the orchestrator learns that the caller left.
   async request(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
     body?: unknown,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<OrchestratorResponse> {
     const payload = body !== undefined && method !== "GET" ? JSON.stringify(body) : undefined;
     const limitMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const failures: string[] = [];
     for (const baseUrl of this.baseUrls) {
       try {
-        return await this.send(method, this.url(baseUrl, suffix), payload, limitMs);
+        return await this.send(method, this.url(baseUrl, suffix), payload, limitMs, opts?.signal);
       } catch (err) {
+        if (opts?.signal?.aborted) {
+          return { ok: false, status: 0, body: { error: "The request was ended, because its caller went away." } };
+        }
         failures.push(`${baseUrl}: ${getErrorMessage(err)}`);
         if (method !== "GET" && err instanceof AttemptFailed && err.connected) {
           return {
@@ -106,6 +110,7 @@ export class OrchestratorClient {
     url: string,
     payload: string | undefined,
     limitMs: number,
+    signal: AbortSignal | undefined,
   ): Promise<OrchestratorResponse> {
     return new Promise((resolve, reject) => {
       const u = new URL(url);
@@ -120,7 +125,7 @@ export class OrchestratorClient {
         u,
         // agent: false gives the call a socket of its own. A pooled socket is already
         // connected, so a failure on it could be before or after the request arrived.
-        { method, headers, agent: false },
+        { method, headers, agent: false, signal },
         (res) => {
           let data = "";
           res.setEncoding("utf-8");

@@ -88,6 +88,8 @@ export interface PluginCliRequest {
   cwd?: string;
   /** A stream is input that the caller sends as it arrives; it can still be open when the command exits. */
   stdin?: string | Readable;
+  /** True when nothing waits for the result any more. The command is then stopped (req 32). */
+  callerGone?: () => boolean;
 }
 
 export interface PluginCliResult {
@@ -337,6 +339,7 @@ async function runHeldPluginCommand(
       args: req.args,
       workingDir: mapWorkingDir(deps.workspaceDir, req.cwd),
       stdin: req.stdin ?? "",
+      callerGone: req.callerGone,
       networkMode: netns.networkMode,
       overlaySpec,
       memoryBytes,
@@ -466,6 +469,7 @@ interface ExecuteSpec {
   args: string[];
   workingDir: string;
   stdin: string | Readable;
+  callerGone?: () => boolean;
   networkMode: string;
   overlaySpec?: PluginOverlaySpec;
   memoryBytes: number;
@@ -560,7 +564,12 @@ async function runCreated(
   if (typeof spec.stdin === "string") stream.end(spec.stdin);
   else spec.stdin.pipe(stream);
 
-  const code = await waitForContainerExit(container, timeoutMs, deps.isCancelled);
+  const callerGone = (): boolean => spec.callerGone?.() ?? false;
+  const code = await waitForContainerExit(
+    container,
+    timeoutMs,
+    () => callerGone() || (deps.isCancelled?.() ?? false),
+  );
   // Stop the command's clock here: the drain and the OOM inspection below are ShipIt's time.
   const exitedAt = performance.now();
   // Container exit can precede the last output chunk.
@@ -585,7 +594,8 @@ async function runCreated(
     });
   }
   if (code === "cancelled") {
-    return timed({ error: "the session went away while the command was running", exitCode: 125, stdout: out.text(), stderr: err.text() });
+    const who = callerGone() ? "caller" : "session";
+    return timed({ error: `the ${who} went away while the command was running`, exitCode: 125, stdout: out.text(), stderr: err.text() });
   }
   const exitCode = typeof code === "number" ? code : 1;
   const result: PluginCliResult = { exitCode, stdout: out.text(), stderr: err.text() };

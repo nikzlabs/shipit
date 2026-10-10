@@ -183,9 +183,9 @@ it arrives, and the end of its stdin when yours ends. ShipIt does not wait for
 input that has not arrived before it starts the command: input from a slow
 producer is delivered when it comes, and a command that does not read stdin
 does not wait for it. If ShipIt cannot deliver a part, the call ends with exit
-code 2 and a `Could not deliver stdin` message. The command is not stopped: it
-can still run, with the part of the input that it has, so do not read that
-exit as "nothing happened".
+code 2 and a `Could not deliver stdin` message, and ShipIt stops the command
+(see below). The command can have done a part of its work with the part of the
+input that it had, so do not read that exit as "nothing happened".
 
 The other side of that rule is also the one a local program has: **a command
 that reads stdin to its end waits until your stdin ends.** A shell tool can
@@ -193,6 +193,17 @@ give a call a stdin that stays open and sends nothing. Such a command then
 waits until its time limit, and the timeout message says that its stdin had
 not ended. When you pass no input, run the command with `</dev/null`. Output
 is different: you see it when the command exits, not while it runs.
+
+**A call that ends before its command does stops the command.** When a call
+is interrupted — your shell tool's time limit, `timeout`, Ctrl-C — ShipIt kills
+the command's container. It looks for a lost caller every 2 seconds while the
+command runs, so the command can run for some seconds more, and a command
+that had not started yet can still start before it is killed. The command
+gets no signal that it can handle and does no cleanup, and you get none of
+its output. What it did up to that moment stays done, so check the result
+before you run the command again. For a command that needs more time than your shell
+tool gives a call, run the call in the background: a call that still waits
+keeps its command.
 
 The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
