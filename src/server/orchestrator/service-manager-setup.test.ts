@@ -788,6 +788,23 @@ describe("joinSessionNetworkEndpoints", () => {
       expect(warn.mock.calls[0]?.[0]).toContain("Failed to connect orchestrator to");
     });
 
+    it("still reports an error that names a different network", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const other = () => {
+        throw new Error("(HTTP code 500) server error - No such network: shipit-egress-abc");
+      };
+      const otherNetwork = {
+        connectToNetwork: async () => other(),
+        getDockerClient: () => ({ getNetwork: () => ({ connect: async () => other() }) }),
+      };
+
+      await expect(
+        joinSessionNetworkEndpoints(otherNetwork, "abc", NETWORK, { networkExpected: false }),
+      ).rejects.toThrow("shipit-egress-abc");
+
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
     it("still reports a different failure of a join that follows no up", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const noContainer = {

@@ -37,7 +37,8 @@ import type { ProjectComposeAccess } from "./services/plugin-services.js";
  */
 export function sessionNetworkMissing(err: unknown, networkName: string): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return msg.includes(`network ${networkName} not found`) || /no such network/i.test(msg);
+  return msg.includes(`network ${networkName} not found`)
+    || (/no such network/i.test(msg) && msg.includes(networkName));
 }
 
 export function handleStackError(
@@ -420,8 +421,8 @@ export interface SessionNetworkJoiner {
  * healthy services behind a preview nothing can route to — and only the agent's attachment is
  * repaired afterwards, by the poller's heal.
  *
- * `networkExpected: false` is a join that follows no `up`. There a missing network is the state
- * of a stack that has started nothing, not a failure; every other error is reported as usual.
+ * `networkExpected: false` is a join that follows no `up`. Compose creates the network with the
+ * first service, so its absence is not reported there; every other error is.
  */
 export async function joinSessionNetworkEndpoints(
   containerManager: SessionNetworkJoiner,

@@ -980,7 +980,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
       this._started = true;
 
-      // Still join when no `up` ran: a manual service can run from before this start.
+      // Still join when no `up` ran: a reconcile keeps the manual services that already run.
       await this.joinSessionNetwork({ networkExpected: upRan });
 
       await this.poller.pollOnce();

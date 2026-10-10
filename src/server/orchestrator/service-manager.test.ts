@@ -690,10 +690,9 @@ services:
       });
       const joinWarnings = () =>
         warn.mock.calls.map((call) => call.join(" ")).filter((line) => line.includes(NETWORK));
-      return { mgr, net, joinWarnings, hooks, ups: () => ups };
+      return { mgr, net, warn, joinWarnings, hooks, ups: () => ups };
     }
 
-    // A Stop that lands while the start resolves leaves nothing for `up` to start.
     function stopWhileStartResolves(h: ReturnType<typeof harness>, name: string): () => Promise<void> {
       let stopped: Promise<void> | undefined;
       h.hooks.whileStartResolves = () => { stopped ??= h.mgr.stopService(name); };
@@ -738,21 +737,26 @@ services:
       h.mgr.setInstallRunning(true);
       await h.mgr.start();
       const stopSettled = stopWhileStartResolves(h, "web");
+      const callsBefore = h.net.calls.length;
 
       h.mgr.setInstallRunning(false);
       await serializeStackOp(SESSION, async () => {});
       await stopSettled();
 
-      expect(h.net.calls.filter((call) => call.startsWith("connect:"))).toHaveLength(4);
+      expect(h.net.calls.slice(callsBefore)).toEqual(expect.arrayContaining([
+        `connect:${NETWORK}:agent-test-session`,
+        `connect:${NETWORK}:${os.hostname()}`,
+      ]));
       expect(h.ups()).toBe(0);
       expect(h.joinWarnings()).toEqual([]);
     });
 
-    it("still joins a network that an all-manual stack kept", async () => {
+    it("still joins on a reconcile that finds a manual service running", async () => {
       const h = harness(setup(), MANUAL);
+      await h.mgr.start();
       h.net.seed(NETWORK, ["dev-1"]);
 
-      await h.mgr.start();
+      await h.mgr.reconcile();
 
       expect(h.net.attached(NETWORK)).toEqual(["agent-test-session", os.hostname(), "dev-1"].sort());
     });
@@ -768,9 +772,25 @@ services:
       ]);
     });
 
+    it("warns on both endpoints when the network is missing after the gated batch brought a service up", async () => {
+      const h = harness(setup(), AUTO);
+      h.mgr.setInstallRunning(true);
+      await h.mgr.start();
+
+      h.mgr.setInstallRunning(false);
+      await serializeStackOp(SESSION, async () => {});
+
+      expect(h.ups()).toBe(1);
+      expect(h.joinWarnings()).toEqual([
+        expect.stringContaining("Failed to connect orchestrator to"),
+        expect.stringContaining("joinSessionNetwork failed:"),
+      ]);
+    });
+
     it("warns on both endpoints when the network is missing after a manual service started", async () => {
       const h = harness(setup(), MANUAL);
       await h.mgr.start();
+      h.warn.mockClear();
 
       await h.mgr.startService("dev");
 
