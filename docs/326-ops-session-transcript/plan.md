@@ -87,27 +87,39 @@ content blocks.
 
 - provider API keys, GitHub and Slack tokens and AWS keys — the same patterns
   that `redactStage1` has;
-- the value after `Bearer`, `Token` or `Basic`, when it has a digit in it or is
-  32 characters or longer. Stage 1 takes any 12 characters after the word, also
-  "Token documentation"; in a transcript that removes ordinary prose;
+- the value after `Authorization:` and `Bearer`, `Token` or `Basic`, whatever
+  it is. With no header in front, the value after one of those words is
+  replaced when it has a digit in it or is 32 characters or longer. That is a
+  heuristic: Stage 1 takes any 12 characters after the word, also "Token
+  documentation", which in a transcript removes ordinary prose; the price is
+  that a short value with no digit and no header passes;
 - JWTs — the same matches as the Stage 1 pattern, by a pattern that is linear
   (see below);
 - the password in a URL: all that is between the first `:` and the **last**
   `@` of the authority, so a password with an `@` in it leaves nothing. The
-  authority ends at a character that a URL cannot hold (a quote, `<`, `\`), so
-  a URL with a port in JSON does not reach into the next field;
+  authority ends at a character that a URL cannot hold (`"`, `<`, `\`), or at
+  a `'` that closes a string, so a URL with a port does not reach into the next
+  field of JSON or of an object literal;
 - private key blocks: the `BEGIN` line and then key text, to the `END` line or
-  to where key text ends. The marker alone, as source code quotes it, is not a
-  block;
-- the value of an environment-style assignment (`NAME=value`) whose upper-case
-  name contains `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, `API_KEY`,
-  `PRIVATE_KEY` or `ACCESS_KEY`. The value is one shell word: quoted parts and
-  bare parts with no space between them, across escaped quotes and line ends,
-  and to the end of the text if a quote never closes. Inside a JSON string the
-  quotes are `\"`, and that form is read too. A name that ends in a word for a
-  fact about the secret (`_FILE`, `_PATH`, `_DIR`, `_URL`, `_URI`, `_ID`,
-  `_NAME`, `_TYPE`, `_TTL`, `_EXPIRY`, `_EXPIRES`, `_TIMEOUT`, `_LENGTH`,
-  `_COUNT`, `_LIMIT`, `_ENABLED`) is not matched.
+  to where key text ends. Key text is 16 base64 characters with only line ends
+  between them, so the marker alone, as source code or prose quotes it, is not
+  a block;
+- the value of an environment-style assignment (`NAME=value`, not `NAME==`)
+  whose upper-case name contains `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`,
+  `API_KEY`, `PRIVATE_KEY` or `ACCESS_KEY`. The value is one shell word: quoted
+  parts and bare parts with no space between them, across escaped quotes and
+  line ends, and to the end of the text if a quote never closes. Inside a JSON
+  string the quotes are `\"`, and that form is read too. A name that ends in a
+  word for a fact about the secret (`_FILE`, `_PATH`, `_DIR`, `_URL`, `_URI`,
+  `_ID`, `_NAME`, `_TYPE`, `_TTL`, `_EXPIRY`, `_EXPIRES`, `_TIMEOUT`,
+  `_LENGTH`, `_COUNT`, `_LIMIT`, `_ENABLED`) is not matched, and `TOKENIZER`
+  is not `TOKEN`.
+
+**Every shape is looked for in the original text, and the spans are merged.**
+An earlier version replaced one shape after another. A replacement then hid the
+shape of a larger credential around it: `Bearer ghp_….secret` lost only the
+part that looked like a GitHub token. With merged spans the order of the shapes
+does not matter, and a credential that two shapes match is counted once.
 
 It does not touch URLs, paths, e-mail addresses or 40-character strings, so
 pull request links and commit hashes stay (req 3). `redactStage1` is not
@@ -153,7 +165,9 @@ runs on the orchestrator's main thread, which also serves the UI.
   value did not match, which the second review measured as quadratic.
   `redaction.test.ts` times twenty-five hostile inputs of 2 MB, and compares
   `JWT_LINEAR_RE` with the Stage 1 pattern on the cases where they could
-  differ.
+  differ. The reviews compared the two on 800,000 random strings and found no
+  difference, and measured no input whose time more than doubles when its size
+  doubles.
 - **The work is bounded, for a read and for each message.** Redaction costs
   about 20 ms for each million characters. A read stops at 8,000,000 scanned
   characters (`MAX_TRANSCRIPT_SCAN_CHARS`) and names the cursor for the rest.

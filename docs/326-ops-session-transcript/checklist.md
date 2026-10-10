@@ -18,3 +18,4 @@
 - [x] Independent reviewer pass against every numbered requirement
 - [x] Act on the review: whole-text redaction before the cut, linear patterns and the assignment scan, per-message limits, withheld rows, strict block flattening
 - [x] Second independent reviewer pass on the fixes
+- [x] Third reviewer pass, on the redaction only, and its fixes: every shape is found in the original text and the spans are merged

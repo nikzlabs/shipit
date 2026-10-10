@@ -117,11 +117,11 @@ describe("redactCredentials (docs/326-ops-session-transcript req 3)", () => {
   it("replaces the listed credential shapes", () => {
     for (const secret of [
       "ghp_ABCDEFGHIJKLMNOP1234567890abcd",
-      `github_pat_${"11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123456789"}`,
+      ["github_pat_", "11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123456789"].join(""),
       "sk-ant-abcdefghijklmnop",
       "sk-abcdefghijklmnopqrstuvwx",
-      `AKIA${"ABCDEFGHIJKLMNOP"}`,
-      `xoxb-${"123456789012-abcdef"}`,
+      ["AKIA", "ABCDEFGHIJKLMNOP"].join(""),
+      ["xoxb-", "123456789012-abcdef"].join(""),
       JWT,
     ]) {
       const { text, redactedCount } = redactCredentials(`before ${secret} after`);
@@ -131,10 +131,17 @@ describe("redactCredentials (docs/326-ops-session-transcript req 3)", () => {
   });
 
   it("replaces the value of an authorization scheme, and leaves prose about tokens alone", () => {
-    expect(redactCredentials("Authorization: Bearer abcdef1234567890XYZ").text).toBe(`Authorization: Bearer ${R}`);
-    expect(redactCredentials("Authorization: Basic dXNlcjpodW50ZXIy").text).toBe(`Authorization: Basic ${R}`);
-    expect(redactCredentials("Authorization: token abcdefghijklmnopqrstuvwxyzABCDEFGH").text)
-      .toBe(`Authorization: token ${R}`);
+    const cases: [string, string][] = [
+      ["Authorization: Bearer abcdef1234567890XYZ", `Authorization: Bearer ${R}`],
+      // After the header, any value: this one is `user:pass`, short and with no digit.
+      ["Authorization: Basic dXNlcjpwYXNz", `Authorization: Basic ${R}`],
+      ['{"Authorization": "Bearer abc"}', `{"Authorization": "Bearer ${R}"}`],
+      ["Proxy-Authorization: token abcdefgh", `Proxy-Authorization: token ${R}`],
+      // With no header: a digit, or 32 characters.
+      ["curl -H 'X-Auth: Bearer abcdef1234567890XYZ'", `curl -H 'X-Auth: Bearer ${R}'`],
+      ["token abcdefghijklmnopqrstuvwxyzABCDEFGH", `token ${R}`],
+    ];
+    for (const [input, expected] of cases) expect(redactCredentials(input).text, input).toBe(expected);
     for (const prose of [
       "[Token documentation](https://example.com)",
       "Use token authentication for the API.",
@@ -142,6 +149,20 @@ describe("redactCredentials (docs/326-ops-session-transcript req 3)", () => {
       "Basic configuration follows.",
     ]) {
       expect(redactCredentials(prose).text, prose).toBe(prose);
+    }
+  });
+
+  it("finds each shape in the original text, so one replacement cannot hide a larger credential", () => {
+    const cases: [string, string][] = [
+      ["Bearer ghp_ABCDEFGHIJKLMNOP.secret123", `Bearer ${R}`],
+      ["eyJabcdefg.sk-abcdefghijklmnop.qrstuvwx", R],
+      ["TOKEN=x://u:'a@h b' rest", `TOKEN=${R} rest`],
+      [String.raw`{"out":"TOKEN=\"ghp_ABCDEFGHIJKLMNOP\"def"}`, `{"out":"TOKEN=${R}"}`],
+    ];
+    for (const [input, expected] of cases) {
+      const result = redactCredentials(input);
+      expect(result.text, input).toBe(expected);
+      expect(result.redactedCount, input).toBe(1);
     }
   });
 
@@ -183,6 +204,7 @@ describe("redactCredentials (docs/326-ops-session-transcript req 3)", () => {
       '{"url":"https://example.com:443","email":"jane@example.net"}',
       '{"url":"http://[::1]:3000","email":"a@example.net"}',
       "<https://example.com:443> jane@example.net",
+      "const c={url:'http://localhost:3000',email:'dev@example.com'};",
     ]) {
       expect(redactCredentials(text).text, text).toBe(text);
     }
@@ -202,15 +224,24 @@ describe("redactCredentials (docs/326-ops-session-transcript req 3)", () => {
       // One shell word made of quoted and bare parts, and an escaped space.
       [`PASSWORD='ab'"'"'cd' rest`, `PASSWORD=${R} rest`],
       [String.raw`PASSWORD=one\ two rest`, `PASSWORD=${R} rest`],
+      // A quoted value that starts with a comma or a line end.
+      ['TOKEN=",secret" rest', `TOKEN=${R} rest`],
+      ['TOKEN="\r\nsecret" rest', `TOKEN=${R} rest`],
+      // A backslash before a letter is part of the value.
+      [String.raw`TOKEN=one\two rest`, `TOKEN=${R} rest`],
       // A quote that never closes hides the rest: too much is safer than too little.
       ['A_TOKEN="abc def', `A_TOKEN=${R}`],
       ['X_TOKEN=abc"def rest', `X_TOKEN=${R}`],
+      ['echo "set A_TOKEN="', `echo "set A_TOKEN=${R}`],
       // As `docker inspect` prints an environment, spaced and compact.
       [`"Env": ["API_KEY=abc123", "PATH=/usr/bin"]`, `"Env": ["API_KEY=${R}", "PATH=/usr/bin"]`],
       [`{"env":["API_KEY=abc123","PATH=/usr/bin"]}`, `{"env":["API_KEY=${R}","PATH=/usr/bin"]}`],
-      // As JSON prints a quoted value: the quotes escaped, and an escaped quote escaped twice.
-      [String.raw`"env": "FOO_TOKEN=\"abc def\"" rest`, `"env": "FOO_TOKEN=${R}" rest`],
+      // As JSON prints a shell value: the quotes escaped, an escaped quote escaped twice, a
+      // part after the closing quote, and an escaped space.
+      [String.raw`{"env": "FOO_TOKEN=\"abc def\""}`, `{"env": "FOO_TOKEN=${R}"}`],
       [String.raw`{"env":"DB_PASSWORD=\"abc\\\"def\""}`, `{"env":"DB_PASSWORD=${R}"}`],
+      [String.raw`{"out":"TOKEN=\"abc\"def"}`, `{"out":"TOKEN=${R}"}`],
+      [String.raw`{"out":"TOKEN=one\\ two"}`, `{"out":"TOKEN=${R}"}`],
       // As JSON prints two lines: the written-out line end closes the first value.
       [String.raw`{"out":"A_TOKEN=abc\nNEXT=1"}`, String.raw`{"out":"A_TOKEN=` + R + String.raw`\nNEXT=1"}`],
       // A secret inside the quoted value of a name that is not a secret.
@@ -235,8 +266,10 @@ describe("redactCredentials (docs/326-ops-session-transcript req 3)", () => {
       "env:\n  - TOKEN_TTL=3600\n  - SECRET_NAME=billing-prod",
       "PATH=/usr/bin",
       // No value.
-      'echo "set A_TOKEN="',
       "A_TOKEN=\nnext line",
+      // A tokenizer is not a token, and `==` is a comparison.
+      "TOKENIZERS_PARALLELISM=false",
+      "if TOKEN==expected: pass",
     ]) {
       expect(redactCredentials(input).text, input).toBe(input);
     }
@@ -268,6 +301,9 @@ describe("redactCredentials (docs/326-ops-session-transcript req 3)", () => {
     expect(redactCredentials(legacy.join("\n")).text).toBe(R);
     // With the line ends of Windows.
     expect(redactCredentials(`${key.replaceAll("\n", "\r\n")}\r\ndone`).text).toBe(`${R}\r\ndone`);
+    // With lines of eight characters, which a key parser accepts.
+    const narrow = [keyLine("BEGIN"), "MC4CAQAw", "BQYDK2Vw", "BCIEICVj", "3OV0+b6w", keyLine("END")].join("\n");
+    expect(redactCredentials(narrow).text).toBe(R);
   });
 
   it("leaves source code that only names the key marker as it is", () => {
