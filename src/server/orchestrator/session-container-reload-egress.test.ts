@@ -435,6 +435,12 @@ describe("reconcileAdoptedFirewalls — a kept contained agent's sidecars", () =
     expect(opts.decisionUrl).toMatch(/^http:\/\/[^/]+:4123\/api\/egress\/decision$/);
   });
 
+  it("asks about the allowlist a resolver started now would be built from", async () => {
+    const manager = await buildManager({ contained: true, extraHosts: ["api"], base: ["example.com"] });
+    await manager.reconcileAdoptedFirewalls({ retryDelayMs: 0 });
+    expect(staleEgressSidecars.mock.calls[0][1].allowlist).toEqual(["example.com", "api"]);
+  });
+
   it("replaces the stale sidecars with the session's current policy", async () => {
     staleEgressSidecars.mockResolvedValue({ resolver: true, proxy: false });
     const manager = await buildManager({
