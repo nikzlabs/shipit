@@ -81,6 +81,10 @@ export async function postTurnCommit(
       else arm();
       return;
     }
+    if (block.atMergedHead) {
+      console.log(`[merged-push-guard] ${sessionId}: HEAD is the merged pull request's head — nothing to push.`);
+      return;
+    }
     console.warn(
       `[merged-push-guard] auto-push refused for ${sessionId}: pull request `
         + `${block.prNumber ? `#${block.prNumber}` : "(unknown)"} already merged and this commit `

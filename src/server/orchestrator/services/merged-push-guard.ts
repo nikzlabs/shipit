@@ -12,6 +12,11 @@ export interface MergedPushBlock {
   prNumber?: number;
   baseBranch?: string;
   branch?: string;
+  /**
+   * HEAD is the merged head itself, so the work shipped and there is nothing to
+   * report. The push stays refused: it could only recreate a deleted branch.
+   */
+  atMergedHead?: true;
 }
 
 export async function evaluateMergedBranchPush(
@@ -25,6 +30,8 @@ export async function evaluateMergedBranchPush(
     const anchor = session.mergedHeadSha;
     if (anchor) {
       const head = await git.getHeadHash();
+      // Before the ancestry test: a commit is its own ancestor.
+      if (head === anchor) return { atMergedHead: true };
       if (head && !(await git.isAncestor(anchor, head))) return null;
     }
 

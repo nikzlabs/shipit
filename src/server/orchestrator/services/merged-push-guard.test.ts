@@ -55,6 +55,14 @@ describe("evaluateMergedBranchPush", () => {
     expect(git.isAncestor).toHaveBeenCalledWith(MERGED_SHA, NEW_HEAD);
   });
 
+  // A commit is its own ancestor, so the stacked test alone also matched an
+  // agent that opened and merged its own PR in one turn.
+  it("refuses the push but reports nothing new when HEAD IS the merged head", async () => {
+    const git = makeGit({ head: MERGED_SHA });
+    const block = await evaluateMergedBranchPush(makeSession(), () => makePrStatus(), git);
+    expect(block).toEqual({ atMergedHead: true });
+  });
+
   it("allows the push for a session that never merged (one property read, no git)", async () => {
     const session = makeSession();
     delete session.mergedAt;
