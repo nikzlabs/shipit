@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>link N different programs</title>
+<canvas id="c" width="480" height="320"></canvas>
+<script>
+// run(n, salt, mode): link n different programs made from the three.js source pairs in sources.json.
+// The same salt gives the same sources. A new salt gives different sources.
+// mode "sync": ask LINK_STATUS for each program (blocks). mode "poll": wait on COMPLETION_STATUS_KHR in animation frames.
+window.run = async (n, salt, mode = "sync") => {
+  const pairs = await (await fetch("sources.json")).json();
+  const gl = document.getElementById("c").getContext("webgl2", { antialias: false });
+  if (!gl) return { error: "no webgl2 context" };
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const par = gl.getExtension("KHR_parallel_shader_compile");
+  const out = { renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), parallelExt: !!par, n, salt, mode, pairs: pairs.length };
+
+  // Each variant differs in its text and in what it computes.
+  const variant = (text, i, isFs) => {
+    const tag = `#define SHIPIT_UNIQ ${i}.0\n#define SHIPIT_SALT ${salt}.0\n`;
+    let t = text.replace(/^(#version 300 es[^\n]*\n)/, `$1${tag}`);
+    if (isFs) {
+      const k = t.lastIndexOf("}");
+      t = `${t.slice(0, k)}\n\tgl_FragColor.rgb += vec3( ( SHIPIT_UNIQ + SHIPIT_SALT * 1000.0 ) * 1.0e-7 );\n}${t.slice(k + 1)}`;
+    }
+    return t;
+  };
+
+  let maxGap = 0, lastFrame = performance.now(), frames = 0, watching = true;
+  const tick = (t) => { maxGap = Math.max(maxGap, t - lastFrame); lastFrame = t; frames++; if (watching) requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  maxGap = 0; frames = 0; lastFrame = performance.now();
+
+  const progs = [];
+  const tStart = performance.now();
+  let tFirstLink = 0;
+  for (let i = 0; i < n; i++) {
+    const p = pairs[i % pairs.length];
+    const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, variant(p.vs, i, false)); gl.compileShader(vs);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, variant(p.fs, i, true)); gl.compileShader(fs);
+    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+    if (!tFirstLink) tFirstLink = performance.now();
+    gl.linkProgram(prog);
+    progs.push({ prog, vs, fs });
+  }
+  const tSubmitted = performance.now();
+
+  if (mode === "poll" && par) {
+    let pending = progs.slice();
+    while (pending.length) {
+      await new Promise((r) => requestAnimationFrame(r));
+      pending = pending.filter((x) => !gl.getProgramParameter(x.prog, par.COMPLETION_STATUS_KHR));
+    }
+  }
+  let failed = 0, firstLog = null;
+  const perProg = [];
+  let prev = performance.now();
+  for (const x of progs) {
+    if (!gl.getProgramParameter(x.prog, gl.LINK_STATUS)) {
+      failed++;
+      firstLog ??= (gl.getProgramInfoLog(x.prog) || gl.getShaderInfoLog(x.fs) || gl.getShaderInfoLog(x.vs) || "").slice(0, 400);
+    }
+    const now = performance.now(); perProg.push(now - prev); prev = now;
+  }
+  const tLinked = performance.now();
+  const gapDuringLink = maxGap, framesDuringLink = frames;
+
+  // First draw with each program: this is where a driver can compile again for the pipeline state.
+  const unitOf = new Map([[gl.SAMPLER_2D, 0], [gl.SAMPLER_CUBE, 1], [gl.SAMPLER_2D_SHADOW, 2], [gl.SAMPLER_3D, 3], [gl.SAMPLER_2D_ARRAY, 4], [gl.SAMPLER_CUBE_SHADOW, 5], [gl.SAMPLER_2D_ARRAY_SHADOW, 6]]);
+  const tDraw0 = performance.now();
+  for (const x of progs) {
+    gl.useProgram(x.prog);
+    const count = gl.getProgramParameter(x.prog, gl.ACTIVE_UNIFORMS) || 0;
+    for (let u = 0; u < count; u++) {
+      const info = gl.getActiveUniform(x.prog, u);
+      if (!info || !unitOf.has(info.type)) continue;
+      const loc = gl.getUniformLocation(x.prog, info.name);
+      if (loc) gl.uniform1iv(loc, new Int32Array(info.size).fill(unitOf.get(info.type)));
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const tDrawn = performance.now();
+  const glError = gl.getError();
+  watching = false;
+
+  perProg.sort((a, b) => a - b);
+  return {
+    ...out, failed, firstLog, glError,
+    submitMs: Math.round(tSubmitted - tStart),
+    linkMs: Math.round(tLinked - tFirstLink),
+    perProgramMs: Math.round((tLinked - tFirstLink) / n * 10) / 10,
+    slowestStatusMs: Math.round(perProg[perProg.length - 1]),
+    firstDrawMs: Math.round(tDrawn - tDraw0),
+    maxFrameGapMs: Math.round(gapDuringLink), framesDuringLink,
+  };
+};
+</script>

@@ -762,13 +762,17 @@ its own, which also comes back on each load. Measured on one host (an RTX
 4090, Mesa 22.3.6) with 200 three.js programs: on average 22 to 37 ms to link
 a program on a first load, 16 to 22 ms on a reload with the same shaders, and
 35 to 44 ms for its first draw. The browser's GPU process used about one CPU
-core for this, and a page that waited on `COMPLETION_STATUS_KHR` got one
-animation frame while the 200 programs linked. The cache variables of Mesa,
-`--disable-gpu-program-cache` and Mesa 25.0.7 did not remove the link or the
-first-draw cost of a reload. Another card, host or page can give other
-numbers. So when you measure a page load on the GPU, time the link and the
-first draws separately, and measure a warm load before you expect it to be
-faster.
+core for this. Two later browsers, which ran while other processes used the
+CPUs of the host, took about 1.5 times as long. The cause was not examined.
+The test page got no animation frame during the link when it asked for
+`LINK_STATUS` of each program immediately. When it waited on
+`COMPLETION_STATUS_KHR`, it kept about 60 frames each second while 20, 50 and
+100 programs linked, and it got one frame while 150 and 200 programs linked.
+The cache variables of Mesa, `--disable-gpu-program-cache` and Mesa 25.0.7 did
+not remove the link or the first-draw cost of a reload. Another card, host or
+page can give other numbers. So when you measure a page load on the GPU, time
+the link and the first draws separately, measure a warm load before you
+expect it to be faster, and record the load on the host with each run.
 
 What this does not cover:
 
