@@ -207,7 +207,7 @@ change, i.e. the result is not delivered.
 
 **A plain `run_in_background` job is not a consult, and is not covered here.** A build
 or a test run that the agent backgrounded on a one-shot turn is stopped by the CLI at
-turn end and has no result to deliver. `docs/235-agent-self-wake-liveness/plan.md` §8
+turn end and has no result to deliver. `docs/235-agent-self-wake-liveness/plan.md` §9
 covers it: ShipIt tells the agent what was stopped. While a consult is in flight, that
 note is parked for the turn this delivery starts, so the two never start a turn each.
 

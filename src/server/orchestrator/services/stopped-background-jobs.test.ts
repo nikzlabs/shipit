@@ -82,7 +82,7 @@ function makeCtx() {
   return { sessionManager, chatHistoryManager, runner, deps, notices };
 }
 
-describe("reportStoppedBackgroundJobs (docs/235 §8)", () => {
+describe("reportStoppedBackgroundJobs (docs/235 §9)", () => {
   let ctx: ReturnType<typeof makeCtx>;
 
   beforeEach(() => {

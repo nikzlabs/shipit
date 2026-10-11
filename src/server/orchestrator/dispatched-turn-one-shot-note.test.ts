@@ -9,7 +9,7 @@ import {
   type FakeAgent,
 } from "./integration_tests/dispatch-test-helpers.js";
 
-// docs/235 §8 — a turn that ShipIt starts runs on a process that exits when the message ends.
+// docs/235 §9 — a turn that ShipIt starts runs on a process that exits when the message ends.
 describe("dispatched turn — the one-shot note in the prompt", () => {
   let runner: SessionRunner;
   afterEach(() => { runner?.dispose({ force: true }); vi.restoreAllMocks(); });

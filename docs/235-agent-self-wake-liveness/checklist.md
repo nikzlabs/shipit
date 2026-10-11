@@ -77,7 +77,7 @@
       commit/PR promises, so a wake landing mid-flow can't be handed an
       already-settled flow and commit nothing
 
-## §8 — a one-shot process stops its jobs
+## §9 — a one-shot process stops its jobs
 
 - [x] `turn-executor` reads the task list at each result of a non-streaming turn
       and reports what is left at `done`, as the last step of the terminal

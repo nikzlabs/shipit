@@ -1,5 +1,5 @@
 // A one-shot CLI stops the background jobs that still run when its turn ends, and raises no
-// completion notice for them, so ShipIt tells the agent (docs/235-agent-self-wake-liveness §8).
+// completion notice for them, so ShipIt tells the agent (docs/235-agent-self-wake-liveness §9).
 
 import { randomUUID } from "node:crypto";
 import {

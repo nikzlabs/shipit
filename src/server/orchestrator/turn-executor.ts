@@ -1019,7 +1019,7 @@ export async function executeAgentTurn(
 
   // Before the listeners below, so `onError` can read the error that ended the turn.
   agent.on("error", (err: Error) => { lastAgentError = err; });
-  // Also before them (docs/235 §8): a stopped process still sends a task notification, and
+  // Also before them (docs/235 §9): a stopped process still sends a task notification, and
   // the listeners below adopt that as a new turn, which starts a new Stop record.
   let userStopSeen = false;
   agent.on("event", () => {
@@ -1113,7 +1113,7 @@ export async function executeAgentTurn(
   const stderrTail = createAgentStderrTail();
   agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
 
-  // docs/235-agent-self-wake-liveness §8 — a one-shot CLI stops the jobs that still run about
+  // docs/235-agent-self-wake-liveness §9 — a one-shot CLI stops the jobs that still run about
   // 5 s after its result, then exits. A job that ends in that window gets a turn of the CLI's
   // own, and that turn's result takes the reading again.
   let trackedJobs = new Map<string, string>();

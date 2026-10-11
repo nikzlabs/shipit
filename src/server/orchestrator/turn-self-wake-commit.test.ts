@@ -1909,7 +1909,7 @@ describe("post-turn flow for a self-woken turn", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/235 §8. The event orders below are the CLI's own, measured on 2.1.284.
+  // docs/235 §9. The event orders below are the CLI's own, measured on 2.1.284.
   describe("background jobs a one-shot process stops at its exit", () => {
     const BUILD = { id: "b1", type: "local_bash", description: "npm run build" };
     const RENDER = { id: "b2", type: "local_bash", description: "node render.js" };
@@ -2029,6 +2029,24 @@ describe("post-turn flow for a self-woken turn", () => {
       await h.exit();
 
       expect(h.reportStoppedBackgroundJobs).not.toHaveBeenCalled();
+
+      h.runner.dispose({ force: true });
+    });
+
+    // §8: the resumed process first closes the notice of a job its predecessor left. That
+    // job was this wake's subject; only the jobs of the turn itself are reported.
+    it("reports only this turn's jobs when the turn opens with the previous process's notice", async () => {
+      const h = await startTurn();
+
+      await h.notify("old-job", "stopped");
+      h.tasks(RENDER);
+      await h.result();
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledWith(
+        expect.objectContaining({ jobs: ["node render.js"] }),
+      );
 
       h.runner.dispose({ force: true });
     });

@@ -273,7 +273,7 @@ async function runDispatchedTurnInner(
       ? deps.sessionStatusContext?.(runner.sessionId) ?? ""
       : "";
 
-  // docs/235-agent-self-wake-liveness §8 — a system turn always runs on a one-shot process,
+  // docs/235-agent-self-wake-liveness §9 — a system turn always runs on a one-shot process,
   // and the agent cannot see that. Only where a resident process starts a turn when a
   // background job ends: there the agent ends a message to wait for one. A driver-owned
   // turn's prompt is the driver's script, so the note stays off it like the notice above.

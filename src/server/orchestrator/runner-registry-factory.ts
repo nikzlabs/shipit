@@ -136,7 +136,7 @@ export interface RunnerRegistryDeps {
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
   /** docs/324-agent-requested-compaction — likewise. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
-  /** docs/235-agent-self-wake-liveness §8 — likewise. */
+  /** docs/235-agent-self-wake-liveness §9 — likewise. */
   reportStoppedBackgroundJobs?: SystemTurnDeps["reportStoppedBackgroundJobs"];
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
