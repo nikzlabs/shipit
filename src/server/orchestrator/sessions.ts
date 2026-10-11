@@ -840,7 +840,7 @@ export class SessionManager {
     ).run(anchor, id);
   }
 
-  /** docs/218 req 6 — this merge's compaction was started; a later message must not start another. */
+  /** docs/218 req 6 — this merge's compaction offer is spent; a later message must not compact. */
   setMergeContinueCompacted(id: string, anchor: string): void {
     this.db.prepare(
       "UPDATE sessions SET merge_continue_compacted_anchor = ? WHERE id = ?",

@@ -95,6 +95,7 @@ export function compactRunsBeforeTurn(sessionId: string | undefined, text: strin
   if (isCompactCommand(trimmed) || isGoalCommand(trimmed)) return false;
   if (useSessionStore.getState().isLoading) return false;
   if (!usePrStore.getState().resetEligibleBySession[sessionId]) return false;
+  if (usePrStore.getState().compactionSpentBySession[sessionId]) return false;
   if (!useSettingsStore.getState().autoResetMergedBranch) return false;
   const ui = useUiStore.getState();
   const supportsCompaction =

@@ -309,11 +309,12 @@ button on a ShipIt card, and a message that a page you built sends through
 merge, a message from another session — has no tick to read, so the setting
 alone decides and it resets and compacts.
 
-The offer belongs to the first message after the merge, so the context is
-compacted at most once for each merge. If the reset could not be done on that
-message, a notice in the transcript gives the reason and your prompt says the
-branch was not reset. ShipIt does not try again by itself and the tick boxes do
-not come back: run `shipit branch reset-to-base`.
+The context is compacted at most once for each merge: after a message
+compacted it, or was sent with **Compact the context** unticked, that box does
+not come back. If the reset could not be done on that message, a notice in the
+transcript gives the reason and your prompt says the branch was not reset. The
+**Start from the latest base** box stays for the next message, which tries the
+reset again; `shipit branch reset-to-base` does it at once.
 
 A session works one pull request at a time, so a second one is a fresh start on
 the same session, not two open at once.

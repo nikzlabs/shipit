@@ -353,32 +353,13 @@ describe("applyPreTurnReset — the branch did not move", () => {
     );
   });
 
-  it("records the answer when a reset that was due failed, so no later message repeats the offer", async () => {
+  it("records nothing when a reset that was due failed: the next turn offers it again", async () => {
     const h = makeHarness({ git: makeGit({ fetch: vi.fn().mockRejectedValue(new Error("no network")) }) });
     const result = await run(h);
 
-    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith(
-      "s1",
-      mergeContinueAnchor(makeSession()),
-    );
-    expect(h.emitted).toContainEqual({ type: "reset_eligible", sessionId: "s1", eligible: false });
+    expect(h.deps.sessionManager.setMergeContinueDeclined).not.toHaveBeenCalled();
+    expect(h.emitted.filter((m) => m.type === "reset_eligible")).toEqual([]);
     expect(result.agentPrefix).toContain("the reset could not be completed (no network)");
-  });
-
-  it("records the answer when a blocker stops the reset AFTER this merge's compaction", async () => {
-    const compacted = makeSession();
-    compacted.mergeContinueCompactedAnchor = mergeContinueAnchor(compacted)!;
-    const h = makeHarness({
-      session: compacted,
-      git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }),
-    });
-    await run(h);
-
-    // The message took the offer by compacting; the dirty tree is no longer just an obstacle.
-    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith(
-      "s1",
-      mergeContinueAnchor(compacted),
-    );
   });
 
   it("records nothing when the reset was refused rather than declined", async () => {

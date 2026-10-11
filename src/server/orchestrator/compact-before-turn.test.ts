@@ -127,7 +127,14 @@ describe("shouldCompactBeforeTurn", () => {
   it("says no when the user unticked the control for this message (req 5)", async () => {
     const marked: string[] = [];
     expect(await ask({ intent: false, marked })).toBe(false);
-    // An untick is not a compaction: nothing is recorded against the merge.
+    // The untick answers this merge's compaction offer, so a later message must not compact.
+    expect(marked).toHaveLength(1);
+  });
+
+  it("records nothing for an untick on a session with no offer", async () => {
+    const marked: string[] = [];
+    const notMerged = makeSession({ mergedAt: undefined });
+    expect(await ask({ session: notMerged, intent: false, marked })).toBe(false);
     expect(marked).toEqual([]);
   });
 

@@ -130,7 +130,7 @@ export interface SessionInfo {
    * which one is spent.
    */
   mergeContinueDeclinedAnchor?: string;
-  /** docs/218 req 6 — the merge whose context compaction was already started; same identity as above. */
+  /** docs/218 req 6 — the merge whose compaction offer is spent (started, or unticked); same identity as above. */
   mergeContinueCompactedAnchor?: string;
   /** Durable, last-write-wins notice consumed atomically by the next interactive turn. */
   pendingAgentNotice?: string;

@@ -233,7 +233,7 @@ describe("Integration: a dispatched message on a merged session with a real orig
     client.close();
   });
 
-  it("says why when the reset fails, and no later message compacts or resets for the same merge", async () => {
+  it("says why when the reset fails; the next message resets the branch and does not compact again", async () => {
     markMerged();
     fs.renameSync(path.join(tmpDir, "origin.git"), path.join(tmpDir, "origin-gone.git"));
     const mergedHead = head();
@@ -255,16 +255,16 @@ describe("Integration: a dispatched message on a merged session with a real orig
     const history = res.json() as { messages: { text?: string; notice?: { text?: string } }[] };
     expect(JSON.stringify(history.messages)).toContain("the reset could not be completed");
 
-    // Still merged and on the merged head, which read as eligible before. The origin is
-    // reachable again, so a reset that was still on offer would now move the branch.
+    // Still merged and on the merged head: the reset is still due, the compaction is not.
     expect(sessionManager.get(SESSION_ID)?.mergedAt).toBeDefined();
     fs.renameSync(path.join(tmpDir, "origin-gone.git"), path.join(tmpDir, "origin.git"));
     await dispatch("second from the page");
     const next = await waitForClaude(() => spawns.at(-1) ?? (null as never), userTurn);
     expect(next.lastPrompt).toContain("second from the page");
-    expect(next.lastPrompt).toContain("NOT reset to origin/main");
+    expect(next.lastPrompt).toContain("automatically reset to the latest origin/main");
     expect(spawns.filter((s) => s.lastCompact)).toHaveLength(1);
-    expect(head()).toBe(mergedHead);
+    expect(head()).toBe(baseTip);
+    expect(sessionManager.get(SESSION_ID)?.mergedAt).toBeUndefined();
 
     client.close();
   });

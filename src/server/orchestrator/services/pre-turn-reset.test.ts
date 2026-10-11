@@ -381,12 +381,19 @@ describe("autoResetMergedBranchOnContinue", () => {
     expect(out.skip?.level).toBe("warn");
     expect(out.skip?.detail).toContain("fatal: unable to access the remote");
     expect(out.skip?.detail).not.toContain("second line");
-    // The offer is over for this merge, so the notice must not promise a retry.
-    expect(out.skip?.notice).toContain("shipit branch reset-to-base");
-    expect(out.skip?.notice).not.toContain("re-evaluated every turn");
+    // Nothing ended the offer, so the next turn does try again.
+    expect(out.skip?.notice).toContain("re-evaluated every turn");
     // A failed fetch does not prove where the branch is relative to the base.
     expect(out.agentPrefix).toContain("NOT reset to origin/main");
     expect(out.agentPrefix).not.toContain("behind the base");
+  });
+
+  it("says why when the first checks throw, before any fetch", async () => {
+    const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("index is corrupt")) });
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(git.fetch).not.toHaveBeenCalled();
+    expect(out.skip?.clause).toBe("reset-failed");
+    expect(out.skip?.detail).toContain("index is corrupt");
   });
 
   it("does not say the branch was not reset when the throw comes after it moved", async () => {
@@ -1037,6 +1044,20 @@ describe("emitResetEligible (the one emit path, and its log line)", () => {
     await emitResetEligible(makeDeps(), { sessionId: "s1", sessionDir: "/ws", origin: "activation", emit });
     expect(emit).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("reset_eligible=true for s1 (activation)"));
+    log.mockRestore();
+  });
+
+  it("keeps the reset on offer and says the compaction is spent (docs/218 req 6)", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const emit = vi.fn();
+    const s = makeSession();
+    s.mergeContinueCompactedAnchor = mergeContinueAnchor(s)!;
+    await emitResetEligible(makeDeps({ getSession: () => s }), {
+      sessionId: "s1", sessionDir: "/ws", origin: "post-turn", emit,
+    });
+    expect(emit).toHaveBeenCalledWith({
+      type: "reset_eligible", sessionId: "s1", eligible: true, compactionSpent: true,
+    });
     log.mockRestore();
   });
 

@@ -37,8 +37,8 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
   let dbManager: DatabaseManager;
   let repoStore: RepoStore;
   /**
-   * A setup turn on a merged session answers the offer (docs/218 req 6), so a
-   * test that needs one runs it before the merge lands, as a real session does.
+   * A setup turn on a merged session spends the compaction offer (docs/218 req 6),
+   * so a test that needs one runs it before the merge lands, as a real session does.
    */
   let beforeMerge: () => void;
   let mergeLands: () => void;
@@ -248,7 +248,7 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.close();
   });
 
-  it("ends the offer when only the compaction was unticked and the reset then failed (docs/218 req 6)", async () => {
+  it("does not compact a later message when the first unticked it and its reset failed (docs/218 req 6)", async () => {
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
@@ -485,10 +485,8 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.send({ type: "send_message", text: "start the next slice", compactContext: false });
     await waitForClaude(() => spawns.at(-1) ?? (null as never));
 
-    // A `false` may arrive: the fixture's reset fails, which ends the offer. What must
-    // not come back is the pre-turn `true`, which puts the controls on screen again.
     const duringTurn = await client.drain({ quietMs: 300, maxMs: 2000 });
-    expect(duringTurn.filter((m) => m.type === "reset_eligible" && m.eligible)).toEqual([]);
+    expect(duringTurn.filter((m) => m.type === "reset_eligible")).toEqual([]);
 
     client.close();
   });

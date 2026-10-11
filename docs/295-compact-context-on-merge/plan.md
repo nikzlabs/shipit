@@ -316,7 +316,7 @@ without the card — the same loss a review queued behind a merge hold has today
 
 ```
 showResetControl   = resetEligible && autoResetMergedBranch && !isLoading
-showCompactControl = showResetControl && supportsCompaction
+showCompactControl = showResetControl && supportsCompaction && !compactionSpent
 ```
 
 Offered whenever the reset control is, so req 11's single setting governs both
@@ -359,36 +359,48 @@ now ends the offer at the first answer, and `shouldCompactBeforeTurn` reads the
 same `isResetEligible` predicate, so the compaction stands down with the reset.
 One merge, one offer, one compaction.
 
-**An accepted offer ends too.** That closed the offer for an *unticked* first
-message only. A first message that compacted and whose reset then did not
-happen — a fetch error, a blocker that appeared during the compaction — left the
-session merged, clean and on `mergedHeadSha`, so the next message compacted
-again; the user reported exactly that from an agent-built page. Two records now
-end it, both keyed on the merge's anchor:
+**The compaction is offered once for each merge, also when the reset did not
+happen.** That closed the offer for an *unticked reset* only. A first message
+that compacted and whose reset then did not happen — a fetch error, a blocker
+that appeared during the compaction — left the session merged, clean and on
+`mergedHeadSha`, so the next message compacted again; the user reported exactly
+that from an agent-built page. `shouldCompactBeforeTurn` now records the merge's
+anchor (`merge_continue_compacted_anchor`, the same identity the decline uses)
+when it finds the offer live, and answers false for that merge from then on. It
+records on a true answer — at the decision, not at the compaction's result, so a
+compaction that fails is not tried again either — and on an untick, which is an
+answer to the same offer (req 5 and docs/218 req 6 together).
 
-- `shouldCompactBeforeTurn` records `merge_continue_compacted_anchor` when it
-  answers true, and `computeResetEligibility` answers false for that merge from
-  then on. Recorded at the decision, not at the compaction's result, so a
-  compaction that fails is not tried again either. It gates the offer only: the
-  message that compacted still has its own reset to run.
-- `applyPreTurnReset` records the answer (the anchor the decline already used)
-  when the message took the offer and the branch did not move: a reset that was
-  due and failed, or any skip after this merge's compaction. From then on
-  `autoResetMergedBranchOnContinue` stands down as it does after a decline, so
-  no later message resets the branch with no control on screen. A blocker with
-  no compaction is still an obstacle, not an answer, and stays re-evaluated
-  every turn.
+**The reset is not touched by that.** It stays offered until it moves the branch
+or the user unticks it, which is what it did before. A stricter version shipped
+for one review round: it also ended the *reset* offer whenever the first message
+did not move the branch. A second review found that rule incomplete in four
+places (a branch already at the base, a throw in the first checks, a blocker
+that appears during the fetch, a queued message cancelled during its own
+compaction), each leaving a later message to reset with no control on screen,
+and each needing one more rule. The hazard in all of them was a reset with no
+control, not a reset that is retried — so the control is what stays. The
+`reset_eligible` signal carries `compactionSpent`, and the composer then shows
+"Start from the latest base" alone:
+
+```
+showCompactControl = showResetControl && supportsCompaction && !compactionSpent
+```
+
+A ticked "Compact the context" that compacts nothing would be the defect class
+this feature keeps hitting; `compactRunsBeforeTurn` reads the same flag, so the
+prediction and the control cannot disagree.
 
 **A reset that fails says so.** `autoResetMergedBranchOnContinue` used to answer
 a throw with a log line and "not moved", so the turn ran on already-merged
-commits with no notice and no agent prefix. A reset that was due (every check
-passed) and then threw before the branch moved now returns a `reset-failed`
-skip: the transcript carries the notice with the first line of the error, and
-the agent gets the "NOT reset" prefix on this turn and on each later one. The
-notice names `shipit branch reset-to-base` and promises no retry, because the
-offer is over. The prefix does not say the branch is behind the base — a failed
-fetch does not prove that. A throw after the branch moved keeps the old path,
-where the post-turn re-arm finishes the bookkeeping.
+commits with no notice and no agent prefix. A throw before the branch moved —
+in the first checks, the fetch or the reset — now returns a `reset-failed` skip:
+the transcript carries the notice with the first line of the error, and the
+agent gets the "NOT reset" prefix. The notice says the reset is re-evaluated on
+the next turn, which is true, because nothing ended the offer. The prefix does
+not say the branch is behind the base — a failed fetch does not prove that. A
+throw after the branch moved keeps the old path, where the post-turn re-arm
+finishes the bookkeeping.
 
 ## The send opens queued, not running
 
@@ -448,9 +460,9 @@ Advanced description names both.
 
 | File | Role |
 |---|---|
-| `orchestrator/compact-before-turn.ts` | The decision, which also records that this merge's compaction ran; the post-merge `/compact` prompt; `noteMissedCompaction`. |
-| `orchestrator/services/pre-turn-reset.ts` | `compactedThisMerge` in the eligibility answer; the `reset-failed` skip. |
-| `orchestrator/pre-turn-reset-hook.ts` | Records the answer when the offer was taken and the branch did not move. |
+| `orchestrator/compact-before-turn.ts` | The decision, which also records that this merge's compaction offer is spent; the post-merge `/compact` prompt; `noteMissedCompaction`. |
+| `orchestrator/services/pre-turn-reset.ts` | `compactedThisMerge`, `compactionSpent` on the eligibility signal; the `reset-failed` skip. |
+| `client/stores/pr-store.ts`, `client/hooks/message-handlers/reset-eligible.ts` | `compactionSpentBySession`, set from the signal. |
 | `orchestrator/integration_tests/pre-turn-compaction-dispatched.test.ts` | The dispatched path against a real `origin`: reset, req 14's untick, a failed reset. |
 | `orchestrator/ws-handlers/send-message.ts` | The interactive takeover. |
 | `orchestrator/dispatched-turn.ts` | The dispatched takeover (req 13); `/compact` re-derived on the drain (req 12). |
@@ -482,11 +494,16 @@ Advanced description names both.
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.
-- **A reset that failed is not tried again by ShipIt.** docs/218 req 6 gives the
-  offer to one message, so a fetch that fails once leaves the branch on the
-  merged tip until the agent runs `shipit branch reset-to-base`. The notice and
-  the prefix on every later turn are what make that visible. A retry on the
-  next message would move the branch with no control on screen to stop it.
+- **A reset that did not happen is offered again.** docs/218 req 6 says the
+  first message after the merge is the only one that can trigger the reset. A
+  reset that failed or was blocked on that message is still offered on the next
+  one, with its control, as it was before this change. Whether the words of
+  req 6 should win here is an open question in
+  [docs/218's requirements](../218-auto-reset-merged-branch-on-continue/requirements.md).
+- **A branch already at the base keeps its offer.** After a fast-forward merge
+  `HEAD` is the merged head and the base tip at once, so the reset has nothing
+  to do and nothing retires the merge. The control stays; the compaction does
+  not repeat. Older than this change, and not changed by it.
 - **Why the reported reset did not happen is not known.** Three integration
   probes — an idle session, a resident streaming process, and one whose old
   process exits while the compaction starts — all reset the branch. The

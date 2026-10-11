@@ -29,7 +29,14 @@ as the user states more; do not backfill from `plan.md`.
 
 ## Open questions
 
-None.
+- Requirement 6 says the first message after the merge is the only one that can
+  trigger the branch reset. When that message accepted the reset and the reset
+  did not happen — the fetch failed, or a blocker appeared — the shipped code
+  offers the reset again on the next message, with its control. An independent
+  review read that as against requirement 6. Which is wanted: offer the reset
+  again until it happens or is unticked, or end the offer and leave
+  `shipit branch reset-to-base` as the only way? (The compaction is not part of
+  this question: it is offered once for each merge in both cases.)
 
 ## Resolved questions
 

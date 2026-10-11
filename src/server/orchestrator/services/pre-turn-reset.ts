@@ -36,7 +36,6 @@ export type ResetSkipClause =
   | "setting-off"
   | "opted-out"
   | "already-declined"
-  | "already-compacted"
   | "no-merged-head-sha"
   | "no-base-branch"
   | "dirty-tree"
@@ -93,34 +92,25 @@ export function declinedThisMerge(session: SessionInfo | undefined): boolean {
   return anchor !== undefined && session?.mergeContinueDeclinedAnchor === anchor;
 }
 
-// Also the answer of a message that accepted the reset and could not carry it out.
 const ALREADY_DECLINED: ResetSkip = {
   clause: "already-declined",
   detail:
-    "this merge's offer to start from the latest base was already answered by an earlier "
-    + "message — it was unticked, or the reset could not be done then — and it is not made "
-    + "again for the same merge",
+    "“start from the latest base” was unticked when this pull request merged, and that "
+    + "choice stands for this merge rather than being re-offered on every later message",
 };
 
 /**
- * docs/218 req 6 — a message took this merge's offer: its compaction was started.
- * A reset that then does not move the branch leaves the session merged, clean and
- * on `mergedHeadSha`, which reads as eligible, so without this the next message
- * compacted again. It gates the OFFER only: the message that compacted still has
- * its own reset to run, so `autoResetMergedBranchOnContinue` does not read it.
- * `applyPreTurnReset` records the answer when that reset does not move the branch.
+ * docs/218 req 6 — this merge's compaction offer is spent: a message started the
+ * compaction, or unticked it. A reset that does not move the branch leaves the
+ * session merged, clean and on `mergedHeadSha`, which is exactly the eligible
+ * state, so without this the next message compacted again. It says nothing about
+ * the reset: that stays offered, with its own control, until it moves the branch
+ * or the user unticks it.
  */
 export function compactedThisMerge(session: SessionInfo | undefined): boolean {
   const anchor = mergeContinueAnchor(session);
   return anchor !== undefined && session?.mergeContinueCompactedAnchor === anchor;
 }
-
-const ALREADY_COMPACTED: ResetSkip = {
-  clause: "already-compacted",
-  detail:
-    "an earlier message already started the context compaction for this merge, so the "
-    + "offer is not made again",
-};
 
 const DIRTY_PATH_LIMIT = 10;
 
@@ -230,6 +220,8 @@ export interface ResetEligibility {
   eligible: boolean;
   merged: boolean;
   blocker: ResetSkip | null;
+  /** docs/295 — the reset may still be on offer, but this merge's compaction is not. */
+  compactionSpent: boolean;
   error?: string;
 }
 
@@ -239,24 +231,26 @@ export async function computeResetEligibility(
   sessionDir: string,
 ): Promise<ResetEligibility> {
   let merged = false;
+  let compactionSpent = false;
   try {
     const session = deps.getSession(sessionId);
-    if (!session?.mergedAt) return { eligible: false, merged: false, blocker: null };
+    if (!session?.mergedAt) return { eligible: false, merged: false, blocker: null, compactionSpent };
     merged = true;
+    compactionSpent = compactedThisMerge(session);
     // Answered for this merge: no control, and no compaction either — the
     // compaction decision reads this same predicate (docs/295).
     if (declinedThisMerge(session)) {
-      return { eligible: false, merged: true, blocker: ALREADY_DECLINED };
-    }
-    if (compactedThisMerge(session)) {
-      return { eligible: false, merged: true, blocker: ALREADY_COMPACTED };
+      return { eligible: false, merged: true, blocker: ALREADY_DECLINED, compactionSpent };
     }
     const prStatus = deps.getPrStatus(sessionId);
     const git = deps.createGitManager(sessionDir);
     const blocker = await computeResetBlocker(session, prStatus, git);
-    return { eligible: blocker === null, merged: true, blocker };
+    return { eligible: blocker === null, merged: true, blocker, compactionSpent };
   } catch (err) {
-    return { eligible: false, merged, blocker: null, error: err instanceof Error ? err.message : String(err) };
+    return {
+      eligible: false, merged, blocker: null, compactionSpent,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -278,14 +272,15 @@ export async function emitResetEligible(
 ): Promise<ResetEligibility> {
   const { sessionId, sessionDir, origin, emit } = args;
   const result = await computeResetEligibility(deps, sessionId, sessionDir);
-  const { eligible, merged, blocker, error } = result;
+  const { eligible, merged, blocker, compactionSpent, error } = result;
   if (merged) {
     const why = error
       ? `: computation failed (${error}) — failing closed`
       : blocker ? `: ${blocker.clause} — ${blocker.detail}` : "";
-    console.log(`[pre-turn-reset] reset_eligible=${eligible} for ${sessionId} (${origin})${why}`);
+    const spent = compactionSpent ? " [compaction spent for this merge]" : "";
+    console.log(`[pre-turn-reset] reset_eligible=${eligible} for ${sessionId} (${origin})${why}${spent}`);
   }
-  emit({ type: "reset_eligible", sessionId, eligible });
+  emit({ type: "reset_eligible", sessionId, eligible, ...(compactionSpent ? { compactionSpent: true } : {}) });
   return result;
 }
 
@@ -315,8 +310,8 @@ export async function announceResetStateOnMerge(
       clearResetSkipEpisode(sessionId);
       return;
     }
-    // An answered offer is not a refusal of the reset; the notice below would say it was.
-    if (blocker.clause === "already-compacted" || blocker.clause === "already-declined") return;
+    // A declined offer is not a refusal of the reset; the notice below would say it was.
+    if (blocker.clause === "already-declined") return;
 
     if (!deps.chatHistory) {
       console.error(
@@ -379,7 +374,7 @@ export async function autoResetMergedBranchOnContinue(
   intent?: boolean,
 ): Promise<ResetOutcome> {
   let mutatedWorkspace = false;
-  // Set once the reset is due; cleared when the branch has moved.
+  // Set once nothing but git stands between this turn and the reset; cleared when the branch moved.
   let due: { session: SessionInfo; prStatus: PrStatusSummary | null } | null = null;
   try {
     const session = deps.getSession(sessionId);
@@ -408,6 +403,7 @@ export async function autoResetMergedBranchOnContinue(
       return skipped(sessionId, session, prStatus, ALREADY_DECLINED);
     }
 
+    due = { session, prStatus };
     const git = deps.createGitManager(sessionDir);
 
     const blocker = await computeResetBlocker(session, prStatus, git);
@@ -416,7 +412,6 @@ export async function autoResetMergedBranchOnContinue(
 
     // Fetch writes .git and yields; hand back ownership and recheck before resetting.
     mutatedWorkspace = true;
-    due = { session, prStatus };
     await git.fetch("origin");
     const blockerAfterFetch = await computeResetBlocker(session, prStatus, git);
     if (blockerAfterFetch) return skipped(sessionId, session, prStatus, blockerAfterFetch);
@@ -467,8 +462,8 @@ export async function autoResetMergedBranchOnContinue(
     };
   } catch (err) {
     console.error(`[pre-turn-reset] auto-reset failed for ${sessionId} (running turn on the un-moved branch):`, err);
-    // A reset that was due and did not happen must say so: without the notice and the
-    // prefix, the turn runs on already-merged commits and neither the user nor the agent knows.
+    // A reset that could not be done must say so: without the notice and the prefix, the
+    // turn runs on already-merged commits and neither the user nor the agent knows.
     if (due) {
       const why = (err instanceof Error ? err.message : String(err)).trim().split("\n")[0].slice(0, 300);
       return skipped(sessionId, due.session, due.prStatus, {
@@ -514,10 +509,10 @@ function buildSkipNotice(skip: ResetSkip, prNumber?: number, base?: string): str
   const pr = prNumber ? `#${prNumber}` : "for this session";
   const into = base ? ` into ${base}` : "";
   const target = base ? `origin/${base}` : "the latest base";
-  // An answered offer is not re-evaluated (docs/218 req 6), so it must not be told
+  // A declined offer is not re-evaluated (docs/218 req 6), so it must not be told
   // that sending another message brings it back.
   const howToGetIt =
-    skip.clause === "opted-out" || skip.clause === "already-declined" || skip.clause === "reset-failed"
+    skip.clause === "opted-out" || skip.clause === "already-declined"
       ? `To move the branch after all, ask the agent to run \`shipit branch reset-to-base\`.`
       : `Clear the reason above and send another message (the reset is re-evaluated every turn), `
         + `or ask the agent to run \`shipit branch reset-to-base\`.`;

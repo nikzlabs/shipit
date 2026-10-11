@@ -326,10 +326,13 @@ export function MessageInput({
   const showResetControl = resetEligible && autoResetMergedBranch && !isLoading;
 
   // docs/295 — offered whenever the reset control is (reqs 1, 3, 11), if the
-  // backend can compact (req 10). No occupancy threshold (req 3).
+  // backend can compact (req 10). No occupancy threshold (req 3). Not offered a
+  // second time for the same merge (docs/218 req 6): the reset can still be due
+  // then, and a ticked box that compacts nothing would say otherwise.
   const agentSupportsCompaction =
     agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
-  const showCompactControl = showResetControl && agentSupportsCompaction;
+  const compactionSpent = usePrStore((s) => (sessionId ? s.compactionSpentBySession[sessionId] ?? false : false));
+  const showCompactControl = showResetControl && agentSupportsCompaction && !compactionSpent;
 
   /**
    * Both controls' tick state, and why it is not component state.
