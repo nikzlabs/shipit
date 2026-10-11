@@ -62,6 +62,9 @@ const TIER1_TIMEOUT_MS = 30_000;
 const TIER2_TIMEOUT_MS = 60_000;
 const KILL_SETTLE_MS = 5_000;
 
+// Session naming's CLI times out after 15 s. Past this a tick stops waiting for a run, but does not probe.
+const PRIVATE_RUN_WAIT_MS = 30_000;
+
 const TIMED_OUT = "[timeout] claude CLI did not exit in time";
 const INSTALL_FAILED = "[install-failed] the rotated credential is kept for the next tick";
 
@@ -157,6 +160,7 @@ type ProbeResult = "installed" | "rejected" | "unchanged" | "superseded" | "inst
 export type RefreshOutcome =
   | "rotated_tier1"
   | "rotated_tier2"
+  | "rotated_private_run"
   | "harvested_session"
   | "noop"
   | "rate_limited"
@@ -190,6 +194,10 @@ interface AccountState {
   pendingRotation: ProbeHome | null;
   // Until then a turn start leaves the retry to the schedule's backoff.
   retryNotBefore: number;
+  // Each resolves when its run's copy is settled. A tick waits for them: both can spend one grant.
+  privateRuns: Set<Promise<void>>;
+  // A run's rejected grant, judged when no other run that can hold its successor is open.
+  unjudgedRejection: string | null;
 }
 
 export interface ClaudeOAuthRefresherDeps {
@@ -295,6 +303,90 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     return after > this.deps.now();
   }
 
+  // For a model call outside the refresher (session naming): the copy keeps the real expiry, and
+  // what the CLI does to it is judged as a probe's result is, so that the source is never written
+  // by the CLI and a grant the CLI spent is not lost (docs/153).
+  async runInPrivateCopy<T>(accountId: string, run: (home: string) => Promise<T>): Promise<T> {
+    const state = this.ensureAccountState(accountId);
+    while (state.inFlight) await state.inFlight.catch(() => undefined);
+    let copy: ProbeHome;
+    try {
+      copy = this.createProbeHome(this.sourceFileFor(accountId), null);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? "unreadable source";
+      // eslint-disable-next-line preserve-caught-error -- a JSON parse error quotes the credential file.
+      throw new Error(`The Claude account's credentials could not be copied (${code}).`);
+    }
+    let release = (): void => {};
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    state.privateRuns.add(settled);
+    try {
+      return await run(copy.home);
+    } finally {
+      this.settlePrivateRun(accountId, copy, state.privateRuns.size > 1);
+      state.privateRuns.delete(settled);
+      release();
+    }
+  }
+
+  // Never throws: it runs in the caller's finally.
+  private settlePrivateRun(accountId: string, copy: ProbeHome, othersOpen: boolean): void {
+    const state = this.ensureAccountState(accountId);
+    try {
+      const before = this.readSourceExpiresAt(accountId);
+      const result = this.adoptProbeRotation(accountId, copy);
+      const after = this.readSourceExpiresAt(accountId);
+      if (result === "installed" && after !== NO_EXPIRY) {
+        this.handleSuccess(accountId, before, after, "rotated_private_run");
+      } else if (copy.outstanding) {
+        const kept = state.pendingRotation;
+        const keptFor = kept ? this.readSourceFor(kept, this.sourceFileFor(accountId)).state : null;
+        // Only where a tick would give the kept rotation up: the source is gone or holds another credential.
+        if (kept && keptFor !== "replaced" && keptFor !== "gone") {
+          console.error(`[claude-oauth-refresh] account=${accountId} a rotation is kept already; this copy is left at ${copy.home}`);
+        } else {
+          if (kept) this.removeProbeHome(kept);
+          state.pendingRotation = copy;
+          this.scheduleBackoff(accountId, RETRY_NOW_MS);
+        }
+      } else if (result === "rejected" && this.readSourceIdentity(accountId) === copy.seedIdentity) {
+        state.unjudgedRejection = copy.seedIdentity;
+      }
+      const rejected = othersOpen ? null : state.unjudgedRejection;
+      if (rejected === null) return;
+      state.unjudgedRejection = null;
+      // Only for the credential the source still holds, and only if no kept rotation holds its successor.
+      if (state.pendingRotation || this.readSourceIdentity(accountId) !== rejected) return;
+      const late = this.harvestSessionRotations(accountId);
+      if (late) {
+        this.handleSuccess(accountId, late.before, late.after, "harvested_session");
+        return;
+      }
+      state.rejectedIdentity = rejected;
+      this.handleRevoked(accountId, before, before, "invalid_grant");
+    } catch (err) {
+      console.error(`[claude-oauth-refresh] account=${accountId} settling a private run failed:`, err);
+    } finally {
+      if (!copy.outstanding) this.removeProbeHome(copy);
+    }
+  }
+
+  // False when a run is still open at the cap.
+  private async waitForPrivateRuns(state: AccountState): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let capped = false;
+    const cap = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        capped = true;
+        resolve();
+      }, PRIVATE_RUN_WAIT_MS);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+    await Promise.race([Promise.all(state.privateRuns), cap]);
+    clearTimeout(timer);
+    return !capped;
+  }
+
   private scheduleAccount(accountId: string): void {
     if (this.stopped) return;
     const state = this.ensureAccountState(accountId);
@@ -360,6 +452,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     const state = this.ensureAccountState(accountId);
     const sourceFile = this.sourceFileFor(accountId);
 
+    const runStillOpen = state.privateRuns.size > 0 && !(await this.waitForPrivateRuns(state));
+
     // Harvest first: a resident CLI can spend the source's single-use refresh grant.
     // This skips forced probing, so a grant revoked since the session's refresh can pass.
     const harvest = this.harvestSessionRotations(accountId);
@@ -420,6 +514,11 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         beforeExpiresAt: before,
         afterExpiresAt: before,
       };
+    }
+
+    // That run can hold the grant's successor, so a probe could only spend or misjudge the grant.
+    if (runStillOpen) {
+      return this.handleFailure(accountId, before, before, "[private-run-open] session naming has not finished", false);
     }
 
     let probe: ProbeHome;
@@ -511,7 +610,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     accountId: string,
     before: number | null,
     after: number,
-    outcome: "rotated_tier1" | "rotated_tier2" | "harvested_session",
+    outcome: "rotated_tier1" | "rotated_tier2" | "rotated_private_run" | "harvested_session",
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
     state.failureCount = 0;
@@ -915,6 +1014,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         rejectedIdentity: null,
         pendingRotation: null,
         retryNotBefore: 0,
+        privateRuns: new Set(),
+        unjudgedRejection: null,
       };
       this.accounts.set(accountId, state);
     }

@@ -889,6 +889,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       runtimeMode,
     });
     claudeOAuthRefresherRef.ref = refresher;
+    // Local mode keeps naming in the account root, where its turn CLIs run as well.
+    if (runtimeMode === "containerized") {
+      providerAccountManager.attachClaudeCredentialCopy((accountId, run) => refresher.runInPrivateCopy(accountId, run));
+    }
     refresher.start();
     refresher.on("account_unauthenticated", (accountId: string) => {
       markProviderAccountUnauthenticated({

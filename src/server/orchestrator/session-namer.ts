@@ -56,6 +56,8 @@ export interface SessionNamingTarget {
   credentialSecret?: string | undefined;
   /** Omission uses the orchestrator home, which can select a different account. */
   credentialRoot?: string | undefined;
+  /** Claude: run the CLI in a private copy of the account's credentials, not in `credentialRoot` (docs/153). */
+  inCredentialCopy?: (<T>(run: (home: string) => Promise<T>) => Promise<T>) | undefined;
 }
 
 const PROMPT_TEMPLATE = loadPrompt(import.meta.url, "./session-naming-prompt.md");
@@ -143,7 +145,9 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
       // JSON output includes usage and cost.
       const args = ["-p", prompt, "--output-format", "json"];
       if (model) args.push("--model", model);
-      const raw = await callCli("claude", args, target);
+      const raw = target.inCredentialCopy
+        ? await target.inCredentialCopy((home) => callCli("claude", args, { ...target, credentialRoot: home }))
+        : await callCli("claude", args, target);
       if (raw.text === null) return raw;
       const parsed = parseClaudeJson(raw.text);
       if (!parsed.usage) return { ...raw, text: parsed.text };
@@ -512,6 +516,8 @@ function callCli(
     if (extraEnv) Object.assign(env, extraEnv);
     // Ambient API keys can override the selected subscription's login.
     if (credentialRoot) scrubHarnessEnvCredentials(env, harnessId);
+    // With this set, the Claude CLI ignores HOME and so the private copy.
+    if (target.inCredentialCopy && harnessId === "claude") delete env.CLAUDE_CONFIG_DIR;
     if (serviceRouting && !isOpenCodeAccountRouting(serviceRouting)) {
       // Routing reads the storage variable and writes the harness variable.
       if (credentialSecret && serviceRouting.credentialSourceEnv) env[serviceRouting.credentialSourceEnv] = credentialSecret;

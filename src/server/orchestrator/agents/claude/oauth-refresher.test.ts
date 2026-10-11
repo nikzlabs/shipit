@@ -1402,6 +1402,373 @@ describe("ClaudeOAuthRefresher", () => {
     });
   });
 
+  describe("private run (session naming)", () => {
+    const now = 1_700_000_000_000;
+    const inMargin = now + 40 * 60 * 1000;
+    const rotatedTo = now + 8 * 60 * 60 * 1000;
+
+    function marginRig(): TestRig {
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": inMargin },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      return rig;
+    }
+
+    function readCopy(home: string): SeenCredentials {
+      const raw = fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8");
+      return (JSON.parse(raw) as { claudeAiOauth: SeenCredentials }).claudeAiOauth;
+    }
+
+    function events(rig: TestRig): string[] {
+      return rig.sseCalls.map((c) => c.event);
+    }
+
+    it("runs in a copy with the source's tokens and real expiry, and removes it", async () => {
+      const rig = marginRig();
+      const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
+      let seenHome = "";
+      let seen: SeenCredentials | null = null;
+
+      const value = await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        seenHome = home;
+        seen = readCopy(home);
+        return "named";
+      });
+
+      expect(value).toBe("named");
+      expect(seenHome).not.toBe(accountRootOf(rig.rootDir, "acct-1"));
+      expect(seen).toEqual(readSourceCredentials(rig.rootDir, "acct-1"));
+      expect(fs.existsSync(seenHome)).toBe(false);
+      expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toBe(sourceBefore);
+    });
+
+    it("installs a rotation that the run made, keeps the source's other keys, and pushes it", async () => {
+      const rig = marginRig();
+      const sourceFile = accountTokenFile(rig.rootDir, "acct-1");
+      const logs = captureLogs();
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeCredentials(home, { expiresAt: rotatedTo });
+        const source = JSON.parse(fs.readFileSync(sourceFile, "utf8")) as Record<string, unknown>;
+        fs.writeFileSync(sourceFile, JSON.stringify({ ...source, mcpOAuth: { server: "kept" } }), "utf8");
+      });
+      logs.restore();
+
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      expect((JSON.parse(fs.readFileSync(sourceFile, "utf8")) as { mcpOAuth?: unknown }).mcpOAuth)
+        .toEqual({ server: "kept" });
+      expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "acct-1" }]);
+      expect(logs.lines.some((line) => line.includes("rotated_private_run"))).toBe(true);
+    });
+
+    it("reports a copy that the run blanked as a rejected grant, which no tick spends again", async () => {
+      const rig = marginRig();
+      const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+
+      expect(events(rig)).toContain("claude_account_unauthenticated");
+      expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toBe(sourceBefore);
+      const [tick] = await rig.refresher.refreshNow("acct-1");
+      expect(tick!.outcome).toBe("revoked");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(false);
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+    });
+
+    it("does not judge a blanked copy while another run, which can hold the new grant, is open", async () => {
+      const rig = marginRig();
+      let finishWinner = (): void => {};
+      const winnerGate = new Promise<void>((resolve) => { finishWinner = resolve; });
+      const winner = rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        await winnerGate;
+        writeCredentials(home, { expiresAt: rotatedTo });
+      });
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+      finishWinner();
+      await winner;
+
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      expect(events(rig)).not.toContain("claude_account_unauthenticated");
+    });
+
+    it("does not report a sign-in revoked because the run's copy of the old token was rejected", async () => {
+      const rig = marginRig();
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeBlankedCredentials(home);
+        writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: inMargin });
+      });
+
+      expect(events(rig)).not.toContain("claude_account_unauthenticated");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(true);
+    });
+
+    it("does not report a rejection while a kept rotation holds the grant's successor", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+      await rig.refresher.refreshNow("acct-1");
+      rename.mockRestore();
+      errors.mockRestore();
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+
+      expect(events(rig)).not.toContain("claude_account_unauthenticated");
+      const [installed] = await rig.refresher.refreshNow("acct-1");
+      expect(installed!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+    });
+
+    it("harvests a session that spent the grant first, and does not report the account revoked", async () => {
+      const rig = marginRig();
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeBlankedCredentials(home);
+        writeSessionToken(rig.rootDir, "sess-a", { expiresAt: rotatedTo, accountId: "acct-1" });
+      });
+
+      expect(readSourceCredentials(rig.rootDir, "acct-1").accessToken).toBe(`sess_tok_${rotatedTo}`);
+      expect(events(rig)).not.toContain("claude_account_unauthenticated");
+    });
+
+    it("keeps a rotation that it could not install, and the next tick installs it without a spawn", async () => {
+      const rig = marginRig();
+      let home = "";
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+        throw Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" });
+      });
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (copyHome) => {
+        home = copyHome;
+        writeCredentials(copyHome, { expiresAt: rotatedTo });
+      });
+      rename.mockRestore();
+      errors.mockRestore();
+
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(inMargin);
+      expect(fs.existsSync(home)).toBe(true);
+      const [tick] = await rig.refresher.refreshNow("acct-1");
+      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+      expect(fs.existsSync(home)).toBe(false);
+    });
+
+    it("a tick waits for an open run before it probes", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{}, {}];
+      let finishRun = (): void => {};
+      const gate = new Promise<void>((resolve) => { finishRun = resolve; });
+      const run = rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        await gate;
+        writeCredentials(home, { expiresAt: rotatedTo });
+      });
+
+      const tick = rig.refresher.refreshNow("acct-1");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+      finishRun();
+      await run;
+      const [result] = await tick;
+
+      expect(result!.outcome).toBe("noop");
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+    });
+
+    it("a tick stops waiting for a run that hangs, and does not probe past it", async () => {
+      vi.useFakeTimers();
+      try {
+        const rig = marginRig();
+        rig.spawnHandle.effects = [{ blank: true }];
+        let finishRun = (): void => {};
+        const gate = new Promise<void>((resolve) => { finishRun = resolve; });
+        // The run has spent the grant and holds its successor, but has not ended.
+        const run = rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          writeCredentials(home, { expiresAt: rotatedTo });
+          await gate;
+        });
+
+        const tick = rig.refresher.refreshNow("acct-1");
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(10);
+        const [result] = await tick;
+
+        expect(result!.outcome).toBe("not_rotated");
+        expect(rig.spawnHandle.invocations.length).toBe(0);
+        expect(events(rig)).not.toContain("claude_account_unauthenticated");
+        finishRun();
+        await run;
+        expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("judges a rejection when the last open run ends without a rotation", async () => {
+      const rig = marginRig();
+      let finishOther = (): void => {};
+      const otherGate = new Promise<void>((resolve) => { finishOther = resolve; });
+      const other = rig.refresher.runInPrivateCopy("acct-1", async () => {
+        await otherGate;
+      });
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+      expect(events(rig)).not.toContain("claude_account_unauthenticated");
+      finishOther();
+      await other;
+
+      expect(events(rig)).toContain("claude_account_unauthenticated");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(false);
+    });
+
+    it("keeps a newer rotation that it could not install in place of one kept for a replaced token", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const failRename = (): void => {
+        vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        });
+      };
+      failRename();
+      await rig.refresher.refreshNow("acct-1");
+      const olderHome = rig.spawnHandle.invocations[0]!.home;
+      // A sign-in replaces the token that the kept rotation came from.
+      writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: inMargin });
+      let newer: SeenCredentials | null = null;
+      failRename();
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeCredentials(home, { expiresAt: rotatedTo + 1 });
+        newer = readCopy(home);
+      });
+      vi.mocked(fs.renameSync).mockRestore();
+      errors.mockRestore();
+
+      expect(fs.existsSync(olderHome)).toBe(false);
+      const [tick] = await rig.refresher.refreshNow("acct-1");
+      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(newer);
+    });
+
+    it("keeps a kept rotation when a later copy of the same credential cannot be read", async () => {
+      const rig = marginRig();
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+      let successor: SeenCredentials | null = null;
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeCredentials(home, { expiresAt: rotatedTo });
+        successor = readCopy(home);
+      });
+      vi.mocked(fs.renameSync).mockRestore();
+      let unreadableHome = "";
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        unreadableHome = home;
+        fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), "{", "utf8");
+      });
+      errors.mockRestore();
+
+      const [tick] = await rig.refresher.refreshNow("acct-1");
+      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+      fs.rmSync(unreadableHome, { recursive: true, force: true });
+    });
+
+    it("keeps a newer kept rotation when an earlier run ends while the source cannot be read", async () => {
+      const rig = marginRig();
+      const sourceFile = accountTokenFile(rig.rootDir, "acct-1");
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      let finishEarlier = (): void => {};
+      const earlierGate = new Promise<void>((resolve) => { finishEarlier = resolve; });
+      let earlierHome = "";
+      const earlier = rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        earlierHome = home;
+        await earlierGate;
+        writeCredentials(home, { expiresAt: rotatedTo });
+        fs.writeFileSync(sourceFile, "{", "utf8");
+      });
+      // A sign-in replaces the token that the earlier run copied.
+      writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: inMargin });
+      const signedIn = fs.readFileSync(sourceFile, "utf8");
+      vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+      let successor: SeenCredentials | null = null;
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeCredentials(home, { expiresAt: rotatedTo + 1 });
+        successor = readCopy(home);
+      });
+      vi.mocked(fs.renameSync).mockRestore();
+
+      finishEarlier();
+      await earlier;
+      errors.mockRestore();
+      fs.writeFileSync(sourceFile, signedIn, "utf8");
+
+      const [tick] = await rig.refresher.refreshNow("acct-1");
+      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+      fs.rmSync(earlierHome, { recursive: true, force: true });
+    });
+
+    it("does not let a rejection of a replaced token hide one of the token that replaced it", async () => {
+      const rig = marginRig();
+      let finishOld = (): void => {};
+      const oldGate = new Promise<void>((resolve) => { finishOld = resolve; });
+      const oldRun = rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        await oldGate;
+        writeBlankedCredentials(home);
+      });
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeCredentials(home, { expiresAt: rotatedTo }));
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+      finishOld();
+      await oldRun;
+
+      expect(events(rig)).toContain("claude_account_unauthenticated");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(false);
+    });
+
+    it("waits for a tick in flight before it copies the source", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo, delayMs: 20 }];
+      let seen: SeenCredentials | null = null;
+
+      const tick = rig.refresher.refreshNow("acct-1");
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        seen = readCopy(home);
+      });
+      await tick;
+
+      expect(seen!.expiresAt).toBe(rotatedTo);
+    });
+
+    it("refuses to run when the source cannot be read, and does not quote it", async () => {
+      const rig = marginRig();
+      // JSON.parse quotes a short input like this one in its error message.
+      fs.writeFileSync(accountTokenFile(rig.rootDir, "acct-1"), "tok_secret_part", "utf8");
+      const run = vi.fn(async () => "named");
+
+      const attempt = rig.refresher.runInPrivateCopy("acct-1", run);
+
+      await expect(attempt).rejects.toThrow("could not be copied");
+      await attempt.catch((err: unknown) => expect(String(err)).not.toContain("tok_secret_part"));
+      expect(run).not.toHaveBeenCalled();
+    });
+  });
+
   describe("retry schedule", () => {
     const now = 1_700_000_000_000;
 

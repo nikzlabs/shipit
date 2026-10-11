@@ -130,11 +130,15 @@ export interface SelectAccountOptions {
   optimistic?: boolean;
 }
 
+// Runs `run` with HOME at a private copy of a Claude account's credentials (docs/153).
+export type ClaudeCredentialCopyRunner = <T>(accountId: string, run: (home: string) => Promise<T>) => Promise<T>;
+
 export class ProviderAccountManager {
   private credentialsDir: string;
   private credentialStore: CredentialStore;
   private authManagers: Map<LoginIntegrationId, AgentAuthManager> | null = null;
   private getSubscriptionLimits: (() => SubscriptionLimitsMap) | undefined;
+  private claudeCredentialCopy: ClaudeCredentialCopyRunner | null = null;
 
   constructor(opts: ProviderAccountManagerOptions) {
     this.credentialsDir = opts.credentialsDir;
@@ -155,6 +159,15 @@ export class ProviderAccountManager {
 
   attachAuthManagers(authManagers: Map<LoginIntegrationId, AgentAuthManager>): void {
     this.authManagers = authManagers;
+  }
+
+  attachClaudeCredentialCopy(runner: ClaudeCredentialCopyRunner): void {
+    this.claudeCredentialCopy = runner;
+  }
+
+  // Null in local mode and until boot attaches the OAuth refresher: a caller then uses the account root.
+  claudeCredentialCopyRunner(): ClaudeCredentialCopyRunner | null {
+    return this.claudeCredentialCopy;
   }
 
   migrateDefaultAccounts(): void {
