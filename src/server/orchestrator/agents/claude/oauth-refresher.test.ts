@@ -1182,12 +1182,16 @@ describe("ClaudeOAuthRefresher", () => {
       const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
       rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-      const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
-        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
-      });
+      const readOnly = (): never => {
+        throw Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" });
+      };
+      const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(readOnly);
+      // The cleanup of the staging file fails for the same reason.
+      const remove = vi.spyOn(fs, "rmSync").mockImplementationOnce(readOnly);
 
       const [failed] = await rig.refresher.refreshNow("acct-1");
       rename.mockRestore();
+      remove.mockRestore();
       errors.mockRestore();
 
       expect(failed!.outcome).toBe("not_rotated");
@@ -1211,7 +1215,9 @@ describe("ClaudeOAuthRefresher", () => {
 
         const tick = rig.refresher.refreshNow("acct-1");
         await vi.advanceTimersByTimeAsync(30_000);
-        // Killed, but not gone: tier 2 has not started on a copy that can still change.
+        rig.spawnHandle.children[0]!.emit("error", new Error("kill EPERM"));
+        await vi.advanceTimersByTimeAsync(0);
+        // Signalled, but not gone: tier 2 has not started on a copy that can still change.
         expect(rig.spawnHandle.invocations.length).toBe(1);
 
         writeCredentials(rig.spawnHandle.invocations[0]!.home, { expiresAt: rotatedTo });
@@ -1225,16 +1231,78 @@ describe("ClaudeOAuthRefresher", () => {
         vi.useRealTimers();
       }
     });
+
+    it("goes on after the kill grace when the CLI never exits", async () => {
+      vi.useFakeTimers();
+      try {
+        const rig = marginRig();
+        rig.spawnHandle.effects = [{ hang: true }, {}];
+
+        const tick = rig.refresher.refreshNow("acct-1");
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(rig.spawnHandle.invocations.length).toBe(1);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(rig.spawnHandle.invocations.length).toBe(2);
+        await vi.advanceTimersByTimeAsync(1);
+        const [result] = await tick;
+
+        expect(result!.outcome).toBe("not_rotated");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps a rotation while the source cannot be read, and does not end the account for it", async () => {
+      const rig = marginRig();
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      const sourceFile = accountTokenFile(rig.rootDir, "acct-1");
+      const sourceBefore = fs.readFileSync(sourceFile, "utf8");
+      // Another writer is part-way through the file when the probe ends.
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo, sideEffect: () => fs.writeFileSync(sourceFile, "{", "utf8") }];
+
+      await rig.refresher.refreshNow("acct-1");
+      const [stillUnreadable] = await rig.refresher.refreshNow("acct-1");
+
+      expect(stillUnreadable!.outcome).toBe("unknown_failure");
+      expect(rig.sseCalls.map((c) => c.event)).not.toContain("agent_auth_failed");
+      expect(rig.refresher._inspectForTest("acct-1").hasTimer).toBe(true);
+      expect(fs.existsSync(rig.spawnHandle.invocations[0]!.home)).toBe(true);
+
+      fs.writeFileSync(sourceFile, sourceBefore, "utf8");
+      const [installed] = await rig.refresher.refreshNow("acct-1");
+
+      expect(installed!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+    });
+
+    it("remembers a rejected grant also when the credential has no access token", async () => {
+      const rig = marginRig();
+      fs.writeFileSync(
+        accountTokenFile(rig.rootDir, "acct-1"),
+        JSON.stringify({ claudeAiOauth: { accessToken: "", refreshToken: "rfk_only", expiresAt: inMargin } }),
+        "utf8",
+      );
+      rig.spawnHandle.effects = [{ blank: true }];
+
+      const [first] = await rig.refresher.refreshNow("acct-1");
+      const [second] = await rig.refresher.refreshNow("acct-1");
+
+      expect(first!.outcome).toBe("revoked");
+      expect(second!.outcome).toBe("revoked");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(false);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+    });
   });
 
   describe("retry schedule", () => {
     const now = 1_700_000_000_000;
 
-    // The last chance is 6.5 minutes before expiry, sooner than the backoff in each row.
+    // The last chance is 7 minutes before expiry, sooner than the backoff in each row.
     it.each([
-      { failure: "rate-limited", stderr: "HTTP 429 rate_limit_error", ticks: 1, expiresInMin: 8, clamped: 90_000, backoff: 120_000 },
-      { failure: "unclassified", stderr: "", ticks: 2, expiresInMin: 9, clamped: 150_000, backoff: 300_000 },
-    ])("lands a tick before the sessions refresh after $failure failures", async (row) => {
+      { failure: "rate-limited", stderr: "HTTP 429 rate_limit_error", ticks: 1, expiresInMin: 8.5, clamped: 90_000, backoff: 120_000 },
+      { failure: "unclassified", stderr: "", ticks: 2, expiresInMin: 9.5, clamped: 150_000, backoff: 300_000 },
+    ])("clamps the backoff to the last chance before the sessions refresh after $failure failures", async (row) => {
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
         initialExpiries: { "acct-1": now + row.expiresInMin * 60 * 1000 },

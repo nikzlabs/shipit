@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { killProcessTree } from "../../../shared/kill-child.js";
@@ -53,8 +54,9 @@ const KILL_SETTLE_MS = 5_000;
 const TIMED_OUT = "[timeout] claude CLI did not exit in time";
 const INSTALL_FAILED = "[install-failed] the rotated credential is kept for the next tick";
 
-// A tick that starts this long before expiry ends before the session CLIs refresh by themselves.
-const LAST_CHANCE_BEFORE_EXPIRY_MS = CLI_REFRESH_WINDOW_MS + TIER1_TIMEOUT_MS + TIER2_TIMEOUT_MS;
+// A tick that starts this long before expiry ends before the session CLIs refresh by themselves:
+// both tier timeouts and their kill grace come to 100 s.
+const LAST_CHANCE_BEFORE_EXPIRY_MS = CLI_REFRESH_WINDOW_MS + 2 * 60_000;
 
 const CLAUDE_CREDENTIALS_RELATIVE = path.join(".claude", ".credentials.json");
 
@@ -92,9 +94,13 @@ function redactSecrets(text: string): string {
     .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]");
 }
 
-function claudeAccessToken(parsed: unknown): string | null {
-  const oauth = (parsed as { claudeAiOauth?: { accessToken?: unknown } } | null)?.claudeAiOauth;
-  return typeof oauth?.accessToken === "string" && oauth.accessToken ? oauth.accessToken : null;
+// Which credential a file holds. A hash, so that no token stays in memory; null without a token.
+function claudeCredentialIdentity(parsed: unknown): string | null {
+  const oauth = (parsed as { claudeAiOauth?: Record<string, unknown> } | null)?.claudeAiOauth;
+  const access = typeof oauth?.accessToken === "string" ? oauth.accessToken : "";
+  const refresh = typeof oauth?.refreshToken === "string" ? oauth.refreshToken : "";
+  if (!access && !refresh) return null;
+  return createHash("sha256").update(`${access}\n${refresh}`).digest("hex");
 }
 
 export function summarizeRefreshFailure(combinedOutput: string): string {
@@ -128,7 +134,9 @@ interface HarvestResult {
 interface ProbeHome {
   home: string;
   credentialsFile: string;
-  seedAccessToken: string | null;
+  seedIdentity: string;
+  // The copy holds a rotation that is not in the source: the only record of a live grant.
+  outstanding: boolean;
 }
 
 // "rejected": the CLI blanks a credential only when the OAuth server answers invalid_grant.
@@ -167,8 +175,7 @@ interface AccountState {
   failureCount: number;
   emittedUnauthenticated: boolean;
   // The source is never blanked, so this is the record that its grant is dead.
-  rejectedAccessToken: string | null;
-  // A rotation that could not be written to the source yet. It is the only copy of a live grant.
+  rejectedIdentity: string | null;
   pendingRotation: ProbeHome | null;
 }
 
@@ -344,6 +351,22 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     }
 
     const before = this.readSourceExpiresAt(accountId);
+
+    // Before the missing-source check: an unreadable source must not end the account while a
+    // rotation waits for it.
+    const pending = state.pendingRotation;
+    if (pending) {
+      const retried = this.adoptProbeRotation(accountId, pending);
+      // The source's grant is spent: another probe would only be rejected.
+      if (pending.outstanding) return this.handleFailure(accountId, before, before, INSTALL_FAILED, false);
+      state.pendingRotation = null;
+      this.removeProbeHome(pending);
+      const installedAt = this.readSourceExpiresAt(accountId);
+      if (retried === "installed" && installedAt !== NO_EXPIRY) {
+        return this.handleSuccess(accountId, before, installedAt, "rotated_tier1");
+      }
+    }
+
     if (before === NO_EXPIRY) {
       const unusable = this.describeUnusableSource(sourceFile);
       const result: RefreshResult = {
@@ -359,19 +382,6 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       );
       this.emitUnauthenticated(accountId, "missing_credentials");
       return result;
-    }
-
-    const pending = state.pendingRotation;
-    if (pending) {
-      const retried = this.adoptProbeRotation(accountId, pending);
-      // Its grant is spent: another probe would only be rejected.
-      if (retried === "install_failed") return this.handleFailure(accountId, before, before, INSTALL_FAILED, false);
-      state.pendingRotation = null;
-      this.removeProbeHome(pending);
-      const installedAt = this.readSourceExpiresAt(accountId);
-      if (retried === "installed" && installedAt !== NO_EXPIRY) {
-        return this.handleSuccess(accountId, before, installedAt, "rotated_tier1");
-      }
     }
 
     if (this.sourceGrantIsKnownRejected(accountId)) {
@@ -404,7 +414,9 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     try {
       return await this.runProbes(accountId, probe, before, force, isNearExpiry);
     } finally {
-      if (state.pendingRotation !== probe) this.removeProbeHome(probe);
+      // Decided here, so that no path out of the probes, a throw included, deletes a rotation.
+      if (probe.outstanding) state.pendingRotation = probe;
+      else this.removeProbeHome(probe);
     }
   }
 
@@ -444,11 +456,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       }
     }
 
-    if (probeResult === "install_failed") {
-      state.pendingRotation = probe;
-      return this.handleFailure(accountId, before, after, INSTALL_FAILED, false);
-    }
-    if (this.readSourceAccessToken(accountId) !== probe.seedAccessToken) {
+    if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED, false);
+    if (this.readSourceIdentity(accountId) !== probe.seedIdentity) {
       // The verdict is on a token the source no longer holds; the new one gets a tick of its own.
       state.failureCount = 0;
       this.scheduleBackoff(accountId, RETRY_NOW_MS);
@@ -467,7 +476,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       // A session can spend the grant between the first harvest and the probe.
       const late = this.harvestSessionRotations(accountId);
       if (late) return this.handleSuccess(accountId, late.before, late.after, "harvested_session");
-      state.rejectedAccessToken = probe.seedAccessToken;
+      state.rejectedIdentity = probe.seedIdentity;
     }
     // No rotation before expiry is not a scheduling failure; retain the expiry schedule.
     if (force && !isNearExpiry && !grantRejected) {
@@ -497,7 +506,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
     state.failureCount = 0;
-    state.rejectedAccessToken = null;
+    state.rejectedIdentity = null;
     const wasUnauthenticated = state.emittedUnauthenticated;
     state.emittedUnauthenticated = false;
     console.log(
@@ -522,7 +531,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     };
   }
 
-  private handleRevoked(accountId: string, before: number, after: number | null, reason: string): RefreshResult {
+  private handleRevoked(accountId: string, before: number | null, after: number | null, reason: string): RefreshResult {
     console.log(`[claude-oauth-refresh] account=${accountId} revoked (${reason}) — emitting auth_required`);
     this.emitUnauthenticated(accountId, "revoked");
     return {
@@ -536,7 +545,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
   private handleFailure(
     accountId: string,
-    before: number,
+    before: number | null,
     after: number | null,
     combinedOutput: string,
     grantRejected: boolean,
@@ -568,7 +577,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     }
 
     const now = this.deps.now();
-    const stillValid = before > now;
+    const stillValid = before !== null && before > now;
     console.log(
       stillValid
         ? `[claude-oauth-refresh] account=${accountId} not_rotated failure_count=${state.failureCount}`
@@ -616,6 +625,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
   private createProbeHome(sourceFile: string, claimedExpiresAt: number | null): ProbeHome {
     const source = fs.readFileSync(sourceFile, "utf8");
     const parsed = JSON.parse(source) as Record<string, unknown>;
+    const seedIdentity = claudeCredentialIdentity(parsed);
+    if (seedIdentity === null) throw new Error("the source holds no token");
     const oauth = (parsed.claudeAiOauth ?? {}) as Record<string, unknown>;
     const seeded = claimedExpiresAt === null
       ? source
@@ -625,7 +636,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       const credentialsFile = path.join(home, CLAUDE_CREDENTIALS_RELATIVE);
       fs.mkdirSync(path.dirname(credentialsFile), { recursive: true });
       fs.writeFileSync(credentialsFile, seeded, { mode: 0o600 });
-      return { home, credentialsFile, seedAccessToken: claudeAccessToken(parsed) };
+      return { home, credentialsFile, seedIdentity, outstanding: false };
     } catch (err) {
       fs.rmSync(home, { recursive: true, force: true });
       throw err;
@@ -638,30 +649,39 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     } catch { /* best-effort */ }
   }
 
+  // Never throws, and gives up a rotation only for a source that demonstrably holds another
+  // credential: a file it cannot read proves nothing, and the grant is already spent.
   private adoptProbeRotation(accountId: string, probe: ProbeHome): ProbeResult {
     let rotated: Record<string, unknown>;
     try {
       rotated = JSON.parse(fs.readFileSync(probe.credentialsFile, "utf8")) as Record<string, unknown>;
     } catch {
-      return "unchanged";
+      return probe.outstanding ? "install_failed" : "unchanged";
     }
-    if (isBlankedClaudeCredential(rotated)) return "rejected";
-    const accessToken = claudeAccessToken(rotated);
-    if (accessToken === null || accessToken === probe.seedAccessToken) return "unchanged";
-    if (this.readClaudeExpiresAt(probe.credentialsFile) === NO_EXPIRY) return "unchanged";
+    const identity = claudeCredentialIdentity(rotated);
+    if (identity === null || identity === probe.seedIdentity
+      || this.readClaudeExpiresAt(probe.credentialsFile) === NO_EXPIRY) {
+      probe.outstanding = false;
+      return isBlankedClaudeCredential(rotated) ? "rejected" : "unchanged";
+    }
+    probe.outstanding = true;
 
-    // The source's grant is spent now. Keep only a source whose token changed meanwhile: a
-    // sign-in or a session's rotation.
     const sourceFile = this.sourceFileFor(accountId);
-    let current: Record<string, unknown> = {};
+    let current: Record<string, unknown>;
     try {
       current = JSON.parse(fs.readFileSync(sourceFile, "utf8")) as Record<string, unknown>;
-    } catch { /* gone or unreadable: its token is not the copy's */ }
-    if (claudeAccessToken(current) !== probe.seedAccessToken) {
+    } catch (err) {
+      // Gone is a sign-out; anything else is a read that can succeed next time.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return "install_failed";
+      probe.outstanding = false;
+      return "superseded";
+    }
+    if (claudeCredentialIdentity(current) !== probe.seedIdentity) {
       console.log(
         `[claude-oauth-refresh] account=${accountId} the source's token changed while the probe ran`
           + " — the probe's rotation is not installed",
       );
+      probe.outstanding = false;
       return "superseded";
     }
     const tmp = `${sourceFile}.tmp-${process.pid}-${Date.now()}`;
@@ -670,24 +690,27 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       fs.writeFileSync(tmp, JSON.stringify({ ...current, claudeAiOauth: rotated.claudeAiOauth }), { mode: 0o600 });
       fs.renameSync(tmp, sourceFile);
     } catch (err) {
-      fs.rmSync(tmp, { force: true });
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch { /* best-effort */ }
       console.error(`[claude-oauth-refresh] account=${accountId} failed to install the rotated credential:`, err);
       return "install_failed";
     }
+    probe.outstanding = false;
     return "installed";
   }
 
-  private readSourceAccessToken(accountId: string): string | null {
+  private readSourceIdentity(accountId: string): string | null {
     try {
-      return claudeAccessToken(JSON.parse(fs.readFileSync(this.sourceFileFor(accountId), "utf8")));
+      return claudeCredentialIdentity(JSON.parse(fs.readFileSync(this.sourceFileFor(accountId), "utf8")));
     } catch {
       return null;
     }
   }
 
   private sourceGrantIsKnownRejected(accountId: string): boolean {
-    const rejected = this.ensureAccountState(accountId).rejectedAccessToken;
-    return rejected !== null && this.readSourceAccessToken(accountId) === rejected;
+    const rejected = this.ensureAccountState(accountId).rejectedIdentity;
+    return rejected !== null && this.readSourceIdentity(accountId) === rejected;
   }
 
   private spawnCli(
@@ -740,15 +763,18 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
       const timer = setTimeout(() => {
         timedOut = true;
-        killProcessTree(child, "SIGKILL", { label: "claude-refresh" });
         // Settle on the exit, not on the signal: a write under way must land before the copy is read.
         killGrace = setTimeout(() => settle(TIMED_OUT), KILL_SETTLE_MS);
         if (typeof killGrace.unref === "function") killGrace.unref();
+        killProcessTree(child, "SIGKILL", { label: "claude-refresh" });
       }, timeoutMs);
       if (typeof timer.unref === "function") timer.unref();
 
       child.on("exit", () => settle(timedOut ? TIMED_OUT : ""));
-      child.on("error", (err) => settle(`[error] ${err.message}`));
+      child.on("error", (err) => {
+        // A kill that fails is an error and not an exit: the CLI can still write.
+        if (!timedOut) settle(`[error] ${err.message}`);
+      });
     });
   }
 
@@ -869,7 +895,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         inFlight: null,
         failureCount: 0,
         emittedUnauthenticated: false,
-        rejectedAccessToken: null,
+        rejectedIdentity: null,
         pendingRotation: null,
       };
       this.accounts.set(accountId, state);

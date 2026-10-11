@@ -117,14 +117,14 @@ did not rotate, which is the exception.
 ```
 on tick (single-flight via in-process mutex; `force` = a session reported a 401):
   harvest: a pinned session holds a newer token → adopt it, repush, return HARVESTED_SESSION
+  a rotation from an earlier tick is not in the source yet → install it; while it waits,
+                                                     no tick probes
   before := source expiresAt                       (none → MISSING_CREDENTIALS)
   the source's grant is already known rejected     → REVOKED, no CLI spawn
 
   if before > now + safetyMargin and not force:
     schedule next at before - safetyMargin
     return NOOP                                    (no CLI spawn)
-
-  a rotation from an earlier tick is still not installed → install it; no probe this tick
 
   copy := private HOME holding a copy of the source credentials file
           near expiry: the copy claims min(before, now + 60s), inside the CLI's window
@@ -142,14 +142,15 @@ on tick (single-flight via in-process mutex; `force` = a session reported a 401)
   the source holds another token than the copy was made from → conclude nothing, tick again
   invalid_grant (blanked copy, or named in the output):
     harvest again; a session that spent the grant first → HARVESTED_SESSION
-    else remember the grant as rejected, emit "auth_required", stop scheduling → REVOKED
+    else remember the grant as rejected, emit "auth_required", schedule nothing → REVOKED
   forced on a healthy token, nothing wrong → NOOP
   429-shaped signal → backoff (2m → 5m → 10m → 30m, cap 30m)          → RATE_LIMITED
   source token still valid → short backoff, log the time left          → NOT_ROTATED
   source token expired     → short backoff, log loudly                 → UNKNOWN_FAILURE
 
-  every backoff is clamped so that one tick lands 6.5 minutes before expiry (the CLI's
-  5-minute window plus both tier timeouts), the last moment to rotate ahead of the sessions
+  a backoff that would step over the last chance is cut short to it: 7 minutes before
+  expiry (the CLI's 5-minute window, plus 2 minutes for both tier timeouts and their kill
+  grace), the last moment to rotate ahead of the sessions
   the copy is deleted when the tick ends, unless it holds a rotation that is not installed
 ```
 
@@ -159,8 +160,9 @@ fires; it is the copy's short claimed life, not the margin, that makes the CLI r
 from extended orchestrator downtime is independent (when start() runs against an
 already-expired source, a refresh tick is scheduled immediately).
 
-A **turn start** (`ensureFresh`) runs a tick only inside those last 6.5 minutes, or when
-the token is expired. Earlier in the margin the schedule
+A **turn start** (`ensureFresh`) runs a tick only inside those last 7 minutes, when the
+token is expired, or when its grant is known rejected (that tick spawns nothing). Earlier
+in the margin the schedule
 owns the retries: a turn start cannot do better than the schedule, and when each turn
 start ran its own tick it paid for a billable Tier 2 call and about 5.5 s per turn, and
 re-armed the backoff from "now", which moved the scheduled retry later.
@@ -494,19 +496,23 @@ if the CLI's own 401 handling does.
 
 - **A new access token** → the copy's `claudeAiOauth` replaces the source's, written
   by atomic rename with the source's other keys kept, then the usual success path. The
-  install is skipped if the source holds a different token by then, so that a sign-in or
-  a session's published rotation wins. The test is on the token and not on the file:
-  other orchestrator-side CLIs run in the account root and rewrite its other keys, and
-  that must not strand a spent grant.
-- **The install fails** (a full disk, a permission error) → the copy is the only place
-  the live grant exists, so it is **kept** (`pendingRotation`) and not deleted with the
-  tick. The next tick installs it before anything else and does not probe: the
-  source's grant is spent, and a probe would only be rejected.
+  install is skipped if the source holds a different credential by then, so that a
+  sign-in or a session's published rotation wins (one gap: Known limits). A credential
+  is identified by a hash of its two tokens, never by the file: other orchestrator-side
+  CLIs run in the account root and rewrite its other keys, and that must not strand a
+  spent grant.
+- **The install fails, or the source cannot be read** (a full disk, a read-only volume,
+  another writer part-way through the file) → the copy is the only place the live grant
+  exists, so it is **kept** (`pendingRotation`) and not deleted with the tick. The next
+  tick installs it right after the harvest, and no tick probes while it waits: the
+  source's grant is spent, and a probe would only be rejected. A rotation is given up
+  only for a source that is gone (a sign-out) or that demonstrably holds another
+  credential.
 - **A blanked copy** → `invalid_grant`, and Tier 2 is skipped. The harvest runs once
   more, because a session can spend the grant between the first harvest and the probe;
   if it finds that session, the tick is `harvested_session`. Otherwise the outcome is
-  `revoked`, and the refresher remembers the rejected grant (`rejectedAccessToken`, in
-  memory, compared against the source's current token). That memory replaces what the
+  `revoked`, and the refresher remembers the rejected grant (`rejectedIdentity`, in
+  memory, compared against the source's current credential). That memory replaces what the
   blanked source used to provide: no later tick or forced heal spends the dead grant
   again, and a tick on the unchanged source cannot read it as healthy and flip the
   account back to "ready". A new sign-in or a session's rotation changes the source's
@@ -517,16 +523,17 @@ token when the probes end, and its expiry did not advance (which is the ordinary
 success test), the tick concludes nothing and a new tick runs at once — otherwise a
 rejected old grant would report a completed sign-in as revoked.
 
-After a timeout the CLI is killed, and the copy is read only when the CLI has exited
-(or after 5 s), so that a write under way lands before the copy is judged or deleted.
+After a timeout the CLI is killed, and the copy is read when the CLI has exited, so
+that a write under way lands before the copy is judged or deleted. An error from the
+kill is not an exit. If no exit comes within 5 s, the tick goes on without it.
 
 **Outcomes and logs.** `not_rotated` is new: no rotation, no `invalid_grant`, no 429,
 and the source token is **still valid**; its line carries `expires_in=<N>m`.
 `unknown_failure … — short backoff` keeps its sentence and now means the token is
 expired. With the short claimed life in place, `not_rotated` is the sign that the CLI
 stopped refreshing a near-expiry copy — the first thing to check after a CLI bump. In
-`reason="…"`, lines that only report a missing optional file (`ENOENT`) are dropped,
-lines above debug level are preferred, and each of the three lines is capped
+`reason="…"`, lines that contain `ENOENT` are dropped (the CLI logs each optional file
+it does not find), lines above debug level are preferred, and each of the three lines is capped
 separately, so that a long line cannot hide the last one. Tier 1's stdout names the
 account's email and organization and is kept out of it. Debug timestamps are stripped
 before classification: one ending `.429Z` used to read as an HTTP 429 and select the
@@ -571,8 +578,13 @@ rate-limit backoff.
   dies between the CLI's write and the install, the grant is spent and the new
   token is left in the temp directory, where nothing looks for it; the account
   needs a sign-in. The window is the CLI's remaining run time: well under a
-  second for Tier 1, a few seconds for Tier 2. `pendingRotation` covers a failed
+  second for Tier 1, a few seconds for Tier 2. It lasts as long as a
+  `pendingRotation` waits, which is held in memory only: that covers a failed
   install, not a dead process.
+- **Other orchestrator-side CLIs still run in the account root.** Session naming is
+  one (`namingHome` in `session-namer.ts`). Such a CLI refreshes the source itself
+  when it finds it inside the 5-minute window, and blanks it on `invalid_grant`.
+  The private copy covers the refresher's own probes only.
 - **The install's token check and its rename are two steps.** A writer that
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
@@ -833,8 +845,8 @@ history that was moved into the orphan.
 ### Key files (private probe copy, 2026-10)
 
 - `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `createProbeHome`,
-  `adoptProbeRotation`, `pendingRotation`, `sourceGrantIsKnownRejected`,
-  `clampToLastChance`
+  `adoptProbeRotation`, `claudeCredentialIdentity`, `pendingRotation`,
+  `sourceGrantIsKnownRejected`, `clampToLastChance`
 - `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — "private probe
   copy", "retry schedule"
 
