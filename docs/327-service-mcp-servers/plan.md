@@ -216,8 +216,8 @@ the worker what that process holds.
 - **A backend that starts a process per turn** gets a late server, a late
   service's tools, and a changed tool list at its next turn. The proxy sends the
   standard `tools/list_changed`, so a CLI that honours it gets them sooner, but
-  only the Claude CLI was checked. `requirements.md` → Open questions asks if
-  that is enough.
+  only the Claude CLI was checked. This is accepted: `requirements.md` req 7
+  and req 8, and the receipt under Resolved questions.
 - **The plugin's name in another letter case.** `plugins.use` matches a plugin's
   name without regard to case, the server takes the manifest's spelling, and the
   allowlist is written from the consumer's spelling before the manifest is read.

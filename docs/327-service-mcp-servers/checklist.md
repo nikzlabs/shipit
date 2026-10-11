@@ -16,4 +16,4 @@
 - [x] A resident Claude takes a server that is declared after it started: `syncServiceMcp`, `POST /agent/service-mcp`, `setLiveMcpServers` (`mcp_set_servers`), allowlist candidates; with tests
 - [x] Review findings: one deadline for the proxy's handshake, a timed-out call is a lost connection, MCP names go to admitted repositories only
 - [x] Second review: a start carries the set of the moment it is posted, sync calls run in order and ignore an answer about a replaced process, a turn with no record asks the worker
-- [x] Independent review against the requirements (two rounds; the open question in `requirements.md` is its remaining point)
+- [x] Independent review against the requirements (two rounds; its last point was answered, see `requirements.md` → Resolved questions)
