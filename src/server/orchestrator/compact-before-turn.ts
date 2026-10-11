@@ -1,5 +1,9 @@
 import type { AgentId } from "../shared/types.js";
-import { isResetEligible, type ResetEligibleSignalDeps } from "./services/pre-turn-reset.js";
+import {
+  isResetEligible,
+  mergeContinueAnchor,
+  type ResetEligibleSignalDeps,
+} from "./services/pre-turn-reset.js";
 import {
   recheckMergeBeforeTurn,
   type PreTurnMergeRecheckDeps,
@@ -24,6 +28,8 @@ export const MISSED_COMPACTION_NOTICE =
 export interface CompactBeforeTurnDeps extends ResetEligibleSignalDeps {
   mergeRecheckDeps?: Pick<PreTurnMergeRecheckDeps, "verifyPrState" | "awaitMergeHandling">;
   getAutoResetMergedBranch: () => boolean;
+  /** docs/218 req 6 — record that this merge's compaction was started (`setMergeContinueCompacted`). */
+  markCompacted: (sessionId: string, anchor: string) => void;
 }
 
 export interface CompactBeforeTurnArgs {
@@ -65,7 +71,12 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
       // Without the reset's merge prefix, compaction could lose the completed-work boundary.
       if (recheck === "unsettled") return false;
     }
-    return await isResetEligible(deps, sessionId, sessionDir);
+    if (!(await isResetEligible(deps, sessionId, sessionDir))) return false;
+    // A true answer is the commitment: both takeovers run the compaction on it. Recorded
+    // here, before it runs, so a compaction that fails is not tried again either.
+    const anchor = mergeContinueAnchor(deps.getSession(sessionId));
+    if (anchor) deps.markCompacted(sessionId, anchor);
+    return true;
   } catch (err) {
     console.error(`[compact-before-turn] decision failed for ${sessionId}:`, err);
     return false;

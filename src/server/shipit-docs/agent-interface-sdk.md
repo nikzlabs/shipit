@@ -31,6 +31,7 @@ Use visibility to pause audio, media, animation, polling, and expensive timers. 
 - ShipIt shows a normal user bubble with a `Preview` or `Present` Agent Interface SDK badge.
 - The agent receives ShipIt-authored context explaining that the instruction came through the SDK and may have been automatic.
 - Dispatch follows normal behavior: start when idle, live-steer when enabled and supported, otherwise queue.
+- After the session's pull request merges, the message obeys the composer's **Start from the latest base** and **Compact the context** tick boxes as a typed message does.
 - The Promise resolves when ShipIt accepts the request, not when the agent finishes.
 - Empty messages and messages over 50,000 characters are rejected.
 - Repository-backed sessions require **Trust this repository**; the server enforces it.

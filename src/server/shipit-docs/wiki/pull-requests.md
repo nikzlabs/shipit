@@ -303,6 +303,18 @@ base** *answers the offer for that merge*: ShipIt records the decision, and
 neither control comes back — so the compaction stands down with it — until the
 next pull request merges.
 
+The ticks govern what the user sends from the ShipIt view: a typed message, a
+button on a ShipIt card, and a message that a page you built sends through
+`window.shipit`. A turn that starts with nobody at the composer — a wake after a
+merge, a message from another session — has no tick to read, so the setting
+alone decides and it resets and compacts.
+
+The offer belongs to the first message after the merge, so the context is
+compacted at most once for each merge. If the reset could not be done on that
+message, a notice in the transcript gives the reason and your prompt says the
+branch was not reset. ShipIt does not try again by itself and the tick boxes do
+not come back: run `shipit branch reset-to-base`.
+
 A session works one pull request at a time, so a second one is a fresh start on
 the same session, not two open at once.
 

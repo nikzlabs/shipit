@@ -1182,6 +1182,10 @@ const MIGRATIONS: Migration[] = [
       );
     `);
   },
+  // docs/218 req 6 — identifies the merge whose context compaction was already started.
+  (db) => {
+    addSessionColumnIfMissing(db, "merge_continue_compacted_anchor");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

@@ -538,6 +538,17 @@ describe("SessionManager", () => {
       expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(true);
       expect(mgr.get("sess-1")?.mergeContinueDeclinedAnchor).toBeUndefined();
     });
+
+    it("drops the compacted anchor too, so the next merge can compact (docs/218 req 6)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.setMergeContinueCompacted("sess-1", "anchor-of-the-first-merge");
+      expect(mgr.get("sess-1")?.mergeContinueCompactedAnchor).toBe("anchor-of-the-first-merge");
+
+      expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(true);
+      expect(mgr.get("sess-1")?.mergeContinueCompactedAnchor).toBeUndefined();
+    });
   });
 
   describe("clearPriorPrRecord (unarchive drops the previous PR entirely)", () => {
@@ -550,6 +561,7 @@ describe("SessionManager", () => {
       mgr.setMergedHeadSha("sess-1", "abc123def456");
 
       mgr.setMergeContinueDeclined("sess-1", "anchor-of-the-first-merge");
+      mgr.setMergeContinueCompacted("sess-1", "anchor-of-the-first-merge");
 
       mgr.clearPriorPrRecord("sess-1");
       const s = mgr.get("sess-1");
@@ -558,6 +570,7 @@ describe("SessionManager", () => {
       expect(s?.previousMergedPr).toBeUndefined();
       // docs/218 req 6 — as with clearMerged: the decline dies with its merge.
       expect(s?.mergeContinueDeclinedAnchor).toBeUndefined();
+      expect(s?.mergeContinueCompactedAnchor).toBeUndefined();
     });
 
     it("clears a breadcrumb left by an earlier re-arm, which clearMerged cannot", () => {

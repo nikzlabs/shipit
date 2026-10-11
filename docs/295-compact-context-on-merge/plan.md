@@ -35,8 +35,10 @@ Both transports make the same decision (req 13), for the planning#333 reason:
 docs/218 scoped its reset to the interactive path, and an Agent Interface SDK
 click, a `shipit session message` and a notify-on-merge wake then all continued
 on a branch still sitting on merged commits. The composer checkbox is the
-per-send intent for the typed path only; a programmatic continuation has no
-checkbox and follows the global setting, exactly as the reset does.
+per-send intent for a message the user sends from the ShipIt view — typed, a
+card button, or a message from an agent-built page (req 14). A continuation
+with no view has no checkbox and follows the global setting, exactly as the
+reset does.
 
 ## The pieces
 
@@ -172,10 +174,9 @@ mean "do it".
 **The transport does not decide it; the interaction does.** The same omission
 existed on the HTTP dispatch (`POST /agent/dispatch`), which four ShipIt buttons
 use — preview errors, Create PR, and the two compose-error actions. They now
-pass `userInitiated`, which carries the intent and spends it; a CI auto-fix and
-an agent-interface continuation do not, and keep req 13. The server route and
-`services/agent.ts` forward the two fields onto the dispatch shape, which
-already carried them.
+pass `userInitiated`, which carries the intent and spends it; a CI auto-fix does
+not, and keeps req 13. The server route and `services/agent.ts` forward the two
+fields onto the dispatch shape, which already carried them.
 
 **One snapshot for display and wire.** The composer memoises what it read while
 a send reads afresh, so another tab could display an unticked box and send
@@ -189,9 +190,18 @@ card button is pressed by the user, in the view the checkbox is in, often in the
 same breath as unticking it — the checkbox is right there, and req 5 says an
 untick applies to the user's next message. These frames therefore honour it. A
 continuation with genuinely no checkbox — a wake turn, a `shipit session
-message`, a click inside an agent-built page — never reaches that builder and is
-unaffected. This is a requirements judgement, recorded here rather than as a new
-numbered requirement.
+message` — never reaches that builder and is unaffected. This is a requirements
+judgement, recorded here rather than as a new numbered requirement.
+
+**A message from an agent-built page obeys the controls (req 14).** It first
+shipped on the other side of that line: the page is in the Preview or Present
+tab, beside the composer, and its message compacted while the user's untick sat
+on screen. `dispatchAgentMessage` now carries and spends the intent whenever the
+dispatch has `agentInterface` provenance — decided inside the helper, so its one
+caller cannot omit it. The SDK also lets a page send from a timer, and the
+client does not tell that from a click: an opt-out can only skip an action, and
+the message that carries it is the first one after the merge, which is the
+message the untick was made for.
 
 **The other four defects.** Each is real, each is fixed here, and the host log
 rules each out for the observed incident. The remount is what the log positively
@@ -349,6 +359,37 @@ now ends the offer at the first answer, and `shouldCompactBeforeTurn` reads the
 same `isResetEligible` predicate, so the compaction stands down with the reset.
 One merge, one offer, one compaction.
 
+**An accepted offer ends too.** That closed the offer for an *unticked* first
+message only. A first message that compacted and whose reset then did not
+happen — a fetch error, a blocker that appeared during the compaction — left the
+session merged, clean and on `mergedHeadSha`, so the next message compacted
+again; the user reported exactly that from an agent-built page. Two records now
+end it, both keyed on the merge's anchor:
+
+- `shouldCompactBeforeTurn` records `merge_continue_compacted_anchor` when it
+  answers true, and `computeResetEligibility` answers false for that merge from
+  then on. Recorded at the decision, not at the compaction's result, so a
+  compaction that fails is not tried again either. It gates the offer only: the
+  message that compacted still has its own reset to run.
+- `applyPreTurnReset` records the answer (the anchor the decline already used)
+  when the message took the offer and the branch did not move: a reset that was
+  due and failed, or any skip after this merge's compaction. From then on
+  `autoResetMergedBranchOnContinue` stands down as it does after a decline, so
+  no later message resets the branch with no control on screen. A blocker with
+  no compaction is still an obstacle, not an answer, and stays re-evaluated
+  every turn.
+
+**A reset that fails says so.** `autoResetMergedBranchOnContinue` used to answer
+a throw with a log line and "not moved", so the turn ran on already-merged
+commits with no notice and no agent prefix. A reset that was due (every check
+passed) and then threw before the branch moved now returns a `reset-failed`
+skip: the transcript carries the notice with the first line of the error, and
+the agent gets the "NOT reset" prefix on this turn and on each later one. The
+notice names `shipit branch reset-to-base` and promises no retry, because the
+offer is over. The prefix does not say the branch is behind the base — a failed
+fetch does not prove that. A throw after the branch moved keeps the old path,
+where the post-turn re-arm finishes the bookkeeping.
+
 ## The send opens queued, not running
 
 A compacted-ahead message does not start a turn: it goes to the front of the
@@ -407,7 +448,10 @@ Advanced description names both.
 
 | File | Role |
 |---|---|
-| `orchestrator/compact-before-turn.ts` | The decision, the post-merge `/compact` prompt, `noteMissedCompaction`. |
+| `orchestrator/compact-before-turn.ts` | The decision, which also records that this merge's compaction ran; the post-merge `/compact` prompt; `noteMissedCompaction`. |
+| `orchestrator/services/pre-turn-reset.ts` | `compactedThisMerge` in the eligibility answer; the `reset-failed` skip. |
+| `orchestrator/pre-turn-reset-hook.ts` | Records the answer when the offer was taken and the branch did not move. |
+| `orchestrator/integration_tests/pre-turn-compaction-dispatched.test.ts` | The dispatched path against a real `origin`: reset, req 14's untick, a failed reset. |
 | `orchestrator/ws-handlers/send-message.ts` | The interactive takeover. |
 | `orchestrator/dispatched-turn.ts` | The dispatched takeover (req 13); `/compact` re-derived on the drain (req 12). |
 | `orchestrator/ws-handlers/agent-execution.ts` | `decideCompactBeforeTurn` + `runCompactionAhead` (shared by the send handler and the WS drain); `silent`, `systemTurn`; the compaction turn's drain exemptions and `noteMissedCompaction`; `/compact` re-derived on the WS drain (req 12). |
@@ -438,9 +482,12 @@ Advanced description names both.
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.
-- **A refused reset compacts again next time.** Eligibility is the composer's
-  own signal, so while a reset keeps being *refused* (no network, say) the box
-  keeps appearing ticked and each message compacts first. A refusal is not a
-  decline — docs/218 req 6 ends the offer only on an answer the user gave — so
-  this one survives that change. Consistent with what the user sees; untick to
-  skip, which now ends the offer.
+- **A reset that failed is not tried again by ShipIt.** docs/218 req 6 gives the
+  offer to one message, so a fetch that fails once leaves the branch on the
+  merged tip until the agent runs `shipit branch reset-to-base`. The notice and
+  the prefix on every later turn are what make that visible. A retry on the
+  next message would move the branch with no control on screen to stop it.
+- **Why the reported reset did not happen is not known.** Three integration
+  probes — an idle session, a resident streaming process, and one whose old
+  process exits while the compaction starts — all reset the branch. The
+  `reset-failed` notice is what will name the cause when it happens again.

@@ -165,6 +165,7 @@ export async function decideCompactBeforeTurn(
       getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
       createGitManager: ctx.createGitManager,
       getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+      markCompacted: (id, anchor) => ctx.sessionManager.setMergeContinueCompacted(id, anchor),
       mergeRecheckDeps: {
         verifyPrState: (id) =>
           ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),

@@ -68,6 +68,7 @@ function ask(over: {
   backgroundWork?: string[];
   conversationReplay?: string;
   unsettled?: boolean;
+  marked?: string[];
 } = {}): Promise<boolean> {
   const unsettled = over.unsettled === true;
   const sessionRef = {
@@ -95,6 +96,7 @@ function ask(over: {
           })
         : makeGit()),
       getAutoResetMergedBranch: () => over.setting ?? true,
+      markCompacted: (_id: string, anchor: string) => { over.marked?.push(anchor); },
       mergeRecheckDeps: {
         verifyPrState: () => {
           if (unsettled) sessionRef.value = makeSession();
@@ -123,7 +125,24 @@ describe("shouldCompactBeforeTurn", () => {
   });
 
   it("says no when the user unticked the control for this message (req 5)", async () => {
-    expect(await ask({ intent: false })).toBe(false);
+    const marked: string[] = [];
+    expect(await ask({ intent: false, marked })).toBe(false);
+    // An untick is not a compaction: nothing is recorded against the merge.
+    expect(marked).toEqual([]);
+  });
+
+  it("records the merge when it says yes, and says no for that merge from then on (docs/218 req 6)", async () => {
+    const session = makeSession();
+    const marked: string[] = [];
+    expect(await ask({ session, marked })).toBe(true);
+    expect(marked).toHaveLength(1);
+
+    // Same merge, still merged, clean and on the merged head: the reset did not happen.
+    expect(await ask({ session: { ...session, mergeContinueCompactedAnchor: marked[0] }, marked })).toBe(false);
+    expect(marked).toHaveLength(1);
+
+    // An anchor from an earlier merge does not stop this one.
+    expect(await ask({ session: { ...session, mergeContinueCompactedAnchor: "an-earlier-merge" } })).toBe(true);
   });
 
   it("says no when the shared setting is off (req 11)", async () => {

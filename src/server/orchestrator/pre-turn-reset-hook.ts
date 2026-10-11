@@ -3,6 +3,7 @@ import type { BranchAutoResetCard, WsServerMessage } from "../shared/types.js";
 import {
   autoResetMergedBranchOnContinue,
   clearResetSkipEpisode,
+  compactedThisMerge,
   mergeContinueAnchor,
 } from "./services/pre-turn-reset.js";
 import { recheckMergeBeforeTurn } from "./services/pre-turn-merge-recheck.js";
@@ -90,11 +91,19 @@ export async function applyPreTurnReset(args: {
     intent,
   );
 
-  // docs/218 req 6 — the offer belongs to this merge, and the user just answered
-  // it. Recorded here rather than inside the reset service because the service's
-  // deps are read-only. The post-turn `emitResetEligible` then answers false for
-  // every later message, which also stands the compaction down.
-  if (reset.skip?.clause === "opted-out") {
+  // docs/218 req 6 — the offer belongs to this merge, and this message answered it:
+  // by an untick, or by taking it (a reset that was due and failed, or any skip after
+  // this merge's compaction). A blocker with no compaction is an obstacle, not an
+  // answer, and stays re-evaluated every turn. Recorded here rather than inside the
+  // reset service because the service's deps are read-only. The post-turn
+  // `emitResetEligible` then answers false for every later message, which also
+  // stands the compaction down.
+  const answered = reset.skip !== undefined && (
+    reset.skip.clause === "opted-out"
+    || reset.skip.clause === "reset-failed"
+    || compactedThisMerge(deps.sessionManager.get(sessionId))
+  );
+  if (answered) {
     const anchor = mergeContinueAnchor(deps.sessionManager.get(sessionId));
     if (anchor) {
       deps.sessionManager.setMergeContinueDeclined(sessionId, anchor);
@@ -104,7 +113,7 @@ export async function applyPreTurnReset(args: {
       // above proves the session is merged. Say so rather than dropping the
       // user's choice in silence if that ever stops being true.
       console.error(
-        `[pre-turn-reset] ${sessionId} declined the post-merge continuation but has no merge `
+        `[pre-turn-reset] ${sessionId} answered the post-merge continuation but has no merge `
           + "anchor to record it against — the offer will be made again on the next message",
       );
     }

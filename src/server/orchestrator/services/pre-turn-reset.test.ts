@@ -371,6 +371,33 @@ describe("autoResetMergedBranchOnContinue", () => {
     expect(out.moved).toBe(false);
   });
 
+  it("says why when a reset that was due throws before the branch moved", async () => {
+    const git = makeGit({
+      fetch: vi.fn().mockRejectedValue(new Error("fatal: unable to access the remote\nsecond line")),
+    });
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(out.moved).toBe(false);
+    expect(out.skip?.clause).toBe("reset-failed");
+    expect(out.skip?.level).toBe("warn");
+    expect(out.skip?.detail).toContain("fatal: unable to access the remote");
+    expect(out.skip?.detail).not.toContain("second line");
+    // The offer is over for this merge, so the notice must not promise a retry.
+    expect(out.skip?.notice).toContain("shipit branch reset-to-base");
+    expect(out.skip?.notice).not.toContain("re-evaluated every turn");
+    // A failed fetch does not prove where the branch is relative to the base.
+    expect(out.agentPrefix).toContain("NOT reset to origin/main");
+    expect(out.agentPrefix).not.toContain("behind the base");
+  });
+
+  it("does not say the branch was not reset when the throw comes after it moved", async () => {
+    vi.mocked(restoreLfsAfterTreeRewrite).mockRejectedValueOnce(new Error("lfs blew up"));
+    const git = makeGit();
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(git.resetHardToRemoteBase).toHaveBeenCalledOnce();
+    expect(out.moved).toBe(false);
+    expect(out.skip).toBeUndefined();
+  });
+
   it("still reports moved:true when the remote-heal force-push fails (best-effort)", async () => {
     const git = makeGit({ forcePush: vi.fn().mockRejectedValue(new Error("(stale info)")) });
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");

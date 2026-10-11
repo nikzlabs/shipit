@@ -36,6 +36,7 @@ export type ResetSkipClause =
   | "setting-off"
   | "opted-out"
   | "already-declined"
+  | "already-compacted"
   | "no-merged-head-sha"
   | "no-base-branch"
   | "dirty-tree"
@@ -43,7 +44,8 @@ export type ResetSkipClause =
   | "wrong-branch"
   | "rebase-in-progress"
   | "sequencer-in-progress"
-  | "head-moved";
+  | "head-moved"
+  | "reset-failed";
 
 export type ResetPreconditionClause = Extract<
   ResetSkipClause,
@@ -91,11 +93,33 @@ export function declinedThisMerge(session: SessionInfo | undefined): boolean {
   return anchor !== undefined && session?.mergeContinueDeclinedAnchor === anchor;
 }
 
+// Also the answer of a message that accepted the reset and could not carry it out.
 const ALREADY_DECLINED: ResetSkip = {
   clause: "already-declined",
   detail:
-    "“start from the latest base” was unticked when this pull request merged, and that "
-    + "choice stands for this merge rather than being re-offered on every later message",
+    "this merge's offer to start from the latest base was already answered by an earlier "
+    + "message — it was unticked, or the reset could not be done then — and it is not made "
+    + "again for the same merge",
+};
+
+/**
+ * docs/218 req 6 — a message took this merge's offer: its compaction was started.
+ * A reset that then does not move the branch leaves the session merged, clean and
+ * on `mergedHeadSha`, which reads as eligible, so without this the next message
+ * compacted again. It gates the OFFER only: the message that compacted still has
+ * its own reset to run, so `autoResetMergedBranchOnContinue` does not read it.
+ * `applyPreTurnReset` records the answer when that reset does not move the branch.
+ */
+export function compactedThisMerge(session: SessionInfo | undefined): boolean {
+  const anchor = mergeContinueAnchor(session);
+  return anchor !== undefined && session?.mergeContinueCompactedAnchor === anchor;
+}
+
+const ALREADY_COMPACTED: ResetSkip = {
+  clause: "already-compacted",
+  detail:
+    "an earlier message already started the context compaction for this merge, so the "
+    + "offer is not made again",
 };
 
 const DIRTY_PATH_LIMIT = 10;
@@ -224,6 +248,9 @@ export async function computeResetEligibility(
     if (declinedThisMerge(session)) {
       return { eligible: false, merged: true, blocker: ALREADY_DECLINED };
     }
+    if (compactedThisMerge(session)) {
+      return { eligible: false, merged: true, blocker: ALREADY_COMPACTED };
+    }
     const prStatus = deps.getPrStatus(sessionId);
     const git = deps.createGitManager(sessionDir);
     const blocker = await computeResetBlocker(session, prStatus, git);
@@ -288,6 +315,8 @@ export async function announceResetStateOnMerge(
       clearResetSkipEpisode(sessionId);
       return;
     }
+    // An answered offer is not a refusal of the reset; the notice below would say it was.
+    if (blocker.clause === "already-compacted" || blocker.clause === "already-declined") return;
 
     if (!deps.chatHistory) {
       console.error(
@@ -350,6 +379,8 @@ export async function autoResetMergedBranchOnContinue(
   intent?: boolean,
 ): Promise<ResetOutcome> {
   let mutatedWorkspace = false;
+  // Set once the reset is due; cleared when the branch has moved.
+  let due: { session: SessionInfo; prStatus: PrStatusSummary | null } | null = null;
   try {
     const session = deps.getSession(sessionId);
     const prStatus = deps.getPrStatus(sessionId);
@@ -385,6 +416,7 @@ export async function autoResetMergedBranchOnContinue(
 
     // Fetch writes .git and yields; hand back ownership and recheck before resetting.
     mutatedWorkspace = true;
+    due = { session, prStatus };
     await git.fetch("origin");
     const blockerAfterFetch = await computeResetBlocker(session, prStatus, git);
     if (blockerAfterFetch) return skipped(sessionId, session, prStatus, blockerAfterFetch);
@@ -398,6 +430,7 @@ export async function autoResetMergedBranchOnContinue(
     }
 
     const { from, to } = await git.resetHardToRemoteBase(base);
+    due = null;
 
     // Orchestrator git disables LFS smudge; restore assets before the agent reads them.
     const lfs = await restoreLfsAfterTreeRewrite(sessionDir, `Reset onto ${base}`, (message) =>
@@ -434,6 +467,15 @@ export async function autoResetMergedBranchOnContinue(
     };
   } catch (err) {
     console.error(`[pre-turn-reset] auto-reset failed for ${sessionId} (running turn on the un-moved branch):`, err);
+    // A reset that was due and did not happen must say so: without the notice and the
+    // prefix, the turn runs on already-merged commits and neither the user nor the agent knows.
+    if (due) {
+      const why = (err instanceof Error ? err.message : String(err)).trim().split("\n")[0].slice(0, 300);
+      return skipped(sessionId, due.session, due.prStatus, {
+        clause: "reset-failed",
+        detail: `the reset could not be completed (${why})`,
+      });
+    }
     return NOT_MOVED;
   } finally {
     // Reconcile git/worktree owners after any write, including a failed fetch or reset.
@@ -472,10 +514,10 @@ function buildSkipNotice(skip: ResetSkip, prNumber?: number, base?: string): str
   const pr = prNumber ? `#${prNumber}` : "for this session";
   const into = base ? ` into ${base}` : "";
   const target = base ? `origin/${base}` : "the latest base";
-  // A declined offer is not re-evaluated (docs/218 req 6), so it must not be told
+  // An answered offer is not re-evaluated (docs/218 req 6), so it must not be told
   // that sending another message brings it back.
   const howToGetIt =
-    skip.clause === "opted-out" || skip.clause === "already-declined"
+    skip.clause === "opted-out" || skip.clause === "already-declined" || skip.clause === "reset-failed"
       ? `To move the branch after all, ask the agent to run \`shipit branch reset-to-base\`.`
       : `Clear the reason above and send another message (the reset is re-evaluated every turn), `
         + `or ask the agent to run \`shipit branch reset-to-base\`.`;
@@ -491,10 +533,14 @@ function buildSkipAgentPrefix(skip: ResetSkip, prNumber?: number, base?: string)
   const pr = prNumber ? ` (#${prNumber})` : "";
   const into = base ? ` into ${base}` : "";
   const target = base ? `origin/${base}` : "the latest base";
+  // A failed fetch proves nothing about where the branch is relative to the base.
+  const state = skip.clause === "reset-failed"
+    ? "The branch was left where it was"
+    : "The branch still contains the merged commits, is behind the base";
   return (
     `[System] This session's pull request${pr} was already merged${into}, and the branch was `
-    + `NOT reset to ${target}: ${skip.detail}. The branch still contains the merged commits, `
-    + `is behind the base, and has no open pull request — anything you commit here will not be `
+    + `NOT reset to ${target}: ${skip.detail}. ${state}, and has no open pull request — `
+    + `anything you commit here will not be `
     + `auto-pushed and belongs to no pull request. Tell the user this before doing work that `
     + `assumes a fresh base. Do not run a manual \`git reset --hard\` or \`git push --force\`; `
     + `if the user wants the branch moved, use \`shipit branch reset-to-base\`.`

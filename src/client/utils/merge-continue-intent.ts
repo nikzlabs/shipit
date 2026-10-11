@@ -28,9 +28,9 @@ import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-stora
  * decides". A card button is pressed by the user, in the view the checkbox is
  * in, often in the same breath as unticking it — the checkbox is right there,
  * and req 5 says an untick applies to the user's next message. So these frames
- * honour it. A continuation with genuinely no checkbox — a wake turn, a
- * `shipit session message`, a click inside an agent-built page — never reaches
- * this function and is unaffected.
+ * honour it, and so does a message from an agent-built page (req 14). A
+ * continuation with genuinely no checkbox — a wake turn, a `shipit session
+ * message` — never reaches this function and is unaffected.
  *
  * Only an opt-out is carried. A ticked control needs no field: absent and
  * `true` both mean "do it", and the server's own eligibility gates still apply.

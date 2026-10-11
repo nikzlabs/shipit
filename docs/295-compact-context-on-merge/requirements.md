@@ -67,11 +67,19 @@ later turn, and the agent reads them as live work in progress.
 
 13. A continuation that the user did not type also compacts, under the same
     setting and in the same conditions in which its branch is reset. It has no
-    checkbox, so the setting alone decides.
+    checkbox, so the setting alone decides. Requirement 14 takes a message from
+    an agent-built page out of this rule.
+
+14. A message that a page built by the agent sends to the agent, from the
+    Preview or the Present tab, obeys the two composer controls as a typed
+    message does. When the user unticked a control, that message does not do
+    that action, and the untick is used up by that message. A continuation that
+    starts with no ShipIt view in front of the user — a wake turn after a
+    merge, a message from another session — stays under requirement 13.
 
 ## Requirement provenance
 
-Requirements 1 to 6, 11 and 13 come from what the user asked for and decided.
+Requirements 1 to 6, 11, 13 and 14 come from what the user asked for and decided.
 Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
 already ships (docs/218 for the merge notice, docs/178 for how a compaction
 appears and for the `/compact` boundary) from becoming weaker. They are recorded
@@ -111,3 +119,15 @@ None.
   offered and rejected: it would split programmatic continuations into two
   classes that docs/218 treats as one, and the two gates could then disagree.
   Recorded as requirement 13.
+
+- **2026-10-11 — The user unticked "Compact the context", then a message from
+  an agent-built page compacted the context. What must a message that the user
+  did not type do on a merged session?** A click in an agent-built page uses
+  the composer's tick state and spends it, the same as a button on a ShipIt
+  card. A wake turn and a session message have no view, so they keep the global
+  setting. This changes the 2026-09-07 answer above for one of its three
+  examples: the click inside an agent-built page. The user also saw a
+  compaction on a merge event and on a message from another session; the answer
+  keeps the setting for those two. "The composer's tick state" is both
+  controls, so the same message also obeys "Start from the latest base".
+  Recorded as requirement 14.

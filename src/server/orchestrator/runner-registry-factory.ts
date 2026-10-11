@@ -510,6 +510,7 @@ export function createRunnerRegistry(
               getPrStatus: (id) => sessionManager.getPrStatus(id),
               createGitManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
+              markCompacted: (id, anchor) => sessionManager.setMergeContinueCompacted(id, anchor),
               ...(prStatusPoller
                 ? {
                     mergeRecheckDeps: {
