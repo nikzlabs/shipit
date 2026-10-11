@@ -651,8 +651,10 @@ CLIs share that root anyway.
   pathname with no re-check**, so an external writer landing between the two is
   overwritten. Pre-existing, in a function this change does not touch, and it
   affects every caller.
-- The **Codex** refresher (`agents/codex/oauth-refresher.ts`) has the same shape
-  and was not audited for the same gap.
+- The **Codex** refresher (`agents/codex/oauth-refresher.ts`) was audited against
+  these fixes in 2026-10. What it had of these gaps, and what it does now, is in
+  docs/154-codex-oauth-refresh-readiness, "On-demand refresh, real rejections,
+  harvest". It imports `summarizeRefreshFailure` from this refresher.
 - **The private copy depends on three CLI behaviors** that the CLI does not
   document: it refreshes when the file says 5 minutes or less are left, it writes
   the result to the file it read, and it blanks that file on `invalid_grant` only.

@@ -22,6 +22,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       egress: ${{ steps.filter.outputs.egress }}
       claude-probe: ${{ steps.filter.outputs.claude-probe }}
+      codex-probe: ${{ steps.filter.outputs.codex-probe }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,6 +37,7 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "egress=true" >> "$GITHUB_OUTPUT"
             echo "claude-probe=true" >> "$GITHUB_OUTPUT"
+            echo "codex-probe=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Compare PR endpoints, not GitHub's synthetic merge commit.
@@ -60,6 +62,12 @@ jobs:
             echo "claude-probe=true" >> "$GITHUB_OUTPUT"
           else
             echo "claude-probe=false" >> "$GITHUB_OUTPUT"
+          fi
+          # The same for Codex: its probe runs the refresher's own tick against the binary.
+          if printf '%s\n' "$changed" | grep -qE '^(docker/agent-cli/(package\.json|package-lock\.json|install-agent-clis\.sh)|scripts/probe-codex-refresh\.mjs|src/server/orchestrator/agents/codex/oauth-refresher\.ts|\.github/workflows/ci\.yml)$'; then
+            echo "codex-probe=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "codex-probe=false" >> "$GITHUB_OUTPUT"
           fi
 
   check:
@@ -161,6 +169,44 @@ jobs:
         env:
           CLAUDE_BIN: ${{ runner.temp }}/agent-bin/claude
         run: node --import tsx scripts/probe-claude-refresh.mjs
+
+  # docs/154: the same for the Codex CLI. The probe runs the refresher's own tick against the
+  # pinned binary, with synthetic tokens and a local recorder. The job needs no secret.
+  codex-refresh-probe:
+    name: Codex CLI Refresh Probe
+    needs: changes
+    if: needs.changes.outputs.codex-probe == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@v5
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
+      - if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Install the pinned Codex CLI as the images do
+        env:
+          AGENT_CLI_DIR: ${{ github.workspace }}/docker/agent-cli
+          BIN_DIR: ${{ runner.temp }}/agent-bin
+          SHIPIT_AGENTS_INSTALL_REPORT: ${{ runner.temp }}/agents-installed.json
+          SHIPIT_HARNESSES: codex
+        run: |
+          mkdir -p "$BIN_DIR"
+          sh docker/agent-cli/install-agent-clis.sh
+      - name: Run the refresh probe
+        env:
+          CODEX_BIN: ${{ runner.temp }}/agent-bin/codex
+        run: node --import tsx scripts/probe-codex-refresh.mjs
 
   # Assert the privileged egress image contract, including orchestrator UIDs.
   egress-sidecar-image:
