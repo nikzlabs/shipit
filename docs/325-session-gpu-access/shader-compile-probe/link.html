@@ -3,16 +3,38 @@
 <title>link N different programs</title>
 <canvas id="c" width="480" height="320"></canvas>
 <script>
-// run(n, salt, mode): link n different programs made from the three.js source pairs in sources.json.
+// run(n, salt, mode, opt): link n different programs made from the three.js source pairs in sources.json, then draw once with each.
 // The same salt gives the same sources. A new salt gives different sources.
-// mode "sync": ask LINK_STATUS for each program (blocks). mode "poll": wait on COMPLETION_STATUS_KHR in animation frames.
-window.run = async (n, salt, mode = "sync") => {
-  const pairs = await (await fetch("sources.json")).json();
+// mode "sync": send all, then ask LINK_STATUS for each program (blocks). mode "poll": send all, then wait on COMPLETION_STATUS_KHR
+// in animation frames. mode "groups": send opt.group programs, wait on COMPLETION_STATUS_KHR of them in animation frames, then send the next group.
+// opt.drawGroup: 0 draws with all programs in one loop. K draws with K programs, waits on a fence in animation frames, then draws with the next K.
+// opt.pairs: "all", "small" (the pairs below 50 kB of source) or "large" (the pairs above 90 kB).
+// opt.animate: in each animation frame, draw into the canvas with one small program that is linked before the measurement.
+window.run = async (n, salt, mode = "sync", opt = {}) => {
+  const { group = 50, drawGroup = 0, pairs: pairSet = "all", animate = false } = opt;
+  const size = (p) => p.vs.length + p.fs.length;
+  const sets = { all: () => true, small: (p) => size(p) < 50000, large: (p) => size(p) > 90000 };
+  const count = (v, min) => Number.isInteger(v) && v >= min;
+  if (!["sync", "poll", "groups"].includes(mode) || !Object.hasOwn(sets, pairSet) || !count(n, 1) || !count(group, 1) || !count(drawGroup, 0)) {
+    return { error: `bad options: n ${n}, mode ${mode}, pairs ${pairSet}, group ${group}, drawGroup ${drawGroup}` };
+  }
+  const pairs = (await (await fetch("sources.json")).json()).filter(sets[pairSet]);
   const gl = document.getElementById("c").getContext("webgl2", { antialias: false });
   if (!gl) return { error: "no webgl2 context" };
   const dbg = gl.getExtension("WEBGL_debug_renderer_info");
   const par = gl.getExtension("KHR_parallel_shader_compile");
-  const out = { renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), parallelExt: !!par, n, salt, mode, pairs: pairs.length };
+  const out = { renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), parallelExt: !!par, n, salt, mode, group: mode === "groups" ? group : undefined, drawGroup, pairSet, pairs: pairs.length, animate };
+
+  let anim = null, animTime = null;
+  if (animate) {
+    const shader = (type, text) => { const s = gl.createShader(type); gl.shaderSource(s, text); gl.compileShader(s); return s; };
+    anim = gl.createProgram();
+    gl.attachShader(anim, shader(gl.VERTEX_SHADER, "#version 300 es\nvoid main() { gl_Position = vec4(gl_VertexID == 1 ? 1.0 : -1.0, gl_VertexID == 2 ? 1.0 : -1.0, 0.0, 1.0); }"));
+    gl.attachShader(anim, shader(gl.FRAGMENT_SHADER, "#version 300 es\nprecision mediump float;\nuniform float t;\nout vec4 c;\nvoid main() { c = vec4(fract(t), 0.5, 0.5, 1.0); }"));
+    gl.linkProgram(anim);
+    if (!gl.getProgramParameter(anim, gl.LINK_STATUS)) return { error: "the animation program did not link" };
+    animTime = gl.getUniformLocation(anim, "t");
+  }
 
   // Each variant differs in its text and in what it computes.
   const variant = (text, i, isFs) => {
@@ -25,32 +47,59 @@ window.run = async (n, salt, mode = "sync") => {
     return t;
   };
 
-  let maxGap = 0, lastFrame = performance.now(), frames = 0, watching = true;
-  const tick = (t) => { maxGap = Math.max(maxGap, t - lastFrame); lastFrame = t; frames++; if (watching) requestAnimationFrame(tick); };
+  // Animation frames in each phase: the count, and the longest time with no call of tick, from the start of the phase to its end.
+  // The time is read in the call: the timestamp that requestAnimationFrame gives is the start of the frame, which can be earlier.
+  let frames = 0, maxGap = 0, last = 0, watching = true;
+  const tick = () => {
+    const now = performance.now();
+    maxGap = Math.max(maxGap, now - last); last = now; frames++;
+    if (anim) { gl.useProgram(anim); gl.uniform1f(animTime, now / 1000); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+    if (watching) requestAnimationFrame(tick);
+  };
+  const startPhase = () => { frames = 0; maxGap = 0; last = performance.now(); };
+  const endPhase = (tEnd) => ({ frames, gap: Math.round(Math.max(maxGap, tEnd - last)) });
+  const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
   requestAnimationFrame(tick);
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  maxGap = 0; frames = 0; lastFrame = performance.now();
+  await nextFrame(); await nextFrame();
 
   const progs = [];
-  const tStart = performance.now();
-  let tFirstLink = 0;
-  for (let i = 0; i < n; i++) {
-    const p = pairs[i % pairs.length];
-    const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, variant(p.vs, i, false)); gl.compileShader(vs);
-    const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, variant(p.fs, i, true)); gl.compileShader(fs);
-    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs);
-    if (!tFirstLink) tFirstLink = performance.now();
-    gl.linkProgram(prog);
-    progs.push({ prog, vs, fs });
-  }
-  const tSubmitted = performance.now();
-
-  if (mode === "poll" && par) {
-    let pending = progs.slice();
-    while (pending.length) {
-      await new Promise((r) => requestAnimationFrame(r));
-      pending = pending.filter((x) => !gl.getProgramParameter(x.prog, par.COMPLETION_STATUS_KHR));
+  let bytes = 0, tFirstLink = 0, submitMs = 0, longestSendMs = 0, pollRounds = 0, longestPollMs = 0, longestCallMs = 0, longestCallAt = null;
+  const send = (to) => {
+    const t = performance.now();
+    for (let i = progs.length; i < to; i++) {
+      const p = pairs[i % pairs.length];
+      const vsText = variant(p.vs, i, false), fsText = variant(p.fs, i, true);
+      bytes += vsText.length + fsText.length;
+      const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, vsText); gl.compileShader(vs);
+      const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, fsText); gl.compileShader(fs);
+      const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+      if (!tFirstLink) tFirstLink = performance.now();
+      gl.linkProgram(prog);
+      progs.push({ prog, vs, fs, i });
     }
+    const d = performance.now() - t;
+    submitMs += d; longestSendMs = Math.max(longestSendMs, d);
+  };
+  const waitLinked = async (list) => {
+    let pending = list;
+    while (pending.length) {
+      await nextFrame();
+      const t = performance.now();
+      pending = pending.filter((x, k) => {
+        const c = performance.now(), done = gl.getProgramParameter(x.prog, par.COMPLETION_STATUS_KHR), d = performance.now() - c;
+        if (d > longestCallMs) { longestCallMs = d; longestCallAt = { round: pollRounds + 1, place: k, program: x.i }; }
+        return !done;
+      });
+      longestPollMs = Math.max(longestPollMs, performance.now() - t); pollRounds++;
+    }
+  };
+
+  startPhase();
+  if (mode === "groups") {
+    while (progs.length < n) { const from = progs.length; send(Math.min(n, from + group)); if (par) await waitLinked(progs.slice(from)); }
+  } else {
+    send(n);
+    if (mode === "poll" && par) await waitLinked(progs);
   }
   let failed = 0, firstLog = null;
   const perProg = [];
@@ -63,12 +112,11 @@ window.run = async (n, salt, mode = "sync") => {
     const now = performance.now(); perProg.push(now - prev); prev = now;
   }
   const tLinked = performance.now();
-  const gapDuringLink = maxGap, framesDuringLink = frames;
+  const link = endPhase(tLinked);
 
   // First draw with each program: this is where a driver can compile again for the pipeline state.
   const unitOf = new Map([[gl.SAMPLER_2D, 0], [gl.SAMPLER_CUBE, 1], [gl.SAMPLER_2D_SHADOW, 2], [gl.SAMPLER_3D, 3], [gl.SAMPLER_2D_ARRAY, 4], [gl.SAMPLER_CUBE_SHADOW, 5], [gl.SAMPLER_2D_ARRAY_SHADOW, 6]]);
-  const tDraw0 = performance.now();
-  for (const x of progs) {
+  const drawWith = (x) => {
     gl.useProgram(x.prog);
     const count = gl.getProgramParameter(x.prog, gl.ACTIVE_UNIFORMS) || 0;
     for (let u = 0; u < count; u++) {
@@ -78,21 +126,35 @@ window.run = async (n, salt, mode = "sync") => {
       if (loc) gl.uniform1iv(loc, new Int32Array(info.size).fill(unitOf.get(info.type)));
     }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+  };
+  startPhase();
+  const tDraw0 = performance.now();
+  for (let i = 0; i < progs.length; i++) {
+    drawWith(progs[i]);
+    if (drawGroup && ((i + 1) % drawGroup === 0 || i === progs.length - 1)) {
+      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
+      do await nextFrame(); while (gl.getSyncParameter(sync, gl.SYNC_STATUS) !== gl.SIGNALED);
+      gl.deleteSync(sync);
+    }
   }
   const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
   const tDrawn = performance.now();
+  const draw = endPhase(tDrawn);
   const glError = gl.getError();
   watching = false;
 
   perProg.sort((a, b) => a - b);
   return {
     ...out, failed, firstLog, glError,
-    submitMs: Math.round(tSubmitted - tStart),
+    sourceMB: Math.round(bytes / 1e5) / 10,
+    submitMs: Math.round(submitMs), longestSendMs: Math.round(longestSendMs),
     linkMs: Math.round(tLinked - tFirstLink),
     perProgramMs: Math.round((tLinked - tFirstLink) / n * 10) / 10,
     slowestStatusMs: Math.round(perProg[perProg.length - 1]),
+    pollRounds, longestPollMs: Math.round(longestPollMs), longestCallMs: Math.round(longestCallMs), longestCallAt,
+    maxFrameGapMs: link.gap, framesDuringLink: link.frames,
     firstDrawMs: Math.round(tDrawn - tDraw0),
-    maxFrameGapMs: Math.round(gapDuringLink), framesDuringLink,
+    maxDrawGapMs: draw.gap, framesDuringDraw: draw.frames,
   };
 };
 </script>
