@@ -225,6 +225,7 @@ function buildRig(opts: {
   initialExpiries?: Record<string, number>;
   initialNow?: number;
   safetyMarginMs?: number;
+  lateRotationWaitMs?: number;
 }): TestRig {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-refresh-test-"));
   const accounts = opts.accounts;
@@ -260,6 +261,7 @@ function buildRig(opts: {
     runtimeMode: "containerized",
     now,
     spawn: spawnHandle.spawn as unknown as ClaudeOAuthRefresherDeps["spawn"],
+    lateRotationWaitMs: opts.lateRotationWaitMs ?? 0,
   };
   if (opts.safetyMarginMs !== undefined) {
     deps.safetyMarginMs = opts.safetyMarginMs;
@@ -1042,11 +1044,12 @@ describe("ClaudeOAuthRefresher", () => {
     const now = 1_700_000_000_000;
     const inMargin = now + 40 * 60 * 1000;
 
-    function marginRig(): TestRig {
+    function marginRig(lateRotationWaitMs?: number): TestRig {
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
         initialExpiries: { "acct-1": inMargin },
         initialNow: now,
+        lateRotationWaitMs,
       });
       rigs.push(rig);
       return rig;
@@ -1141,6 +1144,43 @@ describe("ClaudeOAuthRefresher", () => {
       expect(readSourceCredentials(rig.rootDir, "acct-1").accessToken).toBe(`sess_tok_${rotatedTo}`);
       expect(rig.sseCalls.map((c) => c.event)).not.toContain("claude_account_unauthenticated");
       expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "acct-1" }]);
+    });
+
+    it("harvests a session rotation that is written after the probe was rejected", async () => {
+      const rig = marginRig(200);
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      rig.spawnHandle.effects = [{
+        blank: true,
+        sideEffect: () => setTimeout(
+          () => writeSessionToken(rig.rootDir, "sess-a", { expiresAt: rotatedTo, accountId: "acct-1" }),
+          50,
+        ),
+      }];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("harvested_session");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").accessToken).toBe(`sess_tok_${rotatedTo}`);
+      expect(rig.sseCalls.map((c) => c.event)).not.toContain("claude_account_unauthenticated");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+    });
+
+    it("does not report the grant revoked when the source changes after the probe was rejected", async () => {
+      const rig = marginRig(200);
+      rig.spawnHandle.effects = [{
+        blank: true,
+        // A session's rotation that its write-back watch published.
+        sideEffect: () => setTimeout(
+          () => writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: now + 8 * 60 * 60 * 1000 }),
+          50,
+        ),
+      }];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("noop");
+      expect(rig.sseCalls.map((c) => c.event)).not.toContain("claude_account_unauthenticated");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
     });
 
     it("installs the rotation beside a key that another writer changed during the probe", async () => {
@@ -1407,11 +1447,12 @@ describe("ClaudeOAuthRefresher", () => {
     const inMargin = now + 40 * 60 * 1000;
     const rotatedTo = now + 8 * 60 * 60 * 1000;
 
-    function marginRig(): TestRig {
+    function marginRig(lateRotationWaitMs?: number): TestRig {
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
         initialExpiries: { "acct-1": inMargin },
         initialNow: now,
+        lateRotationWaitMs,
       });
       rigs.push(rig);
       return rig;
@@ -1536,6 +1577,110 @@ describe("ClaudeOAuthRefresher", () => {
 
       expect(readSourceCredentials(rig.rootDir, "acct-1").accessToken).toBe(`sess_tok_${rotatedTo}`);
       expect(events(rig)).not.toContain("claude_account_unauthenticated");
+    });
+
+    it("harvests a session rotation that is written after the run's grant was rejected", async () => {
+      const rig = marginRig(200);
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeBlankedCredentials(home);
+        setTimeout(() => writeSessionToken(rig.rootDir, "sess-a", { expiresAt: rotatedTo, accountId: "acct-1" }), 50);
+      });
+
+      expect(readSourceCredentials(rig.rootDir, "acct-1").accessToken).toBe(`sess_tok_${rotatedTo}`);
+      expect(events(rig)).not.toContain("claude_account_unauthenticated");
+    });
+
+    it("does not report the grant revoked when the source changes after the run's grant was rejected", async () => {
+      const rig = marginRig(200);
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        writeBlankedCredentials(home);
+        setTimeout(() => writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: rotatedTo }), 50);
+      });
+
+      expect(events(rig)).not.toContain("claude_account_unauthenticated");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(true);
+    });
+
+    it("judges a rejection of a signed-in token although a rotation of the old one is kept", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+      await rig.refresher.refreshNow("acct-1");
+      rename.mockRestore();
+      errors.mockRestore();
+      writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: inMargin });
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+
+      expect(events(rig)).toContain("claude_account_unauthenticated");
+      const [tick] = await rig.refresher.refreshNow("acct-1");
+      expect(tick!.outcome).toBe("revoked");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+    });
+
+    it("judges a rejection when two runs end together", async () => {
+      const rig = marginRig();
+      let finishBoth = (): void => {};
+      const gate = new Promise<void>((resolve) => { finishBoth = resolve; });
+      const runs = [1, 2].map(() => rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+        await gate;
+        writeBlankedCredentials(home);
+      }));
+
+      finishBoth();
+      await Promise.all(runs);
+
+      expect(events(rig)).toContain("claude_account_unauthenticated");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(false);
+    });
+
+    it("judges a rejection of a new token while a run waits on the rejection of the old one", async () => {
+      const rig = marginRig(200);
+      const waiting = rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // A sign-in, whose token the next run's grant is also rejected for.
+      writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: inMargin });
+
+      await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+      await waiting;
+
+      expect(events(rig)).toContain("claude_account_unauthenticated");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(false);
+    });
+
+    it("does not make a run that installed a rotation wait on a rejection that it answers", async () => {
+      vi.useFakeTimers();
+      try {
+        const rig = marginRig(5_000);
+        let finishWinner = (): void => {};
+        const winnerGate = new Promise<void>((resolve) => { finishWinner = resolve; });
+        const winner = rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          await winnerGate;
+          writeCredentials(home, { expiresAt: rotatedTo });
+          return "named";
+        });
+        await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+
+        finishWinner();
+        let returned = false;
+        const watched = (async () => {
+          await winner;
+          returned = true;
+        })();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(returned).toBe(true);
+        await watched;
+        expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+        expect(events(rig)).not.toContain("claude_account_unauthenticated");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("keeps a rotation that it could not install, and the next tick installs it without a spawn", async () => {
