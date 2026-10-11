@@ -379,7 +379,7 @@ async function runDispatchedTurnInner(
       if (deps.statusCardEnabled) {
         releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
       }
-      releaseResidentOnServiceMcpChange(runner, runner.serviceMcpServers?.() ?? null);
+      releaseResidentOnServiceMcpChange(runner, runner.serviceMcp?.()?.servers ?? null);
     }
     // Reuse follows the resident process, even if live steering was since disabled.
     const resident =

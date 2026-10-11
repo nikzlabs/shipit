@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 import type { PluginComposeService } from "./plugin-compose.js";
-import { pluginServiceMcpServers, resolveServiceMcpServers } from "./service-mcp.js";
+import { pluginServiceMcpServers, resolveServiceMcp } from "./service-mcp.js";
 
 let workspaceDir: string;
 
@@ -22,11 +22,11 @@ const writeConfig = (body: string): void => {
 
 const plugins = (...servers: { name: string; url: string }[]) => ({ pluginMcpServers: () => servers });
 
-describe("resolveServiceMcpServers (docs/327)", () => {
+describe("resolveServiceMcp (docs/327)", () => {
   it("gives the project's servers, then the plugins'", () => {
     writeConfig("mcp:\n  verseshotdev:\n    service: api\n    port: 8787\n");
 
-    expect(resolveServiceMcpServers(workspaceDir, plugins({ name: "verseshot", url: "http://verseshot:4300/mcp" })))
+    expect(resolveServiceMcp(workspaceDir, plugins({ name: "verseshot", url: "http://verseshot:4300/mcp" }))?.servers)
       .toEqual([
         { name: "verseshotdev", url: "http://api:8787/mcp" },
         { name: "verseshot", url: "http://verseshot:4300/mcp" },
@@ -36,17 +36,33 @@ describe("resolveServiceMcpServers (docs/327)", () => {
   it("lets the project's server win a name over a plugin's", () => {
     writeConfig("mcp:\n  Verseshot:\n    service: api\n    port: 8787\n    path: /v1\n");
 
-    expect(resolveServiceMcpServers(workspaceDir, plugins({ name: "verseshot", url: "http://verseshot:4300/mcp" })))
+    expect(resolveServiceMcp(workspaceDir, plugins({ name: "verseshot", url: "http://verseshot:4300/mcp" }))?.servers)
       .toEqual([{ name: "Verseshot", url: "http://api:8787/v1" }]);
   });
 
   it("is empty for a session with no shipit.yaml and no service manager", () => {
-    expect(resolveServiceMcpServers(workspaceDir, null)).toEqual([]);
+    expect(resolveServiceMcp(workspaceDir, null)).toEqual({ servers: [], candidates: [] });
+  });
+
+  it("names every used plugin as a candidate, before its version is live, and leaves out a name no server can take", () => {
+    writeConfig([
+      "plugins:",
+      "  repos:",
+      "    - repo: acme/tools",
+      "      name: tools",
+      "  use:",
+      "    - { plugin: verseshot, from: tools }",
+      "    - { plugin: verseshot, from: tools, alias: second }",
+      "    - { plugin: dotted.name, from: tools }",
+      "",
+    ].join("\n"));
+
+    expect(resolveServiceMcp(workspaceDir, plugins())).toEqual({ servers: [], candidates: ["verseshot"] });
   });
 
   it("is null while shipit.yaml cannot be parsed, so a resident keeps its servers", () => {
     expectInvalidShipitConfig(() => writeConfig("compose: {}\n"));
-    expect(resolveServiceMcpServers(workspaceDir, plugins())).toBeNull();
+    expect(resolveServiceMcp(workspaceDir, plugins())).toBeNull();
   });
 });
 

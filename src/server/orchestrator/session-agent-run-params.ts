@@ -10,8 +10,7 @@ import {
 } from "./agent-run-params-prep.js";
 import { serviceRoutingForSelection } from "./service-routing.js";
 import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
-import { recordServiceMcpSpawn } from "./service-mcp.js";
-import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
+import { recordServiceMcpSpawn, type SessionServiceMcp } from "./service-mcp.js";
 
 export interface BuildAgentRunParamsDeps {
   credentialStore: CredentialStore;
@@ -33,8 +32,8 @@ export interface BuildAgentRunParamsArgs {
   sessionDir: string;
   permissionMode?: PermissionMode;
   compact?: boolean;
-  /** docs/327 — the session's declared MCP servers (`resolveServiceMcpServers`). */
-  serviceMcpServers?: ServiceMcpServer[];
+  /** docs/327 — the session's declared MCP servers (`resolveServiceMcp`). */
+  serviceMcp?: SessionServiceMcp | null;
 }
 
 export async function buildAgentRunParams(
@@ -53,11 +52,10 @@ export async function buildAgentRunParams(
 
   // Finish DB reads before the first await; shutdown can close the connection during it.
   const agentInstructionsEnabled = deps.credentialStore.getAgentSystemInstructionsEnabled();
-  const serviceMcpServers = args.serviceMcpServers ?? [];
-  // docs/327 — a declared server keeps its name in its own sessions; an account server yields it.
-  const declaredMcpNames = new Set(serviceMcpServers.map((s) => s.name.toLowerCase()));
+  const serviceMcpServers = args.serviceMcp?.servers ?? [];
+  const serviceMcpCandidates = args.serviceMcp?.candidates ?? [];
   const mcpServers = Object.values(deps.credentialStore.getAllMcpServers()).filter(
-    (s) => s.enabled && !declaredMcpNames.has(s.name.toLowerCase()),
+    (s) => s.enabled,
   );
   const replay = deps.sessionManager.consumeConversationReplay(sessionId);
   const sessionInfo = deps.sessionManager.get(sessionId);
@@ -117,6 +115,7 @@ export async function buildAgentRunParams(
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
     ...(serviceMcpServers.length > 0 ? { serviceMcpServers } : {}),
+    ...(serviceMcpCandidates.length > 0 ? { serviceMcpCandidates } : {}),
     ...(sessionStatusCard ? { sessionStatusCard: true } : {}),
     ...(compact ? { compact: true } : {}),
   };

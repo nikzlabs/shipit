@@ -24,7 +24,12 @@ const FAST: ServiceProxyTiming = {
 };
 
 /** A stateless Streamable HTTP MCP server, as a plugin's service would run one. */
-function startService(port: number, toolNames: string[]): Promise<http.Server> {
+function startService(
+  port: number,
+  toolNames: string[],
+  /** Requests with this JSON-RPC method get no answer while it is set. */
+  stalled: { method?: string } = {},
+): Promise<http.Server> {
   const httpServer = http.createServer((req, res) => {
     if (req.method !== "POST") {
       res.writeHead(405).end();
@@ -47,8 +52,12 @@ function startService(port: number, toolNames: string[]): Promise<http.Server> {
       void mcp.close();
     });
     void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: string };
+      if (stalled.method !== undefined && body.method === stalled.method) return;
       await mcp.connect(transport);
-      await transport.handleRequest(req, res);
+      await transport.handleRequest(req, res, body);
     })();
   });
   return new Promise((resolve) => httpServer.listen(port, "127.0.0.1", () => resolve(httpServer)));
@@ -216,5 +225,45 @@ describe("mcp-service-proxy (docs/327)", () => {
     expect(refused.isError).toBe(true);
     expect(textOf(refused)).toContain("no such verse");
     expect(lines.filter((l) => l.startsWith("lost"))).toEqual([]);
+  });
+
+  it("does not wait for ever on a handshake that the service leaves half done", async () => {
+    const port = await freePort();
+    const stalled: { method?: string } = { method: "notifications/initialized" };
+    const service = await startService(port, ["render"], stalled);
+    cleanup.push(() => stopService(service));
+    const { agent, listChanged } = await connectAgent(
+      startProxy(`http://127.0.0.1:${port}/mcp`, { ...FAST, firstListWaitMs: 50, connectTimeoutMs: 100 }),
+    );
+    expect((await agent.listTools()).tools).toEqual([]);
+
+    const changed = listChanged();
+    await new Promise((r) => setTimeout(r, 300));
+    delete stalled.method;
+    await changed;
+
+    expect((await agent.listTools()).tools.map((t) => t.name)).toEqual(["render"]);
+  });
+
+  it("treats a call the service never answers as a lost connection, with the service's address", async () => {
+    const port = await freePort();
+    const url = `http://127.0.0.1:${port}/mcp`;
+    const stalled: { method?: string } = {};
+    const service = await startService(port, ["render"], stalled);
+    cleanup.push(() => stopService(service));
+    const lines: string[] = [];
+    const { agent } = await connectAgent(startProxy(url, { ...FAST, callTimeoutMs: 150 }, (l) => lines.push(l)));
+    await agent.listTools();
+
+    stalled.method = "tools/call";
+    const silent = await agent.callTool({ name: "render", arguments: {} });
+    expect(silent.isError).toBe(true);
+    expect(textOf(silent)).toContain(url);
+    expect(textOf(silent)).toContain("shipit service list");
+    expect(lines.some((l) => l.startsWith("lost"))).toBe(true);
+
+    delete stalled.method;
+    const again = await agent.callTool({ name: "render", arguments: {} });
+    expect(again.isError).toBeFalsy();
   });
 });

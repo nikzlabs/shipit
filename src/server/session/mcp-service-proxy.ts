@@ -17,8 +17,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 
-// McpError carries a plain number; ErrorCode is an enum.
-const CONNECTION_CLOSED: number = ErrorCode.ConnectionClosed;
+// McpError carries a plain number; ErrorCode is an enum. The SDK raises both of
+// these itself, so neither is an answer from the service.
+const NO_ANSWER_CODES: readonly number[] = [ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout];
 
 export interface ServiceProxyTiming {
   /** How long the agent's first tools/list waits for the first connection attempt. */
@@ -62,6 +63,7 @@ export function createServiceProxy(
   );
 
   let client: Client | null = null;
+  let opening: Client | null = null;
   let tools: Tool[] = [];
   let listed = false;
   let reachable = false;
@@ -99,8 +101,20 @@ export function createServiceProxy(
     const c = new Client({ name: "shipit-service-proxy", version: "1.0.0" });
     // A broken stream after a restart; the next request reports it.
     c.onerror = () => undefined;
-    await c.connect(new StreamableHTTPClientTransport(new URL(url)), { timeout: timing.connectTimeoutMs });
-    return c;
+    opening = c;
+    try {
+      // The SDK's timeout covers `initialize` only, not the notification it posts after.
+      await within(
+        c.connect(new StreamableHTTPClientTransport(new URL(url)), { timeout: timing.connectTimeoutMs }),
+        timing.connectTimeoutMs,
+      );
+      return c;
+    } catch (err) {
+      void c.close().catch(() => undefined);
+      throw err;
+    } finally {
+      opening = null;
+    }
   };
 
   const listAll = async (c: Client): Promise<Tool[]> => {
@@ -118,7 +132,7 @@ export function createServiceProxy(
     try {
       client ??= await openClient();
       const next = await listAll(client);
-      if (stopped) return;
+      if (stopped) throw new Error("stopped");
       if (!reachable) log(`connected to ${url} (${next.length} tools)`);
       reachable = true;
       retryMs = timing.retryMinMs;
@@ -161,12 +175,12 @@ export function createServiceProxy(
       return await c.request(
         { method: "tools/call", params: req.params },
         CallToolResultSchema,
-        { signal: extra.signal, timeout: timing.callTimeoutMs, resetTimeoutOnProgress: true },
+        { signal: extra.signal, timeout: timing.callTimeoutMs },
       );
     } catch (err) {
       if (extra.signal.aborted) throw err;
       // The service answered with an error, so the connection is fine.
-      if (err instanceof McpError && err.code !== CONNECTION_CLOSED) {
+      if (err instanceof McpError && !NO_ANSWER_CODES.includes(err.code)) {
         return { content: [{ type: "text", text: err.message }], isError: true };
       }
       // Not retried: the service can have done the work before the connection broke.
@@ -186,11 +200,26 @@ export function createServiceProxy(
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
-      const old = client;
+      const old = client ?? opening;
       client = null;
       await old?.close().catch(() => undefined);
     },
   };
+}
+
+async function within<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`no answer in ${ms} ms`));
+    }, ms);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function delay(ms: number): Promise<void> {

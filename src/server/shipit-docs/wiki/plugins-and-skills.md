@@ -333,9 +333,12 @@ edit to `shipit.yaml`, like any other — the schema is
 `/shipit-docs/plugins.md` → A plugin's MCP server.
 
 The service can start after you do: ShipIt connects when the service answers,
-and again after it restarts, and you get the tools without a restart. So "the
-tools are missing" in a new session usually means the service is not running
-yet — `shipit service list` answers it. A plugin server that ShipIt does not
+and again after it restarts, and nobody restarts you for it. On a process that
+lives across turns (Claude, by default) the tools appear as soon as the service
+answers; on an agent that starts a new process each turn, at the first turn
+that starts while the service answers. So "the tools are missing" in a new
+session usually means the service is not running yet — `shipit service list`
+answers it. A plugin server that ShipIt does not
 give at all is a problem row on the plugin's card, which names the reason.
 
 ## Who does what

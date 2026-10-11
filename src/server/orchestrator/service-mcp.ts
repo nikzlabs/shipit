@@ -1,17 +1,26 @@
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { serviceMcpUrl } from "../shared/service-mcp.js";
+import { mcpServerNameError, serviceMcpUrl } from "../shared/service-mcp.js";
 import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import type { PluginComposeService } from "./plugin-compose.js";
+
+export interface SessionServiceMcp {
+  servers: ServiceMcpServer[];
+  /**
+   * The names a plugin's server can still take: a plugin's version can go live
+   * after the agent started, and the agent's tool allowlist is fixed at its start.
+   */
+  candidates: string[];
+}
 
 /**
  * docs/327-service-mcp-servers — the MCP servers a session's agent gets: the
  * project's own, then the plugins'. A project server wins a name over a plugin's.
  * Null when shipit.yaml cannot be read, so an edit in progress changes nothing.
  */
-export function resolveServiceMcpServers(
+export function resolveServiceMcp(
   workspaceDir: string,
   plugins: { pluginMcpServers(): ServiceMcpServer[] } | null,
-): ServiceMcpServer[] | null {
+): SessionServiceMcp | null {
   let config;
   try {
     config = resolveShipitConfig(workspaceDir);
@@ -28,7 +37,9 @@ export function resolveServiceMcpServers(
     taken.add(server.name.toLowerCase());
     servers.push(server);
   }
-  return servers;
+  const candidates = [...new Set(config.plugins.uses.map((u) => u.plugin))]
+    .filter((name) => mcpServerNameError(name) === null);
+  return { servers, candidates };
 }
 
 /** The URL is the service's compose name, which the session network resolves, and the consumer's port. */
@@ -40,10 +51,11 @@ export function pluginServiceMcpServers(services: readonly PluginComposeService[
 }
 
 /**
- * The set each session's agent was spawned with. A resident process keeps the
- * servers it started with, so a later set retires it (`resident-spawn-guard.ts`).
- * Recorded in `buildAgentRunParams`, which every spawn goes through; a session
- * with no record (an adopted process) is left alone until its next spawn.
+ * The set each session's agent process holds. A resident process keeps its
+ * servers across turns, so a set it could not take while it runs retires it at
+ * the next turn (`resident-spawn-guard.ts`). Written in `buildAgentRunParams`,
+ * which every spawn goes through, and by `ContainerSessionRunner.syncServiceMcp`
+ * from what the worker reports. A session with no record is left alone.
  */
 const spawnedWith = new Map<string, string>();
 

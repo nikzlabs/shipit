@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
-import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
+import type { SessionServiceMcp } from "./service-mcp.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
@@ -760,7 +760,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Re-materialize plugin skills in the workspace (docs/262-plugins). */
   preparePlugins?(): Promise<void>;
   /** docs/327 — the session's declared MCP servers; null when shipit.yaml cannot be read. */
-  serviceMcpServers?(): ServiceMcpServer[] | null;
+  serviceMcp?(): SessionServiceMcp | null;
+  /** docs/327 — gives a resident agent the servers that were declared after it started. */
+  syncServiceMcp?(): Promise<void>;
   readonly dependencyGap?: DependencyGap | null;
   resumeInFlightTurn?(): Promise<boolean>;
 

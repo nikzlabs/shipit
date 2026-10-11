@@ -111,11 +111,7 @@ export function collectPluginFragments(
   const addIssue = (repo: string, issue: string): void => {
     issuesByRepo.set(repo, [...(issuesByRepo.get(repo) ?? []), issue]);
   };
-  const mcpIssuesByRepo = new Map<string, string[]>();
-  const mcpNames = new Map<string, string>();
-  for (const name of opts.projectMcpNames ?? []) {
-    mcpNames.set(name.toLowerCase(), `this project's own \`mcp.${name}\``);
-  }
+  const mcpDeclared: PluginMcpImport[] = [];
 
   // One snapshot keeps manifests, commits, and mounted trees on the same generation.
   const snapshots = new Map<string, RepoSnapshot>();
@@ -166,9 +162,8 @@ export function collectPluginFragments(
       continue;
     }
 
-    const mcp = exported.mcp ? claimPluginMcp(exported.name, exported.mcp, use, claimedHere, mcpNames) : undefined;
-    if (typeof mcp === "string") {
-      mcpIssuesByRepo.set(repoName, [...(mcpIssuesByRepo.get(repoName) ?? []), `\`${use.alias}\`: ${mcp}`]);
+    if (exported.mcp) {
+      mcpDeclared.push({ repo: repoName, plugin: exported.name, declared: exported.mcp, use, claimedHere });
     }
 
     const fragmentDir = path.posix.dirname(exported.compose);
@@ -193,17 +188,50 @@ export function collectPluginFragments(
         checkoutDir: snapshot.root,
         ...(snapshot.commit ? { commit: snapshot.commit } : {}),
         ...(snapshot.generationId ? { generationId: snapshot.generationId } : {}),
-        ...(typeof mcp === "object" && mcp.service === source.name ? { mcp: mcp.host } : {}),
       });
     }
   }
 
   // Services activate per repository: withhold the whole stack if any import is invalid.
+  const admitted = services.filter((s) => !issuesByRepo.has(s.repo));
   return {
-    services: services.filter((s) => !issuesByRepo.has(s.repo)),
+    services: admitted,
     issuesByRepo,
-    mcpIssuesByRepo,
+    mcpIssuesByRepo: assignPluginMcp(mcpDeclared, admitted, issuesByRepo, opts.projectMcpNames ?? []),
   };
+}
+
+interface PluginMcpImport {
+  repo: string;
+  plugin: string;
+  declared: PluginMcpDeclaration;
+  use: PluginUse;
+  claimedHere: readonly { name: string; source: ParsedFragmentService }[];
+}
+
+/** Names go to admitted services only: a withheld repository must not keep one from another plugin. */
+function assignPluginMcp(
+  imports: readonly PluginMcpImport[],
+  admitted: readonly PluginFragmentService[],
+  issuesByRepo: ReadonlyMap<string, string[]>,
+  projectMcpNames: readonly string[],
+): Map<string, string[]> {
+  const mcpIssuesByRepo = new Map<string, string[]>();
+  const names = new Map<string, string>();
+  for (const name of projectMcpNames) {
+    names.set(name.toLowerCase(), `this project's own \`mcp.${name}\``);
+  }
+  for (const { repo, plugin, declared, use, claimedHere } of imports) {
+    if (issuesByRepo.has(repo)) continue;
+    const mcp = claimPluginMcp(plugin, declared, use, claimedHere, names);
+    if (typeof mcp === "string") {
+      mcpIssuesByRepo.set(repo, [...(mcpIssuesByRepo.get(repo) ?? []), `\`${use.alias}\`: ${mcp}`]);
+      continue;
+    }
+    const host = admitted.find((s) => s.alias === use.alias && s.sourceName === mcp.service);
+    if (host) host.mcp = mcp.host;
+  }
+  return mcpIssuesByRepo;
 }
 
 /** docs/327 — a server is withheld rather than renamed, since a plugin's web UI names it. */

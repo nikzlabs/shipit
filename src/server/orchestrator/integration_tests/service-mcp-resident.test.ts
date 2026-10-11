@@ -69,7 +69,7 @@ describe("Integration: declared MCP servers and the resident agent (docs/327)", 
       .runnerRegistry.get(client.sessionId);
     if (!runner) throw new Error("no runner for the session");
     // The local runner has no Compose stack; stand in for what the container runner resolves.
-    runner.serviceMcpServers = () => declared;
+    runner.serviceMcp = () => ({ servers: declared, candidates: [] });
     return client;
   }
 

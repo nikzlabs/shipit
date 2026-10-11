@@ -35,8 +35,14 @@ import { readAnswerHold } from "./turn-admission.js";
 import { forgetHeldEntries } from "./held-turns.js";
 import { modelListField } from "../shared/catalogue/model-list.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
-import { resolveServiceMcpServers } from "./service-mcp.js";
-import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
+import {
+  recordServiceMcpSpawn,
+  resolveServiceMcp,
+  serviceMcpSetKey,
+  serviceMcpSpawnKey,
+  type SessionServiceMcp,
+} from "./service-mcp.js";
+import type { WorkerServiceMcpBody, WorkerServiceMcpResult } from "../shared/types/agent-types.js";
 import {
   dependencyGapNotice,
   dependencyGapSummary,
@@ -57,6 +63,7 @@ const INSTALL_POST_TIMEOUT_MS = 180_000;
 const GOAL_WORKER_TIMEOUT_MS = 30_000;
 
 const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
+const SERVICE_MCP_SYNC_TIMEOUT_MS = 30_000;
 
 // Recovers lost completion events. The install itself has no deadline.
 const INSTALL_STATUS_PROBE_INTERVAL_MS = 30_000;
@@ -775,7 +782,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     const body: WorkerAgentStartBody = {
       agentId,
-      params,
+      params: this.withCurrentServiceMcp(params),
       ...(runToken !== undefined ? { runToken } : {}),
       ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
       ...modelListField(),
@@ -789,6 +796,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._startPosted = false;
       throw err;
     }
+    // A set that changed while the start was on its way had no process to go to.
+    void this.syncServiceMcp();
+  }
+
+  /**
+   * docs/327 — the params were built before the install wait, which can take
+   * minutes; a plugin whose version went live in it must be in this start.
+   */
+  private withCurrentServiceMcp(params: AgentRunParams): AgentRunParams {
+    const current = this.serviceMcp();
+    if (!current) return params;
+    recordServiceMcpSpawn(this.sessionId, current.servers);
+    const { serviceMcpServers: _servers, serviceMcpCandidates: _candidates, ...rest } = params;
+    return {
+      ...rest,
+      ...(current.servers.length > 0 ? { serviceMcpServers: current.servers } : {}),
+      ...(current.candidates.length > 0 ? { serviceMcpCandidates: current.candidates } : {}),
+    };
   }
 
   private async postAgentStart(body: WorkerAgentStartBody): Promise<void> {
@@ -1223,8 +1248,49 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return this._dependencyGap;
   }
 
-  serviceMcpServers(): ServiceMcpServer[] | null {
-    return resolveServiceMcpServers(this.sessionDir, this._serviceManager);
+  serviceMcp(): SessionServiceMcp | null {
+    return resolveServiceMcp(this.sessionDir, this._serviceManager);
+  }
+
+  /**
+   * docs/327 — a plugin's version can go live after the agent started. The worker
+   * gives an added server to a resident process while it runs, and answers with
+   * what the process holds; recording that makes the next turn respawn only for
+   * a change the process could not take.
+   */
+  syncServiceMcp(): Promise<void> {
+    // One at a time: a late answer must not replace what a newer request recorded.
+    const previous = this._serviceMcpSync;
+    this._serviceMcpSync = (async () => {
+      await previous;
+      await this.syncServiceMcpNow();
+    })();
+    return this._serviceMcpSync;
+  }
+
+  private _serviceMcpSync: Promise<void> = Promise.resolve();
+
+  private async syncServiceMcpNow(): Promise<void> {
+    const desired = this.serviceMcp()?.servers;
+    const agent = this._agent;
+    if (!desired || !agent) return;
+    if (serviceMcpSpawnKey(this.sessionId) === serviceMcpSetKey(desired)) return;
+    try {
+      this.assertWorkerReachable("/agent/service-mcp");
+      const body: WorkerServiceMcpBody = { serviceMcpServers: desired };
+      // Longer than the worker's own wait for the agent's answer.
+      const result = await workerPost(this.workerUrl, "/agent/service-mcp", body, {
+        timeoutMs: SERVICE_MCP_SYNC_TIMEOUT_MS,
+      }) as WorkerServiceMcpResult | undefined;
+      // The answer describes the process that ran when the request left.
+      if (Array.isArray(result?.live) && this._agent === agent) recordServiceMcpSpawn(this.sessionId, result.live);
+    } catch (err) {
+      // The next turn's check still sees the difference and respawns.
+      console.warn(
+        `[mcp:${this.sessionId}] could not give the running agent its MCP servers:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   async preparePlugins(): Promise<void> {

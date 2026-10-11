@@ -543,9 +543,12 @@ the session's private network.
   ([plugins.md](plugins.md) → A plugin's MCP server).
 - **The service can start after the agent.** ShipIt gives the agent a small
   proxy that answers at once and connects when the service answers, and again
-  after a restart. The tools arrive without a restart of the agent — when and
-  how is in [plugins.md](plugins.md) → A plugin's MCP server, and is the same
-  for a project's server.
+  after a restart. Nobody restarts the agent for it. An agent process that
+  lives across turns (Claude, by default) gets the tools as soon as the service
+  answers; an agent that starts a new process each turn gets them at the first
+  turn that starts while the service answers. The details are in
+  [plugins.md](plugins.md) → A plugin's MCP server, and are the same for a
+  project's server.
 - **Only tools** reach the agent: not the server's resources, prompts or
   `instructions`.
 - An invalid entry (a name with a dot, `shipit` or `playwright`, no `port`, a

@@ -276,6 +276,29 @@ describe("applyShipitConfigChange", () => {
       expect(mgr.reconcile).not.toHaveBeenCalled();
     });
 
+    it("gives a running agent the servers of a plugin that went live in the round (docs/327)", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = Object.assign(makeRunner(), { syncServiceMcp: vi.fn(async () => undefined) });
+      const order: string[] = [];
+      const mgr = {
+        ...makePluginManager([]),
+        setPluginServices: vi.fn(() => {
+          order.push("setPluginServices");
+          return false;
+        }),
+      };
+      runner.syncServiceMcp.mockImplementation(async () => {
+        order.push("syncServiceMcp");
+      });
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      emitPluginReposUpdated(runner, deps)("s1");
+      await vi.waitFor(() => expect(runner.syncServiceMcp).toHaveBeenCalledTimes(1));
+
+      // After the manager holds the round's services: the agent's set is read from it.
+      expect(order).toEqual(["setPluginServices", "syncServiceMcp"]);
+    });
+
     it("still tells viewers the round settled when there is no manager", () => {
       const runner = makeRunner();
       const deps = { ...makeDeps(""), resolvePluginServices: vi.fn(async () => [] as never) };

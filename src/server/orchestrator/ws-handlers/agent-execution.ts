@@ -364,7 +364,7 @@ async function composeAndRunAgentTurn(
   }
   if (useStreaming) {
     releaseResidentOnStatusCardChange(runner, ctx.credentialStore.getSessionStatusCard());
-    releaseResidentOnServiceMcpChange(runner, runner?.serviceMcpServers?.() ?? null);
+    releaseResidentOnServiceMcpChange(runner, runner?.serviceMcp?.()?.servers ?? null);
   }
   const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
   const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
@@ -627,7 +627,7 @@ async function composeAndRunAgentTurn(
         ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
         ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
         ...(opts.compact ? { compact: true } : {}),
-        serviceMcpServers: runner?.serviceMcpServers?.() ?? [],
+        serviceMcp: runner?.serviceMcp?.() ?? null,
       });
     },
     prepareAgentEnv: async (sessionId, id, envOpts) => {

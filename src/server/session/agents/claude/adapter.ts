@@ -27,6 +27,7 @@ import type {
   AgentProcess,
   AgentProcessEvents,
   AgentRunParams,
+  McpServerConfig,
 } from "../agent-process.js";
 import {
   GOAL_CONTROL_TIMEOUT_MS,
@@ -128,6 +129,8 @@ export class ClaudeAdapter
   private inner: ClaudeProcess | StreamingClaudeProcess;
   private _isStreaming = false;
   private _permissionPromptTool: string | undefined;
+  /** The MCP server names in the CLI's `--allowedTools`, which is fixed at spawn. */
+  private allowedMcpNames = new Set<string>();
 
   // docs/297 — a goal control process resumes the live session id, so it must
   // not run beside a turn; and it runs where the turn ran. Tracks the CLI's own
@@ -420,6 +423,11 @@ export class ClaudeAdapter
 
     this.selectedModel = params.model;
     this.spawnPromptUnread = true;
+    // docs/327 — a candidate name has no server yet; its glob matches nothing until one arrives.
+    this.allowedMcpNames = new Set([
+      ...(params.mcpServers ?? []).filter((s) => s.enabled).map((s) => s.name),
+      ...(params.serviceMcpCandidates ?? []),
+    ]);
     this.inner.run({
       prompt: params.prompt,
       sessionId: params.sessionId,
@@ -428,9 +436,7 @@ export class ClaudeAdapter
       cwd: params.cwd,
       permissionMode: params.permissionMode,
       mcpConfigPath: params.mcpConfigPath,
-      mcpServerNames: params.mcpServers
-        ?.filter((s) => s.enabled)
-        .map((s) => s.name),
+      mcpServerNames: [...this.allowedMcpNames],
       model: params.model,
       serviceRouting: params.serviceRouting,
       homeDir: params.homeDir,
@@ -592,6 +598,19 @@ export class ClaudeAdapter
     console.warn(
       "[claude-adapter] compact() called on non-streaming inner — no resident process to compact (the orchestrator should have spawned a /compact turn instead)",
     );
+  }
+
+  async setLiveMcpServers(servers: McpServerConfig[]): Promise<boolean> {
+    if (!(this.inner instanceof StreamingClaudeProcess)) return false;
+    // A server outside the allowlist would work only through a permission card per call.
+    if (servers.some((s) => !this.allowedMcpNames.has(s.name))) return false;
+    const live: Record<string, unknown> = {};
+    for (const server of servers) {
+      const { resolved } = resolveMcpServer(server);
+      if (!resolved) return false;
+      live[server.name] = resolved;
+    }
+    return this.inner.setMcpServers(live);
   }
 
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {

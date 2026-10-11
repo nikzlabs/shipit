@@ -74,6 +74,15 @@ describe("McpConfigController.withServiceMcpServers (docs/327)", () => {
     ]);
   });
 
+  it("gives the name to the declared server when an account server has it too", () => {
+    const { controller } = controllerWith(proxy);
+    const account: McpServerConfig = { name: "Verseshot", type: "http", url: "https://example.com/mcp", enabled: true };
+
+    const params = controller.withServiceMcpServers({ ...base, mcpServers: [account], serviceMcpServers: [verseshot] });
+
+    expect(params.mcpServers?.map((s) => [s.name, s.type])).toEqual([["verseshot", "stdio"]]);
+  });
+
   it("is what the adapter's writer receives, so every backend writes the entry", () => {
     const { controller } = controllerWith(proxy);
     const { agent, seen } = fakeAgent();

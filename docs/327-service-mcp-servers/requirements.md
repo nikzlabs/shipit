@@ -51,7 +51,19 @@ These are from the request, which named them as not needed:
 
 ## Open questions
 
-*(none)*
+- **Is "at the next turn" enough for a backend that starts a new agent process
+  for each turn?** Requirements 7 and 8 say the tools come "without a restart of
+  the agent". On Claude with live steering (the default), which keeps one
+  process across turns, the tools arrive as soon as the service answers, also in
+  the middle of a turn. Codex, Grok, OpenCode, Antigravity, and Claude with live
+  steering off start a new process for each turn. There nobody restarts the
+  agent, but a service that becomes ready in the middle of a turn gives its
+  tools only at the next turn, unless that CLI reloads tools on the standard
+  `tools/list_changed` notification, which was not checked for those four. An
+  independent review read this as requirement 7 not fully met for those
+  backends. Options: (a) accept it as it is — recommended, because no backend
+  needs a restart by the user and Verseshot's case is met; (b) check each of the
+  four CLIs for `tools/list_changed`, and build what is missing, as a follow-up.
 
 ## Resolved questions
 

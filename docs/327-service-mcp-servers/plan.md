@@ -25,6 +25,13 @@ an ordinary stdio entry in `params.mcpServers`, so all five adapters write it
 with the code they already have for an account server, and Claude's allowlist
 (`mcp__<name>__*`) covers it.
 
+So two things can be late, and each has its own answer. **The service** is late
+in every new session: the proxy covers it. **The declaration** is late when a
+plugin's version goes live after the agent started — ShipIt reads the manifest
+only after the plugin's checkout — and a process that lives across turns keeps
+the servers it started with. For that, ShipIt gives the added server to the
+running process (below, "A server that is declared after the agent started").
+
 ## Declarations (req 1, 2, 3)
 
 A plugin, in its manifest:
@@ -98,7 +105,9 @@ withholds a server, and says why:
   card reports the plugin's.
 - **Two plugin servers** with one name (one plugin imported under two aliases,
   or two repositories that export one plugin name): the first `plugins.use`
-  entry wins; the card reports the later one.
+  entry wins; the card reports the later one. Names are given out after the
+  repositories with a withheld stack are known (`assignPluginMcp`), so a
+  repository that gives the agent nothing keeps no name from another plugin.
 - **An account server** (`mcp.servers`) with the name of a declared server: the
   declared server wins in that session, and the account server is not given to
   that session's agent. The declared one is the project's own choice, and the
@@ -121,16 +130,22 @@ process, so two servers would share one variable.
 - **Not reachable:** the proxy tries again after 1 s, doubling to at most 15 s.
   When the service answers, the proxy reads its tools and sends
   `tools/list_changed` if they differ from the last list it gave (req 6, 7).
+  One deadline (5 s) covers the whole handshake: the SDK's own timeout ends with
+  `initialize`, and a service that then leaves the `notifications/initialized`
+  POST without an answer would hold the retry for ever.
 - **Reachable:** the proxy reads the list again every 60 s and sends
   `tools/list_changed` when it changed — a plugin refresh can restart the
   service with other tools (req 8).
 - **`tools/call`** goes to the service with the agent's arguments, and its result
   comes back unchanged. A call the service cannot be reached for returns a tool
   error that names the service, the URL and `shipit service list`, and puts the
-  proxy back on the fast retry. It is not retried: the service can have done the
-  work before the connection broke. (A stateful server that restarted answers
-  the old session with an error; the retry opens a new session, and the agent's
-  next call works.)
+  proxy back on the fast retry. A call with no answer in 15 minutes is the same
+  case: the timeout comes from the SDK, not from the service. Neither is
+  retried: the service can have done the work before the connection broke. (A
+  stateful server that restarted answers the old session with an error; the
+  retry opens a new session, and the agent's next call works.) An error the
+  service itself returns goes to the agent as the tool's error, and the
+  connection stays.
 - **While the service is down** the last tool list stays. Calls fail with the
   message above; when the service is back they work again.
 - **Only tools.** The server's `instructions`, resources and prompts are not
@@ -145,24 +160,94 @@ process, so two servers would share one variable.
 | Claude, live steering on (the default) | resident across turns | as soon as the service answers, also in the middle of a turn |
 | Claude with steering off, Codex, Grok, OpenCode, Antigravity | one per turn | at the start of the first turn that begins while the service answers |
 
-The resident Claude reloads its tools on `tools/list_changed`: verified in the
-pinned CLI (2.1.284), whose MCP client registers the handler when the server's
-`capabilities.tools.listChanged` is true ("Received tools/list_changed
-notification, refreshing tools"). The per-turn backends start a new proxy each
-turn, and its first `tools/list` waits for the service as described above.
+The resident Claude reloads its tools on `tools/list_changed`: verified with the
+pinned CLI (2.1.284) and the bundled proxy, with no model call — the CLI started
+while the service was down, and its `mcp_status` listed the tool after the
+service started. The per-turn backends start a new proxy each turn, and its
+first `tools/list` waits for the service as described above. Whether one of
+those CLIs also reloads tools in the middle of a turn is its own behaviour, and
+nothing here depends on it: no user restarts anything, because each of their
+turns is a new process.
 
-**The declared set can change under a resident process.** The proxy covers the
-service; it cannot cover a server whose declaration the process never received.
-That happens on every new session whose first turn spawns before the plugin's
-version is live, and on an edit to `shipit.yaml` that adds a server. So the set
-a resident was spawned with is recorded (`recordServiceMcpSpawn` in
-`orchestrator/service-mcp.ts`, called from `buildAgentRunParams`, the same place
-as the status-card record of docs/303),
-and the next turn retires a resident whose set differs
-(`releaseResidentOnServiceMcpChange`). The next process resumes the
-conversation, as for a model change. The user restarts nothing. A set ShipIt
-cannot read (an invalid `shipit.yaml` in the middle of an edit) retires
-nothing.
+### A server that is declared after the agent started
+
+The proxy covers the service; it cannot cover a server whose declaration the
+process never received. That is the normal case in a new session: the first
+turn often starts before the plugin's version is live.
+
+**Claude takes the added server while it runs.** After every round that
+resolves the plugin services (`resolvePluginServicesInto` in
+`service-manager-setup.ts`: session setup, a plugin's activation, a
+`shipit.yaml` edit), `ContainerSessionRunner.syncServiceMcp` compares the
+session's servers with the set on record for its agent. When they differ it
+posts the set to the worker (`POST /agent/service-mcp`). The worker gives the
+set to the agent only when it **adds** servers to what the process holds, and
+the Claude adapter (`setLiveMcpServers`) sends the CLI's `mcp_set_servers`
+control request and waits for its answer. Verified on CLI 2.1.284: the request
+adds a server to a running process; a server sent again with the same config is
+not restarted; and the servers of `--mcp-config` that a request leaves out stay
+connected. So the request carries the proxy entries only.
+
+Two details make that safe:
+
+- **The allowlist is fixed at spawn** (`--allowedTools`), so a server that
+  arrives later would work only through a permission card for each call.
+  `AgentRunParams.serviceMcpCandidates` carries the names a plugin's server can
+  still take — the names of the plugins in `plugins.use`, which `shipit.yaml`
+  gives before any manifest is read — and the adapter adds their globs at spawn.
+  A glob for a server that does not exist matches nothing. The adapter refuses
+  to add a server outside that list.
+- **The worker says what the process holds**, and the orchestrator records that
+  answer, not what it asked for. So a request the process did not confirm leaves
+  the old set on record.
+
+**Everything else waits for the next turn.** A changed or removed server, a name
+outside the allowlist, a CLI that does not confirm, or a worker that does not
+answer leave the record different from the session's set. The next turn then
+retires the resident (`releaseResidentOnServiceMcpChange`, beside the
+status-card check of docs/303), and the new process resumes the conversation, as
+for a model change. The user restarts nothing. A set ShipIt cannot read (an
+invalid `shipit.yaml` in the middle of an edit) retires nothing. A process the
+orchestrator adopted after its own restart has no record; the first sync asks
+the worker what that process holds.
+
+## Known limits
+
+- **A backend that starts a process per turn** gets a late server, a late
+  service's tools, and a changed tool list at its next turn. The proxy sends the
+  standard `tools/list_changed`, so a CLI that honours it gets them sooner, but
+  only the Claude CLI was checked. `requirements.md` → Open questions asks if
+  that is enough.
+- **The plugin's name in another letter case.** `plugins.use` matches a plugin's
+  name without regard to case, the server takes the manifest's spelling, and the
+  allowlist is written from the consumer's spelling before the manifest is read.
+  When the two differ, a server that arrives after the agent started is refused
+  for the running process and comes at the next turn.
+- **A sync and a turn start at the same moment.** A turn that starts while a
+  request to the worker is on its way sees the old record and retires a process
+  that was about to get the server. The result is right; one respawn is wasted.
+- **The two CLI behaviours this design rests on** — the tool reload on
+  `tools/list_changed`, and `mcp_set_servers` — have no automated test against
+  the real CLI. A CLI that stops confirming `mcp_set_servers` falls back to the
+  next turn by itself. One that stops reloading tools would not; check it on a
+  CLI update, with the steps below.
+
+### Checking the Claude CLI by hand
+
+No model call is necessary: the CLI starts its MCP servers before it reads the
+first message, and answers control requests on stdin.
+
+1. Build the proxy (`npm run build:bridges`) and write an MCP config with one
+   entry: `{"mcpServers":{"probe":{"command":"node","args":["dist/mcp-bridges/mcp-service-proxy.js","http://127.0.0.1:47321/mcp"]}}}`.
+2. Start the CLI with nothing on that port, and keep its stdin open:
+   `claude -p --input-format stream-json --output-format stream-json --verbose --mcp-config <file> --strict-mcp-config`.
+3. Start a Streamable HTTP MCP server on the port. Then send
+   `{"type":"control_request","request_id":"1","request":{"subtype":"mcp_status"}}`:
+   the answer must list the server's tools under `probe`. That is the reload on
+   `tools/list_changed`.
+4. Send `{"type":"control_request","request_id":"2","request":{"subtype":"mcp_set_servers","servers":{"late":{"command":"node","args":[…]}}}}`:
+   the answer must be `success` with empty `errors`, and `mcp_status` must then
+   list both `probe` and `late`, with `probe` not restarted.
 
 ## Reporting
 
@@ -194,6 +279,14 @@ nothing.
   than its container starts.
 - **Counting declared servers as account servers.** Req 4 and req 5 rule it out:
   an account server reaches every session of the account.
+- **Only retiring the resident at the next turn** when the declared set changed.
+  It was the first design. It leaves the first turn of a new session without the
+  tools whenever that turn starts before the plugin is live, which is the case
+  req 7 names. It stays as the fallback.
+- **A proxy for every used plugin, with the URL looked up later.** The name is
+  known from `shipit.yaml` at spawn, so the entry could exist before the
+  manifest is read. But most plugins have no MCP server, and each of them would
+  cost the agent an idle process, or a server that shows as failed.
 
 ## Key files
 
@@ -207,9 +300,14 @@ nothing.
   each plugin server to its service and port, and returns `mcpIssuesByRepo`.
 - `src/server/orchestrator/service-manager.ts` — `pluginMcpServers()`, from the
   resolved plugin services.
-- `src/server/orchestrator/service-mcp.ts` — `resolveServiceMcpServers` (the
-  project's and the plugins' servers for one session, which
-  `ContainerSessionRunner.serviceMcpServers()` returns), and the spawn record.
+- `src/server/orchestrator/service-mcp.ts` — `resolveServiceMcp` (the project's
+  and the plugins' servers for one session, and the candidate names, which
+  `ContainerSessionRunner.serviceMcp()` returns), and the record of the set each
+  agent process holds.
+- `src/server/orchestrator/container-session-runner.ts` — `syncServiceMcp`.
+- `src/server/session/agent-controller.ts` — `POST /agent/service-mcp`.
+- `src/server/session/agents/claude/adapter.ts` (`setLiveMcpServers`) and
+  `process.ts` (`setMcpServers`, the `mcp_set_servers` control request).
 - `src/server/orchestrator/resident-spawn-guard.ts` —
   `releaseResidentOnServiceMcpChange`, called on the interactive path
   (`ws-handlers/agent-execution.ts`) and the dispatched path
@@ -217,7 +315,7 @@ nothing.
 - `src/server/orchestrator/api-routes-plugin-repos.ts` — adds the MCP rows to
   the card's service issues.
 - `src/server/orchestrator/session-agent-run-params.ts` — sets
-  `serviceMcpServers`, and leaves out an account server with a declared name.
-- `src/server/session/mcp-config-controller.ts` — `withServiceMcpServers`, the
-  stdio entries.
+  `serviceMcpServers` and `serviceMcpCandidates`, and records the set.
+- `src/server/session/mcp-config-controller.ts` — `withServiceMcpServers`: the
+  stdio entries, which take the name from an account server that has it too.
 - `src/server/session/mcp-service-proxy.ts` — the proxy.

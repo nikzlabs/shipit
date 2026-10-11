@@ -421,17 +421,29 @@ the tools. Until the service answers, the server has no tools.
 - On a session whose agent process lives across turns (Claude, by default),
   the tools appear as soon as the service answers — also in the middle of a
   turn.
-- On an agent that starts a new process each turn, they are there from the
-  first turn that starts while the service answers.
-- When the server itself is new to your agent process — the plugin's version
-  went live after the process started, or `shipit.yaml` changed — ShipIt starts
-  a new process at the next turn. It continues the same conversation.
+- On an agent that starts a new process each turn (Codex, Grok, OpenCode,
+  Antigravity, and Claude with live steering off), they are there from the
+  first turn that starts while the service answers. Do not count on them in
+  the middle of a turn there.
+- A new session often starts its agent before the plugin's version is live. A
+  Claude process that lives across turns then gets the server when the version
+  goes live, also in the middle of a turn. The other agents get it at their
+  next turn.
+- A server that changes or goes away — its port in this project's `shipit.yaml`,
+  a removed `use` entry — reaches a Claude process that lives across turns at
+  its next turn: ShipIt starts a new process, which continues the same
+  conversation.
 
 **When the service restarts**, the tools stay listed. A call while the service
-is down fails with an error that names the service and its URL; call again
-when `shipit service list` shows it running. The proxy reads the tool list
-again every minute, so a restart that changed the tools reaches you without a
-restart of your agent.
+is down, or a call the service does not answer in 15 minutes, fails with an
+error that names the service and its URL; call again when `shipit service
+list` shows it running. The proxy does not send a failed call again by itself,
+because the service can have done the work.
+
+A restart can also change the tools — a plugin refresh starts the service on
+a new version. The proxy reads the tool list again every minute. On a process
+that lives across turns, the new list reaches you then; on an agent that
+starts a new process each turn, at its next turn.
 
 **No tools listed?** Run `shipit service list`: the service is not running yet,
 was never started (`autostart: false`), or has no port. A server that ShipIt

@@ -509,6 +509,36 @@ use:
     expect(services.map((s) => [s.name, s.mcp?.name])).toEqual([["probe", "probe"], ["probe-two", undefined]]);
     expect(mcpIssuesByRepo.get("mine")?.[0]).toContain("`second`: its MCP server is not given");
   });
+
+  it("does not let a repository whose services are withheld keep the name from another plugin", () => {
+    const [exported] = parsePluginExports(parseYaml(MCP_MANIFEST), []);
+    const use = (from: string, alias: string, services: Record<string, { port?: number; as?: string }>) => ({
+      plugin: "probe",
+      from,
+      alias,
+      overrides: { services, commands: {}, settings: {} },
+    });
+    const { services, mcpIssuesByRepo } = collectPluginFragments({
+      workspaceDir,
+      live: () => null,
+      plugins: {
+        declared: true,
+        // The parser admits one `self`; two stand in for two repositories that export one plugin name.
+        repos: [{ name: "first", source: { kind: "self" } }, { name: "second", source: { kind: "self" } }],
+        uses: [
+          use("first", "one", { probe: { port: 4820 } }),
+          use("first", "broken", { nope: { port: 4821 } }),
+          use("second", "three", { probe: { port: 4830, as: "probe-b" } }),
+        ],
+      },
+      selfExports: [exported!],
+      projectServiceNames: [],
+      containEgress: false,
+    });
+
+    expect(services.map((s) => [s.repo, s.name, s.mcp?.name])).toEqual([["second", "probe-b", "probe"]]);
+    expect(mcpIssuesByRepo.size).toBe(0);
+  });
 });
 
 describe("fragment validation (req 20)", () => {

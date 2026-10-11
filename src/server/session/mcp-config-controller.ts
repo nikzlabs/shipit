@@ -7,6 +7,7 @@ import type {
 } from "./agents/agent-process.js";
 import { resolveBridge } from "./mcp-bridge-paths.js";
 import { substituteMcpPlaceholders } from "../shared/mcp-placeholders.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
 export interface McpConfigDeps {
@@ -44,8 +45,8 @@ export class McpConfigController {
   withServiceMcpServers(params: AgentRunParams): AgentRunParams {
     const declared = params.serviceMcpServers ?? [];
     if (declared.length === 0) return params;
-    const proxy = this.serviceProxyPaths();
-    if (!proxy) {
+    const entries = this.serviceMcpEntries(declared);
+    if (!entries) {
       for (const server of declared) {
         this.deps.broadcast({
           type: "mcp_server_status",
@@ -55,14 +56,6 @@ export class McpConfigController {
       return params;
     }
     const names = new Set(declared.map((s) => s.name.toLowerCase()));
-    const entries: McpServerConfig[] = declared.map((server) => ({
-      name: server.name,
-      type: "stdio",
-      command: proxy.tsxBin,
-      // An argument, not env: Codex sets an MCP child's env for the whole process.
-      args: [proxy.bridgePath, server.url],
-      enabled: true,
-    }));
     return {
       ...params,
       mcpServers: [
@@ -70,6 +63,20 @@ export class McpConfigController {
         ...entries,
       ],
     };
+  }
+
+  /** Null when this image has no proxy bundle. */
+  serviceMcpEntries(declared: readonly ServiceMcpServer[]): McpServerConfig[] | null {
+    const proxy = this.serviceProxyPaths();
+    if (!proxy) return null;
+    return declared.map((server) => ({
+      name: server.name,
+      type: "stdio",
+      command: proxy.tsxBin,
+      // An argument, not env: Codex sets an MCP child's env for the whole process.
+      args: [proxy.bridgePath, server.url],
+      enabled: true,
+    }));
   }
 
   serviceProxyPaths(): AgentMcpBridge | null {
