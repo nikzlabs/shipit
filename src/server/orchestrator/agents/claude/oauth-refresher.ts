@@ -65,11 +65,15 @@ const KILL_SETTLE_MS = 5_000;
 // Session naming's CLI times out after 15 s. Past this a tick stops waiting for a run, but does not probe.
 const PRIVATE_RUN_WAIT_MS = 30_000;
 
+// A session's CLI that won the grant writes its rotation moments after the loser is rejected;
+// the late harvest looks this much later, so that a race does not read as a revocation.
+const LATE_ROTATION_WAIT_MS = 5_000;
+
 const TIMED_OUT = "[timeout] claude CLI did not exit in time";
 const INSTALL_FAILED = "[install-failed] the rotated credential is kept for the next tick";
 
 // A tick that starts this long before expiry ends before the session CLIs refresh by themselves:
-// both tier timeouts and their kill grace come to 100 s.
+// both tier timeouts, their kill grace and the late-rotation wait come to 105 s.
 const LAST_CHANCE_BEFORE_EXPIRY_MS = CLI_REFRESH_WINDOW_MS + 2 * 60_000;
 
 const CLAUDE_CREDENTIALS_RELATIVE = path.join(".claude", ".credentials.json");
@@ -196,6 +200,8 @@ interface AccountState {
   retryNotBefore: number;
   // Each resolves when its run's copy is settled. A tick waits for them: both can spend one grant.
   privateRuns: Set<Promise<void>>;
+  // Runs whose CLI has not ended. A run that is only settling cannot hold a grant's successor.
+  openRuns: number;
   // A run's rejected grant, judged when no other run that can hold its successor is open.
   unjudgedRejection: string | null;
 }
@@ -209,10 +215,11 @@ export interface ClaudeOAuthRefresherDeps {
   now?: () => number;
   spawn?: typeof nodeSpawn;
   safetyMarginMs?: number;
+  lateRotationWaitMs?: number;
 }
 
 export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvents> {
-  private readonly deps: Required<Omit<ClaudeOAuthRefresherDeps, "safetyMarginMs">> & { safetyMarginMs: number };
+  private readonly deps: Required<ClaudeOAuthRefresherDeps>;
   private readonly accounts = new Map<string, AccountState>();
   private started = false;
   private stopped = false;
@@ -228,6 +235,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       now: deps.now ?? (() => Date.now()),
       spawn: deps.spawn ?? nodeSpawn,
       safetyMarginMs: deps.safetyMarginMs ?? SAFETY_MARGIN_MS,
+      lateRotationWaitMs: deps.lateRotationWaitMs ?? LATE_ROTATION_WAIT_MS,
     };
   }
 
@@ -320,17 +328,19 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     let release = (): void => {};
     const settled = new Promise<void>((resolve) => { release = resolve; });
     state.privateRuns.add(settled);
+    state.openRuns += 1;
     try {
       return await run(copy.home);
     } finally {
-      this.settlePrivateRun(accountId, copy, state.privateRuns.size > 1);
+      state.openRuns -= 1;
+      await this.settlePrivateRun(accountId, copy, state.openRuns > 0);
       state.privateRuns.delete(settled);
       release();
     }
   }
 
-  // Never throws: it runs in the caller's finally.
-  private settlePrivateRun(accountId: string, copy: ProbeHome, othersOpen: boolean): void {
+  // Never rejects: it runs in the caller's finally.
+  private async settlePrivateRun(accountId: string, copy: ProbeHome, othersOpen: boolean): Promise<void> {
     const state = this.ensureAccountState(accountId);
     try {
       const before = this.readSourceExpiresAt(accountId);
@@ -355,8 +365,9 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       const rejected = othersOpen ? null : state.unjudgedRejection;
       if (rejected === null) return;
       state.unjudgedRejection = null;
-      // Only for the credential the source still holds, and only if no kept rotation holds its successor.
-      if (state.pendingRotation || this.readSourceIdentity(accountId) !== rejected) return;
+      if (!this.rejectionStillApplies(accountId, rejected)) return;
+      await this.waitForLateRotation();
+      if (!this.rejectionStillApplies(accountId, rejected)) return;
       const late = this.harvestSessionRotations(accountId);
       if (late) {
         this.handleSuccess(accountId, late.before, late.after, "harvested_session");
@@ -369,6 +380,12 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     } finally {
       if (!copy.outstanding) this.removeProbeHome(copy);
     }
+  }
+
+  // Only for the credential the source still holds, and only if no kept rotation holds its successor.
+  private rejectionStillApplies(accountId: string, rejected: string): boolean {
+    const kept = this.ensureAccountState(accountId).pendingRotation;
+    return kept?.seedIdentity !== rejected && this.readSourceIdentity(accountId) === rejected;
   }
 
   // False when a run is still open at the cap.
@@ -385,6 +402,13 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     await Promise.race([Promise.all(state.privateRuns), cap]);
     clearTimeout(timer);
     return !capped;
+  }
+
+  private async waitForLateRotation(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, this.deps.lateRotationWaitMs);
+      if (typeof timer.unref === "function") timer.unref();
+    });
   }
 
   private scheduleAccount(accountId: string): void {
@@ -565,6 +589,10 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     }
 
     if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED, false);
+    const combinedOutput = `${tier1Log}\n${tier2Log}`;
+    const grantRejected = probeResult === "rejected" || this.outputIndicatesRevoked(combinedOutput);
+    // Before the source check: a session's rotation can reach the source during the wait.
+    if (grantRejected) await this.waitForLateRotation();
     if (this.readSourceIdentity(accountId) !== probe.seedIdentity) {
       // The verdict is on a token the source no longer holds; the new one gets a tick of its own.
       state.failureCount = 0;
@@ -578,8 +606,6 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       };
     }
 
-    const combinedOutput = `${tier1Log}\n${tier2Log}`;
-    const grantRejected = probeResult === "rejected" || this.outputIndicatesRevoked(combinedOutput);
     if (grantRejected) {
       // A session can spend the grant between the first harvest and the probe.
       const late = this.harvestSessionRotations(accountId);
@@ -1015,6 +1041,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         pendingRotation: null,
         retryNotBefore: 0,
         privateRuns: new Set(),
+        openRuns: 0,
         unjudgedRejection: null,
       };
       this.accounts.set(accountId, state);

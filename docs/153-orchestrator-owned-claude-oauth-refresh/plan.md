@@ -520,7 +520,10 @@ if the CLI's own 401 handling does.
     no longer be read is still released by a sign-in or a sign-out.
 - **A blanked copy** → `invalid_grant`, and Tier 2 is skipped. The harvest runs once
   more, because a session can spend the grant between the first harvest and the probe;
-  if it finds that session, the tick is `harvested_session`. Otherwise the outcome is
+  if it finds that session, the tick is `harvested_session`. It runs 5 s after the probe
+  ends (`LATE_ROTATION_WAIT_MS`), because the session's CLI writes its rotation only after
+  the server has answered it, and that can be after this probe's rejection. The tick
+  holds its single flight through the wait and spends no grant in it. Otherwise the outcome is
   `revoked`, and the refresher remembers the rejected grant (`rejectedIdentity`, in
   memory, compared against the source's current credential). That memory replaces what the
   blanked source used to provide: no later tick or forced heal spends the dead grant
@@ -529,7 +532,7 @@ if the CLI's own 401 handling does.
   token, and the memory no longer applies.
 
 Every verdict is about the token the copy was made from. If the source holds another
-token when the probes end, and its expiry did not advance (which is the ordinary
+token when the probes end (after the wait, on a rejection), and its expiry did not advance (which is the ordinary
 success test), the tick concludes nothing and a new tick runs at once — otherwise a
 rejected old grant would report a completed sign-in as revoked.
 
@@ -557,9 +560,14 @@ checks what the refresher depends on: both tiers accept their command line, neit
 refreshes outside the window, each refreshes a copy that claims one minute and writes
 the result to it, `invalid_grant` blanks the file, and a 429 or a 500 does not. It does
 not check every row of the table (the rejected flag order is history, not a
-dependency). 13 checks, about 3 s, exit 1 on a failure. Run it on
-every bump of `@anthropic-ai/claude-code` in `docker/agent-cli/package.json`; CI does
-not run it, because CI does not install the agent CLIs.
+dependency). 13 checks, about 3 s, exit 1 on a failure. CI runs it as the job
+`claude-refresh-probe` (`.github/workflows/ci.yml`) on a pull request that changes
+`docker/agent-cli/package.json`, its lockfile or `install-agent-clis.sh`, the probe, this
+refresher (whose command lines the probe uses) or the workflow, and on every push to
+`main`. The job installs the pinned CLI with the images' own `install-agent-clis.sh`
+(`SHIPIT_HARNESSES=claude`): `npm ci --ignore-scripts` alone does not give a binary that
+runs ("claude native binary not installed"), so the `npm rebuild` of that one package is
+needed. It gets no secret, and its checkout keeps no token.
 
 **Options weighed and not taken:**
 
@@ -604,8 +612,14 @@ When the run ends, the copy is judged by the probe's rules (`adoptProbeRotation`
   `revoked`), if the source still holds the rejected credential. While another naming
   run of the account is open, it can hold the grant's successor, so the rejection is
   kept (`unjudgedRejection`) and judged when the last open run ends: again only if the
-  source still holds that credential, and only if no rotation is kept. The late harvest
-  runs first, as after a probe.
+  source still holds that credential, and only if no rotation kept from that same
+  credential (which holds its successor) waits. A rotation kept from an older
+  credential does not stop the verdict; the next tick gives it up. Where both
+  checks pass, the run that judges waits 5 s, as after a probe, checks again and only
+  then does the late harvest; it returns to its caller that much later. "Open" counts a
+  run until its CLI has ended (`openRuns`), not through this wait: a run that is only
+  waiting cannot hold a successor, and counting it would leave a rejection that ends
+  during the wait unjudged. A tick waits for both, so it does not probe in the wait.
 - **Anything else** → no verdict. The copy is deleted.
 
 A naming run and a probe would spend the same grant, so they do not overlap: a naming
@@ -643,7 +657,8 @@ CLIs share that root anyway.
   document: it refreshes when the file says 5 minutes or less are left, it writes
   the result to the file it read, and it blanks that file on `invalid_grant` only.
   A CLI bump can change any of them. `scripts/probe-claude-refresh.mjs` checks them
-  against the installed binary, but only when someone runs it.
+  against the pinned binary, and CI runs it on every change to the pin. A red run
+  blocks a merge only if the branch protection names the job as a required check.
 - **A rotation is in the copy before it is in the source.** If the orchestrator
   dies between the CLI's write and the install, the grant is spent and the new
   token is left in the temp directory, where nothing looks for it; the account
@@ -668,12 +683,17 @@ CLIs share that root anyway.
   the log, and nothing installs it. It takes two failed installs; and since a
   single-use grant gives at most one live successor, it loses a grant only when the
   kept copy holds none (an unreadable probe copy) or the source cannot be read.
-- **The late harvest can run before a session's rotation is on disk.** When a
-  session's CLI and a naming run (or a probe) spend the same grant, and the naming
-  run's `invalid_grant` is judged before the session's CLI has written its new
-  tokens, the account is reported revoked until a later tick harvests that
-  rotation. The probe path has had the same window since the late harvest was
-  added.
+- **The late harvest waits 5 s, not until a session's rotation is on disk.** When a
+  session's CLI and a probe (or a naming run) spend the same grant, the loser's
+  `invalid_grant` is judged no earlier than 5 s after it ends (for a naming run, 5 s
+  after the last naming run that was open when it ended; a run that starts later
+  copies the spent grant and cannot hold its successor). A session CLI that writes its new
+  tokens later than that still has the account reported revoked until a later tick
+  harvests the rotation. Measured offline on CLI 2.1.284 (the probe script's recorder,
+  10 runs on an idle container), the CLI writes the new tokens 10–18 ms after the token
+  host answers; the rest of the 5 s is for a loaded session container and for an
+  answer that reaches the session later than the rejection reaches the loser. A real
+  revocation is reported 5 s later than before.
 - **The install's token check and its rename are two steps.** A writer that
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
@@ -936,15 +956,17 @@ history that was moved into the orphan.
 - `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `createProbeHome`,
   `adoptProbeRotation`, `readSourceFor`, `claudeCredentialIdentity`,
   `pendingRotation`, `sourceGrantIsKnownRejected`, `clampToLastChance`,
-  `retryNotBefore`
+  `retryNotBefore`, `waitForLateRotation`
 - `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — "private probe
   copy", "retry schedule"
 - `scripts/probe-claude-refresh.mjs` — the same checks against the real binary
+- `.github/workflows/ci.yml` — the `claude-refresh-probe` job that runs it
 
 ### Key files (session naming in a private copy, 2026-10)
 
 - `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `runInPrivateCopy`,
-  `settlePrivateRun`, `waitForPrivateRuns`, `privateRuns`, `unjudgedRejection`
+  `settlePrivateRun`, `waitForPrivateRuns`, `privateRuns`, `openRuns`,
+  `unjudgedRejection`, `rejectionStillApplies`
 - `src/server/orchestrator/provider-account-manager.ts` —
   `attachClaudeCredentialCopy`, `claudeCredentialCopyRunner`
 - `src/server/orchestrator/bootstrap-managers.ts` — attaches the runner in
