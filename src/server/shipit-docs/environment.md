@@ -755,6 +755,21 @@ When the renderer is `llvmpipe`, find which part is missing, in this order:
 4. **All of these are in place.** Mesa could not start the card's driver. Run a
    Mesa program with `LD_DEBUG=files` to see which file it could not open.
 
+**A reload does not skip the shader compile on the GPU.** Mesa's Direct3D 12
+driver gives Chrome no program binary to keep. So Chrome links each WebGL
+program again on each load, and the first draw of each program has a cost of
+its own, which also comes back on each load. Measured on one host (an RTX
+4090, Mesa 22.3.6) with 200 three.js programs: on average 22 to 37 ms to link
+a program on a first load, 16 to 22 ms on a reload with the same shaders, and
+35 to 44 ms for its first draw. The browser's GPU process used about one CPU
+core for this, and a page that waited on `COMPLETION_STATUS_KHR` got one
+animation frame while the 200 programs linked. The cache variables of Mesa,
+`--disable-gpu-program-cache` and Mesa 25.0.7 did not remove the link or the
+first-draw cost of a reload. Another card, host or page can give other
+numbers. So when you measure a page load on the GPU, time the link and the
+first draws separately, and measure a warm load before you expect it to be
+faster.
+
 What this does not cover:
 
 - **WebGPU.** It needs Vulkan, and this image has no Vulkan driver for the card.
