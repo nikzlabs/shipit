@@ -354,6 +354,7 @@ describe("releaseQueuedTurn (planning#338)", () => {
     queueLength?: number;
     head?: QueuedMessage;
     work?: string[];
+    turnCommitPending?: boolean;
   }) {
     const dispatched: AgentDispatchOptions[] = [];
     let dequeues = 0;
@@ -367,6 +368,7 @@ describe("releaseQueuedTurn (planning#338)", () => {
       running: opts.running ?? false,
       systemTurnInProgress: opts.systemTurnInProgress ?? false,
       mergeHold: opts.mergeHold ?? false,
+      turnCommitPending: opts.turnCommitPending ?? false,
       get queueLength() { return queue.length; },
       messageQueue: queue,
       canRunDispatchedTurn: true,
@@ -429,6 +431,25 @@ describe("releaseQueuedTurn (planning#338)", () => {
     expect(dispatched).toEqual([]);
     expect(dequeueCount()).toBe(0);
     expect(queue).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  // docs/240-unlosable-turn-dispatch Fix G — dispatch would re-queue it at the tail.
+  it("leaves the head queued while the finished turn's commit is pending, except a driver's own step", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const held = fakeReleaseRunner({ queueLength: 2, turnCommitPending: true });
+    expect(releaseQueuedTurn(held.runner)).toBe(false);
+    expect(held.dispatched).toEqual([]);
+    expect(held.dequeueCount()).toBe(0);
+
+    const driver = fakeReleaseRunner({
+      queueLength: 1,
+      turnCommitPending: true,
+      head: { text: "resolve the conflicts", execution: "dispatched", systemTurn: true, postTurn: "none" },
+      work: [],
+    });
+    expect(releaseQueuedTurn(driver.runner)).toBe(true);
+    expect(driver.dispatched.map((d) => d.text)).toEqual(["resolve the conflicts"]);
     warn.mockRestore();
   });
 });
