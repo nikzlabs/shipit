@@ -110,3 +110,20 @@
 - [x] That release is gated on `drainSettled`, not `drainFired` (the flag is set before the
       commit the drain awaits), and runs synchronously inside a `finally` so no successor can
       appear in a gap and a throwing completion callback cannot strand the entry
+
+## Fix G — admission waits for the finished turn's commit
+
+- [x] Reproduced first: a dispatch in the interval destroys the finished turn's edit on the
+      streaming, one-shot and adapter-`error` paths
+- [x] `turnBlockedByPendingCommit` gates `dispatchOnRunner` and `takeRunnableQueuedTurn`; a
+      driver-owned step is exempt and a refusing caller is refused
+- [x] `releaseTurnCommit` releases the queue when the hold comes off, never while a drain of
+      the same turn is in flight
+- [x] The executor's own timer comes back for an entry whose hold expired unreleased
+- [x] A drain parked on its commit stands down when another turn claimed the runner meanwhile
+- [x] A dispatch that carries attachments is queued, never steered as bare text
+- [x] The `done` handler does not release a hold that the error path it started commits under
+- [x] `send_message` waits for the commit and keeps the interactive executor; `answer_question`
+      queues; a steer is decided again after its attachment reads, and keeps what it read
+- [x] A commit hold has an owner: a holder that expired and was written off ends nothing
+- [x] A streaming process that exits late does not clear the claim of a successor in setup

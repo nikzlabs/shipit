@@ -33,6 +33,7 @@ import {
   automaticTurnHeldForAnswer,
   readAnswerHold,
   systemTurnBlockedByResidentWork,
+  turnBlockedByPendingCommit,
 } from "./turn-admission.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
@@ -293,6 +294,10 @@ export function dispatchOnRunner(
   }
 
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
+
+  // `running` is already false while the finished turn's edits are still outside git.
+  const uncommitted = turnBlockedByPendingCommit(runner, opts);
+  if (uncommitted) return enqueueOrRefuse(uncommitted);
 
   const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
@@ -665,8 +670,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   endPostTurnWork(): void;
   /** From a turn's end until its local commit settles. Narrower than the lease, which a push can hold for minutes. */
   readonly turnCommitPending: boolean;
-  beginTurnCommit(): void;
-  endTurnCommit(): void;
+  /** Returns the hold to pass back to `endTurnCommit`, so an expired holder ends nothing. */
+  beginTurnCommit(): number;
+  endTurnCommit(hold: number): void;
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
   clearBackgroundTasks(): void;
   /** Actual resident process mode, distinct from the adapter's static steering capability. */
@@ -885,8 +891,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (!this._postTurnHold.active) this.emit("work_released");
   }
   get turnCommitPending(): boolean { return this._turnCommitHold.active; }
-  beginTurnCommit(): void { this._turnCommitHold.begin(); }
-  endTurnCommit(): void { this._turnCommitHold.end(); }
+  beginTurnCommit(): number { return this._turnCommitHold.begin(); }
+  endTurnCommit(hold: number): void { this._turnCommitHold.end(hold); }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
