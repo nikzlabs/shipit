@@ -60,6 +60,9 @@ Tracks the four-axis rollout from `plan.md`. Order follows the plan's
   - [x] The Claude CLI behaviors that the OAuth refresher depends on:
         `scripts/probe-claude-refresh.mjs`, run by the `claude-refresh-probe` CI
         job on bump PRs, offline and without secrets (docs/153).
+  - [x] The Codex CLI behaviors that the OAuth refresher depends on:
+        `scripts/probe-codex-refresh.mjs`, run by the `codex-refresh-probe` CI
+        job on bump PRs, offline and without secrets (docs/154).
 - [ ] Wire as the required merge gate on bump PRs.
 - [ ] (Optional) worker startup self-check that logs/flags version mismatch or
       failed handshake; feed `agent-registry` health reporting.
