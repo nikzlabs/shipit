@@ -12,6 +12,7 @@ import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 import {
   handleSessionCreate,
   handleSessionFind,
+  handleSessionInbox,
   handleSessionList,
   handleSessionLogs,
   handleSessionMessage,
@@ -131,6 +132,12 @@ Supported subcommands:
   shipit session report  -b TEXT | --body-file FILE
                           [--severity fyi|warn|blocker] [--subject T]
                           [--to parent] [--json]
+  shipit session inbox   [--all] [--json]
+                          Read the messages other sessions sent to THIS session:
+                          a child's report, a parent's message, a notice that a
+                          child's pull request merged or closed. One call returns
+                          every unread message and marks them read. '--all' lists
+                          every message ever sent here and marks nothing.
   shipit session help
 
 Context (docs/324-agent-requested-compaction):
@@ -631,6 +638,7 @@ const SESSION_HANDLERS: Record<
   "continue-after-rebase": handleSessionContinueAfterRebase,
   restart: handleSessionRestart,
   report: handleSessionReport,
+  inbox: handleSessionInbox,
   status: handleSessionStatus,
   whoami: handleSessionWhoami,
   rename: handleSessionRename,

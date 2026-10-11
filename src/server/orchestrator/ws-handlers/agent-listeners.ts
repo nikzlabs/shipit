@@ -270,12 +270,14 @@ export function wireAgentListeners(
           if (turnSessionId) {
             persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
           }
-          const position = runner.enqueue(steerToQueuedMessage(dropped));
-          emitToViewers({ type: "message_queued", text: dropped.text, position });
-          deps.broadcastLog(
-            "server",
-            `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
-          );
+          if (!dropped.bestEffort) {
+            const position = runner.enqueue(steerToQueuedMessage(dropped));
+            emitToViewers({ type: "message_queued", text: dropped.text, position });
+            deps.broadcastLog(
+              "server",
+              `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
+            );
+          }
         }
         // A worker with no agent at all would otherwise hold the turn, and the re-queued
         // message, until a viewer's reconciler noticed.

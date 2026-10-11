@@ -282,6 +282,11 @@ export class SessionManager {
     this.adoptLegacySelfMergeWatches();
   }
 
+  /** For a store whose rows reference `sessions`: they must be in this database, not in another. */
+  get database(): Pick<DatabaseManager, "db"> {
+    return { db: this.db };
+  }
+
   /**
    * docs/239-self-merge-wake — a session's own watch belongs in `self_merge_watch`. Code older than
    * that column wrote it into `merge_watch`, and does so again after a rollback, so this runs on

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -17,6 +17,8 @@ import {
 } from "./session-report.js";
 import { ServiceError } from "./types.js";
 import { createTurnSettlement, type TurnHandle } from "../turn-settlement.js";
+import { SessionInboxStore } from "../session-inbox-store.js";
+import { SessionInbox } from "./session-inbox.js";
 
 class FakeRunner {
   running = false;
@@ -71,13 +73,21 @@ function makeCohort() {
     sessionManager.setBranch(id, `shipit/${id}`);
   }
 
+  // The store is real, so a test reads what the parent's agent would read. Telling is
+  // `session-inbox.test.ts`'s subject; here a report is stored and nothing more.
+  const store = new SessionInboxStore(db);
   const deps: SessionReportDeps = {
     sessionManager,
     runnerRegistry: registry,
     chatHistoryManager,
-    defaultAgentId: "claude",
+    sessionInbox: {
+      post: async (recipient, message) => {
+        store.add(recipient.id, message);
+        return { told: "later" };
+      },
+    },
   };
-  return { db, sessionManager, chatHistoryManager, registry, runners, deps };
+  return { db, sessionManager, chatHistoryManager, registry, runners, store, deps };
 }
 
 describe("deliverSessionReport (docs/233)", () => {
@@ -88,7 +98,7 @@ describe("deliverSessionReport (docs/233)", () => {
     ctx = makeCohort();
   });
 
-  it("delivers to the parent by default: persisted card + queued system turn", async () => {
+  it("delivers to the parent by default: a persisted card and a message in its inbox, and no turn", async () => {
     ctx.registry.getOrCreate("parent", "/ws/parent", "claude");
     const result = await deliverSessionReport(ctx.deps, "elementalist", {
       body: "The shared regen command deletes every catalog.",
@@ -98,7 +108,7 @@ describe("deliverSessionReport (docs/233)", () => {
 
     expect(result.to).toBe("parent");
     expect(result.recipients).toEqual([
-      { sessionId: "parent", title: "Spell catalogs", relation: "child", woken: true },
+      { sessionId: "parent", title: "Spell catalogs", relation: "child", woken: true, told: "later" },
     ]);
 
     const card = ctx.chatHistoryManager.load("parent").find((m) => m.sessionReport)?.sessionReport;
@@ -113,13 +123,15 @@ describe("deliverSessionReport (docs/233)", () => {
     });
 
     const parent = ctx.runners.get("parent");
-    expect(parent?.dispatched).toHaveLength(1);
-    expect(parent?.dispatched[0].systemTurn).toBe(true);
-    expect(parent?.dispatched[0].text).toContain("BLOCKER");
-    expect(parent?.dispatched[0].text).toContain("The shared regen command deletes every catalog.");
-    expect(parent?.dispatched[0].text).toContain("report from child");
-    expect(parent?.dispatched[0].text.length).toBeLessThan(300);
-    expect(parent?.dispatched[0].messageOrigin).toEqual({
+    // docs/328-session-message-inbox req 1 — the report is not a turn of its own.
+    expect(parent?.dispatched).toHaveLength(0);
+    const [message] = ctx.store.all("parent");
+    expect(ctx.store.all("parent")).toHaveLength(1);
+    expect(message!.body).toContain("BLOCKER");
+    expect(message!.body).toContain("The shared regen command deletes every catalog.");
+    expect(message!.body).toContain("report from child");
+    expect(message!.body.length).toBeLessThan(300);
+    expect(message!.origin).toEqual({
       sessionId: "elementalist",
       sessionTitle: "Elementalist catalog",
       relation: "child",
@@ -139,10 +151,12 @@ describe("deliverSessionReport (docs/233)", () => {
       });
 
       expect(result.recipients).toEqual([
-        { sessionId: "parent", title: "Spell catalogs", relation: "child", woken: true },
+        { sessionId: "parent", title: "Spell catalogs", relation: "child", woken: true, told: "later" },
       ]);
       expect(ctx.chatHistoryManager.load("parent")[0].sessionReport?.severity).toBe(severity);
-      expect(ctx.runners.get("parent")?.dispatched[0].text).toContain(severity.toUpperCase());
+      expect(ctx.store.all("parent")[0]!.body).toContain(severity.toUpperCase());
+      expect(ctx.store.all("druid")).toHaveLength(0);
+      expect(ctx.store.all("necromancer")).toHaveLength(0);
       expect(ctx.chatHistoryManager.load("druid")).toHaveLength(0);
       expect(ctx.chatHistoryManager.load("necromancer")).toHaveLength(0);
     },
@@ -210,17 +224,33 @@ describe("deliverSessionReport (docs/233)", () => {
     await expect(deliverSessionReport(ctx.deps, "druid", { body: "mine" })).resolves.toBeTruthy();
   });
 
-  it("reports a parent whose wake failed while keeping the persisted card", async () => {
+  it("stores the report for a parent that cannot be started, and says so", async () => {
     ctx.db.db.prepare("UPDATE sessions SET workspace_dir = NULL WHERE id = ?").run("parent");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sessionInbox = new SessionInbox({
+      store: ctx.store,
+      sessionManager: ctx.sessionManager,
+      runnerRegistry: ctx.registry,
+      defaultAgentId: "claude",
+    });
 
-    const result = await deliverSessionReport(ctx.deps, "elementalist", {
+    const result = await deliverSessionReport({ ...ctx.deps, sessionInbox }, "elementalist", {
       body: "Heads up",
     });
 
-    const broken = result.recipients[0];
-    expect(broken?.woken).toBe(false);
-    expect(broken?.error).toMatch(/no workspace/i);
+    // Stored, so `woken` stays true for an older shim; `told` carries the truth.
+    expect(result.recipients[0]).toMatchObject({
+      woken: true,
+      told: "failed",
+      error: expect.stringMatching(/no workspace/i),
+    });
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringContaining("could not start parent"),
+      expect.objectContaining({ message: expect.stringMatching(/no workspace/i) }),
+    );
     expect(ctx.chatHistoryManager.load("parent").filter((m) => m.sessionReport)).toHaveLength(1);
+    expect(ctx.store.owed("parent")).toMatchObject({ unread: 1 });
+    errors.mockRestore();
   });
 });
 

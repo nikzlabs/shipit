@@ -28,6 +28,7 @@ export function testDispatch(
     silent: opts.silent,
     deliveryId: opts.deliveryId,
     dictated: opts.dictated,
+    bestEffortSteer: opts.bestEffortSteer,
   });
 }
 

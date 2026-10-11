@@ -343,9 +343,13 @@ export interface SessionReportCard {
   fromSessionId: string;
   fromTitle: string;
   fromBranch?: string;
-  /** Sibling is a legacy persisted value; current reports come from children. */
-  relation: "child" | "sibling";
-  severity: SessionReportSeverity;
+  /**
+   * `child` is a report; `sibling` is a legacy persisted report. `parent` and `proposed`
+   * are a message, shown to the user of the session that received it (docs/328).
+   */
+  relation: "child" | "sibling" | "parent" | "proposed";
+  /** A report has one; a message has none. */
+  severity?: SessionReportSeverity;
   subject?: string;
   body: string;
   createdAt: string;

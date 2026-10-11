@@ -6,10 +6,14 @@ import type {
   SessionInfo,
   SessionReportCard,
   SessionReportSeverity,
-  WsServerMessage,
 } from "../../shared/types.js";
-import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
-import { buildChildView, type ChildSessionView, type ChildViewProjections } from "./child-sessions.js";
+import type { InboxTold, SessionInbox } from "./session-inbox.js";
+import {
+  buildChildView,
+  surfaceSessionCard,
+  type ChildSessionView,
+  type ChildViewProjections,
+} from "./child-sessions.js";
 import { ServiceError } from "./types.js";
 
 export type SessionReportTarget = "parent";
@@ -19,7 +23,7 @@ const SEVERITIES: readonly SessionReportSeverity[] = ["fyi", "warn", "blocker"];
 export const MAX_REPORT_BODY_CHARS = 10_000;
 export const MAX_REPORT_SUBJECT_CHARS = 200;
 
-// Reports trigger agent turns; cap repeated reports from each sender.
+// Cap repeated reports from each sender.
 export const MAX_REPORTS_PER_WINDOW = 5;
 export const REPORT_RATE_WINDOW_MS = 10 * 60 * 1000;
 
@@ -94,15 +98,21 @@ export interface DeliverSessionReportOptions {
   to?: string;
 }
 
-export interface SessionReportDeps extends WakeSessionDeps {
+export interface SessionReportDeps {
+  sessionManager: SessionManager;
+  runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
+  sessionInbox: Pick<SessionInbox, "post">;
 }
 
 export interface SessionReportRecipient {
   sessionId: string;
   title: string;
   relation: "child";
+  /** Kept for a container whose shim predates the inbox: it reads this as "delivered". */
   woken: boolean;
+  told: InboxTold;
+  /** Why the parent could not be started, when `told` is `failed`. */
   error?: string;
 }
 
@@ -165,7 +175,7 @@ export async function deliverSessionReport(
   const reportId = randomUUID();
   const createdAt = new Date().toISOString();
   const relation = "child" as const;
-  const card: SessionReportCard = {
+  const card: SessionReportCard & { severity: SessionReportSeverity } = {
     cardId: `session-report-${reportId}-0`,
     fromSessionId: reporter.id,
     fromTitle: reporter.title,
@@ -176,56 +186,20 @@ export async function deliverSessionReport(
     body,
     createdAt,
   };
-  // Persist the report even if waking the parent fails.
-  surfaceCard(deps, parent.id, card);
+  surfaceSessionCard(deps, parent.id, card);
 
-  const result: SessionReportRecipient = {
-    sessionId: parent.id,
-    title: parent.title,
-    relation,
-    woken: false,
-  };
-  try {
-    const handle = await wakeSessionWithTurn(deps, parent, {
-      text: buildReportWakePrompt(card),
-      messageOrigin: {
-        sessionId: reporter.id,
-        sessionTitle: reporter.title,
-        relation,
-      },
-      activity:
-        severity === "blocker"
-          ? "Reassessing after a child-session blocker report…"
-          : "Reading a report from a child session…",
-    });
-    result.woken = true;
-    // The card is already in the parent's transcript; only the turn can be waiting.
-    if (handle.admitted !== "started") {
-      console.log(
-        `[session-report] the wake for ${parent.id} was ${handle.admitted}; `
-        + "no turn has started on the report yet",
-      );
-    }
-  } catch (err) {
-    result.error = err instanceof Error ? err.message : String(err);
-    console.error(`[session-report] wake-turn not delivered to ${parent.id}:`, err);
-  }
-  const recipients = [result];
+  // docs/328-session-message-inbox — the card is for the user; the agent reads the inbox.
+  const { told, error } = await deps.sessionInbox.post(parent, {
+    origin: { sessionId: reporter.id, sessionTitle: reporter.title, relation },
+    body: buildReportMessage(card),
+  });
+  const recipients: SessionReportRecipient[] = [
+    { sessionId: parent.id, title: parent.title, relation, woken: true, told, ...(error ? { error } : {}) },
+  ];
 
-  console.log(
-    `[session-report] ${reporter.id} → ${to} (${recipients.length} recipient(s)), severity=${severity}`,
-  );
+  console.log(`[session-report] ${reporter.id} → ${to}, severity=${severity}, told=${told}`);
 
   return { reportId, severity, to, recipients };
-}
-
-function surfaceCard(deps: SessionReportDeps, recipientId: string, card: SessionReportCard): void {
-  deps.chatHistoryManager.append(recipientId, { role: "assistant", text: "", sessionReport: card });
-  const runner = deps.runnerRegistry.get(recipientId);
-  if (runner) {
-    const message: WsServerMessage = { type: "session_report_card", sessionId: recipientId, card };
-    runner.emitMessage(message);
-  }
 }
 
 const SEVERITY_GUIDANCE: Record<SessionReportSeverity, string> = {
@@ -234,7 +208,7 @@ const SEVERITY_GUIDANCE: Record<SessionReportSeverity, string> = {
   blocker: "BLOCKER: stop and assess this before continuing.",
 };
 
-export function buildReportWakePrompt(card: SessionReportCard): string {
+export function buildReportMessage(card: SessionReportCard & { severity: SessionReportSeverity }): string {
   return [
     `${card.severity.toUpperCase()} report from child ${card.fromTitle} (${card.fromSessionId})${card.subject ? ` — ${card.subject}` : ""}:`,
     card.body,

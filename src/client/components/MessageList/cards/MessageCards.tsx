@@ -157,7 +157,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
             fromTitle={msg.sessionReport.fromTitle}
             {...(msg.sessionReport.fromBranch ? { fromBranch: msg.sessionReport.fromBranch } : {})}
             relation={msg.sessionReport.relation}
-            severity={msg.sessionReport.severity}
+            {...(msg.sessionReport.severity ? { severity: msg.sessionReport.severity } : {})}
             {...(msg.sessionReport.subject ? { subject: msg.sessionReport.subject } : {})}
             body={msg.sessionReport.body}
             {...(cb.onResumeSession ? { onOpen: cb.onResumeSession } : {})}

@@ -31,6 +31,20 @@ beforeEach(() => {
 });
 
 describe("handleSessionReportCard (docs/233)", () => {
+  // docs/328-session-message-inbox — a parent's message has the same card and no severity.
+  it("appends a message from the parent session, which has no severity", () => {
+    const { severity: _severity, subject: _subject, ...card } = message().card;
+    handleSessionReportCard(ctx, {
+      type: "session_report_card",
+      sessionId: "child-1",
+      card: { ...card, cardId: "session-message-1", relation: "parent", body: "Fix the lexer first." },
+    });
+
+    const [row] = useSessionStore.getState().messages;
+    expect(row!.sessionReport).toMatchObject({ relation: "parent", body: "Fix the lexer first." });
+    expect(row!.sessionReport).not.toHaveProperty("severity");
+  });
+
   it("appends a card-carrying message with the report payload", () => {
     handleSessionReportCard(ctx, message());
     const messages = useSessionStore.getState().messages;

@@ -46,7 +46,7 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
+    mergeWatchManager, sessionInbox, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
     cleanupContainer, version, agentRegistry, providerAccountManager, scheduleRunner,
   } = rt;
 
@@ -415,6 +415,7 @@ export async function startStartupMonitors(
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
     mergeWatchManager?.stopRetryLoop();
+    sessionInbox?.stop();
     quotaContinuationManager?.stop();
   });
   registerShutdownHook(app, {

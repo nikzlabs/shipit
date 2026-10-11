@@ -642,6 +642,21 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    // docs/328-session-message-inbox — the inbox tells again by its own rule.
+    it("a rejected best-effort steer loses its row and is not re-queued", () => {
+      const { agent, runner } = wireWithSteers();
+      recordSteeredMessage(runner, "you have messages", {
+        assembledPrompt: "you have messages",
+        bestEffort: true,
+      });
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "you have messages" });
+
+      expect(runner.steeredMessages.map((m) => m.text)).toEqual(["earlier", "change of scope"]);
+      expect(runner.queueLength).toBe(0);
+      runner.dispose({ force: true });
+    });
+
     it("a rejection that arrives after the turn errored does not queue the message twice", async () => {
       const { agent, runner } = wireWithSteers();
 

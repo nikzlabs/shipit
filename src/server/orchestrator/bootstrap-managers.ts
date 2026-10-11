@@ -68,6 +68,8 @@ import { ScheduleStore } from "./schedule-store.js";
 import { ScheduleRunner } from "./schedule-runner.js";
 import { mountableRunDir, ScheduleNotes } from "./schedule-notes.js";
 import { ScheduleNotesRequestStore } from "./schedule-notes-request-store.js";
+import { SessionInboxStore } from "./session-inbox-store.js";
+import { SessionInbox } from "./services/session-inbox.js";
 import { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { TurnEnd } from "./turn-settlement.js";
 import { createClaimSessionService } from "./services/claim-session.js";
@@ -668,6 +670,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const settingsProposals = new SettingsProposalStore(databaseManager);
   const scheduleProposals = new ScheduleProposalStore(databaseManager);
   const scheduleNotesRequests = new ScheduleNotesRequestStore(databaseManager);
+  // Its rows reference `sessions`, so it uses the session manager's database.
+  const sessionInboxStore = new SessionInboxStore(sessionManager.database);
+  const sessionInboxRef: { ref: SessionInbox | null } = { ref: null };
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
   const restoreWorkspace = (sessionId: string) =>
@@ -739,6 +744,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     settingsProposals,
     scheduleProposals,
     scheduleNotesRequests,
+    sessionInboxStore,
+    getSessionInbox: () => sessionInboxRef.ref ?? undefined,
     scheduledRuns: { store: scheduleStore, notes: scheduleNotes },
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
@@ -795,6 +802,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       ),
   });
   quotaContinuationRef.ref = quotaContinuationManager;
+
+  const sessionInbox = new SessionInbox({
+    store: sessionInboxStore,
+    sessionManager,
+    runnerRegistry,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+    restoreWorkspace,
+    probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
+  });
+  sessionInboxRef.ref = sessionInbox;
 
   const mergeWatchManager = new MergeWatchManager({
     sessionManager,
@@ -1195,6 +1216,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
   agentMergeExecutor.start();
 
+  sessionInbox.start();
+
   void (async () => {
     try {
       await mergeWatchManager.reconcilePending();
@@ -1257,6 +1280,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoPrefetcher,
     drainQueueForSession,
     mergeWatchManager,
+    sessionInbox,
+    sessionInboxStore,
     quotaContinuationManager,
     runRequestedRestartForTurn,
     runRequestedCompactionForTurn,

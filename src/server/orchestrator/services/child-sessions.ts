@@ -11,6 +11,7 @@ import type {
   SessionMergeWatch,
   SpawnTarget,
   SessionMessageOrigin,
+  SessionReportCard,
 } from "../../shared/types.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
 import { selectionExists } from "../../shared/catalogue/index.js";
@@ -23,12 +24,9 @@ import { joinRolePrompt, ROLE_PROMPT_LIMITS } from "./roles.js";
 import { applyModelRetirement } from "../model-retirement.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
-import type { SessionContainerManager } from "../session-container.js";
-import { ContainerSessionRunner } from "../container-session-runner.js";
 import { agentIdForModel, getAgentCapabilities, KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
-import { reconcileRunnerAgent } from "../reconcile-runner-agent.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -36,7 +34,8 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { isSessionDone } from "../../shared/session-resolution.js";
-import type { TurnAdmission } from "../turn-settlement.js";
+import type { InboxTold, SessionInbox } from "./session-inbox.js";
+import type { PersistedMessage } from "../chat-history.js";
 import { getErrorMessage } from "../../shared/utils.js";
 
 export class ResolvedChildMessageError extends ServiceError {
@@ -665,36 +664,40 @@ export function buildChildView(
 }
 
 export interface SendChildMessageResult {
-  /** One-based when queued behind a running turn; otherwise zero. */
+  /** Kept for a container whose shim predates the inbox; a message is never queued now. */
   queuePosition: number;
   enqueued: boolean;
-  /** docs/314 — the dispatch's OWN admission, not a guess from the runner's state. */
-  admitted: TurnAdmission;
+  /** docs/328-session-message-inbox — how the recipient's agent learns of the message. */
+  told: InboxTold;
+  /** Why the recipient could not be started, when `told` is `failed`. */
+  error?: string;
 }
 
-// Observe boot failure before acknowledging; timeout still permits dispatch to await readiness itself.
-const CHILD_MESSAGE_WORKER_READY_TIMEOUT_MS = 30_000;
+export interface SessionCardDeps {
+  runnerRegistry: Pick<SessionRunnerRegistry, "get">;
+  chatHistoryManager: { append(sessionId: string, message: PersistedMessage): unknown };
+}
 
-function hasLiveContainer(
-  containerManager: SessionContainerManager,
-  sessionId: string,
-): boolean {
-  const sc = containerManager.get(sessionId);
-  return !!sc && (sc.status === "running" || sc.status === "starting");
+export interface SessionMessageDeps extends SessionCardDeps {
+  sessionInbox: Pick<SessionInbox, "post">;
+}
+
+/**
+ * The user's record, in the recipient's transcript, of what another session sent. A card
+ * with no text: a row with text is replayed to an agent as its own conversation.
+ */
+export function surfaceSessionCard(deps: SessionCardDeps, recipientId: string, card: SessionReportCard): void {
+  deps.chatHistoryManager.append(recipientId, { role: "assistant", text: "", sessionReport: card });
+  deps.runnerRegistry.get(recipientId)?.emitMessage({ type: "session_report_card", sessionId: recipientId, card });
 }
 
 export async function sendChildMessage(
-  sessionManager: SessionManager,
-  runnerRegistry: SessionRunnerRegistry,
+  deps: SessionMessageDeps & { sessionManager: SessionManager },
   parentSessionId: string,
   childSessionId: string,
   text: string,
-  defaultAgentId: AgentId,
-  credentialsDir: string | undefined,
-  credentialStore: CredentialStore | undefined,
-  providerAccountManager?: ProviderAccountManager,
-  containerManager?: SessionContainerManager | null,
 ): Promise<SendChildMessageResult> {
+  const { sessionManager, runnerRegistry } = deps;
   const trimmed = text?.trim();
   if (!trimmed) throw new ServiceError(400, "Message text is required");
   if (trimmed.length > 50_000) {
@@ -711,22 +714,11 @@ export async function sendChildMessage(
     throw new ServiceError(400, "Child session is archived");
   }
 
-  return deliverSessionMessage(
-    sessionManager,
-    runnerRegistry,
-    child,
-    trimmed,
-    {
-      sessionId: parentSessionId,
-      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
-      relation: "parent",
-    },
-    defaultAgentId,
-    credentialsDir,
-    credentialStore,
-    providerAccountManager,
-    containerManager,
-  );
+  return deliverSessionMessage(deps, child, trimmed, {
+    sessionId: parentSessionId,
+    sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
+    relation: "parent",
+  });
 }
 
 /**
@@ -734,93 +726,31 @@ export async function sendChildMessage(
  *
  * Every caller decides separately who is allowed to reach `target`:
  * `sendChildMessage` allows a direct child, and docs/314's proposal card allows
- * anything the user approved by clicking. Sharing the body is what stops a
- * change to dispatch — a credential refresh, a readiness wait — from applying
- * to one route and not the other.
+ * anything the user approved by clicking. The message goes to the target's inbox
+ * (docs/328-session-message-inbox); it is not a turn.
  */
 export async function deliverSessionMessage(
-  sessionManager: SessionManager,
-  runnerRegistry: SessionRunnerRegistry,
+  deps: SessionMessageDeps,
   target: SessionInfo,
   text: string,
   origin: SessionMessageOrigin,
-  defaultAgentId: AgentId,
-  credentialsDir: string | undefined,
-  credentialStore: CredentialStore | undefined,
-  providerAccountManager?: ProviderAccountManager,
-  containerManager?: SessionContainerManager | null,
 ): Promise<SendChildMessageResult> {
   if (!target.workspaceDir) {
     throw new ServiceError(400, "Target session has no workspace");
   }
-  const targetSessionId = target.id;
-
-  // A runner can survive its container. Dispose it so getOrCreate starts a fresh worker.
-  if (containerManager) {
-    const stale = runnerRegistry.get(targetSessionId);
-    if (stale && !hasLiveContainer(containerManager, targetSessionId)) {
-      runnerRegistry.dispose(targetSessionId, { force: true });
-    }
-  }
-
-  const runner = runnerRegistry.getOrCreate(targetSessionId, target.workspaceDir, target.agentId ?? defaultAgentId);
-  // getOrCreate ignores the agent argument for an existing runner; reconcile before provisioning.
-  const effectiveAgentId = reconcileRunnerAgent(runner, target.agentId);
-
-  // A queued turn refreshes its own environment when it starts.
-  const wasRunning = runner.running;
-  if (!wasRunning && credentialsDir && credentialStore) {
-    await prepareSessionAgentEnvironment(runner, {
-      sessionId: targetSessionId,
-      agentId: effectiveAgentId,
-      deps: {
-        credentialsDir,
-        credentialStore,
-        sessionManager,
-        ...(providerAccountManager ? { providerAccountManager } : {}),
-      },
-    });
-  }
-  if (runner instanceof ContainerSessionRunner) {
-    await Promise.race([
-      runner.whenWorkerReady(),
-      new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, CHILD_MESSAGE_WORKER_READY_TIMEOUT_MS);
-        t.unref?.();
-      }),
-    ]);
-  }
-  if (runner.disposed) {
-    throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
-  }
-
-  const handle = runner.dispatch(prepareDispatch({
-    text,
-    agentInterface: undefined,
-    messageOrigin: origin,
-    execution: undefined,
-    activity: undefined,
-    images: undefined,
-    files: undefined,
-    uploads: undefined,
-    permissionMode: undefined,
-    postTurn: undefined,
-    systemTurn: undefined,
-    // A proposal card is delivered by the user's own click; another session's message is not.
-    automatic: origin.relation !== "proposed",
-    heldId: undefined,
-    onTurnComplete: undefined,
-    deliveryId: undefined,
-    dictated: undefined,
-    resetMergedBranch: undefined,
-    compactContext: undefined,
-    silent: undefined,
-  }));
-  return {
-    queuePosition: handle.admitted === "queued" ? runner.queueLength : 0,
-    enqueued: wasRunning,
-    admitted: handle.admitted,
-  };
+  // The agent reads the inbox; this is what the user of that session sees
+  // (docs/314-session-message-proposal req 6).
+  surfaceSessionCard(deps, target.id, {
+    cardId: `session-message-${randomUUID()}`,
+    fromSessionId: origin.sessionId,
+    fromTitle: origin.sessionTitle,
+    relation: origin.relation,
+    body: text,
+    createdAt: new Date().toISOString(),
+  });
+  const { told, error } = await deps.sessionInbox.post(target, { origin, body: text });
+  const toldNow = told === "steered" || told === "started";
+  return { queuePosition: 0, enqueued: !toldNow, told, ...(error ? { error } : {}) };
 }
 
 export interface RegisterMergeWatchResult {

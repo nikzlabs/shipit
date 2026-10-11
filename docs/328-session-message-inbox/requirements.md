@@ -26,24 +26,29 @@ remaining" messages.
    read yet, together.
 5. A session that received several messages while it was busy deals with them
    together, so that it can ignore a message that a later one made out of date.
+6. The notices that ShipIt sends to a session about its child's pull request —
+   merged, or closed without a merge — are messages of this kind. Requirements
+   1 to 5 apply to them.
+7. ShipIt can tell the agent that messages wait while the agent's turn is in
+   progress. The agent does not have to wait for the end of its turn to learn
+   of them.
 
 ## Open questions
 
-- Do the notices that ShipIt sends about another session use the inbox too — a
-  child's pull request merged, or closed without a merge? The request says
-  "messages between sessions". These notices come from ShipIt and not from the
-  child's agent, but they pile up in a busy parent in the same way.
-- Can ShipIt tell the agent that messages wait while the agent's turn is in
-  progress? docs/233-child-session-report req 9 says that a child report must
-  not preempt a running parent turn.
+None.
 
 ## Resolved questions
 
-None.
+- 2026-10-11 — Do the notices that ShipIt sends about a child's pull request
+  (merged, or closed without a merge) use the inbox too? The user: yes, include
+  them. Recorded as req 6.
+- 2026-10-11 — Can the "you have messages" notice arrive while the agent's turn
+  is in progress? The user: yes, during a turn. Recorded as req 7. This replaces
+  docs/233-child-session-report req 9, which said that a child report must not
+  preempt a running parent turn.
 
 ## Earlier requirements that this changes
 
-Requirement 1 replaces the wake turn in docs/233-child-session-report req 8
-("start or queue a parent wake turn"). That document changes together with the
-implementation, and its req 9 changes only if the second open question is
-answered that way.
+Requirement 1 replaced the wake turn in docs/233-child-session-report req 8
+("start or queue a parent wake turn"), and requirement 7 replaced its req 9.
+That document carries both changes, with their receipts.

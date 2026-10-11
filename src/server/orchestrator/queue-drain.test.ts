@@ -92,6 +92,7 @@ describe("queue drain routing (planning#257)", () => {
       onTurnComplete,
       deliveryId: "watch-1:1",
       dictated: true,
+      bestEffortSteer: true,
     };
 
     const restored = queuedMessageToDispatchOptions(toQueuedMessage(testDispatch(opts)));

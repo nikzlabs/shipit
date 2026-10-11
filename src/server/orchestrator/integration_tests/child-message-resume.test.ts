@@ -111,6 +111,7 @@ describe("Integration: child-message container resume (Ops docs/162 follow-up)",
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await app.close();
     dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
@@ -144,6 +145,11 @@ describe("Integration: child-message container resume (Ops docs/162 follow-up)",
     await new Promise((r) => setTimeout(r, 300));
     expect(fakeDocker._createCount()).toBe(1);
     expect(containerManager.get(childId)?.status).toBe("running");
+    // The worker of this fake container answers nothing, so the child's first turn did not
+    // reach an agent, and ShipIt waits a minute before it starts the child again
+    // (docs/328-session-message-inbox). The tests below are about what comes after that wait.
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 61_000);
     return { parentId, childId };
   }
 
@@ -186,19 +192,28 @@ describe("Integration: child-message container resume (Ops docs/162 follow-up)",
     expect(containerManager.get(childId)?.status).toBe("running");
   });
 
-  it("fails loudly (does not falsely ack) when the resumed container cannot boot", { timeout: 15_000 }, async () => {
+  // docs/328-session-message-inbox — the message is stored, so the answer is not an error
+  // that would make the parent send it again. It still says that the child did not start.
+  it("keeps the message and says that the child could not start when the resumed container cannot boot", { timeout: 15_000 }, async () => {
     await buildAppWith(createFakeDocker({ failCreateAfter: 1 }));
     const { parentId, childId } = await setupParentAndChild();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await containerManager.destroy(childId);
 
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/children/${childId}/message`,
-      payload: { text: "this should fail loudly" },
+      payload: { text: "this must not be lost" },
     });
 
-    expect(res.statusCode).toBe(503);
-    expect(res.json().error).toMatch(/could not resume/i);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ told: "failed", enqueued: true });
+    expect(res.json().error).toMatch(/could not be resumed/i);
+
+    const inbox = await app.inject({ method: "POST", url: `/api/sessions/${childId}/inbox/read`, payload: {} });
+    expect((inbox.json().messages as { text: string }[]).map((m) => m.text))
+      .toEqual([expect.stringContaining("first turn"), expect.stringContaining("this must not be lost")]);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("could not start"), expect.anything());
   });
 });

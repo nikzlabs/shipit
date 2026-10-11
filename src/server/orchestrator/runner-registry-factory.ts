@@ -65,6 +65,9 @@ import type { ScheduleNotesRequestStore } from "./schedule-notes-request-store.j
 import { prepareCardOutcomeNotices } from "./services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
+import { containerPredatesShipIt, prepareInboxNotice } from "./services/session-inbox-notice.js";
+import type { SessionInbox } from "./services/session-inbox.js";
+import type { SessionInboxStore } from "./session-inbox-store.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -160,6 +163,9 @@ export interface RunnerRegistryDeps {
   settingsProposals?: SettingsProposalStore;
   scheduleProposals?: ScheduleProposalStore;
   scheduleNotesRequests?: ScheduleNotesRequestStore;
+  /** Absent in minimal setups; a turn then carries no inbox notice (docs/328-session-message-inbox). */
+  sessionInboxStore?: SessionInboxStore;
+  getSessionInbox?: () => SessionInbox | undefined;
   /** Absent in minimal setups; a run's first turn then carries no `<scheduled_run>` block. */
   scheduledRuns?: { store: ScheduleStore; notes: ScheduleNotes };
 }
@@ -205,6 +211,8 @@ export function createRunnerRegistry(
     settingsProposals,
     scheduleProposals,
     scheduleNotesRequests,
+    sessionInboxStore,
+    getSessionInbox,
     scheduledRuns,
   } = registryDeps;
 
@@ -221,6 +229,7 @@ export function createRunnerRegistry(
       enforceIdleContainerLimit();
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
       reconcileAgentMergeClaimsFor?.(sessionId);
+      getSessionInbox?.()?.onRunnerIdle(sessionId);
     },
     // Same event restartContainer sends: it tells an open tab to reconnect.
     onViewersOrphaned: (sessionId, incarnation) => {
@@ -535,6 +544,14 @@ export function createRunnerRegistry(
           prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId),
         sessionMessageOutcomeNotice: (sessionId) =>
           prepareSessionMessageOutcomeNotice({ chatHistoryManager }, sessionId),
+        ...(sessionInboxStore
+          ? {
+              inboxNotice: (sessionId: string) =>
+                prepareInboxNotice(sessionInboxStore, sessionId, {
+                  inline: containerPredatesShipIt(containerManager, sessionId),
+                }),
+            }
+          : {}),
         ...(credentialStore
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }

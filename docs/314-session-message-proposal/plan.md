@@ -25,7 +25,7 @@ agent → propose_session_message (MCP)
 
 user click (browser only, NOT containerAccessible)                         (req 7)
       → POST /api/sessions/:id/session-message-proposals/:cardId/deliver
-          └─ deliverSessionMessage(...) → runner.dispatch on the TARGET    (req 4)
+          └─ deliverSessionMessage(...) → the TARGET's inbox               (req 4)
 ```
 
 The two halves are what make req 7 hold mechanically: a session container can
@@ -39,19 +39,22 @@ enforce, which is inherited and not introduced here.
 
 ## Where the delivery comes from
 
-`sendChildMessage` (`orchestrator/services/child-sessions.ts:600`) already does
-everything a delivery needs — dispose a runner that outlived its container,
-`getOrCreate`, reconcile the agent, prepare the credential environment, wait for
-the worker, then `runner.dispatch(prepareDispatch({...}))` with a
-`messageOrigin`. Only its first three lines are child-specific:
+`sendChildMessage` (`orchestrator/services/child-sessions.ts`) already does
+everything a delivery needs. Only its first three lines are child-specific:
 `assertChildOfParent`, the `ResolvedChildMessageError` grouping check, and the
 archived check.
 
-So split it: the body below those checks becomes `deliverSessionMessage(...,
+So split it: the body below those checks is `deliverSessionMessage(...,
 origin: SessionMessageOrigin)`, and `sendChildMessage` keeps its checks and
 calls it with `relation: "parent"`. One delivery path, two callers with
-different admission rules — a behaviour change to dispatch cannot diverge
+different admission rules — a behaviour change to delivery cannot diverge
 between them.
+
+Since docs/328-session-message-inbox that body does two things: it puts the
+message in the target's transcript with the sender's name (req 6), and it stores
+the message in the target's inbox, which tells the target's agent. A message the
+user approved is not automatic work, so its notice does not wait behind a
+question that the target's agent asked.
 
 The grouping check stays in `sendChildMessage` alone: `isResolvedForGrouping`
 asks whether a *child* is finished for sidebar-grouping purposes, which is not a
@@ -85,7 +88,7 @@ Three guards, because each covers what the others cannot:
 1. A process-lived in-flight set, for two clicks racing inside one process.
 2. The persisted `delivered` state, which is terminal server-side and hides the
    send button client-side. This is the one that survives a reload.
-3. Dispatch is the point of no return: once `deliverSessionMessage` returns, a
+3. Delivery is the point of no return: once `deliverSessionMessage` returns, a
    later throw (persisting the terminal state, say) must NOT mark the card
    failed, because `failed` offers a *Try again* that would deliver it twice.
    The route answers 500 with `delivered: true` and leaves the card alone. It
@@ -94,7 +97,7 @@ Three guards, because each covers what the others cannot:
    it — the stored card still reads `delivering`, so without that a reload would
    offer a second send, or a decline over a message that already landed.
 
-The residual is an orchestrator that stops between the dispatch and the write,
+The residual is an orchestrator that stops between the delivery and the write,
 or restarts after a failed write. The card is then left `delivering`, which is
 deliberately retryable — a card that spins forever is worse than one the user
 can re-send — so that window trades once-only for liveness. The same leftover
@@ -104,12 +107,12 @@ reconcile against, which is more machinery than the case is worth.
 
 ## Reporting what actually happened
 
-The card's "queued" line comes from the dispatch's own `TurnHandle.admitted`,
-not from whether the target's runner was running when we looked. A *running*
-target that is steerable takes the message immediately (`steered`), and an
-*idle* one under a merge hold queues it — so the runner's state is the wrong
-question, and answering it that way would print "Queued behind…" over a message
-that already arrived.
+The card's "queued" line comes from how the inbox told the target (`told`), not
+from whether the target's runner was running when we looked. A *running* target
+that is steerable takes the notice immediately (`steered`), and an *idle* one
+under a merge hold is told later — so the runner's state is the wrong question,
+and answering it that way would print "its agent is told when it is free" over a
+notice that already arrived.
 
 ## Message length
 

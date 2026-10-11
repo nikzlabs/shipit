@@ -266,7 +266,12 @@ async function runDispatchedTurnInner(
   const sessionMessageOutcome = isCompactRequest
     ? null
     : deps.sessionMessageOutcomeNotice?.(runner.sessionId) ?? null;
-  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome]
+  // docs/328-session-message-inbox — not on a driver-owned turn: its prompt is the driver's
+  // script, and the messages are work for a turn of the session's own.
+  const inboxNotice = isCompactRequest || opts.postTurn === "none"
+    ? null
+    : deps.inboxNotice?.(runner.sessionId) ?? null;
+  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome, inboxNotice]
     .filter((d) => d !== null);
 
   // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
@@ -293,6 +298,7 @@ async function runDispatchedTurnInner(
     ...cardOutcomes.map((o) => o.notice),
     repoSessionOutcome?.notice,
     sessionMessageOutcome?.notice,
+    inboxNotice?.notice,
     reset?.agentPrefix,
     isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
     oneShotTurnNote,
