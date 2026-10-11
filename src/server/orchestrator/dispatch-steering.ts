@@ -24,9 +24,11 @@ export function shouldSteerMessage(i: SteerDecisionInputs): boolean {
   );
 }
 
-// Steering has no separate teardown to fire an incoming turn's completion callback.
+// Steering has no separate teardown to fire an incoming turn's completion callback, and it
+// sends the text alone: a dispatch that carries attachments would lose them.
 export function isSteerableDispatch(opts: AgentDispatchOptions): boolean {
-  return !opts.systemTurn && !opts.onTurnComplete;
+  const attachments = (opts.images?.length ?? 0) + (opts.files?.length ?? 0) + (opts.uploads?.length ?? 0);
+  return !opts.systemTurn && !opts.onTurnComplete && attachments === 0;
 }
 
 /** Returns false when the caller must enqueue the message. */

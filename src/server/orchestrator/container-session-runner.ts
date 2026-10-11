@@ -309,8 +309,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (!this._postTurnHold.active) this.emit("work_released");
   }
   get turnCommitPending(): boolean { return this._turnCommitHold.active; }
-  beginTurnCommit(): void { this._turnCommitHold.begin(); }
-  endTurnCommit(): void { this._turnCommitHold.end(); }
+  beginTurnCommit(): number { return this._turnCommitHold.begin(); }
+  endTurnCommit(hold: number): void { this._turnCommitHold.end(hold); }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();

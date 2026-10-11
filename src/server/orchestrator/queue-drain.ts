@@ -4,7 +4,11 @@ import type {
   SessionRunnerInterface,
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
-import { automaticTurnHeldForAnswer, systemTurnBlockedByResidentWork } from "./turn-admission.js";
+import {
+  automaticTurnHeldForAnswer,
+  systemTurnBlockedByResidentWork,
+  turnBlockedByPendingCommit,
+} from "./turn-admission.js";
 import { forgetHeldEntries, holdTurn } from "./held-turns.js";
 import { settleDroppedQueueEntries } from "./turn-settlement.js";
 
@@ -58,10 +62,12 @@ function holdQueuedAutomaticTurns(runner: SessionRunnerInterface, reason: string
 }
 
 function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedMessage | undefined {
-  const blocked = systemTurnBlockedByResidentWork(runner, runner.messageQueue[index]?.systemTurn);
+  const entry = runner.messageQueue[index];
+  const blocked = systemTurnBlockedByResidentWork(runner, entry?.systemTurn)
+    ?? (entry ? turnBlockedByPendingCommit(runner, entry) : null);
   if (blocked) {
     console.warn(
-      `[queue] holding the queued system turn for ${runner.sessionId} — ${blocked}`,
+      `[queue] holding the queued ${entry?.systemTurn ? "system " : ""}turn for ${runner.sessionId} — ${blocked}`,
     );
     return undefined;
   }

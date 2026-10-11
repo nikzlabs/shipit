@@ -52,6 +52,7 @@ import {
   type TurnStatusFacts,
 } from "./services/session-status.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
+import { POST_TURN_HOLD_MAX_MS } from "./post-turn-hold.js";
 import { writeAnswerHold } from "./turn-admission.js";
 import { retireRewindUndo } from "./chat-history.js";
 import { forgetHeldTurn, restoreHeldTurns } from "./held-turns.js";
@@ -213,6 +214,9 @@ function reseedConversationForRetry(
   }
 }
 
+// A timer can fire a little early, which would read the hold as still open.
+const COMMIT_HOLD_EXPIRY_MARGIN_MS = 1_000;
+
 // A turn parked on its PR flow can reach the release flow after a successor already
 // has; its older markers must not overwrite the successor's newer card.
 const releaseFlowEpochs = new WeakMap<object, number>();
@@ -275,6 +279,7 @@ export async function executeAgentTurn(
   const postTurn = input.postTurn ?? "commit-push";
 
   let agentErrored = false;
+  let errorPathRuns = 0;
   let turnCompleteFired = false;
   let wasSuperseded = false;
 
@@ -1043,6 +1048,7 @@ export async function executeAgentTurn(
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
       agentErrored = true;
+      errorPathRuns += 1;
       await settleHandovers();
       // After the handover, so the record belongs to the turn the error ended. A pending
       // docs/306 continuation is a new turn, which records how it ends.
@@ -1085,7 +1091,9 @@ export async function executeAgentTurn(
   let postTurnHeld = false;
   // Released as soon as the local commit settles: a rewind waits on this, not on the push.
   let turnCommitHeld = false;
+  let turnCommitHold = 0;
   let localCommitSettled = false;
+  let commitHoldExpiry: ReturnType<typeof setTimeout> | null = null;
   const holdPostTurn = (): void => {
     if (postTurnHeld || !runner) return;
     postTurnHeld = true;
@@ -1093,12 +1101,45 @@ export async function executeAgentTurn(
     // A late `done` re-enters after the commit, with only network work left.
     if (localCommitSettled) return;
     turnCommitHeld = true;
-    runner.beginTurnCommit();
+    turnCommitHold = runner.beginTurnCommit();
+    armCommitHoldExpiry();
+  };
+  const armCommitHoldExpiry = (): void => {
+    commitHoldExpiry = setTimeout(onCommitHoldExpired, POST_TURN_HOLD_MAX_MS + COMMIT_HOLD_EXPIRY_MARGIN_MS);
+    commitHoldExpiry.unref?.();
+  };
+  // Synchronous, like the release in `finishTurn`. A `none` turn's queue belongs to its driver.
+  const releaseQueueBehindCommit = (): boolean => {
+    if (!runner || postTurn === "none") return false;
+    try {
+      return releaseQueuedTurn(runner);
+    } catch (err) {
+      console.error(`[turn] releasing ${sessionId}'s queue behind the commit failed:`, err);
+      return false;
+    }
   };
   const releaseTurnCommit = (): void => {
     if (!turnCommitHeld || !runner) return;
     turnCommitHeld = false;
-    runner.endTurnCommit();
+    if (commitHoldExpiry) clearTimeout(commitHoldExpiry);
+    commitHoldExpiry = null;
+    runner.endTurnCommit(turnCommitHold);
+    // A dispatch that arrived while the hold was open queued behind it, after the drain passed.
+    // Not while a drain of this turn's is in flight: it starts the successor itself, and a
+    // second start would run two turns at once.
+    if (drainSettled) releaseQueueBehindCommit();
+  };
+  // The hold expires without an event, so a commit that never settles — or a one-shot exit
+  // that never arrives — would leave what queued behind it with no trigger.
+  const onCommitHoldExpired = (): void => {
+    commitHoldExpiry = null;
+    if (!turnCommitHeld || !runner) return;
+    // Another executor's hold moved the shared deadline, and its own timer is gone with it.
+    if (runner.turnCommitPending) {
+      armCommitHoldExpiry();
+      return;
+    }
+    releaseQueueBehindCommit();
   };
   const releasePostTurn = (): void => {
     releaseTurnCommit();
@@ -1180,6 +1221,8 @@ export async function executeAgentTurn(
   const tryDrain = async (): Promise<void> => {
     if (drainFired) return;
     drainFired = true;
+    // An adopted CLI turn re-arms the drain, and the previous turn's settled flag is not its own.
+    drainSettled = false;
     snapshotTurnText();
     try {
       // Before the successor's prompt is composed, so it carries what this turn settled.
@@ -1189,8 +1232,10 @@ export async function executeAgentTurn(
       if (postTurn === "none") return;
       // Commit locally before a queued turn can reset the tree. Network flows stay after drain.
       if ((runner?.queueLength ?? 0) > 0) await commitOnce();
-      // A CLI-started turn can take ownership during the commit await.
-      if (!turnIsCurrent()) return;
+      // A CLI-started turn can take ownership during the commit await. So can a turn that a
+      // release started — the hold's expiry, or an earlier turn's late commit — and that one
+      // is still in setup, so only its claim on `running`, cleared just above, shows it.
+      if (!turnIsCurrent() || runner?.running) return;
       await input.drainNext({ ownsSystemHold: ownsSystemHold() });
     } finally {
       drainSettled = true;
@@ -1592,6 +1637,7 @@ export async function executeAgentTurn(
     if (automaticRecoveryInProgress || quotaRetryInProgress) return;
     settleTurnFacts();
     holdPostTurn();
+    let errorPathOwnsHold = false;
     try {
       if (runner) {
         if (runner.getAgent() === agent) {
@@ -1649,10 +1695,16 @@ export async function executeAgentTurn(
         !(runner?.wasInterrupted ?? false)
       ) {
         let handled = false;
+        const errorPathRunsBefore = errorPathRuns;
         await postTurnStep("no-result-exit-hook", async () => {
           handled = await input.onNoResultExit!(code, stderrTail.describe());
         });
-        if (handled) return;
+        if (handled) {
+          // The hook can end the turn through `onError`, which found this hold taken and
+          // commits under it; releasing here leaves that commit with no hold and no lease.
+          errorPathOwnsHold = errorPathRuns !== errorPathRunsBefore;
+          return;
+        }
       }
 
       // `sawOwnResult`, not `receivedResult`: an adopted CLI turn keeps its predecessor's result.
@@ -1693,8 +1745,9 @@ export async function executeAgentTurn(
         // turn's post-turn sequence — a drained entry, or the docs/303 status nudge — has
         // already claimed `running`, and clearing it here reports that live turn as idle
         // and lets the enforcer reclaim its runner (invariant 5). `tryDrain` below has
-        // carried the same guard all along.
-        if (runner && turnIsCurrent()) runner.running = false;
+        // carried the same guard all along. A successor still in setup has not moved the
+        // epoch, hence `turnInSetup`, as in the one-shot branch below.
+        if (runner && turnIsCurrent() && !turnInSetup(runner)) runner.running = false;
         await postTurnStep("drain", tryDrain);
         await postTurnStep("finished-sse", broadcastFinishedIfIdle);
         await postTurnStep("commit", runCommitAndPr);
@@ -1731,7 +1784,7 @@ export async function executeAgentTurn(
       }
     } finally {
       settleTurn(turnNoResult(`agent process exited (code ${code}) without settling the turn`));
-      releasePostTurn();
+      if (!errorPathOwnsHold) releasePostTurn();
       // Last of all, because the report can start a turn, and after the release: a step
       // before it would end this lease later (planning#556). Empty unless a one-shot turn
       // had a result.
