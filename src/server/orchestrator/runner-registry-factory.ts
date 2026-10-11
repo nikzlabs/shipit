@@ -30,7 +30,7 @@ import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnEnd, TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
-import type { QuotaContinuationManager } from "./services/quota-continuation.js";
+import type { QuotaContinuationManager, StandDownCause } from "./services/quota-continuation.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
 import {
   applyShipitConfigChange,
@@ -434,12 +434,13 @@ export function createRunnerRegistry(
             }),
         } : {}),
         ...(getQuotaContinuation ? {
-          recordQuotaStandDown: (args: {
+          recordStandDown: (args: {
             sessionId: string;
             agentId: AgentId;
             benchedRouteId?: string;
+            cause?: StandDownCause;
           }) => getQuotaContinuation()?.recordStandDown(args) ?? { continues: false },
-          continueAfterQuotaStandDown: async (sessionId: string) => {
+          continueAfterStandDown: async (sessionId: string) => {
             await getQuotaContinuation()?.continueNow(sessionId);
           },
         } : {}),

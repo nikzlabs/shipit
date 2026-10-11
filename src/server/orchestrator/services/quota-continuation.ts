@@ -1,7 +1,8 @@
 // A turn the CLI started on its own has no prompt to replay, so a quota refusal used to
 // end the session's autonomous work until a human sent a message. ShipIt starts a fresh
 // continuation turn instead — now if another credential is free, later when a bench ends.
-// docs/306-quota-continuation.
+// docs/306-quota-continuation. A sign-in ShipIt renewed under such a turn stops it the same
+// way, and is continued the same way (docs/140-live-steering Phase 6.13).
 
 import type { AgentId, SessionInfo } from "../../shared/types.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
@@ -10,8 +11,19 @@ import { modelSelectionOf } from "../session-agent-env.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import { loadPrompt } from "../load-prompt.js";
 
-const CONTINUATION_PROMPT = loadPrompt(import.meta.url, "../prompts/quota-continuation-wake.md");
-const CONTINUATION_ACTIVITY = "Continuing after a quota limit…";
+/** What stopped the turn. It chooses what the continuation turn is told, and nothing else. */
+export type StandDownCause = "quota" | "auth";
+
+const CONTINUATIONS: Record<StandDownCause, { text: string; activity: string }> = {
+  quota: {
+    text: loadPrompt(import.meta.url, "../prompts/quota-continuation-wake.md"),
+    activity: "Continuing after a quota limit…",
+  },
+  auth: {
+    text: loadPrompt(import.meta.url, "../prompts/auth-continuation-wake.md"),
+    activity: "Continuing after a sign-in renewal…",
+  },
+};
 
 // Polling resolution only: eligibility is the router's answer, on the docs/260 refusal clocks.
 const STALL_SWEEP_MS = 60_000;
@@ -25,6 +37,7 @@ export interface QuotaContinuationDeps extends WakeSessionDeps {
 
 interface StoppedSession {
   agentId: AgentId;
+  cause: StandDownCause;
   /** Every turn start stamps lastUsedAt; a change means something else took the session on. */
   lastUsedAt: string;
   wakeAttempts: number;
@@ -46,12 +59,14 @@ export class QuotaContinuationManager {
     sessionId: string;
     agentId: AgentId;
     benchedRouteId?: string;
+    cause?: StandDownCause;
   }): { continues: boolean } {
     const session = this.deps.sessionManager.get(args.sessionId);
     if (!session || isArchived(session)) return { continues: false };
 
     this.stopped.set(args.sessionId, {
       agentId: args.agentId,
+      cause: args.cause ?? "quota",
       lastUsedAt: session.lastUsedAt,
       wakeAttempts: 0,
     });
@@ -77,9 +92,9 @@ export class QuotaContinuationManager {
   async continueNow(sessionId: string): Promise<void> {
     const session = this.currentIfStillStopped(sessionId);
     if (!session) return;
-    const attempts = this.stopped.get(sessionId)?.wakeAttempts ?? 0;
+    const entry = this.stopped.get(sessionId);
     this.stopped.delete(sessionId);
-    await this.wake(session, attempts);
+    await this.wake(session, entry?.cause ?? "quota", entry?.wakeAttempts ?? 0);
   }
 
   stop(): void {
@@ -102,7 +117,7 @@ export class QuotaContinuationManager {
         // Delete before waking: at most one wake per session per stall.
         this.stopped.delete(sessionId);
         console.log(`[quota] a credential is free again; resuming ${sessionId}`);
-        await this.wake(session, entry.wakeAttempts);
+        await this.wake(session, entry.cause, entry.wakeAttempts);
       }
     } finally {
       this.sweepInFlight = false;
@@ -127,13 +142,14 @@ export class QuotaContinuationManager {
     return session;
   }
 
-  private async wake(session: SessionInfo, priorAttempts: number): Promise<void> {
+  private async wake(
+    session: SessionInfo,
+    cause: StandDownCause,
+    priorAttempts: number,
+  ): Promise<void> {
     const attempts = priorAttempts + 1;
     try {
-      await wakeSessionWithTurn(this.deps, session, {
-        text: CONTINUATION_PROMPT,
-        activity: CONTINUATION_ACTIVITY,
-      });
+      await wakeSessionWithTurn(this.deps, session, CONTINUATIONS[cause]);
     } catch (err) {
       console.error(
         `[quota] the continuation turn for ${session.id} was not delivered `
@@ -144,6 +160,7 @@ export class QuotaContinuationManager {
       if (attempts >= MAX_WAKE_ATTEMPTS) return;
       this.stopped.set(session.id, {
         agentId: session.agentId ?? this.deps.defaultAgentId,
+        cause,
         lastUsedAt: session.lastUsedAt,
         wakeAttempts: attempts,
       });

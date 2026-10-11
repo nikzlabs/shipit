@@ -78,6 +78,7 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
     sessionManager: {
       setAgentSessionId: vi.fn(),
       setLastTurnErrored: vi.fn(),
+      setLastTurnOutcome: vi.fn(),
       get: vi.fn(),
       track: vi.fn(),
       touchUnlessResolved: vi.fn(),
@@ -349,6 +350,165 @@ describe("post-turn flow for a self-woken turn", () => {
     h.runner.dispose({ force: true });
   });
 
+  // docs/140 Phase 6.13 — production 2026-10-11, session 83d3273c: this path ended with no
+  // chat row and nothing to continue the work.
+  describe("a healed sign-in that cut a CLI-started turn short", () => {
+    const accountRoute = {
+      prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
+      routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
+      routeLabel: () => "Work account",
+    };
+
+    async function cutAdoptedTurnShort(
+      extraDeps: Partial<SystemTurnDeps>,
+      beforeCut?: (h: Awaited<ReturnType<typeof runFirstStreamingTurn>>) => void,
+    ) {
+      const filePath = path.join(repoDir, "file.txt");
+      const h = await runFirstStreamingTurn({
+        onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+        ensureAgentTokenFresh: vi.fn().mockResolvedValue(true),
+        extraDeps: { ...accountRoute, ...extraDeps },
+      });
+      const outcomes = h.listenerDeps.sessionManager.setLastTurnOutcome as ReturnType<typeof vi.fn>;
+
+      h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+      outcomes.mockClear();
+
+      await selfWake(h.agent);
+      fs.writeFileSync(filePath, "adopted work\n");
+      h.agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "Applying the consult's fix" }],
+      });
+      beforeCut?.(h);
+      h.agent.emit("auth_required");
+      h.agent.emit("done", 0);
+      return { h, outcomes };
+    }
+
+    const notices = (h: { messages: { type: string; [k: string]: unknown }[] }) =>
+      h.messages.filter((m) => m.type === "system_notice");
+
+    it("continues the work with a turn of ShipIt's own, and says why the output stops", async () => {
+      const recordStandDown = vi.fn(() => ({ continues: true }));
+      // The continuation is a new turn: the cut one must be committed and settled before it starts.
+      const stateAtContinuation: { porcelain: string; prFlows: number; running: boolean; noticed: boolean }[] = [];
+      const continueAfterStandDown = vi.fn(async () => {
+        stateAtContinuation.push({
+          porcelain: gitOut("status", "--porcelain"),
+          prFlows: h.postTurnPrFlow.mock.calls.length,
+          running: h.runner.running,
+          noticed: notices(h).length === 1,
+        });
+      });
+      const { h, outcomes } = await cutAdoptedTurnShort({ recordStandDown, continueAfterStandDown });
+
+      await waitFor(() => continueAfterStandDown.mock.calls.length === 1, "the cut turn was continued");
+
+      expect(recordStandDown).toHaveBeenCalledWith({ sessionId: "s1", agentId: "claude", cause: "auth" });
+      expect(continueAfterStandDown).toHaveBeenCalledWith("s1");
+      expect(stateAtContinuation).toEqual([{ porcelain: "", prFlows: 2, running: false, noticed: true }]);
+      expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
+
+      // The CLI started this turn, so there is no prompt of its own to run again.
+      expect(h.agent.run).toHaveBeenCalledTimes(1);
+      expect(h.messages.filter((m) => m.type === "error")).toEqual([]);
+
+      const [notice] = notices(h);
+      expect(notice).toMatchObject({ level: "info" });
+      expect(notice?.message).toContain("Work account");
+      const append = h.listenerDeps.chatHistoryManager.append as ReturnType<typeof vi.fn>;
+      expect(append.mock.calls.map((c) => (c[1] as { text?: string }).text)).toContain(notice?.message);
+      // The continuation is the turn that records how the work ended.
+      expect(outcomes).not.toHaveBeenCalled();
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("asks for a message when ShipIt cannot continue the work itself", async () => {
+      const continueAfterStandDown = vi.fn(async () => {});
+      const { h, outcomes } = await cutAdoptedTurnShort({
+        recordStandDown: () => ({ continues: false }),
+        continueAfterStandDown,
+      });
+
+      await waitFor(() => !h.runner.running, "cut turn settled");
+      await waitFor(() => gitOut("status", "--porcelain") === "", "cut turn's edits committed");
+
+      const [notice, ...others] = notices(h);
+      expect(others).toEqual([]);
+      expect(notice).toMatchObject({ level: "warn" });
+      expect(outcomes).toHaveBeenCalledWith("s1", "errored");
+      expect(continueAfterStandDown).not.toHaveBeenCalled();
+      expect(h.agent.run).toHaveBeenCalledTimes(1);
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("does not continue a turn the user stopped", async () => {
+      const recordStandDown = vi.fn(() => ({ continues: true }));
+      const continueAfterStandDown = vi.fn(async () => {});
+      const { h, outcomes } = await cutAdoptedTurnShort(
+        { recordStandDown, continueAfterStandDown },
+        (turn) => { turn.runner.wasInterrupted = true; },
+      );
+
+      await waitFor(() => !h.runner.running, "stopped turn settled");
+      await waitFor(() => gitOut("status", "--porcelain") === "", "stopped turn's edits committed");
+
+      expect(recordStandDown).not.toHaveBeenCalled();
+      expect(continueAfterStandDown).not.toHaveBeenCalled();
+      expect(notices(h)).toEqual([]);
+      expect(outcomes).toHaveBeenCalledWith("s1", "ok");
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("still commits and continues the cut turn when persisting the notice throws", async () => {
+      const continueAfterStandDown = vi.fn(async () => {});
+      const { h } = await cutAdoptedTurnShort(
+        { recordStandDown: () => ({ continues: true }), continueAfterStandDown },
+        (turn) => {
+          const append = turn.listenerDeps.chatHistoryManager.append as ReturnType<typeof vi.fn>;
+          append.mockImplementation((_id: string, row: { notice?: boolean }) => {
+            if (row?.notice) throw new Error("sqlite is having a day");
+          });
+        },
+      );
+
+      await waitFor(() => continueAfterStandDown.mock.calls.length === 1, "the cut turn was continued");
+      expect(gitOut("status", "--porcelain")).toBe("");
+      expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
+
+      h.runner.dispose({ force: true });
+    });
+  });
+
+  // A resumed CLI can announce a job its previous process left before it reads the prompt
+  // (docs/235-agent-self-wake-liveness §8). The prompt is still this executor's to re-run.
+  it("re-dispatches the prompt after a healed 401 when a task notice came before its answer", async () => {
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+    const recordStandDown = vi.fn(() => ({ continues: true }));
+    const h = await runFirstStreamingTurn({ ensureAgentTokenFresh, extraDeps: { recordStandDown } });
+
+    await selfWake(h.agent);
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Answering the prompt" }],
+    });
+    h.agent.emit("auth_required");
+    h.agent.emit("done", 0);
+
+    await waitFor(() => h.agent.run.mock.calls.length === 2, "the prompt was re-dispatched");
+    expect(recordStandDown).not.toHaveBeenCalled();
+    expect(h.messages.filter((m) => m.type === "system_notice" || m.type === "error")).toEqual([]);
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "re-dispatched turn settled");
+    h.runner.dispose({ force: true });
+  });
+
   it("still surfaces the sign-in card on a self-woken turn when the heal is refused", async () => {
     const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false);
     const h = await runFirstStreamingTurn({
@@ -388,15 +548,15 @@ describe("post-turn flow for a self-woken turn", () => {
   it("does not re-dispatch a CLI-started turn whose quota limit leaves no credential free", async () => {
     const filePath = path.join(repoDir, "file.txt");
     const markSessionAccountExhausted = vi.fn();
-    const continueAfterQuotaStandDown = vi.fn(async () => {});
+    const continueAfterStandDown = vi.fn(async () => {});
     const h = await runFirstStreamingTurn({
       onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
       extraDeps: {
         prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
         routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
         routeLabel: () => "Work account",
-        recordQuotaStandDown: () => ({ continues: false }),
-        continueAfterQuotaStandDown,
+        recordStandDown: () => ({ continues: false }),
+        continueAfterStandDown,
       },
     });
     (h.listenerDeps as { markSessionAccountExhausted?: unknown }).markSessionAccountExhausted =
@@ -427,7 +587,7 @@ describe("post-turn flow for a self-woken turn", () => {
     const notice = h.messages.find((m) => m.type === "system_notice");
     expect(notice?.message).toContain("Work account is out of quota");
     expect(notice?.message).toContain("will continue this work as soon as one of your credentials is free");
-    expect(continueAfterQuotaStandDown).not.toHaveBeenCalled();
+    expect(continueAfterStandDown).not.toHaveBeenCalled();
     const append = h.listenerDeps.chatHistoryManager.append as ReturnType<typeof vi.fn>;
     expect(
       append.mock.calls.some((c) =>
@@ -450,10 +610,10 @@ describe("post-turn flow for a self-woken turn", () => {
 
   it("continues a CLI-started turn on another credential when one is free", async () => {
     const filePath = path.join(repoDir, "file.txt");
-    const recordQuotaStandDown = vi.fn(() => ({ continues: true }));
+    const recordStandDown = vi.fn(() => ({ continues: true }));
     // The continuation is a new turn: this one must be committed and settled before it starts.
     const stateAtContinuation: { porcelain: string; prFlows: number; running: boolean }[] = [];
-    const continueAfterQuotaStandDown = vi.fn(async () => {
+    const continueAfterStandDown = vi.fn(async () => {
       stateAtContinuation.push({
         porcelain: gitOut("status", "--porcelain"),
         prFlows: h.postTurnPrFlow.mock.calls.length,
@@ -467,8 +627,8 @@ describe("post-turn flow for a self-woken turn", () => {
         prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
         routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
         routeLabel: () => "Work account",
-        recordQuotaStandDown,
-        continueAfterQuotaStandDown,
+        recordStandDown,
+        continueAfterStandDown,
       },
     });
 
@@ -484,16 +644,16 @@ describe("post-turn flow for a self-woken turn", () => {
     h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
 
     await waitFor(
-      () => continueAfterQuotaStandDown.mock.calls.length === 1,
+      () => continueAfterStandDown.mock.calls.length === 1,
       "the stood-down session was continued",
     );
 
-    expect(recordQuotaStandDown).toHaveBeenCalledWith({
+    expect(recordStandDown).toHaveBeenCalledWith({
       sessionId: "s1",
       agentId: "claude",
       benchedRouteId: "acct-a",
     });
-    expect(continueAfterQuotaStandDown).toHaveBeenCalledWith("s1");
+    expect(continueAfterStandDown).toHaveBeenCalledWith("s1");
     expect(stateAtContinuation).toEqual([{ porcelain: "", prFlows: 2, running: false }]);
 
     const notice = h.messages.find((m) => m.type === "system_notice");
@@ -513,16 +673,16 @@ describe("post-turn flow for a self-woken turn", () => {
   it("continues a CLI-started turn whose quota refusal arrives as an adapter error", async () => {
     const filePath = path.join(repoDir, "file.txt");
     const markSessionAccountExhausted = vi.fn();
-    const recordQuotaStandDown = vi.fn(() => ({ continues: true }));
-    const continueAfterQuotaStandDown = vi.fn(async () => {});
+    const recordStandDown = vi.fn(() => ({ continues: true }));
+    const continueAfterStandDown = vi.fn(async () => {});
     const h = await runFirstStreamingTurn({
       onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
       extraDeps: {
         prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
         routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
         routeLabel: () => "Work account",
-        recordQuotaStandDown,
-        continueAfterQuotaStandDown,
+        recordStandDown,
+        continueAfterStandDown,
       },
     });
     (h.listenerDeps as { markSessionAccountExhausted?: unknown }).markSessionAccountExhausted =
@@ -536,14 +696,14 @@ describe("post-turn flow for a self-woken turn", () => {
     h.agent.emit("error", new Error("Claude AI usage limit reached · resets 6:40pm (UTC)"));
 
     await waitFor(
-      () => continueAfterQuotaStandDown.mock.calls.length === 1,
+      () => continueAfterStandDown.mock.calls.length === 1,
       "the errored adopted turn was continued",
     );
 
     expect(h.agent.run).toHaveBeenCalledTimes(1);
     // Nothing else stamps the bench on this path, so the notice's promise would be false.
     expect(markSessionAccountExhausted).toHaveBeenCalledWith("s1", expect.any(Number), "acct-a");
-    expect(recordQuotaStandDown).toHaveBeenCalledWith({
+    expect(recordStandDown).toHaveBeenCalledWith({
       sessionId: "s1",
       agentId: "claude",
       benchedRouteId: "acct-a",

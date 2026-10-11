@@ -580,6 +580,7 @@ export async function executeAgentTurn(
       await postTurnStep("drain", tryDrain);
       await postTurnStep("commit", runCommitAndPr);
       await postTurnStep("finished", emitFinishedIfIdle);
+      await postTurnStep("continuation", runContinuation);
       finishTurn();
     } finally {
       releasePostTurn();
@@ -656,7 +657,9 @@ export async function executeAgentTurn(
       } catch (err) {
         console.warn("[turn] adopted-turn 401-recovery token repush failed:", err);
       }
+      // Before the notice, so its row lands after the output the kill cut short.
       finalizeAttemptOutput();
+      await postTurnStep("auth-stand-down", standDownAfterAuthHeal);
       await settleTurnWithoutRedispatch();
       return true;
     }
@@ -781,8 +784,8 @@ export async function executeAgentTurn(
     };
   };
 
-  // At most one automatic continuation per refusal; the wake runs after this turn's teardown.
-  let quotaContinuationPending = false;
+  // At most one automatic continuation per stand-down; the wake runs after this turn's teardown.
+  let continuationPending = false;
 
   // A declined retry still needs an explanation, and quota text must not become a commit subject.
   const retireOnSpentAccount = (opts: {
@@ -807,16 +810,16 @@ export async function executeAgentTurn(
     const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "This account";
     // The turn's prompt cannot be replayed, but ShipIt can start a turn of its own, so ask
     // the router before deciding what to tell the user (docs/306-quota-continuation, superseding docs/140).
-    quotaContinuationPending = deps.recordQuotaStandDown?.({
+    continuationPending = deps.recordStandDown?.({
       sessionId,
       agentId,
       ...(routeId ? { benchedRouteId: routeId } : {}),
     }).continues === true;
-    const outcomeLog = quotaContinuationPending
+    const outcomeLog = continuationPending
       ? "the account is benched and ShipIt is continuing the work on another credential"
       : "the account is benched and no credential is free; ShipIt will resume when one is";
     // Req 2: the notice describes the credential, never which kind of turn was interrupted.
-    const outcomeNotice = quotaContinuationPending
+    const outcomeNotice = continuationPending
       ? "is continuing this work on another credential."
       : "will continue this work as soon as one of your credentials is free.";
     console.log(
@@ -833,11 +836,47 @@ export async function executeAgentTurn(
     );
   };
 
-  const runQuotaContinuation = async (): Promise<void> => {
-    if (!quotaContinuationPending) return;
-    quotaContinuationPending = false;
+  // docs/140 Phase 6.13 — the 401 killed a turn whose prompt is not this executor's to re-run.
+  // ShipIt continues the work with a turn of its own, and the transcript says why the
+  // agent's output stops where it does.
+  const standDownAfterAuthHeal = (): void => {
+    // A Stop is the user's last word, so the turn ended as they asked.
+    if (runner?.wasInterrupted) {
+      recordTurnEnd("ok");
+      return;
+    }
+    continuationPending =
+      deps.recordStandDown?.({ sessionId, agentId, cause: "auth" }).continues === true;
+    // A continuation is a new turn, which records how it ends.
+    if (!continuationPending) {
+      recordTurnEnd("errored", "A sign-in renewal stopped the agent partway through its work.");
+    }
+    const routeId = capturedCredentialRoute?.providerRouteId;
+    const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "this account";
+    const outcomeLog = continuationPending
+      ? "ShipIt is continuing the work"
+      : "the work waits for a message";
+    const outcomeNotice = continuationPending
+      ? "The sign-in works again, and ShipIt is continuing the work."
+      : "The sign-in works again. Send a message to have the agent continue.";
+    console.log(
+      `[turn] the sign-in renewal for ${sessionId} stopped a CLI-started turn; ${outcomeLog}`,
+    );
+    emitNoticePostTurn(
+      (m) => { if (runner) runner.emitMessage(m); else emit(m); },
+      deps.listenerDeps.chatHistoryManager,
+      sessionId,
+      `ShipIt renewed the sign-in for ${label} while the agent was working, `
+      + `which stopped it partway through this work. ${outcomeNotice}`,
+      continuationPending ? "info" : "warn",
+    );
+  };
+
+  const runContinuation = async (): Promise<void> => {
+    if (!continuationPending) return;
+    continuationPending = false;
     // A turn that drained during teardown supersedes this one; the manager holds that rule.
-    await deps.continueAfterQuotaStandDown?.(sessionId);
+    await deps.continueAfterStandDown?.(sessionId);
   };
 
   // A true return takes ownership of teardown; rejected retries must finish it themselves.
@@ -996,7 +1035,7 @@ export async function executeAgentTurn(
       // After the handover, so the record belongs to the turn the error ended. A pending
       // docs/306 continuation is a new turn, which records how it ends.
       const quota = isQuotaRefusal(lastAgentError);
-      if (!(quota && quotaContinuationPending)) {
+      if (!(quota && continuationPending)) {
         recordTurnEnd(quota ? "quota-refused" : "errored", lastAgentError?.message);
       }
       settleTurnFacts();
@@ -1006,7 +1045,7 @@ export async function executeAgentTurn(
         await postTurnStep("drain", tryDrain);
         await postTurnStep("commit", runCommitAndPr);
         // A quota refusal can reach the executor as an adapter error; continue from here too.
-        await postTurnStep("quota-continuation", runQuotaContinuation);
+        await postTurnStep("continuation", runContinuation);
         } finally {
         releasePostTurn();
       }
@@ -1431,7 +1470,7 @@ export async function executeAgentTurn(
       await postTurnStep("quota-stand-down", () => {
         retireOnSpentAccount({ summaryIsTheNotice: !event.error });
       });
-      if (!quotaContinuationPending) recordTurnEnd("quota-refused", refusal);
+      if (!continuationPending) recordTurnEnd("quota-refused", refusal);
     } else {
       recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error);
     }
@@ -1481,7 +1520,7 @@ export async function executeAgentTurn(
           await postTurnStep("commit", runCommitAndPr);
           await postTurnStep("idle", signalIdleIfIdle);
           // Last of all: the continuation is a new turn, so this one must be fully settled.
-          await postTurnStep("quota-continuation", runQuotaContinuation);
+          await postTurnStep("continuation", runContinuation);
             } finally {
           releasePostTurn();
         }
@@ -1615,7 +1654,7 @@ export async function executeAgentTurn(
         await postTurnStep("commit", runCommitAndPr);
         await postTurnStep("idle", signalIdleIfIdle);
         // Only fires when the result's own sequence did not reach it (a second result).
-        await postTurnStep("quota-continuation", runQuotaContinuation);
+        await postTurnStep("continuation", runContinuation);
           finishTurn();
         return;
       }

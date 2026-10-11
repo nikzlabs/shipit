@@ -185,6 +185,8 @@ export interface ClaudeResultEvent {
   subtype: "success" | "error" | "error_max_turns" | "error_during_execution";
   /** docs/297 — 0 for a command the CLI answered itself; a model turn is >= 1. */
   num_turns?: number;
+  /** What the CLI answered, when it was not a prompt: "task-notification" for a background task's notice. */
+  origin?: { kind?: string };
   is_error?: boolean;
   terminal_reason?: string;
   session_id: string;

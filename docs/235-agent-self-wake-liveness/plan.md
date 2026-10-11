@@ -536,6 +536,10 @@ follow — so adopting on a bare init can wedge a session as permanently busy. T
 `task_notification` edge is unaffected (it genuinely precedes a wake turn); the
 init half of this sentence should not be reused as an adoption signal.
 
+**And a caveat on that caveat, 2026-10-11:** a `task_notification` does not always
+precede a turn either. One with `status: "stopped"` for a job the previous process
+left is closed by a `result` that ran no model call — see §8.
+
 Three gates make the re-arm safe, and each is pinned by a test in
 `turn-self-wake-commit.test.ts` that fails without it:
 
@@ -562,6 +566,79 @@ describe the turn this executor was invoked for: clearing the first would arm th
 `done` no-result paths (including dispatch's `onNoResultExit`, which would re-run
 the user's original prompt) if the wake turn's process later died, and clearing
 the second would settle a dispatch handle twice.
+
+### 8. A resumed conversation announces the job its previous process left
+
+Probe A in §5 shows a one-shot process stopping its background job as it exits.
+The conversation it leaves still owes that job a notice, and the **next** process
+to resume the conversation pays it before it reads its prompt. Measured
+2026-10-11 on claude 2.1.284: process 1 is the one-shot invocation, told to start
+a backgrounded `sleep 300` and end its turn; process 2 resumes with a prompt on
+stdin. The streaming invocation:
+
+```
+  573ms  system/task_notification  status:"stopped", summary:"Background shell command
+                                   didn't finish before the previous session ended"
+  639ms  system/init
+  640ms  result/success            num_turns:0, duration_api_ms:0, result:"",
+                                   origin:{kind:"task-notification"}
+  657ms  system/init
+ 1884ms  user (isReplay)           <- the prompt is read only now
+ 1887ms  assistant …
+ 1939ms  result/success            num_turns:1, result_index:1
+```
+
+The one-shot invocation emits the same sequence, without the replay. Three facts
+from the same runs:
+
+- **The first `result` ends no turn.** No model call ran (`num_turns: 0`, zero
+  usage, an empty `iterations`), and the CLI says what it answered:
+  `origin.kind` is `"task-notification"`. A prompt's own result carries no
+  `origin`.
+- **It fires once.** A second resume of the same conversation emits neither the
+  notice nor the result.
+- **The model is still told.** Asked in the resumed turn, it reports the
+  unfinished command, so the notice reaches its context with the prompt.
+
+**What it cost.** Every layer reads `agent_result` as "the running turn ended",
+and the running turn is the prompt the process was spawned for. Production
+2026-10-11, session `83d3273c`: the user's prompt was dispatched on a fresh
+streaming process, the notice's result arrived under a second later, and the
+executor settled the user's turn — commit, PR flow, idle — while the CLI had not
+read the prompt. The session read idle for the 18 s the model then spent
+thinking, the answer was adopted as a CLI-started turn (`post-result assistant
+output`), and a 401 five minutes later took the adopted-turn path, which does not
+re-run a prompt (docs/140-live-steering Phase 6.13). The worker counts the same
+way: `AgentController.endTurn` cleared `turnActive` and the delivery id under a
+turn that had not begun, and on the one-shot path nothing sets them again.
+
+**The rule** (`closesTaskNoticeWithoutTurn`, `ClaudeAdapter.dropsStaleNoticeResult`
+in `session/agents/claude/adapter.ts`): the adapter drops a successful zero-turn
+result whose origin is a task notification, from the spawn until the CLI first
+shows work on the spawn prompt — a replay, assistant output, or any other
+result. The `agent_self_wake` for the notice is still forwarded, so a
+backgrounded subagent's card still retires.
+
+Two bounds on that rule, both deliberate:
+
+- **Only before the spawn prompt's turn shows.** In that window every layer
+  already counts the prompt's turn as running, so the notice began no turn in
+  anyone's books and nothing waits on its result. Later is different: a notice
+  on an idle resident process makes the worker and the orchestrator mark the
+  session busy, and only a result clears that. Dropping one there would wedge the
+  session, which is §7's bare-`init` hazard again.
+- **Only the shape the CLI names.** A zero-turn result is also how the CLI
+  answers a command itself (`/goal`, docs/297), and a failed result must always
+  be seen. Neither is dropped: the test is all of `subtype: "success"`,
+  `is_error` not true, `num_turns: 0` and the `task-notification` origin.
+
+**Known gap.** `runClaudeGoalControl` (`claude-goal.ts`) resumes the conversation
+in a process of its own and takes the first `result` as the command's answer. On a
+conversation in this state that is the notice's empty result, so the first goal
+read fails; the second succeeds, because the first one spent the notice.
+Measured, not fixed here.
+
+Coverage: `adapter.test.ts` → "a task notice left by the previous process".
 
 ## Bounds — what this does not do
 

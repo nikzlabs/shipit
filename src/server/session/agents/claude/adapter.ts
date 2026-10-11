@@ -74,6 +74,19 @@ export function indicatesTurnActivity(raw: ClaudeEvent): boolean {
   return !raw.parent_tool_use_id;
 }
 
+/**
+ * Measured on 2.1.284 (docs/235-agent-self-wake-liveness §8): a CLI resumed after its
+ * predecessor exited with a background job outstanding closes that job's notice with a
+ * `result` that ran no model turn, and only then reads its prompt.
+ */
+export function closesTaskNoticeWithoutTurn(raw: ClaudeEvent): boolean {
+  return raw.type === "result"
+    && raw.subtype === "success"
+    && raw.is_error !== true
+    && raw.num_turns === 0
+    && raw.origin?.kind === "task-notification";
+}
+
 interface PendingGoal {
   resolve: (result: AgentGoalCommandResult) => void;
   reject: (err: Error) => void;
@@ -132,6 +145,8 @@ export class ClaudeAdapter
   // not run beside a turn; and it runs where the turn ran. Tracks the CLI's own
   // turns too, not just the ones ShipIt dispatched — see `indicatesTurnActivity`.
   private turnLive = false;
+  // The CLI has shown no work on the prompt this process was spawned with.
+  private spawnPromptUnread = false;
   private lastCwd: string | undefined;
   private spawnHomeOverride: string | undefined;
   private pendingGoal: PendingGoal | null = null;
@@ -159,6 +174,7 @@ export class ClaudeAdapter
       // An answer to a command ShipIt injected belongs to that command, not the
       // transcript: the user typed no message and no turn ran.
       if (this.consumeGoalAnswer(raw)) return;
+      if (this.dropsStaleNoticeResult(raw)) return;
 
       if (indicatesTurnActivity(raw)) this.turnLive = true;
 
@@ -181,6 +197,7 @@ export class ClaudeAdapter
 
     proc.on("done", (code: number) => {
       this.turnLive = false;
+      this.spawnPromptUnread = false;
       this.failPendingGoal(new Error("the Claude CLI ended before answering the goal command"));
       this.emit("done", code);
     });
@@ -196,6 +213,24 @@ export class ClaudeAdapter
     proc.on("log", (source: string, text: string) => {
       this.emit("log", source, text);
     });
+  }
+
+  /**
+   * Only until the spawn prompt's own turn shows. Before that, every layer above already
+   * counts this prompt's turn as running, so the notice started none of its own and its
+   * result would end the prompt's turn before the CLI has read the prompt. Afterwards a
+   * notice can have marked an idle session busy, and only its result clears that.
+   */
+  private dropsStaleNoticeResult(raw: ClaudeEvent): boolean {
+    if (!this.spawnPromptUnread) return false;
+    if (closesTaskNoticeWithoutTurn(raw)) {
+      console.log("[claude-adapter] dropped the zero-turn result of a task notice the previous process left");
+      return true;
+    }
+    if (raw.type === "result" || raw.type === "assistant" || raw.type === "stream_event" || raw.type === "user") {
+      this.spawnPromptUnread = false;
+    }
+    return false;
   }
 
   private recordCallContext(usage: ClaudeUsageIteration | undefined): void {
@@ -397,6 +432,7 @@ export class ClaudeAdapter
     }
 
     this.selectedModel = params.model;
+    this.spawnPromptUnread = true;
     this.inner.run({
       prompt: params.prompt,
       sessionId: params.sessionId,

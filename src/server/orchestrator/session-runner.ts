@@ -14,6 +14,7 @@ import type { RepoSessionOutcomeNotice } from "./services/repo-session-outcome-n
 import type { SessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
+import type { StandDownCause } from "./services/quota-continuation.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace, CommitHookFailure } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
@@ -511,17 +512,18 @@ export interface SystemTurnDeps {
   ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
   /**
-   * A quota refusal stopped a turn the CLI started on its own. Reports whether another
-   * credential can continue the work now; when none can, the session is recorded so it is
-   * resumed once one is free (docs/306-quota-continuation).
+   * A quota refusal, or a sign-in ShipIt had to renew, stopped a turn the CLI started on
+   * its own. Reports whether a credential can continue the work now; when none can, the
+   * session is recorded so it is resumed once one is free (docs/306-quota-continuation).
    */
-  recordQuotaStandDown?: (args: {
+  recordStandDown?: (args: {
     sessionId: string;
     agentId: AgentId;
     benchedRouteId?: string;
+    cause?: StandDownCause;
   }) => { continues: boolean };
   /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
-  continueAfterQuotaStandDown?: (sessionId: string) => Promise<void>;
+  continueAfterStandDown?: (sessionId: string) => Promise<void>;
   /** Told after `last_turn_outcome` is written; a scheduled run's first turn is watched here. */
   onTurnEnd?: (end: TurnEnd) => void;
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
