@@ -27,7 +27,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { SubscriptionLimitsMap } from "../../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage, SystemTurnDeps } from "../session-runner.js";
 import type { GenerateText } from "../non-turn-model.js";
 import type { RequestedRestartTurn } from "../services/agent-restart-request.js";
 import type { QuotaContinuationManager } from "../services/quota-continuation.js";
@@ -129,6 +129,8 @@ export interface AppCtx {
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   /** docs/306-quota-continuation — likewise: a resident CLI starts its own turns here too. */
   quotaContinuation?: Pick<QuotaContinuationManager, "recordStandDown" | "continueNow">;
+  /** docs/235-agent-self-wake-liveness §9 — likewise, for a one-shot turn the user typed. */
+  reportStoppedBackgroundJobs?: SystemTurnDeps["reportStoppedBackgroundJobs"];
 
   recordAgentRateLimits?: (
     agentId: AgentId,

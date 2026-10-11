@@ -76,3 +76,21 @@
 - [x] Wait the in-flight post-turn sequence out before clearing the memoized
       commit/PR promises, so a wake landing mid-flow can't be handed an
       already-settled flow and commit nothing
+
+## §9 — a one-shot process stops its jobs
+
+- [x] `turn-executor` reads the task list at each result of a non-streaming turn
+      and reports what is left at `done`, as the last step of the terminal
+      sequence
+- [x] `services/stopped-background-jobs.ts` wakes the session with a turn that
+      names the jobs; its own turn starts no second wake, and a consult in
+      flight takes the note on its own wake
+- [x] A displaced process reports once, from `superseded`, and that report
+      starts no turn
+- [x] A Stop by the user is latched ahead of the listeners that adopt the
+      stopped process's notification
+- [x] Every system turn carries the one-shot note in its prompt prefix
+- [x] `/shipit-docs/environment.md`, `sessions.md` and `wiki/chat.md` state the
+      rule
+- [x] Tests: the executor cases with the CLI's measured event orders, the
+      service's decisions, and the note's presence by turn kind and harness

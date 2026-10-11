@@ -512,6 +512,28 @@ no durability guarantee and belong in `docker-compose.yml`.
   window for everything still outstanding. Treat it as cover for a build or a
   test run, never as a guarantee your job runs to completion. Nothing about it
   survives eviction once that does happen.
+- **On a turn that ShipIt started, the agent process exits a few seconds after
+  your message ends, and a `run_in_background` job that is still running stops
+  with it.** A turn that a user's message starts normally runs on a resident
+  process: you can end the message, and the end of the job starts a new turn
+  for you. A turn that ShipIt starts does not. That is a `notify-on-merge` wake,
+  a child session's report, a finished consult, a CI fix, a rebase follow-up,
+  and the turn after `shipit session restart`. There the process exits about
+  five seconds after your message ends. A job that is still running then is
+  stopped before it finishes, and **no completion notice comes for it**. Do not
+  count on those seconds. Such a turn begins with a `[System]` line that says
+  so. The same limit applies to a turn that the user typed when the
+  `advanced.liveSteering` setting is off
+  (`shipit settings get advanced.liveSteering`), and that turn carries no such
+  line. On these turns, run the work in the foreground and wait for it in the
+  same message; split work that is longer than one tool call allows, or declare
+  it as a Compose service. If you leave a job running, ShipIt normally starts
+  one turn that names the jobs. It starts none if that turn leaves a job running
+  too, or if another turn or a credential change took the agent process before
+  it exited: then you get the note with a later turn, and the user normally gets
+  a notice in the transcript. A backgrounded `shipit agent run` is the
+  exception, because the consult runs on ShipIt's side and its result starts a
+  turn of its own ([agent.md](agent.md)).
 - **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
   both are host-backed and re-mounted onto the new container. In-memory state,
   processes, and files written *elsewhere* (outside `/workspace`, `/persist`,

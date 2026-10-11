@@ -12,6 +12,7 @@ import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./ws-handlers/agent-auth-handle
 import { interruptAgentTurn } from "./services/agent-interrupt.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
+import { noteUserStop } from "./turn-stop-request.js";
 
 // Allow three sequential waits to fail with their diagnostic labels before Vitest times out.
 vi.setConfig({ testTimeout: 90_000 });
@@ -1906,6 +1907,257 @@ describe("post-turn flow for a self-woken turn", () => {
     expect(idleSignals).toBe(0);
 
     runner.dispose({ force: true });
+  });
+
+  // docs/235 §9. The event orders below are the CLI's own, measured on 2.1.284.
+  describe("background jobs a one-shot process stops at its exit", () => {
+    const BUILD = { id: "b1", type: "local_bash", description: "npm run build" };
+    const RENDER = { id: "b2", type: "local_bash", description: "node render.js" };
+
+    async function startTurn(over: { deliveryId?: string } = {}) {
+      const runner = new SessionRunner({
+        sessionId: "s1",
+        sessionDir: repoDir,
+        defaultAgentId: "claude" as AgentId,
+      });
+      const agent = makeFakeAgent(() => fs.writeFileSync(path.join(repoDir, "file.txt"), "work\n"));
+      const order: string[] = [];
+      runner.on("idle", () => { order.push("idle"); });
+      let heldAtReport: boolean | undefined;
+      const reportStoppedBackgroundJobs = vi.fn(async () => {
+        order.push("report");
+        heldAtReport = runner.postTurnWorkInFlight;
+      });
+      const deps: SystemTurnDeps = {
+        agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+        autoCommit: vi.fn(async (dir: string, summary: string) => {
+          const result = await realAutoCommit(dir, summary);
+          order.push("commit");
+          return result;
+        }),
+        scheduleAutoPush: vi.fn(),
+        listenerDeps: makeListenerDeps(),
+        buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+        reportStoppedBackgroundJobs,
+      };
+      await executeAgentTurn(runner, deps, agent as never, {
+        agentId: "claude" as AgentId,
+        sessionId: "s1",
+        prompt: "p",
+        userText: "merge wake",
+        emitUserEcho: false,
+        persistUserMessage: vi.fn(),
+        isNewSession: false,
+        fallbackTitle: "t",
+        turnStartHeadHash: null,
+        drainNext: vi.fn(async () => {}),
+        emit: () => {},
+        useStreaming: false,
+        systemTurn: true,
+        onTurnComplete: () => { order.push("settled"); },
+        ...(over.deliveryId !== undefined ? { deliveryId: over.deliveryId } : {}),
+      });
+      await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+      const tasks = (...list: typeof BUILD[]): void => {
+        agent.emit("event", { type: "agent_background_tasks", tasks: list });
+      };
+      const result = async (): Promise<void> => {
+        agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+        await flush();
+      };
+      const notify = async (taskId: string, status: string): Promise<void> => {
+        agent.emit("event", { type: "agent_self_wake", taskId, status });
+        await flush();
+      };
+      // The report runs after the hold is released, so give it the ticks it needs.
+      const exit = async (): Promise<void> => {
+        agent.emit("done", 0);
+        await waitFor(() => !runner.postTurnWorkInFlight, "teardown finished");
+        await flush();
+        await flush();
+      };
+      return {
+        runner, agent, order, reportStoppedBackgroundJobs, tasks, result, notify, exit,
+        heldAtReport: () => heldAtReport,
+      };
+    }
+
+    it("reports them last of all, after the commit, the idle signal and the settlement", async () => {
+      const h = await startTurn({ deliveryId: "merge-watch:7" });
+
+      h.tasks(BUILD);
+      await h.result();
+      h.tasks();
+      await h.notify("b1", "stopped");
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledWith({
+        sessionId: "s1",
+        jobs: ["npm run build"],
+        deliveryId: "merge-watch:7",
+        mayWake: true,
+      });
+      expect(h.order).toEqual(["commit", "idle", "settled", "report"]);
+      expect(h.heldAtReport()).toBe(false);
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("reports a job that ended mid-turn as nothing, and the ones still running by name", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD, RENDER);
+      h.tasks(RENDER);
+      await h.result();
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledWith(
+        expect.objectContaining({ jobs: ["node render.js"] }),
+      );
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("does not report a job that completed before the process exited", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD);
+      await h.result();
+      h.tasks();
+      await h.notify("b1", "completed");
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).not.toHaveBeenCalled();
+
+      h.runner.dispose({ force: true });
+    });
+
+    // §8: the resumed process first closes the notice of a job its predecessor left. That
+    // job was this wake's subject; only the jobs of the turn itself are reported.
+    it("reports only this turn's jobs when the turn opens with the previous process's notice", async () => {
+      const h = await startTurn();
+
+      await h.notify("old-job", "stopped");
+      h.tasks(RENDER);
+      await h.result();
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledWith(
+        expect.objectContaining({ jobs: ["node render.js"] }),
+      );
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("reads the jobs again at the result of the turn the CLI starts for a finished job", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD, RENDER);
+      await h.result();
+      h.tasks(RENDER);
+      await h.notify("b1", "completed");
+      h.tasks();
+      await h.notify("b2", "failed");
+      await h.result();
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).not.toHaveBeenCalled();
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("does not report work that the user's Stop ended before the result", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD);
+      noteUserStop(h.runner);
+      await h.result();
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).not.toHaveBeenCalled();
+
+      h.runner.dispose({ force: true });
+    });
+
+    // The stopped process sends its notification, and adopting that as a turn starts a new
+    // Stop record. The Stop must be read before that.
+    it("does not report when the Stop comes after the result, through the notification it causes", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD);
+      await h.result();
+      noteUserStop(h.runner);
+      // No task-list event first: the notification must be what the latch reads.
+      await h.notify("b1", "stopped");
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).not.toHaveBeenCalled();
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("does not report when a Stop after the result ends the process with no further event", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD);
+      await h.result();
+      noteUserStop(h.runner);
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).not.toHaveBeenCalled();
+
+      h.runner.dispose({ force: true });
+    });
+
+    // A container runner drops the `done` of a displaced process, so displacement reports.
+    // The displaced turn's work can be uncommitted, so that report may start no turn.
+    it("reports a displaced process once, and lets that report start no turn", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD);
+      await h.result();
+      // As a drain does: the successor claims the runner before it installs its agent.
+      h.runner.running = true;
+      h.agent.emit("superseded");
+      await flush();
+      await flush();
+
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledWith(
+        expect.objectContaining({ jobs: ["npm run build"], mayWake: false }),
+      );
+
+      await h.exit();
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+
+      h.runner.dispose({ force: true });
+    });
+
+    // A local runner still delivers the later events of a displaced process. One of its
+    // jobs ends, the CLI runs a turn of its own, and that turn's result must not make a
+    // second report, which would be free to start a turn.
+    it("takes no new reading from a process that was displaced", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD, RENDER);
+      await h.result();
+      h.runner.running = true;
+      h.agent.emit("superseded");
+      await flush();
+      await flush();
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+
+      h.tasks(RENDER);
+      await h.notify("b1", "completed");
+      await h.result();
+      await h.exit();
+
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+
+      h.runner.dispose({ force: true });
+    });
   });
 
   it("gives an adopted turn its own turn-start head, so a no-op wake neither re-scans nor re-pushes", async () => {

@@ -747,6 +747,13 @@ Notes:
   The two watches are independent: one merge wakes this session with its own
   turn and the parent with its "Child PR merged" turn, and arming, re-arming or
   cancelling one never changes the other.
+- **Every link after the first is a turn that ShipIt started, and its agent
+  process exits a few seconds after your message ends.** Do not end a link's
+  message to wait for a `run_in_background` job, even if that worked on a turn
+  the user typed: a job that is still running then stops with the process, and
+  no completion notice comes for it. Run the build or the test run in the
+  foreground and wait for it in the same message
+  ([environment.md](environment.md) → *Session container lifecycle*).
 
 ## What spawning a session does
 

@@ -1019,6 +1019,12 @@ export async function executeAgentTurn(
 
   // Before the listeners below, so `onError` can read the error that ended the turn.
   agent.on("error", (err: Error) => { lastAgentError = err; });
+  // Also before them (docs/235 §9): a stopped process still sends a task notification, and
+  // the listeners below adopt that as a new turn, which starts a new Stop record.
+  let userStopSeen = false;
+  agent.on("event", () => {
+    if (!useStreaming && runner && stoppedByUser(runner)) userStopSeen = true;
+  });
 
   wireAgentListeners(agent, runner, deps.listenerDeps, {
     isNewSession: input.isNewSession,
@@ -1107,6 +1113,28 @@ export async function executeAgentTurn(
   const stderrTail = createAgentStderrTail();
   agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
 
+  // docs/235-agent-self-wake-liveness §9 — a one-shot CLI stops the jobs that still run about
+  // 5 s after its result, then exits. A job that ends in that window gets a turn of the CLI's
+  // own, and that turn's result takes the reading again.
+  let trackedJobs = new Map<string, string>();
+  let jobsRunningAtResult = new Map<string, string>();
+  // Work that the user's Stop or force-kill ended is not reported.
+  const forgetJobsIfStopped = (): void => {
+    if (userStopSeen || (runner !== null && stoppedByUser(runner))) jobsRunningAtResult = new Map();
+  };
+  const reportStoppedJobs = async (mayWake: boolean): Promise<void> => {
+    const jobs = [...jobsRunningAtResult.values()];
+    jobsRunningAtResult = new Map();
+    if (jobs.length === 0) return;
+    console.log(
+      `[turn] the one-shot agent process for ${sessionId} ended with ${jobs.length} background `
+      + "job(s) still running",
+    );
+    await deps.reportStoppedBackgroundJobs?.({
+      sessionId, jobs, deliveryId: input.deliveryId, mayWake,
+    });
+  };
+
   // The successor owns teardown. Release this turn's hold and arm any already-made commit.
   agent.on("superseded", () => {
     if (automaticRecoveryInProgress || quotaRetryInProgress) return;
@@ -1114,6 +1142,10 @@ export async function executeAgentTurn(
     finishTurn();
     releasePostTurn();
     armPendingPush();
+    // The runner drops a displaced process's `done`, so the report cannot wait for it. This
+    // turn's work can be uncommitted here, so the report must not start a turn.
+    forgetJobsIfStopped();
+    void postTurnStep("stopped-background-jobs", () => reportStoppedJobs(false));
   });
 
   let turnStartHeadHash: string | null = input.turnStartHeadHash;
@@ -1399,7 +1431,12 @@ export async function executeAgentTurn(
   };
 
   agent.on("event", async (event: AgentEvent) => {
+    if (event.type === "agent_background_tasks") {
+      if (!useStreaming) trackedJobs = new Map(event.tasks.map((t) => [t.id, t.description ?? t.id]));
+      return;
+    }
     if (event.type === "agent_self_wake") {
+      if (event.taskId && event.status === "completed") jobsRunningAtResult.delete(event.taskId);
       noteCliStartedTurn();
       await beginRearm("self-wake");
       return;
@@ -1421,6 +1458,8 @@ export async function executeAgentTurn(
     // it is taken BEFORE yielding: the await below can span a replay or a wake,
     // and a result must not answer a turn that began while it was waiting.
     resultsObserved += 1;
+    // A displaced process made its report; a local runner still delivers its later results.
+    if (!useStreaming && !wasSuperseded) jobsRunningAtResult = new Map(trackedJobs);
     const answersThisPrompt = takeResultAttribution();
     if (rearmInFlight === null && gatedResults === 0) {
       // Capture before an await lets adoption reset the live summary.
@@ -1546,6 +1585,7 @@ export async function executeAgentTurn(
     // Recovery owns teardown and any hold it opened; do not release it here.
     if (automaticRecoveryInProgress) return;
     if (quotaRetryInProgress) return;
+    forgetJobsIfStopped();
     // After the handover, never before it: a turn adopted here owns this terminal path,
     // and the predecessor's snapshot would be discarded by the re-arm anyway.
     await settleHandovers();
@@ -1692,6 +1732,10 @@ export async function executeAgentTurn(
     } finally {
       settleTurn(turnNoResult(`agent process exited (code ${code}) without settling the turn`));
       releasePostTurn();
+      // Last of all, because the report can start a turn, and after the release: a step
+      // before it would end this lease later (planning#556). Empty unless a one-shot turn
+      // had a result.
+      await postTurnStep("stopped-background-jobs", () => reportStoppedJobs(true));
     }
   });
 
