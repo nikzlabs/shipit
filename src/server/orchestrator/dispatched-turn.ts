@@ -28,8 +28,11 @@ import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { loadPrompt } from "./load-prompt.js";
 
 const MAX_NO_RESULT_RETRIES = 1;
+
+export const ONE_SHOT_TURN_NOTE = loadPrompt(import.meta.url, "./prompts/one-shot-turn-note.md").trim();
 
 // Clearing the slot bypasses displacement detection. Settle without touching the next turn.
 function supersedeRetiredTurn(outgoing: AgentProcess): void {
@@ -270,6 +273,16 @@ async function runDispatchedTurnInner(
       ? deps.sessionStatusContext?.(runner.sessionId) ?? ""
       : "";
 
+  // docs/235-agent-self-wake-liveness §8 — a system turn always runs on a one-shot process,
+  // and the agent cannot see that. Only where a resident process starts a turn when a
+  // background job ends: there the agent ends a message to wait for one. A driver-owned
+  // turn's prompt is the driver's script, so the note stays off it like the notice above.
+  const oneShotTurnNote =
+    opts.systemTurn && opts.postTurn !== "none" && !isCompactRequest
+    && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false)
+      ? ONE_SHOT_TURN_NOTE
+      : "";
+
   const agentPrefix = [
     pendingNotice,
     bugOutcomeNotice,
@@ -278,6 +291,7 @@ async function runDispatchedTurnInner(
     sessionMessageOutcome?.notice,
     reset?.agentPrefix,
     isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
+    oneShotTurnNote,
     statusContext,
   ]
     .filter(Boolean)

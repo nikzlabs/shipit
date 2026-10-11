@@ -742,6 +742,9 @@ async function composeAndRunAgentTurn(
       recordStandDown: (args) => continuation.recordStandDown(args),
       continueAfterStandDown: async (sessionId) => { await continuation.continueNow(sessionId); },
     } : {}),
+    ...(ctx.reportStoppedBackgroundJobs
+      ? { reportStoppedBackgroundJobs: ctx.reportStoppedBackgroundJobs }
+      : {}),
     postTurnReleaseFlow: buildPostTurnReleaseFlow({
       getReleaseStatusPoller: () => ctx.releaseStatusPoller,
       sessionManager: ctx.sessionManager,

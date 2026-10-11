@@ -84,6 +84,7 @@ import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
 import { runRequestedCompaction } from "./services/agent-compaction-request.js";
+import { reportStoppedBackgroundJobs, type StoppedBackgroundJobsReport } from "./services/stopped-background-jobs.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -699,6 +700,22 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }, turn);
   };
 
+  const reportStoppedBackgroundJobsForTurn = async (report: StoppedBackgroundJobsReport): Promise<void> => {
+    const registry = registryHolder.ref;
+    if (!registry) return;
+    await reportStoppedBackgroundJobs({
+      sessionManager,
+      runnerRegistry: registry,
+      chatHistoryManager,
+      defaultAgentId,
+      credentialsDir,
+      credentialStore,
+      providerAccountManager,
+      containerManager,
+      restoreWorkspace,
+    }, report);
+  };
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
@@ -710,6 +727,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
     runRequestedRestart: runRequestedRestartForTurn,
     runRequestedCompaction: runRequestedCompactionForTurn,
+    reportStoppedBackgroundJobs: reportStoppedBackgroundJobsForTurn,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -1238,6 +1256,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     quotaContinuationManager,
     runRequestedRestartForTurn,
     runRequestedCompactionForTurn,
+    reportStoppedBackgroundJobsForTurn,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,

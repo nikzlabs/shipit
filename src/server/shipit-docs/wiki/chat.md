@@ -154,6 +154,17 @@ new turn; the next message resumes the conversation. A brokered
 stop that does not take is what **Force-kill the agent** on the Terminal tab's
 health strip is for ([sessions.md](sessions.md)).
 
+**Background work does not outlive a turn that ShipIt started.** A turn the user
+typed normally runs on an agent process that stays up, so a job you left in the
+background can end and start a new turn. A turn that ShipIt starts — a merge
+notice, a child report, a finished consult, a CI fix — runs on a process that
+exits a few seconds after your message ends, and a job that is still running
+then stops with it. ShipIt then normally starts one turn that names the work.
+If that turn leaves work running too, or if another turn took the agent process
+first, ShipIt starts no turn for it: the transcript gets a notice, and that
+notice is the answer when the user asks why a session stopped with a build half
+done. `/shipit-docs/environment.md` has the rule to follow.
+
 While you work, a line under the transcript names what you are doing. When the
 turn ends, ShipIt commits, and pushes if the session has a remote and GitHub is
 connected; that flow is in `/shipit-docs/github.md`. **Ops and sandbox sessions

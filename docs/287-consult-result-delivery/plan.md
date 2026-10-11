@@ -205,6 +205,12 @@ change, i.e. the result is not delivered.
    behavior. A session archived between the check and the dispatch, or one whose
    checkout was disk-evicted, ends as a failed wake rather than a delivery.
 
+**A plain `run_in_background` job is not a consult, and is not covered here.** A build
+or a test run that the agent backgrounded on a one-shot turn is stopped by the CLI at
+turn end and has no result to deliver. `docs/235-agent-self-wake-liveness/plan.md` §8
+covers it: ShipIt tells the agent what was stopped. While a consult is in flight, that
+note is parked for the turn this delivery starts, so the two never start a turn each.
+
 ## Known limits of the tests
 
 The delivery tests use a fake runner whose creation is instantaneous and whose

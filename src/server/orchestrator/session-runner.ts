@@ -524,6 +524,17 @@ export interface SystemTurnDeps {
   }) => { continues: boolean };
   /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
   continueAfterStandDown?: (sessionId: string) => Promise<void>;
+  /**
+   * docs/235-agent-self-wake-liveness §8 — these jobs still ran when a one-shot turn's
+   * process ended. Runs last in that turn's terminal sequence, because it can start a turn.
+   */
+  reportStoppedBackgroundJobs?: (report: {
+    sessionId: string;
+    jobs: readonly string[];
+    deliveryId?: string | undefined;
+    /** False when the process was displaced: its work can be uncommitted, so start no turn. */
+    mayWake: boolean;
+  }) => Promise<unknown>;
   /** Told after `last_turn_outcome` is written; a scheduled run's first turn is watched here. */
   onTurnEnd?: (end: TurnEnd) => void;
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
