@@ -305,7 +305,9 @@ first message, and answers control requests on stdin.
   `ContainerSessionRunner.serviceMcp()` returns), and the record of the set each
   agent process holds.
 - `src/server/orchestrator/container-session-runner.ts` — `syncServiceMcp`.
-- `src/server/session/agent-controller.ts` — `POST /agent/service-mcp`.
+- `src/server/session/agent-controller.ts` — `POST /agent/service-mcp`. It is
+  in `LIFECYCLE_PATHS` (`shared/worker-auth.ts`): it changes a running agent, so
+  it needs the worker token, also from loopback.
 - `src/server/session/agents/claude/adapter.ts` (`setLiveMcpServers`) and
   `process.ts` (`setMcpServers`, the `mcp_set_servers` control request).
 - `src/server/orchestrator/resident-spawn-guard.ts` —
