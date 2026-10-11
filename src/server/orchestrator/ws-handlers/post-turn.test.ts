@@ -244,6 +244,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     prStatus?: unknown;
     commitHash?: string | null;
     stackedOnMergedTip?: boolean;
+    head?: string;
   }) {
     const autoCommit = vi.fn(async () => ({
       commitHash: opts.commitHash === undefined ? "0d9a31d1" : opts.commitHash,
@@ -255,7 +256,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     const ctx = {
       createGitManager: vi.fn(() => ({
         autoCommit,
-        getHeadHash: vi.fn(async () => "0d9a31d1"),
+        getHeadHash: vi.fn(async () => opts.head ?? "0d9a31d1"),
         isAncestor: vi.fn(async () => opts.stackedOnMergedTip ?? true),
         diffRange: vi.fn(async () => "diff --git a/ok.ts b/ok.ts\n+const x = 1;"),
       })),
@@ -297,6 +298,22 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     });
     expect(scheduleAutoPush).not.toHaveBeenCalled();
     expect(append).toHaveBeenCalled();
+  });
+
+  // `gh pr create` flushed this turn's edits as the PR head, then `gh pr merge`
+  // merged exactly that commit: HEAD moved during the turn, and it IS the merged head.
+  it("says nothing and pushes nothing when the turn opened and merged its own PR", async () => {
+    const { ctx, scheduleAutoPush, append, emit } = makeMergedCtx({ commitHash: null, head: MERGED_SHA });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hash = await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "x", turnStartHeadHash: "eeddce9",
+    });
+    expect(hash).toBeNull();
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "system_notice" }));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[merged-push-guard]"));
+    warn.mockRestore();
   });
 
   it("pushes normally once the branch has been rebased off the merged tip", async () => {

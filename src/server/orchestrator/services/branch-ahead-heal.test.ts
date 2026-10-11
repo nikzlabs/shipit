@@ -91,6 +91,15 @@ describe("BranchAheadHealer", () => {
     expect(schedule).not.toHaveBeenCalled();
   });
 
+  it("does not push a branch sitting at the merged head either", async () => {
+    const { heal, schedule } = setup({
+      head: "merged1",
+      session: { mergedAt: new Date().toISOString(), mergedHeadSha: "merged1" },
+    });
+    expect(await heal()).toEqual({ action: "skip", reason: "merged" });
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
   it.each(["sandbox", "ops"] as const)("never writes for a kind=%s session", async (kind) => {
     const { heal, schedule } = setup({ session: { kind } });
     expect(await heal()).toEqual({ action: "skip", reason: "kind" });

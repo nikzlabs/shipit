@@ -671,7 +671,10 @@ the second time they had reported "changes are missing from the merged PR".
   ShipIt's own agent instructions prescribe after a merge) still has `mergedAt`
   set at commit time, because the docs/202 re-arm that clears it runs *after* —
   so gating on `mergedAt` alone would have blocked and mis-explained a
-  legitimate pre-PR push.
+  legitimate pre-PR push. HEAD *equal* to `mergedHeadSha` is checked first,
+  because a commit is its own ancestor: an agent that opens and merges its own
+  PR in one turn ends there with nothing unshipped, so the push is still
+  refused but no notice is written.
 
 **Phase 5 (planning#333) — programmatic messages continue on the fresh base too, and
 the card is unconditional.** The Agent Interface SDK (docs/242) turns a click
