@@ -619,7 +619,13 @@ What this does not cover:
   errored is one the CLI started for itself while the turn before it was still in its network
   half: the handover then waits for that flow with no hold open. A quota refusal carried in a
   result likewise takes the hold only after its stand-down, a microtask later.
-
+- **Work that no commit covers.** The gate waits for a commit that is pending, not for one
+  that will never run. A one-shot process that another turn displaced with an empty queue
+  committed nothing (its `superseded` handler releases the hold without a commit), and a
+  displacing turn that then fails in setup, before the executor takes a hold, commits
+  nothing either; the next queued turn starts on that work. The stopped-background-jobs
+  report keeps its wake off a displacement for this reason
+  (docs/235-agent-self-wake-liveness §9).
 - **A one-shot system turn whose exit never arrives** keeps `systemTurnInProgress`, which
   `finishTurn` alone releases. The expiry's release is refused by that hold, as every other
   release is; the stranded hold is the older problem of docs/304-stranded-system-turn-hold.

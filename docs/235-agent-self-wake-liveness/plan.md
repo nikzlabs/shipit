@@ -746,13 +746,19 @@ with leave to start a turn. Two things are different on this path:
 
 - **The report starts no turn.** A one-shot turn commits in `done`, or before the drain
   when the queue is not empty. A process retired with an empty queue — a credential
-  change does that — has committed nothing, and its `done` never comes. So the executor
-  passes `mayWake: false` at every displacement, and the service parks the note. A wake
-  that only "queues behind the displacing turn" was tried and taken out: `runner.dispatch`
-  admits a turn as soon as `running` is false, and it does not wait for a local commit
-  that is still pending, so a displacing turn that fails during the wake's preparation
-  lets the wake start on uncommitted work. Every caller of `wakeSessionWithTurn` has
-  that gap; this path does not add one more. Where the parked note lands depends on the
+  change does that — has committed nothing, and its `done` never comes: the `superseded`
+  handler releases its commit hold without a commit, and the displacing turn's own
+  commit is the only one its work gets. So the executor passes `mayWake: false` at every
+  displacement, and the service parks the note. A wake that only "queues behind the
+  displacing turn" was tried and taken out, because a displacing turn that fails during
+  the wake's preparation let the wake start on uncommitted work. Since
+  docs/240-unlosable-turn-dispatch Fix G that holds only for one way of failing. A
+  displacing turn that fails inside the executor holds its commit hold until the commit
+  of the whole tree settles, and `dispatchOnRunner` queues the wake behind it. A turn that
+  fails in setup, before the executor takes the hold (the catch in `dispatchOnRunner`, or
+  an interactive turn whose composition throws), commits nothing and holds nothing, so a
+  wake would still start on the displaced process's uncommitted work. That case keeps
+  this rule. Where the parked note lands depends on the
   turn that displaced the process. An interactive turn installs its agent before it reads
   the pending notice (`ws-handlers/agent-execution.ts`), so it carries the note itself.
   A dispatched turn composed its prefix first, so the note rides the turn after it.
@@ -811,10 +817,13 @@ chain section of `/shipit-docs/sessions.md` state the same rule.
   the runner before this process sends one more event, and the report then leaves a
   note. A Stop on a successor that is still in setup when it displaces this process
   drops this process's report.
-- `runner.dispatch` does not wait for a pending local commit, for any wake. The report
-  from `done` runs after its own turn's commit, but like every caller of
-  `wakeSessionWithTurn` it can start a turn while a *later* turn that failed is still
-  committing.
+- A wake does not wait for work that no commit covers. Since
+  docs/240-unlosable-turn-dispatch Fix G, `runner.dispatch` queues every wake while
+  `runner.turnCommitPending` is set, and the executor releases the queue when its local
+  commit settles or its hold expires, so a wake no longer starts while a *later* turn
+  that failed is still committing. Two cases stay open: a turn that failed in setup
+  never takes the hold and commits nothing (the displacement rule above), and once the
+  hold's 120 s deadline has passed the gate is open again.
 - The consult gate reads `subAgentSpawnsInFlight`, which drops when the worker's spawn
   returns — before the consult's result is delivered. A consult that ends in the few
   seconds between the turn's result and the report is therefore not counted, and the
