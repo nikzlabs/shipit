@@ -571,7 +571,14 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     }
     const cp = createdClaudes[createdClaudes.length - 1];
     cp.finish();
-    await new Promise((r) => setTimeout(r, 50));
+    // Idle means committed too: a message that arrives before the commit lands is queued behind it.
+    const registry = (app as unknown as {
+      runnerRegistry: { get(id: string): { running: boolean; turnCommitPending: boolean } | undefined };
+    }).runnerRegistry;
+    await expect.poll(() => {
+      const runner = registry.get(childId);
+      return runner !== undefined && !runner.running && !runner.turnCommitPending;
+    }, { timeout: 5000 }).toBe(true);
     return childId;
   }
 
