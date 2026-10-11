@@ -234,6 +234,50 @@ The variable is **absent** when the consuming project named no port. That is not
 an error: it means nothing is previewing this service, so a worker or a database
 can simply ignore it.
 
+### Give the agent MCP tools from your service
+
+A service can carry an MCP server that ShipIt gives the agent, in the sessions of
+each project that uses your plugin. Name the service in your manifest:
+
+```yaml
+exports:
+  plugins:
+    verseshot:
+      compose: plugins/verseshot/docker-compose.yml
+      mcp:
+        service: verseshot # its name in your fragment, before a consumer's `as`
+        path: /mcp         # optional; /mcp is the default
+```
+
+- **Serve Streamable HTTP, stateless,** at `path`, on `SHIPIT_PLUGIN_PORT`,
+  bound to `0.0.0.0` — the same rules as your service's port above. It can be
+  the same server as your web UI. ShipIt sends no credentials: the server is on
+  the session's private network, as your service's API already is.
+- **The server has your plugin's name**, so its tools are
+  `mcp__verseshot__<tool>`, whatever alias a consumer imports the plugin under.
+  Your web UI can name it in a message to the agent (`window.shipit`, see
+  [agent-interface-sdk.md](agent-interface-sdk.md)) — for example "Use the
+  `verseshot` MCP server's `render` tool". So the name must be letters, digits,
+  `_` or `-`, and not `shipit` or `playwright`; another name drops the export,
+  and your repository's card says why.
+- **The consumer must give the service a port.** You cannot choose it (see
+  above), and without one ShipIt has no address for the server: the agent does
+  not get it, and the consumer's card names the key to set. Say this in your
+  README and your skill.
+- **Only tools reach the agent.** Resources, prompts and the server's
+  `instructions` do not, because ShipIt answers the agent before your service
+  is up. Put the guidance an agent needs in a skill.
+- **The agent can start first, and your service can restart.** ShipIt connects
+  when your service answers and again after a restart, and tells the agent when
+  the tool list changes. Do not depend on the agent having seen your tools at
+  any particular moment; [plugins.md](plugins.md) → A plugin's MCP server says
+  when they arrive.
+- **What a tool returns is untrusted input to the agent**, as your CLI's output
+  is. Return data, not instructions.
+
+Under `repo: self` you test it the same way: give the service a `port:` in your
+own `plugins.use` entry, and the server reaches your own agent.
+
 ### Build in `install`, and declare where the build lands — on both sides
 
 A consumer's `/plugin` is the checkout plus whatever `install` left behind, so
@@ -561,6 +605,8 @@ not for how a specific tool reacts.
 - No watcher, no polling, no dev server in the exported fragment.
 - No `ports:` in the exported fragment, and every server in it binds
   `SHIPIT_PLUGIN_PORT` on `0.0.0.0` rather than a port of its own.
+- An `mcp` server answers stateless Streamable HTTP at its `path`, and your
+  docs tell a consumer to give its service a port.
 - Every failure message names its precondition and is actionable by someone with
   no access to your repository.
 - The exported service's name cannot collide with a consumer's own service names

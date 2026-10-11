@@ -1840,6 +1840,60 @@ describe("StreamingClaudeProcess", () => {
       expect(modes).toEqual(["auto", "default"]);
     });
   });
+
+  describe("setMcpServers (docs/327)", () => {
+    const servers = { verseshot: { command: "/usr/bin/node", args: ["/proxy.js", "http://verseshot:8787/mcp"] } };
+
+    function started() {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+      mockProc.stdinWrites.length = 0;
+      const answer = (response: Record<string, unknown>): void => {
+        const request = JSON.parse(mockProc.stdinWrites[0]) as { request_id: string };
+        const line = { type: "control_response", response: { request_id: request.request_id, ...response } };
+        mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify(line)}\n`));
+      };
+      return { streaming, mockProc, answer };
+    }
+
+    it("writes an mcp_set_servers control_request, and confirms when the CLI holds the servers", async () => {
+      const { streaming, mockProc, answer } = started();
+
+      const confirmed = streaming.setMcpServers(servers);
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const parsed = JSON.parse(mockProc.stdinWrites[0]) as { type: string; request: unknown };
+      expect(parsed.type).toBe("control_request");
+      expect(parsed.request).toEqual({ subtype: "mcp_set_servers", servers });
+
+      answer({ subtype: "success", response: { added: ["verseshot"], removed: [], errors: {} } });
+      expect(await confirmed).toBe(true);
+    });
+
+    it("does not confirm a server the CLI could not connect", async () => {
+      const { streaming, answer } = started();
+      const confirmed = streaming.setMcpServers(servers);
+      answer({ subtype: "success", response: { added: [], removed: [], errors: { verseshot: "spawn ENOENT" } } });
+      expect(await confirmed).toBe(false);
+    });
+
+    it("does not confirm when the CLI refuses the request, or never answers it", async () => {
+      const refused = started();
+      const first = refused.streaming.setMcpServers(servers);
+      refused.answer({ subtype: "error", error: "Unsupported control request subtype: mcp_set_servers" });
+      expect(await first).toBe(false);
+
+      const silent = started();
+      const second = silent.streaming.setMcpServers(servers, 20);
+      vi.advanceTimersByTime(20);
+      expect(await second).toBe(false);
+    });
+
+    it("says no when there is no process to take them", async () => {
+      expect(await new StreamingClaudeProcess().setMcpServers({})).toBe(false);
+    });
+  });
 });
 
 describe("service routing (docs/252 phase 3)", () => {

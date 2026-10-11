@@ -372,6 +372,39 @@ describe("parsePluginExports", () => {
     }
   });
 
+  describe("mcp (docs/327)", () => {
+    const parseOne = (entry: Record<string, unknown>, name = "verseshot") => {
+      const warnings: string[] = [];
+      const [exported] = parsePluginExports({ plugins: { [name]: entry } }, warnings);
+      return { exported, warnings };
+    };
+
+    it("names a service in the fragment, with the default path", () => {
+      const { exported, warnings } = parseOne({ compose: "docker-compose.yml", mcp: { service: "verseshot" } });
+      expect(warnings).toEqual([]);
+      expect(exported?.mcp).toEqual({ service: "verseshot", path: "/mcp" });
+    });
+
+    it("takes an explicit path, and warns about an unknown key", () => {
+      const { exported, warnings } = parseOne({ compose: "c.yml", mcp: { service: "api", path: "/mcp/v2", port: 1 } });
+      expect(exported?.mcp).toEqual({ service: "api", path: "/mcp/v2" });
+      expect(warnings.join("\n")).toContain("`exports.plugins.verseshot.mcp.port`");
+    });
+
+    it.each([
+      ["no service", { compose: "c.yml", mcp: {} }, "verseshot", "`mcp.service`"],
+      ["no compose fragment", { mcp: { service: "api" } }, "verseshot", "needs a `compose` fragment"],
+      ["a plugin name with a dot", { compose: "c.yml", mcp: { service: "api" } }, "verse.shot", "letters, digits"],
+      ["the name of a server ShipIt always gives", { compose: "c.yml", mcp: { service: "api" } }, "playwright", "always gives the agent"],
+      ["a relative path", { compose: "c.yml", mcp: { service: "api", path: "mcp" } }, "verseshot", "`mcp.path`"],
+      ["a scalar", { compose: "c.yml", mcp: "verseshot" }, "verseshot", "`mcp` must be a mapping"],
+    ])("drops the whole export for %s", (_what, entry, name, reason) => {
+      const { exported, warnings } = parseOne(entry, name);
+      expect(exported).toBeUndefined();
+      expect(warnings.join("\n")).toContain(reason);
+    });
+  });
+
   describe("optional credentials and hosts", () => {
     it("reads a bare string as required and a mapping as what it says", () => {
       const warnings: string[] = [];

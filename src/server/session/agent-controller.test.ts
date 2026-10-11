@@ -955,3 +955,104 @@ describe("AgentController — a turn that ends inside run()", () => {
     expect((await app.inject({ method: "GET", url: "/agent/status" })).json().running).toBe(false);
   });
 });
+
+describe("AgentController — /agent/service-mcp (docs/327)", () => {
+  const proxy = { tsxBin: "/usr/bin/node", bridgePath: "/app/dist/mcp-bridges/mcp-service-proxy.js" };
+  const verseshot = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+  const dev = { name: "verseshotdev", url: "http://api:8787/mcp" };
+
+  class LiveAgent extends FakeAgent {
+    liveCalls: string[][] = [];
+    accepts = true;
+    setLiveMcpServers(servers: { name: string }[]): Promise<boolean> {
+      this.liveCalls.push(servers.map((s) => s.name));
+      return Promise.resolve(this.accepts);
+    }
+  }
+
+  let app: FastifyInstance;
+  let workspace: string;
+  let agent: FakeAgent | null;
+  let makeAgent: () => FakeAgent;
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-mcp-"));
+    resetNodeRuntimeForTests();
+    agent = null;
+    makeAgent = () => new LiveAgent();
+    const mcpConfig = new McpConfigController({ broadcast: () => {} });
+    mcpConfig.serviceProxyPaths = () => proxy;
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        agent = makeAgent();
+        return agent as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig,
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  async function start(serviceMcpServers: typeof verseshot[]): Promise<void> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "p", cwd: workspace, useStreaming: true, serviceMcpServers } },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+  }
+
+  async function sync(serviceMcpServers: typeof verseshot[]): Promise<unknown> {
+    const res = await app.inject({ method: "POST", url: "/agent/service-mcp", payload: { serviceMcpServers } });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json();
+  }
+
+  it("gives a running agent a server that was declared after it started, and reports what it holds", async () => {
+    await start([dev]);
+
+    expect(await sync([dev, verseshot])).toEqual({ live: [dev, verseshot] });
+    expect((agent as LiveAgent).liveCalls).toEqual([["verseshotdev", "verseshot"]]);
+  });
+
+  it("sends nothing when the set is the one the agent already holds", async () => {
+    await start([verseshot]);
+
+    expect(await sync([verseshot])).toEqual({ live: [verseshot] });
+    expect((agent as LiveAgent).liveCalls).toEqual([]);
+  });
+
+  it("leaves a changed or removed server to a new process, and reports the old set", async () => {
+    await start([verseshot]);
+
+    expect(await sync([{ name: "verseshot", url: "http://verseshot:9000/mcp" }, dev])).toEqual({ live: [verseshot] });
+    expect(await sync([])).toEqual({ live: [verseshot] });
+    expect((agent as LiveAgent).liveCalls).toEqual([]);
+  });
+
+  it("reports the old set when the agent cannot take servers while it runs", async () => {
+    makeAgent = () => new FakeAgent();
+    await start([]);
+    expect(await sync([verseshot])).toEqual({ live: [] });
+
+    makeAgent = () => Object.assign(new LiveAgent(), { accepts: false });
+    agent?.emit("done", 0);
+    await new Promise((r) => setImmediate(r));
+    await start([]);
+    expect(await sync([verseshot])).toEqual({ live: [] });
+  });
+
+  it("answers null when no agent process runs", async () => {
+    expect(await sync([verseshot])).toEqual({ live: null });
+  });
+});

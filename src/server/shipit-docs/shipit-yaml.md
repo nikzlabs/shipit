@@ -1,8 +1,9 @@
 # shipit.yaml Reference
 
 Place `shipit.yaml` at the workspace root (`/workspace/shipit.yaml`) to
-configure the agent container, install commands, the compose file path, and the
-issue trackers the repository declares.
+configure the agent container, install commands, the compose file path, the
+issue trackers the repository declares, and MCP servers on the project's own
+services.
 
 ShipIt reads a compose file only when `shipit.yaml` names it in the `compose`
 key. It does not auto-detect `docker-compose.yml` or `compose.yml`, so a project
@@ -509,6 +510,51 @@ Declaring the host opens no network access. Your session reaches it only if the
 user allows it (and the storage host its server redirects downloads to) in the
 egress settings. ShipIt's own push and pull are not affected.
 
+### `mcp` (optional)
+
+Gives the agent an MCP server that runs on one of this project's own Compose
+services, in this project's sessions only.
+
+```yaml
+mcp:
+  verseshotdev:      # the server's name in the agent
+    service: api     # a service in this project's compose file
+    port: 8787       # the port the service serves the MCP server on
+    path: /mcp       # optional; /mcp is the default
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| *key* | string | required | The server's name: letters, digits, `_` and `-`. Its tools are `mcp__<name>__<tool>`. |
+| `service` | string | required | The Compose service, by the name the session network resolves |
+| `port` | number | required | The service's port for the server. Written here, not read from `ports:`, so a service with only `expose:` can carry a server too |
+| `path` | string | `/mcp` | The URL path the server answers on |
+
+The service serves Streamable HTTP (stateless) at
+`http://<service>:<port><path>`. ShipIt sends no credentials: the service is on
+the session's private network.
+
+- **It is not an account MCP server.** It uses none of the account's
+  `mcp.servers` slots, and the sessions of other projects do not get it. If an
+  account server has the same name, this project's sessions get this one.
+- **The name wins over a plugin's.** A plugin's MCP server takes the plugin's
+  name; if this project declares that name too, the project's server is given
+  and the plugin's card reports its own as not given
+  ([plugins.md](plugins.md) → A plugin's MCP server).
+- **The service can start after the agent.** ShipIt gives the agent a small
+  proxy that answers at once and connects when the service answers, and again
+  after a restart. Nobody restarts the agent for it. An agent process that
+  lives across turns (Claude, by default) gets the tools as soon as the service
+  answers; an agent that starts a new process each turn gets them at the first
+  turn that starts while the service answers. The details are in
+  [plugins.md](plugins.md) → A plugin's MCP server, and are the same for a
+  project's server.
+- **Only tools** reach the agent: not the server's resources, prompts or
+  `instructions`.
+- An invalid entry (a name with a dot, `shipit` or `playwright`, no `port`, a
+  `path` that does not start with `/`) is skipped with a warning; the rest of
+  the file still applies.
+
 ## Config resolution
 
 1. **shipit.yaml with `compose`** — use the referenced compose file
@@ -585,6 +631,8 @@ worker, which writes `.shipit/.install-done` until it is recreated.)
 - An invalid `shipit.yaml` (YAML syntax error, bad `compose:` shape) leaves the
   running stack alone and reports the error rather than tearing the preview down
   mid-edit.
+- A changed `mcp` block reaches the agent at its next turn: ShipIt starts a
+  new agent process, which continues the same conversation.
 - Changes to lockfiles are debounced (30s cooldown) to avoid install loops.
 - Resource changes take effect on the next session container creation (not live).
 

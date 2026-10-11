@@ -7,7 +7,13 @@ import type {
   AgentId,
 } from "./agents/agent-process.js";
 import type { PermissionMode, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
-import type { AgentGoalCommand, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
+import type {
+  AgentGoalCommand,
+  WorkerAgentGoalBody,
+  WorkerServiceMcpBody,
+  WorkerServiceMcpResult,
+} from "../shared/types/agent-types.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import { toolResultIds, type PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -65,6 +71,9 @@ export class AgentController {
 
   private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
 
+  /** docs/327 — the declared MCP servers the running agent process holds. */
+  private liveServiceMcp: ServiceMcpServer[] = [];
+
   // Delivery identity belongs to the turn, not the resident process that can outlive it.
   private turnDeliveryId: string | undefined;
 
@@ -99,10 +108,13 @@ export class AgentController {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params, runToken, deliveryId } = request.body;
-      if (!agentId || !params) {
+      const { agentId, runToken, deliveryId } = request.body;
+      if (!agentId || !request.body.params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
+      const params = this.deps.mcpConfig.withServiceMcpServers(request.body.params);
+      // Unchanged params mean the proxy bundle is missing and the agent got no entry.
+      this.liveServiceMcp = params === request.body.params ? [] : (params.serviceMcpServers ?? []);
       adoptModelList(request.body.modelList);
 
       let startSettled!: () => void;
@@ -296,6 +308,25 @@ export class AgentController {
         return { success: true };
       },
     );
+
+    // docs/327 — a plugin's version can go live while a resident agent runs.
+    app.post<{ Body: WorkerServiceMcpBody }>("/agent/service-mcp", async (request): Promise<WorkerServiceMcpResult> => {
+      await this.pendingStart;
+      const agent = this.agent;
+      if (!agent) return { live: null };
+      const desired = request.body?.serviceMcpServers ?? [];
+      const held = this.liveServiceMcp;
+      const keepsAll = held.every((h) => desired.some((d) => d.name === h.name && d.url === h.url));
+      // Only additions go to a running process; a changed or removed server needs a new one.
+      if (keepsAll && desired.length > held.length) {
+        const entries = this.deps.mcpConfig.serviceMcpEntries(desired);
+        // The agent can have ended during the wait; its set must not go to the next one.
+        if (entries && await agent.setLiveMcpServers?.(entries) && this.agent === agent) {
+          this.liveServiceMcp = desired;
+        }
+      }
+      return { live: this.liveServiceMcp };
+    });
 
     app.post<{ Body: { text: string } }>(
       "/agent/message",

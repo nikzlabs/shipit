@@ -1,7 +1,7 @@
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
 import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
-import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
+import type { McpServerConfig, McpServerStatus, ServiceMcpServer } from "./mcp-types.js";
 
 export type AgentId = "claude" | "codex" | "opencode" | "grok" | "antigravity";
 
@@ -406,6 +406,10 @@ export interface AgentRunParams {
   mcpConfigPath?: string;
   /** Unresolved secret placeholders; the adapter resolves against its environment. */
   mcpServers?: McpServerConfig[];
+  /** docs/327 — the worker adds each as a stdio proxy entry in `mcpServers`. */
+  serviceMcpServers?: ServiceMcpServer[];
+  /** docs/327 — names a server can still take while the process runs; the tool allowlist is fixed at spawn. */
+  serviceMcpCandidates?: string[];
   model?: string;
   serviceRouting?: ServiceRouting;
   /** Per-spawn isolation overrides the adapter's home resolver. */
@@ -487,6 +491,20 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   /** docs/154 — works with or without a live process; `threadId` is the session's agentSessionId. */
   goalCommand?(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult>;
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
+  /**
+   * docs/327 — give a resident process these MCP servers while it runs. False
+   * when it did not take them; the caller then lets the next turn respawn it.
+   */
+  setLiveMcpServers?(servers: McpServerConfig[]): Promise<boolean>;
+}
+
+export interface WorkerServiceMcpBody {
+  serviceMcpServers: ServiceMcpServer[];
+}
+
+export interface WorkerServiceMcpResult {
+  /** What the agent process holds after this call; null when no process runs. */
+  live: ServiceMcpServer[] | null;
 }
 
 export interface WorkerAgentGoalBody {

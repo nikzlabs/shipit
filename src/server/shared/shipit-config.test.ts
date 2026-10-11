@@ -814,3 +814,42 @@ describe("lfs (docs/320-lfs-host-credential)", () => {
     expect(config.warnings.join("\n")).toContain(warning);
   });
 });
+
+describe("mcp (docs/327-service-mcp-servers)", () => {
+  const mcp = (body: string) => parseShipitConfig(parseYaml(`mcp:\n${body}`));
+
+  it("keeps a server on one of the project's services, with the default path", () => {
+    const config = mcp("  verseshotdev:\n    service: api\n    port: 8787\n");
+    expect(config.mcp).toEqual([{ name: "verseshotdev", service: "api", port: 8787, path: "/mcp" }]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("takes an explicit path", () => {
+    expect(mcp("  dev:\n    service: api\n    port: 8787\n    path: /v1/mcp\n").mcp[0]?.path).toBe("/v1/mcp");
+  });
+
+  it("is empty when not declared", () => {
+    expect(parseShipitConfig(parseYaml("version: 1\n")).mcp).toEqual([]);
+  });
+
+  it.each([
+    ["a dotted name", "  dev.api:\n    service: api\n    port: 8787\n", "letters, digits"],
+    ["the name of ShipIt's own server", "  shipit:\n    service: api\n    port: 8787\n", "always gives the agent"],
+    ["no port", "  dev:\n    service: api\n", "`port` must be"],
+    ["a port as a string", "  dev:\n    service: api\n    port: \"8787\"\n", "`port` must be"],
+    ["no service", "  dev:\n    port: 8787\n", "`service` must"],
+    ["a path without a leading slash", "  dev:\n    service: api\n    port: 8787\n    path: mcp\n", "`mcp.dev.path`"],
+    ["a path with a placeholder", "  dev:\n    service: api\n    port: 8787\n    path: /$secret:X\n", "`mcp.dev.path`"],
+    ["a name that differs from another only in case", "  dev:\n    service: api\n    port: 1\n  Dev:\n    service: api\n    port: 2\n", "already has that name"],
+  ])("skips an entry with %s, with a warning", (_what, body, warning) => {
+    const config = mcp(body);
+    expect(config.mcp.length).toBeLessThanOrEqual(1);
+    expect(config.mcp.find((m) => m.name === "dev.api" || m.name === "shipit" || m.name === "Dev")).toBeUndefined();
+    expect(config.warnings.join("\n")).toContain(warning);
+  });
+
+  it("keeps the valid entries beside an invalid one", () => {
+    const config = mcp("  bad:\n    service: api\n  good:\n    service: api\n    port: 8787\n");
+    expect(config.mcp.map((m) => m.name)).toEqual(["good"]);
+  });
+});

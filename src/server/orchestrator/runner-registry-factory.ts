@@ -380,6 +380,7 @@ export function createRunnerRegistry(
             sessionDir: runner.sessionDir,
             ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
             ...(runParamOpts?.compact ? { compact: true } : {}),
+            serviceMcp: runner.serviceMcp?.() ?? null,
           });
         },
         ...(credentialsDir && credentialStore ? {

@@ -866,7 +866,7 @@ export function setupServiceManager(
     await applyOverlayDepDirs(runner, mgr, { containerManager, session, workspaceDir, broadcastLog });
     // Resolve and start under one stack operation so activation cannot reconcile between them.
     await serializeStackOp(runner.sessionId, async () => {
-      await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps);
+      await resolvePluginServicesInto(runner, workspaceDir, mgr, deps);
       // Readiness waits can outlive the runner; start() would revive an orphaned manager.
       if (runner instanceof ContainerSessionRunner && runner.disposed) {
         console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
@@ -939,7 +939,7 @@ async function refreshPluginServices(
   try {
     await serializeStackOp(runner.sessionId, async () => {
       const { changed, count } = await resolvePluginServicesInto(
-        runner.sessionId, workspaceDir, mgr, deps,
+        runner, workspaceDir, mgr, deps,
       );
       if (!changed) return;
       if (!ownsStack(deps.serviceManagers, runner.sessionId, mgr)) return;
@@ -955,15 +955,19 @@ async function refreshPluginServices(
 
 /** Caller must hold the non-reentrant stack operation through resolution and start/reconcile. */
 async function resolvePluginServicesInto(
-  sessionId: string,
+  runner: SessionRunnerInterface,
   workspaceDir: string,
   mgr: ServiceManager,
   deps: Pick<ServiceSetupDeps, "resolvePluginServices">,
 ): Promise<{ changed: boolean; count: number }> {
+  const { sessionId } = runner;
   if (!deps.resolvePluginServices) return { changed: false, count: 0 };
   try {
     const services = await deps.resolvePluginServices(sessionId, workspaceDir);
-    return { changed: mgr.setPluginServices(services), count: services.length };
+    const changed = mgr.setPluginServices(services);
+    // docs/327 — also after a shipit.yaml edit, which reaches here with the plugins unchanged.
+    void runner.syncServiceMcp?.();
+    return { changed, count: services.length };
   } catch (err) {
     console.error(`[plugins:${sessionId}] service resolution failed:`, getErrorMessage(err));
     return { changed: false, count: 0 };
@@ -1066,7 +1070,7 @@ export function applyShipitConfigChange(
   }
   void serializeStackOp(runner.sessionId, async () => {
     // Recheck name collisions against the edited project file before generating its override.
-    if ((await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps)).changed) {
+    if ((await resolvePluginServicesInto(runner, workspaceDir, mgr, deps)).changed) {
       runner.emitMessage({ type: "plugin_repos_updated", sessionId: runner.sessionId });
     }
     if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();

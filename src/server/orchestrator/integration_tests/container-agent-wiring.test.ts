@@ -8,6 +8,9 @@ import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { SystemTurnDeps } from "../session-runner.js";
 import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import { TURN_COMPLETED, type TurnOutcome } from "../turn-settlement.js";
+import { releaseResidentOnServiceMcpChange } from "../resident-spawn-guard.js";
+import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "../service-mcp.js";
+import type { ServiceMcpServer } from "../../shared/types.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
@@ -58,6 +61,12 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
 
   writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
     return {};
+  }
+
+  liveMcp: string[][] = [];
+  setLiveMcpServers(servers: { name: string }[]): Promise<boolean> {
+    this.liveMcp.push(servers.map((s) => s.name));
+    return Promise.resolve(true);
   }
 }
 
@@ -144,6 +153,89 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     expect(lastAgent.lastParams?.cwd).toBe("/workspace");
 
     runner.dispose();
+  });
+
+  describe("declared MCP servers reach the worker's agent (docs/327)", () => {
+    const verseshot: ServiceMcpServer = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+
+    function runnerWith(sessionId: string, declared: { current: ServiceMcpServer[] }): ContainerSessionRunner {
+      forgetServiceMcpSpawn(sessionId);
+      const runner = new ContainerSessionRunner({ sessionId, sessionDir: "/tmp/test", defaultAgentId: "claude", workerUrl });
+      runner.serviceMcp = () => ({ servers: declared.current, candidates: ["verseshot"] });
+      return runner;
+    }
+
+    it("starts the agent with the set of the moment the start is posted, not of when its params were built", async () => {
+      const declared = { current: [] as ServiceMcpServer[] };
+      const runner = runnerWith("mcp-start", declared);
+      const proxy = runner.createAgent("claude");
+
+      // The plugin's version went live while the start waited for the install.
+      declared.current = [verseshot];
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+
+      expect(lastAgent.lastParams?.serviceMcpServers).toEqual([verseshot]);
+      expect(lastAgent.lastParams?.serviceMcpCandidates).toEqual(["verseshot"]);
+      expect(lastAgent.lastParams?.mcpServers?.map((m) => [m.name, m.type])).toEqual([["verseshot", "stdio"]]);
+      expect(serviceMcpSpawnKey("mcp-start")).toBe(serviceMcpSetKey([verseshot]));
+      expect(lastAgent.liveMcp).toEqual([]);
+
+      runner.dispose({ force: true });
+    });
+
+    it("gives a running agent a server declared after its start, so the next turn keeps the process", async () => {
+      const declared = { current: [] as ServiceMcpServer[] };
+      const runner = runnerWith("mcp-live", declared);
+      const proxy = runner.createAgent("claude");
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+      expect(lastAgent.lastParams?.serviceMcpServers).toBeUndefined();
+
+      declared.current = [verseshot];
+      await runner.syncServiceMcp();
+
+      expect(lastAgent.liveMcp).toEqual([["verseshot"]]);
+      expect(releaseResidentOnServiceMcpChange(runner, declared.current)).toBe(false);
+      expect(lastAgent.killed).toBe(false);
+
+      runner.dispose({ force: true });
+    });
+
+    it("leaves a changed server to the next turn, which retires the process", async () => {
+      const declared = { current: [verseshot] };
+      const runner = runnerWith("mcp-changed", declared);
+      const proxy = runner.createAgent("claude");
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+
+      declared.current = [{ name: "verseshot", url: "http://verseshot:9000/mcp" }];
+      await runner.syncServiceMcp();
+
+      expect(lastAgent.liveMcp).toEqual([]);
+      expect(releaseResidentOnServiceMcpChange(runner, declared.current)).toBe(true);
+
+      runner.dispose({ force: true });
+    });
+
+    it("asks the worker what an adopted agent holds when a turn starts with no record", async () => {
+      const declared = { current: [] as ServiceMcpServer[] };
+      const runner = runnerWith("mcp-adopted", declared);
+      const proxy = runner.createAgent("claude");
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+      // An orchestrator restart loses the record; the worker and its agent live on.
+      forgetServiceMcpSpawn("mcp-adopted");
+      declared.current = [verseshot];
+
+      expect(releaseResidentOnServiceMcpChange(runner, declared.current)).toBe(false);
+      await waitFor(() => serviceMcpSpawnKey("mcp-adopted") !== undefined, 3000, "the record");
+
+      expect(lastAgent.liveMcp).toEqual([["verseshot"]]);
+      expect(serviceMcpSpawnKey("mcp-adopted")).toBe(serviceMcpSetKey([verseshot]));
+
+      runner.dispose({ force: true });
+    });
   });
 
   it("proxy receives events via SSE after run()", async () => {

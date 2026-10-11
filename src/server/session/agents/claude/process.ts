@@ -421,6 +421,14 @@ export class ClaudeProcess extends EventEmitter {
 }
 
 // Open stdin keeps the CLI alive across turns; result ends a turn, done ends the process.
+const SET_MCP_SERVERS_TIMEOUT_MS = 15_000;
+
+interface McpSetServersResponse {
+  subtype?: string;
+  request_id?: string;
+  response?: { errors?: Record<string, unknown> };
+}
+
 export class StreamingClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
 
@@ -616,6 +624,42 @@ export class StreamingClaudeProcess extends EventEmitter {
     };
     console.log(`[streaming-claude] setPermissionMode → ${cliMode}`);
     this.writeToStdin(`${JSON.stringify(msg)}\n`);
+  }
+
+  /**
+   * docs/327 — adds MCP servers to the running CLI, and resolves true only when
+   * the CLI confirms them. Verified on CLI 2.1.284: a server sent again with the
+   * same config is not restarted, and the servers of `--mcp-config` that a
+   * request leaves out stay connected.
+   */
+  setMcpServers(servers: Record<string, unknown>, timeoutMs = SET_MCP_SERVERS_TIMEOUT_MS): Promise<boolean> {
+    if (!this.alive) return Promise.resolve(false);
+    const requestId = `set-mcp-${++this.requestIdCounter}-${Date.now()}`;
+    return new Promise((resolve) => {
+      const settle = (confirmed: boolean): void => {
+        clearTimeout(timer);
+        this.off("event", onEvent);
+        this.off("done", onDone);
+        resolve(confirmed);
+      };
+      const onEvent = (raw: { type?: string; response?: McpSetServersResponse }): void => {
+        if (raw.type !== "control_response" || raw.response?.request_id !== requestId) return;
+        const errors = raw.response.response?.errors ?? {};
+        settle(raw.response.subtype === "success" && Object.keys(errors).length === 0);
+      };
+      const onDone = (): void => settle(false);
+      // A CLI that does not know the request must not leave the caller waiting.
+      const timer = setTimeout(() => settle(false), timeoutMs);
+      timer.unref();
+      this.on("event", onEvent);
+      this.on("done", onDone);
+      console.log(`[streaming-claude] setMcpServers → ${Object.keys(servers).join(", ") || "(none)"}`);
+      this.writeToStdin(`${JSON.stringify({
+        type: "control_request",
+        request_id: requestId,
+        request: { subtype: "mcp_set_servers", servers },
+      })}\n`);
+    });
   }
 
   kill(): void {

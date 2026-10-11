@@ -10,6 +10,7 @@ import {
 } from "./agent-run-params-prep.js";
 import { serviceRoutingForSelection } from "./service-routing.js";
 import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
+import { recordServiceMcpSpawn, type SessionServiceMcp } from "./service-mcp.js";
 
 export interface BuildAgentRunParamsDeps {
   credentialStore: CredentialStore;
@@ -31,6 +32,8 @@ export interface BuildAgentRunParamsArgs {
   sessionDir: string;
   permissionMode?: PermissionMode;
   compact?: boolean;
+  /** docs/327 — the session's declared MCP servers (`resolveServiceMcp`). */
+  serviceMcp?: SessionServiceMcp | null;
 }
 
 export async function buildAgentRunParams(
@@ -49,6 +52,8 @@ export async function buildAgentRunParams(
 
   // Finish DB reads before the first await; shutdown can close the connection during it.
   const agentInstructionsEnabled = deps.credentialStore.getAgentSystemInstructionsEnabled();
+  const serviceMcpServers = args.serviceMcp?.servers ?? [];
+  const serviceMcpCandidates = args.serviceMcp?.candidates ?? [];
   const mcpServers = Object.values(deps.credentialStore.getAllMcpServers()).filter(
     (s) => s.enabled,
   );
@@ -83,6 +88,7 @@ export async function buildAgentRunParams(
   // Only a spawning turn builds run params, so this is the value the process
   // about to start will hold until it is retired.
   recordStatusCardSpawn(sessionId, sessionStatusCard);
+  recordServiceMcpSpawn(sessionId, serviceMcpServers);
 
   const userSystemPrompt = await deps.readSystemPrompt(isOps ? "ops" : "standard");
 
@@ -108,6 +114,8 @@ export async function buildAgentRunParams(
     ...(serviceRouting !== undefined ? { serviceRouting } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
+    ...(serviceMcpServers.length > 0 ? { serviceMcpServers } : {}),
+    ...(serviceMcpCandidates.length > 0 ? { serviceMcpCandidates } : {}),
     ...(sessionStatusCard ? { sessionStatusCard: true } : {}),
     ...(compact ? { compact: true } : {}),
   };

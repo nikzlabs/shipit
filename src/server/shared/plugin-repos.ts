@@ -4,6 +4,7 @@ import type { DeclaredTracker } from "./declared-tracker.js";
 import { PLUGIN_CONTRACT_ENV_NAMES } from "./plugin-contract.js";
 import type { PluginCredentialGroup, PluginCredentialNeed } from "./plugin-credentials.js";
 import type { PluginHostGroup, PluginHostNeed } from "./plugin-hosts.js";
+import { mcpServerNameError, parseServiceMcpPath } from "./service-mcp.js";
 
 export type PluginRepoSource =
   | { kind: "github"; owner: string; repo: string }
@@ -69,6 +70,14 @@ export interface PluginExport {
   /** Informational; grants no network access. */
   hosts: PluginRequirement[];
   settings: Record<string, { description?: string; default?: string | number | boolean }>;
+  /** docs/327 — an MCP server on one of the fragment's services, named after the plugin. */
+  mcp?: PluginMcpDeclaration;
+}
+
+export interface PluginMcpDeclaration {
+  /** The service's name in the fragment, before a consumer's `as`. */
+  service: string;
+  path: string;
 }
 
 export const EMPTY_PLUGIN_REPOS: Readonly<PluginReposConfig> = Object.freeze({
@@ -513,7 +522,10 @@ const KNOWN_EXPORT_KEYS = new Set([
   "credentials",
   "hosts",
   "settings",
+  "mcp",
 ]);
+
+const KNOWN_MCP_KEYS = new Set(["service", "path"]);
 
 const KNOWN_CLI_KEYS = new Set(["entry", "memory"]);
 
@@ -737,6 +749,9 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     }
   }
 
+  const mcp = parseExportMcp(name, entry.mcp, compose !== undefined, warnings);
+  if (mcp && "error" in mcp) return drop(mcp.error);
+
   return {
     name,
     ...(compose !== undefined ? { compose } : {}),
@@ -749,7 +764,33 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     credentials,
     hosts,
     settings,
+    ...(mcp ? { mcp } : {}),
   };
+}
+
+function parseExportMcp(
+  name: string,
+  raw: unknown,
+  hasCompose: boolean,
+  warnings: string[],
+): PluginMcpDeclaration | { error: string } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isMapping(raw)) return { error: "`mcp` must be a mapping with `service:` and an optional `path:`" };
+  for (const key of Object.keys(raw)) {
+    if (!KNOWN_MCP_KEYS.has(key)) {
+      warnings.push(`Unknown key \`exports.plugins.${name}.mcp.${key}\` in shipit.yaml.`);
+    }
+  }
+  const service = typeof raw.service === "string" ? raw.service.trim() : "";
+  if (!service) return { error: "`mcp.service` must name the service the MCP server runs on" };
+  if (!hasCompose) return { error: "`mcp` names a service, so the plugin needs a `compose` fragment" };
+  const nameError = mcpServerNameError(name);
+  if (nameError) {
+    return { error: `\`mcp\` gives the agent a server with the plugin's name, which ${nameError}` };
+  }
+  const path = parseServiceMcpPath(raw.path, "mcp.path");
+  if (typeof path === "object") return path;
+  return { service, path };
 }
 
 /** Duplicate structural path validation to keep filesystem imports out. */

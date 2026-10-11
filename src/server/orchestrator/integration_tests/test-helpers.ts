@@ -696,6 +696,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastModel: string | undefined;
   public lastReasoningEffort: string | undefined;
   public lastMcpServers: unknown[] | undefined;
+  public lastServiceMcpServers: unknown[] | undefined;
   public lastAutoCreatePr: boolean | undefined;
   public lastSessionStatusCard: boolean | undefined;
   public lastServiceRouting: { serviceId: string; billingMode: string; baseUrl: string } | undefined;
@@ -738,6 +739,7 @@ export class FakeClaudeProcess extends EventEmitter {
     model?: string;
     reasoningEffort?: string;
     mcpServers?: unknown[];
+    serviceMcpServers?: unknown[];
     autoCreatePr?: boolean;
     sessionStatusCard?: boolean;
     compact?: boolean;
@@ -756,6 +758,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastModel = params.model;
     this.lastReasoningEffort = params.reasoningEffort;
     this.lastMcpServers = params.mcpServers;
+    this.lastServiceMcpServers = params.serviceMcpServers;
     this.lastAutoCreatePr = params.autoCreatePr;
     this.lastSessionStatusCard = params.sessionStatusCard;
     this.lastServiceRouting = params.serviceRouting;

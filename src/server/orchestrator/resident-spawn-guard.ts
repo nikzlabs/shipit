@@ -1,6 +1,8 @@
 import type { AgentProcess } from "../shared/types.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { forgetStatusCardSpawn, statusCardSpawnValue } from "./session-status-spawn-record.js";
+import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "./service-mcp.js";
 
 // Clearing the slot bypasses displacement handling. Settle before removing its listeners.
 function resolveResidentToRetire(runner: SessionRunnerInterface): AgentProcess | null {
@@ -9,18 +11,7 @@ function resolveResidentToRetire(runner: SessionRunnerInterface): AgentProcess |
   return resident;
 }
 
-// Model, endpoint and credentials are fixed at spawn; changes require a new process.
-export function releaseResidentOnSpawnChange(
-  runner: SessionRunnerInterface | null | undefined,
-  desiredIdentity: string | undefined,
-): boolean {
-  if (!runner) return false;
-  const applied = runner.appliedSpawnIdentity;
-  // Adopted processes can have an unknown identity; do not respawn them every turn.
-  if (applied === undefined || applied === desiredIdentity) return false;
-  const resident = resolveResidentToRetire(runner);
-  if (!resident) return false;
-
+function retire(runner: SessionRunnerInterface, resident: AgentProcess): void {
   // Prevent kill's done event from repeating the previous turn's terminal flow.
   try {
     resident.removeAllListeners();
@@ -37,6 +28,21 @@ export function releaseResidentOnSpawnChange(
   runner.appliedSpawnIdentity = undefined;
   // The exiting CLI reaps its tasks; stale counts would prevent idle reclamation.
   runner.clearBackgroundTasks();
+}
+
+// Model, endpoint and credentials are fixed at spawn; changes require a new process.
+export function releaseResidentOnSpawnChange(
+  runner: SessionRunnerInterface | null | undefined,
+  desiredIdentity: string | undefined,
+): boolean {
+  if (!runner) return false;
+  const applied = runner.appliedSpawnIdentity;
+  // Adopted processes can have an unknown identity; do not respawn them every turn.
+  if (applied === undefined || applied === desiredIdentity) return false;
+  const resident = resolveResidentToRetire(runner);
+  if (!resident) return false;
+
+  retire(runner, resident);
   console.log(
     `[spawn-switch] released resident agent for ${runner.sessionId}: `
     + `spawned as ${applied}, session now selects ${desiredIdentity ?? "the agent default"}`,
@@ -62,20 +68,7 @@ export function releaseResidentOnStatusCardChange(
   const resident = resolveResidentToRetire(runner);
   if (!resident) return false;
 
-  try {
-    resident.removeAllListeners();
-  } catch {
-    // Best-effort listener cleanup.
-  }
-  try {
-    resident.kill();
-  } catch {
-    // Already gone.
-  }
-  if (runner.getAgent() === resident) runner.setAgent(null);
-  runner.isStreamingActive = false;
-  runner.appliedSpawnIdentity = undefined;
-  runner.clearBackgroundTasks();
+  retire(runner, resident);
   // The record is rewritten by the spawn this turn makes; forgetting it keeps a
   // failed spawn from retiring the next process on a value it never had.
   forgetStatusCardSpawn(runner.sessionId);
@@ -125,21 +118,39 @@ function releaseResidentForToggle(runner: SessionRunnerInterface): boolean {
   if (runner.backgroundWorkDescriptions.length > 0) return false;
   const resident = resolveResidentToRetire(runner);
   if (!resident) return false;
-  try {
-    resident.removeAllListeners();
-  } catch {
-    // Best-effort listener cleanup.
-  }
-  try {
-    resident.kill();
-  } catch {
-    // Already gone.
-  }
-  if (runner.getAgent() === resident) runner.setAgent(null);
-  runner.isStreamingActive = false;
-  runner.appliedSpawnIdentity = undefined;
-  runner.clearBackgroundTasks();
+  retire(runner, resident);
   forgetStatusCardSpawn(runner.sessionId);
+  return true;
+}
+
+/**
+ * docs/327-service-mcp-servers — a resident holds the MCP servers it has. An
+ * added server normally reaches it while it runs (`syncServiceMcp`); this
+ * catches a set it could not take that way: a changed or removed server, a name
+ * outside its tool allowlist, or a worker that did not answer. Null (shipit.yaml
+ * unreadable) retires nothing.
+ */
+export function releaseResidentOnServiceMcpChange(
+  runner: SessionRunnerInterface | null | undefined,
+  servers: readonly ServiceMcpServer[] | null,
+): boolean {
+  if (!runner || servers === null) return false;
+  const applied = serviceMcpSpawnKey(runner.sessionId);
+  if (applied === undefined) {
+    // An adopted process: ask the worker what it holds, for the next turn's comparison.
+    void runner.syncServiceMcp?.();
+    return false;
+  }
+  if (applied === serviceMcpSetKey(servers)) return false;
+  const resident = resolveResidentToRetire(runner);
+  if (!resident) return false;
+
+  retire(runner, resident);
+  forgetServiceMcpSpawn(runner.sessionId);
+  console.log(
+    `[spawn-switch] released resident agent for ${runner.sessionId}: `
+    + `its MCP servers on Compose services changed in a way a running process cannot take`,
+  );
   return true;
 }
 
@@ -151,20 +162,7 @@ export function releaseResidentForCredentialChange(
   if (runner.backgroundWorkDescriptions.length > 0) return false;
   const resident = resolveResidentToRetire(runner);
   if (!resident) return false;
-  try {
-    resident.removeAllListeners();
-  } catch {
-    // Best-effort listener cleanup.
-  }
-  try {
-    resident.kill();
-  } catch {
-    // Already gone.
-  }
-  if (runner.getAgent() === resident) runner.setAgent(null);
-  runner.isStreamingActive = false;
-  runner.appliedSpawnIdentity = undefined;
-  runner.clearBackgroundTasks();
+  retire(runner, resident);
   console.log(
     `[credentials] released resident agent for ${runner.sessionId} — a credential changed, `
     + `so the next turn respawns with the credentials the store now holds`,

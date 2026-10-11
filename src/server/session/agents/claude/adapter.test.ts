@@ -1323,6 +1323,64 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  describe("setLiveMcpServers (docs/327)", () => {
+    const proxyEntry = (name: string) => ({
+      name,
+      type: "stdio" as const,
+      command: "/usr/bin/node",
+      args: ["/proxy.js", `http://${name}:8787/mcp`],
+      enabled: true,
+    });
+
+    async function streamingAdapter() {
+      const { StreamingClaudeProcess } = await import("./process.js");
+      const sent: Record<string, unknown>[] = [];
+      let allowed: string[] | undefined;
+      class FakeStreaming extends StreamingClaudeProcess {
+        override run(opts: { mcpServerNames?: string[] }): void {
+          allowed = opts.mcpServerNames;
+        }
+        override setMcpServers(servers: Record<string, unknown>): Promise<boolean> {
+          sent.push(servers);
+          return Promise.resolve(true);
+        }
+      }
+      const adapter = new ClaudeAdapter(new FakeStreaming() as never);
+      return { adapter, sent, allowed: () => allowed };
+    }
+
+    it("allows a candidate name at spawn, so a server that arrives later needs no permission card", async () => {
+      const { adapter, sent, allowed } = await streamingAdapter();
+      adapter.run({
+        prompt: "p",
+        cwd: "/w",
+        mcpServers: [{ name: "linear", type: "http", url: "https://mcp.linear.app/mcp", enabled: true }],
+        serviceMcpCandidates: ["verseshot"],
+      });
+      expect(allowed()).toEqual(["linear", "verseshot"]);
+
+      expect(await adapter.setLiveMcpServers([proxyEntry("verseshot")])).toBe(true);
+      expect(sent).toEqual([
+        { verseshot: { command: "/usr/bin/node", args: ["/proxy.js", "http://verseshot:8787/mcp"] } },
+      ]);
+    });
+
+    it("refuses a name outside the spawn-time allowlist, and sends nothing", async () => {
+      const { adapter, sent } = await streamingAdapter();
+      adapter.run({ prompt: "p", cwd: "/w", serviceMcpCandidates: ["verseshot"] });
+
+      expect(await adapter.setLiveMcpServers([proxyEntry("verseshot"), proxyEntry("other")])).toBe(false);
+      expect(sent).toEqual([]);
+    });
+
+    it("refuses on a process that ends with its turn", async () => {
+      const adapter = new ClaudeAdapter(new FakeInnerProcess() as any);
+      adapter.run({ prompt: "p", cwd: "/w", serviceMcpCandidates: ["verseshot"] });
+
+      expect(await adapter.setLiveMcpServers([proxyEntry("verseshot")])).toBe(false);
+    });
+  });
+
   describe("MCP server liveness (docs/088)", () => {
     it("emits mcp_status for each entry in the init event's mcp_servers", () => {
       const inner = new FakeInnerProcess();

@@ -7,6 +7,12 @@ import type { Socket } from "node:net";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { WorkerAbortedError } from "./worker-http.js";
 import { clearActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
+import {
+  forgetServiceMcpSpawn,
+  recordServiceMcpSpawn,
+  serviceMcpSetKey,
+  serviceMcpSpawnKey,
+} from "./service-mcp.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import {
   hasTokenWriteBackWatch,
@@ -1031,5 +1037,139 @@ describe("ContainerSessionRunner — token write-back watch release (docs/153)",
 
     runner.isStreamingActive = false;
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+});
+
+describe("ContainerSessionRunner — syncServiceMcp (docs/327)", () => {
+  const SESSION = "service-mcp-session";
+  const verseshot = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+
+  async function withWorker(
+    answer: { live: unknown },
+    run: (runner: ContainerSessionRunner, requests: { path: string; body: unknown }[]) => Promise<void>,
+    opts: { agent?: boolean } = {},
+  ): Promise<void> {
+    const requests: { path: string; body: unknown }[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        requests.push({ path: req.url ?? "", body: JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION,
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude",
+      workerUrl: `http://127.0.0.1:${addr.port}`,
+    });
+    runner.serviceMcp = () => ({ servers: [verseshot], candidates: ["verseshot"] });
+    if (opts.agent ?? true) (runner as unknown as { _agent: unknown })._agent = {};
+    try {
+      await run(runner, requests);
+    } finally {
+      (runner as unknown as { _agent: unknown })._agent = null;
+      runner.dispose({ force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  beforeEach(() => forgetServiceMcpSpawn(SESSION));
+  afterEach(() => forgetServiceMcpSpawn(SESSION));
+
+  it("sends the worker a set the agent was not spawned with, and records what the agent now holds", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    await withWorker({ live: [verseshot] }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+
+      expect(requests).toEqual([{ path: "/agent/service-mcp", body: { serviceMcpServers: [verseshot] } }]);
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([verseshot]));
+    });
+  });
+
+  it("keeps the old set on record when the agent could not take the new one, so the next turn respawns", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    await withWorker({ live: [] }, async (runner) => {
+      await runner.syncServiceMcp();
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([]));
+    });
+  });
+
+  it("learns what an adopted agent holds, which the orchestrator has no record of", async () => {
+    await withWorker({ live: [] }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+      expect(requests).toHaveLength(1);
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([]));
+    });
+  });
+
+  it("asks nothing when the agent already holds the set, or when no agent runs", async () => {
+    recordServiceMcpSpawn(SESSION, [verseshot]);
+    await withWorker({ live: [verseshot] }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+      expect(requests).toEqual([]);
+    });
+    forgetServiceMcpSpawn(SESSION);
+    await withWorker({ live: null }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+      expect(requests).toEqual([]);
+      expect(serviceMcpSpawnKey(SESSION)).toBeUndefined();
+    }, { agent: false });
+  });
+
+  it("drops an answer about a process that was replaced while the request was on its way", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const server = http.createServer((req, res) => {
+      req.resume();
+      void (async () => {
+        await held;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ live: [] }));
+      })();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION,
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude",
+      workerUrl: `http://127.0.0.1:${port}`,
+    });
+    runner.serviceMcp = () => ({ servers: [verseshot], candidates: [] });
+    const slot = runner as unknown as { _agent: unknown };
+    slot._agent = { process: "A" };
+    try {
+      const sync = runner.syncServiceMcp();
+      await new Promise((r) => setTimeout(r, 50));
+      // The next turn retired A and spawned B with the new set.
+      slot._agent = { process: "B" };
+      recordServiceMcpSpawn(SESSION, [verseshot]);
+      release();
+      await sync;
+
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([verseshot]));
+    } finally {
+      release();
+      slot._agent = null;
+      runner.dispose({ force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("leaves the record alone when the worker has no agent process", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    await withWorker({ live: null }, async (runner) => {
+      await runner.syncServiceMcp();
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([]));
+    });
   });
 });

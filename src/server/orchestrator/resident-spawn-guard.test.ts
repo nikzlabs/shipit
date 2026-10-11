@@ -1,9 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
+  releaseResidentOnServiceMcpChange,
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
   releaseResidentsOnStatusCardToggle,
 } from "./resident-spawn-guard.js";
+import { forgetServiceMcpSpawn, recordServiceMcpSpawn } from "./service-mcp.js";
 import {
   forgetStatusCardSpawn,
   recordStatusCardSpawn,
@@ -151,6 +153,60 @@ describe("releaseResidentOnStatusCardChange (docs/303 req 21)", () => {
   it("does nothing without a runner or a resident", () => {
     expect(releaseResidentOnStatusCardChange(null, true)).toBe(false);
     expect(releaseResidentOnStatusCardChange(asRunner(makeRunner({ agent: null })), true)).toBe(false);
+  });
+});
+
+describe("releaseResidentOnServiceMcpChange (docs/327)", () => {
+  const verseshot = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+  afterEach(() => { forgetServiceMcpSpawn("s1"); });
+
+  it("ends a resident spawned before a declared server existed, so the next turn gives it to the agent", () => {
+    const order: string[] = [];
+    const runner = makeRunner({ appliedSpawnIdentity: "claude-opus-5", order });
+    recordServiceMcpSpawn("s1", []);
+
+    expect(releaseResidentOnServiceMcpChange(asRunner(runner), [verseshot])).toBe(true);
+
+    expect(order).toEqual(["emit:superseded", "removeAllListeners", "kill"]);
+    expect(runner.getAgent()).toBeNull();
+    expect(runner.isStreamingActive).toBe(false);
+    expect(runner.appliedSpawnIdentity).toBeUndefined();
+  });
+
+  it("keeps a resident whose servers are the same, in any order", () => {
+    const runner = makeRunner({ appliedSpawnIdentity: "claude-opus-5" });
+    const dev = { name: "verseshotdev", url: "http://api:8787/mcp" };
+    recordServiceMcpSpawn("s1", [verseshot, dev]);
+
+    expect(releaseResidentOnServiceMcpChange(asRunner(runner), [dev, verseshot])).toBe(false);
+    expect(runner.agent!.kill).not.toHaveBeenCalled();
+  });
+
+  it("ends a resident whose server moved to another port", () => {
+    const runner = makeRunner({ appliedSpawnIdentity: "claude-opus-5" });
+    recordServiceMcpSpawn("s1", [verseshot]);
+
+    expect(
+      releaseResidentOnServiceMcpChange(asRunner(runner), [{ name: "verseshot", url: "http://verseshot:9000/mcp" }]),
+    ).toBe(true);
+  });
+
+  it("retires nothing while shipit.yaml cannot be read", () => {
+    const runner = makeRunner({ appliedSpawnIdentity: "claude-opus-5" });
+    recordServiceMcpSpawn("s1", [verseshot]);
+
+    expect(releaseResidentOnServiceMcpChange(asRunner(runner), null)).toBe(false);
+    expect(runner.agent!.kill).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unrecorded session alone, and forgets the record when it releases", () => {
+    const runner = makeRunner({ appliedSpawnIdentity: "claude-opus-5" });
+    expect(releaseResidentOnServiceMcpChange(asRunner(runner), [verseshot])).toBe(false);
+
+    recordServiceMcpSpawn("s1", []);
+    expect(releaseResidentOnServiceMcpChange(asRunner(runner), [verseshot])).toBe(true);
+    runner.setAgent(makeAgent());
+    expect(releaseResidentOnServiceMcpChange(asRunner(runner), [verseshot])).toBe(false);
   });
 });
 
