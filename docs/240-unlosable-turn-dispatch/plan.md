@@ -501,6 +501,103 @@ Producers that reach this: merge-watch wake turns (docs/196, docs/239) and the
 post-rebase follow-up turn (docs/303), which dispatches `{ whenBusy: "queue" }` so a
 message typed during the rebase is answered first.
 
+## Fix G — admission waits for the finished turn's commit
+
+Found by reading, 2026-10-11, and reproduced before any change. Post-turn invariant 1
+("the queue never drains before the finished turn's work is committed") lived inside
+`tryDrain`, so it covered the queue and nothing else. A turn that ends with an **empty**
+queue clears `runner.running` first and commits afterwards — in `runCommitAndPr` on the
+streaming and adapter-`error` paths, and as late as the `done` handler on the one-shot
+path, which opens the interval at `agent_result`. Every gate in `dispatchOnRunner` read
+false in that interval, so a dispatch from outside the queue — a merge-watch wake, a
+consult result, a session report, a quota continuation, an agent-requested restart —
+started a turn on a tree whose last turn was not in git. The reproduction ends each of the
+three paths with an edit and a held-open commit, dispatches a turn whose first act is
+`git reset --hard`, and reads the file back as its pre-turn content.
+
+Same family as Fix E and Fix F: a guard that covered the entry point that existed when it
+was written. `runner.turnCommitPending` already described the interval exactly — the
+executor takes that hold with the lease and drops it when the local commit settles — and
+its only reader was the rewind handler (planning#636).
+
+- **The gate.** `turnBlockedByPendingCommit` (`turn-admission.ts`) is read by
+  `dispatchOnRunner`, which exits through `enqueueOrRefuse` like every other gate, and by
+  `takeRunnableQueuedTurn`, so a release or a drain that runs while the hold is open leaves
+  the entry at the head instead of moving it to the tail (Fix F's rule). A refusing caller
+  is refused, with the commit named as the reason.
+- **The exemption.** A driver-owned step (`systemTurn` with `postTurn: "none"`) passes, as
+  it passes the system-hold gate. Such a turn commits nothing, but it still takes the hold
+  from its result to its exit, and the rebase driver dispatches its next resolution step
+  with `whenBusy: "refuse"`: without the exemption a step could be refused by the hold of
+  the step before it.
+- **The release.** `releaseTurnCommit` (`turn-executor.ts`) calls `releaseQueuedTurn` when
+  the hold comes off, synchronously, from the commit's own `finally` — so the successor
+  starts after the LOCAL commit and before the network half, which is where a queued turn
+  has always started. **Not while a drain of this turn's is in flight**: `tryDrain` parks on
+  the same commit when the queue was not empty, and it starts the successor itself; a
+  release there would start a second one. `drainSettled` is what tells the two apart, and it
+  is now cleared when a drain begins, because an adopted CLI turn re-arms the drain and
+  would otherwise read the previous turn's settled flag. A system turn's own hold still
+  wins: `releaseQueuedTurn` declines while `systemTurnInProgress` is set, and `finishTurn`
+  releases after the network half, as before.
+- **The backstop.** `PostTurnHold` expires on a deadline and says nothing when it does, so
+  an entry queued behind a commit that never settles — or behind a one-shot exit that never
+  arrives — would have no trigger. The executor that took the hold arms one unreferenced
+  timer for that deadline (`onCommitHoldExpired`) and clears it when it releases. It lives
+  in the executor and not beside the queue because of the same drain: a first version armed
+  the timer at the gate, and an independent review showed that it could start a successor
+  while a drain of the finished turn was still parked on the commit — which starts a second
+  one when the commit settles, since the first is still in setup and has not moved the turn
+  epoch. The executor's timer records that hand-over (`drainHandedOver`) and the parked
+  drain stands down on it. The deadline belongs to the runner and not to one hold, so a
+  timer that finds the hold still open — another executor's hold moved the deadline, and
+  that executor's timer went when it released — arms itself again instead of giving up.
+- **A dispatched crash kept no hold at all.** A dispatched turn that dies with partial work
+  reaches its commit through the no-result hook, which ends the turn on the adapter-`error`
+  path. `onError` found the hold already taken by the `done` handler that called the hook,
+  and that handler released it on its way out — so the commit ran with neither the commit
+  hold nor the post-turn lease (invariant 5), and the gate above read nothing. The `done`
+  handler now leaves the release to the error path when the hook started one
+  (`errorPathOwnsHold`). The same review found this; it is older than Fix G.
+- **A typed message waits; it is not queued.** `send_message` starts its turn itself, so it
+  never reached the gate, and the same reproduction through a real WebSocket started the
+  turn inside the interval. Routing it through `dispatch` was tried first and rejected: a
+  released entry runs on the dispatched executor, which runs pre-turn compaction as a
+  system turn and so replaces a resident streaming process the interactive path would have
+  reused (two `pre-turn-compaction` tests caught it). `decideAndRunSend` instead awaits
+  `turnCommitSettled` before its last read of turn state. The wait is bounded by the hold's
+  own deadline, sits inside the send gate so later messages keep their order, and returns
+  as soon as another turn has claimed the runner, at which point the existing check queues
+  the message behind that turn.
+- **An answer is queued.** `answer_question` claims the runner with no gate around it and
+  treats whatever agent it finds as stale, so a turn that started while it waited would be
+  refused, taken for a duplicate, or killed. It takes the branch it already had for a merge
+  hold instead: the answer is dispatched as the user's next message and waits in the queue.
+- **A steer that lost its turn.** The steer branch reads attachments before it writes to the
+  agent. A turn that ended during those reads left the write going to an idle resident
+  process, which starts a turn of its own on the uncommitted tree. The branch now re-reads
+  `running` after the reads and dispatches the message instead. `running` alone is not
+  enough: a queued turn can have started by then, so the branch also compares the turn
+  epoch and the agent in the slot, and dispatches when either moved.
+
+What this does not cover:
+
+- **A turn the CLI starts for itself** (a self-wake, `agent-listeners.ts`) is already
+  running when ShipIt hears of it; nothing can hold it. On the streaming path its own
+  post-turn flow waits for the finished turn's (docs/235-agent-self-wake-liveness §7).
+- **`runRebaseFlow`** is not a turn and does not pass admission. It saves uncommitted work
+  itself before it rebases, so the work is not lost, but it can race the turn's commit for
+  the same edits.
+- **Before the hold is taken.** On the adapter-`error` path `agent-listeners.ts` clears
+  `running` before `onError` reaches `holdPostTurn`, with `settleHandovers` in between. That
+  is a few microtasks, which no timer or I/O callback fits in — except when the turn that
+  errored is one the CLI started for itself while the turn before it was still in its network
+  half: the handover then waits for that flow with no hold open. A quota refusal carried in a
+  result likewise takes the hold only after its stand-down, a microtask later.
+
+One behaviour change for callers: `releaseQueuedTurn` now returns `false` while a commit
+hold is open, where it used to start the entry. The executor's release follows it.
+
 ## Key files
 
 | Area | File | Change |
@@ -532,6 +629,9 @@ message typed during the rebase is answered first.
 | Fix F — gate the take | `src/server/orchestrator/queue-drain.ts` | `takeRunnableQueuedTurn` — the single entry point for taking a queue entry that will be run WITHOUT re-entering `dispatch` |
 | Fix F — the drains | `src/server/orchestrator/ws-handlers/agent-execution.ts`, `dispatched-turn.ts`, `turn-adoption.ts` | Take the head through it; the interactive drain's shift moves *before* its `queue_updated` + `running = true` claim |
 | Fix F — the release | `src/server/orchestrator/queue-drain.ts`, `runner-registry-factory.ts`, `turn-executor.ts` | `releaseQueuedTurn` takes through the same gate (no tail re-queue); the `background_work` listener calls it instead of hand-rolling a drain; `finishTurn` calls it synchronously in a `finally` once `drainSettled` |
+| **Fix G** — the gate | `src/server/orchestrator/turn-admission.ts`, `session-runner.ts`, `queue-drain.ts` | `turnBlockedByPendingCommit`, read by `dispatchOnRunner` and by `takeRunnableQueuedTurn` |
+| Fix G — the release | `src/server/orchestrator/turn-executor.ts` | `releaseTurnCommit` releases the queue once no drain of the turn's is in flight; `onCommitHoldExpired` is the backstop; `drainSettled` cleared when a drain begins; the `done` handler leaves the hold to an error path its hook started |
+| Fix G — typed messages | `src/server/orchestrator/ws-handlers/send-message.ts`, `turn-admission.ts` | `send_message` awaits `turnCommitSettled`; `answer_question` queues; a steer whose turn ended during its attachment reads is dispatched |
 | Fix D — the race | `src/server/orchestrator/ws-handlers/send-message.ts` | Re-reads `runner.running` after `verifyRunningState`, so a released entry isn't raced for the `_agent` slot |
 | Fix D — banner scope | `src/server/shared/types/ws-server-messages/git.ts`, `services/rebase-driver.ts`, `api-routes-git.ts`, `client/hooks/message-handlers/rebase-*.ts` | `sessionId` on the four rebase lifecycle messages; handlers drop foreign ones (the guard `auto_resolve_started` already had) |
 
@@ -598,6 +698,24 @@ message typed during the rebase is answered first.
   behind an errored system turn and asserts exactly one successor starts, which is what an
   awaited release gets wrong. One more in `turn-settlement.test.ts`: a completion callback
   that **throws** does not strand the deferred entry.
+
+- `turn-admission-commit-pending.test.ts` (Fix G) — a real repository, a real commit
+  held open, and a dispatched turn that begins with `git reset --hard`: after a streaming
+  result, between a one-shot result and its exit, after an adapter error, and after a
+  dispatched crash with partial work, the dispatch is queued and the finished turn's edit is
+  in git before the turn starts. Two dispatches in the interval start one successor and
+  commit once; a refusing caller is refused; a driver-owned step is admitted. Three more run
+  the expiry on fake timers: an entry behind a one-shot turn whose exit never arrives starts
+  when the hold expires; it still starts when a second hold extended the deadline and was
+  released; and a turn whose drain is parked on its commit starts one successor, not two,
+  when that commit settles after the expiry — the successor is held in setup so the turn
+  epoch cannot hide a missing hand-over.
+  `integration_tests/system-turn-queue.test.ts` has the typed half through a real WebSocket:
+  a `send_message` sent in the interval starts only after the commit, an `answer_question`
+  is queued and then starts, and a wake that arrives while a message waits runs first.
+  `integration_tests/steer-after-turn-end.test.ts` holds an attachment read open across the
+  end of a turn and asserts that nothing is written to the idle agent until the commit lands,
+  and that nothing is written to a system turn that started in the meantime.
 
 ## Resolved decisions
 

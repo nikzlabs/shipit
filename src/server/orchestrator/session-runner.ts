@@ -33,6 +33,7 @@ import {
   automaticTurnHeldForAnswer,
   readAnswerHold,
   systemTurnBlockedByResidentWork,
+  turnBlockedByPendingCommit,
 } from "./turn-admission.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
@@ -293,6 +294,10 @@ export function dispatchOnRunner(
   }
 
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
+
+  // `running` is already false while the finished turn's edits are still outside git.
+  const uncommitted = turnBlockedByPendingCommit(runner, opts);
+  if (uncommitted) return enqueueOrRefuse(uncommitted);
 
   const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);

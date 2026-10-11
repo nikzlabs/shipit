@@ -15,6 +15,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { decideCompactBeforeTurn, runCompactionAhead, runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
+import { turnCommitSettled } from "../turn-admission.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { settleNetworkModeWrites } from "../services/network-mode-writes.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
@@ -242,6 +243,32 @@ async function decideAndRunSend(
         }
         return;
       }
+      // docs/303 — the dispatch queues the message, and a full queue still
+      // throws: accept only once it is taken, so a refused message marks
+      // nothing taken and submits no card.
+      const queueTypedMessage = (): void => {
+        runnerForQueue.dispatch(prepareDispatch({
+          text: msg.text,
+          agentInterface: undefined,
+          execution: "interactive",
+          images: msg.images,
+          files: msg.files,
+          uploads: msg.uploads,
+          permissionMode: msg.permissionMode,
+          activity: undefined,
+          postTurn: undefined,
+          systemTurn: undefined,
+          automatic: undefined,
+          heldId: undefined,
+          onTurnComplete: undefined,
+          deliveryId: undefined,
+          dictated: msg.dictated,
+          resetMergedBranch: msg.resetMergedBranch,
+          compactContext: msg.compactContext,
+          silent: undefined,
+        }));
+        checklistAccepted();
+      };
       // Adapter capability does not prove the current process was started in streaming mode.
       const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
       const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
@@ -261,6 +288,8 @@ async function decideAndRunSend(
         );
         if (steeringAgent) {
           const capturedSessionId = ctx.getActiveAppSessionId();
+          const turnWasRunning = runnerForQueue.running;
+          const steeredEpoch = runnerForQueue.turnEpoch;
 
           const steerDir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
           let steerFiles: FileAttachment[] = [];
@@ -298,6 +327,16 @@ async function decideAndRunSend(
             imageContext,
             dictated: msg.dictated,
           });
+          // The turn can end during the attachment reads above, and another can start. A steer
+          // would then start a turn of the CLI's own while the finished one commits, or reach a
+          // turn it was never meant for, so the message takes admission instead.
+          const turnEnded = turnWasRunning && !runnerForQueue.running;
+          const turnReplaced = runnerForQueue.turnEpoch !== steeredEpoch
+            || runnerForQueue.getAgent() !== steeringAgent;
+          if (turnEnded || turnReplaced) {
+            queueTypedMessage();
+            return;
+          }
           // Steering bypasses turn setup; update permission mode before sending.
           if (
             runnerForQueue.appliedPermissionMode !== msg.permissionMode &&
@@ -353,30 +392,7 @@ async function decideAndRunSend(
         }
       }
 
-      // docs/303 — the dispatch queues the message, and a full queue still
-      // throws: accept only once it is taken, so a refused message marks
-      // nothing taken and submits no card.
-      runnerForQueue.dispatch(prepareDispatch({
-        text: msg.text,
-        agentInterface: undefined,
-        execution: "interactive",
-        images: msg.images,
-        files: msg.files,
-        uploads: msg.uploads,
-        permissionMode: msg.permissionMode,
-        activity: undefined,
-        postTurn: undefined,
-        systemTurn: undefined,
-        automatic: undefined,
-        heldId: undefined,
-        onTurnComplete: undefined,
-        deliveryId: undefined,
-        dictated: msg.dictated,
-        resetMergedBranch: msg.resetMergedBranch,
-        compactContext: msg.compactContext,
-        silent: undefined,
-      }));
-      checklistAccepted();
+      queueTypedMessage();
       return;
     }
   }
@@ -536,6 +552,9 @@ async function decideAndRunSend(
   // workspace checked. What follows queues or dispatches the message — and the
   // queue itself can still refuse it, so each branch accepts after its own
   // dispatch has been taken.
+  // The last turn's commit can still be open. Wait rather than queue behind it: a released
+  // entry runs on the dispatched executor, which does not reuse a resident agent to compact.
+  await turnCommitSettled(resolveRunner(ctx));
   const turnRunner = resolveRunner(ctx);
   // A turn, merge or system hold (docs/321's restart) can start during the awaits above.
   if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.systemTurnInProgress) {
@@ -624,7 +643,9 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
 
-  if (runnerEarly?.mergeHold) {
+  // Queued, not awaited as a send is: this handler claims the runner with no gate around it,
+  // so a wait here would let a turn start in between and be taken for a stale agent below.
+  if (runnerEarly?.mergeHold || runnerEarly?.turnCommitPending) {
     runnerEarly.dispatch(prepareDispatch({
       text: answerText,
       agentInterface: undefined,
