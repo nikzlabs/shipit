@@ -764,10 +764,11 @@ a program on a first load, 16 to 22 ms on a reload with the same shaders, and
 35 to 44 ms for its first draw. The browser's GPU process used about one CPU
 core for this, and a page that waited on `COMPLETION_STATUS_KHR` got one
 animation frame while the 200 programs linked. The cache variables of Mesa,
-`--disable-gpu-program-cache` and Mesa 25.0.7 did not change these times.
-Another card, host or page can give other numbers. So when you measure a page
-load on the GPU, time the link and the first draws separately, and measure a
-warm load before you expect it to be faster.
+`--disable-gpu-program-cache` and Mesa 25.0.7 did not remove the link or the
+first-draw cost of a reload. Another card, host or page can give other
+numbers. So when you measure a page load on the GPU, time the link and the
+first draws separately, and measure a warm load before you expect it to be
+faster.
 
 What this does not cover:
 
