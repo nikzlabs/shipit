@@ -37,6 +37,45 @@ export class McpConfigController {
     return resolveBridge("mcp-shipit-bridge");
   }
 
+  /**
+   * docs/327 — each declared server becomes an ordinary stdio entry, so every
+   * adapter writes it, and Claude's allowlist covers it, as for an account server.
+   */
+  withServiceMcpServers(params: AgentRunParams): AgentRunParams {
+    const declared = params.serviceMcpServers ?? [];
+    if (declared.length === 0) return params;
+    const proxy = this.serviceProxyPaths();
+    if (!proxy) {
+      for (const server of declared) {
+        this.deps.broadcast({
+          type: "mcp_server_status",
+          data: { name: server.name, state: "failed", reason: "ShipIt's MCP service proxy is missing from this session image" },
+        });
+      }
+      return params;
+    }
+    const names = new Set(declared.map((s) => s.name.toLowerCase()));
+    const entries: McpServerConfig[] = declared.map((server) => ({
+      name: server.name,
+      type: "stdio",
+      command: proxy.tsxBin,
+      // An argument, not env: Codex sets an MCP child's env for the whole process.
+      args: [proxy.bridgePath, server.url],
+      enabled: true,
+    }));
+    return {
+      ...params,
+      mcpServers: [
+        ...(params.mcpServers ?? []).filter((s) => !names.has(s.name.toLowerCase())),
+        ...entries,
+      ],
+    };
+  }
+
+  serviceProxyPaths(): AgentMcpBridge | null {
+    return resolveBridge("mcp-service-proxy");
+  }
+
   // Use the adapter's placeholder rules so the connectivity test sends the same credentials.
   resolveMcpServerConfig(
     server: McpServerConfig,

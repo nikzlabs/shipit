@@ -7,8 +7,9 @@ largest:
 - **A plugin repository** — a whole toolkit that lives in *another* repository:
   services, commands, skills and settings, declared once in this project's
   `shipit.yaml`.
-- **An MCP server** — tools from a running server, connected once per account
-  and available in every session.
+- **An MCP server** — tools from a running server: connected once per account
+  and available in every session, or declared by a project or a plugin on one
+  of its own Compose services and available in that project's sessions only.
 
 This page is what the **user** sees and decides. Writing a plugin is a
 different job and a different page: `/shipit-docs/plugin-authoring.md`. How you
@@ -132,6 +133,9 @@ What an activated plugin gives this project, all from its manifest:
   `</dev/null` when you pass no input. A call that you stop, or that hits your
   shell tool's time limit, stops its command too.
 - **Skills**, which reach you and not the composer's menu.
+- **An MCP server** on one of its services, named after the plugin, which
+  reaches you only in this project's sessions — once this project gives that
+  service a `port:`. See "MCP servers on a project's services", below.
 - **Settings** the consuming project sets, and a state directory of the
   plugin's own.
 - **Declarations of what it needs** — credential names and external hosts —
@@ -317,6 +321,22 @@ process is still resident may therefore keep running without a server the user
 just added or enabled; the next process picks it up. A stdio server's npm
 package is installed during session setup, so that one can need a new session
 before its command exists at all.
+
+### MCP servers on a project's services
+
+A project can also bring its own MCP server, on one of its Compose services:
+the project declares it in `shipit.yaml` (`mcp:`), and a plugin declares it in
+its manifest (`mcp:` under its export). Neither is in Settings, neither uses an
+account slot, and only that project's sessions get it. Declaring one is your
+edit to `shipit.yaml`, like any other — the schema is
+`/shipit-docs/shipit-yaml.md` → `mcp`, and a plugin's server is
+`/shipit-docs/plugins.md` → A plugin's MCP server.
+
+The service can start after you do: ShipIt connects when the service answers,
+and again after it restarts, and you get the tools without a restart. So "the
+tools are missing" in a new session usually means the service is not running
+yet — `shipit service list` answers it. A plugin server that ShipIt does not
+give at all is a problem row on the plugin's card, which names the reason.
 
 ## Who does what
 

@@ -35,6 +35,8 @@ import { readAnswerHold } from "./turn-admission.js";
 import { forgetHeldEntries } from "./held-turns.js";
 import { modelListField } from "../shared/catalogue/model-list.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
+import { resolveServiceMcpServers } from "./service-mcp.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import {
   dependencyGapNotice,
   dependencyGapSummary,
@@ -1219,6 +1221,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get dependencyGap(): DependencyGap | null {
     return this._dependencyGap;
+  }
+
+  serviceMcpServers(): ServiceMcpServer[] | null {
+    return resolveServiceMcpServers(this.sessionDir, this._serviceManager);
   }
 
   async preparePlugins(): Promise<void> {

@@ -40,6 +40,7 @@ import { createPromptRepark, createPromptTakeLedger, type PromptTakeLedger } fro
 import {
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
+  releaseResidentOnServiceMcpChange,
 } from "../resident-spawn-guard.js";
 import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
@@ -363,6 +364,7 @@ async function composeAndRunAgentTurn(
   }
   if (useStreaming) {
     releaseResidentOnStatusCardChange(runner, ctx.credentialStore.getSessionStatusCard());
+    releaseResidentOnServiceMcpChange(runner, runner?.serviceMcpServers?.() ?? null);
   }
   const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
   const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
@@ -625,6 +627,7 @@ async function composeAndRunAgentTurn(
         ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
         ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
         ...(opts.compact ? { compact: true } : {}),
+        serviceMcpServers: runner?.serviceMcpServers?.() ?? [],
       });
     },
     prepareAgentEnv: async (sessionId, id, envOpts) => {

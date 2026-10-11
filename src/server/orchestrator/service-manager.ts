@@ -45,6 +45,8 @@ import { preparePersistDir } from "./compose-persist.js";
 import { noGpuWhy, type SessionGpu } from "./session-gpu.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
+import { pluginServiceMcpServers } from "./service-mcp.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import {
   COMPOSE_OVERRIDE_FILE,
   composeStateDirForWorkspace,
@@ -514,6 +516,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const changed = JSON.stringify(this.pluginServices) !== JSON.stringify(services);
     this.pluginServices = services;
     return changed;
+  }
+
+  /** docs/327 — the MCP servers the resolved plugin services carry. */
+  pluginMcpServers(): ServiceMcpServer[] {
+    return pluginServiceMcpServers(this.pluginServices);
   }
 
   get composeFilePath(): string {

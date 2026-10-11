@@ -1,6 +1,10 @@
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { releaseResidentOnSpawnChange, releaseResidentOnStatusCardChange } from "./resident-spawn-guard.js";
+import {
+  releaseResidentOnServiceMcpChange,
+  releaseResidentOnSpawnChange,
+  releaseResidentOnStatusCardChange,
+} from "./resident-spawn-guard.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAttachmentRefusal } from "./validation.js";
@@ -375,6 +379,7 @@ async function runDispatchedTurnInner(
       if (deps.statusCardEnabled) {
         releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
       }
+      releaseResidentOnServiceMcpChange(runner, runner.serviceMcpServers?.() ?? null);
     }
     // Reuse follows the resident process, even if live steering was since disabled.
     const resident =

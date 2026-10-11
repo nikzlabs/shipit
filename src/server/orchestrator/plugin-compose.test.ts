@@ -83,6 +83,7 @@ use:
 
 function collect(consumer: string, manifest = defaultManifest(), opts: {
   projectServiceNames?: string[];
+  projectMcpNames?: string[];
   containEgress?: boolean;
 } = {}): ReturnType<typeof collectPluginFragments> {
   const { plugins, selfExports } = declare(consumer, manifest);
@@ -92,6 +93,7 @@ function collect(consumer: string, manifest = defaultManifest(), opts: {
     plugins,
     selfExports,
     projectServiceNames: opts.projectServiceNames ?? [],
+    ...(opts.projectMcpNames ? { projectMcpNames: opts.projectMcpNames } : {}),
     containEgress: opts.containEgress ?? false,
   });
 }
@@ -429,6 +431,83 @@ plugins:
 `);
     expect(services).toHaveLength(0);
     expect(issuesByRepo.size).toBe(0);
+  });
+});
+
+describe("MCP servers on plugin services (docs/327)", () => {
+  const MCP_MANIFEST = `
+plugins:
+  probe:
+    compose: tools/probe/docker-compose.yml
+    mcp: { service: probe }
+`;
+  const useWith = (services: string, extra = ""): string => `
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+${services}
+${extra}`;
+
+  it("puts the plugin's server, named after the plugin, on the service the consumer gave a port", () => {
+    const { services, issuesByRepo, mcpIssuesByRepo } = collect(SELF_USE, MCP_MANIFEST);
+    expect(issuesByRepo.size).toBe(0);
+    expect(mcpIssuesByRepo.size).toBe(0);
+    expect(services[0]).toMatchObject({ name: "probe", port: 4820, mcp: { name: "probe", path: "/mcp" } });
+    expect(build(services).services[0]?.mcp).toEqual({ name: "probe", path: "/mcp" });
+  });
+
+  it("follows the consumer's `as` rename, so the URL uses the name the network resolves", () => {
+    const { services } = collect(useWith("        probe: { port: 4820, as: verse-api }"), MCP_MANIFEST);
+    expect(services[0]).toMatchObject({ name: "verse-api", sourceName: "probe", mcp: { name: "probe" } });
+  });
+
+  it("gives no server for a service with no port, and says which key to set, without withholding the service", () => {
+    const { services, issuesByRepo, mcpIssuesByRepo } = collect(useWith("        probe: { autostart: true }"), MCP_MANIFEST);
+    expect(issuesByRepo.size).toBe(0);
+    expect(services).toHaveLength(1);
+    expect(services[0]?.mcp).toBeUndefined();
+    expect(mcpIssuesByRepo.get("mine")?.[0]).toContain("`overrides.services.probe.port`");
+  });
+
+  it("reports a manifest that names a service its fragment does not define", () => {
+    const manifest = MCP_MANIFEST.replace("service: probe", "service: api");
+    const { services, mcpIssuesByRepo } = collect(SELF_USE, manifest);
+    expect(services[0]?.mcp).toBeUndefined();
+    expect(mcpIssuesByRepo.get("mine")?.[0]).toContain("names the service `api`");
+  });
+
+  it("leaves the name to the project's own server", () => {
+    const { services, mcpIssuesByRepo } = collect(SELF_USE, MCP_MANIFEST, { projectMcpNames: ["Probe"] });
+    expect(services[0]?.mcp).toBeUndefined();
+    expect(mcpIssuesByRepo.get("mine")?.[0]).toContain("this project's own `mcp.Probe`");
+  });
+
+  it("gives the name to the first import when a plugin is imported twice", () => {
+    const consumer = `
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+        probe: { port: 4820 }
+  - plugin: probe
+    from: mine
+    alias: second
+    overrides:
+      services:
+        probe: { port: 4821, as: probe-two }
+`;
+    const { services, mcpIssuesByRepo } = collect(consumer, MCP_MANIFEST);
+    expect(services.map((s) => [s.name, s.mcp?.name])).toEqual([["probe", "probe"], ["probe-two", undefined]]);
+    expect(mcpIssuesByRepo.get("mine")?.[0]).toContain("`second`: its MCP server is not given");
   });
 });
 

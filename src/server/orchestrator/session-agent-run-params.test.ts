@@ -4,7 +4,8 @@ import {
   forgetStatusCardSpawn,
   statusCardSpawnValue,
 } from "./session-status-spawn-record.js";
-import type { AgentId, SessionInfo } from "../shared/types.js";
+import type { AgentId, McpServerConfig, ServiceMcpServer, SessionInfo } from "../shared/types.js";
+import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "./service-mcp.js";
 import {
   buildAgentRunParams,
   type BuildAgentRunParamsDeps,
@@ -26,7 +27,12 @@ function setup(
   session: SessionInfo | undefined,
   connectionModel?: string,
   connectionReasoning?: string,
-  opts: { sessionStatusCard?: boolean; agentInstructions?: boolean } = {},
+  opts: {
+    sessionStatusCard?: boolean;
+    agentInstructions?: boolean;
+    accountMcp?: Record<string, McpServerConfig>;
+    serviceMcpServers?: ServiceMcpServer[];
+  } = {},
 ) {
   const captured: PrepareRunParamsInput[] = [];
   const prep: PrepareRunParamsFn = (params, input) => {
@@ -36,7 +42,7 @@ function setup(
   const deps = {
     credentialStore: {
       getAgentSystemInstructionsEnabled: () => opts.agentInstructions === true,
-      getAllMcpServers: () => ({}),
+      getAllMcpServers: () => opts.accountMcp ?? {},
       getAutoCreatePr: () => true,
       getSessionStatusCard: () => opts.sessionStatusCard === true,
     },
@@ -58,6 +64,7 @@ function setup(
       agentId: "claude" as AgentId,
       prompt: "hi",
       sessionDir: "/workspace",
+      ...(opts.serviceMcpServers ? { serviceMcpServers: opts.serviceMcpServers } : {}),
     });
 
   return { run, captured };
@@ -170,5 +177,44 @@ describe("buildAgentRunParams — docs/303 session status card", () => {
     expect(params.sessionStatusCard).toBeUndefined();
     expect(params.systemPrompt).toContain(promptSection("propose-actions.md"));
     expect(params.systemPrompt).not.toContain(promptSection("session-status.md"));
+  });
+});
+
+describe("buildAgentRunParams — docs/327 MCP servers on Compose services", () => {
+  const account = (name: string): McpServerConfig => ({ name, type: "http", url: `https://${name}.example/mcp`, enabled: true });
+  const verseshot = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+
+  it("sends the session's declared servers, and records them for the resident-reuse check", async () => {
+    forgetServiceMcpSpawn("s1");
+    const { run } = setup(makeSession(), undefined, undefined, {
+      accountMcp: { linear: account("linear") },
+      serviceMcpServers: [verseshot],
+    });
+
+    const params = await run();
+
+    expect(params.serviceMcpServers).toEqual([verseshot]);
+    expect(params.mcpServers?.map((s) => s.name)).toEqual(["linear"]);
+    expect(serviceMcpSpawnKey("s1")).toBe(serviceMcpSetKey([verseshot]));
+  });
+
+  it("leaves out an account server whose name a declared server has", async () => {
+    const { run } = setup(makeSession(), undefined, undefined, {
+      accountMcp: { Verseshot: account("Verseshot"), linear: account("linear") },
+      serviceMcpServers: [verseshot],
+    });
+
+    const params = await run();
+
+    expect(params.mcpServers?.map((s) => s.name)).toEqual(["linear"]);
+  });
+
+  it("records an empty set for a session that declares none", async () => {
+    const { run } = setup(makeSession());
+
+    const params = await run();
+
+    expect(params.serviceMcpServers).toBeUndefined();
+    expect(serviceMcpSpawnKey("s1")).toBe(serviceMcpSetKey([]));
   });
 });

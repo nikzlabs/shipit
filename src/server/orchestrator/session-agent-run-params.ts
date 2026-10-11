@@ -10,6 +10,8 @@ import {
 } from "./agent-run-params-prep.js";
 import { serviceRoutingForSelection } from "./service-routing.js";
 import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
+import { recordServiceMcpSpawn } from "./service-mcp.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 
 export interface BuildAgentRunParamsDeps {
   credentialStore: CredentialStore;
@@ -31,6 +33,8 @@ export interface BuildAgentRunParamsArgs {
   sessionDir: string;
   permissionMode?: PermissionMode;
   compact?: boolean;
+  /** docs/327 — the session's declared MCP servers (`resolveServiceMcpServers`). */
+  serviceMcpServers?: ServiceMcpServer[];
 }
 
 export async function buildAgentRunParams(
@@ -49,8 +53,11 @@ export async function buildAgentRunParams(
 
   // Finish DB reads before the first await; shutdown can close the connection during it.
   const agentInstructionsEnabled = deps.credentialStore.getAgentSystemInstructionsEnabled();
+  const serviceMcpServers = args.serviceMcpServers ?? [];
+  // docs/327 — a declared server keeps its name in its own sessions; an account server yields it.
+  const declaredMcpNames = new Set(serviceMcpServers.map((s) => s.name.toLowerCase()));
   const mcpServers = Object.values(deps.credentialStore.getAllMcpServers()).filter(
-    (s) => s.enabled,
+    (s) => s.enabled && !declaredMcpNames.has(s.name.toLowerCase()),
   );
   const replay = deps.sessionManager.consumeConversationReplay(sessionId);
   const sessionInfo = deps.sessionManager.get(sessionId);
@@ -83,6 +90,7 @@ export async function buildAgentRunParams(
   // Only a spawning turn builds run params, so this is the value the process
   // about to start will hold until it is retired.
   recordStatusCardSpawn(sessionId, sessionStatusCard);
+  recordServiceMcpSpawn(sessionId, serviceMcpServers);
 
   const userSystemPrompt = await deps.readSystemPrompt(isOps ? "ops" : "standard");
 
@@ -108,6 +116,7 @@ export async function buildAgentRunParams(
     ...(serviceRouting !== undefined ? { serviceRouting } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
+    ...(serviceMcpServers.length > 0 ? { serviceMcpServers } : {}),
     ...(sessionStatusCard ? { sessionStatusCard: true } : {}),
     ...(compact ? { compact: true } : {}),
   };

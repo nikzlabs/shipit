@@ -122,6 +122,7 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "what's this Plugins tab", "it says something needs a key" | [plugins-and-skills.md](plugins-and-skills.md) — the Plugins tab |
 | "get the latest version of that plugin", "it's out of date" | [plugins-and-skills.md](plugins-and-skills.md) — refreshing |
 | "connect Notion", "let it read our Sentry", "add my own tools" | [plugins-and-skills.md](plugins-and-skills.md) — MCP servers |
+| "give the agent our service's MCP tools", "the plugin's MCP tools are missing" | [plugins-and-skills.md](plugins-and-skills.md) — MCP servers on a project's services |
 | "deploy to my server", "ssh into the box", "run this on production", "give it access to my VPS" | [settings-and-accounts.md](settings-and-accounts.md) — SSH hosts, and `/shipit-docs/ssh.md` for using one |
 | "it can't see my Notion pages any more" | [plugins-and-skills.md](plugins-and-skills.md) — reconnect an expired MCP connection |
 | "connect my Claude account", "sign in to ChatGPT", "where do I put my provider key" | [settings-and-accounts.md](settings-and-accounts.md) — connecting a provider |

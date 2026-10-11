@@ -21,6 +21,12 @@ export interface McpHttpServerConfig {
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
 
+/** docs/327 — an MCP server on a Compose service of the session, given to the agent through a stdio proxy. */
+export interface ServiceMcpServer {
+  name: string;
+  url: string;
+}
+
 export type McpServerState = "loaded" | "failed" | "crashed" | "disabled";
 
 export interface McpServerStatus {

@@ -70,6 +70,7 @@ export async function resolveSessionPluginServices(
     plugins: config.plugins,
     selfExports: config.pluginExports,
     projectServiceNames: project.names,
+    projectMcpNames: config.mcp.map((m) => m.name),
     containEgress: deps.containEgress,
   });
   if (fragments.length === 0) return nothingToSurface(sessionId);

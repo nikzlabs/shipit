@@ -1,6 +1,8 @@
 import type { AgentProcess } from "../shared/types.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { forgetStatusCardSpawn, statusCardSpawnValue } from "./session-status-spawn-record.js";
+import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "./service-mcp.js";
 
 // Clearing the slot bypasses displacement handling. Settle before removing its listeners.
 function resolveResidentToRetire(runner: SessionRunnerInterface): AgentProcess | null {
@@ -140,6 +142,44 @@ function releaseResidentForToggle(runner: SessionRunnerInterface): boolean {
   runner.appliedSpawnIdentity = undefined;
   runner.clearBackgroundTasks();
   forgetStatusCardSpawn(runner.sessionId);
+  return true;
+}
+
+/**
+ * docs/327-service-mcp-servers — a resident holds the MCP servers it was spawned
+ * with. The proxy covers a service that starts later, but not a server the
+ * process was never given: a plugin whose version went live after the first
+ * spawn, or a `shipit.yaml` edit. Null (shipit.yaml unreadable) retires nothing.
+ */
+export function releaseResidentOnServiceMcpChange(
+  runner: SessionRunnerInterface | null | undefined,
+  servers: readonly ServiceMcpServer[] | null,
+): boolean {
+  if (!runner || servers === null) return false;
+  const applied = serviceMcpSpawnKey(runner.sessionId);
+  if (applied === undefined || applied === serviceMcpSetKey(servers)) return false;
+  const resident = resolveResidentToRetire(runner);
+  if (!resident) return false;
+
+  try {
+    resident.removeAllListeners();
+  } catch {
+    // Best-effort listener cleanup.
+  }
+  try {
+    resident.kill();
+  } catch {
+    // Already gone.
+  }
+  if (runner.getAgent() === resident) runner.setAgent(null);
+  runner.isStreamingActive = false;
+  runner.appliedSpawnIdentity = undefined;
+  runner.clearBackgroundTasks();
+  forgetServiceMcpSpawn(runner.sessionId);
+  console.log(
+    `[spawn-switch] released resident agent for ${runner.sessionId}: `
+    + `its MCP servers on Compose services changed, so the next spawn receives the new set`,
+  );
   return true;
 }
 

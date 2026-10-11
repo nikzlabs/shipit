@@ -329,7 +329,7 @@ function liveGenerationsFor(
 async function readRuntimeState(
   sessionId: string | undefined,
   workspaceDir: string,
-  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
+  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose" | "mcp">,
   live: LiveGenerations,
   opts: { containEgress: boolean; projectCompose?: ProjectComposeAccess },
 ): Promise<Record<string, PluginRepoRuntime>> {
@@ -395,21 +395,27 @@ async function readRuntimeState(
 async function collectPluginFragmentIssues(
   workspaceDir: string,
   live: LiveGenerations,
-  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
+  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose" | "mcp">,
   containEgress: boolean,
   projectCompose: ProjectComposeAccess | undefined,
 ): Promise<Map<string, string[]>> {
   // Project compose errors are reported separately.
   const { names: projectServiceNames } = await readProjectServices(config, containEgress, projectCompose);
   try {
-    return collectPluginFragments({
+    const { issuesByRepo, mcpIssuesByRepo } = collectPluginFragments({
       workspaceDir,
       live,
       plugins: config.plugins,
       selfExports: config.pluginExports,
       projectServiceNames,
+      projectMcpNames: config.mcp.map((m) => m.name),
       containEgress,
-    }).issuesByRepo;
+    });
+    const issues = new Map(issuesByRepo);
+    for (const [repo, mcpIssues] of mcpIssuesByRepo) {
+      issues.set(repo, [...(issues.get(repo) ?? []), ...mcpIssues]);
+    }
+    return issues;
   } catch {
     return new Map();
   }

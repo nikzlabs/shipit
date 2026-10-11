@@ -1,7 +1,7 @@
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
 import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
-import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
+import type { McpServerConfig, McpServerStatus, ServiceMcpServer } from "./mcp-types.js";
 
 export type AgentId = "claude" | "codex" | "opencode" | "grok" | "antigravity";
 
@@ -406,6 +406,8 @@ export interface AgentRunParams {
   mcpConfigPath?: string;
   /** Unresolved secret placeholders; the adapter resolves against its environment. */
   mcpServers?: McpServerConfig[];
+  /** docs/327 — the worker adds each as a stdio proxy entry in `mcpServers`. */
+  serviceMcpServers?: ServiceMcpServer[];
   model?: string;
   serviceRouting?: ServiceRouting;
   /** Per-spawn isolation overrides the adapter's home resolver. */

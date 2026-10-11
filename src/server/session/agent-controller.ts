@@ -99,10 +99,11 @@ export class AgentController {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params, runToken, deliveryId } = request.body;
-      if (!agentId || !params) {
+      const { agentId, runToken, deliveryId } = request.body;
+      if (!agentId || !request.body.params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
+      const params = this.deps.mcpConfig.withServiceMcpServers(request.body.params);
       adoptModelList(request.body.modelList);
 
       let startSettled!: () => void;

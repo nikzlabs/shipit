@@ -346,6 +346,8 @@ exports:
         root:
           description: Directory inside the project the plugin reads and writes
           default: docs
+
+      mcp: { service: api, path: /mcp }  # an MCP server for the agent — docs/327-service-mcp-servers
 ```
 
 **Optional credentials and hosts (reqs 23, 24).** Both lists take either a bare

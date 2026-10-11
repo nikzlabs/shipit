@@ -82,6 +82,7 @@ exports:
         root:
           description: Directory the plugin reads and writes
           default: docs
+      mcp: { service: api, path: /mcp } # See "A plugin's MCP server".
 ```
 
 **A declared credential or host is REQUIRED unless the manifest says
@@ -291,9 +292,10 @@ those is not a diff you get to read later; by the time you notice it, it may
 already have run. Stop and surface it to the user.
 
 Containment does not limit what a plugin **tells you to do**, and nothing
-could. A plugin's skills are instructions you follow. A plugin CLI's output is
-material you read and may act on. A plugin service serves pages the user's
-browser loads. All three are the feature working as designed.
+could. A plugin's skills are instructions you follow. A plugin CLI's output,
+and what its MCP tools return, is material you read and may act on. A plugin
+service serves pages the user's browser loads. All of these are the feature
+working as designed.
 
 A plugin is a dependency this project declared, and a more contained one than a
 package in `package.json`: its code runs in another container, which holds none
@@ -383,6 +385,67 @@ from the plugin repository, and your change would reach nobody. Fix the skill
 in the plugin's own repository instead.
 
 Removing the `use` entry removes the skills.
+
+## A plugin's MCP server
+
+A plugin can give you MCP tools from one of its services. Its manifest names
+the service, and the path the server answers on (default `/mcp`):
+
+```yaml
+exports:
+  plugins:
+    verseshot:
+      compose: plugins/verseshot/docker-compose.yml
+      mcp: { service: verseshot, path: /mcp }
+```
+
+- **The server has the plugin's name**, not the alias: `verseshot` above, so
+  its tools are `mcp__verseshot__<tool>`. The plugin's web UI uses that name
+  when it sends you a message, so it never changes. A server whose name is
+  taken is not given to you rather than renamed (see below).
+- **Only this project's sessions get it.** It is not an account MCP server: it
+  is not in Settings, uses none of the account's MCP server slots, and no other
+  project's session has it. If an account MCP server has the same name, this
+  project's sessions get the plugin's server instead.
+- **The service needs a port.** The server is on the port this project gives
+  the service — `overrides.services.<service>.port` in the `plugins.use` entry,
+  the same number that makes the service previewable. With no port, you do not
+  get the server, and the plugin's card says which key to set. Adding the port
+  is an edit to this project's `shipit.yaml`, so tell the user.
+
+**When the tools arrive.** With your agent, ShipIt starts a small proxy for
+each such server. The proxy answers at once and connects to the service when
+the service answers, so a new session whose install takes minutes still gets
+the tools. Until the service answers, the server has no tools.
+
+- On a session whose agent process lives across turns (Claude, by default),
+  the tools appear as soon as the service answers — also in the middle of a
+  turn.
+- On an agent that starts a new process each turn, they are there from the
+  first turn that starts while the service answers.
+- When the server itself is new to your agent process — the plugin's version
+  went live after the process started, or `shipit.yaml` changed — ShipIt starts
+  a new process at the next turn. It continues the same conversation.
+
+**When the service restarts**, the tools stay listed. A call while the service
+is down fails with an error that names the service and its URL; call again
+when `shipit service list` shows it running. The proxy reads the tool list
+again every minute, so a restart that changed the tools reaches you without a
+restart of your agent.
+
+**No tools listed?** Run `shipit service list`: the service is not running yet,
+was never started (`autostart: false`), or has no port. A server that ShipIt
+does not give you at all is a row on the plugin's card in the Plugins tab and a
+line in `shipit plugin status`:
+
+- its service has no port in this project's `plugins.use` entry;
+- the manifest names a service that its compose fragment does not define;
+- the name is taken: this project's own `mcp` server of the same name wins (see
+  [shipit-yaml.md](shipit-yaml.md) → `mcp`), and so does an earlier
+  `plugins.use` entry that imports the same plugin.
+
+Only tools pass through. The server's resources, prompts and `instructions` do
+not reach you; a plugin gives you its guidance in a skill.
 
 ## Refreshing a plugin repository
 
@@ -557,8 +620,8 @@ root, the reserved egress UIDs, or one inside ShipIt's per-session range.
 
 ## When a declared surface does not appear
 
-The surfaces a manifest can declare — services, CLIs, skills, settings, and the
-per-plugin state directory — are wired into a session. If one of them is not
+The surfaces a manifest can declare — services, CLIs, skills, settings, an MCP
+server, and the per-plugin state directory — are wired into a session. If one of them is not
 there, that is reported rather than silent: the repository's card in the Plugins
 tab names the plugin, the surface, and the reason. A command withheld because
 two plugins claim the name, a settings value that no longer matches the
