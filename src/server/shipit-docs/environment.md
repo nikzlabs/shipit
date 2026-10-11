@@ -787,14 +787,24 @@ a program on a first load, 16 to 22 ms on a reload with the same shaders, and
 core for this. Two later browsers, which ran while other processes used the
 CPUs of the host, took about 1.5 times as long. The cause was not examined.
 The test page got no animation frame during the link when it asked for
-`LINK_STATUS` of each program immediately. When it waited on
-`COMPLETION_STATUS_KHR`, it kept about 60 frames each second while 20, 50 and
-100 programs linked, and it got one frame while 150 and 200 programs linked.
+`LINK_STATUS` of each program immediately. A page that animates got few frames
+during the link, even when it waited on `COMPLETION_STATUS_KHR` between
+frames: when it drew into its canvas in each frame, it got about one frame for
+each group of programs that it sent. With groups of 25 to 100 programs, the
+longest gap was 0.5 to 2.3 s. With groups of 1, it got 29 to 41 frames each
+second, and the link took 4.9 to 7.7 s, against 3.3 to 4.6 s with groups of 25
+to 100. Only a page that
+drew nothing in its frames got about 60 frames each second during the link,
+and only with 128 programs or fewer sent at one time. During the first draws,
+the page got one frame for each group of draws: 16 to 25 frames each second
+with one new program for each frame.
 The cache variables of Mesa, `--disable-gpu-program-cache` and Mesa 25.0.7 did
 not remove the link or the first-draw cost of a reload. Another card, host or
 page can give other numbers. So when you measure a page load on the GPU, time
 the link and the first draws separately, measure a warm load before you
-expect it to be faster, and record the load on the host with each run.
+expect it to be faster, and record the load on the host with each run. Do not
+expect a page to keep its animation while it compiles on this route: measure
+its frames during the link and the first draws.
 
 What this does not cover:
 
