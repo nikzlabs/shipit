@@ -61,8 +61,17 @@ function writeCredentials(accountRoot: string, payload: { expiresAt: number }): 
 // Assemble the fake token to avoid triggering the secret scanner.
 const FAKE_OAUTH_TOKEN = ["sk", "ant", "oat01", "F".repeat(40)].join("-");
 
+function accountRootOf(rootDir: string, accountId: string): string {
+  return path.join(rootDir, "provider-accounts", "claude", accountId);
+}
+
 function accountTokenFile(rootDir: string, accountId: string): string {
-  return path.join(rootDir, "provider-accounts", "claude", accountId, ".claude", ".credentials.json");
+  return path.join(accountRootOf(rootDir, accountId), ".claude", ".credentials.json");
+}
+
+function readSourceCredentials(rootDir: string, accountId: string): SeenCredentials {
+  const raw = fs.readFileSync(accountTokenFile(rootDir, accountId), "utf8");
+  return (JSON.parse(raw) as { claudeAiOauth: SeenCredentials }).claudeAiOauth;
 }
 
 function writeBlankedCredentials(accountRoot: string): void {
@@ -114,6 +123,11 @@ function captureLogs(): { lines: string[]; restore: () => void } {
 
 interface SpawnEffect {
   rotateTo?: number;
+  // What the CLI does to the credential file it runs against on invalid_grant.
+  blank?: boolean;
+  sideEffect?: () => void;
+  // Never exits by itself; the test emits "exit" on the child.
+  hang?: boolean;
   debugLog?: string;
   stderr?: string;
   stdout?: string;
@@ -121,8 +135,15 @@ interface SpawnEffect {
   delayMs?: number;
 }
 
+interface SeenCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+}
+
 interface FakeSpawnHandle {
-  invocations: { args: string[]; accountRoot: string }[];
+  invocations: { args: string[]; home: string; credentials: SeenCredentials | null }[];
+  children: ChildProcess[];
   effects: SpawnEffect[];
   spawn: (cmd: string, args?: readonly string[], opts?: { env?: Record<string, string> }) => ChildProcess;
 }
@@ -130,6 +151,7 @@ interface FakeSpawnHandle {
 function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string): FakeSpawnHandle {
   const handle: FakeSpawnHandle = {
     invocations: [],
+    children: [],
     effects: [],
     spawn: (() => undefined as unknown) as FakeSpawnHandle["spawn"],
   };
@@ -137,7 +159,12 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
   handle.spawn = ((cmd, args, opts) => {
     const argArr = Array.from(args ?? []);
     const accountRoot = opts?.env ? getAccountRoot(opts.env) : "";
-    handle.invocations.push({ args: argArr, accountRoot });
+    let credentials: SeenCredentials | null = null;
+    try {
+      const raw = fs.readFileSync(path.join(accountRoot, ".claude", ".credentials.json"), "utf8");
+      credentials = (JSON.parse(raw) as { claudeAiOauth: SeenCredentials }).claudeAiOauth;
+    } catch { /* no credential in this HOME */ }
+    handle.invocations.push({ args: argArr, home: accountRoot, credentials });
     const idx = handle.invocations.length - 1;
     const effect = handle.effects[idx] ?? { exitCode: 0 };
 
@@ -147,6 +174,7 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
     (child as unknown as { stdout: EventEmitter }).stdout = stdout;
     (child as unknown as { stderr: EventEmitter }).stderr = stderr;
     (child as unknown as { kill: (sig?: string) => boolean }).kill = () => true;
+    handle.children.push(child);
 
     const fire = (): void => {
       if (effect.stdout) stdout.emit("data", Buffer.from(effect.stdout, "utf8"));
@@ -162,11 +190,14 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
           }
         }
       }
+      effect.sideEffect?.();
       if (effect.rotateTo !== undefined && accountRoot) {
         writeCredentials(accountRoot, { expiresAt: effect.rotateTo });
       }
+      if (effect.blank && accountRoot) writeBlankedCredentials(accountRoot);
       child.emit("exit", effect.exitCode ?? 0, null);
     };
+    if (effect.hang) return child;
     if (effect.delayMs && effect.delayMs > 0) {
       setTimeout(fire, effect.delayMs);
     } else {
@@ -251,7 +282,7 @@ describe("ClaudeOAuthRefresher", () => {
     rigs = [];
   });
 
-  it("noop when token is healthy and tier1 doesn't rotate", async () => {
+  it("noop without a CLI spawn when the token is healthy", async () => {
     const now = 1_700_000_000_000;
     const future = now + 8 * 60 * 60 * 1000;
     const rig = buildRig({
@@ -260,26 +291,25 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    rig.spawnHandle.effects = [{}];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("noop");
-    expect(rig.spawnHandle.invocations.length).toBe(1);
-    expect(rig.spawnHandle.invocations[0]!.args).toContain("status");
+    expect(rig.spawnHandle.invocations.length).toBe(0);
     expect(rig.repushCalls.length).toBe(0);
     expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
   });
 
   it("rotates via tier1 and repushes to pinned sessions", async () => {
     const now = 1_700_000_000_000;
-    const future = now + 8 * 60 * 60 * 1000;
-    const rotatedTo = now + 16 * 60 * 60 * 1000;
+    const future = now + 40 * 60 * 1000;
+    const rotatedTo = now + 8 * 60 * 60 * 1000;
     const rig = buildRig({
       accounts: [makeAccount("claude-default")],
       initialExpiries: { "claude-default": future },
       initialNow: now,
     });
     rigs.push(rig);
+    const original = readSourceCredentials(rig.rootDir, "claude-default");
     rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
@@ -287,6 +317,11 @@ describe("ClaudeOAuthRefresher", () => {
     expect(result!.afterExpiresAt).toBe(rotatedTo);
     expect(rig.spawnHandle.invocations.length).toBe(1);
     expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
+    // The CLI rotated a private copy; the refresher installed the result into the source.
+    expect(rig.spawnHandle.invocations[0]!.home).not.toBe(accountRootOf(rig.rootDir, "claude-default"));
+    const installed = readSourceCredentials(rig.rootDir, "claude-default");
+    expect(installed.expiresAt).toBe(rotatedTo);
+    expect(installed.accessToken).not.toBe(original.accessToken);
   });
 
   it("falls through to tier2 when tier1 doesn't rotate and token is near expiry", async () => {
@@ -369,10 +404,10 @@ describe("ClaudeOAuthRefresher", () => {
 
   it("classifies runtime 401 invalid-credentials output as unknown_failure (NOT revoked) and keeps retrying", async () => {
     const now = 1_700_000_000_000;
-    const nearExpiry = now + 5 * 60 * 1000;
+    const expired = now - 5 * 60 * 1000;
     const rig = buildRig({
       accounts: [makeAccount("claude-default")],
-      initialExpiries: { "claude-default": nearExpiry },
+      initialExpiries: { "claude-default": expired },
       initialNow: now,
     });
     rigs.push(rig);
@@ -464,6 +499,8 @@ describe("ClaudeOAuthRefresher", () => {
     await rig.refresher.refreshNow("claude-default");
     expect(rig.sseCalls.some((c) => c.event === "claude_account_unauthenticated")).toBe(true);
 
+    // A new sign-in: the rejected grant is never probed again.
+    writeCredentials(accountRootOf(rig.rootDir, "claude-default"), { expiresAt: nearExpiry });
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("rotated_tier1");
     expect(rig.sseCalls.some((c) => c.event === "claude_account_authenticated")).toBe(true);
@@ -493,6 +530,7 @@ describe("ClaudeOAuthRefresher", () => {
     await rig.refresher.refreshNow("claude-default");
     expect(reauthEvents).toEqual([]);
 
+    writeCredentials(accountRootOf(rig.rootDir, "claude-default"), { expiresAt: nearExpiry });
     await rig.refresher.refreshNow("claude-default");
     expect(reauthEvents).toEqual(["claude-default"]);
   });
@@ -521,8 +559,8 @@ describe("ClaudeOAuthRefresher", () => {
 
   it("single-flight: two concurrent refreshNow calls spawn the CLI exactly once", async () => {
     const now = 1_700_000_000_000;
-    const future = now + 8 * 60 * 60 * 1000;
-    const rotatedTo = now + 16 * 60 * 60 * 1000;
+    const future = now + 40 * 60 * 1000;
+    const rotatedTo = now + 8 * 60 * 60 * 1000;
     const rig = buildRig({
       accounts: [makeAccount("claude-default")],
       initialExpiries: { "claude-default": future },
@@ -665,9 +703,9 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.spawnHandle.invocations.length).toBe(0);
     });
 
-    it("heals a within-margin token via a single-flight refresh and returns true", async () => {
+    it("heals a token at its last chance via a single-flight refresh and returns true", async () => {
       const now = 1_700_000_000_000;
-      const nearExpiry = now + 10 * 60 * 1000;
+      const nearExpiry = now + 4 * 60 * 1000;
       const rotatedTo = now + 8 * 60 * 60 * 1000;
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
@@ -681,6 +719,26 @@ describe("ClaudeOAuthRefresher", () => {
       expect(ok).toBe(true);
       expect(rig.spawnHandle.invocations.length).toBe(1);
       expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
+    });
+
+    it("leaves a valid token to the schedule: a turn start inside the margin runs no tick", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{}, {}];
+
+      const [scheduled] = await rig.refresher.refreshNow("claude-default");
+      expect(scheduled!.outcome).toBe("not_rotated");
+      const spawnsAfterScheduledTick = rig.spawnHandle.invocations.length;
+
+      rig.setNow(now + 10 * 60 * 1000);
+      expect(await rig.refresher.ensureFresh("claude-default")).toBe(true);
+      expect(rig.spawnHandle.invocations.length).toBe(spawnsAfterScheduledTick);
+      expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(1);
     });
 
     it("returns false when an expired token can't be refreshed (revoked)", async () => {
@@ -730,6 +788,9 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.spawnHandle.invocations.length).toBe(2);
       expect(rig.spawnHandle.invocations[0]!.args).toContain("status");
       expect(rig.spawnHandle.invocations[1]!.args).toContain("--print");
+      // It tests the token as it is: the copy keeps the real expiry.
+      expect(rig.spawnHandle.invocations[0]!.home).not.toBe(accountRootOf(rig.rootDir, "claude-default"));
+      expect(rig.spawnHandle.invocations[0]!.credentials!.expiresAt).toBe(future);
     });
 
     it("forced: a probe that rotates repushes the new token to pinned sessions", async () => {
@@ -958,6 +1019,241 @@ describe("ClaudeOAuthRefresher", () => {
     });
   });
 
+  describe("private probe copy", () => {
+    const now = 1_700_000_000_000;
+    const inMargin = now + 40 * 60 * 1000;
+
+    function marginRig(): TestRig {
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": inMargin },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      return rig;
+    }
+
+    it("runs both tiers in a private copy and removes it, never in the account root", async () => {
+      const rig = marginRig();
+      const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
+      rig.spawnHandle.effects = [{}, {}];
+
+      await rig.refresher.refreshNow("acct-1");
+
+      expect(rig.spawnHandle.invocations.length).toBe(2);
+      for (const invocation of rig.spawnHandle.invocations) {
+        expect(invocation.home).not.toBe(accountRootOf(rig.rootDir, "acct-1"));
+        expect(fs.existsSync(invocation.home)).toBe(false);
+      }
+      expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toBe(sourceBefore);
+    });
+
+    it("claims a short life in the copy, so the CLI refreshes ahead of the sessions", async () => {
+      const rig = marginRig();
+      const source = readSourceCredentials(rig.rootDir, "acct-1");
+      rig.spawnHandle.effects = [{}, {}];
+
+      await rig.refresher.refreshNow("acct-1");
+
+      const copy = rig.spawnHandle.invocations[0]!.credentials!;
+      expect(copy.accessToken).toBe(source.accessToken);
+      expect(copy.refreshToken).toBe(source.refreshToken);
+      // Well inside the CLI's 5-minute window, which the source (40 minutes left) is not.
+      expect(copy.expiresAt).toBeLessThanOrEqual(now + 60_000);
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(inMargin);
+    });
+
+    it("puts the debug flags before the subcommand, where `auth status` accepts them", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ rotateTo: now + 8 * 60 * 60 * 1000 }];
+
+      await rig.refresher.refreshNow("acct-1");
+
+      const args = rig.spawnHandle.invocations[0]!.args;
+      expect(args.indexOf("--debug")).toBeGreaterThanOrEqual(0);
+      expect(args.indexOf("--debug")).toBeLessThan(args.indexOf("auth"));
+      expect(args.indexOf("--debug-file")).toBeLessThan(args.indexOf("auth"));
+    });
+
+    it("a rejected grant blanks only the copy: revoked, source intact, no tier 2", async () => {
+      const rig = marginRig();
+      const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
+      rig.spawnHandle.effects = [{ blank: true }];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("revoked");
+      expect(result!.reason).toBe("invalid_grant");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+      expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toBe(sourceBefore);
+      expect(rig.sseCalls.map((c) => c.event)).toContain("claude_account_unauthenticated");
+    });
+
+    it("does not spend a grant that it knows is dead a second time", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ blank: true }];
+      await rig.refresher.refreshNow("acct-1");
+
+      const [again] = await rig.refresher.refreshNow("acct-1");
+      expect(again!.outcome).toBe("revoked");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(false);
+      expect(await rig.refresher.ensureFresh("acct-1", { force: true })).toBe(false);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+      expect(rig.sseCalls.filter((c) => c.event === "claude_account_unauthenticated").length).toBe(1);
+
+      writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: now + 8 * 60 * 60 * 1000 });
+      const [signedIn] = await rig.refresher.refreshNow("acct-1");
+      expect(signedIn!.outcome).toBe("noop");
+      expect(rig.sseCalls.map((c) => c.event)).toContain("claude_account_authenticated");
+      expect(await rig.refresher.ensureFresh("acct-1")).toBe(true);
+    });
+
+    it("harvests a session that spent the grant first, and does not report the account revoked", async () => {
+      const rig = marginRig();
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      rig.spawnHandle.effects = [{
+        blank: true,
+        sideEffect: () => writeSessionToken(rig.rootDir, "sess-a", { expiresAt: rotatedTo, accountId: "acct-1" }),
+      }];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("harvested_session");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").accessToken).toBe(`sess_tok_${rotatedTo}`);
+      expect(rig.sseCalls.map((c) => c.event)).not.toContain("claude_account_unauthenticated");
+      expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "acct-1" }]);
+    });
+
+    it("installs the rotation beside a key that another writer changed during the probe", async () => {
+      const rig = marginRig();
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      const sourceFile = accountTokenFile(rig.rootDir, "acct-1");
+      rig.spawnHandle.effects = [{
+        rotateTo: rotatedTo,
+        sideEffect: () => {
+          const source = JSON.parse(fs.readFileSync(sourceFile, "utf8")) as Record<string, unknown>;
+          fs.writeFileSync(sourceFile, JSON.stringify({ ...source, mcpOAuth: { server: "kept" } }), "utf8");
+        },
+      }];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      const installed = JSON.parse(fs.readFileSync(sourceFile, "utf8")) as { mcpOAuth?: unknown };
+      expect(installed.mcpOAuth).toEqual({ server: "kept" });
+    });
+
+    it("keeps a source that changed while the probe ran", async () => {
+      const rig = marginRig();
+      const signedInUntil = now + 7 * 60 * 60 * 1000;
+      let signedIn: SeenCredentials | null = null;
+      rig.spawnHandle.effects = [{
+        rotateTo: now + 8 * 60 * 60 * 1000,
+        sideEffect: () => {
+          writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: signedInUntil });
+          signedIn = readSourceCredentials(rig.rootDir, "acct-1");
+        },
+      }];
+
+      await rig.refresher.refreshNow("acct-1");
+
+      expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(signedIn);
+    });
+
+    it("does not report a sign-in revoked because the token it replaced was rejected", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{
+        blank: true,
+        // No later than the token it replaces, so the expiry cannot show the replacement.
+        sideEffect: () => writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: inMargin }),
+      }];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("noop");
+      expect(rig.sseCalls.map((c) => c.event)).not.toContain("claude_account_unauthenticated");
+      expect(rig.refresher._inspectForTest("acct-1").hasTimer).toBe(true);
+    });
+
+    it("keeps a rotation that it could not install, and installs it on the next tick without a spawn", async () => {
+      const rig = marginRig();
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+
+      const [failed] = await rig.refresher.refreshNow("acct-1");
+      rename.mockRestore();
+      errors.mockRestore();
+
+      expect(failed!.outcome).toBe("not_rotated");
+      expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toBe(sourceBefore);
+      expect(fs.existsSync(rig.spawnHandle.invocations[0]!.home)).toBe(true);
+
+      const [retried] = await rig.refresher.refreshNow("acct-1");
+
+      expect(retried!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+      expect(fs.existsSync(rig.spawnHandle.invocations[0]!.home)).toBe(false);
+    });
+
+    it("after a timeout, reads the copy only when the CLI has exited", async () => {
+      vi.useFakeTimers();
+      try {
+        const rig = marginRig();
+        const rotatedTo = now + 8 * 60 * 60 * 1000;
+        rig.spawnHandle.effects = [{ hang: true }];
+
+        const tick = rig.refresher.refreshNow("acct-1");
+        await vi.advanceTimersByTimeAsync(30_000);
+        // Killed, but not gone: tier 2 has not started on a copy that can still change.
+        expect(rig.spawnHandle.invocations.length).toBe(1);
+
+        writeCredentials(rig.spawnHandle.invocations[0]!.home, { expiresAt: rotatedTo });
+        rig.spawnHandle.children[0]!.emit("exit", null, "SIGKILL");
+        const [result] = await tick;
+
+        expect(result!.outcome).toBe("rotated_tier1");
+        expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+        expect(rig.spawnHandle.invocations.length).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("retry schedule", () => {
+    const now = 1_700_000_000_000;
+
+    // The last chance is 6.5 minutes before expiry, sooner than the backoff in each row.
+    it.each([
+      { failure: "rate-limited", stderr: "HTTP 429 rate_limit_error", ticks: 1, expiresInMin: 8, clamped: 90_000, backoff: 120_000 },
+      { failure: "unclassified", stderr: "", ticks: 2, expiresInMin: 9, clamped: 150_000, backoff: 300_000 },
+    ])("lands a tick before the sessions refresh after $failure failures", async (row) => {
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + row.expiresInMin * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = Array.from({ length: row.ticks * 2 }, () => ({ stderr: row.stderr }));
+      const timeouts = vi.spyOn(globalThis, "setTimeout");
+
+      for (let tick = 0; tick < row.ticks; tick++) await rig.refresher.refreshNow("acct-1");
+      const delays = timeouts.mock.calls.map((call) => call[1]);
+      timeouts.mockRestore();
+
+      expect(rig.refresher._inspectForTest("acct-1").failureCount).toBe(row.ticks);
+      expect(delays).toContain(row.clamped);
+      expect(delays).not.toContain(row.backoff);
+    });
+  });
+
   describe("failure logging", () => {
     it("names a blanked source distinctly from a missing one", async () => {
       const now = 1_700_000_000_000;
@@ -983,7 +1279,7 @@ describe("ClaudeOAuthRefresher", () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
-        initialExpiries: { "acct-1": now + 10 * 60 * 1000 },
+        initialExpiries: { "acct-1": now - 60 * 1000 },
         initialNow: now,
       });
       rigs.push(rig);
@@ -1004,6 +1300,69 @@ describe("ClaudeOAuthRefresher", () => {
       expect(failureLine).toBeDefined();
       expect(failureLine).toContain("— short backoff reason=\"");
       expect(failureLine).not.toContain(FAKE_OAUTH_TOKEN);
+    });
+
+    it("reports a valid token that was not rotated as not_rotated, with the time left", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{}, { stderr: "Error: token refresh did not complete" }];
+
+      const logs = captureLogs();
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(result!.outcome).toBe("not_rotated");
+      expect(result!.reason).toContain("token refresh did not complete");
+      const line = logs.lines.find((entry) => entry.includes("not_rotated failure_count=1"));
+      expect(line).toBeDefined();
+      expect(line).toContain("expires_in=40m — token still valid, retry scheduled reason=\"");
+      expect(logs.lines.some((entry) => entry.includes("unknown_failure"))).toBe(false);
+      expect(rig.refresher._inspectForTest("acct-1").hasTimer).toBe(true);
+    });
+
+    it("keeps tier 1's stdout, which names the account, out of the reason", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now - 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [
+        { stdout: '{\n  "loggedIn": true,\n  "email": "person@example.com",\n  "orgName": "Example Org"\n}' },
+        {},
+      ];
+
+      const logs = captureLogs();
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(result!.outcome).toBe("unknown_failure");
+      expect(result!.reason).not.toContain("example");
+      expect(logs.lines.join("\n")).not.toContain("example");
+    });
+
+    it("does not read a debug timestamp's milliseconds as an HTTP 429", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now - 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [
+        {},
+        { debugLog: "2026-10-11T07:55:36.429Z [DEBUG] Cleared proxy agent cache\n" },
+      ];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("unknown_failure");
     });
   });
 });
@@ -1047,6 +1406,30 @@ describe("summarizeRefreshFailure", () => {
       "POST /v1/oauth/token\nAuthorization: Bearer abcdef\nError: 401 invalid_grant",
     );
     expect(summary).toBe("Error: 401 invalid_grant");
+  });
+
+  it("picks the line that explains the failure out of the CLI's debug noise", () => {
+    const summary = summarizeRefreshFailure([
+      "[ERROR] OAuth refresh failed (expected): Request failed with status code 400",
+      "[ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat '/x/.claude.json'",
+      "[DEBUG] Failed to stat directory /etc/claude-code/.claude/output-styles: ENOENT: no such file or directory",
+      "[DEBUG] Error log sink initialized",
+    ].join("\n"));
+    expect(summary).toBe("[ERROR] OAuth refresh failed (expected): Request failed with status code 400");
+  });
+
+  it("gives each of the three lines a share, so a long line cannot hide the last one", () => {
+    // Short words: one long run of letters is redacted as a possible token.
+    const filler = "ab ".repeat(70);
+    const summary = summarizeRefreshFailure([
+      `Error: first ${filler}`,
+      `Error: second ${filler}`,
+      `Error: third ${filler}`,
+    ].join("\n"));
+    expect(summary).toContain("Error: first");
+    expect(summary).toContain("Error: second");
+    expect(summary).toContain("Error: third");
+    expect(summary.length).toBeLessThanOrEqual(300);
   });
 
   it("caps the excerpt so one runaway line cannot flood the log", () => {
