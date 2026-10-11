@@ -568,10 +568,13 @@ export async function executeAgentTurn(
     if (runner) reopenTurnSetup(runner);
     return true;
   };
-  const finalizeAttemptOutput = (): void => {
-    if (!runner) return;
-    finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
-  };
+  // Through postTurnStep: a throw here would reject recoverAuth, whose caller neither
+  // commits, nor retries, nor clears `running` (post-turn invariant 3).
+  const finalizeAttemptOutput = (): Promise<void> =>
+    postTurnStep("finalize-attempt-output", () => {
+      if (!runner) return;
+      finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
+    });
   // Recovery owns teardown after done stands down. Adoption must finish handing over its guards.
   const settleTurnWithoutRedispatch = async (): Promise<void> => {
     await settleHandovers();
@@ -628,7 +631,7 @@ export async function executeAgentTurn(
         automaticRecoveryInProgress = true;
         // A missing credential can make ensureFresh return before it records auth_failed.
         deps.listenerDeps.onAgentAuthRequired?.(agentId);
-        finalizeAttemptOutput();
+        await finalizeAttemptOutput();
         await retryOnNextAccount(
           {
             routeId,
@@ -643,7 +646,7 @@ export async function executeAgentTurn(
       }
       recordTurnEnd("errored", "The agent's account could not authenticate.");
       // The settle can start a queued turn, which would take over these rows (planning#645).
-      finalizeAttemptOutput();
+      await finalizeAttemptOutput();
       await settleTurnWithoutRedispatch();
       return false;
     }
@@ -660,7 +663,7 @@ export async function executeAgentTurn(
         console.warn("[turn] adopted-turn 401-recovery token repush failed:", err);
       }
       // Before the notice, so its row lands after the output the kill cut short.
-      finalizeAttemptOutput();
+      await finalizeAttemptOutput();
       await postTurnStep("auth-stand-down", standDownAfterAuthHeal);
       await settleTurnWithoutRedispatch();
       return true;
@@ -671,7 +674,7 @@ export async function executeAgentTurn(
     } catch (err) {
       console.warn("[turn] 401-recovery token repush failed:", err);
     }
-    finalizeAttemptOutput();
+    await finalizeAttemptOutput();
     reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);

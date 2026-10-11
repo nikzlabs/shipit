@@ -36,6 +36,7 @@ import {
   localGoalAnswer,
   runClaudeGoalControl,
 } from "./claude-goal.js";
+import { closesTaskNoticeWithoutTurn } from "./task-notice.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { resolveAgentHome } from "../../../shared/agent-home.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
@@ -72,19 +73,6 @@ export function indicatesTurnActivity(raw: ClaudeEvent): boolean {
   if (raw.type === "system") return raw.subtype === "task_notification";
   if (raw.type !== "assistant" && raw.type !== "stream_event") return false;
   return !raw.parent_tool_use_id;
-}
-
-/**
- * Measured on 2.1.284 (docs/235-agent-self-wake-liveness §8): a CLI resumed after its
- * predecessor exited with a background job outstanding closes that job's notice with a
- * `result` that ran no model turn, and only then reads its prompt.
- */
-export function closesTaskNoticeWithoutTurn(raw: ClaudeEvent): boolean {
-  return raw.type === "result"
-    && raw.subtype === "success"
-    && raw.is_error !== true
-    && raw.num_turns === 0
-    && raw.origin?.kind === "task-notification";
 }
 
 interface PendingGoal {

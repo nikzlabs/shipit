@@ -361,49 +361,51 @@ describe("post-turn flow for a self-woken turn", () => {
       runner,
     );
 
+  type StreamingTurn = Awaited<ReturnType<typeof runFirstStreamingTurn>>;
+
+  const accountRoute = {
+    prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
+    routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
+    routeLabel: () => "Work account",
+  };
+
+  async function cutAdoptedTurnShort(
+    extraDeps: Partial<SystemTurnDeps>,
+    beforeCut?: (h: StreamingTurn) => void,
+  ) {
+    const filePath = path.join(repoDir, "file.txt");
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+      extraDeps: {
+        ...accountRoute,
+        ensureAgentTokenFresh: vi.fn().mockResolvedValue(true),
+        ...extraDeps,
+      },
+    });
+    const outcomes = h.listenerDeps.sessionManager.setLastTurnOutcome as ReturnType<typeof vi.fn>;
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+    outcomes.mockClear();
+
+    await selfWake(h.agent);
+    fs.writeFileSync(filePath, "adopted work\n");
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Applying the consult's fix" }],
+    });
+    beforeCut?.(h);
+    h.agent.emit("auth_required");
+    h.agent.emit("done", 0);
+    return { h, outcomes };
+  }
+
+  const notices = (h: { messages: { type: string; [k: string]: unknown }[] }) =>
+    h.messages.filter((m) => m.type === "system_notice");
+
   // docs/140 Phase 6.13 — production 2026-10-11, session 83d3273c: this path ended with no
   // chat row and nothing to continue the work.
   describe("a healed sign-in that cut a CLI-started turn short", () => {
-    const accountRoute = {
-      prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
-      routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
-      routeLabel: () => "Work account",
-    };
-
-    async function cutAdoptedTurnShort(
-      extraDeps: Partial<SystemTurnDeps>,
-      beforeCut?: (h: Awaited<ReturnType<typeof runFirstStreamingTurn>>) => void,
-    ) {
-      const filePath = path.join(repoDir, "file.txt");
-      const h = await runFirstStreamingTurn({
-        onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
-        extraDeps: {
-          ...accountRoute,
-          ensureAgentTokenFresh: vi.fn().mockResolvedValue(true),
-          ...extraDeps,
-        },
-      });
-      const outcomes = h.listenerDeps.sessionManager.setLastTurnOutcome as ReturnType<typeof vi.fn>;
-
-      h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-      await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
-      outcomes.mockClear();
-
-      await selfWake(h.agent);
-      fs.writeFileSync(filePath, "adopted work\n");
-      h.agent.emit("event", {
-        type: "agent_assistant",
-        content: [{ type: "text", text: "Applying the consult's fix" }],
-      });
-      beforeCut?.(h);
-      h.agent.emit("auth_required");
-      h.agent.emit("done", 0);
-      return { h, outcomes };
-    }
-
-    const notices = (h: { messages: { type: string; [k: string]: unknown }[] }) =>
-      h.messages.filter((m) => m.type === "system_notice");
-
     it("continues the work with a turn of ShipIt's own, and says why the output stops", async () => {
       const recordStandDown = vi.fn(() => ({ continues: true }));
       // The continuation is a new turn: the cut one must be committed and settled before it starts.
@@ -506,6 +508,95 @@ describe("post-turn flow for a self-woken turn", () => {
       expect(gitOut("status", "--porcelain")).toBe("");
       expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
 
+      h.runner.dispose({ force: true });
+    });
+  });
+
+  // The finalize writes to SQLite ahead of the commit or the retry (post-turn invariant 3).
+  describe("a row finalize that throws during auth recovery", () => {
+    /** Returns a reading of whether the injected failure was the call that ran. */
+    const failFinalizeOnce = (h: StreamingTurn): (() => boolean) => {
+      let failed = false;
+      const finalize = h.listenerDeps.chatHistoryManager.finalizeInProgress as ReturnType<typeof vi.fn>;
+      finalize.mockImplementationOnce(() => {
+        failed = true;
+        throw new Error("sqlite is having a day");
+      });
+      return () => failed;
+    };
+
+    async function cutDispatchedTurnShort(opts: Parameters<typeof runFirstStreamingTurn>[0]) {
+      const h = await runFirstStreamingTurn(opts);
+      h.agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "Answering the prompt" }],
+      });
+      const finalizeFailed = failFinalizeOnce(h);
+      h.agent.emit("auth_required");
+      h.agent.emit("done", 0);
+      return { h, finalizeFailed };
+    }
+
+    it("still commits and continues a CLI-started turn after a healed renewal", async () => {
+      const continueAfterStandDown = vi.fn(async () => {});
+      let finalizeFailed = (): boolean => false;
+      const { h } = await cutAdoptedTurnShort(
+        { recordStandDown: () => ({ continues: true }), continueAfterStandDown },
+        (turn) => { finalizeFailed = failFinalizeOnce(turn); },
+      );
+
+      await waitFor(() => continueAfterStandDown.mock.calls.length === 1, "the cut turn was continued");
+      expect(finalizeFailed()).toBe(true);
+      expect(gitOut("status", "--porcelain")).toBe("");
+      expect(h.runner.running).toBe(false);
+      expect(h.messages.filter((m) => m.type === "error")).toEqual([]);
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("still commits a CLI-started turn whose renewal was refused", async () => {
+      let finalizeFailed = (): boolean => false;
+      const { h } = await cutAdoptedTurnShort(
+        { ensureAgentTokenFresh: vi.fn().mockResolvedValue(false) },
+        (turn) => { finalizeFailed = failFinalizeOnce(turn); },
+      );
+
+      await waitFor(() => !h.runner.running, "refused turn settled");
+      await waitFor(() => gitOut("status", "--porcelain") === "", "refused turn's edits committed");
+      expect(finalizeFailed()).toBe(true);
+      // The card is posted when the recovery returns, which is after the commit.
+      await waitFor(
+        () => h.messages.some((m) => m.type === "error" && m.message === AGENT_NOT_AUTHENTICATED_MESSAGE),
+        "sign-in card shown",
+      );
+
+      h.runner.dispose({ force: true });
+    });
+
+    it("still re-dispatches a prompt after a healed renewal", async () => {
+      const { h, finalizeFailed } = await cutDispatchedTurnShort({
+        ensureAgentTokenFresh: vi.fn().mockResolvedValue(true),
+      });
+
+      await waitFor(() => h.agent.run.mock.calls.length === 2, "the prompt was re-dispatched");
+      expect(finalizeFailed()).toBe(true);
+
+      h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitFor(() => !h.runner.running, "re-dispatched turn settled");
+      h.runner.dispose({ force: true });
+    });
+
+    it("still retries a prompt on the next account after a refused renewal", async () => {
+      const { h, finalizeFailed } = await cutDispatchedTurnShort({
+        ensureAgentTokenFresh: vi.fn().mockResolvedValue(false),
+        extraDeps: accountRoute,
+      });
+
+      await waitFor(() => h.agent.run.mock.calls.length === 2, "the prompt was retried");
+      expect(finalizeFailed()).toBe(true);
+
+      h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitFor(() => !h.runner.running, "retried turn settled");
       h.runner.dispose({ force: true });
     });
   });

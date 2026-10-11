@@ -958,11 +958,34 @@ re-dispatchable; `quota-continuation.test.ts` → "a stand-down after a sign-in
 renewal"; `adapter.test.ts` → "a task notice left by the previous process";
 `integration_tests/chat-turn-stand-down-wiring.test.ts` for the composer site.
 
-Two weaknesses on this path are older than this phase and are not closed by it.
-`finalizeAttemptOutput()` runs outside `postTurnStep` in `recoverAuth`, so a throw
-there can still skip the teardown behind it. And a continuation whose wake cannot
-be delivered in three attempts leaves the cut turn with no recorded end, because
-the record was left to the continuation.
+**The row finalize in `recoverAuth` could abandon the recovery.**
+`finalizeAttemptOutput()` writes to SQLite and ran bare at four points: before
+the teardown of a refused renewal, before the teardown of a healed adopted turn,
+and before each of the two retries (the quiet re-dispatch and the next-account
+retry). A throw at any of them rejected `recoverAuth`, and the auth listener's
+answer to a rejection is the sign-in card and nothing else — no drain, no commit,
+no retry, and `running` left true. That is post-turn invariant 3 on a path its
+guard test did not reach, and it is not hypothetical once a test makes the
+finalize throw: all four cases timed out. The helper now runs through
+`postTurnStep` itself, so no caller can leave it bare, and each call is awaited
+in the place it already had.
+
+That is a trade of history for liveness, and it is the one invariant 3 makes
+everywhere. The write was already best-effort and stays so: when
+`replaceInProgress` throws and a successor then takes the runner, its reset
+drops the accumulator and the partial rows are gone; when only
+`finalizeInProgress` throws, the rows are saved but the latch is not set, so a
+later finalize in the same turn can write them twice. The rejection handler's
+own finalize could sometimes rescue rows the first one lost, and going on gives
+that up where a retry or a continuation follows. What it buys is that the turn
+is no longer stranded with its work uncommitted. Coverage:
+`turn-self-wake-commit.test.ts` → "a row finalize that throws during auth
+recovery", one case for each of the four. The history in those tests is a mock,
+so they pin that the recovery goes on, not what happens to the rows.
+
+One weakness on this path is older than this phase and is not closed by it: a
+continuation whose wake cannot be delivered in three attempts leaves the cut turn
+with no recorded end, because the record was left to the continuation.
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends

@@ -612,8 +612,8 @@ re-run a prompt (docs/140-live-steering Phase 6.13). The worker counts the same
 way: `AgentController.endTurn` cleared `turnActive` and the delivery id under a
 turn that had not begun, and on the one-shot path nothing sets them again.
 
-**The rule** (`closesTaskNoticeWithoutTurn`, `ClaudeAdapter.dropsStaleNoticeResult`
-in `session/agents/claude/adapter.ts`): the adapter drops a successful zero-turn
+**The rule** (`closesTaskNoticeWithoutTurn` in `session/agents/claude/task-notice.ts`,
+`ClaudeAdapter.dropsStaleNoticeResult` in `adapter.ts`): the adapter drops a successful zero-turn
 result whose origin is a task notification, from the spawn until the CLI first
 shows work on the spawn prompt — a replay, assistant output, or any other
 result. The `agent_self_wake` for the notice is still forwarded, so a
@@ -632,13 +632,31 @@ Two bounds on that rule, both deliberate:
   be seen. Neither is dropped: the test is all of `subtype: "success"`,
   `is_error` not true, `num_turns: 0` and the `task-notification` origin.
 
-**Known gap.** `runClaudeGoalControl` (`claude-goal.ts`) resumes the conversation
-in a process of its own and takes the first `result` as the command's answer. On a
-conversation in this state that is the notice's empty result, so the first goal
-read fails; the second succeeds, because the first one spent the notice.
-Measured, not fixed here.
+**A second reader of the same stream.** `runClaudeGoalControl` (`claude-goal.ts`)
+resumes the conversation in a process of its own and took the first `result` as
+the command's answer. On a conversation in this state that is the notice's empty
+result, so the first goal read failed with an empty message, and the second
+succeeded because the first one had spent the notice. Measured on the same CLI,
+the command's own result follows and is told apart by shape — it carries
+`local_command: "goal"` and no `origin`:
 
-Coverage: `adapter.test.ts` → "a task notice left by the previous process".
+```
+ 1165ms  system/task_notification  status:"stopped"
+ 1936ms  system/init
+ 1937ms  result/success            num_turns:0, result:"", origin:{kind:"task-notification"}
+ 1948ms  system/init
+ 1948ms  assistant (synthetic)     "No goal set. Usage: `/goal <condition>`"
+ 1949ms  result/success            num_turns:0, result:"No goal set. …", local_command:"goal"
+```
+
+The control process now skips a result that matches the same predicate and reads
+on. It needs no window of its own: the process exists for one command, and a
+notice's result is never that command's answer. What it cannot change is that
+the read still spends the notice, so the session's next turn is not told about
+the job.
+
+Coverage: `adapter.test.ts` → "a task notice left by the previous process";
+`claude-goal.test.ts` → "on a thread whose previous process left a background job".
 
 ## Bounds — what this does not do
 
