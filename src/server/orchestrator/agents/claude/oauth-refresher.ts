@@ -23,10 +23,21 @@ import {
 const SAFETY_MARGIN_MS = 45 * 60 * 1000;
 
 // The CLI refreshes a credential only when its file says this little is left (docs/153).
-const CLI_REFRESH_WINDOW_MS = 5 * 60 * 1000;
+export const CLI_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
 // What a probe's private copy claims is left, so that the CLI refreshes it now.
-const PROBE_REMAINING_MS = 60_000;
+export const PROBE_REMAINING_MS = 60_000;
+
+// scripts/probe-claude-refresh.mjs runs these against the real binary.
+export const REFRESH_PROBE_COMMANDS = {
+  tier1: ["auth", "status", "--json"],
+  tier2: ["--print", "ok", "--model", "claude-haiku-4-5-20251001", "--tools", "", "--no-session-persistence"],
+} as const;
+
+// Before the subcommand: `claude auth status` rejects --debug as an unknown option.
+export function withDebugCapture(args: readonly string[], debugFile: string): string[] {
+  return ["--debug", "api", "--debug-file", debugFile, ...args];
+}
 
 const STARTUP_OVERDUE_DELAY_MS = 1_000;
 
@@ -177,6 +188,8 @@ interface AccountState {
   // The source is never blanked, so this is the record that its grant is dead.
   rejectedIdentity: string | null;
   pendingRotation: ProbeHome | null;
+  // Until then a turn start leaves the retry to the schedule's backoff.
+  retryNotBefore: number;
 }
 
 export interface ClaudeOAuthRefresherDeps {
@@ -261,6 +274,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     // Before the last chance the schedule owns the retries; a turn start would only add to them.
     const turnStartMarginMs = Math.min(this.deps.safetyMarginMs, LAST_CHANCE_BEFORE_EXPIRY_MS);
     if (!force && before - now > turnStartMarginMs && !this.sourceGrantIsKnownRejected(accountId)) return true;
+    // A turn start in the backoff would spend it: each one is a probe, and under a 429 a request more.
+    if (!force && now < this.ensureAccountState(accountId).retryNotBefore) return before > now;
     let outcome: RefreshOutcome | null = null;
     try {
       outcome = (await this.runTickForAccount(accountId, force)).outcome;
@@ -294,6 +309,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     const now = this.deps.now();
     const fireAt = expiresAt - this.deps.safetyMarginMs;
     const delay = Math.max(STARTUP_OVERDUE_DELAY_MS, fireAt - now);
+    state.retryNotBefore = 0;
     state.timer = setTimeout(() => {
       state.timer = null;
       void this.runTickForAccount(accountId).catch((err: unknown) => {
@@ -312,6 +328,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     }
     const idx = Math.min(state.failureCount, schedule.length - 1);
     const delay = this.clampToLastChance(accountId, schedule[idx]);
+    state.retryNotBefore = this.deps.now() + delay;
     state.timer = setTimeout(() => {
       state.timer = null;
       void this.runTickForAccount(accountId).catch((err: unknown) => {
@@ -361,6 +378,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       if (pending.outstanding) return this.handleFailure(accountId, before, before, INSTALL_FAILED, false);
       state.pendingRotation = null;
       this.removeProbeHome(pending);
+      // A kept copy that reads as blanked is a rejected grant, as after a probe.
+      if (retried === "rejected") state.rejectedIdentity = pending.seedIdentity;
       const installedAt = this.readSourceExpiresAt(accountId);
       if (retried === "installed" && installedAt !== NO_EXPIRY) {
         return this.handleSuccess(accountId, before, installedAt, "rotated_tier1");
@@ -428,7 +447,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     isNearExpiry: boolean,
   ): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
-    const tier1Log = await this.spawnCli(["auth", "status", "--json"], probe, "tier1", TIER1_TIMEOUT_MS);
+    const tier1Log = await this.spawnCli(probe, "tier1", TIER1_TIMEOUT_MS);
     let probeResult = this.adoptProbeRotation(accountId, probe);
     let after = this.readSourceExpiresAt(accountId);
     if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
@@ -438,17 +457,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     let tier2Log = "";
     if (probeResult === "unchanged") {
       // This fallback makes a billable API call.
-      tier2Log = await this.spawnCli(
-        [
-          "--print", "ok",
-          "--model", "claude-haiku-4-5-20251001",
-          "--tools", "",
-          "--no-session-persistence",
-        ],
-        probe,
-        "tier2",
-        TIER2_TIMEOUT_MS,
-      );
+      tier2Log = await this.spawnCli(probe, "tier2", TIER2_TIMEOUT_MS);
       probeResult = this.adoptProbeRotation(accountId, probe);
       after = this.readSourceExpiresAt(accountId);
       if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
@@ -649,45 +658,59 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     } catch { /* best-effort */ }
   }
 
-  // Never throws, and gives up a rotation only for a source that demonstrably holds another
-  // credential: a file it cannot read proves nothing, and the grant is already spent.
-  private adoptProbeRotation(accountId: string, probe: ProbeHome): ProbeResult {
-    let rotated: Record<string, unknown>;
-    try {
-      rotated = JSON.parse(fs.readFileSync(probe.credentialsFile, "utf8")) as Record<string, unknown>;
-    } catch {
-      return probe.outstanding ? "install_failed" : "unchanged";
-    }
-    const identity = claudeCredentialIdentity(rotated);
-    if (identity === null || identity === probe.seedIdentity
-      || this.readClaudeExpiresAt(probe.credentialsFile) === NO_EXPIRY) {
-      probe.outstanding = false;
-      return isBlankedClaudeCredential(rotated) ? "rejected" : "unchanged";
-    }
-    probe.outstanding = true;
-
-    const sourceFile = this.sourceFileFor(accountId);
+  // What the source holds, set against the credential the copy was made from. "unknown" is a
+  // file that cannot be read or has no credential in a known shape: it proves nothing.
+  private readSourceFor(probe: ProbeHome, sourceFile: string): {
+    state: "same" | "blanked" | "replaced" | "gone" | "unknown";
+    current: Record<string, unknown>;
+  } {
     let current: Record<string, unknown>;
     try {
       current = JSON.parse(fs.readFileSync(sourceFile, "utf8")) as Record<string, unknown>;
     } catch (err) {
-      // Gone is a sign-out; anything else is a read that can succeed next time.
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return "install_failed";
-      probe.outstanding = false;
-      return "superseded";
+      return { state: (err as NodeJS.ErrnoException).code === "ENOENT" ? "gone" : "unknown", current: {} };
     }
-    if (claudeCredentialIdentity(current) !== probe.seedIdentity) {
+    const identity = claudeCredentialIdentity(current);
+    if (identity === probe.seedIdentity) return { state: "same", current };
+    if (identity !== null) return { state: "replaced", current };
+    return { state: isBlankedClaudeCredential(current) ? "blanked" : "unknown", current };
+  }
+
+  // Never throws. A rotation is given up only for a source that is gone (a sign-out) or that
+  // holds another credential: in every other doubt it stays, because its grant is spent.
+  private adoptProbeRotation(accountId: string, probe: ProbeHome): ProbeResult {
+    let rotated: Record<string, unknown> | null = null;
+    try {
+      rotated = JSON.parse(fs.readFileSync(probe.credentialsFile, "utf8")) as Record<string, unknown>;
+    } catch { /* the CLI writes this file only to rotate or to blank it, so it can hold a rotation */ }
+    if (rotated !== null) {
+      const identity = claudeCredentialIdentity(rotated);
+      if (identity === null || identity === probe.seedIdentity) {
+        probe.outstanding = false;
+        return isBlankedClaudeCredential(rotated) ? "rejected" : "unchanged";
+      }
+    }
+    probe.outstanding = true;
+
+    const sourceFile = this.sourceFileFor(accountId);
+    const source = this.readSourceFor(probe, sourceFile);
+    if (source.state === "gone" || source.state === "replaced") {
       console.log(
-        `[claude-oauth-refresh] account=${accountId} the source's token changed while the probe ran`
+        `[claude-oauth-refresh] account=${accountId} the source was ${source.state} while the probe ran`
           + " — the probe's rotation is not installed",
       );
       probe.outstanding = false;
       return "superseded";
     }
+    if (rotated === null || source.state === "unknown") return "install_failed";
+    if (source.state === "blanked") {
+      // Another CLI in the account root lost the grant to this probe and blanked the file.
+      console.log(`[claude-oauth-refresh] account=${accountId} the source was blanked while the probe ran — installing over it`);
+    }
     const tmp = `${sourceFile}.tmp-${process.pid}-${Date.now()}`;
     try {
       // Other CLIs rewrite the source's other keys; only the token is the probe's to replace.
-      fs.writeFileSync(tmp, JSON.stringify({ ...current, claudeAiOauth: rotated.claudeAiOauth }), { mode: 0o600 });
+      fs.writeFileSync(tmp, JSON.stringify({ ...source.current, claudeAiOauth: rotated.claudeAiOauth }), { mode: 0o600 });
       fs.renameSync(tmp, sourceFile);
     } catch (err) {
       try {
@@ -713,18 +736,12 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     return rejected !== null && this.readSourceIdentity(accountId) === rejected;
   }
 
-  private spawnCli(
-    args: string[],
-    probe: ProbeHome,
-    label: "tier1" | "tier2",
-    timeoutMs: number,
-  ): Promise<string> {
+  private spawnCli(probe: ProbeHome, label: "tier1" | "tier2", timeoutMs: number): Promise<string> {
     return new Promise<string>((resolve) => {
       // Tier 1 prints the account's email and organization; keep them out of the log.
       const keepStdout = label === "tier2";
       const debugFile = path.join(probe.home, `${label}.debug.log`);
-      // Before the subcommand: `claude auth status` rejects --debug as an unknown option.
-      const fullArgs = ["--debug", "api", "--debug-file", debugFile, ...args];
+      const fullArgs = withDebugCapture(REFRESH_PROBE_COMMANDS[label], debugFile);
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: probe.home };
       // With this set, the CLI ignores HOME and the copy is not private.
       delete env.CLAUDE_CONFIG_DIR;
@@ -897,6 +914,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         emittedUnauthenticated: false,
         rejectedIdentity: null,
         pendingRotation: null,
+        retryNotBefore: 0,
       };
       this.accounts.set(accountId, state);
     }

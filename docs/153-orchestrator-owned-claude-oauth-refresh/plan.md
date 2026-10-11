@@ -138,12 +138,13 @@ on tick (single-flight via in-process mutex; `force` = a session reported a 401)
         with HOME=<copy>, timeout 60s
   the copy holds a new token → install it into the source, repush, return SUCCESS_TIER2
 
-  the new token cannot be written to the source → keep the copy, short backoff
+  the new token cannot be written to the source, or the source cannot be read
+                                                   → keep the copy, short backoff
   the source holds another token than the copy was made from → conclude nothing, tick again
   invalid_grant (blanked copy, or named in the output):
     harvest again; a session that spent the grant first → HARVESTED_SESSION
     else remember the grant as rejected, emit "auth_required", schedule nothing → REVOKED
-  forced on a healthy token, nothing wrong → NOOP
+  forced on a healthy token, no grant rejection found → NOOP
   429-shaped signal → backoff (2m → 5m → 10m → 30m, cap 30m)          → RATE_LIMITED
   source token still valid → short backoff, log the time left          → NOT_ROTATED
   source token expired     → short backoff, log loudly                 → UNKNOWN_FAILURE
@@ -161,8 +162,10 @@ from extended orchestrator downtime is independent (when start() runs against an
 already-expired source, a refresh tick is scheduled immediately).
 
 A **turn start** (`ensureFresh`) runs a tick only inside those last 7 minutes, when the
-token is expired, or when its grant is known rejected (that tick spawns nothing). Earlier
-in the margin the schedule
+token is expired, or when its grant is known rejected (that tick spawns nothing) — and
+never while a backoff is in force: the first turn start gets its attempt, and the ones
+after it leave the retry to the schedule. Under a 429 each further attempt is one more
+request to the endpoint that is already limiting. Earlier in the margin the schedule
 owns the retries: a turn start cannot do better than the schedule, and when each turn
 start ran its own tick it paid for a billable Tier 2 call and about 5.5 s per turn, and
 re-armed the backoff from "now", which moved the scheduled retry later.
@@ -494,20 +497,27 @@ if the CLI's own 401 handling does.
 
 `adoptProbeRotation` then reads the copy:
 
-- **A new access token** → the copy's `claudeAiOauth` replaces the source's, written
-  by atomic rename with the source's other keys kept, then the usual success path. The
-  install is skipped if the source holds a different credential by then, so that a
-  sign-in or a session's published rotation wins (one gap: Known limits). A credential
-  is identified by a hash of its two tokens, never by the file: other orchestrator-side
-  CLIs run in the account root and rewrite its other keys, and that must not strand a
-  spent grant.
-- **The install fails, or the source cannot be read** (a full disk, a read-only volume,
-  another writer part-way through the file) → the copy is the only place the live grant
-  exists, so it is **kept** (`pendingRotation`) and not deleted with the tick. The next
-  tick installs it right after the harvest, and no tick probes while it waits: the
-  source's grant is spent, and a probe would only be rejected. A rotation is given up
-  only for a source that is gone (a sign-out) or that demonstrably holds another
-  credential.
+- **New tokens** → the copy's `claudeAiOauth` replaces the source's, written by atomic
+  rename with the source's other keys kept, then the usual success path. New tokens are
+  a rotation whatever the copy says about their expiry; without a readable expiry they
+  are still installed, and the source then reads as `missing_credentials` with the live
+  tokens in it. A copy that cannot be read after a probe counts as a possible rotation,
+  because the CLI writes that file only to rotate or to blank it. A credential is identified by a
+  hash of its two tokens, never by the file: other orchestrator-side CLIs run in the
+  account root and rewrite its other keys, and that must not strand a spent grant.
+  What happens next depends on what the source holds by then (`readSourceFor`):
+  - *the credential the copy was made from* → install;
+  - *a blanked credential* → install. Another CLI in the account root lost the grant
+    to this probe and blanked the file; the copy holds that grant's live successor;
+  - *another credential, or no file* (a sign-in, a session's published rotation, a
+    sign-out) → the rotation is given up, so that the newer credential wins (one gap:
+    Known limits);
+  - *anything else* (a file that cannot be read or parsed, a failed write, a failed
+    cleanup) → nothing is proved, so the copy is **kept** (`pendingRotation`) and not
+    deleted with the tick. It is the only place the live grant exists. The next tick
+    installs it right after the harvest, and no tick probes while it waits: the
+    source's grant is spent, and a probe would only be rejected. A kept copy that can
+    no longer be read is still released by a sign-in or a sign-out.
 - **A blanked copy** → `invalid_grant`, and Tier 2 is skipped. The harvest runs once
   more, because a session can spend the grant between the first harvest and the probe;
   if it finds that session, the tick is `harvested_session`. Otherwise the outcome is
@@ -530,7 +540,7 @@ kill is not an exit. If no exit comes within 5 s, the tick goes on without it.
 **Outcomes and logs.** `not_rotated` is new: no rotation, no `invalid_grant`, no 429,
 and the source token is **still valid**; its line carries `expires_in=<N>m`.
 `unknown_failure … — short backoff` keeps its sentence and now means the token is
-expired. With the short claimed life in place, `not_rotated` is the sign that the CLI
+expired, or that its expiry cannot be read. With the short claimed life in place, `not_rotated` is the sign that the CLI
 stopped refreshing a near-expiry copy — the first thing to check after a CLI bump. In
 `reason="…"`, lines that contain `ENOENT` are dropped (the CLI logs each optional file
 it does not find), lines above debug level are preferred, and each of the three lines is capped
@@ -538,6 +548,18 @@ separately, so that a long line cannot hide the last one. Tier 1's stdout names 
 account's email and organization and is kept out of it. Debug timestamps are stripped
 before classification: one ending `.429Z` used to read as an HTTP 429 and select the
 rate-limit backoff.
+
+**Validation.** `node --import tsx scripts/probe-claude-refresh.mjs` runs the installed
+binary with synthetic tokens, an isolated home and working directory, and a local TLS
+recorder that never forwards traffic. It uses the refresher's own command lines and
+constants (`REFRESH_PROBE_COMMANDS`, `CLI_REFRESH_WINDOW_MS`, `PROBE_REMAINING_MS`), and
+checks what the refresher depends on: both tiers accept their command line, neither
+refreshes outside the window, each refreshes a copy that claims one minute and writes
+the result to it, `invalid_grant` blanks the file, and a 429 or a 500 does not. It does
+not check every row of the table (the rejected flag order is history, not a
+dependency). 13 checks, about 3 s, exit 1 on a failure. Run it on
+every bump of `@anthropic-ai/claude-code` in `docker/agent-cli/package.json`; CI does
+not run it, because CI does not install the agent CLIs.
 
 **Options weighed and not taken:**
 
@@ -572,8 +594,8 @@ rate-limit backoff.
 - **The private copy depends on three CLI behaviors** that the CLI does not
   document: it refreshes when the file says 5 minutes or less are left, it writes
   the result to the file it read, and it blanks that file on `invalid_grant` only.
-  A CLI bump can change any of them; nothing in CI tests them (docs/141's CLI
-  contract test does not exist yet).
+  A CLI bump can change any of them. `scripts/probe-claude-refresh.mjs` checks them
+  against the installed binary, but only when someone runs it.
 - **A rotation is in the copy before it is in the source.** If the orchestrator
   dies between the CLI's write and the install, the grant is spent and the new
   token is left in the temp directory, where nothing looks for it; the account
@@ -581,10 +603,16 @@ rate-limit backoff.
   second for Tier 1, a few seconds for Tier 2. It lasts as long as a
   `pendingRotation` waits, which is held in memory only: that covers a failed
   install, not a dead process.
-- **Other orchestrator-side CLIs still run in the account root.** Session naming is
-  one (`namingHome` in `session-namer.ts`). Such a CLI refreshes the source itself
-  when it finds it inside the 5-minute window, and blanks it on `invalid_grant`.
-  The private copy covers the refresher's own probes only.
+- **Other orchestrator-side CLIs still run in the account root.** In the
+  containerized orchestrator there are two: session naming (`claude -p …`, a real
+  model call; `namingHome` in `session-namer.ts`) and the sign-in PTY, which is
+  meant to write there. In local mode the turn CLIs run there too. Such a CLI
+  refreshes the source itself when it finds it inside the 5-minute window, and
+  blanks it on `invalid_grant`. The refresher's probe no longer shares the CLI's
+  own lock in that directory with them. When the probe wins the grant it installs
+  over the blank; when a session CLI wins it, a naming run can still blank the
+  source, as before this fix. (The usage-limits provider and the account identity
+  reader only read the file. Bug-report redaction runs in the flat `/root` home.)
 - **The install's token check and its rename are two steps.** A writer that
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
@@ -845,10 +873,12 @@ history that was moved into the orphan.
 ### Key files (private probe copy, 2026-10)
 
 - `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `createProbeHome`,
-  `adoptProbeRotation`, `claudeCredentialIdentity`, `pendingRotation`,
-  `sourceGrantIsKnownRejected`, `clampToLastChance`
+  `adoptProbeRotation`, `readSourceFor`, `claudeCredentialIdentity`,
+  `pendingRotation`, `sourceGrantIsKnownRejected`, `clampToLastChance`,
+  `retryNotBefore`
 - `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — "private probe
   copy", "retry schedule"
+- `scripts/probe-claude-refresh.mjs` — the same checks against the real binary
 
 ### Key files (harvest before spend, planning#462)
 

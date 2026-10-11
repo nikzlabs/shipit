@@ -721,7 +721,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
     });
 
-    it("leaves a valid token to the schedule: a turn start inside the margin runs no tick", async () => {
+    it("leaves a valid token to the schedule: a turn start before the last chance runs no tick", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
@@ -739,6 +739,25 @@ describe("ClaudeOAuthRefresher", () => {
       expect(await rig.refresher.ensureFresh("claude-default")).toBe(true);
       expect(rig.spawnHandle.invocations.length).toBe(spawnsAfterScheduledTick);
       expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(1);
+    });
+
+    it("does not spend the schedule's backoff at turn starts in the last minutes", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": now + 6 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = Array.from({ length: 6 }, () => ({ stderr: "HTTP 429 rate_limit_error" }));
+
+      for (let turn = 0; turn < 5; turn++) await rig.refresher.ensureFresh("claude-default");
+      expect(rig.spawnHandle.invocations.length).toBe(2);
+      expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(1);
+
+      // A session's 401 is not a turn start: it probes at once.
+      await rig.refresher.ensureFresh("claude-default", { force: true });
+      expect(rig.spawnHandle.invocations.length).toBe(4);
     });
 
     it("returns false when an expired token can't be refreshed (revoked)", async () => {
@@ -1048,7 +1067,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toBe(sourceBefore);
     });
 
-    it("claims a short life in the copy, so the CLI refreshes ahead of the sessions", async () => {
+    it("gives the CLI a copy that holds the source's tokens and claims a short life", async () => {
       const rig = marginRig();
       const source = readSourceCredentials(rig.rootDir, "acct-1");
       rig.spawnHandle.effects = [{}, {}];
@@ -1063,7 +1082,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(inMargin);
     });
 
-    it("puts the debug flags before the subcommand, where `auth status` accepts them", async () => {
+    it("puts the debug flags before the subcommand", async () => {
       const rig = marginRig();
       rig.spawnHandle.effects = [{ rotateTo: now + 8 * 60 * 60 * 1000 }];
 
@@ -1144,6 +1163,37 @@ describe("ClaudeOAuthRefresher", () => {
       expect(installed.mcpOAuth).toEqual({ server: "kept" });
     });
 
+    it("installs over a source that another CLI blanked because this probe won the grant", async () => {
+      const rig = marginRig();
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      rig.spawnHandle.effects = [{
+        rotateTo: rotatedTo,
+        sideEffect: () => writeBlankedCredentials(accountRootOf(rig.rootDir, "acct-1")),
+      }];
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      expect(rig.sseCalls.map((c) => c.event)).not.toContain("agent_auth_failed");
+    });
+
+    it("installs new tokens also when the copy's expiry cannot be read", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{
+        sideEffect: () => fs.writeFileSync(
+          path.join(rig.spawnHandle.invocations[0]!.home, ".claude", ".credentials.json"),
+          JSON.stringify({ claudeAiOauth: { accessToken: "tok_rotated", refreshToken: "rfk_rotated" } }),
+          "utf8",
+        ),
+      }];
+
+      await rig.refresher.refreshNow("acct-1");
+
+      expect(readSourceCredentials(rig.rootDir, "acct-1").accessToken).toBe("tok_rotated");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+    });
+
     it("keeps a source that changed while the probe ran", async () => {
       const rig = marginRig();
       const signedInUntil = now + 7 * 60 * 60 * 1000;
@@ -1206,7 +1256,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(fs.existsSync(rig.spawnHandle.invocations[0]!.home)).toBe(false);
     });
 
-    it("after a timeout, reads the copy only when the CLI has exited", async () => {
+    it("after a timeout, waits for the CLI's exit before it reads the copy", async () => {
       vi.useFakeTimers();
       try {
         const rig = marginRig();
@@ -1274,6 +1324,63 @@ describe("ClaudeOAuthRefresher", () => {
       expect(installed!.outcome).toBe("rotated_tier1");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
       expect(rig.spawnHandle.invocations.length).toBe(1);
+    });
+
+    it("keeps a copy that it cannot read after a probe, and judges it again before any new spawn", async () => {
+      const rig = marginRig();
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      const copyFile = (): string => path.join(rig.spawnHandle.invocations[0]!.home, ".claude", ".credentials.json");
+      rig.spawnHandle.effects = [{ sideEffect: () => fs.writeFileSync(copyFile(), "{", "utf8") }];
+
+      const [unreadable] = await rig.refresher.refreshNow("acct-1");
+
+      expect(unreadable!.outcome).toBe("not_rotated");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+      expect(fs.existsSync(copyFile())).toBe(true);
+
+      writeCredentials(rig.spawnHandle.invocations[0]!.home, { expiresAt: rotatedTo });
+      const [installed] = await rig.refresher.refreshNow("acct-1");
+
+      expect(installed!.outcome).toBe("rotated_tier1");
+      expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+    });
+
+    it("reports the grant revoked when a kept copy turns out to be blanked, without a new spawn", async () => {
+      const rig = marginRig();
+      const home = (): string => rig.spawnHandle.invocations[0]!.home;
+      rig.spawnHandle.effects = [{
+        sideEffect: () => fs.writeFileSync(path.join(home(), ".claude", ".credentials.json"), "{", "utf8"),
+      }];
+      await rig.refresher.refreshNow("acct-1");
+
+      writeBlankedCredentials(home());
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("revoked");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+      expect(rig.sseCalls.map((c) => c.event)).toContain("claude_account_unauthenticated");
+    });
+
+    it("releases a kept rotation that it cannot read when a sign-in replaces the source", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ rotateTo: now + 8 * 60 * 60 * 1000 }];
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+      await rig.refresher.refreshNow("acct-1");
+      rename.mockRestore();
+      errors.mockRestore();
+      const keptHome = rig.spawnHandle.invocations[0]!.home;
+      expect(fs.existsSync(keptHome)).toBe(true);
+
+      fs.writeFileSync(path.join(keptHome, ".claude", ".credentials.json"), "{", "utf8");
+      writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: now + 8 * 60 * 60 * 1000 });
+      const [afterSignIn] = await rig.refresher.refreshNow("acct-1");
+
+      expect(afterSignIn!.outcome).toBe("noop");
+      expect(fs.existsSync(keptHome)).toBe(false);
     });
 
     it("remembers a rejected grant also when the credential has no access token", async () => {
