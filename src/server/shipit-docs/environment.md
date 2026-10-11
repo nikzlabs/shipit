@@ -530,10 +530,10 @@ no durability guarantee and belong in `docker-compose.yml`.
   it as a Compose service. If you leave a job running, ShipIt normally starts
   one turn that names the jobs. It starts none if that turn leaves a job running
   too, or if another turn or a credential change took the agent process before
-  it exited: then you get the note with a later turn, and the user gets a notice
-  in the transcript. A backgrounded `shipit agent run` is the exception, because
-  the consult runs on ShipIt's side and its result starts a turn of its own
-  ([agent.md](agent.md)).
+  it exited: then you get the note with a later turn, and the user normally gets
+  a notice in the transcript. A backgrounded `shipit agent run` is the
+  exception, because the consult runs on ShipIt's side and its result starts a
+  turn of its own ([agent.md](agent.md)).
 - **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
   both are host-backed and re-mounted onto the new container. In-memory state,
   processes, and files written *elsewhere* (outside `/workspace`, `/persist`,

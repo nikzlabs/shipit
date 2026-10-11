@@ -1922,6 +1922,7 @@ describe("post-turn flow for a self-woken turn", () => {
       });
       const agent = makeFakeAgent(() => fs.writeFileSync(path.join(repoDir, "file.txt"), "work\n"));
       const order: string[] = [];
+      runner.on("idle", () => { order.push("idle"); });
       let heldAtReport: boolean | undefined;
       const reportStoppedBackgroundJobs = vi.fn(async () => {
         order.push("report");
@@ -1981,7 +1982,7 @@ describe("post-turn flow for a self-woken turn", () => {
       };
     }
 
-    it("reports them last of all, after the commit and the settlement", async () => {
+    it("reports them last of all, after the commit, the idle signal and the settlement", async () => {
       const h = await startTurn({ deliveryId: "merge-watch:7" });
 
       h.tasks(BUILD);
@@ -1997,7 +1998,7 @@ describe("post-turn flow for a self-woken turn", () => {
         deliveryId: "merge-watch:7",
         mayWake: true,
       });
-      expect(h.order).toEqual(["commit", "settled", "report"]);
+      expect(h.order).toEqual(["commit", "idle", "settled", "report"]);
       expect(h.heldAtReport()).toBe(false);
 
       h.runner.dispose({ force: true });
@@ -2111,6 +2112,30 @@ describe("post-turn flow for a self-woken turn", () => {
       );
 
       await h.exit();
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+
+      h.runner.dispose({ force: true });
+    });
+
+    // A local runner still delivers the later events of a displaced process. One of its
+    // jobs ends, the CLI runs a turn of its own, and that turn's result must not make a
+    // second report, which would be free to start a turn.
+    it("takes no new reading from a process that was displaced", async () => {
+      const h = await startTurn();
+
+      h.tasks(BUILD, RENDER);
+      await h.result();
+      h.runner.running = true;
+      h.agent.emit("superseded");
+      await flush();
+      await flush();
+      expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
+
+      h.tasks(RENDER);
+      await h.notify("b1", "completed");
+      await h.result();
+      await h.exit();
+
       expect(h.reportStoppedBackgroundJobs).toHaveBeenCalledTimes(1);
 
       h.runner.dispose({ force: true });

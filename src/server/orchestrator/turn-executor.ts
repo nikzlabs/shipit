@@ -1458,7 +1458,8 @@ export async function executeAgentTurn(
     // it is taken BEFORE yielding: the await below can span a replay or a wake,
     // and a result must not answer a turn that began while it was waiting.
     resultsObserved += 1;
-    if (!useStreaming) jobsRunningAtResult = new Map(trackedJobs);
+    // A displaced process made its report; a local runner still delivers its later results.
+    if (!useStreaming && !wasSuperseded) jobsRunningAtResult = new Map(trackedJobs);
     const answersThisPrompt = takeResultAttribution();
     if (rearmInFlight === null && gatedResults === 0) {
       // Capture before an await lets adoption reset the live summary.

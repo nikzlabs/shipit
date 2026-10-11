@@ -85,8 +85,8 @@
 - [x] `services/stopped-background-jobs.ts` wakes the session with a turn that
       names the jobs; its own turn starts no second wake, and a consult in
       flight takes the note on its own wake
-- [x] A displaced process reports from `superseded`, and starts no turn unless
-      one already holds the runner
+- [x] A displaced process reports once, from `superseded`, and that report
+      starts no turn
 - [x] A Stop by the user is latched ahead of the listeners that adopt the
       stopped process's notification
 - [x] Every system turn carries the one-shot note in its prompt prefix

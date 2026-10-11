@@ -724,7 +724,7 @@ The service then does one of four things:
 | The ordinary case | `wakeSessionWithTurn` starts a system turn whose prompt (`prompts/stopped-background-jobs-wake.md`) names the jobs. If that turn never reaches the agent, the prompt is parked as a pending agent notice. |
 | The turn that ended **was this wake** | No second wake. The prompt is parked as a pending agent notice for the next turn, and the transcript gets a `warn` notice for the user. This is what stops a loop when the agent backgrounds a job again. |
 | A `shipit agent run` consult is in flight | No wake. The prompt is parked, and it rides the turn that the consult's result starts (docs/287-consult-result-delivery). One of the jobs is then likely the consult's own local command, and the description cannot say which, so the prompt carries a sentence that a consult must not be run again. |
-| The process was **displaced** (`mayWake: false`, below) | No wake. The prompt is parked and the user gets the `warn` notice. |
+| The process was **displaced** (`mayWake: false`, below) | No wake. The prompt is parked and the user gets the `warn` notice. With a consult in flight the row above applies first, so there is no notice. |
 
 The wake recognises its own turn by the **delivery id** it dispatched with
 (`stopped-background-jobs:<uuid>`), which the executor passes back with the report. A
@@ -737,9 +737,12 @@ runner in the 5 s after the result: a queued one, which the one-shot path starts
 `superseded` on the old one, and a container runner drops the old process's later events
 at its run-token guard — `done` included. A credential change, a spawn-identity change
 and an account failover retire a process the same way. So the `superseded` handler
-reports too, from the reading taken at the result, and the report empties the reading
-so that a `done` which does still arrive (the local runner has no such guard) reports
-nothing a second time. Two things are different on this path:
+reports too, from the reading taken at the result. That is the process's one report:
+the report empties the reading, and a displaced process takes no new one. The second
+half matters on the local runner, which has no such guard and still delivers the later
+events of a process it displaced — a job that ends, the turn the CLI runs for it, and
+that turn's result, which would otherwise fill the reading again for `done` to report
+with leave to start a turn. Two things are different on this path:
 
 - **The report starts no turn.** A one-shot turn commits in `done`, or before the drain
   when the queue is not empty. A process retired with an empty queue — a credential
@@ -800,6 +803,10 @@ chain section of `/shipit-docs/sessions.md` state the same rule.
   off) gets the wake but not the note.
 - A displaced process gets no wake. When a dispatched turn displaced it, the note waits
   for the turn after that one, and the user's notice is the only prompt for it.
+- A parked note is the session's pending agent notice, which it shares. A branch sync and
+  a manual reset replace that whole field on purpose (`setPendingAgentNotice`: branch
+  movement supersedes earlier notices), so a parked note that no turn has read is lost
+  then. The user's transcript notice is not.
 - The Stop record is per turn. A Stop on this process is missed when another turn claims
   the runner before this process sends one more event, and the report then leaves a
   note. A Stop on a successor that is still in setup when it displaces this process
