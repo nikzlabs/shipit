@@ -11,7 +11,7 @@ import { modelSelectionOf } from "../session-agent-env.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import { loadPrompt } from "../load-prompt.js";
 
-/** What stopped the turn. It chooses what the continuation turn is told, and nothing else. */
+/** Selects what the continuation turn is told; routing and timing never read it. */
 export type StandDownCause = "quota" | "auth";
 
 const CONTINUATIONS: Record<StandDownCause, { text: string; activity: string }> = {

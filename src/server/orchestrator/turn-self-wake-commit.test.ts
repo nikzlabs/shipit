@@ -9,6 +9,7 @@ import type { SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./ws-handlers/agent-auth-handler.js";
+import { interruptAgentTurn } from "./services/agent-interrupt.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 
@@ -350,6 +351,16 @@ describe("post-turn flow for a self-woken turn", () => {
     h.runner.dispose({ force: true });
   });
 
+  const pressStop = (runner: SessionRunner): boolean =>
+    interruptAgentTurn(
+      {
+        sessionManager: { dropPendingCompactionNote: vi.fn() },
+        broadcastLog: vi.fn(),
+        postInterruptCommitDeps: {} as never,
+      },
+      runner,
+    );
+
   // docs/140 Phase 6.13 — production 2026-10-11, session 83d3273c: this path ended with no
   // chat row and nothing to continue the work.
   describe("a healed sign-in that cut a CLI-started turn short", () => {
@@ -366,8 +377,11 @@ describe("post-turn flow for a self-woken turn", () => {
       const filePath = path.join(repoDir, "file.txt");
       const h = await runFirstStreamingTurn({
         onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
-        ensureAgentTokenFresh: vi.fn().mockResolvedValue(true),
-        extraDeps: { ...accountRoute, ...extraDeps },
+        extraDeps: {
+          ...accountRoute,
+          ensureAgentTokenFresh: vi.fn().mockResolvedValue(true),
+          ...extraDeps,
+        },
       });
       const outcomes = h.listenerDeps.sessionManager.setLastTurnOutcome as ReturnType<typeof vi.fn>;
 
@@ -426,7 +440,8 @@ describe("post-turn flow for a self-woken turn", () => {
       h.runner.dispose({ force: true });
     });
 
-    it("asks for a message when ShipIt cannot continue the work itself", async () => {
+    // The manager keeps the session and resumes it itself (docs/306-quota-continuation req 3).
+    it("does not ask for a message when no credential is free to continue now", async () => {
       const continueAfterStandDown = vi.fn(async () => {});
       const { h, outcomes } = await cutAdoptedTurnShort({
         recordStandDown: () => ({ continues: false }),
@@ -439,6 +454,8 @@ describe("post-turn flow for a self-woken turn", () => {
       const [notice, ...others] = notices(h);
       expect(others).toEqual([]);
       expect(notice).toMatchObject({ level: "warn" });
+      expect(notice?.message).toContain("as soon as one of your credentials is free");
+      expect(notice?.message).not.toMatch(/send a message/i);
       expect(outcomes).toHaveBeenCalledWith("s1", "errored");
       expect(continueAfterStandDown).not.toHaveBeenCalled();
       expect(h.agent.run).toHaveBeenCalledTimes(1);
@@ -446,13 +463,21 @@ describe("post-turn flow for a self-woken turn", () => {
       h.runner.dispose({ force: true });
     });
 
-    it("does not continue a turn the user stopped", async () => {
+    // The 401 has already killed the process, so this Stop finds no agent to signal.
+    it("does not continue a turn the user stops while the sign-in is renewed", async () => {
+      let finishHeal: (healed: boolean) => void = () => {};
+      const healing = new Promise<boolean>((resolve) => { finishHeal = resolve; });
       const recordStandDown = vi.fn(() => ({ continues: true }));
       const continueAfterStandDown = vi.fn(async () => {});
-      const { h, outcomes } = await cutAdoptedTurnShort(
-        { recordStandDown, continueAfterStandDown },
-        (turn) => { turn.runner.wasInterrupted = true; },
-      );
+      const { h, outcomes } = await cutAdoptedTurnShort({
+        ensureAgentTokenFresh: () => healing,
+        recordStandDown,
+        continueAfterStandDown,
+      });
+      await flush();
+
+      expect(pressStop(h.runner)).toBe(true);
+      finishHeal(true);
 
       await waitFor(() => !h.runner.running, "stopped turn settled");
       await waitFor(() => gitOut("status", "--porcelain") === "", "stopped turn's edits committed");
@@ -506,6 +531,28 @@ describe("post-turn flow for a self-woken turn", () => {
 
     h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => !h.runner.running, "re-dispatched turn settled");
+    h.runner.dispose({ force: true });
+  });
+
+  it("does not re-dispatch a prompt the user stops while the sign-in is renewed", async () => {
+    let finishHeal: (healed: boolean) => void = () => {};
+    const healing = new Promise<boolean>((resolve) => { finishHeal = resolve; });
+    const h = await runFirstStreamingTurn({ ensureAgentTokenFresh: () => healing });
+
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Answering the prompt" }],
+    });
+    h.agent.emit("auth_required");
+    await flush();
+
+    expect(pressStop(h.runner)).toBe(true);
+    finishHeal(true);
+
+    await waitFor(() => !h.runner.running, "stopped turn settled");
+    expect(h.agent.run).toHaveBeenCalledTimes(1);
+    expect(h.messages.filter((m) => m.type === "error")).toEqual([]);
+
     h.runner.dispose({ force: true });
   });
 

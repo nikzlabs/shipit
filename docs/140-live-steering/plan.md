@@ -919,14 +919,22 @@ Two defects met in that incident, and each is fixed where it lives:
     hold and after the commit — the same position, for the same three reasons,
     as docs/306's;
   - it posts a persisted notice that names the credential and says what ShipIt
-    is doing: continuing the work, or — when nothing can continue it — asking
-    for a message. Like the quota notice it says nothing about which kind of
-    turn was cut;
+    is doing: continuing the work now, or continuing it as soon as a credential
+    is free. The manager keeps the session for that second case and resumes it
+    itself, so neither wording asks for a message (docs/306-quota-continuation
+    req 3). Like the quota notice it says nothing about which kind of turn was
+    cut;
   - it records the turn's end (`errored`) when no continuation will record one
     of its own, so docs/324-scheduled-sessions does not read a cut turn as the
     predecessor's `ok`;
   - it stands down from all of that when the user stopped the turn: a Stop is
-    the user's last word, and a continuation would overrule it;
+    the user's last word, and a continuation would overrule it. Seeing that
+    Stop took a change of its own. The 401 has already killed the process, so a
+    Stop pressed while the sign-in is renewed found no agent to signal and was
+    dropped (`interruptAgentTurn` returned false). `willRecoverAuth` now reopens
+    the turn's setup phase, which is where a Stop with no process is recorded.
+    The same record ends the quiet retry of a *dispatched* prompt, which had
+    lost such a Stop and run the prompt again;
   - it runs through `postTurnStep`, for Phase 6.12's reason: it writes to SQLite
     ahead of the commit, inside an un-awaited listener.
 
@@ -934,14 +942,27 @@ Two defects met in that incident, and each is fixed where it lives:
   ordinary quiet retry and then the sign-in card. A credential that keeps
   failing therefore ends at the card and cannot loop.
 
+  None of that reached the turn in the incident's own position until the hooks
+  were wired where a composer message builds its executor: only the runner's
+  dispatch passed them, so a turn adopted on a chat-started process had no
+  manager to ask. docs/306-quota-continuation → "A second cause" has the detail.
+
 Coverage, each verified red with its part of the change removed:
 `turn-self-wake-commit.test.ts` → "a healed sign-in that cut a CLI-started turn
-short" (continues after the commit and says why; asks for a message when nothing
-can continue; leaves a stopped turn alone; still commits and continues when the
-notice cannot be persisted), plus a guard that a task notice ahead of the answer
-leaves the prompt re-dispatchable; `quota-continuation.test.ts` → "a stand-down
-after a sign-in renewal"; `adapter.test.ts` → "a task notice left by the previous
-process".
+short" (continues after the commit and says why; asks for no message when no
+credential is free; does not continue a turn stopped through the real Stop path
+while the sign-in is renewed; still commits and continues when the notice cannot
+be persisted), "does not re-dispatch a prompt the user stops while the sign-in is
+renewed", plus a guard that a task notice ahead of the answer leaves the prompt
+re-dispatchable; `quota-continuation.test.ts` → "a stand-down after a sign-in
+renewal"; `adapter.test.ts` → "a task notice left by the previous process";
+`integration_tests/chat-turn-stand-down-wiring.test.ts` for the composer site.
+
+Two weaknesses on this path are older than this phase and are not closed by it.
+`finalizeAttemptOutput()` runs outside `postTurnStep` in `recoverAuth`, so a throw
+there can still skip the teardown behind it. And a continuation whose wake cannot
+be delivered in three attempts leaves the cut turn with no recorded end, because
+the record was left to the continuation.
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends

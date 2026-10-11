@@ -564,6 +564,8 @@ export async function executeAgentTurn(
   const willRecoverAuth = (): boolean => {
     if (!canRecoverAuth) return false;
     automaticRecoveryInProgress = true;
+    // No process holds the slot until recovery ends, so a Stop is recorded as one during setup.
+    if (runner) reopenTurnSetup(runner);
     return true;
   };
   const finalizeAttemptOutput = (): void => {
@@ -853,12 +855,13 @@ export async function executeAgentTurn(
     }
     const routeId = capturedCredentialRoute?.providerRouteId;
     const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "this account";
+    // Not now means the manager resumes the session itself, so neither wording asks for a message.
     const outcomeLog = continuationPending
       ? "ShipIt is continuing the work"
-      : "the work waits for a message";
+      : "no credential is free; ShipIt will resume when one is";
     const outcomeNotice = continuationPending
       ? "The sign-in works again, and ShipIt is continuing the work."
-      : "The sign-in works again. Send a message to have the agent continue.";
+      : "ShipIt will continue the work as soon as one of your credentials is free.";
     console.log(
       `[turn] the sign-in renewal for ${sessionId} stopped a CLI-started turn; ${outcomeLog}`,
     );

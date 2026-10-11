@@ -153,8 +153,9 @@ nothing: the turn the user sent runs again. One case leaves a trace. When the
 renewal lands while the agent is working on a turn it started itself — after a
 background job or a consult came back — that turn cannot be run again, so the
 transcript gets a **notice** saying the sign-in was renewed, and ShipIt starts a
-turn that continues the work. Nothing is asked of the user, unless the notice
-itself says to send a message.
+turn that continues the work. Nothing is asked of the user. When no credential
+is free at that moment, the notice says so, and ShipIt continues the work when
+one is.
 
 Background work ShipIt does *outside* a turn — naming the session, writing a
 pull-request description — fails quietly instead, as a **notice** card saying

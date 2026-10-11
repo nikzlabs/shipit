@@ -176,6 +176,18 @@ retries are shared. Nothing is benched on this path, so the router is asked with
 no route excluded and the renewed credential itself counts as a way to continue.
 The requirements here are about quota and are unchanged.
 
+**Both executors take the hooks, and until that phase only one did.** A turn has
+two composition sites: the runner's dispatch (`runner-registry-factory.ts`) and
+the composer's `runAgentWithMessage` (`ws-handlers/agent-execution.ts`). Only the
+first passed `recordStandDown` / `continueAfterStandDown`. A resident CLI that a
+chat message started adopts its own turns through the *second* executor, so a
+stand-down there asked nobody, registered nothing, and still posted a notice
+that promised a continuation — for quota as well as for a sign-in. The unit
+tests inject the hooks and could not see it. The composer site now passes the
+manager through `AppCtx.quotaContinuation` (`route-registry.ts`), pinned by
+`integration_tests/chat-turn-stand-down-wiring.test.ts`, which sends a real
+composer message and follows the hooks to the continuation turn.
+
 ## Known gaps
 
 Named rather than hidden; the first is the one most worth closing next.
@@ -221,7 +233,9 @@ Named rather than hidden; the first is the one most worth closing next.
 - `src/server/orchestrator/session-runner.ts` — `recordStandDown` /
   `continueAfterStandDown` on `SystemTurnDeps`.
 - `src/server/orchestrator/runner-registry-factory.ts`,
-  `bootstrap-managers.ts`, `startup-monitors.ts` — wiring and shutdown.
+  `ws-handlers/agent-execution.ts` — the two executors that take the hooks.
+- `bootstrap-managers.ts`, `route-registry.ts`, `startup-monitors.ts` — wiring
+  and shutdown.
 
 ## Coverage
 

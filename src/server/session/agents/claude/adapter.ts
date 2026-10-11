@@ -145,7 +145,6 @@ export class ClaudeAdapter
   // not run beside a turn; and it runs where the turn ran. Tracks the CLI's own
   // turns too, not just the ones ShipIt dispatched — see `indicatesTurnActivity`.
   private turnLive = false;
-  // The CLI has shown no work on the prompt this process was spawned with.
   private spawnPromptUnread = false;
   private lastCwd: string | undefined;
   private spawnHomeOverride: string | undefined;

@@ -30,6 +30,7 @@ import type { SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
 import type { GenerateText } from "../non-turn-model.js";
 import type { RequestedRestartTurn } from "../services/agent-restart-request.js";
+import type { QuotaContinuationManager } from "../services/quota-continuation.js";
 
 export type { QueuedMessage };
 
@@ -126,6 +127,8 @@ export interface AppCtx {
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
   /** docs/324-agent-requested-compaction — likewise. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/306-quota-continuation — likewise: a resident CLI starts its own turns here too. */
+  quotaContinuation?: Pick<QuotaContinuationManager, "recordStandDown" | "continueNow">;
 
   recordAgentRateLimits?: (
     agentId: AgentId,

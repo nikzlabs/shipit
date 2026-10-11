@@ -13,4 +13,5 @@
 - [x] Independent cross-model review; findings fixed or recorded under "Known gaps"
 - [x] docs/140 phase 6.12 marked superseded in part, with the reason
 - [x] The same wake continues a CLI-started turn that a renewed sign-in cut short (docs/140 Phase 6.13)
+- [x] The composer's executor takes the stand-down hooks too, not only the runner's dispatch
 - [ ] Record a stall when a continuation is refused by every credential (see "Known gaps")
