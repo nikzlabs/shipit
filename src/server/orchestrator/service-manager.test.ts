@@ -23,7 +23,7 @@ import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-
 import { serializeStackOp } from "./stack-op-queue.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import { markPreviewReachable, forgetStackUp } from "./preview-timing.js";
-import { recordedOverride, testServiceManager } from "./compose-test-helpers.js";
+import { FakeConfinedCompose, recordedOverride, testServiceManager } from "./compose-test-helpers.js";
 import { joinSessionNetworkEndpoints } from "./service-manager-setup.js";
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { fakeNetworkDocker } from "./session-network-test-helpers.js";
@@ -508,26 +508,61 @@ services:
     const ORCHESTRATOR = os.hostname();
     const flushStackQueue = () => serializeStackOp(SESSION, async () => {});
 
-    function harness(dir: string, hooks: { beforeDown?: () => Promise<void>; duringUp?: () => Promise<void> } = {}) {
-      writeCompose(dir, "services:\n  web:\n    image: node:22\n    ports: ['3000:3000']\n");
+    type Hook = () => Promise<void> | void;
+    function harness(
+      dir: string,
+      hooks: { beforeDown?: Hook; duringRead?: Hook; duringBuild?: Hook; beforeUp?: Hook; duringUp?: Hook; duringStop?: Hook } = {},
+      service = "image: node:22",
+    ) {
+      writeCompose(dir, `services:\n  web:\n    ${service}\n    ports: ['3000:3000']\n`);
       const net = fakeNetworkDocker();
       let agentRuns = true;
       const releaseRequests: string[] = [];
+      const runs: string[] = [];
+      let created = 0;
+      let downHeld: Promise<void> | undefined;
       // The stop paths take the manager out of the registry before they stop it.
       const registered = new Set<unknown>();
-      const composeRunner: ComposeRunner = async (args) => {
+      // A command that a time limit ends: the process is killed.
+      const untilAborted = (signal: AbortSignal | undefined): Promise<void> =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("killed")), { once: true });
+        });
+      const composeRunner: ComposeRunner = async (args, _cwd, _onOutput, signal) => {
         if (args.includes("up")) {
-          // Compose finds or creates the network, then creates its containers, then starts them.
+          runs.push("up");
+          // It pulls a missing image first. Then it finds or creates the network, creates its
+          // containers, and starts them.
+          await hooks.beforeUp?.();
           net.seed(NETWORK);
           await hooks.duringUp?.();
           net.createContainers(NETWORK, ["web-1"]);
+          created += 1;
           net.composeStart(["web-1"]);
+          runs.push("started");
         }
         if (args.includes("down")) {
+          runs.push("down");
+          // It removes the containers that it listed when it began.
+          const listed = created;
           await hooks.beforeDown?.();
-          net.composeDown(NETWORK, ["web-1"]);
+          if (downHeld) await Promise.race([downHeld, untilAborted(signal)]);
+          if (listed === created) net.composeDown(NETWORK, ["web-1"]);
+        }
+        if (args.includes("stop")) {
+          // With `-f`, Compose has the service's definition, and runs its `pre_stop` hook.
+          runs.push(args.includes("-f") ? "stop" : "stop without its files");
+          await hooks.duringStop?.();
         }
       };
+      const composeQuery: ComposeQuery = async (args) =>
+        (args.includes("status=running") && net.attached(NETWORK).includes("web-1") ? "web\n" : "");
+      class Confined extends FakeConfinedCompose {
+        override async readProjectFile(file: string): Promise<Buffer> {
+          await hooks.duringRead?.();
+          return super.readProjectFile(file);
+        }
+      }
       const joiner = {
         connectToNetwork: async (_sessionId: string, name: string) => {
           if (!agentRuns) throw new Error(`No container found for session ${SESSION}`);
@@ -542,18 +577,27 @@ services:
         serviceEnvDir: serviceEnvOf(dir),
         composeConfig: { file: "docker-compose.yml", dockerSocket: false },
         composeRunner: runner,
-        composeQuery: emptyComposeQuery,
+        fakeConfined: new Confined({
+          workspaceDir: dir,
+          sessionId: SESSION,
+          runner,
+          buildRunner: async () => { await hooks.duringBuild?.(); },
+        }),
+        composeQuery,
         pollIntervalMs: 0,
         networkJoinFn: (name) => joinSessionNetworkEndpoints(joiner, SESSION, name),
         networkReleaseFn: () => {
           releaseRequests.push(SESSION);
           releaseSessionNetworkQueued(net.docker, SESSION, () => registered.size > 0);
         },
+        stackOwnedFn: () => registered.size > 0,
       });
       return {
         net,
         manager,
         releaseRequests,
+        runs,
+        holdDown: (until: Promise<void>) => { downHeld = until; },
         registered,
         destroyAgent: () => { agentRuns = false; net.removeContainer(AGENT); },
         createAgent: () => { agentRuns = true; },
@@ -649,6 +693,301 @@ services:
 
       expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
       expect(resumed.getService("web")?.status).not.toBe("error");
+    });
+
+    // Some starts run outside the stack queue, and a stop waits for none of them.
+    describe("with a start in flight", () => {
+      /** A hook that lets the calls before `arm()` pass, and holds the first one after it. */
+      function heldOnce() {
+        let armed = false;
+        let entered = false;
+        let release = (): void => {};
+        return {
+          hook: (): Promise<void> | void => {
+            if (!armed) return;
+            armed = false;
+            entered = true;
+            return new Promise<void>((resolve) => { release = resolve; });
+          },
+          arm: () => { armed = true; },
+          entered: () => vi.waitFor(() => expect(entered).toBe(true)),
+          release: () => release(),
+        };
+      }
+      const ups = (h: ReturnType<typeof harness>) => h.runs.filter((run) => run === "up").length;
+      const downs = (h: ReturnType<typeof harness>) => h.runs.filter((run) => run === "down").length;
+
+      it("does not run `up` for a start whose build ends after the stack stopped", async () => {
+        const build = heldOnce();
+        const h = harness(setup(), { duringBuild: build.hook }, "build: .");
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+
+        build.arm();
+        const starting = mgr.startService("web");
+        await build.entered();
+        await mgr.stop();
+        await flushStackQueue();
+        expect(h.net.has(NETWORK)).toBe(false);
+
+        build.release();
+        await expect(starting).resolves.toBeUndefined();
+        await flushStackQueue();
+
+        expect(ups(h)).toBe(1);
+        expect(h.net.has(NETWORK)).toBe(false);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("ends the first start quietly when the stack stopped during its build", async () => {
+        const build = heldOnce();
+        const h = harness(setup(), { duringBuild: build.hook }, "build: .");
+        const mgr = h.manager();
+        const events: string[] = [];
+        mgr.on("stack_ready", () => events.push("ready"));
+        mgr.on("stack_error", () => events.push("error"));
+
+        build.arm();
+        const starting = mgr.start();
+        await build.entered();
+        await mgr.stop();
+        build.release();
+        await expect(starting).resolves.toBeUndefined();
+
+        expect(ups(h)).toBe(0);
+        expect(mgr.started).toBe(false);
+        expect(events).toEqual([]);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("does not run `up` for a first start that the stop overtook before it resolved the project", async () => {
+        const read = heldOnce();
+        const h = harness(setup(), { duringRead: read.hook });
+        const mgr = h.manager();
+
+        read.arm();
+        const starting = mgr.start();
+        await read.entered();
+        await mgr.stop();
+        read.release();
+        await expect(starting).resolves.toBeUndefined();
+
+        expect(ups(h)).toBe(0);
+        expect(mgr.started).toBe(false);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("ends a first start quietly when every service waits at the install gate", async () => {
+        const read = heldOnce();
+        const h = harness(setup(), { duringRead: read.hook });
+        const mgr = h.manager();
+        mgr.setInstallRunning(true);
+        const events: string[] = [];
+        mgr.on("stack_ready", () => events.push("ready"));
+
+        read.arm();
+        const starting = mgr.start();
+        await read.entered();
+        await mgr.stop();
+        read.release();
+        await starting;
+
+        expect(mgr.started).toBe(false);
+        expect(events).toEqual([]);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("does not run `up` for a secrets refresh that the stop overtook before it resolved the project", async () => {
+        const read = heldOnce();
+        const h = harness(setup(), { duringRead: read.hook });
+        const mgr = h.manager();
+        await mgr.start();
+
+        read.arm();
+        const refreshing = mgr.refreshSecrets();
+        await read.entered();
+        // The stop is held too, so that the refresh still reads the stack as started.
+        let finishDown = (): void => {};
+        h.holdDown(new Promise<void>((resolve) => { finishDown = resolve; }));
+        const stopping = mgr.stop();
+        read.release();
+        await refreshing;
+        finishDown();
+        await stopping;
+
+        expect(ups(h)).toBe(1);
+      });
+
+      it("does not run `up` for a restart whose stop of the old container ends after the stack stopped", async () => {
+        const stop = heldOnce();
+        const h = harness(setup(), { duringStop: stop.hook });
+        const mgr = h.manager();
+        await mgr.start();
+
+        stop.arm();
+        const restarting = mgr.restartService("web");
+        await stop.entered();
+        await mgr.stop();
+        stop.release();
+        await expect(restarting).resolves.toBeUndefined();
+
+        expect(ups(h)).toBe(1);
+      });
+
+      // `start()` clears the disposal flag, so the flag cannot tell an old start from a new one.
+      it("does not run the old `up` after the same manager started again", async () => {
+        const build = heldOnce();
+        const h = harness(setup(), { duringBuild: build.hook }, "build: .");
+        const mgr = h.manager();
+        h.registered.add(mgr);
+        await mgr.start();
+
+        build.arm();
+        const refreshing = mgr.refreshSecrets();
+        await build.entered();
+        await mgr.stop();
+        await mgr.start();
+        expect(ups(h)).toBe(2);
+
+        build.release();
+        await refreshing;
+
+        expect(ups(h)).toBe(2);
+        expect(mgr.getService("web")?.status).not.toBe("error");
+      });
+
+      it("takes down what an `up` that was already running created after the stop", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+        await mgr.stop();
+        await flushStackQueue();
+        expect(h.net.has(NETWORK)).toBe(false);
+
+        pull.release();
+        await refreshing;
+
+        await vi.waitFor(() => expect(downs(h)).toBe(2));
+        await flushStackQueue();
+        // Each `down` comes after a stop of the running service from its start's files,
+        // which is what runs a `pre_stop` hook.
+        expect(h.runs).toEqual(["up", "started", "up", "stop", "down", "started", "stop", "down"]);
+        expect(h.net.has(NETWORK)).toBe(false);
+      });
+
+      // `down` removes what it listed when it began, and the stop then forgets the starts that ended.
+      it("stops a late service from the files of its start when its `up` ended during the first `down`", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+
+        let finishDown = (): void => {};
+        h.holdDown(new Promise<void>((resolve) => { finishDown = resolve; }));
+        const stopping = mgr.stop();
+        await vi.waitFor(() => expect(downs(h)).toBe(1));
+        pull.release();
+        await refreshing;
+        finishDown();
+        await stopping;
+
+        await vi.waitFor(() => expect(downs(h)).toBe(2));
+        await flushStackQueue();
+        expect(h.runs).toEqual(["up", "started", "up", "stop", "down", "started", "stop", "down"]);
+        expect(h.net.has(NETWORK)).toBe(false);
+      });
+
+      // That `down` holds the session's stack queue, which has no timeout of its own.
+      it("ends a second `down` that hangs, so that the next start of the session can run", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+        await mgr.stop();
+        await flushStackQueue();
+
+        const limits: AbortController[] = [];
+        const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+          limits.push(new AbortController());
+          return limits.at(-1)!.signal;
+        });
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        h.holdDown(new Promise<void>(() => {}));
+        pull.release();
+        await refreshing;
+        await vi.waitFor(() => expect(downs(h)).toBe(2));
+        let nextStartRan = false;
+        const nextStart = serializeStackOp(SESSION, async () => { nextStartRan = true; });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(nextStartRan).toBe(false);
+
+        expect(timeout.mock.calls.at(-1)).toEqual([DEFAULT_STOP_GRACE_PERIOD_MS + GATED_TEARDOWN_GRACE_MARGIN_MS]);
+        limits.at(-1)!.abort();
+        await nextStart;
+
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("down after a late up failed"), "killed");
+        timeout.mockRestore();
+        warn.mockRestore();
+      });
+
+      it("leaves what the late `up` created to a manager that owns the stack by then", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const first = h.manager();
+        await first.start();
+
+        pull.arm();
+        const refreshing = first.refreshSecrets();
+        await pull.entered();
+        await first.stop();
+        const resumed = h.manager();
+        h.registered.add(resumed);
+        await serializeStackOp(SESSION, () => resumed.start());
+
+        pull.release();
+        await refreshing;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await flushStackQueue();
+
+        expect(downs(h)).toBe(1);
+        expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      });
+
+      it("does not take the stack down again after the same manager started again", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+        await mgr.stop();
+        await mgr.start();
+
+        pull.release();
+        await refreshing;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await flushStackQueue();
+
+        expect(downs(h)).toBe(1);
+        expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      });
     });
   });
 

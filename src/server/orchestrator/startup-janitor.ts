@@ -387,34 +387,50 @@ async function sweepOrphanSessionNetworks(
     };
   };
 
-  let listOut: string;
-  try {
-    listOut = await runDocker([
+  const list = async (...filters: string[]): Promise<string[]> => {
+    const out = await runDocker([
       "network", "ls",
-      "--filter", "name=shipit-",
-      "--filter", "dangling=true",
+      ...filters.flatMap((f) => ["--filter", f]),
       ...stackFilterArgs,
       "--format", "{{.Name}}",
     ]);
+    return out.split("\n").map((line) => line.trim()).filter(Boolean);
+  };
+
+  let dangling: string[];
+  try {
+    dangling = await list("name=shipit-", "dangling=true");
   } catch (err) {
     console.warn("[disk-janitor] network ls failed:", getMessage(err));
     return 0;
   }
+  // An orchestrator container that restarts in place is back on every network it had joined,
+  // so the Compose network that a stopped stack left is not dangling then.
+  let held: string[] = [];
+  if (stored) {
+    try {
+      held = await list("name=shipit-session-");
+    } catch (err) {
+      console.warn("[disk-janitor] network ls of the joined session networks failed:", getMessage(err));
+    }
+  }
 
-  const candidates: { name: string; prefix: string; sessionId?: string }[] = [];
+  const candidates = new Map<string, { prefix: string; sessionId?: string }>();
   const atListing = read();
-  for (const raw of listOut.split("\n")) {
-    const name = raw.trim();
-    if (!name) continue;
+  for (const name of dangling) {
     const m = SESSION_NETWORK_RE.exec(name);
     if (!m) continue;
     const prefix = m[1].toLowerCase();
     if (atListing.keeps(name, prefix)) continue;
-    candidates.push({ name, prefix, sessionId: atListing.staleSession(name) });
+    candidates.set(name, { prefix, sessionId: atListing.staleSession(name) });
+  }
+  for (const name of held) {
+    const sessionId = atListing.staleSession(name);
+    if (sessionId) candidates.set(name, { prefix: sessionId.slice(0, 12).toLowerCase(), sessionId });
   }
 
   let removed = 0;
-  for (const { name, prefix, sessionId } of candidates) {
+  for (const [name, { prefix, sessionId }] of candidates) {
     try {
       await sleep(paceMs);
       if (read().keeps(name, prefix)) continue;
@@ -425,8 +441,8 @@ async function sweepOrphanSessionNetworks(
       }
       // A stored session can start its stack at any moment. Its stack queue keeps that start
       // out of the time between the check and the removal; the check above saves a wait behind
-      // the build of a session that is live again. A network with no endpoint can still have a
-      // stopped container that names it, which `releaseSessionNetwork` leaves alone.
+      // the build of a session that is live again. `releaseSessionNetwork` leaves a network
+      // that any container but the orchestrator names, and a stopped one has no endpoint.
       const outcome = await serializeStackOp(sessionId, async () =>
         read().keeps(name, prefix) ? "kept" : await releaseSessionNetwork(stored.docker, name));
       if (outcome === "removed") removed += 1;

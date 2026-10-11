@@ -221,6 +221,8 @@ export interface ServiceManagerOptions {
   networkJoinFn?: (networkName: string, opts: { networkExpected: boolean }) => Promise<void>;
   /** Queues the removal of the session network after a `down`; not awaited (docs/091). */
   networkReleaseFn?: () => void;
+  /** Whether a ServiceManager is registered for the session; read inside the stack queue (docs/091). */
+  stackOwnedFn?: () => boolean;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
   /** What `containServicesFn` installs; omitted means contained. */
@@ -254,6 +256,9 @@ export interface ServiceManagerEvents {
   stack_error: [error: Error];
   secrets_status: [snapshot: SecretsStatusInternalSnapshot];
 }
+
+/** A `stop()` ran after the start began. The start ends without `up`, and reports nothing. */
+class StartOvertakenByStop extends Error {}
 
 export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly sessionId: string;
@@ -294,6 +299,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private noProjectCompose: boolean;
   private readonly networkJoinFn?: (networkName: string, opts: { networkExpected: boolean }) => Promise<void>;
   private readonly networkReleaseFn?: () => void;
+  private readonly stackOwnedFn?: () => boolean;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   private containServicesFn?: (serviceNames: string[]) => Promise<void>;
   private firewallPolicy: EgressPolicy;
@@ -319,6 +325,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   // Last parse/validation failure, separate from failures to run the stack.
   private _projectComposeFailure: ComposeFailure | null = null;
   private _disposed = false;
+
+  // `start()` clears `_disposed`, so a start reads this count to learn that a stop overtook it.
+  private _stops = 0;
+
+  private readonly upsRunning = new Set<Promise<void>>();
 
   private _installRunning = false;
 
@@ -395,6 +406,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkReleaseFn = opts.networkReleaseFn;
+    this.stackOwnedFn = opts.stackOwnedFn;
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
     this.firewallPolicy = opts.firewallPolicy ?? "contained";
@@ -881,6 +893,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   async start(opts: { sweepStaleContainers?: boolean } = {}): Promise<void> {
     this._disposed = false;
+    const stops = this._stops;
     // Invalidate old gate releases before an await lets one act on partially rebuilt state.
     this._gateGeneration++;
     await this.ensureSessionNetworkModeFn?.(Boolean(this.containServicesFn));
@@ -982,7 +995,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
           await this.buildAndUp(start, names);
           markStackUp(this.sessionId, startNow.filter((svc) => names.includes(svc.name)));
           await this.containServicesFn?.([...this.services.keys()]);
-        }, { removeOrphans: true });
+        }, { removeOrphans: true, stops });
+      }
+      // Also for a start that runs no `up`: every service at the install gate, or none automatic.
+      if (stops !== this._stops) {
+        // The stop set "stopped" before this start set "starting".
+        if (this._disposed) for (const name of this.services.keys()) this.updateServiceStatus(name, "stopped");
+        return;
       }
       this._started = true;
 
@@ -1031,15 +1050,16 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.retry.resetOomBudget(name);
     this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
+    const stops = this._stops;
     try {
       await this.withUpInFlight([name], async (start, names) => {
         await this.prepareContainedStartFn?.(names);
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      });
+      }, { stops });
       // A later Stop owns the result of this start.
-      if (this.stoppedByUser.has(name)) return;
+      if (stops !== this._stops || this.stoppedByUser.has(name)) return;
       // Attach before the poll can consume the replay anchor with a follower we would replace.
       this.streamLogs(name);
       this.reportGpuRemovals([name]);
@@ -1059,6 +1079,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.retry.resetOomBudget(name);
     this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
+    const stops = this._stops;
     try {
       await this.stopContainer(name);
       // A Stop during the shutdown wait has no in-flight up to chase; check before starting one.
@@ -1068,8 +1089,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      });
-      if (this.stoppedByUser.has(name)) return;
+      }, { stops });
+      if (stops !== this._stops || this.stoppedByUser.has(name)) return;
       this.streamLogs(name);
       this.reportGpuRemovals([name]);
       await this.joinSessionNetwork();
@@ -1229,6 +1250,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   /** removeVolumes also deletes isolated secret files; use it only for permanent teardown. */
   async stop(opts: { removeVolumes?: boolean } = {}): Promise<void> {
     this._disposed = true;
+    this._stops++;
     this.poller.stop();
     this.retry.cancelAll();
     this.cancelStartingWatchdogs();
@@ -1244,15 +1266,17 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     }
 
     await this.stopRunningServices();
+    // An `up` that has not ended can create containers after the `down`. No older start adds one
+    // to this set now: `buildAndUp` reads the count first.
+    const lateUps = [...this.upsRunning];
     try {
-      await this.compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
-      this.startRecord.clear();
-      // `down` exits 0 and leaves a network that has an endpoint Compose does not own, and the
-      // orchestrator's is one.
-      this.networkReleaseFn?.();
+      await this.down(opts);
+      // The second teardown stops what a late `up` created from the files of that start.
+      if (lateUps.length === 0) this.startRecord.clear();
     } catch {
       // Best-effort cleanup
     }
+    if (lateUps.length > 0) void this.downAfterLateUps(lateUps, opts);
 
     if (opts.removeVolumes) {
       removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
@@ -1270,6 +1294,35 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this._started = false;
   }
 
+  private async down(opts: { removeVolumes?: boolean }, compose = this.compose): Promise<void> {
+    await compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
+    // `down` exits 0 and leaves a network that has an endpoint Compose does not own, and the
+    // orchestrator's is one.
+    this.networkReleaseFn?.();
+  }
+
+  // Not awaited, as `stopAfterPendingUps`: a stop does not wait for an `up` that hangs.
+  private async downAfterLateUps(ups: Promise<void>[], opts: { removeVolumes?: boolean }): Promise<void> {
+    await Promise.allSettled(ups);
+    await serializeStackOp(this.sessionId, async () => {
+      // A start since the stop, or another manager of the session, owns what the late `up` created.
+      if (!this._disposed || this.stackOwnedFn?.()) return;
+      // The stack queue has no timeout of its own, and a `pre_stop` hook is the project's command.
+      const limitMs = Math.max(
+        DEFAULT_STOP_GRACE_PERIOD_MS + GATED_TEARDOWN_GRACE_MARGIN_MS,
+        ...[...this.services.keys()].map((name) => this.gatedTeardownTimeoutMs(name)),
+      );
+      const bounded = (): ComposeCli => this.compose.bounded(AbortSignal.timeout(limitMs));
+      await this.stopRunningServices(bounded());
+      try {
+        await this.down(opts, bounded());
+        this.startRecord.clear();
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] down after a late up failed:`, (err as Error).message);
+      }
+    });
+  }
+
   /** Refresh declarations and values without restarting containers. */
   async refreshSecretsStatus(): Promise<void> {
     let parsedServices: ComposeService[];
@@ -1283,6 +1336,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   }
 
   async refreshSecrets(): Promise<void> {
+    const stops = this._stops;
     let parsedServices: ComposeService[];
     try {
       parsedServices = this.noProjectCompose ? [] : await this.readProjectCompose();
@@ -1304,7 +1358,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      }, { removeOrphans: true });
+      }, { removeOrphans: true, stops });
+      if (stops !== this._stops) return;
       await this.poller.pollOnce();
       for (const name of autoNames) this.ensureLogFollower(name);
       this.disarmLogFollowerSince(autoNames);
@@ -1411,7 +1466,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
    * resolved model, and this start's snapshot and override. A start of plugin services only, and a
    * stack with no project file, start from the override alone.
    */
-  private async prepareStart(names: string[]): Promise<PreparedStart> {
+  private async prepareStart(names: string[], stops: number): Promise<PreparedStart> {
     const admitted = this._overrideAdmittedPlugins;
     const pluginNames = new Set(admitted.map((svc) => svc.name));
     const projectNames = names.filter((name) => !pluginNames.has(name));
@@ -1422,6 +1477,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         await this.writeStartOverride(files.overrideFile, admitted.map(toComposeService), []);
         return {
           id: files.id,
+          stops,
           model: { overrideFile: files.overrideFile },
           snapshotServices: [],
           ...(this.noProjectCompose ? { projectServiceNames: [] } : {}),
@@ -1513,6 +1569,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       );
       return {
         id: files.id,
+        stops,
         model: { snapshotFile: files.snapshotFile, overrideFile: files.overrideFile },
         ...(rewrite.builtServices.length > 0
           ? { build: { model: buildModel, services: rewrite.builtServices } }
@@ -1599,12 +1656,14 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   /**
    * Resolves the start before counting it as in flight, so a refused start gets no polling
    * exemption; registers it with `upSettled` first, so a Stop during the resolve follows it.
-   * False when such a Stop left nothing to start, so no `up` ran.
+   * False when no `up` ran: such a Stop left nothing to start, or a `stop()` of the stack overtook
+   * the start. `stops` is the count of `stop()` calls when the caller's start began; the caller
+   * compares it again afterwards, and does nothing more when a `stop()` came.
    */
   private async withUpInFlight(
     names: string[],
     fn: (start: PreparedStart, names: string[]) => Promise<void>,
-    opts: { removeOrphans?: boolean } = {},
+    opts: { stops: number; removeOrphans?: boolean },
   ): Promise<boolean> {
     let settle!: () => void;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
@@ -1616,7 +1675,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     let counted: string[] = [];
     let start: PreparedStart | null = null;
     try {
-      start = await this.prepareStart(names);
+      start = await this.prepareStart(names, opts.stops);
       const live = names.filter((name) => !this.stoppedByUser.has(name));
       if (live.length === 0) {
         console.log(`[compose:${this.sessionId}] ${names.join(", ")} stopped while the start resolved — not starting`);
@@ -1639,6 +1698,10 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
       await fn(start, live);
       return true;
+    } catch (err) {
+      if (!(err instanceof StartOvertakenByStop)) throw err;
+      console.log(`[compose:${this.sessionId}] the stack stopped while ${names.join(", ")} was starting — not starting`);
+      return false;
     } finally {
       for (const name of counted) {
         const next = (this.upInFlight.get(name) ?? 1) - 1;
@@ -1671,39 +1734,48 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private async buildAndUp(start: PreparedStart, names: string[]): Promise<void> {
     const sink = this.composeLogSink(names);
     await this.compose.build(start.build, sink);
+    // A build can outlast a stop, and an `up` after the stop's `down` makes a stack that nothing
+    // owns. No await from here to the `up`: a stop finds it in `upsRunning`, or this finds the stop.
+    if (start.stops !== this._stops) throw new StartOvertakenByStop();
     // Before `up`: a failed `up` can still have created containers, which `stop` must find.
     this.startRecord.record(
       [...new Set([...start.snapshotServices, ...names])],
       { id: start.id, snapshot: start.model.snapshotFile !== undefined },
     );
-    await this.compose.up(names, start, sink);
+    const up = this.compose.up(names, start, sink);
+    this.upsRunning.add(up);
+    try {
+      await up;
+    } finally {
+      this.upsRunning.delete(up);
+    }
   }
 
   /** From the model the service was started from, so Compose runs its `pre_stop` hook. */
-  private async stopContainer(name: string): Promise<void> {
+  private async stopContainer(name: string, compose = this.compose): Promise<void> {
     const recorded = this.startRecord.lookup(name);
     if (recorded.recorded) {
-      await this.compose.stopFrom(name, recorded.model);
+      await compose.stopFrom(name, recorded.model);
       return;
     }
-    if (!(await this.compose.hasContainer(name))) {
+    if (!(await compose.hasContainer(name))) {
       console.log(`[compose:${this.sessionId}] ${name} has no container — recorded the stop only`);
       return;
     }
-    await this.compose.stopFrom(name, null);
+    await compose.stopFrom(name, null);
   }
 
-  private async stopRunningServices(): Promise<void> {
+  private async stopRunningServices(compose = this.compose): Promise<void> {
     let running: string[];
     try {
-      running = await this.compose.runningServices();
+      running = await compose.runningServices();
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] could not list running services before down:`, (err as Error).message);
       return;
     }
     await Promise.all(running.map(async (name) => {
       try {
-        await this.stopContainer(name);
+        await this.stopContainer(name, compose);
       } catch (err) {
         console.warn(`[compose:${this.sessionId}] stopping ${name} before down failed:`, (err as Error).message);
       }
@@ -1754,13 +1826,15 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const svc = this.services.get(name);
     if (!svc) return;
     if (this.stoppedByUser.has(name)) return;
+    const stops = this._stops;
     try {
       const upRan = await this.withUpInFlight([name], async (start, names) => {
         await this.prepareContainedStartFn?.(names);
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      });
+      }, { stops });
+      if (stops !== this._stops) return;
       await this.joinSessionNetwork({ networkExpected: upRan });
       await this.poller.pollOnce();
       this.disarmLogFollowerSince([name]);
@@ -1878,6 +1952,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     // A service can be removed or stopped while this batch waits in the queue.
     const names = requested.filter(n => this.services.has(n) && !this.stoppedByUser.has(n));
     if (names.length === 0) return;
+    const stops = this._stops;
     try {
       const upRan = await this.withUpInFlight(names, async (start, live) => {
         await this.prepareContainedStartFn?.(live);
@@ -1885,7 +1960,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         await this.buildAndUp(start, live);
         markStackUp(this.sessionId, live.flatMap(n => this.services.get(n) ?? []));
         await this.containServicesFn?.([...this.services.keys()]);
-      }, { removeOrphans: true });
+      }, { removeOrphans: true, stops });
+      if (stops !== this._stops) return;
       await this.joinSessionNetwork({ networkExpected: upRan });
       await this.poller.pollOnce();
       this.disarmLogFollowerSince(names);
@@ -2083,6 +2159,8 @@ function hasLiveAddress(svc: ManagedService): svc is ManagedService & { containe
 /** One start's files, from the before-`up` sequence (docs/318-compose-remaining-escapes, Mechanism 2). */
 interface PreparedStart {
   id: string;
+  /** The count of `stop()` calls when the start began. */
+  stops: number;
   model: ComposeStartModel;
   build?: ComposeBuild;
   /** The services the snapshot holds: the named project services and their dependencies. */
