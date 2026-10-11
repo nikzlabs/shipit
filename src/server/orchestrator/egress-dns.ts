@@ -36,9 +36,7 @@ export function buildDnsmasqConfig(opts: DnsmasqConfigOpts): string {
   const listen = opts.listenAddress ?? EGRESS_RESOLVER_LISTEN;
   const dockerDns = opts.dockerDns ?? DOCKER_EMBEDDED_DNS;
 
-  const publicDomains = dedupe(
-    opts.publicDomains.filter((entry) => !namesLocalHost(entry)).map(allowlistEntryToDomain).filter(Boolean),
-  );
+  const publicDomains = publicDnsDomains(opts.publicDomains);
   const internalDomains = dedupe((opts.internalDomains ?? []).map(normalizeHost).filter(Boolean));
   const upstreams = opts.publicUpstreams.filter(Boolean);
   if (upstreams.length === 0) throw new Error("buildDnsmasqConfig: at least one public upstream is required");
@@ -76,10 +74,15 @@ export function buildDnsmasqConfig(opts: DnsmasqConfigOpts): string {
 }
 
 /**
+ * The domains a resolver forwards to the public upstream for these allowlist entries.
  * An exact single-label entry, like an MCP server at `http://api:8000`, names a Compose
  * service. dnsmasq prefers `server=/api/` over `server=//` for the query `api`, so a public
  * route would send it to the upstream and the service would stop resolving (#3166).
  */
+export function publicDnsDomains(entries: readonly string[]): string[] {
+  return dedupe(entries.filter((entry) => !namesLocalHost(entry)).map(allowlistEntryToDomain).filter(Boolean));
+}
+
 function namesLocalHost(entry: string): boolean {
   const h = normalizeHost(entry);
   return !h.startsWith(".") && !h.includes(".");
