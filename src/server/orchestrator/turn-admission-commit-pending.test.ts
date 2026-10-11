@@ -94,11 +94,12 @@ describe("turn admission while the finished turn's commit is pending", () => {
     execFileSync("git", ["log", "--oneline"], { cwd: repoDir, encoding: "utf8" }).split("\n").filter(Boolean).length;
 
   /** Turn 1 edits the file; every later turn begins by discarding the working tree. */
-  function setup(extra: Partial<SystemTurnDeps> = {}) {
+  function setup(extra: Partial<SystemTurnDeps> = {}, heldCommits = 1) {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
-    const commit = { started: 0, landed: 0, land: (): void => {} };
-    const held = new Promise<void>((resolve) => { commit.land = resolve; });
+    const lands: (() => void)[] = [];
+    const held = Array.from({ length: heldCommits }, () => new Promise<void>((resolve) => { lands.push(resolve); }));
+    const commit = { started: 0, landed: 0, land: (nth = 0): void => lands[nth]?.() };
     const postTurnPrFlow = vi.fn(async () => {});
     runner.setSystemTurnDeps({
       agentFactory: () => {
@@ -110,10 +111,10 @@ describe("turn admission while the finished turn's commit is pending", () => {
         agents.push(a);
         return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
       },
-      // Only the first turn's commit is held open.
+      // Only the first commits are held open: one, unless the test asks for more.
       autoCommit: async (sessionDir: string, summary: string) => {
         commit.started += 1;
-        if (commit.started === 1) await held;
+        await held[commit.started - 1];
         const git = new GitManager(sessionDir);
         const parentHash = await git.getHeadHash();
         const r = await git.autoCommit(summary);
@@ -264,7 +265,7 @@ describe("turn admission while the finished turn's commit is pending", () => {
 
   it("refuses a refusing caller, and names the commit as the reason", async () => {
     const { runner, finish } = setup();
-    runner.beginTurnCommit();
+    const hold = runner.beginTurnCommit();
     const outcomes: unknown[] = [];
     const handle = runner.dispatch(
       testDispatch({ text: "its own turn or nothing", onTurnComplete: (o) => outcomes.push(o) }),
@@ -273,7 +274,7 @@ describe("turn admission while the finished turn's commit is pending", () => {
     expect(handle.admitted).toBe("refused");
     expect(outcomes).toEqual([expect.objectContaining({ status: "refused", detail: expect.stringContaining("not committed") })]);
     expect([runner.running, runner.queueLength]).toEqual([false, 0]);
-    runner.endTurnCommit();
+    runner.endTurnCommit(hold);
     await finish();
   });
 
@@ -281,23 +282,33 @@ describe("turn admission while the finished turn's commit is pending", () => {
   // and never commits, so the hold its previous step still has open must not refuse the next.
   it("admits a driver-owned turn while a commit hold is open", async () => {
     const { runner, started, finish } = setup();
-    runner.beginTurnCommit();
+    const hold = runner.beginTurnCommit();
     const handle = runner.dispatch(
       testDispatch({ text: "resolve the conflicts", systemTurn: true, postTurn: "none" }),
       { whenBusy: "refuse" },
     );
     expect(handle.admitted).toBe("started");
     await waitFor(() => started(1), "the resolution turn started");
-    runner.endTurnCommit();
+    runner.endTurnCommit(hold);
     await finish();
   });
 
   // The hold is deadline-bounded and expires without an event. Setup only needs microtasks, so
   // these two run on fake timers and step with `setImmediate`.
   describe("when the commit hold expires unreleased", () => {
-    const step = async (until: () => boolean): Promise<void> => {
-      const deadline = performance.now() + 5000;
-      while (!until() && performance.now() < deadline) await new Promise((r) => setImmediate(r));
+    const step = async (until: () => boolean, label = "condition"): Promise<void> => {
+      const deadline = performance.now() + 10_000;
+      while (!until()) {
+        if (performance.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+        await new Promise((r) => setImmediate(r));
+      }
+    };
+    // Real timers again: the real commit needs them, and so does a pause that lets a wrong start show.
+    const landOnRealTimers = async (commit: { landed: number; land: (nth?: number) => void }): Promise<void> => {
+      vi.useRealTimers();
+      commit.land();
+      await step(() => commit.landed === 1, "the first commit landed");
+      await new Promise((r) => setTimeout(r, 100));
     };
 
     it("starts a dispatch queued behind a one-shot turn whose exit never arrives", async () => {
@@ -332,8 +343,7 @@ describe("turn admission while the finished turn's commit is pending", () => {
       expect(runner.dispatch(wake()).admitted).toBe("queued");
 
       await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS / 2);
-      runner.beginTurnCommit();
-      runner.endTurnCommit();
+      runner.endTurnCommit(runner.beginTurnCommit());
       await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS / 2 + 5000);
       expect([agents.length, runner.turnCommitPending]).toEqual([1, true]);
 
@@ -345,7 +355,7 @@ describe("turn admission while the finished turn's commit is pending", () => {
 
     // The drain of the finished turn is still parked on the commit, and it starts a successor
     // when the commit settles. The turn the expiry started is still in setup then, so the turn
-    // epoch has not moved and only the hand-over tells the drain to stand down.
+    // epoch has not moved and only its claim on the runner tells the drain to stand down.
     it("starts one successor when the commit of a draining turn settles after the expiry", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       let resets = 0;
@@ -370,17 +380,128 @@ describe("turn admission while the finished turn's commit is pending", () => {
       await step(() => resets === 2);
       expect([resets, runner.running]).toEqual([2, true]);
 
-      // The real commit needs real timers.
-      vi.useRealTimers();
-      commit.land();
-      await step(() => commit.landed === 1);
-      for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+      await landOnRealTimers(commit);
       expect([commit.landed, resets]).toEqual([1, 2]);
       expect(runner.messageQueue.map((m) => m.text)).toEqual(["wake"]);
 
       finishSetup();
       await step(() => started(2));
       expect(agents).toHaveLength(2);
+      runner.dispose({ force: true });
+    });
+
+    // Whoever starts a successor while a drain is parked on its commit, that drain must not
+    // start another: here it is the turn BEFORE the draining one, whose late commit releases
+    // the queue in the second between the hold's expiry and the draining turn's own timer.
+    it("lets a parked drain stand down when another turn's release claimed the runner first", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      let resets = 0;
+      let finishSetup = (): void => {};
+      const inSetup = new Promise<void>((resolve) => { finishSetup = resolve; });
+      const lands: (() => void)[] = [];
+      const nothing = { commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+      const { runner, agents, started } = setup({
+        autoCommit: (() => new Promise((resolve) => { lands.push(() => resolve(nothing)); })) as never,
+        preTurnReset: async () => {
+          resets += 1;
+          if (resets === 3) await inSetup;
+          return { agentPrefix: "" };
+        },
+      });
+      runner.dispatch(testDispatch({ text: "first turn" }));
+      await step(() => started(1));
+      agents[0]!.emit("event", RESULT);
+      agents[0]!.emit("done", 0);
+      await step(() => lands.length === 1, "the first commit started");
+      runner.dispatch(testDispatch({ text: "second turn" }));
+
+      await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS + 5000);
+      await step(() => started(2), "the expiry started the second turn");
+      runner.dispatch(testDispatch({ text: "third turn" }));
+      runner.dispatch(testDispatch({ text: "fourth turn" }));
+      agents[1]!.emit("event", RESULT);
+      await step(() => lands.length === 2, "the second turn's drain parked on its commit");
+
+      await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS + 500);
+      expect(runner.turnCommitPending).toBe(false);
+      lands[0]!();
+      await step(() => resets === 3, "the first turn's release started the third");
+      expect(runner.running).toBe(true);
+
+      lands[1]!();
+      for (let i = 0; i < 100; i++) await new Promise((r) => setImmediate(r));
+      expect(resets).toBe(3);
+      expect(runner.messageQueue.map((m) => m.text)).toEqual(["fourth turn"]);
+
+      finishSetup();
+      await step(() => started(3));
+      runner.dispose({ force: true });
+    });
+
+    // `PostTurnHold` writes expired depth off at the next `begin`, so an `end` from the turn
+    // that expired would otherwise come out of the hold of the turn after it.
+    it("does not end the commit hold of the turn that the expiry started", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const { runner, agents, commit, started } = setup({}, 2);
+      runner.dispatch(testDispatch({ text: "make an edit" }));
+      await step(() => started(1));
+      agents[0]!.emit("event", RESULT);
+      agents[0]!.emit("done", 0);
+      await step(() => commit.started === 1);
+      runner.dispatch(testDispatch({ text: "second turn" }));
+      runner.dispatch(testDispatch({ text: "third turn", systemTurn: true, automatic: true }));
+
+      await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS + 5000);
+      await step(() => started(2));
+      agents[1]!.emit("event", RESULT);
+      agents[1]!.emit("done", 0);
+      await step(() => commit.started === 2);
+      expect(runner.turnCommitPending).toBe(true);
+
+      await landOnRealTimers(commit);
+      expect([runner.turnCommitPending, agents.length]).toEqual([true, 2]);
+      expect(runner.messageQueue.map((m) => m.text)).toEqual(["third turn"]);
+
+      commit.land(1);
+      await step(() => started(3));
+      expect(started(3)).toBe(true);
+      runner.dispose({ force: true });
+    });
+
+    // A streaming process can exit long after its result. The turn that the expiry started is
+    // still in setup then, and the exit must not clear the claim it holds on the runner.
+    it("keeps the claim of a successor in setup when the finished streaming process exits", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      let resets = 0;
+      let finishSetup = (): void => {};
+      const inSetup = new Promise<void>((resolve) => { finishSetup = resolve; });
+      const { runner, agents, commit, started } = setup({
+        ...STREAMING,
+        preTurnReset: async () => {
+          resets += 1;
+          if (resets > 1) await inSetup;
+          return { agentPrefix: "" };
+        },
+      });
+      runner.dispatch(testDispatch({ text: "make an edit" }));
+      await step(() => started(1));
+      agents[0]!.emit("event", RESULT);
+      await step(() => commit.started === 1);
+      runner.dispatch(testDispatch({ text: "second turn" }));
+      runner.dispatch(testDispatch({ text: "third turn" }));
+
+      await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS + 5000);
+      await step(() => resets === 2);
+      agents[0]!.emit("done", 0);
+      for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+      expect(runner.running).toBe(true);
+
+      await landOnRealTimers(commit);
+      expect(resets).toBe(2);
+      expect(runner.messageQueue.map((m) => m.text)).toEqual(["third turn"]);
+
+      finishSetup();
+      await step(() => started(2));
       runner.dispose({ force: true });
     });
   });

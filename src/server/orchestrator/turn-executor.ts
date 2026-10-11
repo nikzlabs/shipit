@@ -1091,6 +1091,7 @@ export async function executeAgentTurn(
   let postTurnHeld = false;
   // Released as soon as the local commit settles: a rewind waits on this, not on the push.
   let turnCommitHeld = false;
+  let turnCommitHold = 0;
   let localCommitSettled = false;
   let commitHoldExpiry: ReturnType<typeof setTimeout> | null = null;
   const holdPostTurn = (): void => {
@@ -1100,7 +1101,7 @@ export async function executeAgentTurn(
     // A late `done` re-enters after the commit, with only network work left.
     if (localCommitSettled) return;
     turnCommitHeld = true;
-    runner.beginTurnCommit();
+    turnCommitHold = runner.beginTurnCommit();
     armCommitHoldExpiry();
   };
   const armCommitHoldExpiry = (): void => {
@@ -1122,7 +1123,7 @@ export async function executeAgentTurn(
     turnCommitHeld = false;
     if (commitHoldExpiry) clearTimeout(commitHoldExpiry);
     commitHoldExpiry = null;
-    runner.endTurnCommit();
+    runner.endTurnCommit(turnCommitHold);
     // A dispatch that arrived while the hold was open queued behind it, after the drain passed.
     // Not while a drain of this turn's is in flight: it starts the successor itself, and a
     // second start would run two turns at once.
@@ -1138,7 +1139,7 @@ export async function executeAgentTurn(
       armCommitHoldExpiry();
       return;
     }
-    if (releaseQueueBehindCommit() && !drainSettled) drainHandedOver = true;
+    releaseQueueBehindCommit();
   };
   const releasePostTurn = (): void => {
     releaseTurnCommit();
@@ -1217,25 +1218,24 @@ export async function executeAgentTurn(
   // Fired vs. settled: the flag is set before the commit this awaits, so only `drainSettled`
   // says the local commit has happened and no drain of this turn's is still to come.
   let drainSettled = false;
-  // The expiry backstop started a successor in place of a drain still parked on its commit.
-  let drainHandedOver = false;
   const tryDrain = async (): Promise<void> => {
     if (drainFired) return;
     drainFired = true;
-    // An adopted CLI turn re-arms the drain, and the previous turn's flags are not its own.
+    // An adopted CLI turn re-arms the drain, and the previous turn's settled flag is not its own.
     drainSettled = false;
-    drainHandedOver = false;
     snapshotTurnText();
     try {
       // Before the successor's prompt is composed, so it carries what this turn settled.
       await statusCardSettled;
-      if (!turnIsCurrent() || drainHandedOver) return;
+      if (!turnIsCurrent()) return;
       if (runner) runner.running = false;
       if (postTurn === "none") return;
       // Commit locally before a queued turn can reset the tree. Network flows stay after drain.
       if ((runner?.queueLength ?? 0) > 0) await commitOnce();
-      // A CLI-started turn can take ownership during the commit await, and so can the expiry.
-      if (!turnIsCurrent() || drainHandedOver) return;
+      // A CLI-started turn can take ownership during the commit await. So can a turn that a
+      // release started — the hold's expiry, or an earlier turn's late commit — and that one
+      // is still in setup, so only its claim on `running`, cleared just above, shows it.
+      if (!turnIsCurrent() || runner?.running) return;
       await input.drainNext({ ownsSystemHold: ownsSystemHold() });
     } finally {
       drainSettled = true;
@@ -1745,8 +1745,9 @@ export async function executeAgentTurn(
         // turn's post-turn sequence — a drained entry, or the docs/303 status nudge — has
         // already claimed `running`, and clearing it here reports that live turn as idle
         // and lets the enforcer reclaim its runner (invariant 5). `tryDrain` below has
-        // carried the same guard all along.
-        if (runner && turnIsCurrent()) runner.running = false;
+        // carried the same guard all along. A successor still in setup has not moved the
+        // epoch, hence `turnInSetup`, as in the one-shot branch below.
+        if (runner && turnIsCurrent() && !turnInSetup(runner)) runner.running = false;
         await postTurnStep("drain", tryDrain);
         await postTurnStep("finished-sse", broadcastFinishedIfIdle);
         await postTurnStep("commit", runCommitAndPr);

@@ -289,7 +289,6 @@ async function decideAndRunSend(
         if (steeringAgent) {
           const capturedSessionId = ctx.getActiveAppSessionId();
           const turnWasRunning = runnerForQueue.running;
-          const steeredEpoch = runnerForQueue.turnEpoch;
 
           const steerDir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
           let steerFiles: FileAttachment[] = [];
@@ -327,25 +326,31 @@ async function decideAndRunSend(
             imageContext,
             dictated: msg.dictated,
           });
-          // The turn can end during the attachment reads above, and another can start. A steer
-          // would then start a turn of the CLI's own while the finished one commits, or reach a
-          // turn it was never meant for, so the message takes admission instead.
+          // The turn can end during the attachment reads above, and another can start, so the
+          // steer is decided again. A steer into an idle agent starts a turn of the CLI's own
+          // while the finished one commits; the message takes admission instead. A turn that
+          // can take the steer gets it here, because a dispatch steers the text alone.
+          const steerTarget = runnerForQueue.getAgent();
           const turnEnded = turnWasRunning && !runnerForQueue.running;
-          const turnReplaced = runnerForQueue.turnEpoch !== steeredEpoch
-            || runnerForQueue.getAgent() !== steeringAgent;
-          if (turnEnded || turnReplaced) {
+          const steerableNow = steerTarget !== null && !runnerForQueue.mergeHold && shouldSteerMessage({
+            steeringCapable,
+            liveSteering,
+            streamingActive: runnerForQueue.isStreamingActive,
+            systemTurnInProgress: runnerForQueue.systemTurnInProgress,
+          });
+          if (turnEnded || !steerableNow) {
             queueTypedMessage();
             return;
           }
           // Steering bypasses turn setup; update permission mode before sending.
           if (
             runnerForQueue.appliedPermissionMode !== msg.permissionMode &&
-            steeringAgent.setPermissionMode
+            steerTarget.setPermissionMode
           ) {
-            steeringAgent.setPermissionMode(msg.permissionMode);
+            steerTarget.setPermissionMode(msg.permissionMode);
             runnerForQueue.appliedPermissionMode = msg.permissionMode;
           }
-          steeringAgent.sendUserMessage(steerPrompt);
+          steerTarget.sendUserMessage(steerPrompt);
 
           // Refill the human-message budget without clearing the running turn's history.
           resetSubAgentSpawnBudget(runnerForQueue);

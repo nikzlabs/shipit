@@ -543,15 +543,33 @@ its only reader was the rewind handler (planning#636).
 - **The backstop.** `PostTurnHold` expires on a deadline and says nothing when it does, so
   an entry queued behind a commit that never settles — or behind a one-shot exit that never
   arrives — would have no trigger. The executor that took the hold arms one unreferenced
-  timer for that deadline (`onCommitHoldExpired`) and clears it when it releases. It lives
-  in the executor and not beside the queue because of the same drain: a first version armed
-  the timer at the gate, and an independent review showed that it could start a successor
-  while a drain of the finished turn was still parked on the commit — which starts a second
-  one when the commit settles, since the first is still in setup and has not moved the turn
-  epoch. The executor's timer records that hand-over (`drainHandedOver`) and the parked
-  drain stands down on it. The deadline belongs to the runner and not to one hold, so a
-  timer that finds the hold still open — another executor's hold moved the deadline, and
-  that executor's timer went when it released — arms itself again instead of giving up.
+  timer for that deadline (`onCommitHoldExpired`) and clears it when it releases. The
+  deadline belongs to the runner and not to one hold, so a timer that finds the hold still
+  open — another executor's hold moved the deadline, and that executor's timer went when it
+  released — arms itself again instead of giving up. It arms for a full deadline, not for
+  what is left of the extended one, so that release can come up to one deadline late.
+- **A parked drain stands down for whoever claimed the runner.** A release can start a
+  successor while a drain is still parked on its commit: the expiry does, and so does the
+  late commit of the turn before the draining one. That successor is in setup when the
+  commit settles — it moves the turn epoch only when it enters the executor — so the epoch
+  check alone let the drain start a second turn beside it. `tryDrain` clears `running`
+  before it awaits the commit, so `running` set again afterwards means exactly that another
+  turn claimed the runner, and the drain returns on it. The first version of this used a
+  flag that the expiry set; two reviews each found a release the flag did not see, and the
+  claim itself covers them all.
+- **An expired holder ends nothing.** `PostTurnHold` counts depth with no owner and writes
+  expired depth off at the next `begin`. A turn whose commit settled after its hold expired
+  therefore took its `end` out of the hold of the turn the expiry had started, and then
+  released the queue over that turn's unfinished commit. `begin` now returns the hold's
+  generation and `end` ignores one that was written off; the commit hold passes it
+  (`beginTurnCommit` / `endTurnCommit`). The post-turn lease does not, and keeps the old
+  behaviour.
+- **A late exit leaves a successor's claim alone.** The streaming branch of the `done`
+  handler cleared `running` whenever the turn epoch had not moved, and a successor does not
+  move it before it enters the executor. A process that exits long after its result — while the turn
+  the expiry or a drain started is still in setup — cleared that turn's claim, and the next
+  release started a second turn beside it. The branch now carries the `turnInSetup` guard
+  that the one-shot branch has had since planning#644.
 - **A dispatched crash kept no hold at all.** A dispatched turn that dies with partial work
   reaches its commit through the no-result hook, which ends the turn on the adapter-`error`
   path. `onError` found the hold already taken by the `done` handler that called the hook,
@@ -575,10 +593,17 @@ its only reader was the rewind handler (planning#636).
   hold instead: the answer is dispatched as the user's next message and waits in the queue.
 - **A steer that lost its turn.** The steer branch reads attachments before it writes to the
   agent. A turn that ended during those reads left the write going to an idle resident
-  process, which starts a turn of its own on the uncommitted tree. The branch now re-reads
-  `running` after the reads and dispatches the message instead. `running` alone is not
-  enough: a queued turn can have started by then, so the branch also compares the turn
-  epoch and the agent in the slot, and dispatches when either moved.
+  process, which starts a turn of its own on the uncommitted tree. The branch now decides
+  the steer again after the reads. A turn that ended, or one that cannot take a steer (a
+  system turn that started meanwhile), sends the message through `dispatch`. A turn that can
+  take it gets it there and then, on the agent that holds the slot now, with the attachments
+  just read. Comparing the turn epoch instead was tried and reverted: the epoch also moves on
+  a retry of the same turn, and the dispatch it fell back to steered the text alone.
+- **A dispatch with attachments is never steered.** `trySteerDispatch` sends the text and
+  nothing else, and `dispatchOnRunner` tries it for a running turn before it reads any hold.
+  So the fallback above could still lose the attachments — under a merge hold that arrived
+  during the reads, for one. `isSteerableDispatch` now refuses a dispatch that carries
+  images, files or uploads; behind a running turn it queues, and the drain resolves them.
 
 What this does not cover:
 
@@ -594,6 +619,10 @@ What this does not cover:
   errored is one the CLI started for itself while the turn before it was still in its network
   half: the handover then waits for that flow with no hold open. A quota refusal carried in a
   result likewise takes the hold only after its stand-down, a microtask later.
+
+- **A one-shot system turn whose exit never arrives** keeps `systemTurnInProgress`, which
+  `finishTurn` alone releases. The expiry's release is refused by that hold, as every other
+  release is; the stranded hold is the older problem of docs/304-stranded-system-turn-hold.
 
 One behaviour change for callers: `releaseQueuedTurn` now returns `false` while a commit
 hold is open, where it used to start the entry. The executor's release follows it.
@@ -630,8 +659,9 @@ hold is open, where it used to start the entry. The executor's release follows i
 | Fix F — the drains | `src/server/orchestrator/ws-handlers/agent-execution.ts`, `dispatched-turn.ts`, `turn-adoption.ts` | Take the head through it; the interactive drain's shift moves *before* its `queue_updated` + `running = true` claim |
 | Fix F — the release | `src/server/orchestrator/queue-drain.ts`, `runner-registry-factory.ts`, `turn-executor.ts` | `releaseQueuedTurn` takes through the same gate (no tail re-queue); the `background_work` listener calls it instead of hand-rolling a drain; `finishTurn` calls it synchronously in a `finally` once `drainSettled` |
 | **Fix G** — the gate | `src/server/orchestrator/turn-admission.ts`, `session-runner.ts`, `queue-drain.ts` | `turnBlockedByPendingCommit`, read by `dispatchOnRunner` and by `takeRunnableQueuedTurn` |
-| Fix G — the release | `src/server/orchestrator/turn-executor.ts` | `releaseTurnCommit` releases the queue once no drain of the turn's is in flight; `onCommitHoldExpired` is the backstop; `drainSettled` cleared when a drain begins; the `done` handler leaves the hold to an error path its hook started |
-| Fix G — typed messages | `src/server/orchestrator/ws-handlers/send-message.ts`, `turn-admission.ts` | `send_message` awaits `turnCommitSettled`; `answer_question` queues; a steer whose turn ended during its attachment reads is dispatched |
+| Fix G — the release | `src/server/orchestrator/turn-executor.ts` | `releaseTurnCommit` releases the queue once no drain of the turn's is in flight; `onCommitHoldExpired` is the backstop; `tryDrain` returns when the runner was claimed during its commit; `drainSettled` cleared when a drain begins; the `done` handler leaves the hold to an error path its hook started, and leaves `running` to a successor in setup |
+| Fix G — the hold | `src/server/orchestrator/post-turn-hold.ts`, `session-runner.ts`, `container-session-runner.ts` | `begin` returns a generation and `end` ignores one that expired and was written off; `beginTurnCommit` / `endTurnCommit` carry it |
+| Fix G — typed messages | `src/server/orchestrator/ws-handlers/send-message.ts`, `turn-admission.ts`, `dispatch-steering.ts` | `send_message` awaits `turnCommitSettled`; `answer_question` queues; a steer is decided again after its attachment reads; a dispatch that carries attachments is not steered |
 | Fix D — the race | `src/server/orchestrator/ws-handlers/send-message.ts` | Re-reads `runner.running` after `verifyRunningState`, so a released entry isn't raced for the `_agent` slot |
 | Fix D — banner scope | `src/server/shared/types/ws-server-messages/git.ts`, `services/rebase-driver.ts`, `api-routes-git.ts`, `client/hooks/message-handlers/rebase-*.ts` | `sessionId` on the four rebase lifecycle messages; handlers drop foreign ones (the guard `auto_resolve_started` already had) |
 
@@ -704,18 +734,24 @@ hold is open, where it used to start the entry. The executor's release follows i
   result, between a one-shot result and its exit, after an adapter error, and after a
   dispatched crash with partial work, the dispatch is queued and the finished turn's edit is
   in git before the turn starts. Two dispatches in the interval start one successor and
-  commit once; a refusing caller is refused; a driver-owned step is admitted. Three more run
+  commit once; a refusing caller is refused; a driver-owned step is admitted. Six more run
   the expiry on fake timers: an entry behind a one-shot turn whose exit never arrives starts
   when the hold expires; it still starts when a second hold extended the deadline and was
-  released; and a turn whose drain is parked on its commit starts one successor, not two,
-  when that commit settles after the expiry — the successor is held in setup so the turn
-  epoch cannot hide a missing hand-over.
+  released; a turn whose drain is parked on its commit starts one successor, not two, when
+  that commit settles after the expiry — the successor is held in setup so the turn epoch
+  cannot hide a missing guard — and the same when the successor was started by the late
+  commit of the turn before it; a commit that settles after its hold expired leaves the
+  hold of the turn the expiry started in place; and a streaming process that exits while that
+  turn is in setup leaves its claim on the runner. `post-turn-hold.test.ts` has the owned
+  `end` on its own.
   `integration_tests/system-turn-queue.test.ts` has the typed half through a real WebSocket:
   a `send_message` sent in the interval starts only after the commit, an `answer_question`
   is queued and then starts, and a wake that arrives while a message waits runs first.
   `integration_tests/steer-after-turn-end.test.ts` holds an attachment read open across the
   end of a turn and asserts that nothing is written to the idle agent until the commit lands,
-  and that nothing is written to a system turn that started in the meantime.
+  that nothing is written to a system turn that started in the meantime, that a turn which
+  can take the steer receives it once, with the content of the file, and that a merge hold
+  which arrived during the read queues the message with its attachment.
 
 ## Resolved decisions
 

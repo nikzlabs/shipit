@@ -138,6 +138,8 @@ describe("Integration: a steer whose turn ended while its attachments were read"
     );
     expect(runner.turnCommitPending).toBe(false);
     expect(runner.queueLength).toBe(0);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(resident.stdinData.filter((d) => d.includes("and read this note"))).toHaveLength(1);
 
     client.close();
   });
@@ -180,6 +182,79 @@ describe("Integration: a steer whose turn ended while its attachments were read"
     typedTurn.finish("typed-session");
     await waitUntil(() => !runner.running && !runner.postTurnWorkInFlight, "all turns finished");
 
+    client.close();
+  });
+
+  // The dispatch the handler falls back to steers the text alone, so a steer that the turn
+  // running now can still take must be delivered here, with what it read.
+  it("steers into the turn that is running now, and keeps its attachment", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Refactor the parser" });
+    const resident = await waitForClaude(() => lastClaude);
+    resident.initSession("agent-a");
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): SessionRunnerInterface } })
+      .runnerRegistry.get(client.sessionId);
+    await waitUntil(() => runner.running && runner.isStreamingActive, "the turn runs and streams");
+    fs.writeFileSync(path.join(runner.sessionDir, "note.txt"), "the note's own words\n");
+
+    let openAttachments = (): void => {};
+    attachments.gate = new Promise<void>((resolve) => { openAttachments = resolve; });
+    const readsBefore = attachments.reads;
+    client.send({ type: "send_message", text: "and read this note", files: [{ path: "note.txt" }] });
+    await waitUntil(() => attachments.reads === readsBefore + 1, "the steer is reading its attachment");
+
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    await waitUntil(() => !runner.running && !runner.turnCommitPending, "the first turn ended and committed");
+    runner.dispatch(testDispatch({ text: "a follow-up turn" }));
+    await waitUntil(
+      () => runner.running && resident.stdinData.some((d) => d.includes("a follow-up turn")),
+      "a second turn runs on the same agent",
+    );
+    expect(lastClaude).toBe(resident);
+
+    attachments.gate = null;
+    openAttachments();
+    await waitUntil(
+      () => resident.stdinData.some((d) => d.includes("and read this note")),
+      "the steer reached the agent",
+    );
+    expect(resident.stdinData.find((d) => d.includes("and read this note"))).toContain("the note's own words");
+    expect(runner.queueLength).toBe(0);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(resident.stdinData.filter((d) => d.includes("and read this note"))).toHaveLength(1);
+
+    client.close();
+  });
+  // The fallback is a dispatch, and a dispatch into a running turn tries a steer of its own
+  // before it reads the merge hold. That steer sends the text alone, so it must not be taken.
+  it("queues the message with its attachment when a merge hold arrived during the read", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Refactor the parser" });
+    const resident = await waitForClaude(() => lastClaude);
+    resident.initSession("agent-a");
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): SessionRunnerInterface } })
+      .runnerRegistry.get(client.sessionId);
+    await waitUntil(() => runner.running && runner.isStreamingActive, "the turn runs and streams");
+    fs.writeFileSync(path.join(runner.sessionDir, "note.txt"), "a note\n");
+
+    let openAttachments = (): void => {};
+    attachments.gate = new Promise<void>((resolve) => { openAttachments = resolve; });
+    const readsBefore = attachments.reads;
+    client.send({ type: "send_message", text: "and read this note", files: [{ path: "note.txt" }] });
+    await waitUntil(() => attachments.reads === readsBefore + 1, "the steer is reading its attachment");
+
+    runner.mergeHold = true;
+    attachments.gate = null;
+    openAttachments();
+    await waitUntil(() => runner.queueLength === 1, "the message queued");
+    expect(runner.messageQueue[0]?.files).toEqual([{ path: "note.txt" }]);
+    expect(resident.stdinData.some((d) => d.includes("and read this note"))).toBe(false);
+
+    runner.mergeHold = false;
     client.close();
   });
 });
