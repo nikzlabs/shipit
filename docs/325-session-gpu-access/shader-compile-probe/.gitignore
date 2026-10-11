@@ -1,0 +1,7 @@
+# What the probe downloads and makes. plan.md, "To repeat it", gives the commands.
+/three-*.tgz
+/package/
+/sources.json
+/psample
+/results*.txt
+/raw/
