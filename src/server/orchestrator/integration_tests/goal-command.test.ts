@@ -163,6 +163,7 @@ describe("Integration: /goal (docs/154)", () => {
   let lastClaude: FakeClaudeProcess | null;
   let savedOpenAIKey: string | undefined;
   let savedXaiKey: string | undefined;
+  let savedInstallReport: string | undefined;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -175,6 +176,11 @@ describe("Integration: /goal (docs/154)", () => {
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     savedXaiKey = process.env.XAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-goal-"));
+    // Make harness availability independent of the host's installed CLIs.
+    savedInstallReport = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+    const reportPath = path.join(tmpDir, "installed.json");
+    fs.writeFileSync(reportPath, JSON.stringify({ harnesses: ["claude", "codex", "grok"] }));
+    process.env.SHIPIT_AGENTS_INSTALL_REPORT = reportPath;
     sessions = new SessionManager(dbManager);
     chatHistory = new ChatHistoryManager(dbManager);
 
@@ -225,6 +231,8 @@ describe("Integration: /goal (docs/154)", () => {
     else delete process.env.OPENAI_API_KEY;
     if (savedXaiKey !== undefined) process.env.XAI_API_KEY = savedXaiKey;
     else delete process.env.XAI_API_KEY;
+    if (savedInstallReport !== undefined) process.env.SHIPIT_AGENTS_INSTALL_REPORT = savedInstallReport;
+    else delete process.env.SHIPIT_AGENTS_INSTALL_REPORT;
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
