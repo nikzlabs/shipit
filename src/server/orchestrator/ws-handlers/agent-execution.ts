@@ -581,6 +581,7 @@ async function composeAndRunAgentTurn(
       }),
   };
 
+  const continuation = ctx.quotaContinuation;
   const deps: SystemTurnDeps = {
     answerHold: ctx.sessionManager,
     agentFactory: (id) => ctx.agentFactory(id),
@@ -737,6 +738,10 @@ async function composeAndRunAgentTurn(
     },
     ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
     ...(ctx.runRequestedCompaction ? { runRequestedCompaction: ctx.runRequestedCompaction } : {}),
+    ...(continuation ? {
+      recordStandDown: (args) => continuation.recordStandDown(args),
+      continueAfterStandDown: async (sessionId) => { await continuation.continueNow(sessionId); },
+    } : {}),
     postTurnReleaseFlow: buildPostTurnReleaseFlow({
       getReleaseStatusPoller: () => ctx.releaseStatusPoller,
       sessionManager: ctx.sessionManager,

@@ -177,6 +177,56 @@ describe("quota continuation", () => {
     manager.stop();
   });
 
+  // docs/140-live-steering Phase 6.13 — the same wake, for a turn a renewed sign-in cut short.
+  describe("a stand-down after a sign-in renewal", () => {
+    const dispatchedText = (h: ReturnType<typeof makeHarness>, call: number): string =>
+      (h.dispatch.mock.calls[call]![0] as { text: string }).text;
+
+    it("counts the renewed credential itself as a way to continue", () => {
+      // The only account is the one that was renewed; nothing was benched.
+      const h = makeHarness({ accounts: [account("acct-a")] });
+      const manager = new QuotaContinuationManager(h.deps);
+
+      expect(manager.recordStandDown({ sessionId: "s1", agentId: "claude", cause: "auth" }))
+        .toEqual({ continues: true });
+
+      manager.stop();
+    });
+
+    it("tells the continuation turn what stopped the work", async () => {
+      const quota = makeHarness();
+      const quotaManager = new QuotaContinuationManager(quota.deps);
+      quota.standDown(quotaManager);
+      await quotaManager.continueNow("s1");
+
+      const auth = makeHarness();
+      const authManager = new QuotaContinuationManager(auth.deps);
+      authManager.recordStandDown({ sessionId: "s1", agentId: "claude", cause: "auth" });
+      await authManager.continueNow("s1");
+
+      expect(dispatchedText(auth, 0)).not.toBe("");
+      expect(dispatchedText(auth, 0)).not.toBe(dispatchedText(quota, 0));
+
+      quotaManager.stop();
+      authManager.stop();
+    });
+
+    it("keeps the cause across a wake that could not be delivered", async () => {
+      const h = makeHarness();
+      const manager = new QuotaContinuationManager(h.deps);
+      manager.recordStandDown({ sessionId: "s1", agentId: "claude", cause: "auth" });
+      h.dispatch.mockImplementationOnce(() => { throw new Error("container would not resume"); });
+
+      await manager.continueNow("s1");
+      await manager.sweep();
+
+      expect(h.dispatch).toHaveBeenCalledTimes(2);
+      expect(dispatchedText(h, 1)).toBe(dispatchedText(h, 0));
+
+      manager.stop();
+    });
+  });
+
   it("leaves the continuation to a turn that has already taken the session on", async () => {
     const h = makeHarness();
     const manager = new QuotaContinuationManager(h.deps);

@@ -226,6 +226,7 @@ export async function registerRoutes(
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     runRequestedRestartForTurn,
     runRequestedCompactionForTurn,
+    quotaContinuationManager,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId, version,
   } = rt;
@@ -1057,6 +1058,7 @@ export async function registerRoutes(
         releaseStatusPoller,
         runRequestedRestart: runRequestedRestartForTurn,
         runRequestedCompaction: runRequestedCompactionForTurn,
+        quotaContinuation: quotaContinuationManager,
         recordAgentRateLimits,
         markSessionAccountExhausted,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},

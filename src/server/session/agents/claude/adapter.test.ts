@@ -305,6 +305,103 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  // CLI 2.1.284 capture, 2026-10-11: a conversation resumed after its previous process
+  // exited with a background job outstanding (docs/235-agent-self-wake-liveness §8).
+  describe("a task notice left by the previous process", () => {
+    const staleNotice = {
+      type: "system",
+      subtype: "task_notification",
+      task_id: "b4tuj7e58",
+      tool_use_id: "toolu_013ryduPBgJjhL7FRcMLAoMQ",
+      status: "stopped",
+      output_file: "",
+      summary: "Background shell command didn't finish before the previous session ended",
+    } as ClaudeEvent;
+    const init = { type: "system", subtype: "init", session_id: "sess-1" } as ClaudeEvent;
+    const noticeResult = {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 0,
+      stop_reason: null,
+      session_id: "sess-1",
+      origin: { kind: "task-notification" },
+      result: "",
+    } as ClaudeEvent;
+    const promptReplay = {
+      type: "user",
+      isReplay: true,
+      message: { role: "user", content: [{ type: "text", text: "the prompt" }] },
+    } as unknown as ClaudeEvent;
+    const answer = {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "the answer" }] },
+    } as ClaudeEvent;
+    const promptResult = {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      session_id: "sess-1",
+      result: "the answer",
+    } as ClaudeEvent;
+
+    function spawned() {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as unknown as ClaudeProcess);
+      const types: string[] = [];
+      adapter.on("event", (e) => types.push(e.type));
+      adapter.run({ prompt: "the prompt", cwd: "/workspace", sessionId: "sess-1" } as AgentRunParams);
+      return { inner, adapter, types };
+    }
+
+    it("does not report the notice's zero-turn result as the end of the spawn prompt's turn", async () => {
+      const { inner, adapter, types } = spawned();
+
+      for (const raw of [staleNotice, init, noticeResult, init]) inner.emit("event", raw);
+
+      expect(types).toEqual(["agent_self_wake", "agent_init", "agent_init"]);
+      // The prompt's turn has not ended, so a goal command must still wait for it.
+      await expect(adapter.goalCommand("sess-1", { action: "get" })).rejects.toThrow(/between turns/);
+
+      for (const raw of [promptReplay, answer, promptResult]) inner.emit("event", raw);
+      expect(types.filter((t) => t === "agent_result")).toHaveLength(1);
+      expect(types.slice(3)).toEqual(["agent_user_replay", "agent_assistant", "agent_result"]);
+    });
+
+    it("drops one result for each notice the previous process left", () => {
+      const { inner, types } = spawned();
+
+      for (const raw of [staleNotice, init, noticeResult, staleNotice, init, noticeResult, init, answer, promptResult]) {
+        inner.emit("event", raw);
+      }
+
+      expect(types.filter((t) => t === "agent_result")).toHaveLength(1);
+    });
+
+    // A wake on an idle session marks it busy in every layer above, and only a result clears that.
+    it("still reports a notice's zero-turn result once the spawn prompt's turn has begun", () => {
+      const { inner, types } = spawned();
+
+      for (const raw of [init, answer, promptResult, staleNotice, init, noticeResult]) inner.emit("event", raw);
+
+      expect(types.filter((t) => t === "agent_result")).toHaveLength(2);
+      expect(types.at(-1)).toBe("agent_result");
+    });
+
+    it("still reports a zero-turn result that is not a notice's, and a notice's result that failed", () => {
+      const { inner, types } = spawned();
+
+      const { origin: _origin, ...commandResult } = noticeResult as ClaudeEvent & { origin?: unknown };
+      inner.emit("event", commandResult as ClaudeEvent);
+      expect(types).toEqual(["agent_result"]);
+
+      const failed = spawned();
+      failed.inner.emit("event", { ...noticeResult, is_error: true, result: "Invalid API key" } as ClaudeEvent);
+      expect(failed.types).toEqual(["agent_result"]);
+    });
+  });
+
   describe("compaction (docs/178)", () => {
     it("maps system/status status:'compacting' to agent_compaction_started", () => {
       const inner = new FakeInnerProcess();

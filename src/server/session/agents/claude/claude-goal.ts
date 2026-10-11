@@ -7,6 +7,7 @@ import type {
 import { killProcessTree } from "../../../shared/kill-child.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import type { ClaudeEvent } from "../../../shared/types.js";
+import { closesTaskNoticeWithoutTurn } from "./task-notice.js";
 
 /** The CLI prints its goal answers through this wrapper; the model cannot produce one. */
 const LOCAL_COMMAND_STDOUT = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/;
@@ -162,8 +163,9 @@ export async function runClaudeGoalControl(
           } catch {
             continue;
           }
-          // The result carries the same text as the meta message and ends the run.
-          if (event.type !== "result") continue;
+          // The result carries the same text as the meta message and ends the run. A notice
+          // the thread's previous process left is closed by a result of its own, first.
+          if (event.type !== "result" || closesTaskNoticeWithoutTurn(event)) continue;
           finish(() => {
             try {
               resolve({ goal: goalFromAnswer(parseGoalAnswer(event.result ?? "")) });

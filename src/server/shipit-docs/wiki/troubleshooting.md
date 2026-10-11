@@ -148,6 +148,15 @@ the provider's own text. Three shapes:
 - **Anything else** — the error text is the provider's. Read it before
   retrying.
 
+A sign-in that ShipIt renews by itself is not one of these, and usually shows
+nothing: the turn the user sent runs again. One case leaves a trace. When the
+renewal lands while the agent is working on a turn it started itself — after a
+background job or a consult came back — that turn cannot be run again, so the
+transcript gets a **notice** saying the sign-in was renewed, and ShipIt starts a
+turn that continues the work. Nothing is asked of the user. When no credential
+is free at that moment, the notice says so, and ShipIt continues the work when
+one is.
+
 Background work ShipIt does *outside* a turn — naming the session, writing a
 pull-request description — fails quietly instead, as a **notice** card saying
 what it fell back to (for instance, the session kept its placeholder title). It

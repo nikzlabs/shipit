@@ -37,7 +37,7 @@ must restart the work).
 
 ## Phase 1 — continue on the next credential (reqs 1, 2, 3, 5, 6)
 
-`retireOnSpentAccount` now asks `recordQuotaStandDown` before it writes the
+`retireOnSpentAccount` now asks `recordStandDown` before it writes the
 notice, and the answer picks the wording: *"is continuing this work on another
 credential"* or *"will continue this work as soon as one of your credentials is
 free"*. Neither asks the user for anything (req 3), and neither says which kind
@@ -66,7 +66,7 @@ then delegating. Caught by `credential-failure-retry.test.ts`'s *"does not fail
 over from an adapter error on a metered key"*, which this change had to keep
 green. The stand-down is synchronous by contract there (the listener calls the
 predicate inline), so it is wrapped in its own try/catch, and `onError`'s
-terminal sequence gained the same `quota-continuation` step.
+terminal sequence gained the same `continuation` step.
 
 The continuation itself runs as the LAST step of the turn's terminal sequence,
 after drain, commit, PR flow and idle:
@@ -74,7 +74,7 @@ after drain, commit, PR flow and idle:
 ```
 await postTurnStep("commit", runCommitAndPr);
 await postTurnStep("idle", signalIdleIfIdle);
-await postTurnStep("quota-continuation", runQuotaContinuation);
+await postTurnStep("continuation", runContinuation);
 ```
 
 Three things make that position load-bearing, all of them CLAUDE.md invariants
@@ -85,7 +85,7 @@ inside the post-turn hold, so the runner never reads idle between the two turns.
 A test asserts the state observed *at the moment the continuation is invoked*:
 clean tree, PR flow already run twice, `runner.running === false`.
 
-Bounding: `quotaContinuationPending` is a single latch, set at the stand-down
+Bounding: `continuationPending` is a single latch, set at the stand-down
 and cleared when the continuation runs — at most one automatic continuation per
 refusal. Whether that continuation is still *wanted* is the manager's decision,
 not the executor's (below), so a queued turn that drained during teardown simply
@@ -165,6 +165,29 @@ Both phases wake with the same prompt
 that ShipIt found a credential with quota left, and that the agent should read
 the conversation and the working tree and finish what was outstanding.
 
+## A second cause — a renewed sign-in
+
+Since docs/140-live-steering Phase 6.13 the same manager continues a CLI-started
+turn that a 401 cut short, once ShipIt has renewed the sign-in. `recordStandDown`
+takes a `cause` (`"quota"` by default, `"auth"` for this), and the cause chooses
+what the continuation turn is told (`prompts/auth-continuation-wake.md`) and
+nothing else: the registry, the freshness rule, the sweep and the delivery
+retries are shared. Nothing is benched on this path, so the router is asked with
+no route excluded and the renewed credential itself counts as a way to continue.
+The requirements here are about quota and are unchanged.
+
+**Both executors take the hooks, and until that phase only one did.** A turn has
+two composition sites: the runner's dispatch (`runner-registry-factory.ts`) and
+the composer's `runAgentWithMessage` (`ws-handlers/agent-execution.ts`). Only the
+first passed `recordStandDown` / `continueAfterStandDown`. A resident CLI that a
+chat message started adopts its own turns through the *second* executor, so a
+stand-down there asked nobody, registered nothing, and still posted a notice
+that promised a continuation — for quota as well as for a sign-in. The unit
+tests inject the hooks and could not see it. The composer site now passes the
+manager through `AppCtx.quotaContinuation` (`route-registry.ts`), pinned by
+`integration_tests/chat-turn-stand-down-wiring.test.ts`, which sends a real
+composer message and follows the hooks to the continuation turn.
+
 ## Known gaps
 
 Named rather than hidden; the first is the one most worth closing next.
@@ -203,14 +226,16 @@ Named rather than hidden; the first is the one most worth closing next.
 
 - `src/server/orchestrator/services/quota-continuation.ts` — the manager: the
   stand-down decision, the stall registry, the sweep, the wake.
-- `src/server/orchestrator/prompts/quota-continuation-wake.md` — the
-  continuation prompt.
-- `src/server/orchestrator/turn-executor.ts` — `retireOnSpentAccount`, the
-  `quota-continuation` terminal step.
-- `src/server/orchestrator/session-runner.ts` — `recordQuotaStandDown` /
-  `continueAfterQuotaStandDown` on `SystemTurnDeps`.
+- `src/server/orchestrator/prompts/quota-continuation-wake.md`,
+  `auth-continuation-wake.md` — the continuation prompt for each cause.
+- `src/server/orchestrator/turn-executor.ts` — `retireOnSpentAccount`,
+  `standDownAfterAuthHeal`, the `continuation` terminal step.
+- `src/server/orchestrator/session-runner.ts` — `recordStandDown` /
+  `continueAfterStandDown` on `SystemTurnDeps`.
 - `src/server/orchestrator/runner-registry-factory.ts`,
-  `bootstrap-managers.ts`, `startup-monitors.ts` — wiring and shutdown.
+  `ws-handlers/agent-execution.ts` — the two executors that take the hooks.
+- `bootstrap-managers.ts`, `route-registry.ts`, `startup-monitors.ts` — wiring
+  and shutdown.
 
 ## Coverage
 
