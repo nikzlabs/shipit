@@ -96,7 +96,7 @@ describe("generateSessionName", () => {
   });
 
   it("runs the CLI with HOME at the account credential root when given one", async () => {
-    let seenHome: string | undefined;
+    let seenEnv: Record<string, string> = {};
     vi.doMock("node:child_process", () => ({
       execFile: (
         _file: string,
@@ -104,19 +104,74 @@ describe("generateSessionName", () => {
         opts: { env?: Record<string, string> },
         cb: (err: Error | null, stdout: string, stderr: string) => void,
       ) => {
-        seenHome = opts.env?.HOME;
+        seenEnv = opts.env ?? {};
         setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
         return { on: () => {}, stdin: { end: () => {} } } as unknown;
       },
     }));
+    // Local mode has no private copy and keeps its environment as it was.
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "/root/.claude-local");
 
     const mod = await import("./session-namer.js");
     await mod.generateSessionName("hi", {
       harnessId: "claude",
       credentialRoot: "/credentials/provider-accounts/claude/acct_work",
     });
+    vi.unstubAllEnvs();
 
-    expect(seenHome).toBe("/credentials/provider-accounts/claude/acct_work");
+    expect(seenEnv.HOME).toBe("/credentials/provider-accounts/claude/acct_work");
+    expect(seenEnv.CLAUDE_CONFIG_DIR).toBe("/root/.claude-local");
+  });
+
+  it("runs Claude naming in the credential copy it is given, never in the account root", async () => {
+    let seenEnv: Record<string, string> = {};
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenEnv = opts.env ?? {};
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "/credentials/provider-accounts/claude/acct_work/.claude");
+    const settledAfterRun: boolean[] = [];
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+      inCredentialCopy: async (run) => {
+        const value = await run("/tmp/private-copy");
+        settledAfterRun.push(seenEnv.HOME === "/tmp/private-copy");
+        return value;
+      },
+    });
+    vi.unstubAllEnvs();
+
+    expect(result.name).toEqual({ slug: "s", title: "T" });
+    expect(seenEnv.HOME).toBe("/tmp/private-copy");
+    expect(seenEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(settledAfterRun).toEqual([true]);
+  });
+
+  it("reports a credential copy that cannot be made as the naming failure, without a spawn", async () => {
+    const execFile = vi.fn();
+    vi.doMock("node:child_process", () => ({ execFile }));
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+      inCredentialCopy: () => Promise.reject(new Error("The Claude account's credentials could not be copied (ENOENT).")),
+    });
+
+    expect(result.name).toBeNull();
+    expect(result.failure).toBe("The Claude account's credentials could not be copied (ENOENT).");
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   it("falls back to the singleton root when no account root is given", async () => {

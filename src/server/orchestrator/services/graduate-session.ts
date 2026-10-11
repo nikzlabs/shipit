@@ -188,6 +188,13 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   const namingCredentialRoot = namingAccountId && credentialsDir
     ? providerAccountCredentialRoot(credentialsDir, namingHarness, namingAccountId)
     : undefined;
+  // A CLI in the account root can rotate or blank the account's only copy (docs/153).
+  const copyRunner = namingHarness === "claude" && namingAccountId && namingCredentialRoot
+    ? providerAccountManager?.claudeCredentialCopyRunner() ?? null
+    : null;
+  const inCredentialCopy = copyRunner && namingAccountId
+    ? <T>(run: (home: string) => Promise<T>): Promise<T> => copyRunner(namingAccountId, run)
+    : undefined;
 
   // Persist failures: background naming can finish after the user switches sessions.
   const reportNamingFailure = (detail: string | undefined): void => {
@@ -281,6 +288,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       ...(target?.serviceRouting ? { serviceRouting: target.serviceRouting } : {}),
       ...(target?.credentialSecret ? { credentialSecret: target.credentialSecret } : {}),
       ...(namingCredentialRoot ? { credentialRoot: namingCredentialRoot } : {}),
+      ...(inCredentialCopy ? { inCredentialCopy } : {}),
     });
     // Count usage even when title parsing fails or the legacy fallback has no target.
     if (result.usage) {

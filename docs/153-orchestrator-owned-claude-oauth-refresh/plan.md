@@ -572,6 +572,54 @@ not run it, because CI does not install the agent CLIs.
 - *Schedule ticks inside the CLI's 5-minute window.* The orchestrator would enter the
   race it exists to prevent, once per lifetime, against every resident CLI.
 
+### Session naming in a private copy (2026-10)
+
+Session naming (`claude -p …`, `session-namer.ts`) was the last model call in the
+containerized orchestrator that ran with `HOME` at an account's credential root. Such
+a CLI refreshes the source itself inside the 5-minute window and blanks it on
+`invalid_grant`, so a naming run that lost the grant to a session's CLI blanked the
+account's only copy.
+
+On a Claude account route in the containerized orchestrator, naming now runs through
+`ClaudeOAuthRefresher.runInPrivateCopy`, reached through
+`ProviderAccountManager.claudeCredentialCopyRunner()` (attached at boot, so no route
+passes a new dependency). It makes the same private copy as a probe, but with the
+**real** expiry: naming should not rotate a token that the refresher would not, and it
+does not run unless the copy can be made — an unreadable source fails naming with
+`The Claude account's credentials could not be copied (<code>).`, never the file's
+text. `CLAUDE_CONFIG_DIR` is removed from that CLI's environment, because with it set
+the CLI ignores `HOME` and so the copy.
+
+When the run ends, the copy is judged by the probe's rules (`adoptProbeRotation`):
+
+- **New tokens** → installed in the source, then the ordinary success path (repush,
+  `refreshed`), logged as `rotated_private_run`. A failed install keeps the copy as
+  `pendingRotation`, and a tick is scheduled in 1 s to install it without a probe. If
+  a rotation is kept already, the new copy takes its place only where a tick would
+  give the kept one up: the source is gone or holds another credential. The kept copy
+  is then deleted. Otherwise the kept one stays, and the new copy is left on disk with
+  its path logged. Different seeds alone prove nothing: a run that started before a
+  sign-in can end after a newer run's rotation was kept.
+- **A blanked copy** → a rejected grant, as after a probe (`rejectedIdentity`,
+  `revoked`), if the source still holds the rejected credential. While another naming
+  run of the account is open, it can hold the grant's successor, so the rejection is
+  kept (`unjudgedRejection`) and judged when the last open run ends: again only if the
+  source still holds that credential, and only if no rotation is kept. The late harvest
+  runs first, as after a probe.
+- **Anything else** → no verdict. The copy is deleted.
+
+A naming run and a probe would spend the same grant, so they do not overlap: a naming
+run waits for a tick in flight before it copies the source, and a tick waits for the
+open naming runs before it harvests or probes. Naming's CLI times out after 15 s; a
+tick waits at most 30 s. If a run is still open then, the tick harvests as usual but
+does not probe: the run can hold the grant's successor, and a probe would misjudge
+the grant as revoked. The tick ends `not_rotated` (`[private-run-open]`) and retries
+on the generic backoff. Naming runs do not wait for each other.
+
+Local mode attaches no runner, so naming there still runs in the account root with
+its environment unchanged: the refresher does not run in local mode, and the turn
+CLIs share that root anyway.
+
 ### Known limits (not addressed here)
 
 - **The marker records what provisioning intended, not whose bytes are on
@@ -600,19 +648,32 @@ not run it, because CI does not install the agent CLIs.
   dies between the CLI's write and the install, the grant is spent and the new
   token is left in the temp directory, where nothing looks for it; the account
   needs a sign-in. The window is the CLI's remaining run time: well under a
-  second for Tier 1, a few seconds for Tier 2. It lasts as long as a
+  second for Tier 1, a few seconds for Tier 2, and up to 15 s for a naming run,
+  which refreshes before its model call. It lasts as long as a
   `pendingRotation` waits, which is held in memory only: that covers a failed
   install, not a dead process.
-- **Other orchestrator-side CLIs still run in the account root.** In the
-  containerized orchestrator there are two: session naming (`claude -p …`, a real
-  model call; `namingHome` in `session-namer.ts`) and the sign-in PTY, which is
-  meant to write there. In local mode the turn CLIs run there too. Such a CLI
-  refreshes the source itself when it finds it inside the 5-minute window, and
-  blanks it on `invalid_grant`. The refresher's probe no longer shares the CLI's
-  own lock in that directory with them. When the probe wins the grant it installs
-  over the blank; when a session CLI wins it, a naming run can still blank the
-  source, as before this fix. (The usage-limits provider and the account identity
+- **The sign-in PTY still runs in the account root**, because it is meant to
+  write there. In local mode the turn CLIs and session naming run there too.
+  Such a CLI refreshes the source itself when it finds it inside the 5-minute
+  window, and blanks it on `invalid_grant`. When the probe wins the grant it
+  installs over the blank. (The usage-limits provider and the account identity
   reader only read the file. Bug-report redaction runs in the flat `/root` home.)
+- **A naming run that never ends stops the account's probes.** Its ticks still
+  harvest the sessions' rotations, so the account falls back to the session CLIs
+  refreshing near expiry, as before the private probe copy. The CLI's own 15 s
+  timeout makes this a fault: a process that ignores the kill, or that leaves
+  a child holding its output open.
+- **Only one rotation is kept.** A second copy that cannot be installed while the
+  source does not prove the kept one superseded is left on disk, with its path in
+  the log, and nothing installs it. It takes two failed installs; and since a
+  single-use grant gives at most one live successor, it loses a grant only when the
+  kept copy holds none (an unreadable probe copy) or the source cannot be read.
+- **The late harvest can run before a session's rotation is on disk.** When a
+  session's CLI and a naming run (or a probe) spend the same grant, and the naming
+  run's `invalid_grant` is judged before the session's CLI has written its new
+  tokens, the account is reported revoked until a later tick harvests that
+  rotation. The probe path has had the same window since the late harvest was
+  added.
 - **The install's token check and its rename are two steps.** A writer that
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
@@ -879,6 +940,21 @@ history that was moved into the orphan.
 - `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — "private probe
   copy", "retry schedule"
 - `scripts/probe-claude-refresh.mjs` — the same checks against the real binary
+
+### Key files (session naming in a private copy, 2026-10)
+
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `runInPrivateCopy`,
+  `settlePrivateRun`, `waitForPrivateRuns`, `privateRuns`, `unjudgedRejection`
+- `src/server/orchestrator/provider-account-manager.ts` —
+  `attachClaudeCredentialCopy`, `claudeCredentialCopyRunner`
+- `src/server/orchestrator/bootstrap-managers.ts` — attaches the runner in
+  containerized mode only
+- `src/server/orchestrator/services/graduate-session.ts` — passes
+  `inCredentialCopy` on a Claude account route
+- `src/server/orchestrator/session-namer.ts` — the Claude case runs `callCli` in
+  the copy, and only there removes `CLAUDE_CONFIG_DIR`
+- Tests: "private run (session naming)" in `oauth-refresher.test.ts`, and the
+  credential-copy cases in `session-namer.test.ts` and `graduate-session.test.ts`
 
 ### Key files (harvest before spend, planning#462)
 
