@@ -244,6 +244,39 @@ The same pricing page says the planned rise of Sonnet 5 to $3/$15 on
 2026-09-01 was cancelled and $2/$10 is its standard price, so Sonnet 5's
 rates are corrected to match Sonnet 5.5's, with the user's approval.
 
+**Catalogue maintenance (2026-10-12): Haiku 5.5.** The user asked for the new
+Haiku. Anthropic's [model page](https://platform.claude.com/docs/en/models/haiku-5-5/overview),
+read on this date, gives `claude-haiku-5-5` (released 2026-10-07), image input,
+a 1M context window and 128K output. Claude Code's own catalog gives efforts
+`low` to `max`. The price is tiered by prompt length: $0.10 input, $0.50
+output, $0.01 cache reads and $0.125 five-minute cache writes per million
+tokens up to 100K prompt tokens, and five times each rate above. The row
+carries the lower tier, the same choice as Gemini Pro's and xAI's long-context
+tiers. It uses Anthropic Messages under both Anthropic billing modes, directly
+after Haiku 4.5, which stays. Gateway availability is not inferred.
+
+Claude Code 2.1.284 runs the new ID through ShipIt's spawn (1M window, a
+completed tool call), but logs `unrecognized_model` and reports
+`costBasis: "unknown"`: a measured turn reported $0.132 where list rates give
+about $0.0036. So the CLI moves to 2.1.293 (published 2026-10-07), the first
+release that describes Haiku 5.5; on the same turn shape it reports
+`costBasis: "list"` and exactly the list-rate cost. The user approved its
+exact-version dependency-age exception on 2026-10-12; it expires on 2026-10-14.
+
+2.1.293 also points Claude Code's `haiku` alias at Haiku 5.5 on the
+first-party API, and the Haiku 4.5 row's id is that alias, so passing the row id
+would run Haiku 5.5 under a Haiku 4.5 label and price. `claudeModelArg` (turns)
+and session naming now pass a row's `apiId` (`claude-haiku-4-5`) when it has
+one, and `unshapeClaudeModelId` maps the echoed vendor id back to the row id. The row id
+stays `haiku`: renaming it would strand every place a selection is stored
+(browser preference, roles, schedules, cached published lists), and none of
+them goes through retirement.
+
+Measured on 2.1.293 with `--permission-mode auto`: Haiku 5.5 starts in auto
+(guarded) mode and Haiku 4.5 falls back to default. So the guarded-mode gate
+refuses only Haiku before 5.5, only for the Claude harness (Grok has its own
+guarded mode), and it normalizes a saved id the same way as a reported one.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither

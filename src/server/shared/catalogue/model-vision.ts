@@ -13,6 +13,8 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   // Anthropic Sonnet 5.5 model page, 2026-09-29.
   "claude-sonnet-5.5": "yes",
   "claude-haiku-4.5": "yes",
+  // Anthropic Haiku 5.5 model page, 2026-10-12.
+  "claude-haiku-5.5": "yes",
   "claude-fable-5": "yes",
   "claude-fable-5.1": "yes",
 

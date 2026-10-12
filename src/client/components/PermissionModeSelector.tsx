@@ -99,10 +99,15 @@ const MODE_META: Record<
 
 const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
 
+// Claude Code does not run guarded mode on Haiku before 5.5.
+const GUARDED_MODEL_GATES: Partial<Record<AgentId, (model: string) => boolean>> = {
+  claude: (model) => resolveModelAlias(model) !== "haiku" || model.startsWith("claude-haiku-5-5"),
+};
+
 /**
- * Whether the effective model can run guarded mode. Guarded needs Sonnet or
- * Opus; Haiku is unsupported. The runtime init-field check is the backstop if a
- * model turns out unsupported despite this gate.
+ * Whether the effective model can run guarded mode on the active harness. The
+ * runtime init-field check is the backstop if a model turns out unsupported
+ * despite this gate.
  *
  * docs/260 — exported because the composer's settings menu offers the same
  * choice below 700px of composer width, and a second copy of the rule would
@@ -117,12 +122,13 @@ export function isGuardedModelOk({
   activeAgentId: AgentId;
   modelInfo?: ModelInfo | null;
 }): boolean {
+  const gate = GUARDED_MODEL_GATES[activeAgentId];
+  if (!gate) return true;
   const activeAgent = agents.find((a) => a.id === activeAgentId);
-  const effectiveAlias =
-    (modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined) ??
-    getSavedModelId() ??
-    activeAgent?.models[0];
-  return effectiveAlias !== "haiku";
+  const effectiveModel = modelInfo?.model
+    ? modelInfo.model
+    : (getSavedModelId() ?? activeAgent?.models[0]);
+  return !effectiveModel || gate(effectiveModel);
 }
 
 export interface NetworkSectionProps {
@@ -263,7 +269,7 @@ export function PermissionModeSelector({
                       {isCurrent && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />}
                     </div>
                     <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-                      {guardedDisabled ? "Guarded mode needs a Sonnet or Opus model." : meta.description}
+                      {guardedDisabled ? "Guarded mode does not run on Haiku before 5.5." : meta.description}
                     </p>
                   </div>
                 </DropdownMenuItem>

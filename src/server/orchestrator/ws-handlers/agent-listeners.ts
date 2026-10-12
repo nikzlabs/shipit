@@ -543,7 +543,7 @@ export function wireAgentListeners(
           emitNoticeInTurn(
             runner,
             turnSessionId,
-            "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan and a Sonnet or Opus model.",
+            "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan, and it does not run on Haiku before 5.5.",
             deps.chatHistoryManager,
             "warn",
           );

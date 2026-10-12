@@ -47,8 +47,8 @@ supports appear, so on a harness with one mode there is nothing to choose.
 
 **Guarded mode can be picked and then not happen, and this is worth getting
 right** — it is the one place where reassuring the user wrongly has a cost. The
-menu enforces the model half: guarded needs a Sonnet or Opus model, and it
-refuses the pick otherwise. The *account* half is only discovered when the turn
+menu enforces the model half: guarded does not run on Haiku before 5.5, and it
+refuses the pick there. The *account* half is only discovered when the turn
 starts: it also needs a Max, Team or Enterprise plan, and where the account or
 the model cannot run it, ShipIt says so in the conversation and **runs the turn
 in auto — with no command safety check at all**, as do the turns after it. So if

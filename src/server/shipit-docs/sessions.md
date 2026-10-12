@@ -872,9 +872,9 @@ The user picks a permission mode per turn from the chat input. There are three
   pre-existing files, exfiltrating secrets) is **blocked** and you receive the
   reason as a tool result. When blocked, find a safer path or tell the user
   what you'd need them to run. A single block doesn't end the turn, but
-  repeated blocks will. Guarded mode is Claude-only and requires a Sonnet or
-  Opus model on a Max/Team/Enterprise plan; when unavailable the turn silently
-  falls back to auto and the user is told.
+  repeated blocks will. Guarded mode is Claude-only, does not run on Haiku
+  before 5.5, and needs a Max/Team/Enterprise plan; when unavailable the turn
+  silently falls back to auto and the user is told.
 - **Auto** — autonomous with no classifier. The default. Safety here rests on
   the tool allowlist, the branch-block hook, and container isolation.
 

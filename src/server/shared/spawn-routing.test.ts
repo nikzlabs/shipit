@@ -15,7 +15,16 @@ describe("claudeModelArg", () => {
   });
 
   it("leaves a 200K model alone", () => {
-    expect(claudeModelArg("haiku")).toBe("haiku");
+    expect(claudeModelArg("claude-haiku-4-5")).toBe("claude-haiku-4-5");
+  });
+
+  // From Claude Code 2.1.293 the `haiku` alias names Haiku 5.5, not the row's Haiku 4.5.
+  it("gives a row named for a Claude Code alias its vendor id", () => {
+    expect(claudeModelArg("haiku")).toBe("claude-haiku-4-5");
+  });
+
+  it("gives Haiku 5.5 its 1M window", () => {
+    expect(claudeModelArg("claude-haiku-5-5")).toBe("claude-haiku-5-5[1m]");
   });
 
   it("leaves an id the catalogue has no window for alone", () => {
@@ -38,6 +47,10 @@ describe("unshapeClaudeModelId", () => {
     expect(unshapeClaudeModelId("glm-5.3[1m]", "glm-5.3[1m]")).toBe("glm-5.3[1m]");
     expect(unshapeClaudeModelId("glm-5.3[1m]", "glm-5.3")).toBe("glm-5.3");
     expect(unshapeClaudeModelId("glm-5.2[1m]", "glm-5.2")).toBe("glm-5.2");
+  });
+
+  it("reports the row's own id when the CLI echoes the vendor id it was given", () => {
+    expect(unshapeClaudeModelId("claude-haiku-4-5", "haiku")).toBe("haiku");
   });
 
   it("passes an unsuffixed id through untouched", () => {

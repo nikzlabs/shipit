@@ -513,6 +513,27 @@ describe("generateSessionName", () => {
     expect(seenEnv.ANTHROPIC_API_KEY).toBe("sk-deepseek");
   });
 
+  it("names with the Haiku 4.5 row's vendor id, never Claude Code's `haiku` alias", async () => {
+    let seenArgs: string[] = [];
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenArgs = args;
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", { harnessId: "claude", model: "haiku" });
+
+    expect(seenArgs[seenArgs.indexOf("--model") + 1]).toBe("claude-haiku-4-5");
+  });
+
   it("refuses to name when the selected service has no credential to deliver", async () => {
     let spawned = false;
     vi.doMock("node:child_process", () => ({

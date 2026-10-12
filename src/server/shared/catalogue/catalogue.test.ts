@@ -567,12 +567,13 @@ describe("harnesses", () => {
 
 describe("the harness\u00d7service join", () => {
   it("leads with the harness's own vendor, in the order the picker had", () => {
-    expect(catalogueModelIdsForHarness("claude").slice(0, 6)).toEqual([
+    expect(catalogueModelIdsForHarness("claude").slice(0, 7)).toEqual([
       "claude-opus-5",
       "claude-opus-5-5",
       "claude-sonnet-5",
       "claude-sonnet-5-5",
       "haiku",
+      "claude-haiku-5-5",
       "claude-fable-5-1",
     ]);
     expect(catalogueModelIdsForHarness("codex").slice(0, 13)).toEqual([
@@ -634,6 +635,29 @@ describe("the harness\u00d7service join", () => {
     }
     expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
     expect(MODEL_ID_ALIASES["claude-sonnet-5-5"]).toBe("claude-sonnet-5.5");
+  });
+
+  it("offers Haiku 5.5 under both Anthropic billing modes beside Haiku 4.5", () => {
+    for (const billingMode of ["sub", "key"] as const) {
+      const selection = { serviceId: "anthropic", billingMode, modelId: "claude-haiku-5-5" };
+      expect(getModel(selection)).toMatchObject({
+        label: "Haiku 5.5", canonicalModelKey: "claude-haiku-5.5", family: "claude",
+        contextWindow: { default: 1_000_000 },
+        price: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+      });
+      expect(resolveSpawnShaping("claude", selection)?.style).toBe("anthropic-messages");
+      expect(visionSupportFor(selection)).toBe("yes");
+      expect(reasoningOptionsFor("claude", selection).map((option) => option.value))
+        .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      if (billingMode === "key") {
+        expect(reasoningOptionsFor("opencode", selection).map((option) => option.value))
+          .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      }
+      expect(resolveSpawnShaping("codex", selection)).toBeUndefined();
+      expect(getModel({ serviceId: "anthropic", billingMode, modelId: "haiku" })?.label).toBe("Haiku 4.5");
+    }
+    expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
+    expect(MODEL_ID_ALIASES["claude-haiku-5-5"]).toBe("claude-haiku-5.5");
   });
 
   it("offers GPT-6 Astra through both OpenAI billing modes without making it the default", () => {
