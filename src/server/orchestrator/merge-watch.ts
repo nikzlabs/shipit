@@ -343,7 +343,7 @@ export class MergeWatchManager {
     if (watch.quotaWait && this.holdForQuota(sessionId, watch, watch.quotaWait)) return;
     // Spent by an attempt that a restart cut off from its settlement: the retry pass, which
     // asks the worker first, ends the watch.
-    if (false) {
+    if (spentAttempts(watch) >= MAX_DELIVERY_ATTEMPTS) {
       this.ensureRetryLoop();
       return;
     }
