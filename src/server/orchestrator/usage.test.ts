@@ -529,7 +529,7 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     expect(mgr.getSessionUsage("s")!.groups!.at(-1)!.key).toBe("legacy");
   });
 
-  it("recomputes at API rates from the rates PERSISTED with each row", () => {
+  it("prices each row at the rates it was recorded with", () => {
     const mgr = new UsageManager(dbManager);
     mgr.record("s", 0, 1000, 1_000_000, 0, {
       costSource: "per-turn",
@@ -541,6 +541,56 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     });
 
     expect(mgr.getSessionUsage("s")!.totals.atApiRatesUsd).toBeCloseTo(9);
+  });
+
+  it("stores each row's figure, so equal totals can owe different amounts (docs/329-tiered-model-pricing)", () => {
+    const tiered = {
+      serviceId: "anthropic",
+      billingMode: "sub" as const,
+      rates: {
+        input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25,
+        longPrompt: { aboveTokens: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 6.25 },
+      },
+    };
+    const mgr = new UsageManager(dbManager);
+    // Same 200K input in both turns: two short prompts, then one long and one short.
+    mgr.record("s", 0, 1000, 200_000, 0, {
+      costSource: "per-turn", attribution: tiered, requests: [{ input: 100_000 }, { input: 100_000 }],
+    });
+    mgr.record("s", 0, 1000, 200_000, 0, {
+      costSource: "per-turn", attribution: tiered, requests: [{ input: 150_000 }, { input: 50_000 }],
+    });
+
+    const turns = mgr.getSessionTurns("s");
+    expect(turns[0].atApiRatesUsd).toBeCloseTo(0.2, 12);
+    expect(turns[1].atApiRatesUsd).toBeCloseTo(0.8, 12);
+    expect(mgr.getSessionUsage("s")!.totals.atApiRatesUsd).toBeCloseTo(1.0, 12);
+    expect(mgr.getStats().weekly[0].atApiRatesUsd).toBeCloseTo(1.0, 12);
+    expect(mgr.getPerTurnUsage("s").map((t) => t.atApiRatesUsd)).toEqual(turns.map((t) => t.atApiRatesUsd));
+  });
+
+  it("prices what the list leaves out at the tier of the turn's context size", () => {
+    const tiered = {
+      serviceId: "anthropic",
+      billingMode: "sub" as const,
+      rates: {
+        input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25,
+        longPrompt: { aboveTokens: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 6.25 },
+      },
+    };
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0, 1000, 150_000, 1_000, {
+      costSource: "per-turn", attribution: tiered, contextTokens: 150_000, requests: [{ input: 150_000 }],
+    });
+    expect(mgr.getSessionTurns("s")[0].atApiRatesUsd).toBeCloseTo((150_000 * 5 + 1_000 * 10) / 1e6, 12);
+  });
+
+  it("stores no at-API-rates figure for a metered or a legacy row", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.5, 1000, 1_000, 0, { costSource: "per-turn", attribution: key("deepseek") });
+    mgr.record("s", 2.0, 1000, 100, 100);
+    const stored = dbManager.db.prepare("SELECT at_api_rates_usd FROM usage_turns ORDER BY id").all();
+    expect(stored).toEqual([{ at_api_rates_usd: null }, { at_api_rates_usd: null }]);
   });
 
   it("prices every token class, cache included", () => {

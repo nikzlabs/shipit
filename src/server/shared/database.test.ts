@@ -15,6 +15,7 @@ import {
   SCHEDULE_PROPOSALS_MIGRATION,
   SCHEDULE_RUN_TIME_ZONE_MIGRATION,
   SELF_MERGE_WATCH_MIGRATION,
+  AT_API_RATES_MIGRATION,
   DatabaseManager,
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
@@ -1487,6 +1488,62 @@ describe("docs/239-self-merge-wake — the self-watch gets its own column (real 
 
     const replayed = new DatabaseManager(file);
     expect(stored(replayed)).toEqual({ merge_watch: '{"a":1}', self_merge_watch: '{"b":2}' });
+    replayed.close();
+  });
+});
+
+describe("docs/329-tiered-model-pricing — the stored at-API-rates figure (real migration)", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-migration-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const stored = (m: DatabaseManager) =>
+    (m.db.prepare("SELECT id, at_api_rates_usd AS usd FROM usage_turns ORDER BY id").all() as { id: number; usd: number | null }[]);
+
+  function rewindAndSeed(): void {
+    const m = new DatabaseManager(file);
+    m.db.exec(`
+      ALTER TABLE usage_turns DROP COLUMN at_api_rates_usd;
+      INSERT INTO usage_turns (id, session_id, cost_usd, duration_ms, input_tokens, output_tokens,
+        cache_read_tokens, cache_create_tokens, service_id, billing_mode,
+        rate_input, rate_output, rate_cache_read, rate_cache_write) VALUES
+        (1, 's', 0, 1, 1000000, 500000, 2000000, 100000, 'anthropic', 'sub', 3, 15, 0.3, 3.75),
+        (2, 's', 0, 1, 1000000, NULL, NULL, NULL, 'anthropic', 'sub', 3, 15, 0.3, 3.75),
+        (3, 's', 0.5, 1, 1000000, 0, 0, 0, 'deepseek', 'key', 0.3, 1.2, 0.006, 0.3),
+        (4, 's', 2.0, 1, 1000, 1000, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    `);
+    m.db.pragma(`user_version = ${AT_API_RATES_MIGRATION}`);
+    m.close();
+  }
+
+  it("gives each subscription row the figure its flat rates and totals showed, and no other row one (req 5)", () => {
+    rewindAndSeed();
+    const m = new DatabaseManager(file);
+    const rows = stored(m);
+    expect(rows[0].usd).toBeCloseTo((1_000_000 * 3 + 500_000 * 15 + 2_000_000 * 0.3 + 100_000 * 3.75) / 1e6, 12);
+    expect(rows[1].usd).toBeCloseTo(3, 12);
+    expect(rows[2].usd).toBeNull();
+    expect(rows[3].usd).toBeNull();
+    m.close();
+  });
+
+  it("is a no-op when re-run, so a rewind cannot overwrite a figure a tier priced", () => {
+    rewindAndSeed();
+    const migrated = new DatabaseManager(file);
+    migrated.db.exec("UPDATE usage_turns SET at_api_rates_usd = 99 WHERE id = 1");
+    migrated.db.pragma(`user_version = ${AT_API_RATES_MIGRATION}`);
+    migrated.close();
+
+    const replayed = new DatabaseManager(file);
+    expect(stored(replayed)[0].usd).toBe(99);
     replayed.close();
   });
 });

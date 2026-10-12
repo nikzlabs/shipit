@@ -1,15 +1,11 @@
-import type { AgentEvent } from "../agent-process.js";
+import type { AgentEvent, AgentRequestUsage } from "../agent-process.js";
+import { disjointCodexTokens, type CodexReportedTokens } from "../../../shared/codex-token-usage.js";
 
-// total accumulates thread billing; last measures the latest call's context occupancy.
+// total accumulates thread billing; last is the latest call's own usage, and its context occupancy.
 export interface CodexTokenUsage {
   /** inputTokens includes cachedInputTokens; convert with disjointCodexTokens. */
-  total?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-    cacheWriteInputTokens?: number;
-  };
-  last?: { totalTokens?: number };
+  total?: CodexReportedTokens;
+  last?: CodexReportedTokens & { totalTokens?: number };
   modelContextWindow?: number;
 }
 
@@ -27,6 +23,9 @@ export class CodexRateLimits {
 
   private _baselineTotal: CodexTokenUsage["total"] | undefined;
 
+  /** One entry per response of `_lastTurnId`, so a resume's replay is never listed for the next turn. */
+  private _turnRequests: AgentRequestUsage[] = [];
+
   private lastRateLimits: {
     session: { usedPct: number; resetAt: string; startedAt?: string } | null;
     weekly: { usedPct: number; resetAt: string; startedAt?: string } | null;
@@ -42,17 +41,31 @@ export class CodexRateLimits {
     if (turnId !== undefined && turnId !== this._lastTurnId) {
       this._baselineTotal = this._lastTokenUsage?.total;
       this._lastTurnId = turnId;
+      this._turnRequests = [];
     }
     this._lastTokenUsage = tokenUsage;
+    const request = disjointCodexTokens(tokenUsage.last);
+    if (request) {
+      this._turnRequests.push({
+        input: request.input,
+        output: request.output,
+        ...(request.cacheRead !== undefined ? { cacheRead: request.cacheRead } : {}),
+        ...(request.cacheWrite !== undefined ? { cacheWrite: request.cacheWrite } : {}),
+      });
+    }
   }
 
   // An empty recorded turn ID is still known; do not bill its replay to a new turn.
   turnTokenUsage(
     turnId: string | null | undefined,
-  ): { usage: CodexTokenUsage; baselineTotal: CodexTokenUsage["total"] | undefined } | null {
+  ): {
+    usage: CodexTokenUsage;
+    baselineTotal: CodexTokenUsage["total"] | undefined;
+    requests: AgentRequestUsage[];
+  } | null {
     if (!this._lastTokenUsage) return null;
     if (turnId && this._lastTurnId !== null && turnId !== this._lastTurnId) return null;
-    return { usage: this._lastTokenUsage, baselineTotal: this._baselineTotal };
+    return { usage: this._lastTokenUsage, baselineTotal: this._baselineTotal, requests: [...this._turnRequests] };
   }
 
   updateRateLimits(params: Record<string, unknown>): AgentEvent | null {

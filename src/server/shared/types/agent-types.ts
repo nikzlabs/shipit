@@ -260,12 +260,27 @@ export interface AgentResultEvent {
   };
   /** Last call's input plus cache reads and writes. */
   contextTokens?: number;
+  /**
+   * Each model call of this turn, listed once, for prompt-length pricing
+   * (docs/329-tiered-model-pricing). `tokens` stays the billing total; whatever
+   * the list does not cover is priced at the tier `contextTokens` selects.
+   */
+  requests?: AgentRequestUsage[];
   /** Prefer the reported window to the static fallback. */
   contextWindow?: number;
   durationMs?: number;
   error?: string;
   /** Classifier denials only, not model self-refusals. */
   permissionDenials?: { toolName: string; toolUseId?: string; toolInput?: unknown }[];
+}
+
+/** One model call's tokens, disjoint like `AgentResultEvent.tokens`. */
+export interface AgentRequestUsage {
+  input: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** Absent where the harness does not report the call's final output. */
+  output?: number;
 }
 
 /** Percentages are 0–100; null usage means unreported, not zero. */

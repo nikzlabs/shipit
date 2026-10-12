@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { costFromRates, resolveTurnCost, selectionOf, turnAttributionFor } from "./turn-attribution.js";
+import { atApiRatesFor, costFromRates, resolveTurnCost, selectionOf, turnAttributionFor } from "./turn-attribution.js";
 import type { TurnAttribution } from "./usage.js";
 
 const RATES = { input: 10, output: 20, cacheRead: 1, cacheWrite: 12.5 };
@@ -34,12 +34,101 @@ describe("turnAttributionFor", () => {
 describe("costFromRates", () => {
   it("prices each token class independently, per million", () => {
     expect(
-      costFromRates(RATES, { input: 1_000_000, output: 500_000, cacheRead: 2_000_000 }),
+      costFromRates(RATES, { tokens: { input: 1_000_000, output: 500_000, cacheRead: 2_000_000 } }),
     ).toBeCloseTo(22, 10);
   });
 
   it("treats an absent class as zero rather than as missing data", () => {
-    expect(costFromRates(RATES, {})).toBe(0);
+    expect(costFromRates(RATES, { tokens: {} })).toBe(0);
+  });
+
+  it("ignores requests and context size for a model with one flat rate", () => {
+    expect(
+      costFromRates(RATES, {
+        tokens: { input: 1_000_000 },
+        requests: [{ input: 500_000_000 }],
+        contextTokens: 900_000,
+      }),
+    ).toBeCloseTo(10, 10);
+  });
+});
+
+describe("costFromRates — a long-prompt tier (docs/329-tiered-model-pricing)", () => {
+  // Every rate 5x above 100K, the shape Haiku 5.5 publishes.
+  const TIERED = {
+    input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25,
+    longPrompt: { aboveTokens: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 6.25 },
+  };
+
+  it("prices each listed request at the tier its own prompt selects (req 4)", () => {
+    const usd = costFromRates(TIERED, {
+      tokens: { input: 50_000 + 150_000, output: 1_000 + 2_000 },
+      requests: [
+        { input: 50_000, output: 1_000 },
+        { input: 150_000, output: 2_000 },
+      ],
+    });
+    expect(usd).toBeCloseTo((50_000 * 1 + 1_000 * 2 + 150_000 * 5 + 2_000 * 10) / 1e6, 12);
+  });
+
+  it("counts cache reads and writes in a request's prompt size", () => {
+    const usd = costFromRates(TIERED, {
+      tokens: { input: 10, cacheRead: 90_000, cacheWrite: 10_000 },
+      requests: [{ input: 10, cacheRead: 90_000, cacheWrite: 10_000 }],
+    });
+    expect(usd).toBeCloseTo((10 * 5 + 90_000 * 0.5 + 10_000 * 6.25) / 1e6, 12);
+  });
+
+  it("keeps a prompt of exactly the limit on the lower tier", () => {
+    const usd = costFromRates(TIERED, { tokens: { input: 100_000 }, requests: [{ input: 100_000 }] });
+    expect(usd).toBeCloseTo(0.1, 12);
+  });
+
+  it("prices what the list leaves out at the tier the last request's prompt selects", () => {
+    // Claude's shape: prompt fields per request, output only in the totals.
+    const usd = costFromRates(TIERED, {
+      tokens: { input: 200_000, output: 3_000 },
+      requests: [{ input: 60_000 }, { input: 140_000 }],
+      contextTokens: 140_000,
+    });
+    expect(usd).toBeCloseTo((60_000 * 1 + 140_000 * 5 + 3_000 * 10) / 1e6, 12);
+  });
+
+  it("prices a turn with no list wholly at the tier its context size selects", () => {
+    expect(costFromRates(TIERED, { tokens: { input: 120_000, output: 1_000 }, contextTokens: 120_000 }))
+      .toBeCloseTo((120_000 * 5 + 1_000 * 10) / 1e6, 12);
+    expect(costFromRates(TIERED, { tokens: { input: 120_000, output: 1_000 }, contextTokens: 40_000 }))
+      .toBeCloseTo((120_000 * 1 + 1_000 * 2) / 1e6, 12);
+  });
+
+  it("falls back to the lower tier when neither a list nor a context size is known", () => {
+    expect(costFromRates(TIERED, { tokens: { input: 300_000 } })).toBeCloseTo(0.3, 12);
+  });
+
+  it("never prices a negative remainder when a list exceeds the totals", () => {
+    const usd = costFromRates(TIERED, {
+      tokens: { input: 1_000 },
+      requests: [{ input: 2_000 }],
+      contextTokens: 200_000,
+    });
+    expect(usd).toBeCloseTo(2_000 / 1e6, 12);
+  });
+});
+
+describe("atApiRatesFor", () => {
+  it("prices a subscription row and nothing else", () => {
+    const usage = { tokens: { input: 1_000_000 } };
+    expect(atApiRatesFor(attribution({ billingMode: "sub" }), usage)).toBeCloseTo(10, 10);
+    expect(atApiRatesFor(attribution({ billingMode: "key" }), usage)).toBeUndefined();
+    expect(atApiRatesFor(undefined, usage)).toBeUndefined();
+  });
+
+  it("prices Haiku 5.5's long prompts from the catalogue at 5x (req 3)", () => {
+    const haiku = turnAttributionFor({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-haiku-5-5" });
+    const short = atApiRatesFor(haiku, { tokens: { input: 100_000 }, requests: [{ input: 100_000 }] });
+    const long = atApiRatesFor(haiku, { tokens: { input: 100_001 }, requests: [{ input: 100_001 }] });
+    expect(short).toBeCloseTo(0.01, 12);
+    expect(long).toBeCloseTo(100_001 * 0.5 / 1e6, 12);
   });
 });
 
@@ -49,7 +138,7 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
       harnessId: "claude",
       attribution: attribution({ serviceId: "anthropic", billingMode: "sub" }),
       reportedCostUsd: 4.2,
-      tokens: { input: 1_000_000 },
+      usage: { tokens: { input: 1_000_000 } },
     });
     expect(resolved).toEqual({ costUsd: 0, costSource: "per-turn" });
   });
@@ -59,7 +148,7 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
       harnessId: "claude",
       attribution: attribution({ serviceId: "anthropic", billingMode: "key" }),
       reportedCostUsd: 4.2,
-      tokens: { input: 1_000_000 },
+      usage: { tokens: { input: 1_000_000 } },
     });
     expect(resolved).toEqual({ costUsd: 4.2, costSource: "cumulative" });
   });
@@ -69,9 +158,19 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
       harnessId: "codex",
       attribution: attribution({ serviceId: "openai", billingMode: "key" }),
       reportedCostUsd: undefined,
-      tokens: { input: 1_000_000 },
+      usage: { tokens: { input: 1_000_000 } },
     });
     expect(resolved).toEqual({ costUsd: 10, costSource: "per-turn" });
+  });
+
+  it("prices a metered turn's long prompts with its requests and context size", () => {
+    const resolved = resolveTurnCost({
+      harnessId: "opencode",
+      attribution: turnAttributionFor({ serviceId: "anthropic", billingMode: "key", modelId: "claude-haiku-5-5" }),
+      reportedCostUsd: undefined,
+      usage: { tokens: { input: 150_000, output: 1_000 }, requests: [{ input: 150_000, output: 1_000 }] },
+    });
+    expect(resolved.costUsd).toBeCloseTo((150_000 * 0.5 + 1_000 * 2.5) / 1e6, 12);
   });
 
   it("a redirected metered turn ignores the harness's figure and uses the rates", () => {
@@ -79,7 +178,7 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
       harnessId: "claude",
       attribution: attribution({ serviceId: "deepseek", billingMode: "key" }),
       reportedCostUsd: 4.2,
-      tokens: { input: 1_000_000, output: 1_000_000 },
+      usage: { tokens: { input: 1_000_000, output: 1_000_000 } },
     });
     expect(resolved).toEqual({ costUsd: 30, costSource: "per-turn" });
   });
@@ -90,7 +189,7 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
         harnessId: "claude",
         attribution: undefined,
         reportedCostUsd: 4.2,
-        tokens: { input: 1_000_000 },
+        usage: { tokens: { input: 1_000_000 } },
       }),
     ).toEqual({ costUsd: 4.2, costSource: "cumulative" });
     expect(
@@ -98,7 +197,7 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
         harnessId: "claude",
         attribution: undefined,
         reportedCostUsd: undefined,
-        tokens: {},
+        usage: { tokens: {} },
       }),
     ).toEqual({ costUsd: 0, costSource: "cumulative" });
   });
@@ -110,7 +209,7 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
         attribution: attribution({ serviceId: "openai", billingMode: "key" }),
         reportedCostUsd: undefined,
         reportedCostSource: "per-turn",
-        tokens: { input: 1_000_000 },
+        usage: { tokens: { input: 1_000_000 } },
       }),
     ).toEqual({ costUsd: 10, costSource: "per-turn" });
   });
@@ -122,7 +221,7 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
         attribution: attribution({ serviceId: "openai", billingMode: "key" }),
         reportedCostUsd: 0.5,
         reportedCostSource: "per-turn",
-        tokens: {},
+        usage: { tokens: {} },
       }),
     ).toEqual({ costUsd: 0.5, costSource: "per-turn" });
   });
@@ -151,7 +250,7 @@ describe("the delta chain across a billing-mode switch", () => {
         modelId: "claude-opus-5",
       }),
       reportedCostUsd: 7.5,
-      tokens: {},
+      usage: { tokens: {} },
     });
     expect(resolved.costUsd).toBe(0);
     expect(resolved.costSource).toBe("per-turn");

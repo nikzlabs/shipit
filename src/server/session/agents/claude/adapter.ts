@@ -26,6 +26,7 @@ import type {
   AgentMcpWriteResult,
   AgentProcess,
   AgentProcessEvents,
+  AgentRequestUsage,
   AgentRunParams,
   McpServerConfig,
 } from "../agent-process.js";
@@ -100,6 +101,13 @@ export class ClaudeAdapter
   // Providers can omit result iterations. DeepSeek supplies assistant usage;
   // GLM supplies only message_delta usage. The latest positive reading wins.
   private latestCallContextTokens: number | undefined;
+
+  /**
+   * This turn's top-level calls by `message.id`, for prompt-length pricing
+   * (docs/329-tiered-model-pricing). A call's output is not final on its
+   * events, so only the prompt side is listed.
+   */
+  private readonly turnCalls = new Map<string, ClaudeUsageIteration>();
 
   private selectedModel: string | undefined;
 
@@ -232,6 +240,29 @@ export class ClaudeAdapter
     if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
   }
 
+  private recordCall(id: string | undefined, usage: ClaudeUsageIteration | undefined): void {
+    if (!id || !usage) return;
+    const seen = this.turnCalls.get(id);
+    // A call's events repeat one usage; a snapshot can still read zero, so keep the largest.
+    const max = (field: keyof Omit<ClaudeUsageIteration, "type">) =>
+      Math.max(seen?.[field] ?? 0, usage[field] ?? 0);
+    this.turnCalls.set(id, {
+      input_tokens: max("input_tokens"),
+      cache_read_input_tokens: max("cache_read_input_tokens"),
+      cache_creation_input_tokens: max("cache_creation_input_tokens"),
+    });
+  }
+
+  private takeTurnRequests(): AgentRequestUsage[] | undefined {
+    const requests = [...this.turnCalls.values()].map((u) => ({
+      input: u.input_tokens ?? 0,
+      cacheRead: u.cache_read_input_tokens ?? 0,
+      cacheWrite: u.cache_creation_input_tokens ?? 0,
+    }));
+    this.turnCalls.clear();
+    return requests.length > 0 ? requests : undefined;
+  }
+
   private mapEvent(raw: ClaudeEvent): AgentEvent | null {
     switch (raw.type) {
       case "system":
@@ -305,7 +336,10 @@ export class ClaudeAdapter
         return null;
 
       case "assistant":
-        if (!raw.parent_tool_use_id) this.recordCallContext(raw.message.usage);
+        if (!raw.parent_tool_use_id) {
+          this.recordCallContext(raw.message.usage);
+          this.recordCall(raw.message.id, raw.message.usage);
+        }
         return {
           type: "agent_assistant",
           content: raw.message.content,
@@ -340,6 +374,7 @@ export class ClaudeAdapter
           contextTokens = this.latestCallContextTokens;
         }
         this.latestCallContextTokens = undefined;
+        const requests = this.takeTurnRequests();
         const modelUsage = raw.modelUsage;
         let contextWindow: number | undefined;
         if (modelUsage) {
@@ -367,6 +402,7 @@ export class ClaudeAdapter
               }
             : undefined,
           contextTokens,
+          ...(requests ? { requests } : {}),
           contextWindow,
           durationMs: raw.duration_ms,
           error: errored ? raw.result : undefined,
@@ -406,6 +442,7 @@ export class ClaudeAdapter
   run(params: AgentRunParams): void {
     // An abnormal prior turn may have left usage without a result to clear it.
     this.latestCallContextTokens = undefined;
+    this.turnCalls.clear();
     this.turnLive = true;
     this.lastCwd = params.cwd;
     this.spawnHomeOverride = params.homeDir;

@@ -251,8 +251,8 @@ a 1M context window and 128K output. Claude Code's own catalog gives efforts
 `low` to `max`. The price is tiered by prompt length: $0.10 input, $0.50
 output, $0.01 cache reads and $0.125 five-minute cache writes per million
 tokens up to 100K prompt tokens, and five times each rate above. The row
-carries the lower tier, the same choice as Gemini Pro's and xAI's long-context
-tiers. It uses Anthropic Messages under both Anthropic billing modes, directly
+first carried the lower tier only; it now carries both, priced per request
+([docs/329-tiered-model-pricing](../329-tiered-model-pricing/plan.md)). It uses Anthropic Messages under both Anthropic billing modes, directly
 after Haiku 4.5, which stays. Gateway availability is not inferred.
 
 Claude Code 2.1.284 runs the new ID through ShipIt's spawn (1M window, a

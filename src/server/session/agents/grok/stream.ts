@@ -14,6 +14,8 @@ export interface GrokUsage {
 }
 
 export interface GrokMessage {
+  /** One per model call. */
+  id?: string;
   role?: string;
   model?: string;
   content?: AgentContentBlock[];

@@ -19,8 +19,12 @@ const ANTHROPIC_PRICES = {
   // Anthropic Sonnet 5.5 model page and pricing, 2026-09-29.
   sonnet55: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   haiku45: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-  // Anthropic Haiku 5.5 model page, 2026-10-12. The ≤100K-prompt tier; every rate is 5× above it.
-  haiku55: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+  // Pricing page, 2026-10-12: a request whose prompt (input + cache reads + cache writes) is
+  // over 100,000 tokens pays every rate 5×, output included; each request is priced on its own.
+  haiku55: {
+    input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125,
+    longPrompt: { aboveTokens: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 },
+  },
   fable5: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   // Pricing page, 2026-09-01: Fable 5.1 uses a 0.025× cache-read multiplier.
   fable51: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },

@@ -723,6 +723,87 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  describe("per-request usage (docs/329-tiered-model-pricing)", () => {
+    // The CLI 2.1.284 probe's shape: several events per call share an id and a
+    // usage, output reads 1 until the call ends, and only the result's output is final.
+    const call = (id: string, input: number, cacheRead: number, cacheWrite: number): ClaudeEvent => ({
+      type: "assistant",
+      message: {
+        id,
+        content: [{ type: "text", text: id }],
+        usage: {
+          input_tokens: input,
+          output_tokens: 1,
+          cache_read_input_tokens: cacheRead,
+          cache_creation_input_tokens: cacheWrite,
+        },
+      },
+    });
+    const result: ClaudeEvent = {
+      type: "result",
+      subtype: "success",
+      session_id: "s",
+      usage: {
+        input_tokens: 18,
+        output_tokens: 249,
+        cache_read_input_tokens: 35_738,
+        cache_creation_input_tokens: 8_640,
+        iterations: [{ input_tokens: 9, cache_read_input_tokens: 21_000, cache_creation_input_tokens: 1_640 }],
+      },
+    };
+
+    function runTurn(events: ClaudeEvent[]) {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const results: any[] = [];
+      adapter.on("event", (e) => {
+        if (e.type === "agent_result") results.push(e);
+      });
+      for (const e of events) inner.emit("event", e);
+      return { inner, adapter, results };
+    }
+
+    it("lists each call once by message id, prompt side only, within the totals", () => {
+      const first = call("msg_1", 9, 14_738, 7_000);
+      const second = call("msg_2", 9, 21_000, 1_640);
+      const { results } = runTurn([first, first, first, second, second, result]);
+
+      const requests = results[0].requests;
+      expect(requests).toEqual([
+        { input: 9, cacheRead: 14_738, cacheWrite: 7_000 },
+        { input: 9, cacheRead: 21_000, cacheWrite: 1_640 },
+      ]);
+      const sum = (field: "input" | "cacheRead" | "cacheWrite") =>
+        requests.reduce((n: number, r: Record<string, number>) => n + r[field], 0);
+      expect(sum("input")).toBeLessThanOrEqual(results[0].tokens.input);
+      expect(sum("cacheRead")).toBeLessThanOrEqual(results[0].tokens.cacheRead);
+      expect(sum("cacheWrite")).toBeLessThanOrEqual(results[0].tokens.cacheWrite);
+      expect(requests.every((r: Record<string, unknown>) => r.output === undefined)).toBe(true);
+    });
+
+    it("keeps a call's largest reading when one of its snapshots reads zero", () => {
+      const zero = call("msg_1", 0, 0, 0);
+      const { results } = runTurn([zero, call("msg_1", 9, 14_738, 7_000), zero, result]);
+      expect(results[0].requests).toEqual([{ input: 9, cacheRead: 14_738, cacheWrite: 7_000 }]);
+    });
+
+    it("leaves out sub-agent calls and calls with no id", () => {
+      const nested = { ...call("msg_sub", 5, 50_000, 0), parent_tool_use_id: "toolu_1" } as ClaudeEvent;
+      const noId = { type: "assistant", message: { content: [], usage: { input_tokens: 7 } } } as ClaudeEvent;
+      const { results } = runTurn([nested, noId, call("msg_1", 9, 14_738, 7_000), result]);
+      expect(results[0].requests).toEqual([{ input: 9, cacheRead: 14_738, cacheWrite: 7_000 }]);
+    });
+
+    it("starts each turn's list empty, even after a turn with no result", () => {
+      const { inner, adapter, results } = runTurn([call("msg_old", 9, 1, 1)]);
+      adapter.run({ prompt: "p", cwd: "/workspace" } as AgentRunParams);
+      inner.emit("event", call("msg_new", 9, 2, 2));
+      inner.emit("event", result);
+      expect(results).toHaveLength(1);
+      expect(results[0].requests).toEqual([{ input: 9, cacheRead: 2, cacheWrite: 2 }]);
+    });
+  });
+
   it("does not use nested subagent usage as the main context", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);

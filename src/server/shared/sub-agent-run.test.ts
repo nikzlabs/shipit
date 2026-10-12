@@ -63,6 +63,23 @@ describe("runAgentToCompletion", () => {
     expect(res.cacheReadTokens).toBe(5000);
     expect(res.cacheCreateTokens).toBe(80);
     expect(res.contextTokens).toBe(6200);
+    expect(res.requests).toBeUndefined();
+  });
+
+  it("carries the per-request list back for prompt-length pricing (docs/329-tiered-model-pricing)", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    const requests = [{ input: 1000, output: 40 }, { input: 200, output: 300, cacheRead: 5000 }];
+    agent.emit("event", assistant("done"));
+    agent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "s",
+      tokens: { input: 1200, output: 340, cacheRead: 5000 },
+      requests,
+    });
+    agent.emit("done", 0);
+    expect((await handle.promise).requests).toEqual(requests);
   });
 
   it("carries back the latest rate-limit snapshot (last-one-wins) for the limits pill", async () => {

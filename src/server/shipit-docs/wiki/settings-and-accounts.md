@@ -411,6 +411,13 @@ chart that toggles between metered spend, spend at API rates, and tokens. The
 dial's own popover — before you open the dialog — carries the context bar and a
 *Largest turns* top three.
 
+Some models cost more per token once a request's prompt passes a size — Haiku
+5.5 above 100K tokens, for example. Spend at API rates, and the spend of a key
+whose harness reports no cost of its own, price each such request at that
+higher rate. Turns recorded before tiered pricing keep the figure they had. The
+**Supported models** dialog shows the higher price under a model's standard
+one, such as *5× above 100K*.
+
 ## Themes
 
 **The theme picker is not in Settings.** It is the palette button in the app

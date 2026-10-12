@@ -375,6 +375,7 @@ export class CodexEventHandler {
               durationMs: Date.now() - this.turnStartTime,
               tokens: codexTurnTokens(compactUsage?.usage.total, compactUsage?.baselineTotal),
               contextTokens: compactUsage?.usage.last?.totalTokens,
+              ...(compactUsage?.requests.length ? { requests: compactUsage.requests } : {}),
               contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
             });
             this.ctx.kill();
@@ -654,6 +655,7 @@ export class CodexEventHandler {
       sessionId: this.threadId ?? "unknown",
       tokens: codexTurnTokens(turnUsage?.usage.total, turnUsage?.baselineTotal),
       contextTokens: turnUsage?.usage.last?.totalTokens,
+      ...(turnUsage?.requests.length ? { requests: turnUsage.requests } : {}),
       contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
       durationMs,
       error: status !== "completed" ? `Turn ended with status: ${status}` : undefined,

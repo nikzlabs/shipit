@@ -510,11 +510,15 @@ export async function runSubAgent(
         // The default zero is not a reported price; missing prices need token-based costing.
         reportedCostUsd: result.costReported ? result.costUsd : undefined,
         reportedCostSource: "per-turn",
-        tokens: {
-          input: result.inputTokens,
-          output: result.outputTokens,
-          cacheRead: result.cacheReadTokens,
-          cacheWrite: result.cacheCreateTokens,
+        usage: {
+          tokens: {
+            input: result.inputTokens,
+            output: result.outputTokens,
+            cacheRead: result.cacheReadTokens,
+            cacheWrite: result.cacheCreateTokens,
+          },
+          requests: result.requests,
+          contextTokens: result.contextTokens,
         },
       });
       deps.usageManager.record(
@@ -531,6 +535,7 @@ export async function runSubAgent(
           ...(result.cacheReadTokens !== undefined ? { cacheRead: result.cacheReadTokens } : {}),
           ...(result.cacheCreateTokens !== undefined ? { cacheCreate: result.cacheCreateTokens } : {}),
           ...(result.contextTokens !== undefined ? { contextTokens: result.contextTokens } : {}),
+          ...(result.requests ? { requests: result.requests } : {}),
         },
       );
       emitSubAgentUsageUpdate(deps.usageManager, runner, sessionId);

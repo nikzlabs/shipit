@@ -1,4 +1,4 @@
-import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, ServiceRouting } from "./types.js";
+import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, AgentRequestUsage, ServiceRouting } from "./types.js";
 
 export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
   process.env.SHIPIT_SUB_AGENT_TIMEOUT_MS,
@@ -45,6 +45,8 @@ export interface SubAgentRunResult {
   cacheReadTokens?: number;
   cacheCreateTokens?: number;
   contextTokens?: number;
+  /** Each model call, where the harness lists them (docs/329-tiered-model-pricing). */
+  requests?: AgentRequestUsage[];
   rateLimits?: {
     session: { usedPct: number | null; resetAt: string } | null;
     weekly: { usedPct: number | null; resetAt: string } | null;
@@ -100,6 +102,7 @@ export function runAgentToCompletion(
   let cacheReadTokens: number | undefined;
   let cacheCreateTokens: number | undefined;
   let contextTokens: number | undefined;
+  let requests: AgentRequestUsage[] | undefined;
   let rateLimits: SubAgentRunResult["rateLimits"] | undefined;
   let resultStatus: "success" | "error" | undefined;
   let resultError: string | undefined;
@@ -141,6 +144,7 @@ export function runAgentToCompletion(
           ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
           ...(cacheCreateTokens !== undefined ? { cacheCreateTokens } : {}),
           ...(contextTokens !== undefined ? { contextTokens } : {}),
+          ...(requests !== undefined ? { requests } : {}),
           ...(rateLimits !== undefined ? { rateLimits } : {}),
           ...(resultError !== undefined ? { error: resultError } : {}),
         });
@@ -179,6 +183,7 @@ export function runAgentToCompletion(
             if (event.tokens.cacheWrite !== undefined) cacheCreateTokens = event.tokens.cacheWrite;
           }
           if (typeof event.contextTokens === "number") contextTokens = event.contextTokens;
+          if (event.requests) requests = event.requests;
           resultStatus = event.status;
           if (event.error) resultError = event.error;
         } else if (event.type === "agent_rate_limits") {

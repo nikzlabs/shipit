@@ -21,6 +21,7 @@ import type { BillingMode } from "../../shared/catalogue/index.js";
 import { resolveNonTurnModel, unavailableFrom, type NonTurnDirectTarget } from "../non-turn-model.js";
 import {
   emitNonTurnFailure,
+  oneRequest,
   recordNonTurnUsage,
   runNonTurnDirect,
   type NonTurnFailurePersister,
@@ -299,7 +300,8 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
           harnessId: namingHarness,
           ...(target ? { target } : {}),
           purpose: "session-naming",
-          telemetry: result.usage,
+          // Naming is one tool-less request, so its totals are that request.
+          telemetry: { ...result.usage, requests: oneRequest(result.usage) },
         },
       );
     }

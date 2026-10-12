@@ -5,7 +5,7 @@ import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { UsageManager } from "../usage.js";
-import { recordNonTurnUsage } from "./non-turn-work.js";
+import { oneRequest, recordNonTurnUsage } from "./non-turn-work.js";
 
 function keyRoute(serviceId: string, billingMode: "key" | "sub" = "key"): CredentialRoute {
   return {
@@ -718,6 +718,23 @@ describe("recordNonTurnUsage — what the selection says, not how it ran (docs/2
     expect(stats.totals.meteredCostUsd).toBeGreaterThan(0);
   });
 
+  it("prices each request of background work at its own prompt length (docs/329-tiered-model-pricing)", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "session-naming",
+      target: { selection: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-haiku-5-5" } },
+      telemetry: {
+        durationMs: 900,
+        inputTokens: 150_000,
+        outputTokens: 100,
+        requests: oneRequest({ inputTokens: 150_000, outputTokens: 100 }),
+      },
+    });
+
+    // Haiku 5.5 above 100K: $0.5 input and $2.5 output per million.
+    expect(usageManager.getSessionTurns("s1")[0].atApiRatesUsd).toBeCloseTo((150_000 * 0.5 + 100 * 2.5) / 1e6, 12);
+  });
+
   it("still names the harness that ran the work, where one did", () => {
     recordNonTurnUsage({ usageManager }, {
       sessionId: "s1",
@@ -878,6 +895,8 @@ describe("makeNonTurnGenerateText — a direct call needs no session and no cont
     expect(row.inputTokens).toBe(900);
     expect(row.outputTokens).toBe(40);
     expect(row.costUsd).toBeGreaterThan(0);
+    // One call, so its totals are that call's entry.
+    expect(row.extra?.requests).toEqual([{ input: 900, output: 40, cacheRead: 10 }]);
   });
 
   it("persists a failure notice for the session that asked, and returns nothing", async () => {
