@@ -19,7 +19,8 @@ export interface RefusedAttempt {
   failureKind: "quota" | "auth";
 }
 
-export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
+// An automatic turn has no message of the user's to send again (docs/306-quota-continuation req 3).
+export function allRefusedMessage(ledger: readonly RefusedAttempt[], opts: { automatic?: boolean } = {}): string {
   const quotaAttempts = ledger.filter((entry) => entry.failureKind === "quota");
   const authAttempts = ledger.filter((entry) => entry.failureKind === "auth");
   const lines = quotaAttempts.map((entry) => {
@@ -27,7 +28,10 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
     return `- ${entry.label}${reset}: ${entry.providerMessage}`;
   });
   if (authAttempts.length === 0) {
-    return `Every connected account refused this turn for quota:\n${lines.join("\n")}\nSend this message again to re-try every account, or connect another account in Settings.`;
+    const next = opts.automatic
+      ? "Connect another account in Settings, or wait for an account to reset."
+      : "Send this message again to re-try every account, or connect another account in Settings.";
+    return `Every connected account refused this turn for quota:\n${lines.join("\n")}\n${next}`;
   }
   const quotaSection = lines.length > 0
     ? `Quota refusals:\n${lines.join("\n")}\n`
@@ -35,7 +39,10 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   const authSection = authAttempts.length > 0
     ? `Authentication failed for: ${authAttempts.map((entry) => entry.label).join(", ")}.\n`
     : "";
-  return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
+  const next = opts.automatic
+    ? "Sign in again or connect another account in Settings."
+    : "Sign in again or connect another account in Settings, then resend your message.";
+  return `${quotaSection}${authSection}No eligible subscription account could continue this turn. ${next}`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
 import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup, stoppedByUser, turnInSetup } from "./turn-stop-request.js";
@@ -1936,7 +1943,7 @@ export async function executeAgentTurn(
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     if (error instanceof ProviderRouteUnavailableError && input.attemptLedger?.length) {
-      error.message = allRefusedMessage(input.attemptLedger);
+      error.message = allRefusedMessage(input.attemptLedger, { automatic: input.automatic === true });
     }
     agent.emit("error", error);
   }

@@ -587,10 +587,17 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
   beforeEach(() => {
     vi.useFakeTimers({ now: Date.parse(REFUSED_AT), toFake: ["Date"] });
     ctx = makeCtx();
+    // As the dispatched turn does: the prompt becomes a transcript row unless it was shown before.
+    const dispatch = ctx.runner.dispatch.bind(ctx.runner);
+    ctx.runner.dispatch = (opts: AgentDispatchOptions) => {
+      if (!opts.promptShown) ctx.chatHistoryManager.append(SESSION_ID, { role: "user", text: opts.text });
+      return dispatch(opts);
+    };
   });
   afterEach(() => { vi.useRealTimers(); });
 
   const notes = () => ctx.chatHistoryManager.load(SESSION_ID).filter((m) => m.notice);
+  const promptRows = () => ctx.chatHistoryManager.load(SESSION_ID).filter((m) => m.role === "user" && m.text.includes("#43"));
   const watch = () => ctx.sessionManager.getSelfMergeWatch(SESSION_ID);
 
   async function deliverWake(): Promise<void> {
@@ -605,10 +612,8 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     await ctx.manager.retryStalledDeliveries();
   }
 
-  it("waits for the earliest stated reset, then wakes once, without a second copy of its prompt", async () => {
+  it("waits for the earliest stated reset, then wakes once, and the merge prompt is in the transcript once", async () => {
     await deliverWake();
-    expect(ctx.runner.dispatched[0]!.promptShown).toBeUndefined();
-
     ctx.runner.completeTurns(turnQuotaRefused([RESET_A, RESET_B]));
 
     expect(watch()?.state).toBe("merge-observed");
@@ -621,9 +626,9 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
 
     await retryAt("2026-10-11T17:01:00.000Z");
     expect(ctx.runner.dispatched).toHaveLength(2);
-    expect(ctx.runner.dispatched[1]!.promptShown).toBe(true);
     ctx.runner.completeTurns();
     expect(watch()?.state).toBe("delivered");
+    expect(promptRows()).toHaveLength(1);
   });
 
   it("spends no delivery attempt: a refusal after four failed attempts does not give up", async () => {
@@ -656,7 +661,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
 
     expect(watch()?.state).toBe("delivery-failed");
     expect(ctx.runner.dispatched).toHaveLength(MAX_QUOTA_REFUSALS);
-    expect(notes().at(-1)?.text).toContain("quota");
+    expect(notes().at(-1)?.text).toContain("could not be resumed automatically");
     await retryAt(new Date(now + 24 * 60 * 60_000).toISOString());
     expect(ctx.runner.dispatched).toHaveLength(MAX_QUOTA_REFUSALS);
   });
@@ -674,7 +679,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     expect(watch()?.state).toBe("delivered");
   });
 
-  it("a later turn that every credential refused as well leaves the wake waiting", async () => {
+  it("a later turn that no credential could run either leaves the session to resume at the reset", async () => {
     await deliverWake();
     ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
 
@@ -684,6 +689,61 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     await retryAt("2026-10-11T17:05:00.000Z");
 
     expect(ctx.runner.dispatched).toHaveLength(2);
+  });
+
+  it("waits while a turn that started since is still running, and that turn decides", async () => {
+    await deliverWake();
+    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+
+    vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.runner.running = true;
+    vi.setSystemTime(Date.parse("2026-10-11T17:05:00.000Z"));
+    await ctx.manager.reconcilePending();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+
+    ctx.runner.running = false;
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "ok");
+    await ctx.manager.reconcilePending();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(watch()?.state).toBe("delivered");
+  });
+
+  it("the wake's own next attempt is not a turn that makes it unnecessary", async () => {
+    await deliverWake();
+    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    await retryAt("2026-10-11T17:01:00.000Z");
+    expect(ctx.runner.dispatched).toHaveLength(2);
+
+    // That attempt starts a turn, which stamps the session, and then fails for another reason.
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "errored");
+    ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
+    await retryAt("2026-10-11T17:13:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(3);
+  });
+
+  it("a retry after a failure of another kind does not show the prompt again either", async () => {
+    await deliverWake();
+    ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
+    await retryAt("2026-10-11T15:05:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    expect(ctx.runner.dispatched[1]!.promptShown).toBe(true);
+    expect(promptRows()).toHaveLength(1);
+  });
+
+  it("a rewind that took the prompt out of the transcript shows it again", async () => {
+    await deliverWake();
+    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    ctx.chatHistoryManager.saveMessages(SESSION_ID, []);
+
+    await retryAt("2026-10-11T17:01:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    expect(ctx.runner.dispatched[1]!.promptShown).toBeUndefined();
+    expect(promptRows()).toHaveLength(1);
   });
 
   it("a restart during the wait does not wake the session before the reset", async () => {
@@ -706,5 +766,38 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     await restarted.reconcilePending();
     expect(ctx.runner.dispatched).toHaveLength(2);
     restarted.stopRetryLoop();
+  });
+
+  it("a restart does not send a wake past the attempt budget", async () => {
+    await deliverWake();
+    const spent = watch()!;
+    ctx.sessionManager.setSelfMergeWatch(SESSION_ID, {
+      ...spent,
+      deliveryAttempts: MAX_DELIVERY_ATTEMPTS,
+      deliveryId: `${spent.watchId}:${MAX_DELIVERY_ATTEMPTS}`,
+    });
+    ctx.runner.activeDeliveryId = undefined;
+
+    await ctx.manager.reconcilePending();
+
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    await retryAt("2026-10-11T15:20:00.000Z");
+    expect(watch()?.state).toBe("delivery-failed");
+  });
+
+  it("a delivery rebound after a restart keeps the attempts that quota refusals did not spend", async () => {
+    await deliverWake();
+    const current = watch()!;
+    const deliveryId = `${current.watchId}:${MAX_DELIVERY_ATTEMPTS}`;
+    ctx.sessionManager.setSelfMergeWatch(SESSION_ID, {
+      ...current,
+      deliveryAttempts: MAX_DELIVERY_ATTEMPTS,
+      quotaRefusals: 1,
+      deliveryId,
+    });
+
+    ctx.manager.rebindDelivery(deliveryId)!(turnNoResult("agent process exited without producing a turn result"));
+
+    expect(watch()?.state).toBe("merge-observed");
   });
 });

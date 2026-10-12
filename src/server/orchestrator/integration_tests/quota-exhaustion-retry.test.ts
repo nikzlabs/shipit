@@ -221,6 +221,32 @@ describe("same-turn quota failover (docs/150-multiple-provider-subscriptions req
     runner.dispose({ force: true });
   });
 
+  it("does not ask the user to send again a message that ShipIt started (docs/306-quota-continuation req 3)", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps, prepareAgentEnv, persistUserRow } = makeDeps(agents);
+    selectionOverTwoAccounts(prepareAgentEnv);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "Your PR merged", systemTurn: true, automatic: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+    agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "second account's attempt");
+    agents[1]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
+
+    const errorRow = persistUserRow.mock.calls
+      .map((call) => call[1] as { text?: string; isError?: boolean } | undefined)
+      .find((row) => row?.isError === true);
+    expect(errorRow?.text).toContain("Every connected account refused this turn for quota");
+    expect(errorRow?.text).not.toMatch(/send this message again|resend/i);
+    expect(allRefusedMessage([
+      { routeId: "acct-2", label: "Work", providerMessage: "Authentication failed", resetAt: null, failureKind: "auth" },
+    ], { automatic: true })).not.toMatch(/resend/i);
+    runner.dispose({ force: true });
+  });
+
   it("does not call a turn quota-refused when no account was there to refuse it", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];

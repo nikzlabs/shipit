@@ -201,12 +201,19 @@ the merge prompt and five quota errors, the watch gave up, and the user typed
 "continue" eight minutes after the first reset.
 
 **The executor says why the turn failed.** When env preparation finds no
-credential left after quota refusals (`ProviderRouteUnavailableError` with quota
-entries in the attempt ledger), the turn settles `errored` with `quotaRefused`:
-one stated reset per refusal, `null` where the provider stated none
-(`turnQuotaRefused`). Nothing else reads it yet. A refusal on a metered key, or
-a turn with no credential at all, keeps the plain `errored`, so neither is ever
-waited on.
+credential left after a quota refusal (`ProviderRouteUnavailableError` with a
+quota entry in the attempt ledger), the turn settles `errored` with
+`quotaRefused`: one stated reset per quota refusal, `null` where the provider
+stated none (`turnQuotaRefused`). Nothing else reads it yet. A ledger that mixes
+a quota refusal with a failed sign-in counts too: the quota account frees at its
+reset whatever the other one does, so waiting for it beats giving up. A refusal
+on a metered key, an auth-only ledger and a turn with no credential at all keep
+the plain `errored`, so none of them is ever waited on.
+
+For an automatic turn the all-refused error row no longer says "Send this
+message again" — there is no message of the user's to send (req 3).
+`allRefusedMessage` takes `automatic` and ends with "Connect another account in
+Settings, or wait for an account to reset."
 
 **The merge watch is the one owner of the wait.** On that outcome the self watch
 records a refusal, not a failure (`merge-watch.ts`, `recordQuotaRefusal`):
@@ -216,14 +223,22 @@ records a refusal, not a failure (`merge-watch.ts`, `recordQuotaRefusal`):
 - `quotaWait.until` is the earliest stated reset plus one minute; a refusal that
   stated none waits the router's re-probe window (`REFUSAL_REPROBE_MS`,
   docs/260), and no wait is shorter than the ordinary backoff;
-- a notice says when ShipIt tries again and asks for nothing (req 3);
-- `promptShown` goes on the watch, and every later attempt dispatches with it,
-  so the merge prompt is in the transcript once. The refused turn persisted the
-  prompt before it asked for a credential, so the flag is never set early.
+- a notice says when ShipIt tries again and asks for nothing (req 3).
 
 `attemptSelfWake` reads the wait, so the retry pass, the poller's repeat and
 `reconcilePending` after a restart all honour it; the retry pass reads it before
-it probes the worker, because a weekly limit can mean days of ticks.
+it probes the worker, because a weekly limit can mean days of ticks. It also
+reads the attempt budget now: a restart that cut the fifth attempt off from its
+settlement used to send a sixth wake from `reconcilePending`, and now leaves the
+watch to the retry pass, which asks the worker and then gives up.
+
+**The merge prompt is in the transcript once.** A retry dispatches with
+`promptShown` when a user row with the same prompt is already in the transcript
+(`promptInTranscript`) — for a quota refusal and for any other failure, because
+the transcript, not the outcome, is what says whether the row exists. A chat
+rewind deletes the row and a code rollback marks it `rolledBack`; either way the
+next attempt shows the prompt again. A `promptShown` turn adds no user row and
+no echo (`dispatched-turn.ts`); the agent still gets the whole prompt.
 
 `QuotaContinuationManager` was the other candidate, and is not used here for
 two reasons. Its registry is in-process (a restart loses it — the incident had
@@ -234,10 +249,22 @@ It never sees this turn either — the executor calls `recordStandDown` only for
 CLI-started turn — so one stall cannot produce two wakes.
 
 **Superseded, not doubled.** `quotaWait.lastUsedAt` is the session's
-`lastUsedAt` at the refusal, and every turn start stamps it. A turn that started
-since took the session on, so the watch ends `delivered` and wakes nothing —
-unless that turn was refused for quota as well (`lastTurnOutcome`), which would
-otherwise let a refused inbox turn cancel the wake for good.
+`lastUsedAt` at the refusal, and every turn start stamps it; the wake's own next
+attempt clears the wait before it dispatches, so it never counts. When a turn has
+started since:
+
+- while it runs, the wake waits for it to end (`runner.running`) — a restart or
+  a poller repeat must not queue a wake behind it;
+- a turn that ran — the user's message, or anything else — took the session on,
+  so the watch ends `delivered` and wakes nothing;
+- a turn that no credential could run either (`lastTurnOutcome` is
+  `quota-refused`) leaves the session stopped by quota, and req 4 says such a
+  session resumes by itself: the wake still runs at the reset. This covers a
+  refused inbox turn, which would otherwise cancel the wake for good, and a
+  refused user message, whose text is in the transcript the woken agent reads.
+  An independent review argued that a user message should cancel the wake even
+  when it was refused; the reading above is the one req 4 supports, and nothing
+  persisted tells a user's turn from ShipIt's without a schema change.
 
 **Bounded.** `MAX_QUOTA_REFUSALS` (5) refusals end the watch with the ordinary
 give-up note, so quota that never returns cannot wake the session for ever.
@@ -269,10 +296,6 @@ Named rather than hidden; the first is the one most worth closing next.
   this fix, and out of its scope. The settled outcome now carries `quotaRefused`
   with the stated resets, which is what a fix for this and for the one-attempt
   wake callers (*A self wake that every credential refuses*) would read.
-- **The refused wake's error row still says "Send this message again".**
-  `allRefusedMessage` does not know that ShipIt started the turn. For the merge
-  watch the notice right after it says when ShipIt tries again; a message sent
-  in between supersedes the wake, so following the error row does no harm.
 - **"Pushed before anything else starts" (req 6) is commit-strict, push-armed.**
   The continuation waits for `runCommitAndPr`, which *arms* the debounced push
   rather than awaiting the remote. A slow push can therefore still be in flight
@@ -343,13 +366,18 @@ implementation and re-running.
   leaves no credential free"* (docs/140's case, with the notice's new wording and
   no continuation).
 - `self-merge-watch.test.ts`, *a wake that every credential refuses for quota* —
-  the incident's timeline on a fake clock: no retry before the earliest stated
-  reset, one wake after it, carrying `promptShown`; a refusal after four failed
+  the incident's timeline on a fake clock, with a fake runner that writes the
+  prompt row as the dispatched turn does: no retry before the earliest stated
+  reset, one wake after it, one prompt row in all; a refusal after four failed
   attempts does not give up; `MAX_QUOTA_REFUSALS` ends the watch; a turn that ran
-  since supersedes the wake, one refused for quota does not; `reconcilePending`
-  after a restart honours the wait.
+  since supersedes the wake, one refused for quota does not, one still running
+  is waited for; the wake's own next attempt does not supersede it; a retry after
+  another kind of failure does not show the prompt again, and one after a rewind
+  does; `reconcilePending` after a restart honours the wait and the attempt
+  budget; a rebound delivery keeps the attempts that refusals did not spend.
 - `integration_tests/quota-exhaustion-retry.test.ts` — the all-refused turn
-  settles with the stated resets; a turn with no credential at all does not; a
+  settles with the stated resets; a turn with no credential at all does not; an
+  automatic turn's error row does not ask to send the message again; a
   `promptShown` dispatch adds no user row and no echo, and the agent still gets
   the prompt.
 - `credential-failure-retry.test.ts` — unchanged, and load-bearing for the error
