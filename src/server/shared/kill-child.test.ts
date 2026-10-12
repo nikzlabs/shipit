@@ -41,11 +41,12 @@ describe("killChild", () => {
   });
 });
 
-// Without a reaping init, a dead process can keep its /proc entry.
+// A dead process keeps its /proc entry as `Z` until reaped, then as `X` until its pid is released.
 function alive(pid: number): boolean {
   try {
     const raw = readFileSync(`/proc/${String(pid)}/stat`, "utf-8");
-    return raw.slice(raw.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+    const state = raw.slice(raw.lastIndexOf(")") + 2).split(" ")[0];
+    return state !== "Z" && state !== "X";
   } catch {
     return false;
   }

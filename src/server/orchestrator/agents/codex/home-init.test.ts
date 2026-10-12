@@ -189,10 +189,13 @@ describe("codex home-init", () => {
       for (const proc of spawned) killProcessTree(proc, "SIGKILL");
     });
 
+    // A reaped zombie shows `X` until its pid is released, so checking `Z`
+    // alone reads a dead process as alive again during reaping.
     function alive(pid: number): boolean {
       try {
         const raw = fs.readFileSync(`/proc/${String(pid)}/stat`, "utf-8");
-        return raw.slice(raw.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+        const state = raw.slice(raw.lastIndexOf(")") + 2).split(" ")[0];
+        return state !== "Z" && state !== "X";
       } catch {
         return false;
       }
@@ -226,11 +229,14 @@ describe("codex home-init", () => {
       expect(roster.length).toBeGreaterThan(0);
 
       // Bounded well under the fixture's 30s sleep, so an unfixed teardown
-      // cannot pass by waiting the descendants out.
-      for (let i = 0; i < 50 && roster.some((p) => alive(p.pid)); i++) {
+      // cannot pass by waiting the descendants out. The verdict is the read
+      // that ended the wait, not a second one taken after it.
+      let survivors = roster.filter((p) => alive(p.pid));
+      for (let i = 0; i < 50 && survivors.length > 0; i++) {
         await new Promise((r) => setTimeout(r, 100));
+        survivors = roster.filter((p) => alive(p.pid));
       }
-      expect(roster.filter((p) => alive(p.pid))).toEqual([]);
+      expect(survivors).toEqual([]);
     }, 40_000);
   });
 });
