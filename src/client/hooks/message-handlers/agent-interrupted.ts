@@ -6,7 +6,6 @@ export const handleAgentInterrupted: Handler<WsAgentInterrupted> = (_ctx, _data)
   const session = useSessionStore.getState();
   session.setIsLoading(false);
   session.setActivity(undefined);
-  session.setQueuedMessages([]);
   session.setMessages((prev) => {
     const last = prev[prev.length - 1];
     const closed = prev.map((m) =>

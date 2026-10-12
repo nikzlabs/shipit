@@ -4,8 +4,11 @@ import { resolveRunner } from "./resolve-runner.js";
 import { forgetHeldEntries } from "../held-turns.js";
 import { interruptAgentTurn } from "../services/agent-interrupt.js";
 import type { QueuedMessage } from "../session-runner.js";
+import { settleDroppedQueueEntries } from "../turn-settlement.js";
+import { takeReturnedMessages } from "../queue-return.js";
 
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
+type WsQueueReturnedTaken = Extract<WsClientMessage, { type: "queue_returned_taken" }>;
 type WsPrTabActive = Extract<WsClientMessage, { type: "pr_tab_active" }>;
 
 export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: WsCancelQueuedMessage): void {
@@ -22,6 +25,8 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
   }
   // docs/322 — a held turn the user cancels must not come back from its saved row.
   forgetHeldEntries(runner?.answerHoldStore, removed);
+  // Its sender waits on this: an automatic CI fix stays "running" for ever without it.
+  settleDroppedQueueEntries(removed, "cancelled by the user");
   if (runner) {
     // To every viewer: a second one would otherwise keep showing the cancelled row.
     runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
@@ -29,6 +34,13 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
   }
   const sessionId = ctx.getActiveAppSessionId();
   if (sessionId) ctx.send({ type: "queue_updated", sessionId, queue: [] });
+}
+
+/** docs/330-stop-returns-queued-messages — a viewer's input box holds these messages now. */
+export function handleQueueReturnedTaken(ctx: ConnectionCtx & RunnerCtx, msg: WsQueueReturnedTaken): void {
+  const runner = resolveRunner(ctx);
+  if (!runner || !Array.isArray(msg.ids)) return;
+  takeReturnedMessages(runner, msg.ids.filter((id): id is string => typeof id === "string"));
 }
 
 export function handlePrTabActive(ctx: AppCtx, msg: WsPrTabActive): void {
@@ -41,7 +53,7 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
   // docs/324-scheduled-sessions req 33 — in a scheduled run, this control stops the run too.
   const sessionId = runner?.sessionId ?? ctx.getActiveAppSessionId();
   if (sessionId) ctx.scheduledRuns?.markRunStopped(sessionId);
-  const stopped = interruptAgentTurn({
+  const result = interruptAgentTurn({
     sessionManager: ctx.sessionManager,
     broadcastLog: ctx.broadcastLog,
     postInterruptCommitDeps: {
@@ -55,5 +67,5 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
       scheduleAutoPush: ctx.scheduleAutoPush,
     },
   }, runner);
-  if (!stopped) ctx.send({ type: "error", message: "No active agent process to interrupt" });
+  if (result === "nothing") ctx.send({ type: "error", message: "No active agent process to interrupt" });
 }

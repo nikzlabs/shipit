@@ -41,6 +41,9 @@ export interface AgentDispatchInit {
   unattended?: boolean;
   promptShown?: boolean;
   clientRequestId?: string;
+  sendOrder?: number;
+  steeredDispatch?: boolean;
+  uploadPaths?: string[];
 }
 
 type AssertNever<T extends never> = T;
@@ -76,6 +79,9 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   unattended: true,
   promptShown: true,
   clientRequestId: true,
+  sendOrder: true,
+  steeredDispatch: true,
+  uploadPaths: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -116,6 +122,9 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     unattended: next.unattended,
     promptShown: next.promptShown,
     clientRequestId: next.clientRequestId,
+    sendOrder: next.sendOrder,
+    steeredDispatch: next.steeredDispatch,
+    uploadPaths: next.uploadPaths,
   });
 }
 

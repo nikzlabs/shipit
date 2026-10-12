@@ -11,6 +11,7 @@ import type { AgentId } from "../shared/types.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "./turn-settlement.js";
 import { noteTurnReady } from "./turn-stop-request.js";
+import { nextSendOrder } from "./queue-identity.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -1098,5 +1099,34 @@ describe("SessionRunnerRegistry", () => {
     const r = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
     r.dispose();
     expect(registry.get("s1")).toBeUndefined();
+  });
+});
+
+// docs/330-stop-returns-queued-messages — a Stop tells what was sent before it by this order.
+describe("the send order of a dispatch", () => {
+  function startedRunner() {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps({} as never);
+    const run = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue(undefined);
+    return { runner, run };
+  }
+
+  it("is taken when the dispatch is accepted, also for a dispatch that starts at once", () => {
+    const { runner, run } = startedRunner();
+    const before = nextSendOrder();
+
+    runner.dispatch(testDispatch({ text: "a wake" }));
+
+    expect(run.mock.calls[0]?.[0].sendOrder).toBeGreaterThan(before);
+    runner.dispose({ force: true });
+  });
+
+  it("is kept when the dispatch has one already, as an entry that a drain started has", () => {
+    const { runner, run } = startedRunner();
+
+    runner.dispatch(testDispatch({ text: "drained", sendOrder: 3 }));
+
+    expect(run.mock.calls[0]?.[0].sendOrder).toBe(3);
+    runner.dispose({ force: true });
   });
 });

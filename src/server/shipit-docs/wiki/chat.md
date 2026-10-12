@@ -166,6 +166,25 @@ new turn; the next message resumes the conversation. A brokered
 stop that does not take is what **Force-kill the agent** on the Terminal tab's
 health strip is for ([sessions.md](sessions.md)).
 
+**Stop also empties the queue.** The messages that the user had waiting go back
+into their composer, in the order they sent them and before the text they were
+writing, with their attachments as file chips; nothing of theirs starts by
+itself after a Stop, and they send again what they still want. So when a user
+asks "where did my queued message go?" after a Stop, the answer is: into the
+composer. This is the same behind a turn they typed and a turn that ShipIt
+started, and **Force-kill the agent** does the same. A message that they send
+after the Stop is not affected: it runs when the stopped turn has ended.
+
+An entry that ShipIt had put in the queue is removed and does not go to the
+composer. Most come back by themselves: the notice that the session's pull
+request merged, a message from another session, an automatic CI fix. A note
+about a restart, about stopped background jobs or about a rebase rides the next
+turn. Three kinds do not come back: an action the user started with a button
+while a turn ran (**Fix CI**, **Create PR**), which they press again; a
+compaction you asked for with `shipit compact`, which you ask for again; and the
+turn that tells you a `shipit agent run` consult finished — after a Stop, read
+its result yourself with `shipit agent result`.
+
 **Background work outlives a turn only on an agent process that stays up.** With
 live steering on and a harness whose process stays up between turns, a turn
 runs on such a process,
@@ -403,7 +422,7 @@ to say "this part, specifically".
 | The user does | You do |
 |---|---|
 | Types, dictates, attaches, and sends | Read the message, including the attachments and the `@` files |
-| Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work |
+| Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work, and a Stop returns their queued messages to the composer |
 | Answers a question, approves or denies a permission, accepts a plan | Ask only when the answer changes what you do |
 | Types `/compact` when context is full; turns on *Let the agent compact its own context* | Compact your own context with `shipit compact` at a point you choose, such as between features — only while that setting is on |
 | Sets and clears a goal | Work toward it |

@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionCapabilities, SessionListRow, SessionStatus, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
+import type { SessionCapabilities, SessionListRow, SessionStatus, TurnUsage, RescuePhase, WsRewindPreview, WsReturnedQueueMessage, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
 import type { AgentGoal } from "../../server/shared/types/agent-types.js";
 import { reuseUnchangedRows } from "../utils/session-rows.js";
 import { useUiStore } from "./ui-store.js";
@@ -154,6 +154,13 @@ interface SessionState {
 
   quoteReplyText: string | undefined;
 
+  /**
+   * docs/330-stop-returns-queued-messages — the messages that a Stop took out of the queue,
+   * until the composer of their session has them. Scoped by `sessionId`: the composer of
+   * another session must not take them.
+   */
+  returnedToComposer: { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined;
+
   historyLoaded: boolean;
 
   rescueState: RescueState | null;
@@ -254,6 +261,9 @@ interface SessionState {
   setPendingIssueRef: (pending: { sessionId: string; ref: IssueRef } | undefined) => void;
 
   setQuoteReplyText: (text: string | undefined) => void;
+  setReturnedToComposer: (
+    returned: { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined,
+  ) => void;
 
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;
 
@@ -299,6 +309,7 @@ const initialResettableState = {
   prefillText: undefined as string | undefined,
   pendingIssueRef: undefined as { sessionId: string; ref: IssueRef } | undefined,
   quoteReplyText: undefined as string | undefined,
+  returnedToComposer: undefined as { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined,
   historyLoaded: false,
   rescueState: null as RescueState | null,
   recoveryActionError: null as string | null,
@@ -640,6 +651,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setPendingIssueRef: (pendingIssueRef) => set({ pendingIssueRef }),
 
   setQuoteReplyText: (quoteReplyText) => set({ quoteReplyText }),
+
+  setReturnedToComposer: (returnedToComposer) => set({ returnedToComposer }),
 
   appendTurnUsage: (sessionId, turn) =>
     set((state) => ({

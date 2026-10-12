@@ -131,6 +131,8 @@ export interface SteeredMessage {
   clientRequestId?: string;
   /** planning#691 — see `requeueInSendOrder`. */
   sendOrder?: number;
+  /** docs/330-stop-returns-queued-messages — see `QueuedMessage.steeredDispatch`. */
+  steeredDispatch?: boolean;
 }
 
 // Add side-channel cards through emitChatCard so they persist at their transcript position.
@@ -167,6 +169,13 @@ export interface QueuedMessage {
   clientRequestId?: string;
   /** planning#691 — see `requeueInSendOrder`. Not saved with a held turn: it is per process. */
   sendOrder?: number;
+  /**
+   * docs/330-stop-returns-queued-messages — a dispatch that was steered and put back. It is
+   * `interactive` because its bubble exists, but it is not a message that the user sent.
+   */
+  steeredDispatch?: boolean;
+  /** The uploads of a steer that was put back; its `images` and `files` hold their content. */
+  uploadPaths?: string[];
 }
 
 export interface AgentDispatchOptions {
@@ -223,6 +232,15 @@ export interface AgentDispatchOptions {
    * matches the queue row, the steer and the echo to that one bubble.
    */
   clientRequestId?: string;
+  /**
+   * planning#691 — when ShipIt accepted the message. Taken at the dispatch when absent, and
+   * kept across a drain, so that a Stop can tell what was sent before it (docs/330).
+   */
+  sendOrder?: number;
+  /** docs/330-stop-returns-queued-messages — see `QueuedMessage.steeredDispatch`. */
+  steeredDispatch?: boolean;
+  /** See `QueuedMessage.uploadPaths`. */
+  uploadPaths?: string[];
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -277,12 +295,16 @@ export const DISPATCH_SETUP_FAILURE = "dispatched turn failed to start";
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps | null,
-  opts: PreparedDispatch,
+  accepted: PreparedDispatch,
   admission?: DispatchAdmission,
 ): TurnHandle {
   // Admission must precede all state changes, persistence, preparation and process creation.
   runner.assertCanDispatch();
   const settlement = createTurnSettlement();
+  // Before any gate: a Stop tells what was sent before it by this order (docs/330).
+  const opts: PreparedDispatch = accepted.sendOrder === undefined
+    ? { ...accepted, sendOrder: nextSendOrder() }
+    : accepted;
 
   // The single exit for every gate below, so a refusing caller cannot be queued by one
   // of them — including a gate added later.
@@ -431,6 +453,9 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.unattended !== undefined) queued.unattended = opts.unattended;
   if (opts.promptShown !== undefined) queued.promptShown = opts.promptShown;
   if (opts.clientRequestId !== undefined) queued.clientRequestId = opts.clientRequestId;
+  if (opts.sendOrder !== undefined) queued.sendOrder = opts.sendOrder;
+  if (opts.steeredDispatch !== undefined) queued.steeredDispatch = opts.steeredDispatch;
+  if (opts.uploadPaths !== undefined) queued.uploadPaths = opts.uploadPaths;
   return queued;
 }
 

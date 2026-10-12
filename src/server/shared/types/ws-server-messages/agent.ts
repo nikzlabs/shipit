@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent, AgentReasoningCapability } from "../agent-types.js";
 import type { EligibleModel } from "../../agent-registry.js";
-import type { PermissionMode } from "../attachment-types.js";
+import type { FileContextRef, PermissionMode } from "../attachment-types.js";
 import type { PersistedMessage } from "../../../orchestrator/chat-history.js";
 import type { ToolResultEntry } from "../../../orchestrator/session-runner.js";
 import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
@@ -84,12 +84,28 @@ export interface WsMessageQueued {
   text: string;
 }
 
+/**
+ * docs/330-stop-returns-queued-messages — a message of the user's that a Stop took out of the
+ * queue. `id` is the id of its queue row. `files` holds its file references and its uploads
+ * (paths under `/uploads/`).
+ */
+export interface WsReturnedQueueMessage {
+  id: string;
+  text: string;
+  files?: FileContextRef[];
+}
+
 export interface WsQueueUpdated {
   type: "queue_updated";
   sessionId: string;
   queue: WsQueueRow[];
   /** A message that leaves the queue for a turn of its own; absent on cancel, clear or steer. */
   dequeued?: { id: string; text: string };
+  /**
+   * Every message that waits for an input box to take it, not only the new ones. Absent when
+   * the event says nothing about them; the viewer answers with `queue_returned_taken`.
+   */
+  returned?: WsReturnedQueueMessage[];
 }
 
 /** Persist before emitting so attachment URLs resolve. */

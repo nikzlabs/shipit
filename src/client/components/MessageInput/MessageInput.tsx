@@ -36,13 +36,14 @@ import {
   type MergeContinueControl,
 } from "../../utils/local-storage.js";
 import { applyRoleSeeds } from "../../utils/role-seed.js";
+import { prependReturnedText, takeReturnedIntoDraft } from "../../utils/returned-messages.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import { isLargePaste, buildPastedTextFile } from "./large-paste.js";
 import { isCompactCommand } from "../../../server/shared/compact-command.js";
 import { isGoalCommand } from "../../../server/shared/goal-command.js";
-import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef, WsReturnedQueueMessage } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
@@ -110,6 +111,7 @@ export function MessageInput({
   pendingFiles = [],
   onRemoveFile,
   onAddFile,
+  onReturnedTaken,
   fileTree = [],
   skills = [],
   sessionId,
@@ -161,6 +163,11 @@ export function MessageInput({
   pendingFiles?: FileContextRef[];
   onRemoveFile?: (index: number) => void;
   onAddFile?: (filePath: string) => void;
+  /**
+   * docs/330-stop-returns-queued-messages — the draft holds these returned messages now, so
+   * the server can stop keeping them.
+   */
+  onReturnedTaken?: (ids: string[]) => void;
   fileTree?: FileTreeNode[];
 
   skills?: SkillInfo[];
@@ -517,6 +524,25 @@ export function MessageInput({
       consume(state.quoteReplyText);
     });
   }, [surface, inert]);
+
+  // docs/330-stop-returns-queued-messages — the messages that a Stop took out of the queue.
+  // eslint-disable-next-line no-restricted-syntax -- consume the returned messages from the external store
+  useEffect(() => {
+    if (surface === "overlay" || !sessionId) return undefined;
+    const consume = (offer: { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined) => {
+      // Left in the store while this composer cannot take it; the server keeps its copy.
+      if (offer?.sessionId !== sessionId || inert) return;
+      useSessionStore.getState().setReturnedToComposer(undefined);
+      const returned = takeReturnedIntoDraft(sessionId, persistDraft ? focusKey : undefined, offer.messages);
+      if (returned.text !== "") setText((prev) => prependReturnedText(prev, returned.text));
+      for (const filePath of returned.files) onAddFile?.(filePath);
+      onReturnedTaken?.(returned.ids);
+    };
+    consume(useSessionStore.getState().returnedToComposer);
+    return useSessionStore.subscribe((state) => {
+      consume(state.returnedToComposer);
+    });
+  }, [surface, inert, sessionId, focusKey, persistDraft, onAddFile, onReturnedTaken]);
 
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
 

@@ -4,6 +4,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { scheduleInterruptCommit, type PostInterruptCommitDeps } from "./post-interrupt-commit.js";
 import { noteUserStop, requestStopDuringSetup } from "../turn-stop-request.js";
 import { stopCompactionContinuation } from "./agent-compaction-stop.js";
+import { returnQueueOnStop } from "../queue-return.js";
 
 export interface AgentInterruptDeps {
   sessionManager: Pick<SessionManager, "dropPendingCompactionNote">;
@@ -11,22 +12,33 @@ export interface AgentInterruptDeps {
   postInterruptCommitDeps: PostInterruptCommitDeps;
 }
 
+/** `queue`: no turn or agent was there to stop, and the queue was emptied. */
+export type StopResult = "turn" | "queue" | "nothing";
+
 /**
- * The chat's stop control: ends the session's turn. Shared with Stop on a scheduled run
- * (docs/324-scheduled-sessions req 33). False when there was no turn or agent to stop.
+ * The chat's stop control: ends the session's turn and empties its queue
+ * (docs/330-stop-returns-queued-messages). Shared with Stop on a scheduled run
+ * (docs/324-scheduled-sessions req 33).
  */
-export function interruptAgentTurn(deps: AgentInterruptDeps, runner: SessionRunnerInterface | null): boolean {
-  if (runner) stopCompactionContinuation(deps.sessionManager, runner);
+export function interruptAgentTurn(deps: AgentInterruptDeps, runner: SessionRunnerInterface | null): StopResult {
+  if (!runner) return "nothing";
+  stopCompactionContinuation(deps.sessionManager, runner);
+  // Also with no turn to stop: a hold can keep a queue while nothing runs.
+  const emptied = returnQueueOnStop(runner);
   // The turn has not submitted its prompt, and may not have an agent yet: it ends itself.
-  if (runner?.running && requestStopDuringSetup(runner)) {
+  if (runner.running && requestStopDuringSetup(runner)) {
     runner.wasInterrupted = true;
     noteUserStop(runner);
     deps.broadcastLog("server", "Agent turn stopped by user before it started");
     runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
-    return true;
+    return "turn";
   }
-  const agent = runner?.getAgent() ?? null;
-  if (!agent || !runner) return false;
+  const agent = runner.getAgent();
+  if (!agent) {
+    if (!emptied) return "nothing";
+    runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
+    return "queue";
+  }
 
   runner.wasInterrupted = true;
   noteUserStop(runner);
@@ -53,5 +65,5 @@ export function interruptAgentTurn(deps: AgentInterruptDeps, runner: SessionRunn
 
   // Interrupted streaming turns may emit neither done nor agent_result.
   scheduleInterruptCommit({ deps: deps.postInterruptCommitDeps, runner });
-  return true;
+  return "turn";
 }

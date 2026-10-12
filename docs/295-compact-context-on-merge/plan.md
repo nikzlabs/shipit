@@ -262,12 +262,13 @@ drains the queue — including the ones where the agent process dies (CLAUDE.md
 post-turn invariant 2) — so the message is never lost. Two cases needed a line
 each:
 
-- **Stop during the compaction** stops the compaction; the message it ran ahead
-  of still runs. The WS drain normally clears the queue after an interrupt (the
-  user stopped *their* turn); after the compaction turn it does not. This rides
-  the turn's terminal event; a streaming CLI that answers a stop with neither a
-  result nor an exit leaves the session as it leaves any stopped streaming turn
-  today — nothing drains until the process ends.
+- **Stop during the compaction** stops the compaction, and the message it ran
+  ahead of goes back into the input box
+  (`docs/330-stop-returns-queued-messages`, changed 2026-10-12: before, that
+  message still ran). The message waits in the queue while the compaction
+  runs, and a Stop empties the queue. The same holds when the Stop comes while
+  the turn still sets up, before the compaction starts. Requirement 9 is about
+  a compaction that fails, and is not changed: there the message runs.
 - **A compaction turn that ends with no compaction card** — stopped before any
   output, or a backend that accepted the trigger, exited 0 and compacted
   nothing — gets a persisted `warn` notice from the turn's drain,

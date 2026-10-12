@@ -16,10 +16,14 @@ import {
   TestClient,
   StubAuthManager,
   FakeClaudeProcess,
+  waitFor,
   waitForClaude,
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
+import { takeSessionHold } from "../session-hold.js";
+import type { TurnOutcome } from "../turn-settlement.js";
 import { DatabaseManager } from "../../shared/database.js";
 
 describe("Integration: Interrupt and Redirect", () => {
@@ -161,39 +165,185 @@ describe("Integration: Interrupt and Redirect", () => {
     client.close();
   });
 
-  it("clears message queue on interrupt", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive();
+  describe("a Stop returns the queued messages (docs/330-stop-returns-queued-messages)", () => {
+    type QueueUpdate = Extract<WsServerMessage, { type: "queue_updated" }>;
 
-    client.send({ type: "send_message", text: "first message" });
-    await waitForClaude(() => lastClaude);
-
-    client.send({ type: "send_message", text: "queued message" });
-    const queued = await client.receiveType("message_queued");
-    expect(queued).toMatchObject({ type: "message_queued", text: "queued message" });
-
-    client.send({ type: "interrupt_agent" });
-
-    await client.receiveType("agent_interrupted");
-
-    await new Promise((r) => setTimeout(r, 200));
-
-    const remaining: WsServerMessage[] = [];
-    try {
-      while (true) {
-        const msg = await client.receiveSkipLogs(500);
-        remaining.push(msg);
+    /** The next `queue_updated` that names returned messages. */
+    async function nextReturn(client: TestClient): Promise<QueueUpdate> {
+      for (;;) {
+        const msg = await client.receiveType("queue_updated");
+        if (msg.type === "queue_updated" && msg.returned) return msg;
       }
-    } catch {
-      // Expected timeout
     }
 
-    const queueUpdates = remaining.filter((m) => m.type === "queue_updated");
-    expect(queueUpdates.length).toBeGreaterThanOrEqual(1);
-    const lastUpdate = queueUpdates[queueUpdates.length - 1];
-    expect(lastUpdate).toMatchObject({ type: "queue_updated", queue: [] });
+    async function queueTyped(client: TestClient, text: string, extra: Record<string, unknown> = {}): Promise<string> {
+      client.send({ type: "send_message", text, ...extra });
+      for (;;) {
+        const queued = await client.receiveType("message_queued");
+        if (queued.type === "message_queued" && queued.text === text) return queued.id;
+      }
+    }
 
-    client.close();
+    it("puts the user's waiting message in the returned list and empties the queue (req 1, 2)", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      client.send({ type: "send_message", text: "first message" });
+      const turn = await waitForClaude(() => lastClaude);
+      const id = await queueTyped(client, "queued message", {
+        files: [{ path: "src/a.ts" }],
+        uploads: [{ path: "/uploads/shot.png", type: "upload" }],
+      });
+
+      client.send({ type: "interrupt_agent" });
+
+      const update = await nextReturn(client);
+      expect(update.queue).toEqual([]);
+      expect(update.returned).toEqual([{
+        id,
+        text: "queued message",
+        files: [{ path: "src/a.ts" }, { path: "/uploads/shot.png" }],
+      }]);
+      await client.receiveType("agent_interrupted");
+      expect(app.runnerRegistry.get(client.sessionId)!.queueLength).toBe(0);
+
+      // The stopped turn ends, and nothing starts by itself.
+      await waitFor(() => !app.runnerRegistry.get(client.sessionId)!.running, "the stopped turn ended");
+      await new Promise((r) => setTimeout(r, 150));
+      expect(lastClaude).toBe(turn);
+
+      client.close();
+    });
+
+    it("keeps the returned messages for a viewer that attaches later, until one has them", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      client.send({ type: "send_message", text: "first message" });
+      await waitForClaude(() => lastClaude);
+      const id = await queueTyped(client, "queued message");
+      client.send({ type: "interrupt_agent" });
+      await nextReturn(client);
+
+      /** Every list of returned messages that a viewer gets when it attaches. */
+      const listsOnAttach = async (): Promise<unknown[]> => {
+        const viewer = await TestClient.connect(port, client.sessionId);
+        const events = await viewer.drain({ quietMs: 200 });
+        viewer.close();
+        return events.flatMap((m) => (m.type === "queue_updated" && m.returned ? [m.returned] : []));
+      };
+
+      // From the runner, one time: the replay of the Stop's own event does not carry them.
+      expect(await listsOnAttach()).toEqual([[{ id, text: "queued message" }]]);
+
+      client.send({ type: "queue_returned_taken", ids: [id] });
+      await waitFor(async () => (await listsOnAttach()).length === 0, "no viewer is offered a taken message");
+
+      client.close();
+    });
+
+    it("runs a message that the user sends after the Stop", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      client.send({ type: "send_message", text: "first message" });
+      const turn = await waitForClaude(() => lastClaude);
+      turn.streamingInterrupt = true;
+      await queueTyped(client, "queued message");
+
+      client.send({ type: "interrupt_agent" });
+      await client.receiveType("agent_interrupted");
+      await queueTyped(client, "the redirect");
+      turn.finish("stopped");
+
+      const next = await waitForClaude(() => lastClaude, turn);
+      expect(next.lastPrompt).toContain("the redirect");
+      expect(next.lastPrompt).not.toContain("queued message");
+
+      client.close();
+    });
+
+    it("removes an entry that ShipIt put in the queue, and tells its sender (req 3)", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      const runner = app.runnerRegistry.get(client.sessionId)!;
+      // A turn that ShipIt started: the same rule as behind a turn that the user typed.
+      runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", automatic: true }));
+      const turn = await waitForClaude(() => lastClaude);
+      const outcomes: TurnOutcome[] = [];
+      const wake = runner.dispatch(
+        testDispatch({ text: "[merge] PR merged", automatic: true, onTurnComplete: (o) => outcomes.push(o) }),
+        { whenBusy: "queue" },
+      );
+      expect(wake.admitted).toBe("queued");
+      const id = await queueTyped(client, "my note");
+
+      client.send({ type: "interrupt_agent" });
+
+      const update = await nextReturn(client);
+      expect(update.queue).toEqual([]);
+      expect(update.returned).toEqual([{ id, text: "my note" }]);
+      expect(outcomes).toEqual([{ status: "dropped", errored: true, detail: "stopped by the user" }]);
+
+      await waitFor(() => !runner.running, "the stopped turn ended");
+      await new Promise((r) => setTimeout(r, 150));
+      expect(lastClaude).toBe(turn);
+
+      client.close();
+    });
+
+    it("empties a queue that a hold keeps while no turn runs", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      // A first turn makes the runner; the hold then keeps the next message in the queue.
+      client.send({ type: "send_message", text: "first message" });
+      (await waitForClaude(() => lastClaude)).finish("first");
+      const runner = app.runnerRegistry.get(client.sessionId)!;
+      await waitFor(() => !runner.running && !runner.turnCommitPending, "the first turn ended");
+      const hold = takeSessionHold(runner);
+      const id = await queueTyped(client, "sent under the hold");
+
+      client.send({ type: "interrupt_agent" });
+
+      expect((await nextReturn(client)).returned).toEqual([{ id, text: "sent under the hold" }]);
+      await client.receiveType("agent_interrupted");
+      expect(runner.queueLength).toBe(0);
+
+      hold.release();
+      client.close();
+    });
+
+    it("the user's Kill returns the queue as their Stop does", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      client.send({ type: "send_message", text: "first message" });
+      await waitForClaude(() => lastClaude);
+      const id = await queueTyped(client, "queued message");
+
+      const res = await app.inject({ method: "POST", url: `/api/sessions/${client.sessionId}/agent/kill` });
+      expect(res.statusCode).toBe(200);
+
+      expect((await nextReturn(client)).returned).toEqual([{ id, text: "queued message" }]);
+
+      client.close();
+    });
+
+    it("a queue row that the user cancels settles its sender", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      client.send({ type: "send_message", text: "first message" });
+      await waitForClaude(() => lastClaude);
+      const runner = app.runnerRegistry.get(client.sessionId)!;
+      const outcomes: TurnOutcome[] = [];
+      runner.dispatch(
+        testDispatch({ text: "[ci-fix] CI failed", automatic: true, onTurnComplete: (o) => outcomes.push(o) }),
+        { whenBusy: "queue" },
+      );
+
+      client.send({ type: "cancel_queued_message", position: 0 });
+
+      await waitFor(() => outcomes.length > 0, "the sender was told");
+      expect(outcomes).toEqual([{ status: "dropped", errored: true, detail: "cancelled by the user" }]);
+
+      client.close();
+    });
   });
 
   it("commits partial work after interrupt (deferred fallback)", async () => {

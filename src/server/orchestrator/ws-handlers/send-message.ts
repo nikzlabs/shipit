@@ -26,6 +26,7 @@ import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 import { acquireTurnClaimGate } from "./turn-claim-gate.js";
 import { takeOfferedActions } from "../services/session-status.js";
+import { nextSendOrder } from "../queue-identity.js";
 
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
 export { runAgentWithMessage } from "./agent-execution.js";
@@ -177,9 +178,11 @@ export async function handleSendMessage(
    * the session. No target session means no turn can be claimed at all: that
    * send is refused inside.
    */
+  // Before the gate, which can wait: a Stop tells what was sent before it by this order.
+  const sendOrder = nextSendOrder();
   const releaseTurnClaim = await acquireSendGate(targetSessionId);
   try {
-    await decideAndRunSend(ctx, msg, { images, isCompactRequest, compactParsed, releaseTurnClaim });
+    await decideAndRunSend(ctx, msg, { images, isCompactRequest, compactParsed, releaseTurnClaim, sendOrder });
   } finally {
     releaseTurnClaim();
   }
@@ -191,6 +194,8 @@ interface GatedSend {
   compactParsed: { match: boolean; instructions?: string };
   /** Call as soon as the turn is claimed; the `finally` covers every other exit. */
   releaseTurnClaim: () => void;
+  /** planning#691 — when the message reached ShipIt. */
+  sendOrder: number;
 }
 
 /** The release is called twice on the normal path; the gate documents that as harmless. */
@@ -202,7 +207,7 @@ async function acquireSendGate(sessionId: string | undefined): Promise<() => voi
 async function decideAndRunSend(
   ctx: FullCtx,
   msg: WsSendMessage,
-  { images, isCompactRequest, compactParsed, releaseTurnClaim }: GatedSend,
+  { images, isCompactRequest, compactParsed, releaseTurnClaim, sendOrder }: GatedSend,
 ): Promise<void> {
   const runnerForQueue = resolveRunner(ctx);
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
@@ -270,6 +275,7 @@ async function decideAndRunSend(
           compactContext: msg.compactContext,
           silent: undefined,
           clientRequestId: msg.requestId,
+          sendOrder,
         }));
         checklistAccepted();
       };
@@ -349,6 +355,7 @@ async function decideAndRunSend(
               uploadPaths: steerUploadPaths,
               assembledPrompt: steerPrompt,
               ...(msg.requestId ? { clientRequestId: msg.requestId } : {}),
+              sendOrder,
             });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
             // Persist before emitting image URLs that resolve against the stored row.
@@ -555,6 +562,7 @@ async function decideAndRunSend(
       deliveryId: undefined,
       dictated: msg.dictated,
       clientRequestId: msg.requestId,
+      sendOrder,
     }));
     checklistAccepted();
     return;
@@ -588,6 +596,7 @@ async function decideAndRunSend(
         deliveryId: undefined,
         dictated: msg.dictated,
         clientRequestId: msg.requestId,
+        sendOrder,
       })), msg.permissionMode);
       return;
     }

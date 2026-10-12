@@ -1778,6 +1778,7 @@ export default function App() {
           pendingFiles={pendingFiles}
           onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)}
           onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)}
+          onReturnedTaken={(ids) => send({ type: "queue_returned_taken", ids })}
           fileTree={fileTree}
           skills={skills}
           sessionId={wsSessionId}

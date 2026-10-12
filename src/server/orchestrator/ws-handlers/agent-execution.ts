@@ -27,7 +27,6 @@ import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
 import { nextSendOrder, queueEntryId } from "../queue-identity.js";
-import { stoppedByUser } from "../turn-stop-request.js";
 import {
   agentEnvTurnArgs,
   prepareSessionAgentEnvironment,
@@ -80,25 +79,14 @@ export async function drainNextQueuedMessage(
   capturedSessionId: string | undefined,
   capturedSessionDir: string | null | undefined,
   emit: (msg: WsServerMessage) => void,
-  compactionTurn = false,
 ): Promise<void> {
   if (!runner) return;
 
   // A rebase or a restart can take the session during the awaited commit; it releases the queue.
   if (runner.sessionHold) return;
 
-  const messageQueue = runner.messageQueue;
-  // A stop discards the queue. docs/322 — a question's own interrupt does not: what the
-  // user queued is their reply, and the take below holds the automatic entries.
-  const questionInterrupt = runner.awaitingUserAnswer && !stoppedByUser(runner);
-  if (runner.wasInterrupted && !questionInterrupt && !compactionTurn) {
-    if (messageQueue.length > 0) {
-      runner.clearQueue();
-      emit({ type: "queue_updated", sessionId: runner.sessionId, queue: [] });
-    }
-    return;
-  }
-  if (messageQueue.length === 0) return;
+  // The Stop emptied the queue itself (docs/330): what waits now was sent after it.
+  if (runner.messageQueue.length === 0) return;
 
   // Gate before the entry leaves the queue: past this point it is claimed, not queued.
   const next = takeRunnableQueuedTurn(runner);
@@ -784,7 +772,7 @@ async function composeAndRunAgentTurn(
       compactionChecked = true;
       noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId, cardBefore);
     }
-    return drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, opts.silent === true);
+    return drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit);
   };
 
   // Record the branch move even if the turn fails before the user-row hook.

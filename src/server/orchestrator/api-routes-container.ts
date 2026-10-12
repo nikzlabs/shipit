@@ -95,6 +95,7 @@ export async function registerContainerRoutes(
             ...postInterruptCommitDepsFrom(deps),
           },
           request.params.id,
+          { stoppedByUser: true },
         );
         return result;
       } catch (err) {

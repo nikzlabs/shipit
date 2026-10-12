@@ -15,7 +15,8 @@ import {
 import type { TurnOutcome } from "./turn-settlement.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { takeSessionHold } from "./session-hold.js";
-import { requeueInSendOrder } from "./queue-identity.js";
+import { nextSendOrder, requeueInSendOrder } from "./queue-identity.js";
+import { isUsersOwnEntry, returnQueueOnStop, returnedMessages } from "./queue-return.js";
 import { steerToQueuedMessage } from "./ws-handlers/agent-message-builder.js";
 
 // docs/329-user-steers-every-turn req 2 — what the user sent while no agent could read it
@@ -72,6 +73,20 @@ describe("deliverWaitingMessages", () => {
     expect(runner.queueLength).toBe(0);
     expect(runner.steeredMessages.map((s) => s.text)).toEqual(["first", "second"]);
     expect(received.filter((m) => m.type === "message_steered").map((m) => m.text)).toEqual(["first", "second"]);
+  });
+
+  // docs/330-stop-returns-queued-messages — a steer that the stopped turn did not take is back
+  // in the queue when the CLI starts a turn of its own.
+  it("does not write a message that was sent before the last Stop", async () => {
+    const old = typed("sent before the Stop", { sendOrder: nextSendOrder(), clientRequestId: "old" });
+    returnQueueOnStop(runner);
+    runner.messageQueue.push(old);
+    runner.enqueue(typed("sent after the Stop"));
+
+    await deliverWaitingMessages(runner, deps());
+
+    expect(sent).toEqual(["sent after the Stop"]);
+    expect(returnedMessages(runner)).toEqual([{ id: "old", text: "sent before the Stop" }]);
   });
 
   // planning#691 — the steer event is the bubble on every viewer, so the queue update that
@@ -403,6 +418,32 @@ describe("a message of the user's behind one that waits", () => {
 
     expect(handle.admitted).toBe("steered");
     expect(sent).toEqual(["from a page"]);
+  });
+
+  // docs/330-stop-returns-queued-messages — a steer that is put back reads as `interactive`,
+  // so the steer itself must say that the user did not send it.
+  it("marks a steered dispatch, so that it is not taken for a message of the user's when put back", () => {
+    runner.messageQueue.length = 0;
+    runner.dispatch(testDispatch({ text: "Fix the failing CI checks" }));
+    runner.dispatch(testDispatch({ text: "typed by the user", execution: "interactive" }));
+
+    const [generated, typed] = runner.steeredMessages.map(steerToQueuedMessage);
+    expect(generated).toMatchObject({ execution: "interactive", steeredDispatch: true });
+    expect(isUsersOwnEntry(generated)).toBe(false);
+    expect(typed.steeredDispatch).toBeUndefined();
+    expect(isUsersOwnEntry(typed)).toBe(true);
+    expect(typed.sendOrder).toBeGreaterThan(generated.sendOrder ?? Infinity);
+  });
+
+  it("keeps the uploads of a steer that is put back", () => {
+    const queued = steerToQueuedMessage({
+      afterGroupIndex: 0,
+      text: "compare this",
+      images: [{ data: "abc", mediaType: "image/png" }],
+      uploadPaths: ["/uploads/shot.png"],
+    });
+
+    expect(queued.uploadPaths).toEqual(["/uploads/shot.png"]);
   });
 });
 
