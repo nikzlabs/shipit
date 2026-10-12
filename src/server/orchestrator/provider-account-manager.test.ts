@@ -440,6 +440,28 @@ describe("ProviderAccountManager", () => {
       });
     });
 
+    it("does not route a turn to an account whose sign-in has removed its credential", () => {
+      const { mgr, claude, account } = setup();
+      const other = mgr.create("anthropic", "Other");
+      mgr.setAccountStatus("anthropic", other.id, "ready");
+      claude.configured = false;
+      mgr.startAccountAuth("anthropic", account.id);
+
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: other.id } });
+
+      mgr.setAccountStatus("anthropic", other.id, "unavailable");
+      const alone = mgr.selectAccountForTurn("anthropic");
+      expect(alone.ok && alone.route.kind === "account").toBe(false);
+    });
+
+    it("still routes a turn to an account that keeps its credential while it signs in again", () => {
+      const { mgr, claude, account } = setup();
+      claude.configured = true;
+      mgr.startAccountAuth("anthropic", account.id);
+
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: account.id } });
+    });
+
     it("cancelAccountAuth resets status from the on-disk credential check", () => {
       const { mgr, claude, account } = setup();
       mgr.startAccountAuth("anthropic", account.id);

@@ -99,24 +99,28 @@ prompt arg, no model, structurally cannot make a billable conversation API call)
 original open question — does `auth status` trigger an OAuth refresh, or only read
 stored state — is answered (measured on CLI 2.1.284, 2026-10-11): it refreshes, but
 **only when the credentials file says 5 minutes or less are left**. The same rule
-governs Tier 2. So Tier 1 is the path that normally rotates, at no cost.
+governs Tier 2. So Tier 1 was taken for the path that normally rotates, at no cost.
+Measured again on 2026-10-12, it is not: Tier 1 sends the refresh grant and exits
+before the token host can answer. Since then Tier 1 runs only on a copy that the CLI
+will not refresh (a forced probe of a healthy token), and Tier 2 is the only tier that
+sends the grant — see [Tier 1 does not present the grant](#tier-1-does-not-present-the-grant-2026-10-12-fix).
 
-If `auth status` doesn't rotate the token, the refresher falls back to the cheapest
-billable form:
+The rotation is done by the cheapest billable form:
 
 ```
 claude --print "ok" --model claude-haiku-4-5-20251001 --tools "" --no-session-persistence
 ```
 
 This forces Haiku (cheapest model), disables tool loop, suppresses session persistence,
-and uses a minimum-token prompt. Cost: <$0.001 per invocation. It runs only when Tier 1
-did not rotate, which is the exception.
+and uses a minimum-token prompt. Cost: <$0.001 per invocation, once per rotation
+(about every 7 h 15 min per account), which is what production paid already.
 
 ### Refresh-tick state machine
 
 ```
 on tick (single-flight via in-process mutex; `force` = a session reported a 401):
   harvest: a pinned session holds a newer token → adopt it, repush, return HARVESTED_SESSION
+           (never into a source that is missing, and never the credential known rejected)
   a rotation from an earlier tick is not in the source yet → install it; while it waits,
                                                      no tick probes
   before := source expiresAt                       (none → MISSING_CREDENTIALS)
@@ -130,9 +134,10 @@ on tick (single-flight via in-process mutex; `force` = a session reported a 401)
           near expiry: the copy claims min(before, now + 60s), inside the CLI's window
           forced on a healthy token: the copy keeps the real expiry
 
-  spawn `claude --debug api --debug-file <f> auth status --json` with HOME=<copy>, timeout 30s
-  the copy holds a new token → install it into the source, repush, return SUCCESS_TIER1
-  the copy is blanked        → the OAuth server answered invalid_grant; skip tier 2
+  only if the copy claims more than 5.5 minutes (a forced probe of a healthy token):
+    spawn `claude --debug api --debug-file <f> auth status --json` with HOME=<copy>, timeout 30s
+    the copy holds a new token → install it into the source, repush, return SUCCESS_TIER1
+    the copy is blanked        → the OAuth server answered invalid_grant; skip tier 2
 
   spawn `claude --debug api --debug-file <f> --print "ok" --model claude-haiku-4-5-20251001 ...`
         with HOME=<copy>, timeout 60s
@@ -582,15 +587,54 @@ account's email and organization and is kept out of it. Debug timestamps are str
 before classification: one ending `.429Z` used to read as an HTTP 429 and select the
 rate-limit backoff.
 
+**The revoked line (2026-10-12).** `revoked (<reason>) — emitting auth_required` keeps its
+sentence, and the first line for a rejected grant now continues with what ran:
+
+```
+… — emitting auth_required trigger=scheduled verdict=blanked_copy rejected_by=tier2 tier1=0.3s,exit=0 tier2=2.4s,exit=1 expires_in=45m reason="…"
+```
+
+- `trigger`: `scheduled` (the expiry timer), `backoff_retry`, `turn_start`, `forced_heal` (a
+  session reported an auth failure), `nudge` (`refreshNow`: a completed sign-in, or an
+  auth-required report), and `private_run` for a naming run's rejection. A caller that
+  joins a tick in flight is reported under the trigger that started it.
+- `verdict`: `blanked_copy`, or `output_phrase` when the output names the rejection and no
+  copy was blanked. `rejected_by`: `tier1`, `tier2`, `tier1+tier2` (a phrase in both
+  outputs), or `kept_copy` (a kept rotation that read as blanked on a later tick).
+- `tier1`, `tier2`: the run time, then `timeout` if the tier was killed, then
+  `exit=<code or signal>`, or `no_exit` when the CLI did not start or did not exit within
+  the kill grace. `not_run` for a tier that was skipped.
+- `expires_in`: what the source token had left, negative when it is expired.
+- `reason`: the redacted excerpt that the other failure lines carry. Tier 1's stdout is
+  not in it.
+
+Each later tick on the same grant logs the sentence with `trigger=… verdict=known_rejected`
+and nothing more, so `grep 'revoked (' | grep -v known_rejected` gives the first line.
+`rotated_tier2` ends with `tier1=…`: `not_run` on a near-expiry tick, and how tier 1
+ended on a forced probe. `rotated_tier1` is now, in practice, a kept rotation that a
+later tick installed.
+A naming run and a kept copy have no tier output, so their lines stop at `expires_in`.
+
+With `tier1=not_run` and a tier 2 that ran for less than 30 s, the refresher sent the
+grant once in that tick. The grant was then dead before that request, or a session's CLI
+spent it at the same moment (the late harvest looks for that). A tier 2 of 30 s or more
+can have sent it twice by itself (Known limits). Before the tier 1 fix, no line could
+tell any of these from a grant that tier 1 had sent without waiting for the answer.
+
 **Validation.** `node --import tsx scripts/probe-claude-refresh.mjs` runs the installed
 binary with synthetic tokens, an isolated home and working directory, and a local TLS
 recorder that never forwards traffic. It uses the refresher's own command lines and
 constants (`REFRESH_PROBE_COMMANDS`, `CLI_REFRESH_WINDOW_MS`, `PROBE_REMAINING_MS`), and
 checks what the refresher depends on: both tiers accept their command line, neither
-refreshes outside the window, each refreshes a copy that claims one minute and writes
-the result to it, `invalid_grant` blanks the file, and a 429 or a 500 does not. It does
-not check every row of the table (the rejected flag order is history, not a
-dependency). 13 checks, about 3 s, exit 1 on a failure. CI runs it as the job
+refreshes outside the window, Tier 1 sends no grant on a healthy copy also when the API
+answers 401, Tier 2 refreshes a copy that claims one minute and writes the result to
+it, **Tier 2 waits for a token host that answers after 1.5 s** and sends the grant once,
+`invalid_grant` blanks the file, and a 429 or a 500 does not. An `info` line says what
+Tier 1 does with a slow answer; it is not a check, because the refresher gives Tier 1
+no copy that it refreshes. Until 2026-10-12 the recorder answered every request at
+once, which no real host does, so the check that Tier 1 writes a rotation could not
+fail. It does not check every row of the table (the rejected flag order is history, not
+a dependency). 13 checks, about 9 s, exit 1 on a failure. CI runs it as the job
 `claude-refresh-probe` (`.github/workflows/ci.yml`) on a pull request that changes
 `docker/agent-cli/package.json`, its lockfile or `install-agent-clis.sh`, the probe, this
 refresher (whose command lines the probe uses) or the workflow, and on every push to
@@ -663,6 +707,92 @@ on the generic backoff. Naming runs do not wait for each other.
 Local mode attaches no runner, so naming there still runs in the account root with
 its environment unchanged: the refresher does not run in local mode, and the turn
 CLIs share that root anyway.
+
+### Tier 1 does not present the grant (2026-10-12 fix)
+
+Production, build `930f5eea` (UTC): `acct_1219…` logged `rotated_tier2` at 14:24:57, and
+35 s later `acct_1a27…`, signed in 7 h 15 min before, logged `revoked (invalid_grant)`.
+Its scheduled tick fired at 14:25:20 and the probes took about 2.9 s. Turns on that
+account got good answers until less than 40 s before the tick; the first session auth
+failure came 14 s after the verdict. Nothing else on the host is known to have touched
+the grant.
+
+Measured on CLI 2.1.284, offline as in "Validation" (synthetic tokens, a local recorder;
+nothing reached the real token host). The probe script and the end-to-end run gave the
+same results on 2.1.293, the version that `main` pinned that day:
+
+| A copy that claims 60 s, and the token host… | Tier 1 (`auth status --json`) | Tier 2 (`--print ok …`) |
+|---|---|---|
+| answers at once | writes the rotation | writes the rotation |
+| answers 25 ms or more after the request | exits about 0.2 s after its start, exit code 0, copy `unchanged`, no line about a refresh in the debug capture | waits (8 s tested), writes the rotation, one request |
+| is reached only after 40 ms of connection set-up | exits before the request is sent | waits, writes the rotation |
+| does not answer | the same exit, the same `unchanged` | gives up after 30 s, **sends the same refresh token again**, ends at about 60 s |
+
+So on a copy inside the CLI's window, Tier 1 sends the grant and does not wait. When
+its request reaches the host and the answer comes after the exit, the grant is spent
+and its successor is lost; the refresher then read `unchanged` and Tier 2 sent the same
+refresh token about 0.3 s later. Run through `ClaudeOAuthRefresher` against a recorder
+that spends a refresh token on first use, that sequence logged `revoked` for a grant
+with 40 minutes left; with a slow connection it logged `rotated_tier2`. Both of the
+production lines, from one mechanism, with no timeout or kill.
+
+**The fix:** Tier 1 does not run on a copy that claims 5.5 minutes or less (the CLI's
+window, plus the 30 s that Tier 1 may run). That is every near-expiry tick, because its
+copy claims 60 s. Tier 2 is the only tier that sends the grant there, and it waits for
+the answer. Tier 1 still runs first on a forced probe of a healthy token, where it sends
+no grant, also when the API answers 401 to it.
+
+**Not known**, and not tested, because that needs the real token host: whether it
+completes a rotation whose client has gone, and whether it revokes the whole grant
+(access token included) on a replayed refresh token. So the incident is consistent with
+this mechanism and not proven to be it.
+
+### A sign-in is not the harvest's to complete (2026-10-12 fix)
+
+Production, build `930f5eea`, account `acct_1a27…` (UTC). The account's grant had been
+rejected at 14:25:28 (what invalidated it is not known). The operator started a new sign-in:
+
+| | |
+|---|---|
+| 14:46:54 | the sign-in starts and removes the account's `.credentials.json`; the row is `authenticating` |
+| 14:47:00 | a new session's first turn is routed to that account, which has no token, and fails over |
+| 14:47:04 | a tick's harvest finds a session subtree that still holds the pushed copy of the rejected credential, reads the missing source as "behind", and copies it in: `harvested … was=none`, then `harvested_session`. It is pushed to 38 sessions, the account reads `ready`, and the memory of the rejected grant is cleared |
+| 14:47:16 | the reinstalled grant is probed again: `revoked` |
+| 14:47:24 | the operator's code reaches the login CLI. The first poll, 300 ms later, finds a credential file newer than the baseline (the harvest's write), reports the sign-in complete and kills the login CLI before it has exchanged the code |
+| 14:47:25 | `revoked` again, but the account was announced once already, so the row stays `ready` |
+
+The account read `ready` with a dead credential, and the operator's code was never used.
+Four rules, each where the fault was:
+
+1. **A missing account source is not refilled from a replica**
+   (`token-sync-manager.ts`). A source is missing while a sign-in runs and after a
+   sign-out, and a replica then holds exactly the credential that was removed.
+   `sessionTokenIsAheadOfSource` no longer reads a replica as ahead of a missing account
+   source, and `syncProviderAccountTokenBack` and `syncSubAgentSpawnHomeTokenBack` refuse
+   the copy (`write-back=refused … reason=source-absent`). So the harvest, the mid-turn
+   publication, the turn-end write-back and a sub-agent's write-back all stop there, for
+   every harness. It is the rule a probe's rotation already had ("the source is gone →
+   the rotation is given up"). The flat (pre-account) root keeps the old behavior.
+2. **The harvest does not adopt the credential that is known rejected**
+   (`harvestSessionRotations`). A session's copy with those tokens is a pushed copy, not a
+   rotation, whatever its expiry says against the source.
+3. **A sign-in's result is a credential that the login CLI wrote** (`auth-manager.ts`).
+   "Fresh" was "a file with a newer mtime than at the start". It is now a credential with
+   an access token whose tokens differ from the baseline, and the baseline is taken again
+   when the first code is submitted: the login CLI cannot write before it has a code, so
+   what is on disk at that moment is another writer's. Tokens, not mtime, because other
+   CLIs rewrite the file's other keys.
+4. **An `authenticating` account is routed to only while it holds a credential**
+   (`ProviderAccountManager.selectAccountForTurn`, asked through the login's
+   `isConfigured`). Claude's sign-in removes the credential at its start; a sign-in that
+   keeps the old one (Codex's device flow) stays routable.
+
+And the announcement: `emitUnauthenticated` was latched after the first report. It now
+reports again when the account's row reads `ready`, because a sign-in's completion sets
+the row `ready` without a word to the refresher. In the other direction, a tick that
+finds the source missing while the row reads `authenticating` reports nothing
+(`missing_credentials … sign_in=in_progress`): the `agent_auth_failed` event would close
+the sign-in that the user is in, and with rule 1 no harvest hides that state any more.
 
 ### Known limits (not addressed here)
 
@@ -742,6 +872,30 @@ CLIs share that root anyway.
   token and writes no line. The Codex refresher has the same rule since
   2026-10-12: no verdict heals (docs/154, "Turn start and forced heal", with
   the costs under its Known limits).
+- **Tier 2 presents the grant a second time after its own timeout.** With a token host
+  that does not answer, the CLI gives up after 30 s and the same process sends the same
+  refresh token again; it ends at about 60 s, where the refresher's tier 2 timeout is.
+  That replay is inside the CLI. A shorter tier 2 timeout would stop the second request,
+  but it would also kill a rotation whose answer is on its way, so it is left as it is.
+- **A request that the token host completes and whose answer is lost still costs the
+  grant.** No tier can know it. A tick that follows sends the same refresh token and is
+  rejected, and the account needs a sign-in. The tier 1 fix removes the case that the
+  refresher made itself; it does not remove a lost answer.
+- **A kept rotation is logged as `rotated_tier1`** when a later tick installs it,
+  whichever tier or naming run made it.
+- **The harvest tells a session's rotation from a pushed copy by expiry alone**, apart
+  from the credential that is known rejected. A source that is replaced by a credential
+  with an earlier expiry than a copy pushed before it is overwritten by that copy.
+- **"Holds a credential" is the login's `isConfigured`**, which for Claude, Codex and
+  Grok is a file that exists, not a token that works. An `authenticating` account with a
+  blanked or empty credential file is still routed to. A sign-in's start removes the
+  file, which is the case that rule 4 is for.
+- **Model eligibility still lists an `authenticating` account** (`listConfiguredCredentials`
+  reads the stored row, not the credential root). A turn started on it while its sign-in
+  has no credential yet gets `auth_required` from the router, or another account.
+- **A login CLI that ends by itself before any code is submitted** is still judged
+  against the baseline of the sign-in's start, so a credential that another writer put
+  there in that time counts as its result. No writer is known for an empty account source.
 
 ## Wiring
 
@@ -885,7 +1039,7 @@ event carries the accountId for docs/150 to consume.
 
 | Risk | Mitigation |
 |---|---|
-| `claude auth status --json` behavior changes in a future CLI version. | Two-tier design: Tier 2 (`--print` against Haiku) makes an authenticated API call, and the CLI checks the token before one. Neither tier refreshes a token with more than 5 minutes left — an authenticated call does **not** guarantee refresh-on-use, as this row once said — which is why both run against a copy that claims a short life. Tier 1 failing gracefully into Tier 2 is the expected steady state if Anthropic redesigns `auth status`. |
+| `claude auth status --json` behavior changes in a future CLI version. | Tier 2 (`--print` against Haiku) makes an authenticated API call, and the CLI checks the token before one. Neither tier refreshes a token with more than 5 minutes left — an authenticated call does **not** guarantee refresh-on-use, as this row once said — which is why the rotation runs against a copy that claims a short life. Since 2026-10-12 the rotation does not depend on `auth status` at all: Tier 1 gets no copy that it would refresh. |
 | The CLI's debug log format changes. | File-state delta is the authoritative success signal; debug parsing is only used for failure classification. A debug-format change degrades the "what's wrong?" classification to "unknown failure", which still backs off and retries. |
 | Session-side CLIs still attempt refresh occasionally despite the safety margin. | A session CLI refreshes only when its own copy says 5 minutes or less are left, so the lead time matters only if the orchestrator has rotated and repushed before then. If we observe session-side refresh traffic (`[token-publish] published mid-turn claude token rotation`, or token-host connections from agent-* containers), check for `not_rotated` lines first. An egress policy that blocks session containers from the OAuth endpoint remains future hardening. |
 | Refresher tick fires during an actual `claude /login` flow. | The refresher's CLI writes only its private copy, and the install is skipped when the source holds another token than the copy was made from, so the sign-in's token stays. |
@@ -1005,6 +1159,26 @@ history that was moved into the orphan.
   copy", "retry schedule"
 - `scripts/probe-claude-refresh.mjs` — the same checks against the real binary
 - `.github/workflows/ci.yml` — the `claude-refresh-probe` job that runs it
+
+### Key files (sign-in and harvest, 2026-10-12)
+
+- `src/server/orchestrator/token-sync-manager.ts` — `refuseAbsentAccountSource`, and the
+  missing-source rule in `sessionTokenIsAheadOfSource`, `syncAgentTokenBackToRoot`,
+  `syncSubAgentSpawnHomeTokenBack`
+- `src/server/orchestrator/agents/claude/auth-manager.ts` — `credentialFingerprint`,
+  `credentialBaseline`, `hasFreshCredentials`
+- `src/server/orchestrator/provider-account-manager.ts` — `holdsCredential` in
+  `selectAccountForTurn`
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` — the rejected-credential
+  guard in `harvestSessionRotations`, `emitUnauthenticated`, `runTier1` in `executeTick`,
+  and the revoked line: `TickTrigger`, `TierRun`, `describeTierRun`, `handleRevoked`
+- `scripts/probe-claude-refresh.mjs` — the delayed answer (`SLOW_ANSWER_MS`) and the
+  API's 401
+- Tests: "a missing account source is not refilled from a replica" in
+  `token-freshness-guard.test.ts`; "fresh-credential completion gate" in
+  `auth-manager.test.ts`; "account-scoped auth flows" in
+  `provider-account-manager.test.ts`; "harvest before spend" and "failure logging" in
+  `oauth-refresher.test.ts`
 
 ### Key files (session naming in a private copy, 2026-10)
 

@@ -224,6 +224,7 @@ interface TestRig {
   spawnHandle: FakeSpawnHandle;
   repushCalls: { agentId: AgentId; accountId: string }[];
   sseCalls: { event: string; data: unknown }[];
+  accounts: CredentialRoute[];
   now: () => number;
   setNow: (n: number) => void;
 }
@@ -276,8 +277,14 @@ function buildRig(opts: {
   }
 
   const refresher = new ClaudeOAuthRefresher(deps);
+  // As the orchestrator wires it: the account's row follows the refresher's verdicts.
+  const setStatus = (accountId: string, status: CredentialRoute["status"]): void => {
+    for (const account of accounts) if (account.id === accountId) account.status = status;
+  };
+  refresher.on("account_unauthenticated", (accountId) => setStatus(accountId, "auth_failed"));
+  refresher.on("account_reauthenticated", (accountId) => setStatus(accountId, "ready"));
 
-  return { rootDir, refresher, spawnHandle, repushCalls, sseCalls, now, setNow };
+  return { rootDir, refresher, spawnHandle, repushCalls, sseCalls, accounts, now, setNow };
 }
 
 function cleanupRig(rig: TestRig): void {
@@ -309,7 +316,7 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
   });
 
-  it("rotates via tier1 and repushes to pinned sessions", async () => {
+  it("rotates a near-expiry token with tier 2 alone and repushes to pinned sessions", async () => {
     const now = 1_700_000_000_000;
     const future = now + 40 * 60 * 1000;
     const rotatedTo = now + 8 * 60 * 60 * 1000;
@@ -323,9 +330,10 @@ describe("ClaudeOAuthRefresher", () => {
     rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
-    expect(result!.outcome).toBe("rotated_tier1");
+    expect(result!.outcome).toBe("rotated_tier2");
     expect(result!.afterExpiresAt).toBe(rotatedTo);
-    expect(rig.spawnHandle.invocations.length).toBe(1);
+    // Tier 1 would present the grant and not wait for the answer (docs/153): it does not run.
+    expect(rig.spawnHandle.invocations.map((invocation) => invocation.args.includes("--print"))).toEqual([true]);
     expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
     // The CLI rotated a private copy; the refresher installed the result into the source.
     expect(rig.spawnHandle.invocations[0]!.home).not.toBe(accountRootOf(rig.rootDir, "claude-default"));
@@ -334,7 +342,7 @@ describe("ClaudeOAuthRefresher", () => {
     expect(installed.accessToken).not.toBe(original.accessToken);
   });
 
-  it("falls through to tier2 when tier1 doesn't rotate and token is near expiry", async () => {
+  it("probes a near-expiry token with the billable tier 2 command", async () => {
     const now = 1_700_000_000_000;
     const nearExpiry = now + 10 * 60 * 1000;
     const rotatedTo = now + 8 * 60 * 60 * 1000;
@@ -344,15 +352,12 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    rig.spawnHandle.effects = [
-      {},
-      { rotateTo: rotatedTo },
-    ];
+    rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("rotated_tier2");
-    expect(rig.spawnHandle.invocations.length).toBe(2);
-    const tier2Args = rig.spawnHandle.invocations[1]!.args;
+    expect(rig.spawnHandle.invocations.length).toBe(1);
+    const tier2Args = rig.spawnHandle.invocations[0]!.args;
     expect(tier2Args).toContain("--print");
     expect(tier2Args).toContain("--model");
     expect(tier2Args).toContain("--no-session-persistence");
@@ -422,7 +427,6 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "auth status did not rotate" },
       {
         stderr: [
           "Failed to authenticate.",
@@ -451,7 +455,6 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "auth status did not rotate" },
       {
         stderr: [
           'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}',
@@ -491,6 +494,28 @@ describe("ClaudeOAuthRefresher", () => {
     expect(perAccount.length).toBe(1);
   });
 
+  it("reports the account unauthenticated again when its row was set ready over the rejected credential", async () => {
+    const now = 1_700_000_000_000;
+    const rig = buildRig({
+      accounts: [makeAccount("claude-default")],
+      initialExpiries: { "claude-default": now + 5 * 60 * 1000 },
+      initialNow: now,
+    });
+    rigs.push(rig);
+    rig.spawnHandle.effects = [{ blank: true }];
+    await rig.refresher.refreshNow("claude-default");
+    expect(rig.accounts[0]!.status).toBe("auth_failed");
+
+    // A sign-in's completion handler does this without a word to the refresher.
+    rig.accounts[0]!.status = "ready";
+    const [again] = await rig.refresher.refreshNow("claude-default");
+
+    expect(again!.outcome).toBe("revoked");
+    expect(rig.accounts[0]!.status).toBe("auth_failed");
+    expect(rig.sseCalls.filter((c) => c.event === "agent_auth_failed").length).toBe(2);
+    expect(rig.spawnHandle.invocations.length).toBe(1);
+  });
+
   it("emits claude_account_authenticated when a previously-revoked account rotates successfully", async () => {
     const now = 1_700_000_000_000;
     const nearExpiry = now + 5 * 60 * 1000;
@@ -502,7 +527,7 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
+      { stderr: "invalid_grant" },
       { rotateTo: rotatedTo },
     ];
 
@@ -512,7 +537,7 @@ describe("ClaudeOAuthRefresher", () => {
     // A new sign-in: the rejected grant is never probed again.
     writeCredentials(accountRootOf(rig.rootDir, "claude-default"), { expiresAt: nearExpiry });
     const [result] = await rig.refresher.refreshNow("claude-default");
-    expect(result!.outcome).toBe("rotated_tier1");
+    expect(result!.outcome).toBe("rotated_tier2");
     expect(rig.sseCalls.some((c) => c.event === "claude_account_authenticated")).toBe(true);
     expect(rig.refresher._inspectForTest("claude-default").emittedUnauthenticated).toBe(false);
   });
@@ -528,7 +553,7 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
+      { stderr: "invalid_grant" },
       { rotateTo: rotatedTo },
     ];
 
@@ -563,7 +588,7 @@ describe("ClaudeOAuthRefresher", () => {
     });
 
     const [result] = await rig.refresher.refreshNow("claude-default");
-    expect(result!.outcome).toBe("rotated_tier1");
+    expect(result!.outcome).toBe("rotated_tier2");
     expect(reauthEvents).toEqual([]);
   });
 
@@ -584,8 +609,8 @@ describe("ClaudeOAuthRefresher", () => {
       rig.refresher.refreshNow("claude-default"),
     ]);
     expect(rig.spawnHandle.invocations.length).toBe(1);
-    expect(a[0]!.outcome).toBe("rotated_tier1");
-    expect(b[0]!.outcome).toBe("rotated_tier1");
+    expect(a[0]!.outcome).toBe("rotated_tier2");
+    expect(b[0]!.outcome).toBe("rotated_tier2");
   });
 
   it("per-account isolation: failures on one account don't affect the other", async () => {
@@ -759,15 +784,15 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = Array.from({ length: 6 }, () => ({ stderr: "HTTP 429 rate_limit_error" }));
+      rig.spawnHandle.effects = Array.from({ length: 3 }, () => ({ stderr: "HTTP 429 rate_limit_error" }));
 
       for (let turn = 0; turn < 5; turn++) await rig.refresher.ensureFresh("claude-default");
-      expect(rig.spawnHandle.invocations.length).toBe(2);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
       expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(1);
 
       // A session's 401 is not a turn start: it probes at once.
       await rig.refresher.ensureFresh("claude-default", { force: true });
-      expect(rig.spawnHandle.invocations.length).toBe(4);
+      expect(rig.spawnHandle.invocations.length).toBe(2);
     });
 
     it("returns false when an expired token can't be refreshed (revoked)", async () => {
@@ -1096,7 +1121,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
-      expect(result!.outcome).toBe("rotated_tier1");
+      expect(result!.outcome).toBe("rotated_tier2");
       expect(rig.spawnHandle.invocations.length).toBe(1);
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).not.toContain("sess_tok_");
     });
@@ -1114,7 +1139,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
-      expect(result!.outcome).toBe("rotated_tier1");
+      expect(result!.outcome).toBe("rotated_tier2");
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).not.toContain("sess_tok_");
     });
 
@@ -1131,7 +1156,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
-      expect(result!.outcome).toBe("rotated_tier1");
+      expect(result!.outcome).toBe("rotated_tier2");
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).not.toContain("sess_tok_");
     });
 
@@ -1158,12 +1183,72 @@ describe("ClaudeOAuthRefresher", () => {
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
-      expect(result!.outcome).toBe("rotated_tier1");
+      expect(result!.outcome).toBe("rotated_tier2");
       const acct1 = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
       const acct2 = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-2"), "utf8");
       const acct2Token = (JSON.parse(acct2) as { claudeAiOauth: { accessToken: string } })
         .claudeAiOauth.accessToken;
       expect(acct1).not.toContain(acct2Token);
+    });
+
+    it("does not refill a source that a sign-in emptied from a session's copy of the old credential", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({ accounts: [makeAccount("acct-1")], initialNow: now });
+      rigs.push(rig);
+      // The sign-in removed the source. The session holds what was pushed to it before that.
+      writeSessionToken(rig.rootDir, "sess-old", { expiresAt: now + 40 * 60 * 1000, accountId: "acct-1" });
+      const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      warnings.mockRestore();
+
+      expect(result!.outcome).toBe("missing_credentials");
+      expect(fs.existsSync(accountTokenFile(rig.rootDir, "acct-1"))).toBe(false);
+      expect(rig.repushCalls).toEqual([]);
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+    });
+
+    it("leaves an account alone while its sign-in has removed the source", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({ accounts: [makeAccount("acct-1", { status: "authenticating" })], initialNow: now });
+      rigs.push(rig);
+
+      const logs = captureLogs();
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(result!.outcome).toBe("missing_credentials");
+      // An auth-failed event would close the sign-in that the user is in.
+      expect(rig.sseCalls).toEqual([]);
+      expect(rig.accounts[0]!.status).toBe("authenticating");
+      expect(logs.lines.some((line) => line.endsWith("sign_in=in_progress"))).toBe(true);
+    });
+
+    it("does not adopt a session's copy of the credential that was rejected", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      const rejected = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
+      rig.spawnHandle.effects = [{ blank: true }, { rotateTo: now + 8 * 60 * 60 * 1000 }];
+      await rig.refresher.refreshNow("acct-1");
+
+      // A session still holds the rejected credential, and a sign-in's token expires before it.
+      const sessionFile = path.join(rig.rootDir, "sessions", "sess-old", ".claude", ".credentials.json");
+      fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+      fs.writeFileSync(sessionFile, rejected, "utf8");
+      writeSessionAccountMarker(rig.rootDir, "sess-old", "claude", "acct-1");
+      writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: now + 30 * 60 * 1000 });
+      const signedIn = readSourceCredentials(rig.rootDir, "acct-1");
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("rotated_tier2");
+      // The probe ran on the sign-in's token, not on the rejected one.
+      expect(rig.spawnHandle.invocations[1]!.credentials!.refreshToken).toBe(signedIn.refreshToken);
     });
 
     it("leaves a blanked source on disk and still reports missing_credentials", async () => {
@@ -1197,14 +1282,14 @@ describe("ClaudeOAuthRefresher", () => {
       return rig;
     }
 
-    it("runs both tiers in a private copy and removes it, never in the account root", async () => {
+    it("runs the probe in a private copy and removes it, never in the account root", async () => {
       const rig = marginRig();
       const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
-      rig.spawnHandle.effects = [{}, {}];
+      rig.spawnHandle.effects = [{}];
 
       await rig.refresher.refreshNow("acct-1");
 
-      expect(rig.spawnHandle.invocations.length).toBe(2);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
       for (const invocation of rig.spawnHandle.invocations) {
         expect(invocation.home).not.toBe(accountRootOf(rig.rootDir, "acct-1"));
         expect(fs.existsSync(invocation.home)).toBe(false);
@@ -1228,18 +1313,25 @@ describe("ClaudeOAuthRefresher", () => {
     });
 
     it("puts the debug flags before the subcommand", async () => {
-      const rig = marginRig();
-      rig.spawnHandle.effects = [{ rotateTo: now + 8 * 60 * 60 * 1000 }];
+      // A forced probe of a healthy token is the one that still runs tier 1.
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 8 * 60 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{}, {}];
 
-      await rig.refresher.refreshNow("acct-1");
+      await rig.refresher.ensureFresh("acct-1", { force: true });
 
-      const args = rig.spawnHandle.invocations[0]!.args;
-      expect(args.indexOf("--debug")).toBeGreaterThanOrEqual(0);
-      expect(args.indexOf("--debug")).toBeLessThan(args.indexOf("auth"));
-      expect(args.indexOf("--debug-file")).toBeLessThan(args.indexOf("auth"));
+      const [tier1Args, tier2Args] = rig.spawnHandle.invocations.map((invocation) => invocation.args);
+      expect(tier1Args!.indexOf("--debug")).toBeGreaterThanOrEqual(0);
+      expect(tier1Args!.indexOf("--debug")).toBeLessThan(tier1Args!.indexOf("auth"));
+      expect(tier1Args!.indexOf("--debug-file")).toBeLessThan(tier1Args!.indexOf("auth"));
+      expect(tier2Args!.indexOf("--debug-file")).toBeLessThan(tier2Args!.indexOf("--print"));
     });
 
-    it("a rejected grant blanks only the copy: revoked, source intact, no tier 2", async () => {
+    it("a rejected grant blanks only the copy: revoked, source intact, one spawn", async () => {
       const rig = marginRig();
       const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
       rig.spawnHandle.effects = [{ blank: true }];
@@ -1339,7 +1431,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
-      expect(result!.outcome).toBe("rotated_tier1");
+      expect(result!.outcome).toBe("rotated_tier2");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
       const installed = JSON.parse(fs.readFileSync(sourceFile, "utf8")) as { mcpOAuth?: unknown };
       expect(installed.mcpOAuth).toEqual({ server: "kept" });
@@ -1355,7 +1447,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
-      expect(result!.outcome).toBe("rotated_tier1");
+      expect(result!.outcome).toBe("rotated_tier2");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
       expect(rig.sseCalls.map((c) => c.event)).not.toContain("agent_auth_failed");
     });
@@ -1446,17 +1538,17 @@ describe("ClaudeOAuthRefresher", () => {
         rig.spawnHandle.effects = [{ hang: true }];
 
         const tick = rig.refresher.refreshNow("acct-1");
-        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(60_000);
         rig.spawnHandle.children[0]!.emit("error", new Error("kill EPERM"));
         await vi.advanceTimersByTimeAsync(0);
-        // Signalled, but not gone: tier 2 has not started on a copy that can still change.
-        expect(rig.spawnHandle.invocations.length).toBe(1);
+        // Signalled, but not gone: the copy can still change, so the tick has not judged it.
+        expect(rig.refresher._inspectForTest("acct-1").hasInFlight).toBe(true);
 
         writeCredentials(rig.spawnHandle.invocations[0]!.home, { expiresAt: rotatedTo });
         rig.spawnHandle.children[0]!.emit("exit", null, "SIGKILL");
         const [result] = await tick;
 
-        expect(result!.outcome).toBe("rotated_tier1");
+        expect(result!.outcome).toBe("rotated_tier2");
         expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
         expect(rig.spawnHandle.invocations.length).toBe(1);
       } finally {
@@ -1468,14 +1560,12 @@ describe("ClaudeOAuthRefresher", () => {
       vi.useFakeTimers();
       try {
         const rig = marginRig();
-        rig.spawnHandle.effects = [{ hang: true }, {}];
+        rig.spawnHandle.effects = [{ hang: true }];
 
         const tick = rig.refresher.refreshNow("acct-1");
-        await vi.advanceTimersByTimeAsync(30_000);
-        expect(rig.spawnHandle.invocations.length).toBe(1);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(rig.refresher._inspectForTest("acct-1").hasInFlight).toBe(true);
         await vi.advanceTimersByTimeAsync(5_000);
-        expect(rig.spawnHandle.invocations.length).toBe(2);
-        await vi.advanceTimersByTimeAsync(1);
         const [result] = await tick;
 
         expect(result!.outcome).toBe("not_rotated");
@@ -1537,11 +1627,14 @@ describe("ClaudeOAuthRefresher", () => {
       await rig.refresher.refreshNow("acct-1");
 
       writeBlankedCredentials(home());
+      const logs = captureLogs();
       const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
 
       expect(result!.outcome).toBe("revoked");
       expect(rig.spawnHandle.invocations.length).toBe(1);
       expect(rig.sseCalls.map((c) => c.event)).toContain("claude_account_unauthenticated");
+      expect(logs.lines.some((line) => line.endsWith("trigger=nudge verdict=blanked_copy rejected_by=kept_copy expires_in=40m"))).toBe(true);
     });
 
     it("releases a kept rotation that it cannot read when a sign-in replaces the source", async () => {
@@ -1651,9 +1744,13 @@ describe("ClaudeOAuthRefresher", () => {
       const rig = marginRig();
       const sourceBefore = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
 
+      const logs = captureLogs();
       await rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+      logs.restore();
 
       expect(events(rig)).toContain("claude_account_unauthenticated");
+      // A naming run's rejection is told apart from a tick's.
+      expect(logs.lines.some((line) => line.endsWith("trigger=private_run verdict=blanked_copy expires_in=40m"))).toBe(true);
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toBe(sourceBefore);
       const [tick] = await rig.refresher.refreshNow("acct-1");
       expect(tick!.outcome).toBe("revoked");
@@ -2113,7 +2210,6 @@ describe("ClaudeOAuthRefresher", () => {
       });
       rigs.push(rig);
       rig.spawnHandle.effects = [
-        {},
         { stderr: "claude v2.1.0\nError: token refresh did not complete\n"
             + `Authorization: Bearer ${FAKE_OAUTH_TOKEN}\n` },
       ];
@@ -2139,7 +2235,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{}, { stderr: "Error: token refresh did not complete" }];
+      rig.spawnHandle.effects = [{ stderr: "Error: token refresh did not complete" }];
 
       const logs = captureLogs();
       const [result] = await rig.refresher.refreshNow("acct-1");
@@ -2162,14 +2258,14 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{ failsToStart: true }, { failsToStart: true }];
+      rig.spawnHandle.effects = [{ failsToStart: true }];
 
       const logs = captureLogs();
       const [result] = await rig.refresher.refreshNow("acct-1");
       logs.restore();
 
       expect(result!.outcome).toBe("not_rotated");
-      expect(result!.reason).toBe("[error] spawn claude ENOENT | [error] spawn claude ENOENT");
+      expect(result!.reason).toBe("[error] spawn claude ENOENT");
       expect(logs.lines.find((entry) => entry.includes("not_rotated failure_count=1")))
         .toContain("reason=\"[error] spawn claude ENOENT");
       expect(rig.sseCalls).toEqual([]);
@@ -2205,7 +2301,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{}, { stderr: "Error: request failed for person@example.com\n" }];
+      rig.spawnHandle.effects = [{ stderr: "Error: request failed for person@example.com\n" }];
 
       const logs = captureLogs();
       const [result] = await rig.refresher.refreshNow("acct-1");
@@ -2217,25 +2313,190 @@ describe("ClaudeOAuthRefresher", () => {
       expect(logs.lines.join("\n")).not.toContain("example.com");
     });
 
+    function revokedLines(lines: string[]): string[] {
+      return lines.filter((line) => line.includes("revoked (invalid_grant) — emitting auth_required"));
+    }
+
+    it("says in the first revoked line what ran and what it found, and keeps the repeated line short", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      const source = readSourceCredentials(rig.rootDir, "acct-1");
+      rig.spawnHandle.effects = [
+        {
+          blank: true,
+          exitCode: 1,
+          stderr: "Error: OAuth refresh failed (expected): Request failed with status code 400\n"
+            + `Error: request body {"refresh_token":"${source.refreshToken}","access_token":"${source.accessToken}"}\n`
+            + `Authorization: Bearer ${FAKE_OAUTH_TOKEN}\n`,
+        },
+      ];
+
+      const logs = captureLogs();
+      const [first] = await rig.refresher.refreshNow("acct-1");
+      await rig.refresher.ensureFresh("acct-1", { force: true });
+      logs.restore();
+
+      expect(first!.reason).toBe("invalid_grant");
+      const [detailed, repeated, ...rest] = revokedLines(logs.lines);
+      expect(rest).toEqual([]);
+      expect(detailed).toContain(" trigger=nudge verdict=blanked_copy rejected_by=tier2 ");
+      expect(detailed).toMatch(/ tier1=not_run tier2=\d+\.\ds,exit=1 expires_in=40m reason="/);
+      expect(detailed).toContain("OAuth refresh failed (expected): Request failed with status code 400");
+      expect(repeated).toMatch(/— emitting auth_required trigger=forced_heal verdict=known_rejected$/);
+      const logged = logs.lines.join("\n");
+      for (const secret of [FAKE_OAUTH_TOKEN, source.accessToken, source.refreshToken]) {
+        expect(logged).not.toContain(secret);
+      }
+    });
+
+    it("names the tier whose run blanked the copy, and that the other one did not run", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 8 * 60 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ blank: true }];
+
+      const logs = captureLogs();
+      await rig.refresher.ensureFresh("acct-1", { force: true });
+      logs.restore();
+
+      const [line] = revokedLines(logs.lines);
+      expect(line).toContain(" trigger=forced_heal verdict=blanked_copy rejected_by=tier1 ");
+      expect(line).toMatch(/ tier1=\d+\.\ds,exit=0 tier2=not_run expires_in=480m reason="/);
+    });
+
+    it("names a turn start, and an expired token, in the revoked line", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now - 3 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ blank: true }];
+
+      const logs = captureLogs();
+      await rig.refresher.ensureFresh("acct-1");
+      logs.restore();
+
+      const [line] = revokedLines(logs.lines);
+      expect(line).toContain(" trigger=turn_start verdict=blanked_copy rejected_by=tier2 ");
+      expect(line).toMatch(/ tier1=not_run tier2=\d+\.\ds,exit=0 expires_in=-3m reason="/);
+    });
+
+    it("names the output as the source of the verdict when no copy was blanked", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 5 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ stderr: "OAuth error: invalid_refresh_token" }];
+
+      const logs = captureLogs();
+      await rig.refresher.ensureFresh("acct-1", { force: true });
+      logs.restore();
+
+      const line = logs.lines.find((entry) => entry.includes("revoked (invalid_refresh_token) — emitting auth_required"));
+      expect(line).toContain(" trigger=forced_heal verdict=output_phrase rejected_by=tier2 ");
+    });
+
+    it("names a scheduled tick, and a tier that timed out, in the revoked line", async () => {
+      vi.useFakeTimers();
+      const logs = captureLogs();
+      try {
+        const now = 1_700_000_000_000;
+        const rig = buildRig({
+          accounts: [makeAccount("acct-1")],
+          initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+          initialNow: now,
+        });
+        rigs.push(rig);
+        rig.spawnHandle.effects = [{ hang: true }];
+
+        rig.refresher.start();
+        await vi.advanceTimersByTimeAsync(1_000 + 60_000);
+        // The token host's rejection reached the CLI before the kill did.
+        writeBlankedCredentials(rig.spawnHandle.invocations[0]!.home);
+        rig.spawnHandle.children[0]!.emit("exit", null, "SIGKILL");
+        await vi.advanceTimersByTimeAsync(10);
+
+        const [line] = revokedLines(logs.lines);
+        expect(line).toContain(" trigger=scheduled verdict=blanked_copy rejected_by=tier2 ");
+        expect(line).toContain(" tier1=not_run tier2=60.0s,timeout,exit=SIGKILL ");
+      } finally {
+        logs.restore();
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      { left: "5 minutes, inside the CLI's window", leftMs: 5 * 60 * 1000, spawns: ["--print"] },
+      { left: "6 minutes, outside it", leftMs: 6 * 60 * 1000, spawns: ["auth", "--print"] },
+    ])("runs tier 1 on a copy that keeps its real expiry only when that is safe: $left", async (row) => {
+      const now = 1_700_000_000_000;
+      // A margin this short makes a forced probe keep an expiry that is near the CLI's window.
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + row.leftMs },
+        initialNow: now,
+        safetyMarginMs: 60_000,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{}, {}];
+
+      await rig.refresher.ensureFresh("acct-1", { force: true });
+
+      expect(rig.spawnHandle.invocations[0]!.credentials!.expiresAt).toBe(now + row.leftMs);
+      expect(rig.spawnHandle.invocations.map((invocation) => (invocation.args.includes("auth") ? "auth" : "--print")))
+        .toEqual(row.spawns);
+    });
+
+    it("says on a tier 2 rotation that tier 1 did not run", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ rotateTo: now + 8 * 60 * 60 * 1000 }];
+
+      const logs = captureLogs();
+      await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(logs.lines.find((line) => line.includes("rotated_tier2 new_expires_at="))).toMatch(/Z tier1=not_run$/);
+    });
+
     it("keeps tier 1's stdout, which names the account, out of the reason", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
-        initialExpiries: { "acct-1": now - 60 * 1000 },
+        initialExpiries: { "acct-1": now + 8 * 60 * 60 * 1000 },
         initialNow: now,
       });
       rigs.push(rig);
       rig.spawnHandle.effects = [
         { stdout: '{\n  "loggedIn": true,\n  "email": "person@example.com",\n  "orgName": "Example Org"\n}' },
-        {},
+        { blank: true },
       ];
 
       const logs = captureLogs();
-      const [result] = await rig.refresher.refreshNow("acct-1");
+      const healed = await rig.refresher.ensureFresh("acct-1", { force: true });
       logs.restore();
 
-      expect(result!.outcome).toBe("unknown_failure");
-      expect(result!.reason).not.toContain("example");
+      expect(healed).toBe(false);
+      expect(revokedLines(logs.lines)[0]).toContain(" rejected_by=tier2 tier1=");
       expect(logs.lines.join("\n")).not.toContain("example");
     });
 

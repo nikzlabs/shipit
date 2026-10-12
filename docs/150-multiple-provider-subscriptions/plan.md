@@ -791,7 +791,10 @@ in-memory map keyed by `{ provider, accountId }`, owned by the relevant auth
 manager. The persisted `ProviderAccount.status` only reflects
 `"authenticating"` while a flow is active, and is reset (to `"ready"` /
 `"auth_failed"`) on process exit so a crash mid-flow doesn't leave a
-permanent `"authenticating"` row.
+permanent `"authenticating"` row. A turn is routed to an `"authenticating"`
+account only while its credential root holds a credential: Claude's sign-in
+removes it at its start (docs/153-orchestrator-owned-claude-oauth-refresh,
+"A sign-in is not the harvest's to complete").
 
 `ProviderAccountCapabilities.source` precedence (highest first): `agent_init`
 > `provider_profile` > `manual_default`. Runtime `agent_init` is the
