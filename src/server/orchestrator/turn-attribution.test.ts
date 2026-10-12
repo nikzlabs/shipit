@@ -123,6 +123,15 @@ describe("atApiRatesFor", () => {
     expect(atApiRatesFor(undefined, usage)).toBeUndefined();
   });
 
+  it("prices Gemini 3.1 Pro's and Grok's long prompts from the catalogue (req 3)", () => {
+    const gemini = turnAttributionFor({ serviceId: "google", billingMode: "key", modelId: "gemini-3.1-pro-preview" });
+    const long = { tokens: { input: 150_000, cacheRead: 60_000, output: 1_000 }, requests: [{ input: 150_000, cacheRead: 60_000, output: 1_000 }] };
+    expect(atApiRatesFor(gemini && { ...gemini, billingMode: "sub" }, long))
+      .toBeCloseTo((150_000 * 4 + 60_000 * 0.4 + 1_000 * 18) / 1e6, 12);
+    const grok = turnAttributionFor({ serviceId: "xai", billingMode: "sub", modelId: "grok-4.6" });
+    expect(atApiRatesFor(grok, long)).toBeCloseTo((150_000 * 4 + 60_000 * 1 + 1_000 * 12) / 1e6, 12);
+  });
+
   it("prices Haiku 5.5's long prompts from the catalogue at 5x (req 3)", () => {
     const haiku = turnAttributionFor({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-haiku-5-5" });
     const short = atApiRatesFor(haiku, { tokens: { input: 100_000 }, requests: [{ input: 100_000 }] });

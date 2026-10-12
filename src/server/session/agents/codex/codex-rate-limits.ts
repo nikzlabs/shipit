@@ -9,6 +9,14 @@ export interface CodexTokenUsage {
   modelContextWindow?: number;
 }
 
+function sameTotals(a: CodexReportedTokens, b: CodexReportedTokens | undefined): boolean {
+  return b !== undefined
+    && a.inputTokens === b.inputTokens
+    && a.outputTokens === b.outputTokens
+    && a.cachedInputTokens === b.cachedInputTokens
+    && a.cacheWriteInputTokens === b.cacheWriteInputTokens;
+}
+
 // Identify windows by duration: a lone primary window can be weekly.
 interface CodexRateLimitWindow {
   usedPercent?: number;
@@ -38,12 +46,16 @@ export class CodexRateLimits {
   // thread/resume replays the prior turn's total; use it as the baseline after recreation.
   recordTokenUsage(tokenUsage: CodexTokenUsage | undefined, turnId?: string): void {
     if (!tokenUsage) return;
+    const previousTotal = this._lastTokenUsage?.total;
     if (turnId !== undefined && turnId !== this._lastTurnId) {
       this._baselineTotal = this._lastTokenUsage?.total;
       this._lastTurnId = turnId;
       this._turnRequests = [];
     }
     this._lastTokenUsage = tokenUsage;
+    // Codex resends unchanged usage (every rate-limit update does), even under the
+    // next turn's id; only a total that grew reports a new response.
+    if (previousTotal && sameTotals(previousTotal, tokenUsage.total)) return;
     const request = disjointCodexTokens(tokenUsage.last);
     if (request) {
       this._turnRequests.push({

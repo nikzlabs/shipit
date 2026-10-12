@@ -197,5 +197,28 @@ describe("CodexRateLimits", () => {
       expect(sum("output")).toBeLessThanOrEqual(totals.output);
       expect(sum("cacheRead")).toBeLessThanOrEqual(totals.cacheRead ?? 0);
     });
+
+    it("does not list a resent snapshot, in the same turn or under the next turn's id", () => {
+      const rl = new CodexRateLimits();
+      const total = { inputTokens: 120_000, cachedInputTokens: 100_000, outputTokens: 300 };
+      const snapshot = update(total, response(120_000, 100_000, 300));
+      rl.recordTokenUsage(snapshot, "turn-1");
+      rl.recordTokenUsage(snapshot, "turn-1");
+      expect(rl.turnTokenUsage("turn-1")!.requests).toHaveLength(1);
+
+      rl.recordTokenUsage(snapshot, "turn-2");
+      expect(rl.turnTokenUsage("turn-2")!.requests).toEqual([]);
+      const grown = { inputTokens: 250_000, cachedInputTokens: 220_000, outputTokens: 800 };
+      rl.recordTokenUsage(update(grown, response(130_000, 120_000, 500)), "turn-2");
+      expect(rl.turnTokenUsage("turn-2")!.requests).toEqual([{ input: 10_000, cacheRead: 120_000, output: 500 }]);
+    });
+
+    it("does not list the zeroed `last` of a prefill estimate, whose total did not grow", () => {
+      const rl = new CodexRateLimits();
+      const total = { inputTokens: 120_000, cachedInputTokens: 100_000, outputTokens: 300 };
+      rl.recordTokenUsage(update(total, response(120_000, 100_000, 300)), "turn-1");
+      rl.recordTokenUsage({ total, last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 130_000 } }, "turn-1");
+      expect(rl.turnTokenUsage("turn-1")!.requests).toHaveLength(1);
+    });
   });
 });

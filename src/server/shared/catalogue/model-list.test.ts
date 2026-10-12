@@ -180,12 +180,6 @@ describe("parseModelList", () => {
     expect(getModel(OPUS6)?.price.longPrompt).toEqual(longPrompt);
   });
 
-  it("publishes a tier in a fixed key order, so the committed file stays byte-stable", () => {
-    const haiku = exportModelList().services.anthropic?.sub?.models.find((m) => m.id === "claude-haiku-5-5");
-    expect(Object.keys(haiku!.price)).toEqual(["input", "output", "cacheRead", "cacheWrite", "longPrompt"]);
-    expect(Object.keys(haiku!.price.longPrompt!)).toEqual(["aboveTokens", "input", "output", "cacheRead", "cacheWrite"]);
-  });
-
   it("narrows harnesses to the ones this build has, never widening a row", () => {
     const doc = parsed(withAnthropicSubRows([{ ...NEW_MODEL, harnesses: ["claude", "future-cli"] }]));
     const row = doc.services.anthropic?.sub?.models.find((m) => m.id === "claude-opus-6");

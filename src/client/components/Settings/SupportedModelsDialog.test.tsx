@@ -285,6 +285,9 @@ describe("SupportedModelsDialog", () => {
     const haiku = screen.getByTestId("supported-models-row-anthropic:key-claude-haiku-5-5");
     expect(haiku).toHaveTextContent("$0.1 / $0.5");
     expect(haiku).toHaveTextContent("5× above 100K");
+    expect(screen.getByTestId("supported-models-row-xai:key-grok-4.6")).toHaveTextContent("2× above 200K");
+    expect(screen.getByTestId("supported-models-row-google:key-gemini-3.1-pro-preview"))
+      .toHaveTextContent("$4 / $18 above 200K");
     expect(screen.getByTestId("supported-models-row-deepseek:key-deepseek-flash")).not.toHaveTextContent("above");
   });
 });

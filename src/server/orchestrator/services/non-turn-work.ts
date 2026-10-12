@@ -84,6 +84,8 @@ export interface NonTurnTelemetry {
   cacheCreateTokens?: number;
   /** Each model call; prices a long prompt at its own rate (docs/329-tiered-model-pricing). */
   requests?: AgentRequestUsage[] | undefined;
+  /** The last call's prompt; prices what `requests` leaves out, such as Claude's output. */
+  contextTokens?: number | undefined;
 }
 
 /** The list for a run that made exactly one model call: its totals are that call. */
@@ -160,6 +162,7 @@ export function recordNonTurnUsage(
             cacheWrite: telemetry.cacheCreateTokens,
           },
           requests: telemetry.requests,
+          contextTokens: telemetry.contextTokens,
         },
       })
     : { costUsd: 0, costSource: "per-turn" as const };
@@ -180,6 +183,7 @@ export function recordNonTurnUsage(
       ...(telemetry.cacheReadTokens !== undefined ? { cacheRead: telemetry.cacheReadTokens } : {}),
       ...(telemetry.cacheCreateTokens !== undefined ? { cacheCreate: telemetry.cacheCreateTokens } : {}),
       ...(telemetry.requests ? { requests: telemetry.requests } : {}),
+      ...(telemetry.contextTokens !== undefined ? { contextTokens: telemetry.contextTokens } : {}),
     },
   );
 }
@@ -535,6 +539,7 @@ async function runNonTurnSpawn(
         ...(result.cacheReadTokens !== undefined ? { cacheReadTokens: result.cacheReadTokens } : {}),
         ...(result.cacheCreateTokens !== undefined ? { cacheCreateTokens: result.cacheCreateTokens } : {}),
         ...(result.requests ? { requests: result.requests } : {}),
+        ...(result.contextTokens !== undefined ? { contextTokens: result.contextTokens } : {}),
       },
     });
     if (result.status !== "success" || !result.text.trim()) {

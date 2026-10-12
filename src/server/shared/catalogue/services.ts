@@ -117,22 +117,44 @@ const OPENCODE_GO_PRICES = {
   oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
-// docs.x.ai/docs/models and /v1/models, 2026-08-18. Excludes the >200K doubled tier.
+// docs.x.ai/docs/models and /v1/models, 2026-08-18. Long-prompt tier re-read 2026-10-12 from
+// the page's model data (default cluster): every model's longContextThreshold is 200000 and
+// every rate doubles above it, output included. xAI publishes no cache-write rate, so it
+// doubles with input. The page does not say whether cached tokens count toward the prompt
+// size; the prompt is taken as input + cache reads + cache writes (docs/329-tiered-model-pricing).
 const XAI_PRICES = {
-  grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
+  grok46: {
+    input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2,
+    longPrompt: { aboveTokens: 200_000, input: 4, output: 12, cacheRead: 1, cacheWrite: 4 },
+  },
   // Re-read 2026-08-19: 4.5 has a different cache-read rate.
-  grok45: { input: 2, output: 6, cacheRead: 0.3, cacheWrite: 2 },
-  grok43: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
-  grok420: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
+  grok45: {
+    input: 2, output: 6, cacheRead: 0.3, cacheWrite: 2,
+    longPrompt: { aboveTokens: 200_000, input: 4, output: 12, cacheRead: 0.6, cacheWrite: 4 },
+  },
+  grok43: {
+    input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25,
+    longPrompt: { aboveTokens: 200_000, input: 2.5, output: 5, cacheRead: 0.4, cacheWrite: 2.5 },
+  },
+  grok420: {
+    input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25,
+    longPrompt: { aboveTokens: 200_000, input: 2.5, output: 5, cacheRead: 0.4, cacheWrite: 2.5 },
+  },
 } as const;
 
 // ai.google.dev/gemini-api/docs/pricing, 2026-09-13 — provenance in docs/302's plan.
 // Introductory rates billed through 2026-12-31; Flash doubles to 1.5/7.5 from
-// 2027-01-01. Pro is the ≤200K tier (4/18 above it). Cache write is 0 because
-// Google bills cache STORAGE per hour, which a token count cannot express.
+// 2027-01-01. Cache write is 0 because Google bills cache STORAGE per hour, which a
+// token count cannot express. Pro's tier re-read 2026-10-12: prompts over 200K tokens
+// pay 4 input, 18 output (thinking included) and 0.4 cache reads. The page does not say
+// whether cached tokens count toward the prompt size; the prompt is taken as input +
+// cache reads + cache writes (docs/329-tiered-model-pricing).
 const GEMINI_PRICES = {
   gemini38flash: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
-  gemini31proPreview: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
+  gemini31proPreview: {
+    input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0,
+    longPrompt: { aboveTokens: 200_000, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 0 },
+  },
 } as const;
 // Google's published input limit for the Gemini 3 line; the gateway Gemini rows keep theirs.
 const GEMINI_WINDOW = { default: 1_048_576 } as const;

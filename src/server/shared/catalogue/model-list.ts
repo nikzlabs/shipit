@@ -126,24 +126,12 @@ function exportModel(model: ModelDef): ModelDef {
     family: model.family,
     ...(model.harnesses !== undefined ? { harnesses: [...model.harnesses] } : {}),
     styles: [...model.styles],
-    price: exportPrice(model.price),
+    price: { ...model.price },
     contextWindow: {
       default: model.contextWindow.default,
       ...(model.contextWindow.byHarness ? { byHarness: { ...model.contextWindow.byHarness } } : {}),
     },
     ...(model.reasoningEfforts !== undefined ? { reasoningEfforts: [...model.reasoningEfforts] } : {}),
-  };
-}
-
-function exportFlat(price: FlatPrice): FlatPrice {
-  return { input: price.input, output: price.output, cacheRead: price.cacheRead, cacheWrite: price.cacheWrite };
-}
-
-function exportPrice(price: ModelPrice): ModelPrice {
-  const tier = price.longPrompt;
-  return {
-    ...exportFlat(price),
-    ...(tier ? { longPrompt: { aboveTokens: tier.aboveTokens, ...exportFlat(tier) } } : {}),
   };
 }
 

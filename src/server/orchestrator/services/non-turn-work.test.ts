@@ -149,6 +149,20 @@ describe("makeNonTurnGenerateText", () => {
     expect(row.extra?.costSource).toBe("per-turn");
   });
 
+  it("passes the run's request list and context size to its row (docs/329-tiered-model-pricing)", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const requests = [{ input: 1000, cacheRead: 0, cacheWrite: 0 }];
+    const { deps, h } = buildDeps({ spawn: async () => ({ ...OK_RESULT, requests, contextTokens: 1000 }) });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+
+    expect(h.recorded[0].extra).toMatchObject({ requests, contextTokens: 1000 });
+  });
+
   it("records nothing when the harness reported no telemetry", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({
@@ -733,6 +747,25 @@ describe("recordNonTurnUsage — what the selection says, not how it ran (docs/2
 
     // Haiku 5.5 above 100K: $0.5 input and $2.5 output per million.
     expect(usageManager.getSessionTurns("s1")[0].atApiRatesUsd).toBeCloseTo((150_000 * 0.5 + 100 * 2.5) / 1e6, 12);
+  });
+
+  it("prices what a partial list leaves out at the tier of the run's context size", () => {
+    // Claude's shape: prompt fields per call, output only in the totals.
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      harnessId: "claude",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-haiku-5-5" } },
+      telemetry: {
+        durationMs: 900,
+        inputTokens: 150_000,
+        outputTokens: 1_000,
+        requests: [{ input: 150_000, cacheRead: 0, cacheWrite: 0 }],
+        contextTokens: 150_000,
+      },
+    });
+
+    expect(usageManager.getSessionTurns("s1")[0].atApiRatesUsd).toBeCloseTo((150_000 * 0.5 + 1_000 * 2.5) / 1e6, 12);
   });
 
   it("still names the harness that ran the work, where one did", () => {

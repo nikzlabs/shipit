@@ -177,6 +177,7 @@ export function makeInProcessGenerateText(deps: {
                 }
               : {}),
             ...(event.requests ? { requests: event.requests } : {}),
+            ...(event.contextTokens !== undefined ? { contextTokens: event.contextTokens } : {}),
           };
         }
       });
