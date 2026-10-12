@@ -19,18 +19,23 @@ those models at their lowest tier even when a prompt is in the higher one.
 3. The long-prompt prices vendors publish today are used: Claude Haiku 5.5 (every
    rate 5× above 100K prompt tokens), Gemini 3.1 Pro (higher rates above 200K),
    and the xAI Grok rows (doubled above 200K).
+4. Each API request in a turn is priced at the tier for its own prompt size. Where
+   a harness does not report each request's usage, ShipIt uses an estimate.
+5. Turns recorded before this change keep their recorded cost; only new turns use
+   the tiers.
+6. For a model with a long-prompt price, the Supported models dialog shows it next
+   to the standard price, for example "$0.10 / $0.50, 5× above 100K".
 
 ## Open questions
 
-- How exact must the cost be? Vendors pick the tier per API request, and one turn
-  makes many requests, but ShipIt stores one token total per turn. Claude Code
-  reports each request's usage (`usage.iterations`); the other harnesses are not
-  checked yet. Options: exact per request, an estimate from the turn's largest
-  prompt that can over-count but never under-count, or an estimate that can err
-  both ways.
-- Should costs already recorded for past turns be corrected, or only new turns use
-  the tiers?
-- Should the Supported models dialog show the long-prompt price next to the flat
-  price it shows now?
-
 ## Resolved questions
+
+- 2026-10-12 — How exact must the cost be, given that vendors pick the tier per
+  API request but ShipIt stores one token total per turn? Answer: exact per
+  request; a harness that does not report each request's usage uses an estimate
+  (req 4). Rejected: an estimate from the turn's largest prompt that never
+  under-counts, and a turn-level estimate that can err both ways.
+- 2026-10-12 — Correct the costs already recorded for past turns? Answer: no, new
+  turns only (req 5).
+- 2026-10-12 — Show the long-prompt price in the Supported models dialog? Answer:
+  yes, next to the standard price (req 6).
