@@ -441,7 +441,10 @@ watch *before* running it, and eligibility is decided on two independent axes:
    2 m, 4 m, 8 m, capped at 10 m) has elapsed, so a container that keeps failing
    to boot is probed on a sane cadence rather than every tick.
 
-The attempt budget is capped at `MAX_DELIVERY_ATTEMPTS` (5). On exhaustion the
+The attempt budget is capped at `MAX_DELIVERY_ATTEMPTS` (5). A wake that every
+credential refused for quota spends none of it: it waits for the stated reset
+instead (docs/306-quota-continuation, *A self wake that every credential
+refuses*). On exhaustion the
 watch moves to the terminal `delivery-failed` state and appends a **persisted**
 note to the session's transcript (`emitNoticePostTurn`), which gives the attempt
 count and the last error, and says the agent did **not** start so the user knows

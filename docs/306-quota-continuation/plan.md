@@ -188,6 +188,73 @@ manager through `AppCtx.quotaContinuation` (`route-registry.ts`), pinned by
 `integration_tests/chat-turn-stand-down-wiring.test.ts`, which sends a real
 composer message and follows the hooks to the continuation turn.
 
+## A self wake that every credential refuses (reqs 3, 4)
+
+Production 2026-10-11, build a28f165b: a session's `notify-on-merge --self` wake
+ran while both of its Claude accounts were out of quota, with stated resets at
+17:00 and 17:20. A wake is a ShipIt-started turn *with* a prompt, so it is not
+the CLI-started stand-down above: it takes the docs/260 attempt loop, every
+account refuses it, and env preparation ends it with `allRefusedMessage`. The
+merge watch counted that as a failed delivery and retried on its 1/2/4/8-minute
+backoff, so all five attempts fell inside 16 minutes. The chat got five copies of
+the merge prompt and five quota errors, the watch gave up, and the user typed
+"continue" eight minutes after the first reset.
+
+**The executor says why the turn failed.** When env preparation finds no
+credential left after quota refusals (`ProviderRouteUnavailableError` with quota
+entries in the attempt ledger), the turn settles `errored` with `quotaRefused`:
+one stated reset per refusal, `null` where the provider stated none
+(`turnQuotaRefused`). Nothing else reads it yet. A refusal on a metered key, or
+a turn with no credential at all, keeps the plain `errored`, so neither is ever
+waited on.
+
+**The merge watch is the one owner of the wait.** On that outcome the self watch
+records a refusal, not a failure (`merge-watch.ts`, `recordQuotaRefusal`):
+
+- the attempt spends no delivery attempt — the budget is `deliveryAttempts`
+  minus `quotaRefusals`, and the delivery id stays unique;
+- `quotaWait.until` is the earliest stated reset plus one minute; a refusal that
+  stated none waits the router's re-probe window (`REFUSAL_REPROBE_MS`,
+  docs/260), and no wait is shorter than the ordinary backoff;
+- a notice says when ShipIt tries again and asks for nothing (req 3);
+- `promptShown` goes on the watch, and every later attempt dispatches with it,
+  so the merge prompt is in the transcript once. The refused turn persisted the
+  prompt before it asked for a credential, so the flag is never set early.
+
+`attemptSelfWake` reads the wait, so the retry pass, the poller's repeat and
+`reconcilePending` after a restart all honour it; the retry pass reads it before
+it probes the worker, because a weekly limit can mean days of ticks.
+
+`QuotaContinuationManager` was the other candidate, and is not used here for
+two reasons. Its registry is in-process (a restart loses it — the incident had
+one between attempts), while the watch is persisted. And it asks the router,
+which re-probes a benched credential 30 minutes after the refusal whatever reset
+the provider stated, so a weekly limit would wake the session every half hour.
+It never sees this turn either — the executor calls `recordStandDown` only for a
+CLI-started turn — so one stall cannot produce two wakes.
+
+**Superseded, not doubled.** `quotaWait.lastUsedAt` is the session's
+`lastUsedAt` at the refusal, and every turn start stamps it. A turn that started
+since took the session on, so the watch ends `delivered` and wakes nothing —
+unless that turn was refused for quota as well (`lastTurnOutcome`), which would
+otherwise let a refused inbox turn cancel the wake for good.
+
+**Bounded.** `MAX_QUOTA_REFUSALS` (5) refusals end the watch with the ordinary
+give-up note, so quota that never returns cannot wake the session for ever.
+
+**The other wake callers** have the same "nobody is there to send it again" end,
+by a different mechanism, and are not changed:
+
+- `services/session-inbox.ts` has no attempt budget: a turn that ends without a
+  receipt doubles its wait, from a minute to an hour, and the stored message is
+  never lost. A quota wall costs a refused turn per wait.
+- `services/consult-result-delivery.ts`, `services/agent-restart-request.ts` and
+  `services/stopped-background-jobs.ts` make one attempt. A refused wake stamps
+  the consult card failed or parks its note for the next turn, which a human
+  then has to start.
+- `services/quota-continuation.ts` — the continuation itself, the first entry
+  under *Known gaps*.
+
 ## Known gaps
 
 Named rather than hidden; the first is the one most worth closing next.
@@ -199,7 +266,13 @@ Named rather than hidden; the first is the one most worth closing next.
   the CLI-started stand-down records. Closing it means recording from the
   all-refused terminal path too, which would also change behaviour for
   *user*-started turns that exhaust every credential — a bigger decision than
-  this fix, and out of its scope.
+  this fix, and out of its scope. The settled outcome now carries `quotaRefused`
+  with the stated resets, which is what a fix for this and for the one-attempt
+  wake callers (*A self wake that every credential refuses*) would read.
+- **The refused wake's error row still says "Send this message again".**
+  `allRefusedMessage` does not know that ShipIt started the turn. For the merge
+  watch the notice right after it says when ShipIt tries again; a message sent
+  in between supersedes the wake, so following the error row does no harm.
 - **"Pushed before anything else starts" (req 6) is commit-strict, push-armed.**
   The continuation waits for `runCommitAndPr`, which *arms* the debounced push
   rather than awaiting the remote. A slow push can therefore still be in flight
@@ -234,6 +307,11 @@ Named rather than hidden; the first is the one most worth closing next.
   `continueAfterStandDown` on `SystemTurnDeps`.
 - `src/server/orchestrator/runner-registry-factory.ts`,
   `ws-handlers/agent-execution.ts` — the two executors that take the hooks.
+- `src/server/orchestrator/merge-watch.ts` — `recordQuotaRefusal`,
+  `holdForQuota`, `quotaWaitUntil`: the self wake's quota wait.
+- `src/server/orchestrator/turn-settlement.ts` — `quotaRefused` on
+  `TurnOutcome`; `promptShown` on `AgentDispatchOptions`
+  (`session-runner.ts`), read by `dispatched-turn.ts`.
 - `bootstrap-managers.ts`, `route-registry.ts`, `startup-monitors.ts` — wiring
   and shutdown.
 
@@ -264,6 +342,16 @@ implementation and re-running.
   work committed); *"does not re-dispatch a CLI-started turn whose quota limit
   leaves no credential free"* (docs/140's case, with the notice's new wording and
   no continuation).
+- `self-merge-watch.test.ts`, *a wake that every credential refuses for quota* —
+  the incident's timeline on a fake clock: no retry before the earliest stated
+  reset, one wake after it, carrying `promptShown`; a refusal after four failed
+  attempts does not give up; `MAX_QUOTA_REFUSALS` ends the watch; a turn that ran
+  since supersedes the wake, one refused for quota does not; `reconcilePending`
+  after a restart honours the wait.
+- `integration_tests/quota-exhaustion-retry.test.ts` — the all-refused turn
+  settles with the stated resets; a turn with no credential at all does not; a
+  `promptShown` dispatch adds no user row and no echo, and the agent still gets
+  the prompt.
 - `credential-failure-retry.test.ts` — unchanged, and load-bearing for the error
   path: *"does not fail over from an adapter error on a metered key"* is what
   keeps the new bench stamp behind the stand-down's gates. Every test importing

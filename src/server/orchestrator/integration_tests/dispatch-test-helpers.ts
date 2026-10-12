@@ -30,6 +30,7 @@ export function testDispatch(
     dictated: opts.dictated,
     bestEffortSteer: opts.bestEffortSteer,
     unattended: opts.unattended,
+    promptShown: opts.promptShown,
   });
 }
 

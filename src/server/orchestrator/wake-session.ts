@@ -51,6 +51,8 @@ export interface WakeTurnOptions {
    * one. Its caller does not wait for its settlement.
    */
   startOrRefuse?: { automatic: boolean };
+  /** An earlier attempt of this wake put `text` in the transcript already. */
+  promptShown?: boolean;
 }
 
 // Dispatch also waits for readiness; this wait exposes early boot failures.
@@ -185,6 +187,7 @@ function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatc
     systemTurn: undefined,
     automatic: opts.startOrRefuse && !opts.startOrRefuse.automatic ? undefined : true,
     unattended: true,
+    ...(opts.promptShown ? { promptShown: true } : {}),
     heldId: undefined,
     ...(onSettled
       ? {

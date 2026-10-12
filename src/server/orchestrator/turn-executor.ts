@@ -64,7 +64,7 @@ import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows } from "./chat-card-persistence.js";
 import { denyAbandonedPermissionCards } from "./permission-cards.js";
-import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, turnQuotaRefused, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -473,6 +473,13 @@ export async function executeAgentTurn(
       || (err instanceof ProviderRouteUnavailableError
         && (input.attemptLedger ?? []).some((entry) => entry.failureKind === "quota"))
     );
+  // The owner of an automatic turn can then wait for a stated reset (docs/306-quota-continuation).
+  const erroredOutcome = (): TurnOutcome => {
+    const refusals = lastAgentError instanceof ProviderRouteUnavailableError
+      ? (input.attemptLedger ?? []).filter((entry) => entry.failureKind === "quota")
+      : [];
+    return refusals.length > 0 ? turnQuotaRefused(refusals.map((entry) => entry.resetAt)) : turnErrored();
+  };
 
   // Any result on a reused process sets `receivedResult`, also one that ended a turn the CLI
   // started; only the result of this prompt completes this turn (docs/329-user-steers-every-turn).
@@ -497,7 +504,7 @@ export async function executeAgentTurn(
       // Superseding resets wasInterrupted; the latched superseded flag must take precedence.
       settleTurn(
         agentErrored
-          ? turnErrored()
+          ? erroredOutcome()
           : ownResultSeen()
             ? TURN_COMPLETED
             : wasSuperseded

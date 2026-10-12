@@ -15,3 +15,5 @@
 - [x] The same wake continues a CLI-started turn that a renewed sign-in cut short (docs/140 Phase 6.13)
 - [x] The composer's executor takes the stand-down hooks too, not only the runner's dispatch
 - [ ] Record a stall when a continuation is refused by every credential (see "Known gaps")
+- [x] A self merge wake that every credential refuses waits for the stated reset, spends no delivery attempt, and shows its prompt once
+- [x] Executor settles an all-refused turn with the stated resets (`quotaRefused`)

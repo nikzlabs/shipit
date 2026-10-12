@@ -6,6 +6,7 @@ import type { AgentId } from "../../shared/types.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import { allRefusedMessage } from "../turn-executor.js";
+import type { TurnOutcome } from "../turn-settlement.js";
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
@@ -194,6 +195,67 @@ describe("same-turn quota failover (docs/150-multiple-provider-subscriptions req
     expect(errorRow?.text).toContain("usage limit");
     expect(runner.lastTurnErrored).toBe(true);
 
+    runner.dispose({ force: true });
+  });
+
+  it("settles a turn that every account refused with the resets they stated, so its owner can wait (docs/306-quota-continuation)", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps, prepareAgentEnv } = makeDeps(agents);
+    selectionOverTwoAccounts(prepareAgentEnv);
+    runner.setSystemTurnDeps(deps);
+    const outcomes: TurnOutcome[] = [];
+
+    runner.dispatch(testDispatch({ text: "do work", onTurnComplete: (outcome) => outcomes.push(outcome) }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+    agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "second account's attempt");
+    agents[1]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => outcomes.length === 1, "settlement");
+
+    expect(outcomes[0]).toMatchObject({
+      status: "errored",
+      quotaRefused: { resetsAt: ["2099-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"] },
+    });
+    runner.dispose({ force: true });
+  });
+
+  it("does not call a turn quota-refused when no account was there to refuse it", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps, prepareAgentEnv } = makeDeps(agents);
+    prepareAgentEnv.mockRejectedValue(
+      new ProviderRouteUnavailableError("claude" as AgentId, { reason: "all_exhausted", earliestResetAt: null }),
+    );
+    runner.setSystemTurnDeps(deps);
+    const outcomes: TurnOutcome[] = [];
+
+    runner.dispatch(testDispatch({ text: "do work", onTurnComplete: (outcome) => outcomes.push(outcome) }));
+    await waitFor(() => outcomes.length === 1, "settlement");
+
+    expect(outcomes[0]?.status).toBe("errored");
+    expect(outcomes[0]?.quotaRefused).toBeUndefined();
+    runner.dispose({ force: true });
+  });
+
+  it("adds no transcript row and no echo for a prompt that an earlier attempt showed (docs/306-quota-continuation)", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps, persistUserRow } = makeDeps(agents);
+    runner.setSystemTurnDeps(deps);
+    const emitted = vi.spyOn(runner, "emitMessage");
+
+    runner.dispatch(testDispatch({ text: "do work", promptShown: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "agent run");
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[0]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
+
+    expect(vi.mocked(deps.buildRunParams).mock.calls[0]?.[2]).toContain("do work");
+    const userRows = persistUserRow.mock.calls.filter((call) => (call[1] as { role?: string }).role === "user");
+    expect(userRows).toEqual([]);
+    expect(emitted.mock.calls.some(([message]) => message.type === "system_user_message")).toBe(false);
     runner.dispose({ force: true });
   });
 

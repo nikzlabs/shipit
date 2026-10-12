@@ -8,6 +8,7 @@ import type {
   WsServerMessage,
 } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
+import { REFUSAL_REPROBE_MS } from "../shared/types/domain-types/credential-route.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import type { SessionInbox } from "./services/session-inbox.js";
 import { hasHeldDelivery } from "./held-turns.js";
@@ -28,6 +29,13 @@ const RETRY_MAX_BACKOFF_MS = 10 * 60_000;
 function retryBackoffMs(attempts: number): number {
   return Math.min(RETRY_BASE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1), RETRY_MAX_BACKOFF_MS);
 }
+
+// docs/306-quota-continuation — a self wake that every credential refused for quota waits for a
+// reset and spends no attempt. This many such refusals end the watch, so quota that never
+// returns cannot wake the session for ever.
+export const MAX_QUOTA_REFUSALS = 5;
+// A provider's reset time is to the minute; a wake on that second can be refused again.
+const QUOTA_RESET_MARGIN_MS = 60_000;
 
 export interface MergeWatchDeps extends WakeSessionDeps {
   chatHistoryManager: ChatHistoryManager;
@@ -332,15 +340,18 @@ export class MergeWatchManager {
     if (watch?.state !== "merge-observed") return;
     // All callers use this guard, including reconciliation after turn adoption.
     if (this.isDeliveryInFlight(sessionId, watch)) return;
+    if (watch.quotaWait && this.holdForQuota(sessionId, watch, watch.quotaWait)) return;
 
     // What the watch recorded is what it delivers; the argument only serves a watch without it.
     const merged = infoFromWatch(sessionId, watch) ?? info;
     const attempts = (watch.deliveryAttempts ?? 0) + 1;
+    const spent = spentAttempts(watch) + 1;
     const observedAt = watch.observedAt ?? new Date().toISOString();
     // Persist identity before dispatch so restart adoption can bind the surviving turn.
     const deliveryId = `${watch.watchId ?? sessionId}:${attempts}`;
+    const { quotaWait: _waitEnds, ...unheld } = watch;
     this.writeWatch(sessionId, "self", {
-      ...watch,
+      ...unheld,
       deliveryAttempts: attempts,
       lastAttemptAt: new Date().toISOString(),
       deliveryId,
@@ -351,7 +362,7 @@ export class MergeWatchManager {
     this.ensureRetryLoop();
     console.log(
       `[merge-watch] PR #${merged.prNumber} of ${sessionId} merged: waking it `
-      + `(attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS})`,
+      + `(attempt ${spent}/${MAX_DELIVERY_ATTEMPTS})`,
     );
 
     try {
@@ -359,8 +370,9 @@ export class MergeWatchManager {
       const handle = await wakeSessionWithTurn(this.deps, session, {
         text: buildSelfWakeTurnPrompt(merged),
         activity: "Resuming after your PR merged…",
-        onSettled: this.buildDeliverySettlement(sessionId, "self", watch.watchId, attempts, observedAt),
+        onSettled: this.buildDeliverySettlement(sessionId, "self", watch.watchId, spent, observedAt),
         deliveryId,
+        ...(watch.promptShown ? { promptShown: true } : {}),
       });
       // Delivered marks the dispatch, not the turn; say which one this was.
       if (handle.admitted !== "started") {
@@ -372,17 +384,73 @@ export class MergeWatchManager {
       const message = errorMessage(err);
       console.error(
         `[merge-watch] wake-turn delivery failed for ${sessionId} `
-        + `(attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}):`,
+        + `(attempt ${spent}/${MAX_DELIVERY_ATTEMPTS}):`,
         err,
       );
       if (!this.isCurrentWatch(sessionId, "self", watch.watchId)) return;
       const current = this.readWatch(sessionId, "self");
       if (current?.state !== "merge-observed") return;
       this.writeWatch(sessionId, "self", { ...current, lastDeliveryError: message });
-      if (attempts >= MAX_DELIVERY_ATTEMPTS) this.failSelfWatch(sessionId, message);
+      if (spent >= MAX_DELIVERY_ATTEMPTS) this.failSelfWatch(sessionId, message);
     } finally {
       this.dispatching.delete(key);
     }
+  }
+
+  /**
+   * True while the wake waits for a reset. A turn that ran since the refusal took the session on,
+   * so the wake is not needed: unless every credential refused that turn as well.
+   */
+  private holdForQuota(
+    sessionId: string,
+    watch: SessionMergeWatch,
+    wait: NonNullable<SessionMergeWatch["quotaWait"]>,
+  ): boolean {
+    const session = this.deps.sessionManager.get(sessionId);
+    if (session && session.lastUsedAt !== wait.lastUsedAt && session.lastTurnOutcome !== "quota-refused") {
+      console.log(
+        `[merge-watch] a turn has run on ${sessionId} since every credential refused its wake for quota; `
+        + "the wake is not needed",
+      );
+      this.afterDelivered(sessionId, this.markDelivered(sessionId, "self", watch.observedAt ?? wait.until));
+      return true;
+    }
+    const until = Date.parse(wait.until);
+    if (!Number.isFinite(until) || Date.now() >= until) return false;
+    this.ensureRetryLoop();
+    return true;
+  }
+
+  private recordQuotaRefusal(sessionId: string, resetsAt: readonly (string | null)[]): void {
+    const current = this.readWatch(sessionId, "self");
+    const session = this.deps.sessionManager.get(sessionId);
+    if (current?.state !== "merge-observed" || !session) return;
+    const refusals = (current.quotaRefusals ?? 0) + 1;
+    const reason = "every connected account refused the wake for quota";
+    // The turn put its prompt in the transcript before it asked for a credential.
+    const refused: SessionMergeWatch = { ...current, quotaRefusals: refusals, promptShown: true, lastDeliveryError: reason };
+    if (refusals >= MAX_QUOTA_REFUSALS) {
+      this.writeWatch(sessionId, "self", refused);
+      this.failSelfWatch(sessionId, `${reason} ${refusals} times`);
+      return;
+    }
+    const until = new Date(quotaWaitUntil(resetsAt, refusals, Date.now()));
+    this.writeWatch(sessionId, "self", {
+      ...refused,
+      quotaWait: { until: until.toISOString(), lastUsedAt: session.lastUsedAt },
+    });
+    console.log(
+      `[merge-watch] ${reason} on ${sessionId} (${refusals}/${MAX_QUOTA_REFUSALS}); `
+      + `the next attempt is at ${until.toISOString()} and spends no delivery attempt`,
+    );
+    const pr = current.mergedPr ? ` #${current.mergedPr.prNumber}` : "";
+    this.appendNote(
+      sessionId,
+      `Every connected account is out of quota, so this session could not resume after your PR${pr} merged. `
+      + `ShipIt will try again at ${formatUtc(until)}. You do not need to do anything.`,
+      "info",
+    );
+    this.ensureRetryLoop();
   }
 
   // A wake turn may re-arm before settling; its old callback must not change the new watch.
@@ -417,6 +485,10 @@ export class MergeWatchManager {
         this.afterDelivered(childSessionId, this.markDelivered(childSessionId, slot, observedAt));
         return;
       }
+      if (slot === "self" && outcome.quotaRefused) {
+        this.recordQuotaRefusal(childSessionId, outcome.quotaRefused.resetsAt);
+        return;
+      }
       this.recordDeliveryOutcomeFailure(
         childSessionId,
         slot,
@@ -437,7 +509,7 @@ export class MergeWatchManager {
       childSessionId,
       slotOf(watch),
       watch.watchId,
-      watch.deliveryAttempts ?? 1,
+      Math.max(1, spentAttempts(watch)),
       watch.observedAt ?? watch.registeredAt,
     );
   }
@@ -456,11 +528,14 @@ export class MergeWatchManager {
       if (this.isDeliveryInFlight(childSessionId, watch)) continue;
       // A parent's notice is stored, and a busy session can take it: no attempt to space or count.
       if (slotOf(watch) === "self") {
+        // Before the worker probe: a quota wait can last for days.
+        if (watch.quotaWait && this.holdForQuota(childSessionId, watch, watch.quotaWait)) continue;
         if (await this.isSessionTurnInFlight(watch.parentSessionId)) continue;
 
-        const attempts = watch.deliveryAttempts ?? 0;
+        const attempts = spentAttempts(watch);
         const lastAt = Date.parse(watch.lastAttemptAt ?? watch.observedAt ?? watch.registeredAt);
-        if (Number.isFinite(lastAt) && now - lastAt < retryBackoffMs(attempts)) continue;
+        // A quota wait that has ended was the spacing.
+        if (!watch.quotaWait && Number.isFinite(lastAt) && now - lastAt < retryBackoffMs(attempts)) continue;
 
         if (attempts >= MAX_DELIVERY_ATTEMPTS) {
           this.failSelfWatch(childSessionId, watch.lastDeliveryError ?? "wake-turn never ran");
@@ -716,6 +791,25 @@ function reportedMerge(watch: SessionMergeWatch): SessionMergeWatch["reportedPr"
 
 function infoFromWatch(sessionId: string, watch: SessionMergeWatch): PrTerminalStateInfo | undefined {
   return watch.mergedPr ? { sessionId, outcome: "merged", ...watch.mergedPr } : undefined;
+}
+
+function spentAttempts(watch: SessionMergeWatch): number {
+  return (watch.deliveryAttempts ?? 0) - (watch.quotaRefusals ?? 0);
+}
+
+// The earliest reset a refusal stated. One that stated none is tried again when the router would
+// probe that credential again (docs/260). Never sooner than the ordinary backoff.
+function quotaWaitUntil(resetsAt: readonly (string | null)[], refusals: number, now: number): number {
+  const times = resetsAt.map((at) => {
+    const stated = at === null ? Number.NaN : Date.parse(at);
+    return Number.isFinite(stated) ? stated + QUOTA_RESET_MARGIN_MS : now + REFUSAL_REPROBE_MS;
+  });
+  const earliest = times.length > 0 ? Math.min(...times) : now + REFUSAL_REPROBE_MS;
+  return Math.max(earliest, now + retryBackoffMs(refusals));
+}
+
+function formatUtc(date: Date): string {
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 function isTerminalWatchState(state: SessionMergeWatch["state"]): boolean {
