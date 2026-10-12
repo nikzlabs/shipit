@@ -2366,6 +2366,28 @@ describe("summarizeRefreshFailure", () => {
     expect(performance.now() - started).toBeLessThan(2_000);
   });
 
+  it("redacts by the key in linear time, for a key of any length with one of the words and no other key", () => {
+    // 128 000 characters each. A key rule that backtracks to each word in the run takes 2 to 4 s per line.
+    const lines = [
+      `"${"token".repeat(25_600)}`,
+      `"${"a_secret".repeat(16_000)}`,
+      `{"${"key".repeat(42_666)}": "x`,
+    ];
+    const started = performance.now();
+    for (const line of lines) summarizeRefreshFailure(`Error: ${line}`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+
+    // A bound on the key length, or no word test at all, would also be linear.
+    for (const pad of [0, 40, 200, 5_000]) {
+      const letters = "a".repeat(pad);
+      for (const key of [`refresh_token${letters}`, `${letters}Secret`, `${letters}api_KEY${letters}`, `${letters}passwd`]) {
+        expect(summarizeRefreshFailure(`Error: {"${key}": "abc123"}`)).not.toContain("abc123");
+      }
+    }
+    const refusal = 'Error: {"error":"invalid_grant","error_description":"Refresh token revoked"}';
+    expect(summarizeRefreshFailure(refusal)).toBe(refusal);
+  });
+
   it("gives each of the three lines a share, so a long line cannot hide the last one", () => {
     // Short words: one long run of letters is redacted as a possible token.
     const filler = "ab ".repeat(70);

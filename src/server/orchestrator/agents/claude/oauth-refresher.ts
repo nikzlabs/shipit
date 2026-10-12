@@ -109,11 +109,16 @@ const CREDENTIAL_HEADER_PATTERN =
 const EMAIL_PATTERN =
   /(?:\[redacted\]|[\w.+-]){1,64}@(?:\[redacted\]|[\w-]){1,63}(?:\.(?:\[redacted\]|[\w-]){1,63})+/g;
 
+// The word is found in a lookahead, which does not backtrack: a quote before a long run of letters
+// costs one pass, not one per word in the run. Keys of any length still match.
+const SECRET_JSON_VALUE_PATTERN =
+  /("(?=[A-Za-z_]*?(?:token|secret|key|password|passwd|auth))[A-Za-z_]*"\s*:\s*")[^"]*"/gi;
+
 // Short, unprefixed secrets in unknown fields can escape this filter.
 function redactSecrets(text: string): string {
   return text
     .replace(CREDENTIAL_HEADER_PATTERN, "$1$2$3[redacted]")
-    .replace(/("[A-Za-z_]*(?:token|secret|key|password|passwd|auth)[A-Za-z_]*"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
+    .replace(SECRET_JSON_VALUE_PATTERN, '$1[redacted]"')
     .replace(/\b(bearer|basic)(\s+)\S+/gi, "$1$2[redacted]")
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]")
     .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]")
