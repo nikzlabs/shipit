@@ -1,7 +1,7 @@
 import type { ServiceRouting, OpenAIAccountRouting } from "./types/agent-types.js";
 import { SHIPIT_PROVIDER_ID, scrubHarnessEnvCredentials } from "./spawn-routing.js";
 import { HARNESSES } from "./catalogue/harnesses.js";
-import { visionSupportFor } from "./catalogue/index.js";
+import { apiModelIdFor, visionSupportFor } from "./catalogue/index.js";
 
 const OPENCODE_REASONING_LEVELS: readonly string[] = (
   HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning?.options ?? []
@@ -50,14 +50,8 @@ export function opencodeProviderConfig(
     if (refused.includes(level)) continue;
     variants[level] = variantPayload(routing.style, level);
   }
-  const modalities =
-    visionSupportFor({
-      serviceId: routing.serviceId,
-      billingMode: routing.billingMode,
-      modelId,
-    }) === "no"
-      ? TEXT_ONLY_MODALITIES
-      : IMAGE_MODALITIES;
+  const selection = { serviceId: routing.serviceId, billingMode: routing.billingMode, modelId };
+  const modalities = visionSupportFor(selection) === "no" ? TEXT_ONLY_MODALITIES : IMAGE_MODALITIES;
   return {
     [SHIPIT_PROVIDER_ID]: {
       name: routing.serviceName,
@@ -66,8 +60,9 @@ export function opencodeProviderConfig(
         baseURL,
         apiKey: `{env:${routing.credentialTarget.name}}`,
       },
+      // The key stays the row id, which OpenCode reports back; `id` is what it sends.
       models: {
-        [modelId]: { name: modelId, variants, modalities },
+        [modelId]: { id: apiModelIdFor(selection) ?? modelId, name: modelId, variants, modalities },
       },
     },
   };

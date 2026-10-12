@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { opencodeProviderConfig, opencodeModelArg } from "./opencode-spawn-shaping.js";
+import { catalogueEntriesForHarness, resolveStyle } from "./catalogue/index.js";
 import type { ServiceRouting } from "./types/agent-types.js";
 
 const ROUTING: ServiceRouting = {
@@ -20,6 +21,7 @@ function block(routing: ServiceRouting, modelId = "claude-haiku-4-5") {
     models?: Record<
       string,
       {
+        id?: string;
         variants?: Record<string, Record<string, unknown>>;
         modalities?: { input?: readonly string[]; output?: readonly string[] };
       }
@@ -103,5 +105,54 @@ describe("opencodeProviderConfig", () => {
 
   it("names the model in ShipIt's own provider namespace", () => {
     expect(opencodeModelArg("glm-5.3")).toBe("shipit/glm-5.3");
+  });
+});
+
+// Measured against opencode 1.18.30: a model entry without `id` posts its key as
+// the Messages API `model`, so the Haiku 4.5 row sent `haiku`.
+describe("the model id OpenCode sends", () => {
+  const ANTHROPIC_KEY: ServiceRouting = {
+    serviceId: "anthropic",
+    serviceName: "Anthropic",
+    billingMode: "key",
+    style: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com",
+    credentialSourceEnv: "ANTHROPIC_API_KEY",
+    credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+  };
+
+  it("sends the vendor id for the Haiku 4.5 row and keeps the row id as the selectable key", () => {
+    const models = block(ANTHROPIC_KEY, "haiku").models ?? {};
+    expect(Object.keys(models)).toEqual(["haiku"]);
+    expect(models.haiku?.id).toBe("claude-haiku-4-5");
+    expect(opencodeModelArg("haiku")).toBe("shipit/haiku");
+  });
+
+  const aliased = catalogueEntriesForHarness("opencode").filter((e) => e.model.apiId !== undefined);
+
+  it("covers the Anthropic API-key Haiku 4.5 row", () => {
+    expect(aliased.map((e) => `${e.selection.serviceId}/${e.selection.billingMode}/${e.selection.modelId}`)).toContain(
+      "anthropic/key/haiku",
+    );
+  });
+
+  it.each(aliased.map((e) => [`${e.selection.serviceId}/${e.selection.billingMode}/${e.selection.modelId}`, e] as const))(
+    "%s sends its declared API id",
+    (_name, entry) => {
+      const style = resolveStyle("opencode", entry.model, "string");
+      if (!style) throw new Error("opencodeAccountConfig ignores apiId, so an aliased row must route by string credential");
+      const routing: ServiceRouting = {
+        ...ANTHROPIC_KEY,
+        serviceId: entry.selection.serviceId,
+        billingMode: entry.selection.billingMode,
+        style,
+      };
+      expect(block(routing, entry.model.id).models?.[entry.model.id]?.id).toBe(entry.model.apiId);
+    },
+  );
+
+  it("sends the row id for a row without an API id, and for a model the catalogue cannot resolve", () => {
+    expect(block(ANTHROPIC_KEY, "claude-haiku-5-5").models?.["claude-haiku-5-5"]?.id).toBe("claude-haiku-5-5");
+    expect(block(ANTHROPIC_KEY, "no-such-model").models?.["no-such-model"]?.id).toBe("no-such-model");
   });
 });
