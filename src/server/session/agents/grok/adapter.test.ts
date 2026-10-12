@@ -244,6 +244,25 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
         }
       });
 
+      it("lists every call once, summing exactly to the result's totals (docs/329-tiered-model-pricing)", () => {
+        const h = makeHarness();
+        homes.push(h.home);
+        h.child.emitStdout(capture(file));
+        h.child.close(0);
+
+        const result = h.events.find((e) => e.type === "agent_result");
+        if (result?.type !== "agent_result") throw new Error("no result");
+        const calls = capture(file).filter((l) => JSON.parse(l).type === "assistant").length;
+        const requests = result.requests ?? [];
+        expect(requests).toHaveLength(calls);
+        const sum = (field: "input" | "output" | "cacheRead" | "cacheWrite") =>
+          requests.reduce((n, r) => n + (r[field] ?? 0), 0);
+        expect(sum("input")).toBe(result.tokens!.input);
+        expect(sum("output")).toBe(result.tokens!.output);
+        expect(sum("cacheRead")).toBe(result.tokens!.cacheRead);
+        expect(sum("cacheWrite")).toBe(result.tokens!.cacheWrite);
+      });
+
       it("tears down the whole process tree when the post-result kill fires", async () => {
         vi.useFakeTimers();
         try {

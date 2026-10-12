@@ -273,9 +273,11 @@ cache totals, and a row that opens the full usage view.
 
 Money needs care when answering. The dial separates **metered spend** — what an
 API key was actually charged — from **at API rates**, which is what turns
-already covered by a subscription *would* have cost and is not a bill. The
-figures sit beside the ring on a wide composer and inside the popover otherwise,
-so "I can't see a number" usually means a narrow panel.
+already covered by a subscription *would* have cost and is not a bill. Where a
+model charges more for a long prompt, both figures use the higher rate for each
+request whose prompt is over the vendor's limit. The figures sit beside the ring
+on a wide composer and inside the popover otherwise, so "I can't see a number"
+usually means a narrow panel.
 
 **Compaction** summarises the conversation so far and frees that context. Four
 ways it happens:

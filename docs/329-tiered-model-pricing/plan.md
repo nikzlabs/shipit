@@ -73,7 +73,7 @@ cache write tokens, and its output tokens where the harness reports them final.
 The turn-wide `tokens` stay the billing totals. Every harness already reports
 per-request usage; no adapter forwards it today (see "Per-harness sources").
 
-`costFromRates(price, tokens, requests?, contextTokens?)` then:
+`costFromRates(price, { tokens, requests?, contextTokens? })` (`PricedUsage`) then:
 
 - no `longPrompt` → today's formula on the totals (unchanged for every other model);
 - otherwise each listed request is priced at the tier its own prompt (input +
@@ -87,10 +87,14 @@ per-request usage; no adapter forwards it today (see "Per-harness sources").
 
 One rule covers every harness, including a partial list, so no harness needs a
 special case in the pricing. The list is used at turn end and is not stored.
+`resolveTurnCost` takes the same `PricedUsage`, so a metered turn ShipIt prices
+itself gets the tiers too.
 
 The list is only as good as the adapter's bookkeeping, so each adapter lists every
 request of **this** turn exactly once: Claude dedupes by `message.id`, Codex skips
-the resume replay `codex-rate-limits.ts` already baselines away, Antigravity takes
+the resume replay `codex-rate-limits.ts` already baselines away and any snapshot
+whose total did not grow (Codex 0.159.2 resends its usage on every rate-limit
+update, even under the next turn's id), Antigravity takes
 a step's usage once although it repeats across ACTIVE/DONE updates. The flooring
 above keeps a slip from producing a negative remainder; a test per adapter checks
 that its list sums to no more than its totals.
@@ -106,14 +110,15 @@ corrects OpenCode turns on flat-priced models.
 ### 3. Every subscription row stores its at-API-rates cost (req 2, req 5)
 
 New nullable column `usage_turns.at_api_rates_usd`. `UsageManager.record` computes
-it for every subscription row from the attribution's rates and the usage it is
-given — tokens, `requests`, `contextTokens` — so the three writers (turns in
-`agent-listeners.ts`, consults in `services/sub-agent.ts`, background work in
-`services/non-turn-work.ts`) cannot diverge, and the live figure in
-`agent-listeners.ts` comes from the same function.
+it for every subscription row with `atApiRatesFor(attribution, usage)` from the
+attribution's rates and the usage it is given — tokens, `requests`,
+`contextTokens` — so the three writers (turns in `agent-listeners.ts`, consults
+in `services/sub-agent.ts`, background work in `services/non-turn-work.ts`)
+cannot diverge, and the live figure in `agent-listeners.ts` comes from the same
+function with the same inputs.
 
-A migration backfills the column for existing subscription rows from their stored
-flat rates and token totals — exactly the figure those rows show today — so past
+A migration (`AT_API_RATES_MIGRATION`) backfills the column for existing
+subscription rows from their stored flat rates and token totals — exactly the figure those rows show today — so past
 turns keep their recorded cost (req 5). The read paths in `usage.ts` then sum the
 column, and the rate columns leave the usage `SELECT`/`GROUP BY`: `foldSplitRows`
 already keys groups by service, billing mode and scope only, so splitting by rate
@@ -149,10 +154,11 @@ the other four price every listed request exactly.
 Consults and harness background work run the same adapters, so
 `runAgentToCompletion` (`shared/sub-agent-run.ts`) keeps the list on
 `SubAgentRunResult` and both pass it on. A direct provider call
-(`runNonTurnDirect`) is one request, so it passes its usage as a one-entry list.
-Session naming parses each CLI's totals itself and makes one tool-less request,
-so it does the same. `NonTurnTelemetry` gains the optional list; it has no
-`contextTokens` and needs none once every caller passes a list.
+(`runNonTurnDirect`) is one request, so it passes its usage as a one-entry list
+(`oneRequest` in `services/non-turn-work.ts`). Session naming parses each CLI's
+totals itself and makes one tool-less request, so it does the same. `NonTurnTelemetry` gains the optional list and `contextTokens`: a harness run
+on Claude lists no output per call, so its output is priced at the tier the
+last prompt selects, as for a turn.
 
 ## Docs to update with the code
 
@@ -170,4 +176,5 @@ so it does the same. `NonTurnTelemetry` gains the optional list; it has no
 - `src/server/orchestrator/usage.ts`, `src/server/shared/database.ts` — the stored column and migration
 - `src/server/orchestrator/services/sub-agent.ts`, `services/non-turn-work.ts`, `src/server/shared/sub-agent-run.ts` — the list for consults and background work
 - `src/server/session/agents/*/adapter.ts`, `src/server/shared/opencode-stream.ts` — per-request usage on the turn-end event; OpenCode reasoning as output
-- `src/client/components/Settings/SupportedModelsDialog.tsx` — the tier in the price cell
+- `src/client/components/Settings/SupportedModelsDialog.tsx` — the tier in the price cell (`formatLongPrompt`)
+- `src/server/shared/antigravity-stream.ts`, `src/server/session/agents/codex/codex-rate-limits.ts` — the per-step and per-response lists

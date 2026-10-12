@@ -136,6 +136,8 @@ export type ClaudeContentBlock = ClaudeContentBlockText | ClaudeContentBlockTool
 export interface ClaudeAssistantEvent {
   type: "assistant";
   message: {
+    /** Shared by the several events one API call produces. */
+    id?: string;
     content: ClaudeContentBlock[];
     /** Per-call counts; some providers omit result.usage.iterations. */
     usage?: ClaudeUsageIteration;

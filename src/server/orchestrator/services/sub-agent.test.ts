@@ -576,6 +576,24 @@ describe("runSubAgent — happy path", () => {
     updatedAt: 0,
   });
 
+  it("passes the consult's request list to its usage row (docs/329-tiered-model-pricing)", async () => {
+    const requests = [{ input: 600, output: 50 }, { input: 400, output: 150 }];
+    const { deps, record } = makeDeps({
+      spawnResult: {
+        status: "success",
+        text: "ok",
+        truncated: false,
+        durationMs: 4200,
+        costUsd: 0,
+        inputTokens: 1000,
+        outputTokens: 200,
+        requests,
+      },
+    });
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });
+    expect(record.mock.calls[0][5]).toMatchObject({ requests });
+  });
+
   it("spawns, returns text, increments the per-turn counter, records usage, emits spinner + persisted consult card", async () => {
     const { deps, runner, emitMessage, record, replaceInProgress } = makeDeps({});
     const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });

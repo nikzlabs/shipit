@@ -17,7 +17,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { allServices } from "../../../server/shared/catalogue/index.js";
-import { SupportedModelsDialog } from "./SupportedModelsDialog.js";
+import { SupportedModelsDialog, formatLongPrompt } from "./SupportedModelsDialog.js";
 
 const claudeAgent = {
   id: "claude" as const,
@@ -278,5 +278,34 @@ describe("SupportedModelsDialog", () => {
     expect(row).toHaveTextContent("$0.3 / $1.2");
 
     expect(screen.getByTestId("supported-models-row-anthropic:sub-haiku")).toHaveTextContent("200K");
+  });
+
+  it("shows a long-prompt price beside the standard one (docs/329-tiered-model-pricing req 6)", () => {
+    open();
+    const haiku = screen.getByTestId("supported-models-row-anthropic:key-claude-haiku-5-5");
+    expect(haiku).toHaveTextContent("$0.1 / $0.5");
+    expect(haiku).toHaveTextContent("5× above 100K");
+    expect(screen.getByTestId("supported-models-row-xai:key-grok-4.6")).toHaveTextContent("2× above 200K");
+    expect(screen.getByTestId("supported-models-row-google:key-gemini-3.1-pro-preview"))
+      .toHaveTextContent("$4 / $18 above 200K");
+    expect(screen.getByTestId("supported-models-row-deepseek:key-deepseek-flash")).not.toHaveTextContent("above");
+  });
+});
+
+describe("formatLongPrompt", () => {
+  const flat = { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 };
+
+  it("says one multiple when every rate scales alike, ignoring a rate that stays zero", () => {
+    const tier = { aboveTokens: 200_000, input: 4, output: 24, cacheRead: 0.4, cacheWrite: 0 };
+    expect(formatLongPrompt({ ...flat, longPrompt: tier })).toBe("2× above 200K");
+  });
+
+  it("names the higher input and output rates when they scale differently", () => {
+    const tier = { aboveTokens: 200_000, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 0 };
+    expect(formatLongPrompt({ ...flat, longPrompt: tier })).toBe("$4 / $18 above 200K");
+  });
+
+  it("says nothing for a model with one flat rate", () => {
+    expect(formatLongPrompt(flat)).toBeUndefined();
   });
 });

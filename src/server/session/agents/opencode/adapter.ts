@@ -398,6 +398,7 @@ export class OpencodeAdapter
       ...(acc.costUsd > 0 ? { cost: { totalUsd: acc.costUsd } } : {}),
       ...(tokens ? { tokens } : {}),
       ...(acc.contextTokens !== undefined ? { contextTokens: acc.contextTokens } : {}),
+      ...(acc.requests.length > 0 ? { requests: acc.requests } : {}),
       ...(errored
         ? {
             error:

@@ -32,6 +32,7 @@ import type {
   AgentMcpWriteResult,
   AgentProcess,
   AgentProcessEvents,
+  AgentRequestUsage,
   AgentRunParams,
   McpServerStatus,
 } from "../agent-process.js";
@@ -40,7 +41,7 @@ import { STRANDED_CREDENTIAL_MARKER } from "../../../shared/fs-constants.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
-import { grokResultErrorText, parseGrokLine, type GrokEvent } from "./stream.js";
+import { grokResultErrorText, parseGrokLine, type GrokEvent, type GrokMessage } from "./stream.js";
 import { normalizeGrokToolCall, normalizeGrokToolResult } from "./grok-tool-normalizer.js";
 import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
 import { isGoalControlInFlight, runGrokGoalControl } from "./grok-goal.js";
@@ -175,6 +176,8 @@ export class GrokAdapter
   // Fatal errors have no result event; preserve their quota wording for close.
   private fatalErrorText: string | null = null;
   private latestCallContextTokens: number | undefined;
+  /** This turn's top-level calls, keyed by message id (docs/329-tiered-model-pricing). */
+  private turnCalls = new Map<string, AgentRequestUsage>();
   // Results carry only IDs; normalization needs the call's raw tool name.
   private turnCallNames = new Map<string, string>();
   private pendingMcpServers: Record<string, GrokMcpServer> = {};
@@ -200,6 +203,7 @@ export class GrokAdapter
     this.sawAnyEvent = false;
     this.fatalErrorText = null;
     this.latestCallContextTokens = undefined;
+    this.turnCalls.clear();
     this.turnCallNames.clear();
     this.compactionRequested = params.compact === true;
     if (this.compactionRequested) {
@@ -514,6 +518,18 @@ export class GrokAdapter
     if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
   }
 
+  // Each top-level assistant event is one call, and its usage is final.
+  private recordCall(message: GrokMessage | undefined): void {
+    const usage = message?.usage;
+    if (!usage) return;
+    this.turnCalls.set(message.id ?? `call-${this.turnCalls.size}`, {
+      input: usage.input_tokens ?? 0,
+      output: usage.output_tokens ?? 0,
+      ...(usage.cache_read_input_tokens !== undefined ? { cacheRead: usage.cache_read_input_tokens } : {}),
+      ...(usage.cache_creation_input_tokens !== undefined ? { cacheWrite: usage.cache_creation_input_tokens } : {}),
+    });
+  }
+
   private normalizeToolCalls(content: AgentContentBlock[]): AgentContentBlock[] {
     return content.map((block) => {
       if (block?.type !== "tool_use" || typeof block.name !== "string") return block;
@@ -560,7 +576,10 @@ export class GrokAdapter
         };
 
       case "assistant":
-        if (!raw.parent_tool_use_id) this.recordCallContext(raw.message?.usage);
+        if (!raw.parent_tool_use_id) {
+          this.recordCallContext(raw.message?.usage);
+          this.recordCall(raw.message);
+        }
         return {
           type: "agent_assistant",
           content: this.normalizeToolCalls(raw.message?.content ?? []),
@@ -580,6 +599,8 @@ export class GrokAdapter
         // Grok's input and cache token counts are disjoint.
         const contextTokens = this.latestCallContextTokens;
         this.latestCallContextTokens = undefined;
+        const requests = [...this.turnCalls.values()];
+        this.turnCalls.clear();
         let contextWindow: number | undefined;
         for (const m of Object.values(raw.modelUsage ?? {})) {
           if (m?.contextWindow && (!contextWindow || m.contextWindow > contextWindow)) {
@@ -604,6 +625,7 @@ export class GrokAdapter
               }
             : {}),
           ...(contextTokens !== undefined ? { contextTokens } : {}),
+          ...(requests.length > 0 ? { requests } : {}),
           ...(contextWindow !== undefined ? { contextWindow } : {}),
           ...(typeof raw.duration_ms === "number" ? { durationMs: raw.duration_ms } : {}),
           ...(errored ? { error: grokResultErrorText(raw) } : {}),

@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
+import { UsageManager } from "../usage.js";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, recordSteeredMessage, type AgentListenerDeps } from "./agent-listeners.js";
 import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
@@ -134,6 +135,46 @@ describe("wireAgentListeners", () => {
       expect.objectContaining({ credentialRouteId: "acct-a" }),
     );
     runner.dispose({ force: true });
+  });
+
+  it("prices a subscription turn's long prompts the same live as on reload (docs/329-tiered-model-pricing)", () => {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "claude",
+    });
+    const emitted: { type: string; turn?: { atApiRatesUsd?: number } }[] = [];
+    runner.on("message", (msg) => emitted.push(msg as (typeof emitted)[number]));
+    const db = new DatabaseManager(":memory:");
+    const usageManager = new UsageManager(db);
+    const d = { ...deps(), usageManager };
+    d.sessionManager.get = vi.fn(() => ({
+      model: "claude-haiku-5-5",
+      serviceId: "anthropic",
+      billingMode: "sub",
+    })) as never;
+
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-1",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    agent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "session-1",
+      tokens: { input: 200_000, output: 1_000 },
+      contextTokens: 150_000,
+      requests: [{ input: 50_000 }, { input: 150_000 }],
+    } satisfies AgentEvent);
+
+    const live = emitted.find((m) => m.type === "turn_usage_update")?.turn?.atApiRatesUsd;
+    // Haiku 5.5: the short request at $0.1/M, the long one and the unlisted output at 5x.
+    expect(live).toBeCloseTo((50_000 * 0.1 + 150_000 * 0.5 + 1_000 * 2.5) / 1e6, 12);
+    expect(usageManager.getSessionTurns("session-1")[0].atApiRatesUsd).toBe(live);
+    runner.dispose({ force: true });
+    db.close();
   });
 
   it("keeps Codex stream-completion events internal so live text is not duplicated", () => {
