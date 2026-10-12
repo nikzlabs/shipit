@@ -544,7 +544,7 @@ describe("CodexOAuthRefresher", () => {
       }
 
       expect(reasons[0]).toContain("[spawn-failed] spawn EAGAIN");
-      expect(reasons[1]).toContain("[error] the codex binary was not found");
+      expect(reasons[1]).toContain("[error] spawn codex ENOENT");
       expect(reasons[2]).toContain("[no-reply]");
     });
 

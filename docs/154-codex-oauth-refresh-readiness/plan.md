@@ -333,8 +333,11 @@ text; it used to be the first 200 raw characters of the output. `[timeout]`,
 `[no-reply]` (the CLI ended before it answered) and `[rpc-error]` (the CLI
 refused `account/read`; only the error's number is kept, because its text comes
 from the CLI and can name the account) name what the refresher itself saw, as
-do `[spawn-failed]` and `[error]`. A missing binary reads `[error] the codex
-binary was not found`: the shared summary drops every line that says `ENOENT`.
+do `[spawn-failed]` and `[error]`. A CLI that did not start reads `[error]
+spawn codex ENOENT`: the shared summary drops the CLI's lines that say `ENOENT`
+and keeps the refresher's own notes (docs/153, "Outcomes and logs"). Node gives
+that error for a missing binary and also for a missing account root, which is
+the CLI's working directory.
 `rotated_tier1` and `rotated_tier2` are gone: the outcomes are `rotated`,
 `harvested_session`, `noop`, `rate_limited`, `revoked (<code>)`,
 `unknown_failure` and `missing_credentials`.

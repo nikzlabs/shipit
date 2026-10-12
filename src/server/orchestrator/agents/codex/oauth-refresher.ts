@@ -575,11 +575,9 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       });
       // On the close, not on the exit: the line that names a refusal can arrive after the exit.
       child.on("close", () => settle(timedOut ? TIMED_OUT : replied ? "" : NO_REPLY));
-      child.on("error", (err: NodeJS.ErrnoException) => {
+      child.on("error", (err) => {
         // A kill that fails is an error and not an exit: the CLI can still write.
-        if (timedOut) return;
-        // Not the message for a missing binary: the reason's summary drops a line that says ENOENT.
-        settle(err.code === "ENOENT" ? "[error] the codex binary was not found" : `[error] ${err.message}`);
+        if (!timedOut) settle(`[error] ${err.message}`);
       });
 
       arm(REFRESH_TIMEOUT_MS, () => {

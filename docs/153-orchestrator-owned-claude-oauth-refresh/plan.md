@@ -413,6 +413,10 @@ Three changes, no new subsystem:
    logged in full. `missing_credentials` additionally names
    `source=missing|blanked|unreadable`, because "the user signed out" and "we
    just destroyed a live account's credentials" were previously the same line.
+   What the refresher itself saw is a note in the same text, on a line of its
+   own that starts with a lower-case tag: `[error]` and `[spawn-failed]` (the
+   CLI did not start), `[timeout]`, `[probe-home-failed]`, `[private-run-open]`
+   and `[install-failed]`.
 
 **A blanked source is diagnosed, not repaired.** It parses as a credential, so
 the write-back's `unorderable` guard (planning#449) refuses to overwrite it, and
@@ -547,7 +551,16 @@ expired, or that its expiry cannot be read. With the short claimed life in place
 stopped refreshing a near-expiry copy — the first thing to check after a CLI bump. In
 `reason="…"`, lines that contain `ENOENT` are dropped (the CLI logs each optional file
 it does not find), lines above debug level are preferred, and each of the three lines is capped
-separately, so that a long line cannot hide the last one. Tier 1's stdout names the
+separately, so that a long line cannot hide the last one. A refresher's own note is
+kept also when it says `ENOENT`: `reason="[error] spawn claude ENOENT"` is a CLI that
+did not start, and it used to read `reason="no CLI output"`. Node reports that error
+for a binary that is not on the `PATH`, for a missing interpreter and for a missing
+working directory (measured on Node 24). `[probe-home-failed] ENOENT` is a private
+copy that could not be made, for example because the temporary directory is missing.
+A note is known by its form only: a lower-case tag and a space at the start of a line.
+The CLI's level tags are upper case (`[DEBUG]`, `[ERROR]`; measured on 2.1.284, where
+no line of the debug log starts with a lower-case tag). The Codex refresher uses the
+same summary (docs/154). Tier 1's stdout names the
 account's email and organization and is kept out of it. Debug timestamps are stripped
 before classification: one ending `.429Z` used to read as an HTTP 429 and select the
 rate-limit backoff.
@@ -700,6 +713,11 @@ CLIs share that root anyway.
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
   same class of gap as the `syncAgentTokenBackToRoot` item above.
+- **A forced probe that could not run reads as a live token.** With more than
+  45 minutes left, a forced tick that finds no rotation and no rejection ends
+  `noop`, also when the CLI did not start or timed out, and the heal succeeds.
+  That path writes no log line, so `reason="[error] spawn claude ENOENT"`
+  appears only on the ticks inside the margin.
 
 ## Wiring
 

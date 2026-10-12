@@ -96,6 +96,8 @@ const FAILURE_SIGNAL_PATTERN =
 
 // The CLI logs each optional file it does not find; none of them explains a refresh.
 const MISSING_FILE_NOISE_PATTERN = /\bENOENT\b/;
+// A refresher's own note ("[error] spawn claude ENOENT") is not that noise. The CLI's level tags are upper case.
+const REFRESHER_NOTE_PATTERN = /^\[[a-z]+(?:-[a-z]+)*\] /;
 const DEBUG_LEVEL_TAG = "[DEBUG]";
 const LOG_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+/gm;
 
@@ -125,7 +127,7 @@ export function summarizeRefreshFailure(combinedOutput: string): string {
   const lines = redactSecrets(combinedOutput)
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !MISSING_FILE_NOISE_PATTERN.test(line));
+    .filter((line) => line && (REFRESHER_NOTE_PATTERN.test(line) || !MISSING_FILE_NOISE_PATTERN.test(line)));
   const signal = lines.filter((line) => FAILURE_SIGNAL_PATTERN.test(line));
   const loud = signal.filter((line) => !line.includes(DEBUG_LEVEL_TAG));
   const picked = loud.length > 0 ? loud : signal.length > 0 ? signal : lines;

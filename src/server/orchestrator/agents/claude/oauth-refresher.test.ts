@@ -128,6 +128,8 @@ interface SpawnEffect {
   sideEffect?: () => void;
   // Never exits by itself; the test emits "exit" on the child.
   hang?: boolean;
+  // What Node reports for a binary that is not on the PATH: an error, and no exit.
+  failsToStart?: boolean;
   debugLog?: string;
   stderr?: string;
   stdout?: string;
@@ -198,6 +200,10 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
       child.emit("exit", effect.exitCode ?? 0, null);
     };
     if (effect.hang) return child;
+    if (effect.failsToStart) {
+      setTimeout(() => child.emit("error", Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })), 0);
+      return child;
+    }
     if (effect.delayMs && effect.delayMs > 0) {
       setTimeout(fire, effect.delayMs);
     } else {
@@ -2012,6 +2018,49 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.refresher._inspectForTest("acct-1").hasTimer).toBe(true);
     });
 
+    it("names a CLI that cannot start", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ failsToStart: true }, { failsToStart: true }];
+
+      const logs = captureLogs();
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(result!.outcome).toBe("not_rotated");
+      expect(result!.reason).toBe("[error] spawn claude ENOENT | [error] spawn claude ENOENT");
+      expect(logs.lines.find((entry) => entry.includes("not_rotated failure_count=1")))
+        .toContain("reason=\"[error] spawn claude ENOENT");
+      expect(rig.sseCalls).toEqual([]);
+    });
+
+    it("names what stopped the private copy", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      vi.stubEnv("TMPDIR", path.join(rig.rootDir, "no-such-directory"));
+
+      let result: Awaited<ReturnType<typeof rig.refresher.refreshNow>>[number];
+      try {
+        [result] = await rig.refresher.refreshNow("acct-1");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+
+      expect(result!.outcome).toBe("not_rotated");
+      expect(result!.reason).toBe("[probe-home-failed] ENOENT");
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+    });
+
     it("keeps tier 1's stdout, which names the account, out of the reason", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
@@ -2103,6 +2152,32 @@ describe("summarizeRefreshFailure", () => {
       "[DEBUG] Error log sink initialized",
     ].join("\n"));
     expect(summary).toBe("[ERROR] OAuth refresh failed (expected): Request failed with status code 400");
+  });
+
+  it("keeps a refresher's own note that says ENOENT, and still drops the CLI's lines that do", () => {
+    const summary = summarizeRefreshFailure([
+      "[ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat '/x/.claude.json'",
+      "[DEBUG] Failed to stat directory /etc/claude-code/.claude/output-styles: ENOENT: no such file or directory",
+      "[error] spawn claude ENOENT",
+    ].join("\n"));
+    expect(summary).toBe("[error] spawn claude ENOENT");
+    expect(summarizeRefreshFailure("[probe-home-failed] ENOENT")).toBe("[probe-home-failed] ENOENT");
+  });
+
+  it("redacts a kept note as it does every other line", () => {
+    const summary = summarizeRefreshFailure(
+      `[error] spawn claude ENOENT {"accessToken":"abc123"} Bearer ${FAKE_OAUTH_TOKEN}`,
+    );
+    expect(summary).toContain("[error] spawn claude ENOENT");
+    expect(summary).not.toContain("abc123");
+    expect(summary).not.toContain(FAKE_OAUTH_TOKEN);
+  });
+
+  it("reads a note only from a lower-case tag and a space at the start of a line", () => {
+    const missingFile = "ENOENT: no such file or directory, open '/x/settings.json'";
+    expect(summarizeRefreshFailure(`[ERROR] Error: ${missingFile}`)).toBe("no CLI output");
+    expect(summarizeRefreshFailure(`Unhandled in the [error] handler: ${missingFile}`)).toBe("no CLI output");
+    expect(summarizeRefreshFailure(`[stdin]:1 Error: ${missingFile}`)).toBe("no CLI output");
   });
 
   it("gives each of the three lines a share, so a long line cannot hide the last one", () => {
