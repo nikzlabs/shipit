@@ -23,6 +23,9 @@ export const POST_MERGE_COMPACTION_INSTRUCTIONS =
 
 export const POST_MERGE_COMPACT_PROMPT = `/compact ${POST_MERGE_COMPACTION_INSTRUCTIONS}`;
 
+/** docs/295 req 15 — under this, a continuation with nobody at the composer is not compacted. */
+export const UNATTENDED_COMPACTION_FLOOR_TOKENS = 50_000;
+
 export const MISSED_COMPACTION_NOTICE =
   "The context was not compacted; the agent continues with the context as it was.";
 
@@ -31,6 +34,8 @@ export interface CompactBeforeTurnDeps extends ResetEligibleSignalDeps {
   getAutoResetMergedBranch: () => boolean;
   /** docs/218 req 6 — record that this merge's compaction offer is spent (`setMergeContinueCompacted`). */
   markCompacted: (sessionId: string, anchor: string) => void;
+  /** The context size after the last turn (`UsageManager.latestContextTokens`); undefined when unknown. */
+  getContextTokens: (sessionId: string) => number | undefined;
 }
 
 export interface CompactBeforeTurnArgs {
@@ -41,15 +46,29 @@ export interface CompactBeforeTurnArgs {
   sessionDir: string;
   /** Requeued messages use false to prevent a second compaction. */
   intent?: boolean;
+  /** docs/295 req 15 — no user is at the composer for this turn, so none could untick it. */
+  unattended?: boolean;
 }
 
 export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Promise<boolean> {
-  const { deps, runner, agentId, sessionId, sessionDir, intent } = args;
+  const { deps, runner, agentId, sessionId, sessionDir, intent, unattended } = args;
   // An untick answers this merge's compaction offer too, so it still reaches the record below.
   const unticked = intent === false;
 
   if (!deps.getAutoResetMergedBranch()) return false;
   if (!(getAgentCapabilities(agentId)?.supportsCompaction ?? false)) return false;
+
+  // Not recorded against the merge: nothing was offered, so nothing is spent.
+  if (unattended) {
+    const context = deps.getContextTokens(sessionId);
+    if (context !== undefined && context < UNATTENDED_COMPACTION_FLOOR_TOKENS) {
+      console.log(
+        `[compact-before-turn] skipping for ${sessionId}: an unattended turn, and the context `
+        + `is ${context} tokens (floor ${UNATTENDED_COMPACTION_FLOOR_TOKENS})`,
+      );
+      return false;
+    }
+  }
 
   if (!unticked) {
     // Compaction would consume the replay seed intended for the next user turn.

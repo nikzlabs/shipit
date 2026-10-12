@@ -307,7 +307,9 @@ The ticks govern what the user sends from the ShipIt view: a typed message, a
 button on a ShipIt card, and a message that a page you built sends through
 `window.shipit`. A turn that starts with nobody at the composer — a wake after a
 merge, a message from another session — has no tick to read, so the setting
-alone decides and it resets and compacts.
+alone decides and it resets and compacts. One exception: such a turn does not
+compact a context under 50,000 tokens, so a session that was compacted not long
+before is only reset.
 
 The context is compacted at most once for each merge: after a message
 compacted it, or was sent with **Compact the context** unticked, that box does

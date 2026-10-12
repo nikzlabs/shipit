@@ -176,6 +176,18 @@ describe("UsageManager", () => {
     expect(dialTurns).toHaveLength(1);
     expect(dialTurns[0].contextTokens).toBe(1500);
   });
+
+  it("reads the latest context size from the session's own last turn (docs/295 req 15)", () => {
+    const mgr = new UsageManager(dbManager);
+    expect(mgr.latestContextTokens("sess-1")).toBeUndefined();
+
+    mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+    mgr.record("sess-1", 0.02, 500, 0, 40, { contextTokens: 12_000 });
+    // A consult has its own context window; it must not stand in for the session's.
+    mgr.record("sess-1", 0.04, 1000, 500, 60, { subAgentId: "codex", contextTokens: 700 });
+
+    expect(mgr.latestContextTokens("sess-1")).toBe(12_000);
+  });
 });
 
 describe("UsageManager — cumulative cost → per-turn delta", () => {

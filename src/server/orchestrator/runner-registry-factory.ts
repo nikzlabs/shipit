@@ -501,7 +501,7 @@ export function createRunnerRegistry(
             ...(intent !== undefined ? { intent } : {}),
           });
         },
-        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent) => {
+        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent, unattended) => {
           if (!credentialStore) return false;
           const prStatusPoller = getPrStatusPoller?.();
           return await shouldCompactBeforeTurn({
@@ -511,6 +511,7 @@ export function createRunnerRegistry(
               createGitManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
               markCompacted: (id, anchor) => sessionManager.setMergeContinueCompacted(id, anchor),
+              getContextTokens: (id) => usageManager.latestContextTokens(id),
               ...(prStatusPoller
                 ? {
                     mergeRecheckDeps: {
@@ -526,6 +527,7 @@ export function createRunnerRegistry(
             sessionId,
             sessionDir,
             ...(intent !== undefined ? { intent } : {}),
+            ...(unattended ? { unattended } : {}),
           });
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),

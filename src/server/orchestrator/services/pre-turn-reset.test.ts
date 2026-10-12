@@ -383,9 +383,13 @@ describe("autoResetMergedBranchOnContinue", () => {
     expect(out.skip?.detail).not.toContain("second line");
     // Nothing ended the offer, so the next turn does try again.
     expect(out.skip?.notice).toContain("re-evaluated every turn");
-    // A failed fetch does not prove where the branch is relative to the base.
+    // A failed reset proves nothing about the branch or the push guard: neither text may say so.
     expect(out.agentPrefix).toContain("NOT reset to origin/main");
-    expect(out.agentPrefix).not.toContain("behind the base");
+    for (const text of [out.agentPrefix!, out.skip!.notice!]) {
+      expect(text).not.toContain("behind the base");
+      expect(text).not.toContain("auto-push");
+      expect(text).not.toContain("already-merged commits");
+    }
   });
 
   it("says why when the first checks throw, before any fetch", async () => {

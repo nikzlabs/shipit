@@ -17,7 +17,14 @@ in their own words, so that a later change can be checked against it.
    first message after that merge is the only one that can trigger the branch
    reset or the context compaction. Once the user has answered the offer — by
    accepting it or by unticking it — it is not made again for the same merge. A
-   later merge makes a new offer.
+   later merge makes a new offer. Requirement 7 states the one exception.
+
+7. When the first message after a merge accepted the branch reset and the reset
+   did not happen — the fetch failed, or something blocked it — the next message
+   offers the reset again, with its control ticked, and the user can untick it.
+   This goes on until the reset moves the branch or the user unticks it. The
+   context compaction is not part of this exception: it is offered once for
+   each merge.
 
 ## Requirement provenance
 
@@ -27,18 +34,24 @@ down: the feature predates this discipline, and inventing them now from the
 shipped code would record the agent's reading as the user's intent. Append here
 as the user states more; do not backfill from `plan.md`.
 
+Requirement 7 comes from the user, on 2026-10-12, as the answer to a question
+that an independent review raised against requirement 6.
+
 ## Open questions
 
-- Requirement 6 says the first message after the merge is the only one that can
-  trigger the branch reset. When that message accepted the reset and the reset
-  did not happen — the fetch failed, or a blocker appeared — the shipped code
-  offers the reset again on the next message, with its control. An independent
-  review read that as against requirement 6. Which is wanted: offer the reset
-  again until it happens or is unticked, or end the offer and leave
-  `shipit branch reset-to-base` as the only way? (The compaction is not part of
-  this question: it is offered once for each merge in both cases.)
+None.
 
 ## Resolved questions
+
+- **2026-10-12 — The first message after a merge accepted the reset, and the
+  reset did not happen (the fetch failed, or a blocker appeared). What must the
+  next message do?** Offer it again: the next message shows "Start from the
+  latest base" again, ticked, and tries the reset, and the user can untick it.
+  The other option was to end the offer and leave `shipit branch reset-to-base`
+  as the only way, which is what the words of requirement 6 say; an independent
+  review had read the shipped behavior as against requirement 6. The user chose
+  to offer it again. The compaction does not repeat in either case. Recorded as
+  requirement 7.
 
 - **2026-09-13 — After the user unticks "Start from the latest base", does the
   next message offer it again?** No. `plan.md` had stated the opposite as a

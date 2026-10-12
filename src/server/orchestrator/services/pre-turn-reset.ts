@@ -245,6 +245,9 @@ export async function computeResetEligibility(
     const prStatus = deps.getPrStatus(sessionId);
     const git = deps.createGitManager(sessionDir);
     const blocker = await computeResetBlocker(session, prStatus, git);
+    // Read again: a turn can spend the offer while the git reads above run, and an
+    // answer from before that would put the compaction control back on screen.
+    compactionSpent = compactedThisMerge(deps.getSession(sessionId));
     return { eligible: blocker === null, merged: true, blocker, compactionSpent };
   } catch (err) {
     return {
@@ -516,11 +519,14 @@ function buildSkipNotice(skip: ResetSkip, prNumber?: number, base?: string): str
       ? `To move the branch after all, ask the agent to run \`shipit branch reset-to-base\`.`
       : `Clear the reason above and send another message (the reset is re-evaluated every turn), `
         + `or ask the agent to run \`shipit branch reset-to-base\`.`;
+  // A failed reset proves nothing about where the branch is, or what the push guard will do.
+  const consequence = skip.clause === "reset-failed"
+    ? ""
+    : `It still sits on the already-merged commits, so anything committed here belongs to no `
+      + `open pull request — and ShipIt will not auto-push it.\n\n`;
   return (
     `Branch not updated to the latest base. Pull request ${pr} merged${into}, but this branch `
-    + `was not reset to ${target} because ${skip.detail}.\n\n`
-    + `It still sits on the already-merged commits, so anything committed here belongs to no `
-    + `open pull request — and ShipIt will not auto-push it.\n\n${howToGetIt}`
+    + `was not reset to ${target} because ${skip.detail}.\n\n${consequence}${howToGetIt}`
   );
 }
 
@@ -528,14 +534,20 @@ function buildSkipAgentPrefix(skip: ResetSkip, prNumber?: number, base?: string)
   const pr = prNumber ? ` (#${prNumber})` : "";
   const into = base ? ` into ${base}` : "";
   const target = base ? `origin/${base}` : "the latest base";
-  // A failed fetch proves nothing about where the branch is relative to the base.
-  const state = skip.clause === "reset-failed"
-    ? "The branch was left where it was"
-    : "The branch still contains the merged commits, is behind the base";
+  // A failed reset proves nothing about where the branch is, or what the push guard will do.
+  if (skip.clause === "reset-failed") {
+    return (
+      `[System] This session's pull request${pr} was already merged${into}, and the branch was `
+      + `NOT reset to ${target}: ${skip.detail}. The branch was left where it was. Tell the user `
+      + `this before doing work that assumes a fresh base. Do not run a manual `
+      + `\`git reset --hard\` or \`git push --force\`; if the user wants the branch moved, use `
+      + `\`shipit branch reset-to-base\`.`
+    );
+  }
   return (
     `[System] This session's pull request${pr} was already merged${into}, and the branch was `
-    + `NOT reset to ${target}: ${skip.detail}. ${state}, and has no open pull request — `
-    + `anything you commit here will not be `
+    + `NOT reset to ${target}: ${skip.detail}. The branch still contains the merged commits, `
+    + `is behind the base, and has no open pull request — anything you commit here will not be `
     + `auto-pushed and belongs to no pull request. Tell the user this before doing work that `
     + `assumes a fresh base. Do not run a manual \`git reset --hard\` or \`git push --force\`; `
     + `if the user wants the branch moved, use \`shipit branch reset-to-base\`.`

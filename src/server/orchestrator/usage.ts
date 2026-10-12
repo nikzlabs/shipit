@@ -1,7 +1,7 @@
 import type {
   UsageTurn, SessionUsage, UsageStats, TurnUsage, WeeklyUsage, UsageGroup,
 } from "../shared/types.js";
-import { usageTotalsFrom } from "../shared/types/usage-types.js";
+import { turnContextTokens, usageTotalsFrom } from "../shared/types/usage-types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { BillingMode, ModelPrice } from "../shared/catalogue/types.js";
 import { costFromRates } from "./turn-attribution.js";
@@ -305,6 +305,12 @@ export class UsageManager {
   lastTurnCredentialRouteId(sessionId: string): string | undefined {
     const row = this.stmtLastRoute.get(sessionId) as { credential_route_id: string } | undefined;
     return row?.credential_route_id ?? undefined;
+  }
+
+  /** The context size after the session's last turn, as the context dial reads it. */
+  latestContextTokens(sessionId: string): number | undefined {
+    const last = this.getPerTurnUsage(sessionId).at(-1);
+    return last ? turnContextTokens(last) : undefined;
   }
 
   getSessionUsage(sessionId: string): SessionUsage | undefined {

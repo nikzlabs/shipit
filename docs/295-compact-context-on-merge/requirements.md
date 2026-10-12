@@ -77,9 +77,14 @@ later turn, and the agent reads them as live work in progress.
     starts with no ShipIt view in front of the user — a wake turn after a
     merge, a message from another session — stays under requirement 13.
 
+15. A continuation that has no checkbox (requirement 13) does not compact when
+    the agent's context is smaller than 50,000 tokens. Its branch is still
+    reset. The control of requirements 1 to 3 is not changed by this: it is
+    offered whatever the size of the context.
+
 ## Requirement provenance
 
-Requirements 1 to 6, 11, 13 and 14 come from what the user asked for and decided.
+Requirements 1 to 6, 11 and 13 to 15 come from what the user asked for and decided.
 Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
 already ships (docs/218 for the merge notice, docs/178 for how a compaction
 appears and for the `/compact` boundary) from becoming weaker. They are recorded
@@ -131,3 +136,13 @@ None.
   keeps the setting for those two. "The composer's tick state" is both
   controls, so the same message also obeys "Start from the latest base".
   Recorded as requirement 14.
+
+- **2026-10-12 — A session that watches its own pull request is compacted when
+  the merge wakes it, and nothing can turn that off. What must happen when the
+  session was compacted not long before?** The user: "A simple solution would be
+  just not compact if the context is <50k." Recorded as requirement 15, for the
+  continuations that have no checkbox, which is where the user saw the problem.
+  The 2026-09-07 answer above rejected a *percentage* gate on the control,
+  because a percentage is model-dependent; this is an absolute floor, and it
+  does not gate the control, so requirement 3 stands. Whether the floor must
+  also apply where the checkbox is shown was not asked.

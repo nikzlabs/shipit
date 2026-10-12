@@ -21,6 +21,7 @@ import {
 } from "./test-helpers.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
+import type { UsageManager } from "../usage.js";
 import { DatabaseManager } from "../../shared/database.js";
 
 const SESSION_ID = "merged-session";
@@ -200,6 +201,62 @@ describe("Integration: a dispatched message on a merged session with a real orig
     expect(userTurn.lastPrompt).toContain("automatically reset to the latest origin/main");
     expect(head()).toBe(baseTip);
     expect(spawns.some((s) => s.lastCompact)).toBe(false);
+
+    client.close();
+  });
+
+  const automaticDispatch = async (text: string): Promise<void> => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${SESSION_ID}/agent/dispatch`,
+      payload: { text, automatic: true },
+    });
+    expect(res.statusCode).toBe(200);
+  };
+
+  const recordContext = (contextTokens: number): void => {
+    (app as unknown as { usageManager: UsageManager }).usageManager
+      .record(SESSION_ID, 0, 1000, 100, 10, { contextTokens });
+  };
+
+  it("does not compact an unattended turn under 50k tokens, and still resets the branch (req 15)", async () => {
+    markMerged();
+    recordContext(20_000);
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    await automaticDispatch("fix the preview errors");
+    const turn = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(turn.lastCompact).toBeFalsy();
+    expect(turn.lastPrompt).toContain("automatically reset to the latest origin/main");
+    expect(head()).toBe(baseTip);
+    expect(spawns.some((s) => s.lastCompact)).toBe(false);
+
+    client.close();
+  });
+
+  it("compacts an unattended turn at 50k tokens or more (req 13)", async () => {
+    markMerged();
+    recordContext(80_000);
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    await automaticDispatch("fix the preview errors");
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(compaction.lastCompact).toBe(true);
+
+    client.close();
+  });
+
+  it("compacts a page message under 50k tokens: its checkbox is the opt-out (req 3)", async () => {
+    markMerged();
+    recordContext(20_000);
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    await dispatch("from the page");
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(compaction.lastCompact).toBe(true);
 
     client.close();
   });

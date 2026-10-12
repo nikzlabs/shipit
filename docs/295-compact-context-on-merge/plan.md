@@ -371,8 +371,9 @@ records on a true answer — at the decision, not at the compaction's result, so
 compaction that fails is not tried again either — and on an untick, which is an
 answer to the same offer (req 5 and docs/218 req 6 together).
 
-**The reset is not touched by that.** It stays offered until it moves the branch
-or the user unticks it, which is what it did before. A stricter version shipped
+**The reset is not touched by that** (docs/218-auto-reset-merged-branch-on-continue
+req 7). It stays offered until it moves the branch or the user unticks it,
+which is what it did before. A stricter version shipped
 for one review round: it also ended the *reset* offer whenever the first message
 did not move the branch. A second review found that rule incomplete in four
 places (a branch already at the base, a throw in the first checks, a blocker
@@ -397,8 +398,9 @@ commits with no notice and no agent prefix. A throw before the branch moved —
 in the first checks, the fetch or the reset — now returns a `reset-failed` skip:
 the transcript carries the notice with the first line of the error, and the
 agent gets the "NOT reset" prefix. The notice says the reset is re-evaluated on
-the next turn, which is true, because nothing ended the offer. The prefix does
-not say the branch is behind the base — a failed fetch does not prove that. A
+the next turn, which is true, because nothing ended the offer. Neither text says
+where the branch is or what the push guard will do with later commits — a failed
+reset proves neither. A
 throw after the branch moved keeps the old path, where the post-turn re-arm
 finishes the bookkeeping.
 
@@ -451,6 +453,27 @@ are invisible to the browser, and are exactly what the echo row above corrects.
 in the *server's* queue, so a cancel aimed at a row the server does not hold yet
 would clear it while the message went on to run.
 
+## A small context is left alone when nobody is at the composer (req 15)
+
+A wake turn after the session's own merge compacted under the setting alone
+(req 13), and nobody could untick it — also when the session had just been
+compacted and held almost nothing. `shouldCompactBeforeTurn` now takes
+`unattended` from the dispatched takeover, which sets it for a system turn, an
+automatic turn and a message with a `messageOrigin` (another session). For
+those, a context under `UNATTENDED_COMPACTION_FLOOR_TOKENS` (50,000) is not
+compacted. The reset is not touched, and nothing is recorded against the merge:
+nothing was offered, so nothing is spent.
+
+The size is `UsageManager.latestContextTokens` — the last turn's context, the
+number the context dial shows. A `/compact` turn records its own usage row
+(Claude reports `input_tokens: 0` for it, docs/178), so right after a compaction
+the reading is small, which is the case the floor is for. An unknown size (no
+turn recorded yet) compacts as before.
+
+The floor does not gate the composer control. Req 3 forbids that, and there the
+user has the box: a typed message, a card button and a page message (req 14)
+compact whatever the size, unless unticked.
+
 ## The shared setting (req 11)
 
 No new setting. `autoResetMergedBranch` governs both actions; the Settings →
@@ -462,6 +485,7 @@ Advanced description names both.
 |---|---|
 | `orchestrator/compact-before-turn.ts` | The decision, which also records that this merge's compaction offer is spent; the post-merge `/compact` prompt; `noteMissedCompaction`. |
 | `orchestrator/services/pre-turn-reset.ts` | `compactedThisMerge`, `compactionSpent` on the eligibility signal; the `reset-failed` skip. |
+| `orchestrator/usage.ts` | `latestContextTokens`, the size req 15's floor reads. |
 | `client/stores/pr-store.ts`, `client/hooks/message-handlers/reset-eligible.ts` | `compactionSpentBySession`, set from the signal. |
 | `orchestrator/integration_tests/pre-turn-compaction-dispatched.test.ts` | The dispatched path against a real `origin`: reset, req 14's untick, a failed reset. |
 | `orchestrator/ws-handlers/send-message.ts` | The interactive takeover. |
@@ -487,19 +511,27 @@ Advanced description names both.
   starts, with the agent status bar reading "Compacting context..." — but not
   with the checkbox there to untick, which is the trade above. Req 3 rules out
   shortening the wait with a size gate.
-- **No mid-turn opt-out for a queued message** — and nothing that needs one:
-  docs/218 req 6 ends the offer at the first answer, so a later message on the
-  same merge compacts nothing. A message queued behind the *offered* turn is the
-  one already covered by req 12's "one compaction".
+- **No mid-turn opt-out for a queued message.** A later message on the same
+  merge compacts nothing, so the compaction needs none. The reset can: when the
+  first message's reset failed and a second message is sent while that turn
+  still runs, the controls are hidden (`!isLoading`), and the second message
+  tries the reset at its drain with no box to untick. Showing the reset box
+  mid-turn was weighed and left out: it is the shape the user reported against,
+  a ticked control sitting over work already under way.
+- **A second tab can show a spent compaction box for a moment.** The anchor is
+  recorded with no broadcast, so a tab that did not send the message learns of
+  it from the next eligibility signal. In that window its box can be ticked and
+  do nothing; the server's answer does not change.
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.
-- **A reset that did not happen is offered again.** docs/218 req 6 says the
-  first message after the merge is the only one that can trigger the reset. A
-  reset that failed or was blocked on that message is still offered on the next
-  one, with its control, as it was before this change. Whether the words of
-  req 6 should win here is an open question in
-  [docs/218's requirements](../218-auto-reset-merged-branch-on-continue/requirements.md).
+- **A reset that did not happen is offered again.** docs/218 req 6 gives the
+  offer to the first message after the merge;
+  [docs/218 req 7](../218-auto-reset-merged-branch-on-continue/requirements.md)
+  is the user's exception for a reset that was accepted and did not happen: it
+  is offered on the next message, with its control. The cost is a branch that
+  can stay on the merged commits for one more turn; the notice and the agent
+  prefix say so.
 - **A branch already at the base keeps its offer.** After a fast-forward merge
   `HEAD` is the merged head and the base tip at once, so the reset has nothing
   to do and nothing retires the merge. The control stays; the compaction does
