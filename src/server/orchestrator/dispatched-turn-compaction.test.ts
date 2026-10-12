@@ -81,10 +81,11 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
       [{ text: "a wake", unattended: true }, true],
       [{ text: "a CI fix", systemTurn: true, automatic: true }, true],
       [{ text: "a preview fix", automatic: true }, true],
+      // A parent's first prompt to a new child: no merged pull request, so the answer is not used.
       [{
         text: "from another session",
         messageOrigin: { sessionId: "p", sessionTitle: "Parent", relation: "parent" },
-      }, true],
+      }, false],
     ];
     const seen: boolean[] = [];
     for (const [dispatch] of cases) {

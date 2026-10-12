@@ -20,7 +20,7 @@ import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions, takeRunnableQueuedTurn } from "./queue-drain.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
-import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction } from "./compact-before-turn.js";
+import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction, startedUnattended } from "./compact-before-turn.js";
 import {
   createPromptRepark,
   createPromptTakeLedger,
@@ -113,17 +113,12 @@ async function runDispatchedTurnInner(
   const useStreaming = steer ? steer.liveSteering && steer.steeringCapable : false;
   const sessionDir = runner.sessionDir;
 
-  // docs/295 req 15 — a wake, an automatic turn, a message from another session: the
-  // composer's tick boxes were never in front of anyone for these.
-  const unattended = opts.unattended === true
-    || opts.systemTurn === true || opts.automatic === true || opts.messageOrigin !== undefined;
-
   // Keep this message first after compaction; avoid resolving its attachments twice.
   if (
     sessionDir && opts.postTurn !== "none" && !isCompactRequest
     && await decideWithSystemHold(runner, () =>
       deps.shouldCompactBeforeTurn?.(
-        runner, agentId, runner.sessionId, sessionDir, opts.compactContext, unattended,
+        runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
       ) ?? Promise.resolve(false))
   ) {
     runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });

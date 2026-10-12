@@ -458,26 +458,39 @@ would clear it while the message went on to run.
 A wake turn after the session's own merge compacted under the setting alone
 (req 13), and nobody could untick it — also when the session had just been
 compacted and held almost nothing. `shouldCompactBeforeTurn` now takes
-`unattended` from the dispatched takeover, which sets it for a system turn, an
-automatic turn, a message with a `messageOrigin` (another session), and a
-dispatch that carries the `unattended` mark. For those, a context under
+`unattended`, and for such a turn a context under
 `UNATTENDED_COMPACTION_FLOOR_TOKENS` (50,000) is not compacted. The reset is not
 touched, and nothing is recorded against the merge: nothing was offered, so
 nothing is spent.
 
-**The mark exists because the other three cannot say it.** `wakeSessionWithTurn`
-sets `unattended` on every turn it starts. Since
-[docs/328](../328-session-message-inbox/plan.md) a wake can be neither a system
-turn nor automatic: the turn that tells a session about an inbox message the
-*user* sent from another session is started as an ordinary turn, so that a
-pending question does not hold it. It also carries no `messageOrigin`, because
-it stands for the whole inbox. Without the mark that turn read as one a user
-sent from the composer, and compacted whatever the size.
+**Which turns.** `startedUnattended` is the one rule, read by both paths that
+decide: a dispatch that carries the `unattended` mark, or one that is
+`automatic`.
 
-The size is `UsageManager.latestContextTokens` — the last turn's context, the
-number the context dial shows. A `/compact` turn records its own usage row
-(Claude reports `input_tokens: 0` for it, docs/178), so right after a compaction
-the reading is small, which is the case the floor is for. An unknown size (no
+- `wakeSessionWithTurn` sets the mark on every turn it starts. The mark exists
+  because `systemTurn` and `automatic` cannot say it: since
+  [docs/328](../328-session-message-inbox/plan.md) the turn that tells a session
+  about an inbox message the *user* sent from another session is neither, so
+  that a pending question does not hold it, and it carries no `messageOrigin`.
+- `automatic` covers what does not come through a wake: a CI fix, and the
+  browser's own preview fix.
+- `systemTurn` and `messageOrigin` are not read. Every system turn that reaches
+  the decision is also automatic, and the one dispatch left with a
+  `messageOrigin` is a parent's first prompt to a new child, which has no merged
+  pull request.
+- The interactive drain reads the rule too. An automatic turn whose steer the
+  CLI did not take comes back as an "interactive" queue entry
+  (`steerToQueuedMessage`), so `runQueuedInteractiveMessage` decides for it.
+
+**Which size.** `UsageManager.latestContextTokens`: the last turn that read a
+context size, the number the context dial shows. Right after a compaction that
+number is wrong in a different way on each harness, and that is the case the
+floor is for: the compaction turn reports zero usage on Claude and Grok and no
+usage at all on OpenCode, so a plain "last turn" reads 0, or the size from
+*before* the compaction. So a compaction card newer than the last reading
+answers instead, with its `postTokens` (Claude, Codex), and with 0 where the
+harness gives none: just compacted is small. A zero-usage turn with no card —
+a `/compact` that failed — is not taken for a small context. An unknown size (no
 turn recorded yet) compacts as before.
 
 The floor does not gate the composer control. Req 3 forbids that, and there the
@@ -495,7 +508,7 @@ Advanced description names both.
 |---|---|
 | `orchestrator/compact-before-turn.ts` | The decision, which also records that this merge's compaction offer is spent; the post-merge `/compact` prompt; `noteMissedCompaction`. |
 | `orchestrator/services/pre-turn-reset.ts` | `compactedThisMerge`, `compactionSpent` on the eligibility signal; the `reset-failed` skip. |
-| `orchestrator/usage.ts` | `latestContextTokens`, the size req 15's floor reads. |
+| `orchestrator/usage.ts`, `orchestrator/chat-history.ts` | `latestContextTokens` and `latestCompactionCard`: the size req 15's floor reads. |
 | `orchestrator/wake-session.ts`, `prepared-dispatch.ts`, `session-runner.ts` | `unattended` on the dispatch and queue shapes, set for every wake turn (req 15). |
 | `client/stores/pr-store.ts`, `client/hooks/message-handlers/reset-eligible.ts` | `compactionSpentBySession`, set from the signal. |
 | `orchestrator/integration_tests/pre-turn-compaction-dispatched.test.ts` | The dispatched path against a real `origin`: reset, req 14's untick, a failed reset. |

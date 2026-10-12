@@ -22,6 +22,8 @@ import {
 import type { CredentialStore } from "../credential-store.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { UsageManager } from "../usage.js";
+import type { QueuedMessage } from "../session-runner.js";
 
 const SESSION_ID = "merged-session";
 const REPO_URL = "https://github.com/o/r.git";
@@ -263,6 +265,36 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.send({ type: "send_message", text: "second" });
     const next = await waitForClaude(() => spawns.at(-1) ?? (null as never), first);
     expect(next.lastPrompt).toContain("second");
+    expect(spawns.some((s) => s.lastCompact)).toBe(false);
+
+    client.close();
+  });
+
+  /**
+   * An automatic turn whose steer the CLI did not take comes back as an "interactive"
+   * queue entry (`steerToQueuedMessage`), so this drain decides for it, not the dispatched one.
+   */
+  it("applies the 50k floor to an automatic entry that this drain runs (req 15)", async () => {
+    beforeMerge();
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "first" });
+    const first = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    first.initSession("agent-a");
+
+    mergeLands();
+    const internals = app as unknown as {
+      usageManager: UsageManager;
+      runnerRegistry: { get(id: string): { enqueue(m: QueuedMessage): number } | undefined };
+    };
+    internals.usageManager.record(SESSION_ID, 0, 1000, 100, 10, { contextTokens: 20_000 });
+    internals.runnerRegistry.get(SESSION_ID)!
+      .enqueue({ text: "fix the preview errors", execution: "interactive", automatic: true });
+
+    first.finish("agent-a");
+    const next = await waitForClaude(() => spawns.at(-1) ?? (null as never), first);
+    expect(next.lastPrompt).toContain("fix the preview errors");
     expect(spawns.some((s) => s.lastCompact)).toBe(false);
 
     client.close();

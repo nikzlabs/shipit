@@ -26,6 +26,14 @@ export const POST_MERGE_COMPACT_PROMPT = `/compact ${POST_MERGE_COMPACTION_INSTR
 /** docs/295 req 15 — under this, a continuation with nobody at the composer is not compacted. */
 export const UNATTENDED_COMPACTION_FLOOR_TOKENS = 50_000;
 
+/**
+ * docs/295 req 15 — ShipIt started the turn (`unattended`, every wake) or the browser's own
+ * automation did (`automatic`): the composer's tick boxes were in front of nobody.
+ */
+export function startedUnattended(opts: { unattended?: boolean; automatic?: boolean }): boolean {
+  return opts.unattended === true || opts.automatic === true;
+}
+
 export const MISSED_COMPACTION_NOTICE =
   "The context was not compacted; the agent continues with the context as it was.";
 

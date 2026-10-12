@@ -511,7 +511,8 @@ export function createRunnerRegistry(
               createGitManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
               markCompacted: (id, anchor) => sessionManager.setMergeContinueCompacted(id, anchor),
-              getContextTokens: (id) => usageManager.latestContextTokens(id),
+              getContextTokens: (id) =>
+                usageManager.latestContextTokens(id, chatHistoryManager.latestCompactionCard(id)),
               ...(prStatusPoller
                 ? {
                     mergeRecheckDeps: {

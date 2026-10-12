@@ -188,6 +188,46 @@ describe("UsageManager", () => {
 
     expect(mgr.latestContextTokens("sess-1")).toBe(12_000);
   });
+
+  /**
+   * The case req 15 exists for: a session compacted shortly before. The compaction turn
+   * reads no context — zero usage (Claude, Grok) or no usage row at all (OpenCode).
+   */
+  describe("right after a compaction (docs/295 req 15)", () => {
+    const later = () => new Date(Date.now() + 5_000).toISOString();
+    const earlier = () => new Date(Date.now() - 60_000).toISOString();
+
+    it("answers with the compaction's own size, not the zero its turn reported", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 200_000 });
+      mgr.record("sess-1", 0, 500, 0, 0);
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: later(), postTokens: 60_000 })).toBe(60_000);
+    });
+
+    it("answers 0 when the harness gave no size, also with no usage row for the compaction", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: later() })).toBe(0);
+    });
+
+    it("keeps the last reading when a turn has run since the compaction", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 80_000 });
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: earlier(), postTokens: 10_000 })).toBe(80_000);
+    });
+
+    it("does not take a zero-usage turn for a small context when nothing was compacted", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+      // A `/compact` that failed: zero usage, no card.
+      mgr.record("sess-1", 0, 500, 0, 0);
+
+      expect(mgr.latestContextTokens("sess-1")).toBe(90_000);
+    });
+  });
 });
 
 describe("UsageManager — cumulative cost → per-turn delta", () => {
