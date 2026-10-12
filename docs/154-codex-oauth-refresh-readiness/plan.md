@@ -297,7 +297,18 @@ a copy would add the window in which a rotation exists only in the copy.
 Only the token host's answer to the refresh counts
 (`classifyCodexRefreshOutput`). The refresher reads the CLI's line
 `Failed to refresh token status=<status> … error_code: Some("<code>")`, after
-it removed the color codes that split `status=401`. Four codes are a rejected
+it removed the color codes that split `status=401` and the timestamp at the
+start of each line. Each line is read alone. Only spaces and tabs can stand
+before the timestamp that is removed: a rule that crossed lines read a run of
+blank lines once per line, and on the refresher's path (the strip runs at the
+CLI's end and again in the classifier) 128 000 newlines took about 20 s on the
+orchestrator's main thread, now about 10 ms. Blank lines before a timestamp now
+stay; neither the classifier nor the summary reads a blank line. Other
+whitespace before a timestamp (`\v`, a no-break space) now keeps the timestamp
+in the reason; the classifier reads no timestamp. In CR LF text
+the old rule also removed the LF before each timestamp line, so the classifier
+read a phrase and a code from two lines as one line. CLI 0.159.2 writes LF only.
+Four codes are a rejected
 grant: `refresh_token_reused`, `refresh_token_invalidated`,
 `refresh_token_expired` and `invalid_grant`. Another 401 from the token host
 (`invalid_client`, or no code), a 401 from the model API, a timeout, a 429 and a

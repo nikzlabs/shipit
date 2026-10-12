@@ -428,6 +428,16 @@ Three changes, no new subsystem:
    `git@github.com:org/repo.git` also reads as an address. The Codex refresher
    replaces an address before this summary as well, for its classifier
    (docs/154).
+   A JSON value is redacted when its key (letters and `_`) holds `token`,
+   `secret`, `key`, `password`, `passwd` or `auth`, for a key of any length.
+   The rule finds the word in a lookahead, which does not backtrack. The earlier
+   form went back to each word in a run of letters: a quote before 128 000
+   characters of `tokentoken…` took 2.4 s on the orchestrator's main thread, now
+   0.3 ms. Two simpler fixes are also linear but redact less: a bound on the key
+   length misses long keys, and a rule that takes any key and then tests it
+   misses a key whose first quote also closes the value before it
+   (`"a": "b"token": "c"`). On 2 000 000 random
+   texts of keys and values, the new rule gives the same text as the old one.
    What the refresher itself saw is a note in the same text, on a line of its
    own that starts with a lower-case tag: `[error]` and `[spawn-failed]` (the
    CLI did not start), `[timeout]`, `[probe-home-failed]`, `[private-run-open]`

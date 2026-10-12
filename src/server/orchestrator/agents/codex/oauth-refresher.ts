@@ -83,9 +83,10 @@ const REJECTION_MESSAGES: readonly (readonly [string, string])[] = [
 // Color codes split `status=401`, and a timestamp uses up a third of a reason line's length.
 // The email stays here, although the reason's summary replaces one too: the classifier reads this
 // text, and "status=429@example.com" must not start to read as a 429.
+// Only spaces and tabs before a timestamp: a `\s*` that crosses lines reads a run of blank lines once per line.
 function stripLogDecoration(text: string): string {
   return stripAnsi(text)
-    .replace(/^\s*\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+/gm, "")
+    .replace(/^[ \t]*\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+/gm, "")
     .replace(/[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+/g, "[email]");
 }
 
