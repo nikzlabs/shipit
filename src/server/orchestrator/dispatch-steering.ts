@@ -9,11 +9,13 @@ import {
 import type { FileAttachment, FileContextRef, ImageAttachment, UploadRef } from "../shared/types.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
-import { currentTurnAttempt, turnTakesMessages } from "./turn-stop-request.js";
+import { currentTurnAttempt, setSteerRefused, steerRefused, turnTakesMessages } from "./turn-stop-request.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
 import { imageHash, imageUrl } from "./transcript-projection.js";
 import { TURN_STEERED } from "./turn-settlement.js";
+import { isCompactCommand } from "../shared/compact-command.js";
+import { parseGoalCommand } from "../shared/goal-command.js";
 
 // Callers must check that a resident agent exists.
 export interface SteerDecisionInputs {
@@ -154,17 +156,37 @@ export function trySteerDispatch(
   return true;
 }
 
-/** A message that the user wrote in this chat, and that waits in the queue. */
+/**
+ * A message that the user wrote in this chat, and that waits in the queue. Not a command of
+ * the harness: steered text is not read as one, so `/compact` and `/goal` keep their turn.
+ */
 function isWaitingUserMessage(entry: QueuedMessage): boolean {
-  return entry.execution === "interactive" && entry.automatic !== true;
+  return entry.execution === "interactive"
+    && entry.automatic !== true
+    && !isCompactCommand(entry.text)
+    && parseGoalCommand(entry.text) === null;
 }
+
+/** A newer message of the user's must not pass one that still waits; see `deliverWaitingMessages`. */
+export function userMessageWaits(runner: Pick<SessionRunnerInterface, "messageQueue">): boolean {
+  return runner.messageQueue.some(isWaitingUserMessage);
+}
+
+/** The turn attempt that a delivery runs for now. */
+const delivering = new WeakMap<object, object | undefined>();
+
+/** An entry that could not be prepared reports why when it runs as a turn of its own. */
+const unprepared = new WeakSet<QueuedMessage>();
 
 /**
  * docs/329-user-steers-every-turn req 2 — the agent now has the prompt of the turn that
  * started, so what the user sent while no agent could read it goes into that turn, in the
- * order it was sent. One entry at a time: the preparation awaits, and the turn can end or be
- * replaced meanwhile, so the steer is decided again before each write, and an entry leaves
- * the queue only when it is written.
+ * order it was sent. One entry at a time: the preparation awaits, and the turn can end, be
+ * stopped or be replaced meanwhile, so the steer is decided again before each write.
+ *
+ * One delivery runs for a turn attempt, because the next message must wait for the agent's
+ * answer to the one before it. A call while it runs adds nothing: the loop reads the queue
+ * again before each message.
  */
 export async function deliverWaitingMessages(
   runner: SessionRunnerInterface,
@@ -173,10 +195,16 @@ export async function deliverWaitingMessages(
   const steer = deps.steerInputs?.();
   if (!steer) return;
   const attempt = currentTurnAttempt(runner);
+  if (delivering.has(runner) && delivering.get(runner) === attempt) return;
+  delivering.set(runner, attempt);
+
   const takesMessagesNow = (): boolean =>
     !runner.disposed
     && currentTurnAttempt(runner) === attempt
     && !runner.mergeHold
+    // A Stop, or a question of the agent's: the turn is ending, though `running` is still set.
+    && !runner.wasInterrupted
+    && !steerRefused(runner)
     && shouldSteerMessage({
       steeringCapable: steer.steeringCapable,
       liveSteering: steer.liveSteering,
@@ -184,58 +212,88 @@ export async function deliverWaitingMessages(
       systemTurnInProgress: runner.systemTurnInProgress,
       takesMessages: turnTakesMessages(runner),
     });
-  // An entry that cannot be prepared reports why when it runs as a turn of its own.
-  const unprepared = new Set<QueuedMessage>();
 
-  for (;;) {
-    if (!takesMessagesNow()) return;
-    const entry = runner.messageQueue.find((m) => isWaitingUserMessage(m) && !unprepared.has(m));
-    if (!entry) return;
-    const prepared = await prepareSteer(runner.sessionDir, entry);
-    if ("error" in prepared) {
-      unprepared.add(entry);
-      continue;
-    }
-    if (!takesMessagesNow()) return;
-    const agent = runner.getAgent();
-    const index = runner.messageQueue.indexOf(entry);
-    if (!agent) return;
-    if (index === -1) continue;
+  try {
+    for (;;) {
+      if (!takesMessagesNow()) return;
+      const entry = runner.messageQueue.find((m) => isWaitingUserMessage(m) && !unprepared.has(m));
+      if (!entry) return;
+      const prepared = await prepareSteer(runner.sessionDir, entry);
+      if ("error" in prepared) {
+        unprepared.add(entry);
+        continue;
+      }
+      if (!takesMessagesNow()) return;
+      const agent = runner.getAgent();
+      const index = runner.messageQueue.indexOf(entry);
+      if (!agent) return;
+      if (index === -1) continue;
 
-    runner.messageQueue.splice(index, 1);
-    if (runner.appliedPermissionMode !== entry.permissionMode && agent.setPermissionMode) {
-      agent.setPermissionMode(entry.permissionMode);
-      runner.appliedPermissionMode = entry.permissionMode;
+      runner.messageQueue.splice(index, 1);
+      try {
+        if (runner.appliedPermissionMode !== entry.permissionMode && agent.setPermissionMode) {
+          agent.setPermissionMode(entry.permissionMode);
+          runner.appliedPermissionMode = entry.permissionMode;
+        }
+        agent.sendUserMessage(prepared.prompt);
+      } catch (err) {
+        // Not written: the entry is still the user's next message.
+        runner.messageQueue.splice(index, 0, entry);
+        throw err;
+      }
+      // Written: from here a failure must not leave the entry's handle open.
+      try {
+        recordDelivered(runner, deps, entry, prepared);
+      } catch (err) {
+        console.error(`[steer] recording a delivered message for ${runner.sessionId} failed:`, err);
+      }
+      try {
+        entry.onTurnComplete?.(TURN_STEERED);
+      } catch (err) {
+        console.error(`[steer] the callback of a delivered message for ${runner.sessionId} threw:`, err);
+      }
+      // In order: the next message goes in after the agent has this one. A refusal puts the
+      // message back in the queue by its own path (`agent_steer_rejected`), and the loop must
+      // not send it again: the mark, read above, stops it. The worker can also accept the
+      // write and the harness refuse it later; the listener of that event sets the same mark.
+      try {
+        await agent.submissionSettled?.();
+      } catch {
+        if (currentTurnAttempt(runner) === attempt) setSteerRefused(runner, true);
+        return;
+      }
     }
-    agent.sendUserMessage(prepared.prompt);
-    resetSubAgentSpawnBudget(runner);
-    recordSteeredMessage(runner, entry.text, {
-      images: prepared.images,
-      files: prepared.files,
-      uploadPaths: prepared.uploadPaths,
-      assembledPrompt: prepared.prompt,
-    });
-    persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
-    // `dequeued` puts the bubble back in the transcript, where the steer below finds it.
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot(), dequeued: entry.text });
-    runner.emitMessage({
-      type: "message_steered",
-      text: entry.text,
-      sessionId: runner.sessionId,
-      images: prepared.images?.map((img) => ({
-        mediaType: img.mediaType,
-        src: imageUrl(runner.sessionId, imageHash(img.data)),
-      })),
-      files: prepared.files,
-      uploadPaths: prepared.uploadPaths,
-    });
-    try {
-      entry.onTurnComplete?.(TURN_STEERED);
-    } catch (err) {
-      console.error(`[steer] the callback of a delivered message for ${runner.sessionId} threw:`, err);
-    }
-    // In order: the next message goes in after the agent has this one. A rejected write
-    // puts the message back in the queue by its own path (`agent_steer_rejected`).
-    await agent.submissionSettled?.()?.catch(() => {});
+  } finally {
+    if (delivering.get(runner) === attempt) delivering.delete(runner);
   }
+}
+
+function recordDelivered(
+  runner: SessionRunnerInterface,
+  deps: SystemTurnDeps,
+  entry: QueuedMessage,
+  prepared: PreparedSteer,
+): void {
+  resetSubAgentSpawnBudget(runner);
+  recordSteeredMessage(runner, entry.text, {
+    images: prepared.images,
+    files: prepared.files,
+    uploadPaths: prepared.uploadPaths,
+    assembledPrompt: prepared.prompt,
+  });
+  persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
+  // `dequeued` gives the sender's browser its composed bubble back, as a drained entry does;
+  // the steer below then finds that bubble, also when an earlier message had the same text.
+  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot(), dequeued: entry.text });
+  runner.emitMessage({
+    type: "message_steered",
+    text: entry.text,
+    sessionId: runner.sessionId,
+    images: prepared.images?.map((img) => ({
+      mediaType: img.mediaType,
+      src: imageUrl(runner.sessionId, imageHash(img.data)),
+    })),
+    files: prepared.files,
+    uploadPaths: prepared.uploadPaths,
+  });
 }

@@ -35,7 +35,7 @@
 - [x] A waiting message with an attachment is delivered too
 - [x] An answer takes the admission of a typed message
 - [x] Tests, with a mutation check for each new one
-- [ ] Independent review of the diff against every numbered requirement
+- [x] Independent review of the diff against every numbered requirement
 - [x] The agent-facing docs and the wiki
 
 ## Part 3 — the session hold, and the last two turns

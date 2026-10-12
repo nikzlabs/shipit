@@ -14,7 +14,7 @@ import { persistCardTransition } from "../chat-card-persistence.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { decideCompactBeforeTurn, runCompactionAhead, runAgentWithMessage } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { prepareSteer, shouldSteerMessage } from "../dispatch-steering.js";
+import { prepareSteer, shouldSteerMessage, userMessageWaits } from "../dispatch-steering.js";
 import { currentTurnPhase, turnInSetup, turnTakesMessages } from "../turn-stop-request.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { turnCommitSettled } from "../turn-admission.js";
@@ -280,7 +280,9 @@ async function decideAndRunSend(
       const streamingActive = runnerForQueue.isStreamingActive;
       const systemTurnInProgress = runnerForQueue.systemTurnInProgress;
 
-      if (!heldByMerge && shouldSteerMessage({
+      // A newer message does not pass an earlier one that still waits: the queue keeps the
+      // order, and the delivery gives both to the turn (`deliverWaitingMessages`).
+      if (!heldByMerge && !userMessageWaits(runnerForQueue) && shouldSteerMessage({
         steeringCapable,
         liveSteering,
         streamingActive,
@@ -312,7 +314,8 @@ async function decideAndRunSend(
           // while the finished one commits; the message takes admission instead. A turn that
           // can take the steer gets it here, because a dispatch steers the text alone.
           const steerTarget = runnerForQueue.getAgent();
-          const steerableNow = steerTarget !== null && !runnerForQueue.mergeHold && shouldSteerMessage({
+          const steerableNow = steerTarget !== null && !runnerForQueue.mergeHold
+            && !userMessageWaits(runnerForQueue) && shouldSteerMessage({
             steeringCapable,
             liveSteering,
             streamingActive: runnerForQueue.isStreamingActive,

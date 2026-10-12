@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SessionRunner, type SystemTurnDeps } from "../session-runner.js";
 import { adoptInFlightTurn } from "../turn-adoption.js";
-import { turnTakesMessages } from "../turn-stop-request.js";
+import { steerRefused, turnAwaitsAgent, turnTakesMessages } from "../turn-stop-request.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import {
   makeDispatchTurnDeps,
@@ -86,6 +86,115 @@ describe("when a turn takes messages", () => {
 
     expect(runner.running).toBe(true);
     expect(turnTakesMessages(runner)).toBe(true);
+  });
+
+  it("does not for a turn in setup when the CLI wakes by itself on the same process", async () => {
+    runner.dispatch(testDispatch({ text: "work" }));
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "the prompt submitted");
+    const resident = agents[0]!;
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => !runner.running, "the turn ended");
+
+    let release: () => void = () => {};
+    (deps.prepareAgentEnv as unknown) = vi.fn(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return undefined;
+    });
+    runner.dispatch(testDispatch({ text: "next" }));
+    await waitForTurn(() => (deps.prepareAgentEnv as ReturnType<typeof vi.fn>).mock.calls.length === 1, "the next turn's setup");
+
+    // The wake belongs to the CLI's own turn. It must not say the agent has the prompt of "next".
+    resident.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    expect(turnTakesMessages(runner)).toBe(false);
+
+    release();
+    await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "the prompt sent");
+    expect(turnTakesMessages(runner)).toBe(true);
+  });
+
+  it("gives a turn that the CLI starts what the user sent before it", async () => {
+    runner.dispatch(testDispatch({ text: "work" }));
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "the prompt submitted");
+    const resident = agents[0]!;
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => !runner.running && !runner.postTurnWorkInFlight, "the turn ended");
+    runner.enqueue({ text: "waits in the queue", execution: "interactive" });
+
+    resident.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+
+    await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "the waiting message delivered");
+    expect(String(resident.sendUserMessage.mock.calls[0]?.[0])).toBe("waits in the queue");
+  });
+
+  it("gives an adopted turn what waits in the queue", async () => {
+    const adopted = makeFakeAgent();
+    runner.setAgent(adopted as unknown as AgentProcess);
+    runner.enqueue({ text: "waits in the queue", execution: "interactive" });
+
+    await adoptInFlightTurn(runner, deps, adopted as unknown as AgentProcess, {
+      agentId: "claude" as AgentId,
+      streaming: true,
+    });
+
+    await waitForTurn(() => adopted.sendUserMessage.mock.calls.length === 1, "the waiting message delivered");
+    expect(String(adopted.sendUserMessage.mock.calls[0]?.[0])).toBe("waits in the queue");
+  });
+
+  it("stops shielding a claim whose prompt the agent refused, and asks the runner to check", async () => {
+    runner.dispatch(testDispatch({ text: "work" }));
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "the prompt submitted");
+    const resident = agents[0]! as FakeAgent & { submissionSettled?: () => Promise<void> };
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => !runner.running && !runner.postTurnWorkInFlight, "the turn ended");
+
+    // The resident is gone on the worker: its answer to the next prompt is a refusal.
+    resident.submissionSettled = () => Promise.reject(new Error("No agent running"));
+    const verify = vi.spyOn(runner, "verifyRunningState");
+    runner.dispatch(testDispatch({ text: "next" }));
+    await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "the prompt sent");
+    await waitForTurn(() => verify.mock.calls.length === 1, "the runner asked to check");
+
+    expect(turnTakesMessages(runner)).toBe(false);
+    expect(turnAwaitsAgent(runner)).toBe(false);
+  });
+
+  it("notes a steer that the harness refuses, and puts the message back in the queue", async () => {
+    runner.dispatch(testDispatch({ text: "work" }));
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "the prompt submitted");
+    const handle = runner.dispatch(testDispatch({ text: "change course", execution: "interactive" }));
+    expect(handle.admitted).toBe("steered");
+
+    agents[0]!.emit("event", { type: "agent_steer_rejected", text: "change course" });
+
+    expect(steerRefused(runner)).toBe(true);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["change course"]);
+    // The agent speaks again; that must not send the refused message a second time.
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(agents[0]!.sendUserMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not stop the user's messages when the harness refuses a notice from another source", async () => {
+    runner.dispatch(testDispatch({ text: "work" }));
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "the prompt submitted");
+    const notice = runner.dispatch(
+      testDispatch({ text: "you have messages", automatic: true, bestEffortSteer: true }),
+      { whenBusy: "steer-or-refuse" },
+    );
+    expect(notice.admitted).toBe("steered");
+
+    agents[0]!.emit("event", { type: "agent_steer_rejected", text: "you have messages" });
+
+    expect(steerRefused(runner)).toBe(false);
+    expect(runner.queueLength).toBe(0);
+
+    // One that goes back to the queue is still not the user's.
+    const fromAChild = runner.dispatch(testDispatch({ text: "a child's report", automatic: true }));
+    expect(fromAChild.admitted).toBe("steered");
+    agents[0]!.emit("event", { type: "agent_steer_rejected", text: "a child's report" });
+
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["a child's report"]);
+    expect(steerRefused(runner)).toBe(false);
   });
 
   it("does for a turn adopted after an orchestrator restart", async () => {

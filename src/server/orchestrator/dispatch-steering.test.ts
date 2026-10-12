@@ -4,9 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentId } from "../shared/types.js";
 import { SessionRunner, type QueuedMessage, type SystemTurnDeps } from "./session-runner.js";
-import { deliverWaitingMessages, prepareSteer } from "./dispatch-steering.js";
-import { beginTurnSetup, noteCompactionTurn, noteTurnReady } from "./turn-stop-request.js";
+import { deliverWaitingMessages, prepareSteer, userMessageWaits } from "./dispatch-steering.js";
+import {
+  beginTurnSetup,
+  noteCompactionTurn,
+  noteTurnReady,
+  setSteerRefused,
+  steerRefused,
+} from "./turn-stop-request.js";
 import type { TurnOutcome } from "./turn-settlement.js";
+import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 
 // docs/329-user-steers-every-turn req 2 — what the user sent while no agent could read it
 // goes into the turn that starts.
@@ -39,6 +46,7 @@ describe("deliverWaitingMessages", () => {
     runner.setAgent({
       sendUserMessage: (t: string) => { sent.push(t); afterWrite(); },
       setPermissionMode,
+      emit: () => true,
       kill: () => {},
     } as never);
     runner.running = true;
@@ -61,8 +69,141 @@ describe("deliverWaitingMessages", () => {
     expect(runner.queueLength).toBe(0);
     expect(runner.steeredMessages.map((s) => s.text)).toEqual(["first", "second"]);
     expect(received.filter((m) => m.type === "message_steered").map((m) => m.text)).toEqual(["first", "second"]);
-    // `dequeued` is what puts the bubble back in the transcript on the client.
-    expect(received.filter((m) => m.type === "queue_updated").map((m) => m.dequeued)).toEqual(["first", "second"]);
+    // `dequeued` gives the sender's browser its composed bubble back, before the steer event.
+    expect(received.filter((m) => m.type === "queue_updated" || m.type === "message_steered")
+      .map((m) => (m.type === "queue_updated" ? `dequeued:${String(m.dequeued)}` : `steered:${String(m.text)}`)))
+      .toEqual(["dequeued:first", "steered:first", "dequeued:second", "steered:second"]);
+  });
+
+  it("puts the attachment on the steer event, for a viewer that has no bubble of its own", async () => {
+    fs.writeFileSync(path.join(dir, "note.txt"), "words\n");
+    runner.enqueue(typed("read this note", { files: [{ path: "note.txt" }] }));
+
+    await deliverWaitingMessages(runner, deps());
+
+    const steered = received.find((m) => m.type === "message_steered") as { files?: { path: string }[] } | undefined;
+    expect(steered?.files?.map((f) => f.path)).toEqual(["note.txt"]);
+  });
+
+  it.each(["/compact", "/compact keep the API notes", "/goal ship the release"])(
+    "leaves the harness command %s to a turn of its own",
+    async (command) => {
+      runner.enqueue(typed(command));
+      runner.enqueue(typed("plain"));
+
+      await deliverWaitingMessages(runner, deps());
+
+      expect(sent).toEqual(["plain"]);
+      expect(runner.messageQueue.map((m) => m.text)).toEqual([command]);
+      expect(userMessageWaits(runner)).toBe(false);
+    },
+  );
+
+  it("writes nothing after a Stop, though the turn still holds the runner", async () => {
+    runner.enqueue(typed("waits"));
+
+    const delivery = deliverWaitingMessages(runner, deps());
+    runner.wasInterrupted = true;
+    await delivery;
+
+    expect(sent).toEqual([]);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["waits"]);
+  });
+
+  it("stops when the agent refuses a message, and does not send for that turn again", async () => {
+    let refuse = true;
+    runner.setAgent({
+      sendUserMessage: (t: string) => { sent.push(t); },
+      submissionSettled: () => (refuse ? Promise.reject(new Error("No agent running")) : Promise.resolve()),
+      emit: () => true,
+      kill: () => {},
+    } as never);
+    runner.enqueue(typed("first"));
+    runner.enqueue(typed("second"));
+
+    await deliverWaitingMessages(runner, deps());
+    expect(sent).toEqual(["first"]);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["second"]);
+
+    // The refused message comes back to the queue by its own path; nothing sends it again.
+    runner.enqueue(typed("first"));
+    refuse = false;
+    await deliverWaitingMessages(runner, deps());
+    expect(sent).toEqual(["first"]);
+
+    // The next turn starts with a clean record.
+    runner.running = false;
+    runner.running = true;
+    noteTurnReady(runner);
+    await deliverWaitingMessages(runner, deps());
+    expect(sent).toEqual(["first", "second", "first"]);
+  });
+
+  it("keeps a message whose write throws, at its place in the queue", async () => {
+    afterWrite = () => { throw new Error("the process is gone"); };
+    const outcomes: TurnOutcome[] = [];
+    runner.enqueue(typed("first", { onTurnComplete: (o) => outcomes.push(o) }));
+    runner.enqueue(typed("second"));
+
+    await expect(deliverWaitingMessages(runner, deps())).rejects.toThrow("the process is gone");
+
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["first", "second"]);
+    expect(runner.steeredMessages).toEqual([]);
+    expect(outcomes).toEqual([]);
+  });
+
+  it("settles the handle of a written message even when the transcript cannot be saved", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = deps();
+    (failing.listenerDeps.chatHistoryManager as unknown as { replaceInProgress: () => void }).replaceInProgress =
+      () => { throw new Error("database connection is not open"); };
+    const outcomes: TurnOutcome[] = [];
+    runner.enqueue(typed("first", { onTurnComplete: (o) => outcomes.push(o) }));
+    runner.enqueue(typed("second"));
+
+    await deliverWaitingMessages(runner, failing);
+
+    expect(sent).toEqual(["first", "second"]);
+    expect(outcomes.map((o) => o.status)).toEqual(["steered"]);
+    vi.restoreAllMocks();
+  });
+
+  it("waits for the agent's answer to one message before it writes the next, also when called again", async () => {
+    let accept: () => void = () => {};
+    const answered = new Promise<void>((resolve) => { accept = resolve; });
+    runner.setAgent({
+      sendUserMessage: (t: string) => { sent.push(t); },
+      submissionSettled: () => answered,
+      emit: () => true,
+      kill: () => {},
+    } as never);
+    runner.enqueue(typed("first"));
+    runner.enqueue(typed("second"));
+
+    const delivery = deliverWaitingMessages(runner, deps());
+    await vi.waitFor(() => expect(sent).toEqual(["first"]));
+    // A second call, as an event of the agent makes, must not write past the open answer.
+    await deliverWaitingMessages(runner, deps());
+    expect(sent).toEqual(["first"]);
+
+    accept();
+    await delivery;
+    expect(sent).toEqual(["first", "second"]);
+  });
+
+  it("stops when the harness refuses a message that the worker accepted", async () => {
+    runner.enqueue(typed("first"));
+    runner.enqueue(typed("second"));
+    // What the listener of `agent_steer_rejected` does: the message is back in the queue.
+    afterWrite = () => {
+      setSteerRefused(runner, true);
+      runner.enqueue(typed("first"));
+    };
+
+    await deliverWaitingMessages(runner, deps());
+
+    expect(sent).toEqual(["first"]);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["second", "first"]);
   });
 
   it("leaves a turn of another source in the queue, and takes the user's message from behind it", async () => {
@@ -174,6 +315,65 @@ describe("deliverWaitingMessages", () => {
 
     expect(setPermissionMode).toHaveBeenCalledWith("plan");
     expect(runner.appliedPermissionMode).toBe("plan");
+  });
+});
+
+// The order of the user's own messages, when one of them still waits.
+describe("a message of the user's behind one that waits", () => {
+  let dir: string;
+  let runner: SessionRunner;
+  let sent: string[];
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-deliver-order-"));
+    sent = [];
+    runner = new SessionRunner({ sessionId: "s1", sessionDir: dir, defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps({
+      listenerDeps: { chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } },
+      steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
+    } as unknown as SystemTurnDeps);
+    runner.setAgent({ sendUserMessage: (t: string) => { sent.push(t); }, emit: () => true, kill: () => {} } as never);
+    runner.running = true;
+    runner.isStreamingActive = true;
+    noteTurnReady(runner);
+    fs.writeFileSync(path.join(dir, "note.txt"), "words\n");
+    runner.enqueue({ text: "the earlier request", execution: "interactive", files: [{ path: "note.txt" }] });
+  });
+
+  afterEach(() => {
+    runner.dispose({ force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("joins the queue, and both reach the agent in the order they were sent", async () => {
+    const handle = runner.dispatch(testDispatch({ text: "a newer correction", execution: "interactive" }));
+
+    expect(handle.admitted).toBe("queued");
+    expect(sent).toEqual([]);
+
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[0]).toContain("the earlier request");
+    expect(sent[1]).toBe("a newer correction");
+    expect((await handle.settled).status).toBe("steered");
+    expect(runner.queueLength).toBe(0);
+  });
+
+  it("tries one time more after a refusal, when the user sends a new message", async () => {
+    setSteerRefused(runner, true);
+
+    runner.dispatch(testDispatch({ text: "a newer correction", execution: "interactive" }));
+
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[0]).toContain("the earlier request");
+    expect(sent[1]).toBe("a newer correction");
+    expect(steerRefused(runner)).toBe(false);
+  });
+
+  it("does not hold back a message from another source", () => {
+    const handle = runner.dispatch(testDispatch({ text: "from a page", execution: "dispatched" }));
+
+    expect(handle.admitted).toBe("steered");
+    expect(sent).toEqual(["from a page"]);
   });
 });
 

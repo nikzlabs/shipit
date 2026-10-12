@@ -344,6 +344,8 @@ export class CodexAdapter
     });
 
     this.eventHandler.initializeAndRun(params).catch((err: unknown) => {
+      // No turn started, and a later one of this process must not get what was kept for it.
+      this.rejectEarlySteers();
       const error = err instanceof Error ? err : new Error(String(err));
       // The exit already reported this run's end through done.
       if (exited) this.emit("log", "codex", `startup ended by process exit: ${error.message}`);

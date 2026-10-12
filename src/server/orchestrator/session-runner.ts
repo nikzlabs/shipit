@@ -36,7 +36,7 @@ import {
   systemTurnBlockedByResidentWork,
   turnBlockedByPendingCommit,
 } from "./turn-admission.js";
-import { trySteerDispatch } from "./dispatch-steering.js";
+import { deliverWaitingMessages, trySteerDispatch, userMessageWaits } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 import {
   createCommittedBodyIds,
@@ -68,7 +68,7 @@ import {
   type TurnOutcome,
 } from "./turn-settlement.js";
 import { PostTurnHold } from "./post-turn-hold.js";
-import { beginTurnSetup } from "./turn-stop-request.js";
+import { beginTurnSetup, setSteerRefused } from "./turn-stop-request.js";
 export {
   prepareDispatch,
   queuedMessageToDispatchOptions,
@@ -298,7 +298,11 @@ export function dispatchOnRunner(
       && (runner.awaitingUserAnswer || runner.answerHold);
     // A caller that named `refuse` or `queue` wants its own turn; steering delivers into someone else's.
     const maySteer = admission === undefined || admission.whenBusy === "steer-or-refuse";
-    if (maySteer && !endingOnQuestion) {
+    // docs/329-user-steers-every-turn — a message of the user's does not pass an earlier one
+    // that still waits: it joins the queue, and the delivery gives both in order.
+    const behindUserMessage = opts.execution === "interactive" && opts.automatic !== true
+      && userMessageWaits(runner);
+    if (maySteer && !endingOnQuestion && !behindUserMessage) {
       // Test steering before attaching settlement: a completion callback makes a dispatch unsteerable.
       if (deps && trySteerDispatch(runner, opts, deps)) {
         settlement.noteAdmission("steered");
@@ -306,7 +310,15 @@ export function dispatchOnRunner(
         return settlement;
       }
     }
-    return enqueueOrRefuse("another turn is already running on this session");
+    const waiting = enqueueOrRefuse("another turn is already running on this session");
+    if (deps && behindUserMessage) {
+      // A refusal stopped the delivery for this turn; the user's new message tries one time more.
+      setSteerRefused(runner, false);
+      void deliverWaitingMessages(runner, deps).catch((err: unknown) => {
+        console.error(`[dispatch] delivering the waiting messages of ${runner.sessionId} failed:`, err);
+      });
+    }
+    return waiting;
   }
   if (!deps) return enqueueOrRefuse("this session's runner has no system-turn dependencies wired");
 

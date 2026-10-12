@@ -189,10 +189,12 @@ the queue, in the order it was sent.
 - **`ready` is set** when the submission of the turn's own prompt is accepted
   (`AgentProcess.submissionSettled` resolved; at once for a process with no
   such promise), when the CLI reads the prompt back, and when ShipIt adopts a
-  turn that the CLI started or that survived an orchestrator restart. The
-  executor captures the phase at its start and sets `ready` only on that same
-  phase while the runner still runs it, so a late answer cannot mark the next
-  turn. A retry (`reopenTurnSetup`) clears it.
+  turn that survived an orchestrator restart or that the CLI started by
+  itself. That last case marks only the turn that the adoption began: a wake of
+  the CLI during another turn's setup says nothing about that turn's prompt.
+  Each attempt of a turn has a token, and an answer marks only the attempt it
+  belongs to, so a late answer cannot mark a retry or the next turn. A retry
+  (`reopenTurnSetup`) clears `ready`.
 - **`compaction`** is set by the executor from `TurnInput.compact`, for each
   attempt, whoever started the turn.
 - **Codex.** Its adapter drops a steer that arrives before the turn has an id
@@ -211,29 +213,53 @@ the queue, in the order it was sent.
 
 ### A waiting message enters the turn that starts
 
-When a turn becomes `ready` on a process that takes input, the executor starts
-`deliverWaitingMessages` (`dispatch-steering.ts`).
+`deliverWaitingMessages` (`dispatch-steering.ts`) gives the user's waiting
+messages to the running turn. It starts when a turn becomes `ready`, when
+ShipIt adopts a turn of the CLI's own, and when a message of the user's joins
+the queue behind one that still waits.
 
 - **Which entries.** The messages that the user wrote in this chat: queue
   entries with `execution: "interactive"`. The typed path and the answer path
   are the callers that queue them, and a typed steer that the agent did not
   read goes back as one. A child's first prompt, a scheduled run's prompt, a
   click on Fix CI and a message from a page keep their own turn: none is the
-  user's message to the agent that works now. No new field is needed.
+  user's message to the agent that works now. A command of the harness
+  (`/compact`, `/goal`) keeps its turn too: steered text is not read as a
+  command.
 - **Attachments.** A typed steer resolves files and uploads, saves images and
-  assembles the prompt before it writes to the agent (`send-message.ts`). That
-  code moves to one function, unchanged, which the typed path and the delivery
-  both call.
-- **One entry at a time.** The delivery holds the phase it started for. For
-  each entry it prepares the message while the entry stays in the queue, then
-  checks that the same phase still takes messages, and only then takes the
-  entry out, writes it, records it as a steered message and tells the viewers.
-  An entry that cannot be prepared stays in the queue and reports its error
-  when it runs. When the check fails the delivery ends, and the queue keeps
-  the rest.
-- **The handle** of a delivered entry settles as `steered`.
-- A steer that the agent rejects or does not read goes back to the queue by
-  the paths that exist (`agent_steer_rejected`, `requeueUndeliveredSteers`).
+  assembles the prompt before it writes to the agent. That code moved to
+  `prepareSteer`, which the typed path and the delivery both call.
+- **One entry at a time, one delivery for a turn attempt.** For each entry the
+  delivery prepares the message while the entry stays in the queue, then
+  decides the steer again, takes the entry out in the same step as the write,
+  and waits until the worker has accepted the write before the next entry. The decision reads
+  the turn attempt it started for, a Stop or a question (`wasInterrupted`), a
+  refusal (below), and every condition of a live steer. A call while a
+  delivery runs adds nothing: the loop reads the queue again before each
+  entry. An entry that cannot be prepared is not tried again; it reports its
+  error when it runs as a turn.
+- **The user's own order.** A newer message of the user's does not pass one
+  that still waits: both steer paths put it in the queue, and the delivery
+  gives them in order. A message from another source is not held back by this.
+  A refusal changes the order: the refused message goes to the end of the
+  queue, as before this part.
+- **A refusal stops the sending.** The agent's refusal puts the message back
+  in the queue by the path that exists (`agent_steer_rejected`). Two things
+  can refuse: the worker's answer to the write, and the harness later, after
+  the worker accepted it. Both set a mark on the turn attempt
+  (`setSteerRefused`), and the delivery sends nothing while the mark is set.
+  Only a message of the user's that goes back to the queue sets it; a refused
+  notice from another source does not.
+  A new message from the user clears it and tries one time more, in order.
+  With no new message, the queue's drain runs the messages after the turn, as
+  before this part.
+- **After the write** the entry's handle settles as `steered`, also when the
+  transcript cannot be saved. A write that throws leaves the entry at its
+  place in the queue.
+- **What the viewers get.** A queue update with `dequeued`, as for an entry
+  that the queue's drain starts, and then the `message_steered` event. The
+  sender's browser gets its composed bubble back; a second viewer gets the
+  text, and the attachments after a reload.
 
 ### A turn in setup is not a stuck turn
 
@@ -241,15 +267,22 @@ When a turn becomes `ready` on a process that takes input, the executor starts
 `turn_abandoned` and releases the queue when the worker reports no agent. From
 a turn's claim until the worker records `/agent/start`, that is the normal
 state. A typed message calls it on every send while a turn runs; outside a
-hold the message then starts a second turn beside the one in setup.
+hold the message then started a second turn beside the one in setup.
 
 - The function leaves a claim alone while its phase is not ready and the
   claim is younger than `TURN_SETUP_MAX_MS` (10 minutes: longer than a setup
-  that works, shorter than a session left stuck).
-- After that bound it clears the claim as today. The setup that it gave up on
-  may still go on, so the executor checks, where it submits the prompt, that
-  no newer turn has the runner or the process, and ends the attempt without a
-  submission when one has.
+  that works, shorter than a session left stuck). This is a grace period for
+  the check, not a deadline: after it, a later check clears the claim as
+  before, when the worker reports no agent.
+- **A refused prompt ends the grace.** A resident process that is gone refuses
+  the turn's prompt, and that refusal is only logged
+  (`ProxyAgentProcess.sendUserMessage`). The executor now marks the attempt
+  as refused and asks the runner to check at once.
+- **A turn that was settled during its setup does not submit its prompt.** A
+  newer turn took the process or its slot (`reused`, `superseded`), or the
+  agent ended. The executor does not read `running` or the phase for this: a
+  turn of the CLI's own clears the one and starts the other during a setup,
+  and the prompt must still go in. A displaced turn settles `dropped`.
 - The check used to repair one more case by accident: a typed turn that
   throws before it has an agent leaves `running` set, and the next message
   cleared it. That turn now ends its own claim (`send-message.ts` →
@@ -281,8 +314,9 @@ are gone.
   through the run parameters. It now sets `TurnInput.compact` too, which is
   what the phase reads.
 - A turn that a newer one displaced before it submitted its prompt settled
-  `interrupted`, which tells a sender that the agent had the prompt. It now
-  settles `dropped`.
+  `interrupted` or `no-result`. The first tells a sender that the agent had
+  the prompt. It now settles `dropped` for both events, `superseded` and
+  `reused`.
 
 ### What changes for the user and the agent
 
@@ -300,7 +334,19 @@ are gone.
 - A waiting entry that the user did not write in this chat (a page message, a
   click on Fix CI) keeps its own turn.
 - A second click on a question card, or a second viewer, can send an answer
-  twice.
+  twice. "The turn that asked" is the runner's flag, not the card's id, so an
+  answer on an old card while a new question waits is taken as the answer to
+  the new one.
+- A claim that the check gives up after its bound still has a setup that can
+  go on and enter the executor, as before this part. Only the grace period is
+  new.
+- An automatic message can steer past a message of the user's during the
+  moment that message is prepared.
+- A second viewer sees a delivered message without its attachments until a
+  reload, as for an entry that the queue's drain starts. The queue update
+  that carries `dequeued` has no session id, so a viewer that switched
+  sessions at that moment can get the bubble in the wrong transcript until a
+  reload. Both are true of every drained entry today (planning#691).
 
 ## Part 3 — the session hold, and the last two turns (req 1, req 2)
 
@@ -589,13 +635,65 @@ more run of the reviewer.
   necessities. `requirements.md` now separates the user's words, the
   requirements of other features, and the choices of this design.
 
-2026-10-12, on the code of Part 2. **The independent review of the diff has not
-run yet.** ShipIt allows three reviewer runs in one turn, and the three design
-reviews above used them. The review runs in the next turn, before the pull
-request is merged. Until then: 822 test files of the orchestrator and the
-worker pass, and 33 mutation checks each made a test fail (one of them only
-together with its twin: the typed path decides a steer two times, before and
-after it reads the attachments).
+2026-10-12, on the code of Part 2. One run of the reviewer on the diff of
+PR #3186, against each numbered requirement. Its verdict on that version: do
+not merge; requirement 2 not met within the part's scope.
+
+- **Applied, each with a test and a mutation check.** A wake of the CLI during
+  another turn's setup no longer marks that turn ready (the blocker). An
+  adopted turn gets the waiting messages too. A refused prompt ends the setup
+  grace, and the runner checks at once. A Stop ends a delivery. A queued
+  `/compact` or `/goal` is not delivered as text. A refusal ends the delivery
+  for that turn; before, the loop sent the same message again without end. A
+  failed write keeps the entry, and a written entry's handle always settles.
+  A newer message of the user's does not pass one that waits. The Codex
+  adapter gives kept steers back when the turn cannot start. The steer event
+  is the bubble, and the queue update carries no `dequeued`. `reused` during
+  setup settles `dropped`.
+- **Found while applying.** The first version of the displacement check read
+  the phase, and a turn of the CLI's own that ended and started again during a
+  setup made the turn in setup drop its prompt. A typed message would have
+  been lost. The check now reads `reused` and `superseded` only, and a test
+  holds the case.
+- **Not applied.** A claim token carried from admission to the executor (the
+  review's point 11). A token taken from the turn phase would drop real
+  prompts, as above, because a turn of the CLI's own replaces the phase during
+  a setup. A separate admission identity that survives those changes is
+  possible; it is not built. What is left is in "Known limits of Part 2".
+- **Requirements.** The review said again that the reading holds design
+  choices. `requirements.md` no longer says "neither has an exception" as a
+  fact.
+
+2026-10-12, on those fixes. One more run of the reviewer. It confirmed nine of
+the twelve fixes, found no break of the post-turn invariants, and asked for
+four more changes, all in the delivery.
+
+- **Applied, each with a test and a mutation check.** One delivery for a turn
+  attempt: without it, a second call wrote the next message before the agent
+  answered the first, and sent a refused one again. A refusal by the harness
+  after the worker accepted the write stops the sending too. A new message of
+  the user's tries again after a refusal; before, it waited for the whole
+  turn. The queue update carries `dequeued` again: without it, a delivered
+  message with the same text as an earlier one lost its bubble.
+- **Still open.** Point 11 above. A second viewer does not see the attachment
+  of a delivered message until a reload, as for a drained entry today.
+
+2026-10-12, on those four changes. A last, short run of the reviewer. It
+confirmed all four and found no leak of the delivery lock.
+
+- **Applied.** The refusal mark was set for every refused steer, also a notice
+  from another session that is discarded; such a refusal then stopped the
+  delivery of the user's messages. Only a message of the user's that goes back
+  to the queue sets it now.
+- **Not applied, filed as planning#691.** The queue update with `dequeued` has
+  no session id, a second viewer gets no attachments from it, and a refused
+  message goes to the end of the queue. All three are true of the code before
+  this feature.
+- The reviewer's verdict on requirement 2 was "not fully met", for the mark
+  above. That fix had no further review: the three runs of the turn were used.
+- Final state: 822 test files pass (16,550 tests). Mutation checks: 33 on the
+  first version, 24 on the first fixes, 10 on the later ones; each one was
+  caught, except two that change nothing a test can see.
 
 ## Key files (Part 2)
 

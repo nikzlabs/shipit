@@ -196,6 +196,27 @@ describe("Integration: a message waits only for an agent that can read it", () =
     client.close();
   });
 
+  it("keeps the order of two typed messages when the first still waits", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const { runner, resident } = await finishedFirstTurn(client);
+
+    client.send({ type: "send_message", text: "a long task" });
+    await waitUntil(() => runner.running && wrote(resident, "a long task"), "the task runs");
+    fs.writeFileSync(path.join(runner.sessionDir, "note.txt"), "a note\n");
+    runner.enqueue({ text: "the earlier request", execution: "interactive", files: [{ path: "note.txt" }] });
+
+    client.send({ type: "send_message", text: "a newer correction" });
+    await waitUntil(() => wrote(resident, "a newer correction"), "both messages reached the agent");
+
+    const written = resident.stdinData.join("\n");
+    expect(written.indexOf("the earlier request")).toBeGreaterThanOrEqual(0);
+    expect(written.indexOf("the earlier request")).toBeLessThan(written.indexOf("a newer correction"));
+    expect(runner.queueLength).toBe(0);
+
+    client.close();
+  });
+
   it("keeps a message out of a compaction turn, and runs it when the compaction ends", async () => {
     const client = await TestClient.connect(port);
     await client.receive();

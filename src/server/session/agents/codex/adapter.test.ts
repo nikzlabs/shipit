@@ -1167,6 +1167,35 @@ describe("CodexAdapter", () => {
     const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
     expect((steer!.params as any).input).toEqual([{ type: "text", text: "sent during startup" }]);
     expect((steer!.params as any).expectedTurnId).toBe("turn-001");
+
+    // The notification names the same turn again: the kept steer is sent one time.
+    fakeProc.sendNotification("turn/started", { turn: { id: "turn-001" } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fakeProc.getRequests().filter((r) => r.method === "turn/steer")).toHaveLength(1);
+  });
+
+  it("gives a kept steer back when the turn cannot start, and does not send it to a later turn", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.on("error", () => {});
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    await respondTo("initialize", { serverInfo: { name: "codex-app-server" } });
+    await respondTo("thread/start", { threadId: "thread-abc-123" });
+
+    adapter.sendUserMessage("sent during startup");
+    await vi.waitFor(() => expect(fakeProc.getRequests().some((r) => r.method === "turn/start")).toBe(true));
+    const start = fakeProc.getRequests().find((r) => r.method === "turn/start");
+    fakeProc.sendErrorResponse(start!.id!, -32000, "the turn cannot start");
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.type === "agent_steer_rejected")).toEqual([
+        { type: "agent_steer_rejected", text: "sent during startup" },
+      ]);
+    });
+
+    fakeProc.sendNotification("turn/started", { turn: { id: "turn-099" } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fakeProc.getRequests().some((r) => r.method === "turn/steer")).toBe(false);
   });
 
   it("gives a kept steer back when the process ends before its turn starts", async () => {

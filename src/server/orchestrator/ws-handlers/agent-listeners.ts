@@ -4,7 +4,7 @@ import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
-import { noteTurnReady, noteTurnSubmitted } from "../turn-stop-request.js";
+import { noteTurnReady, noteTurnSubmitted, setSteerRefused } from "../turn-stop-request.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import { retireRewindUndo } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
@@ -167,9 +167,11 @@ export function wireAgentListeners(
       wiredTurnEpoch = runner.turnEpoch;
     }
     runner.running = true;
-    // The CLI is already generating, so a Stop must reach its process, and a message can enter.
+    // The CLI is already generating, so a Stop must reach its process.
     noteTurnSubmitted(runner);
-    noteTurnReady(runner);
+    // Only for the turn that this adoption began. A wake during another turn's setup must
+    // not say that the agent has that turn's prompt.
+    if (startsTurn) noteTurnReady(runner);
     const turnSessionId = opts.capturedSessionId;
     // A turn the CLI starts on its own is new use (docs/316 req 5).
     if (turnSessionId && startsTurn) deps.sessionManager.track(turnSessionId);
@@ -272,7 +274,13 @@ export function wireAgentListeners(
             persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
           }
           if (!dropped.bestEffort) {
-            const position = runner.enqueue(steerToQueuedMessage(dropped));
+            const requeued = steerToQueuedMessage(dropped);
+            // A message of the user's is back in the queue, and the delivery must not send it
+            // again by itself. A refused notice from another source says nothing about theirs.
+            if (requeued.execution === "interactive" && requeued.automatic !== true) {
+              setSteerRefused(runner, true);
+            }
+            const position = runner.enqueue(requeued);
             emitToViewers({ type: "message_queued", text: dropped.text, position });
             deps.broadcastLog(
               "server",

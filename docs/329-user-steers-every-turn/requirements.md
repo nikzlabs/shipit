@@ -59,10 +59,11 @@ It is written down so that a review can see what was not asked for.
   user, how a Stop ends it, whether the background jobs of the agent go on
   after it, and what ShipIt does after it. It is not taken to cover *when*
   ShipIt may start a turn, or what ShipIt writes into a turn's prompt.
-- **Neither requirement names an exception, so neither has one.** A compaction
-  that ShipIt starts is a turn that ShipIt starts, and behaves as a compaction
-  that the user starts. The agent that resolves the conflicts of a rebase is
-  "the current agent".
+- **Neither requirement names an exception.** A compaction that ShipIt starts
+  is a turn that ShipIt starts, and behaves as a compaction that the user
+  starts. The agent that resolves the conflicts of a rebase is "the current
+  agent". Where this design still differs or waits, "Choices of this design"
+  below says so, with the reason.
 - **"At once" means the first moment an agent can read the message.** Where no
   agent can read it now, it goes to the agent at the first moment one can, and
   before any message from a different source. The cases:

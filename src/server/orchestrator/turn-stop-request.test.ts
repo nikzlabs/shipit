@@ -4,9 +4,12 @@ import {
   beginTurnSetup,
   currentTurnAttempt,
   noteCompactionTurn,
+  noteSubmissionRejected,
   noteTurnReady,
   noteTurnSubmitted,
   reopenTurnSetup,
+  setSteerRefused,
+  steerRefused,
   turnAwaitsAgent,
   turnInSetup,
   turnTakesMessages,
@@ -121,6 +124,35 @@ describe("the turn phase: ready and compaction", () => {
 
     noteTurnReady(runner);
     expect(turnAwaitsAgent(runner, began)).toBe(false);
+  });
+
+  it("does not say so once the agent refused the attempt's prompt", () => {
+    const runner = claimed();
+    const first = currentTurnAttempt(runner);
+
+    noteSubmissionRejected(runner, first);
+    expect(turnAwaitsAgent(runner)).toBe(false);
+
+    // A retry is a new attempt, and a late refusal of the old one does not mark it.
+    reopenTurnSetup(runner);
+    expect(turnAwaitsAgent(runner)).toBe(true);
+    noteSubmissionRejected(runner, first);
+    expect(turnAwaitsAgent(runner)).toBe(true);
+  });
+
+  it("keeps a refused steer for the attempt only", () => {
+    const runner = claimed();
+    expect(steerRefused(runner)).toBe(false);
+
+    setSteerRefused(runner, true);
+    expect(steerRefused(runner)).toBe(true);
+
+    reopenTurnSetup(runner);
+    expect(steerRefused(runner)).toBe(false);
+
+    setSteerRefused(runner, true);
+    beginTurnSetup(runner);
+    expect(steerRefused(runner)).toBe(false);
   });
 
   it("does not say so for a runner that is not running", () => {

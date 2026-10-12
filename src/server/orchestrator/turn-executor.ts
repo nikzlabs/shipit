@@ -42,11 +42,13 @@ import {
   consumeSetupStop,
   currentTurnAttempt,
   noteCompactionTurn,
+  noteSubmissionRejected,
   noteTurnReady,
   noteTurnSubmitted,
   reopenTurnSetup,
   stoppedByUser,
   turnInSetup,
+  turnTakesMessages,
 } from "./turn-stop-request.js";
 import { deliverWaitingMessages } from "./dispatch-steering.js";
 import path from "node:path";
@@ -292,6 +294,7 @@ export async function executeAgentTurn(
   let errorPathRuns = 0;
   let turnCompleteFired = false;
   let wasSuperseded = false;
+  let takenByNextTurn = false;
 
   // Arm after PR/release pushes, preventing a plain push racing their force-push.
   let pendingPushArm: (() => void) | null = null;
@@ -341,16 +344,18 @@ export async function executeAgentTurn(
     ownTurn = cliTurnPending || resultsIntervened ? "queued" : "running";
   };
 
-  // docs/329-user-steers-every-turn — from here a message can follow the prompt into the
-  // turn, and what the user sent while the turn set up goes in first.
+  // docs/329-user-steers-every-turn — what the user sent while no agent could read it goes
+  // into the turn as soon as the turn takes messages.
   let turnAttempt: object | undefined;
-  let waitingMessagesOffered = false;
-  const noteAgentHasPrompt = (): void => {
-    if (!runner || !noteTurnReady(runner, turnAttempt) || waitingMessagesOffered) return;
-    waitingMessagesOffered = true;
+  const offerWaitingMessages = (): void => {
+    if (!runner || runner.queueLength === 0 || !turnTakesMessages(runner)) return;
     void deliverWaitingMessages(runner, deps).catch((err: unknown) => {
       console.error(`[turn] delivering the waiting messages of ${sessionId} failed:`, err);
     });
+  };
+  const noteAgentHasPrompt = (): void => {
+    if (!runner || !noteTurnReady(runner, turnAttempt)) return;
+    offerWaitingMessages();
   };
 
   const noteSubmitted = (): void => {
@@ -368,7 +373,12 @@ export async function executeAgentTurn(
         await settled;
         noteSubmissionAccepted(resultsObserved !== resultsAtSubmission);
       } catch {
-        // The submission failed; the adapter's error path owns the turn.
+        // A fresh spawn reports this as an agent error, which ends the turn. A prompt for a
+        // resident process only logs it, so the claim would stay in setup with no agent
+        // coming: say so, and let the runner find out whether a process is left.
+        if (!runner) return;
+        noteSubmissionRejected(runner, turnAttempt);
+        void runner.verifyRunningState();
       }
     })();
   };
@@ -511,6 +521,13 @@ export async function executeAgentTurn(
       ? turnDropped("the agent process did not start on this prompt")
       : turnInterrupted("the agent process ended another turn before this prompt's result");
 
+  const endedWithoutResult = (): TurnOutcome =>
+    (runner?.wasInterrupted ?? false)
+      ? turnInterrupted("the turn was interrupted before it produced a result")
+      : receivedResult
+        ? endedWithoutOwnResult()
+        : turnNoResult("agent process exited without producing a turn result");
+
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
     // Hold identity, not the turn epoch (docs/304): the release below must only run when
@@ -524,15 +541,13 @@ export async function executeAgentTurn(
           ? turnErrored()
           : ownResultSeen()
             ? TURN_COMPLETED
-            : wasSuperseded
+            : wasSuperseded || takenByNextTurn
               ? ownTurn === "unsubmitted" || (input.reuseExistingAgent === true && promptUnread())
                 ? turnDropped("a newer turn took the agent process before it read this prompt")
-                : turnInterrupted("a newer turn took the agent slot before this one finished")
-              : (runner?.wasInterrupted ?? false)
-                ? turnInterrupted("the turn was interrupted before it produced a result")
-                : receivedResult
-                  ? endedWithoutOwnResult()
-                  : turnNoResult("agent process exited without producing a turn result"),
+                : wasSuperseded
+                  ? turnInterrupted("a newer turn took the agent slot before this one finished")
+                  : endedWithoutResult()
+              : endedWithoutResult(),
       );
     } finally {
       // An entry the drain passed over — a system turn behind this one's background work —
@@ -1234,7 +1249,10 @@ export async function executeAgentTurn(
 
   // The next turn removes these listeners, so a turn that has not settled can only settle
   // here. Its post-turn work goes on: only `superseded` gives that up.
-  agent.on("reused", () => { finishTurn(); });
+  agent.on("reused", () => {
+    takenByNextTurn = true;
+    finishTurn();
+  });
 
   let turnStartHeadHash: string | null = input.turnStartHeadHash;
 
@@ -1530,6 +1548,7 @@ export async function executeAgentTurn(
     if (event.type === "agent_self_wake") {
       if (event.taskId && event.status === "completed") jobsRunningAtResult.delete(event.taskId);
       noteCliStartedTurn();
+      offerWaitingMessages();
       await beginRearm("self-wake");
       return;
     }
@@ -1541,6 +1560,7 @@ export async function executeAgentTurn(
       if (!adoptsCliStartedTurns) return;
       if (!event.parentToolUseId) {
         noteCliStartedTurn();
+        offerWaitingMessages();
         await beginRearm("cli-started turn");
       }
       return;
@@ -1850,6 +1870,7 @@ export async function executeAgentTurn(
     if (runner) {
       noteTurnSubmitted(runner);
       noteTurnReady(runner);
+      offerWaitingMessages();
     }
     const resident = runner?.residentRoute;
     capturedCredentialRoute = resident
@@ -1919,27 +1940,19 @@ export async function executeAgentTurn(
       return true;
     };
 
-    // The setup awaits, and a newer turn can have the runner by now: it took the process, or
-    // it started after this claim was given up (docs/329-user-steers-every-turn). A prompt
-    // submitted then would run beside that turn. `running` alone does not say it: a result
-    // of the CLI's own turn clears it during a setup, and the prompt still goes in.
-    const claimLostDuringSetup = (): boolean => {
-      if (!runner) return false;
-      if (!turnCompleteFired && currentTurnAttempt(runner) === turnAttempt) return false;
-      console.warn(`[turn] the turn for ${sessionId} lost its claim during setup; its prompt is not submitted`);
-      if (!turnCompleteFired) {
-        wasSuperseded = true;
-        finishTurn();
-      }
-      if (!input.reuseExistingAgent && runner.getAgent() === agent) {
-        runner.setAgent(null);
-        runner.isStreamingActive = false;
-      }
+    // The setup awaits, and the turn can be settled when it resumes: a newer turn took the
+    // process or its slot (`reused`, `superseded`), or the agent ended. Its prompt would then
+    // run beside that turn, or on a process nobody follows. Neither `running` nor the phase
+    // says it: the CLI's own turn clears the one and starts the other during a setup, and the
+    // prompt still goes in.
+    const settledDuringSetup = (): boolean => {
+      if (!turnCompleteFired) return false;
+      console.warn(`[turn] the turn for ${sessionId} was settled during its setup; the prompt is not submitted`);
       return true;
     };
 
     if (input.reuseExistingAgent) {
-      if (stoppedDuringSetup() || claimLostDuringSetup()) return;
+      if (stoppedDuringSetup() || settledDuringSetup()) return;
       // undefined also matters: it restores the CLI's default permission mode.
       if (runner && runner.appliedPermissionMode !== input.permissionMode && agent.setPermissionMode) {
         agent.setPermissionMode(input.permissionMode);
@@ -1963,7 +1976,7 @@ export async function executeAgentTurn(
         input.compact ? { compact: true } : undefined,
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
-      if (stoppedDuringSetup() || claimLostDuringSetup()) return;
+      if (stoppedDuringSetup() || settledDuringSetup()) return;
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       noteSubmitted();
       if (runner) runner.appliedPermissionMode = input.permissionMode;

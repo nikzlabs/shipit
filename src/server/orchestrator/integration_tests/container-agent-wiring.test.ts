@@ -12,7 +12,7 @@ import { releaseResidentOnServiceMcpChange } from "../resident-spawn-guard.js";
 import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "../service-mcp.js";
 import type { ServiceMcpServer } from "../../shared/types.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
-import { noteTurnReady, TURN_SETUP_MAX_MS } from "../turn-stop-request.js";
+import { currentTurnAttempt, noteSubmissionRejected, noteTurnReady, TURN_SETUP_MAX_MS } from "../turn-stop-request.js";
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -1280,6 +1280,20 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.dispose({ force: true });
     });
 
+    it("does not shield a claim whose prompt the agent refused", async () => {
+      const runner = makeDispatchStubbedRunner("test-setup-refused", workerUrl);
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      runner.running = true;
+      noteSubmissionRejected(runner, currentTurnAttempt(runner));
+
+      expect(await runner.verifyRunningState()).toBe(false);
+      expect(runner.running).toBe(false);
+
+      runner.dispose({ force: true });
+    });
+
     it("gives a setup up when it is older than its bound", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       try {
@@ -1312,6 +1326,8 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
       runner.running = true;
+      // Past its setup, so the answer below is the worker's and not the setup guard's.
+      noteTurnReady(runner);
 
       const actuallyRunning = await runner.verifyRunningState();
 

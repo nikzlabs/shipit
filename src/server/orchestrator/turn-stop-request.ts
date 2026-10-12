@@ -14,6 +14,10 @@ interface TurnPhase {
   beganAt: number;
   /** A new object for each attempt of the turn, so an answer to an earlier one is told apart. */
   attempt: object;
+  /** The agent refused the turn's prompt: no agent is coming for this attempt. */
+  rejected: boolean;
+  /** The agent refused a steer: the waiting messages are not sent again by themselves. */
+  steerRefused: boolean;
   stopRequested: boolean;
   /** docs/322 — the user pressed Stop, which a question's own interrupt is not. */
   stoppedByUser: boolean;
@@ -32,6 +36,8 @@ export function beginTurnSetup(runner: object): void {
     compaction: false,
     beganAt: Date.now(),
     attempt: {},
+    rejected: false,
+    steerRefused: false,
     stopRequested: false,
     stoppedByUser: false,
   });
@@ -48,6 +54,8 @@ export function reopenTurnSetup(runner: object): void {
   phase.ready = false;
   phase.beganAt = Date.now();
   phase.attempt = {};
+  phase.rejected = false;
+  phase.steerRefused = false;
 }
 
 export function currentTurnAttempt(runner: object): object | undefined {
@@ -71,6 +79,26 @@ export function noteTurnReady(runner: object, attempt?: object): boolean {
   return true;
 }
 
+/** The submission of the attempt's prompt failed, so `turnAwaitsAgent` must not shield it. */
+export function noteSubmissionRejected(runner: object, attempt: object | undefined): void {
+  const phase = phases.get(runner);
+  if (phase && attempt === phase.attempt) phase.rejected = true;
+}
+
+/**
+ * The agent refused a steer in this attempt. The message is back in the queue, and sending
+ * the waiting messages again would repeat for as long as the agent refuses. A new message of
+ * the user's is the one thing that tries again (`setSteerRefused(runner, false)`).
+ */
+export function setSteerRefused(runner: object, refused: boolean): void {
+  const phase = phases.get(runner);
+  if (phase) phase.steerRefused = refused;
+}
+
+export function steerRefused(runner: object): boolean {
+  return phases.get(runner)?.steerRefused === true;
+}
+
 /**
  * docs/329-user-steers-every-turn — a message enters the running turn only when the agent
  * has that turn's prompt and the turn is not a compaction. Without a record the turn reads
@@ -89,7 +117,8 @@ export function turnTakesMessages(runner: { running: boolean }): boolean {
 export function turnAwaitsAgent(runner: { running: boolean }, now = Date.now()): boolean {
   if (!runner.running) return false;
   const phase = phases.get(runner);
-  return phase !== undefined && !phase.ready && now - phase.beganAt < TURN_SETUP_MAX_MS;
+  return phase !== undefined && !phase.ready && !phase.rejected
+    && now - phase.beganAt < TURN_SETUP_MAX_MS;
 }
 
 /** The prompt reached the agent, or the turn is one the CLI started itself. */

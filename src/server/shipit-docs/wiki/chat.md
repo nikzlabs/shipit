@@ -140,7 +140,8 @@ can also send:
   after a restart — takes one like a turn they typed. A turn takes a message
   from the moment the agent has that turn's prompt. A message sent before
   that, while the turn starts, waits in the queue for those seconds and is then
-  given to the same turn, after its prompt. Two turns take none: a compaction
+  normally given to the same turn, after its prompt and in the order they sent
+  it; a `/compact` or `/goal` that waits in the queue keeps a turn of its own. Two turns take none: a compaction
   turn, whoever started it (`/compact`, or one that ShipIt starts), and the turn
   that resolves the conflicts of a rebase. There, and while a merge is being
   held, the message stays in the queue. That is the honest answer to "why did
