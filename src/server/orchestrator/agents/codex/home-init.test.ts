@@ -189,8 +189,8 @@ describe("codex home-init", () => {
       for (const proc of spawned) killProcessTree(proc, "SIGKILL");
     });
 
-    // A reaped zombie shows `X` until its pid is released, so `Z` alone flips
-    // a dead process back to alive for one read.
+    // A reaped zombie shows `X` until its pid is released, so checking `Z`
+    // alone reads a dead process as alive again during reaping.
     function alive(pid: number): boolean {
       try {
         const raw = fs.readFileSync(`/proc/${String(pid)}/stat`, "utf-8");
