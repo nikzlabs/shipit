@@ -73,6 +73,35 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     expect(userRows.map((m) => m.text)).toEqual(["Retry the failed import"]);
   });
 
+  it("tells the decision when nobody was at the composer (req 15)", async () => {
+    const cases: [Parameters<typeof testDispatch>[0], boolean][] = [
+      [{ text: "a page message", agentInterface: { source: "agent_interface_sdk", surface: "present" } }, false],
+      [{ text: "a card button" }, false],
+      // docs/328's turn for a message the user sent: neither system nor automatic.
+      [{ text: "a wake", unattended: true }, true],
+      [{ text: "a CI fix", systemTurn: true, automatic: true }, true],
+      [{ text: "a preview fix", automatic: true }, true],
+      [{
+        text: "from another session",
+        messageOrigin: { sessionId: "p", sessionTitle: "Parent", relation: "parent" },
+      }, true],
+    ];
+    const seen: boolean[] = [];
+    for (const [dispatch] of cases) {
+      const { deps } = setup();
+      deps.shouldCompactBeforeTurn = async (_runner, _agentId, _sessionId, _dir, _intent, unattended) => {
+        seen.push(unattended === true);
+        return false;
+      };
+      runner = makeRunner();
+      runner.setSystemTurnDeps(deps);
+      runner.dispatch(testDispatch(dispatch));
+      await flushTurn();
+      runner.dispose({ force: true });
+    }
+    expect(seen).toEqual(cases.map(([, unattended]) => unattended));
+  });
+
   it("keeps the message NEXT — an entry already queued does not overtake it", async () => {
     const { agents, deps, prompts, decisions } = setup();
     runner = makeRunner();

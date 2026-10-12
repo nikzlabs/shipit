@@ -115,8 +115,8 @@ async function runDispatchedTurnInner(
 
   // docs/295 req 15 — a wake, an automatic turn, a message from another session: the
   // composer's tick boxes were never in front of anyone for these.
-  const unattended =
-    opts.systemTurn === true || opts.automatic === true || opts.messageOrigin !== undefined;
+  const unattended = opts.unattended === true
+    || opts.systemTurn === true || opts.automatic === true || opts.messageOrigin !== undefined;
 
   // Keep this message first after compaction; avoid resolving its attachments twice.
   if (

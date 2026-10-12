@@ -93,6 +93,7 @@ describe("queue drain routing (planning#257)", () => {
       deliveryId: "watch-1:1",
       dictated: true,
       bestEffortSteer: true,
+      unattended: true,
     };
 
     const restored = queuedMessageToDispatchOptions(toQueuedMessage(testDispatch(opts)));
