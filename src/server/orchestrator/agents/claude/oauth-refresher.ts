@@ -165,10 +165,25 @@ interface ProbeHome {
   outstanding: boolean;
 }
 
+// What started a tick. A caller that joins a tick in flight is reported under the first one's.
+type TickTrigger = "scheduled" | "backoff_retry" | "turn_start" | "forced_heal" | "nudge";
+
 interface CliRun {
   output: string;
   // False for a CLI that did not start, and for one that did not end before its timeout.
   completed: boolean;
+  durationMs: number;
+  timedOut: boolean;
+  // The exit code or signal. Null when the CLI did not start, or did not exit within the kill grace.
+  exit: string | null;
+}
+
+function describeTierRun(run: CliRun | null): string {
+  if (run === null) return "not_run";
+  const parts = [`${(run.durationMs / 1000).toFixed(1)}s`];
+  if (run.timedOut) parts.push("timeout");
+  parts.push(run.exit === null ? "no_exit" : `exit=${run.exit}`);
+  return parts.join(",");
 }
 
 // "rejected": the CLI blanks a credential only when the OAuth server answers invalid_grant.
@@ -280,10 +295,10 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       return [];
     }
     if (accountId) {
-      return [await this.runTickForAccount(accountId)];
+      return [await this.runTickForAccount(accountId, "nudge")];
     }
     const accounts = this.deps.providerAccountManager.list("anthropic");
-    return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
+    return Promise.all(accounts.map((a) => this.runTickForAccount(a.id, "nudge")));
   }
 
   // Pass the turn's account ID; an omitted ID includes failures from other accounts.
@@ -308,7 +323,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     if (!force && now < this.ensureAccountState(accountId).retryNotBefore) return before > now;
     let outcome: RefreshOutcome | null = null;
     try {
-      outcome = (await this.runTickForAccount(accountId, force)).outcome;
+      outcome = (await this.runTickForAccount(accountId, force ? "forced_heal" : "turn_start", force)).outcome;
     } catch (err) {
       console.error(`[claude-oauth-refresh] ensureFresh tick for ${accountId} threw:`, err);
     }
@@ -388,7 +403,10 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         return;
       }
       state.rejectedIdentity = rejected;
-      this.handleRevoked(accountId, before, before, "invalid_grant");
+      this.handleRevoked(
+        accountId, before, before, "invalid_grant",
+        `trigger=private_run verdict=blanked_copy expires_in=${this.describeExpiresIn(before)}`,
+      );
     } catch (err) {
       console.error(`[claude-oauth-refresh] account=${accountId} settling a private run failed:`, err);
     } finally {
@@ -442,7 +460,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     state.retryNotBefore = 0;
     state.timer = setTimeout(() => {
       state.timer = null;
-      void this.runTickForAccount(accountId).catch((err: unknown) => {
+      void this.runTickForAccount(accountId, "scheduled").catch((err: unknown) => {
         console.error(`[claude-oauth-refresh] unexpected error in tick for ${accountId}:`, err);
       });
     }, delay);
@@ -461,7 +479,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     state.retryNotBefore = this.deps.now() + delay;
     state.timer = setTimeout(() => {
       state.timer = null;
-      void this.runTickForAccount(accountId).catch((err: unknown) => {
+      void this.runTickForAccount(accountId, "backoff_retry").catch((err: unknown) => {
         console.error(`[claude-oauth-refresh] unexpected error in backoff tick for ${accountId}:`, err);
       });
     }, delay);
@@ -476,17 +494,17 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     return Math.max(STARTUP_OVERDUE_DELAY_MS, Math.min(delay, untilLastChance));
   }
 
-  private runTickForAccount(accountId: string, force = false): Promise<RefreshResult> {
+  private runTickForAccount(accountId: string, trigger: TickTrigger, force = false): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
     if (state.inFlight) return state.inFlight;
-    const promise = this.executeTick(accountId, force).finally(() => {
+    const promise = this.executeTick(accountId, trigger, force).finally(() => {
       state.inFlight = null;
     });
     state.inFlight = promise;
     return promise;
   }
 
-  private async executeTick(accountId: string, force = false): Promise<RefreshResult> {
+  private async executeTick(accountId: string, trigger: TickTrigger, force: boolean): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
     const sourceFile = this.sourceFileFor(accountId);
 
@@ -504,14 +522,16 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     // Before the missing-source check: an unreadable source must not end the account while a
     // rotation waits for it.
     const pending = state.pendingRotation;
+    let keptCopyRejected = false;
     if (pending) {
       const retried = this.adoptProbeRotation(accountId, pending);
       // The source's grant is spent: another probe would only be rejected.
-      if (pending.outstanding) return this.handleFailure(accountId, before, before, INSTALL_FAILED, false);
+      if (pending.outstanding) return this.handleFailure(accountId, before, before, INSTALL_FAILED);
       state.pendingRotation = null;
       this.removeProbeHome(pending);
       // A kept copy that reads as blanked is a rejected grant, as after a probe.
-      if (retried === "rejected") state.rejectedIdentity = pending.seedIdentity;
+      keptCopyRejected = retried === "rejected";
+      if (keptCopyRejected) state.rejectedIdentity = pending.seedIdentity;
       const installedAt = this.readSourceExpiresAt(accountId);
       if (retried === "installed" && installedAt !== NO_EXPIRY) {
         return this.handleSuccess(accountId, before, installedAt, "rotated_tier1");
@@ -527,16 +547,22 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         afterExpiresAt: null,
         reason: unusable.detail,
       };
+      // A sign-in removes the source at its start, and reports its own outcome.
+      const signingIn = this.accountStatus(accountId) === "authenticating";
       console.log(
         `[claude-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete`
-          + ` source=${unusable.kind} detail=${unusable.detail}`,
+          + ` source=${unusable.kind} detail=${unusable.detail}${signingIn ? " sign_in=in_progress" : ""}`,
       );
-      this.emitUnauthenticated(accountId, "missing_credentials");
+      if (!signingIn) this.emitUnauthenticated(accountId, "missing_credentials");
       return result;
     }
 
     if (this.sourceGrantIsKnownRejected(accountId)) {
-      return this.handleRevoked(accountId, before, before, "invalid_grant");
+      // Short on purpose: this repeats on each later tick, and the first line has the detail.
+      const detail = keptCopyRejected
+        ? `verdict=blanked_copy rejected_by=kept_copy expires_in=${this.describeExpiresIn(before)}`
+        : "verdict=known_rejected";
+      return this.handleRevoked(accountId, before, before, "invalid_grant", `trigger=${trigger} ${detail}`);
     }
 
     const now = this.deps.now();
@@ -556,19 +582,24 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
     // That run can hold the grant's successor, so a probe could only spend or misjudge the grant.
     if (runStillOpen) {
-      return this.handleFailure(accountId, before, before, "[private-run-open] session naming has not finished", false);
+      return this.handleFailure(accountId, before, before, "[private-run-open] session naming has not finished");
     }
 
+    const claimedExpiresAt = isNearExpiry ? Math.min(before, now + PROBE_REMAINING_MS) : null;
+    // Tier 1 sends the refresh grant and exits before the token host can answer, so that tier 2
+    // would present a grant that is spent already (docs/153). It gets only a copy that the CLI
+    // will not refresh for as long as tier 1 can run.
+    const runTier1 = (claimedExpiresAt ?? before) - now > CLI_REFRESH_WINDOW_MS + TIER1_TIMEOUT_MS;
     let probe: ProbeHome;
     try {
-      probe = this.createProbeHome(sourceFile, isNearExpiry ? Math.min(before, now + PROBE_REMAINING_MS) : null);
+      probe = this.createProbeHome(sourceFile, claimedExpiresAt);
     } catch (err) {
       // No error text: a JSON parse error quotes the credential file.
       const code = (err as NodeJS.ErrnoException).code ?? "unreadable source";
-      return this.handleFailure(accountId, before, before, `[probe-home-failed] ${code}`, false);
+      return this.handleFailure(accountId, before, before, `[probe-home-failed] ${code}`);
     }
     try {
-      return await this.runProbes(accountId, probe, before, force, isNearExpiry);
+      return await this.runProbes(accountId, probe, before, trigger, force, isNearExpiry, runTier1);
     } finally {
       // Decided here, so that no path out of the probes, a throw included, deletes a rotation.
       if (probe.outstanding) state.pendingRotation = probe;
@@ -580,31 +611,39 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     accountId: string,
     probe: ProbeHome,
     before: number,
+    trigger: TickTrigger,
     force: boolean,
     isNearExpiry: boolean,
+    runTier1: boolean,
   ): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
-    const tier1 = await this.spawnCli(probe, "tier1", TIER1_TIMEOUT_MS);
-    let probeResult = this.adoptProbeRotation(accountId, probe);
-    let after = this.readSourceExpiresAt(accountId);
-    if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
-      return this.handleSuccess(accountId, before, after, "rotated_tier1");
+    let tier1: CliRun | null = null;
+    let probeResult: ProbeResult = "unchanged";
+    let after: number | null = before;
+    if (runTier1) {
+      tier1 = await this.spawnCli(probe, "tier1", TIER1_TIMEOUT_MS);
+      probeResult = this.adoptProbeRotation(accountId, probe);
+      after = this.readSourceExpiresAt(accountId);
+      if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
+        return this.handleSuccess(accountId, before, after, "rotated_tier1");
+      }
     }
 
     let tier2: CliRun | null = null;
     if (probeResult === "unchanged") {
-      // This fallback makes a billable API call.
+      // A billable API call.
       tier2 = await this.spawnCli(probe, "tier2", TIER2_TIMEOUT_MS);
       probeResult = this.adoptProbeRotation(accountId, probe);
       after = this.readSourceExpiresAt(accountId);
       if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
-        return this.handleSuccess(accountId, before, after, "rotated_tier2");
+        return this.handleSuccess(accountId, before, after, "rotated_tier2", ` tier1=${describeTierRun(tier1)}`);
       }
     }
 
-    if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED, false);
-    const combinedOutput = `${tier1.output}\n${tier2?.output ?? ""}`;
-    const grantRejected = probeResult === "rejected" || this.outputIndicatesRevoked(combinedOutput);
+    if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED);
+    const combinedOutput = `${tier1?.output ?? ""}\n${tier2?.output ?? ""}`;
+    const blanked = probeResult === "rejected";
+    const grantRejected = blanked || this.outputIndicatesRevoked(combinedOutput);
     // Before the source check: a session's rotation can reach the source during the wait.
     if (grantRejected) await this.waitForLateRotation();
     if (this.readSourceIdentity(accountId) !== probe.seedIdentity) {
@@ -620,11 +659,20 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       };
     }
 
+    let rejection: string | undefined;
     if (grantRejected) {
       // A session can spend the grant between the first harvest and the probe.
       const late = this.harvestSessionRotations(accountId);
       if (late) return this.handleSuccess(accountId, late.before, late.after, "harvested_session");
       state.rejectedIdentity = probe.seedIdentity;
+      const namedBy = [tier1, tier2]
+        .map((run, index) => (run && this.outputIndicatesRevoked(run.output) ? `tier${index + 1}` : null))
+        .filter((tier) => tier !== null)
+        .join("+");
+      const verdict = blanked
+        ? `verdict=blanked_copy rejected_by=${tier2 ? "tier2" : "tier1"}`
+        : `verdict=output_phrase rejected_by=${namedBy}`;
+      rejection = `trigger=${trigger} ${verdict} tier1=${describeTierRun(tier1)} tier2=${describeTierRun(tier2)}`;
     }
     // No rotation before expiry is not a scheduling failure; retain the expiry schedule.
     if (force && !isNearExpiry && !grantRejected) {
@@ -647,7 +695,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         reason,
       };
     }
-    return this.handleFailure(accountId, before, after, combinedOutput, grantRejected);
+    return this.handleFailure(accountId, before, after, combinedOutput, rejection);
   }
 
   private outputIndicatesRevoked(combinedOutput: string): boolean {
@@ -660,6 +708,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     before: number | null,
     after: number,
     outcome: "rotated_tier1" | "rotated_tier2" | "rotated_private_run" | "harvested_session",
+    detail = "",
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
     state.failureCount = 0;
@@ -667,7 +716,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     const wasUnauthenticated = state.emittedUnauthenticated;
     state.emittedUnauthenticated = false;
     console.log(
-      `[claude-oauth-refresh] account=${accountId} ${outcome} new_expires_at=${new Date(after).toISOString()}`,
+      `[claude-oauth-refresh] account=${accountId} ${outcome} new_expires_at=${new Date(after).toISOString()}${detail}`,
     );
     try {
       this.deps.repushAccountToken("claude", accountId);
@@ -688,8 +737,15 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     };
   }
 
-  private handleRevoked(accountId: string, before: number | null, after: number | null, reason: string): RefreshResult {
-    console.log(`[claude-oauth-refresh] account=${accountId} revoked (${reason}) — emitting auth_required`);
+  // The sentence up to "auth_required" is what incidents are searched by; the detail follows it.
+  private handleRevoked(
+    accountId: string,
+    before: number | null,
+    after: number | null,
+    reason: string,
+    detail: string,
+  ): RefreshResult {
+    console.log(`[claude-oauth-refresh] account=${accountId} revoked (${reason}) — emitting auth_required ${detail}`);
     this.emitUnauthenticated(accountId, "revoked");
     return {
       outcome: "revoked",
@@ -705,7 +761,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     before: number | null,
     after: number | null,
     combinedOutput: string,
-    grantRejected: boolean,
+    // How the probes found the grant rejected; absent for every other failure.
+    rejection?: string,
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
     state.failureCount += 1;
@@ -714,8 +771,11 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     const isRateLimited =
       lc.includes("429") || lc.includes("rate_limit") || lc.includes("rate limited");
 
-    if (grantRejected) {
-      return this.handleRevoked(accountId, before, after, this.authFailureReason(lc));
+    if (rejection !== undefined) {
+      return this.handleRevoked(
+        accountId, before, after, this.authFailureReason(lc),
+        `${rejection} expires_in=${this.describeExpiresIn(before)} reason="${reason}"`,
+      );
     }
 
     if (isRateLimited) {
@@ -733,12 +793,11 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       };
     }
 
-    const now = this.deps.now();
-    const stillValid = before !== null && before > now;
+    const stillValid = before !== null && before > this.deps.now();
     console.log(
       stillValid
         ? `[claude-oauth-refresh] account=${accountId} not_rotated failure_count=${state.failureCount}`
-          + ` expires_in=${Math.round((before - now) / 60_000)}m — token still valid, retry scheduled reason="${reason}"`
+          + ` expires_in=${this.describeExpiresIn(before)} — token still valid, retry scheduled reason="${reason}"`
         : `[claude-oauth-refresh] account=${accountId} unknown_failure failure_count=${state.failureCount} — short backoff`
           + ` reason="${reason}"`,
     );
@@ -752,17 +811,26 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     };
   }
 
+  private describeExpiresIn(expiresAt: number | null): string {
+    return expiresAt === null ? "unknown" : `${Math.round((expiresAt - this.deps.now()) / 60_000)}m`;
+  }
+
   private authFailureReason(lcOutput: string): string {
     return TERMINAL_AUTH_FAILURE_PATTERNS.find((phrase) => lcOutput.includes(phrase)) ?? "invalid_grant";
   }
 
   private emitUnauthenticated(accountId: string, reason: "revoked" | "missing_credentials"): void {
     const state = this.ensureAccountState(accountId);
-    if (state.emittedUnauthenticated) return;
+    // A sign-in's completion sets the row ready by itself. If the credential is still dead, say so again.
+    if (state.emittedUnauthenticated && this.accountStatus(accountId) !== "ready") return;
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("claude_account_unauthenticated", { accountId });
     this.deps.sseBroadcast("agent_auth_failed", { loginId: "anthropic-oauth", accountId, reason });
+  }
+
+  private accountStatus(accountId: string): string | undefined {
+    return this.deps.providerAccountManager.list("anthropic").find((account) => account.id === accountId)?.status;
   }
 
   private handleHealthySource(accountId: string): void {
@@ -872,8 +940,12 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
   }
 
   private readSourceIdentity(accountId: string): string | null {
+    return this.readIdentityAt(this.sourceFileFor(accountId));
+  }
+
+  private readIdentityAt(file: string): string | null {
     try {
-      return claudeCredentialIdentity(JSON.parse(fs.readFileSync(this.sourceFileFor(accountId), "utf8")));
+      return claudeCredentialIdentity(JSON.parse(fs.readFileSync(file, "utf8")));
     } catch {
       return null;
     }
@@ -886,6 +958,11 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
   private spawnCli(probe: ProbeHome, label: "tier1" | "tier2", timeoutMs: number): Promise<CliRun> {
     return new Promise<CliRun>((resolve) => {
+      const startedAt = performance.now();
+      const finish = (output: string, timedOut: boolean, exit: string | null): void => {
+        const completed = !timedOut && exit !== null;
+        resolve({ output, completed, durationMs: performance.now() - startedAt, timedOut, exit });
+      };
       // Tier 1 prints the account's email and organization; keep them out of the log.
       const keepStdout = label === "tier2";
       const debugFile = path.join(probe.home, `${label}.debug.log`);
@@ -902,7 +979,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         child = this.deps.spawn("claude", fullArgs, opts);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        resolve({ output: `[spawn-failed] ${msg}`, completed: false });
+        finish(`[spawn-failed] ${msg}`, false, null);
         return;
       }
       let stdout = "";
@@ -913,7 +990,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
       let timedOut = false;
       let killGrace: ReturnType<typeof setTimeout> | null = null;
-      const settle = (note: string | null): void => {
+      const settle = (note: string, exit: string | null): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -923,25 +1000,22 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
           // A timestamp's milliseconds can read as an HTTP status (".429Z").
           debugContent = fs.readFileSync(debugFile, "utf8").replace(LOG_TIMESTAMP_PATTERN, "");
         } catch { /* the CLI wrote no debug log */ }
-        resolve({
-          output: `${stdout}\n${stderr}\n${debugContent}\n${note ?? ""}`.trim(),
-          completed: note === null,
-        });
+        finish(`${stdout}\n${stderr}\n${debugContent}\n${note}`.trim(), timedOut, exit);
       };
 
       const timer = setTimeout(() => {
         timedOut = true;
         // Settle on the exit, not on the signal: a write under way must land before the copy is read.
-        killGrace = setTimeout(() => settle(TIMED_OUT), KILL_SETTLE_MS);
+        killGrace = setTimeout(() => settle(TIMED_OUT, null), KILL_SETTLE_MS);
         if (typeof killGrace.unref === "function") killGrace.unref();
         killProcessTree(child, "SIGKILL", { label: "claude-refresh" });
       }, timeoutMs);
       if (typeof timer.unref === "function") timer.unref();
 
-      child.on("exit", () => settle(timedOut ? TIMED_OUT : null));
+      child.on("exit", (code, signal) => settle(timedOut ? TIMED_OUT : "", String(code ?? signal ?? "unknown")));
       child.on("error", (err) => {
         // A kill that fails is an error and not an exit: the CLI can still write.
-        if (!timedOut) settle(`[error] ${err.message}`);
+        if (!timedOut) settle(`[error] ${err.message}`, null);
       });
     });
   }
@@ -965,10 +1039,13 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     if (candidates.length === 0) return null;
 
     const before = this.readSourceExpiresAt(accountId);
+    const rejected = this.ensureAccountState(accountId).rejectedIdentity;
     let best = before;
     let adoptedFrom: string | null = null;
     for (const sessionId of candidates) {
       if (!sessionTokenIsAheadOfSource(credentialsDir, sessionId, "claude", accountId)) continue;
+      // A session's copy of the credential that the token host rejected is no rotation.
+      if (rejected !== null && this.readIdentityAt(this.sessionTokenFileFor(sessionId)) === rejected) continue;
       try {
         syncProviderAccountTokenBack(credentialsDir, sessionId, "claude", accountId, { sessionOwnRoute: true });
       } catch (err) {

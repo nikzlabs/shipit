@@ -891,6 +891,7 @@ export function sessionTokenIsAheadOfSource(
     const sourceReading = classifyTokenFreshness(agentId, "source", freshness, sourceFile);
     // Turn-end sync-back reports refusals; this per-file-change probe stays silent.
     if (sourceReading.kind === "unorderable") continue;
+    if (sourceReading.kind === "absent" && accountId !== undefined) continue;
     if (sourceReading.kind === "ordered" && sessionReading.at <= sourceReading.at) continue;
     return true;
   }
@@ -943,6 +944,17 @@ function logWriteBackOutcome(
   );
 }
 
+// An account's source is missing while a sign-in runs and after a sign-out. A replica holds the
+// credential that was removed, so it must not refill the source (docs/153).
+function refuseAbsentAccountSource(sessionId: string, agentId: AgentId, accountId: string, replica: string): void {
+  logWriteBackOutcome(
+    "refused",
+    { sessionId, agentId, target: `account:${accountId}`, holder: accountId, reason: "source-absent" },
+    `refusing to publish ${replica} to account ${accountId}: the account holds no credential `
+      + `(a sign-in in progress, or a sign-out)`,
+  );
+}
+
 export function syncProviderAccountTokenBack(
   credentialsRoot: string,
   sessionId: string,
@@ -988,6 +1000,7 @@ export function syncProviderAccountTokenBack(
     sessionId,
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+    accountId,
   );
 }
 
@@ -996,6 +1009,7 @@ function syncAgentTokenBackToRoot(
   sessionId: string,
   agentId: AgentId,
   sourceRoot: string,
+  accountId?: string,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
@@ -1021,6 +1035,10 @@ function syncAgentTokenBackToRoot(
         { sessionId, agentId, direction: "sync-back", file: sourceFile },
         `refusing to overwrite the source credential with ${sessionFile}: ${UNORDERABLE_HINT}`,
       );
+      continue;
+    }
+    if (sourceReading.kind === "absent" && accountId !== undefined) {
+      refuseAbsentAccountSource(sessionId, agentId, accountId, sessionFile);
       continue;
     }
     if (sourceReading.kind === "ordered" && sessionReading.at <= sourceReading.at) continue;
@@ -1128,6 +1146,10 @@ export function syncSubAgentSpawnHomeTokenBack(
         `refusing to overwrite the source credential with ${spawnFile}: ${UNORDERABLE_HINT}`,
       );
       if (!quarantineTokenCopy(targetRoot, rel, spawnFile)) safeToDelete = false;
+      continue;
+    }
+    if (targetReading.kind === "absent" && accountId !== undefined) {
+      refuseAbsentAccountSource(sessionId, agentId, accountId, spawnFile);
       continue;
     }
     if (targetReading.kind === "ordered" && spawnReading.at <= targetReading.at) continue;

@@ -1,4 +1,5 @@
 // Checks the Claude CLI behaviors that the OAuth refresher depends on (docs/153, "Known limits").
+// Tier 2 is the tier that sends the refresh grant; tier 1 is checked for not sending it.
 // Run: node --import tsx scripts/probe-claude-refresh.mjs   [CLAUDE_BIN=/path/to/claude]
 // All credentials are synthetic, and the local proxy never forwards a request. Each run gets
 // its own HOME and working directory under a temp directory, and none of this process's
@@ -20,6 +21,8 @@ import {
 
 const bin = process.env.CLAUDE_BIN ?? "claude";
 const RUN_TIMEOUT_MS = 60_000;
+// Longer than a real token host takes, and far longer than tier 1 stays alive after its request.
+const SLOW_ANSWER_MS = 1_500;
 const TOKEN_LIFETIME_S = 8 * 60 * 60;
 const HOSTS = ["platform.claude.com", "console.anthropic.com", "api.anthropic.com", "claude.ai"];
 
@@ -54,7 +57,8 @@ function startRecorder() {
     key: fs.readFileSync(path.join(root, "key.pem")),
     cert: fs.readFileSync(path.join(root, "cert.pem")),
   });
-  const recorder = { requests: [], tokenAnswer: "ok", port: 0, close: () => {} };
+  // tokenDelayMs holds a 200 back, as a real token host does. apiStatus answers every other request.
+  const recorder = { requests: [], tokenAnswer: "ok", tokenDelayMs: 0, apiStatus: 404, port: 0, close: () => {} };
 
   const inner = http.createServer((req, res) => {
     let body = "";
@@ -66,8 +70,11 @@ function startRecorder() {
       recorder.requests.push({ host: req.headers.host, method: req.method, url: req.url, isTokenRequest, body: parsed });
       res.setHeader("content-type", "application/json");
       if (!isTokenRequest) {
-        res.writeHead(404);
-        res.end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "probe" } }));
+        res.writeHead(recorder.apiStatus);
+        res.end(JSON.stringify({
+          type: "error",
+          error: { type: recorder.apiStatus === 401 ? "authentication_error" : "not_found_error", message: "probe" },
+        }));
         return;
       }
       if (recorder.tokenAnswer === "invalid_grant") {
@@ -80,14 +87,19 @@ function startRecorder() {
         res.end(JSON.stringify({ error: { type: "rate_limit_error", message: "Rate limited. Please try again later." } }));
         return;
       }
-      res.writeHead(200);
-      res.end(JSON.stringify({
-        token_type: "Bearer",
-        access_token: ROTATED.accessToken,
-        refresh_token: ROTATED.refreshToken,
-        expires_in: TOKEN_LIFETIME_S,
-        scope: typeof parsed.scope === "string" ? parsed.scope : "user:inference user:profile",
-      }));
+      const answer = () => {
+        if (res.destroyed) return;
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          token_type: "Bearer",
+          access_token: ROTATED.accessToken,
+          refresh_token: ROTATED.refreshToken,
+          expires_in: TOKEN_LIFETIME_S,
+          scope: typeof parsed.scope === "string" ? parsed.scope : "user:inference user:profile",
+        }));
+      };
+      if (recorder.tokenDelayMs > 0) setTimeout(answer, recorder.tokenDelayMs).unref();
+      else answer();
     });
   });
 
@@ -132,11 +144,13 @@ function readCredentials(home) {
 }
 
 // Returns what the refresher sees: the exit, the output, and the token requests the CLI made.
-function run(recorder, name, command, msLeft, tokenAnswer = "ok") {
+function run(recorder, name, command, msLeft, tokenAnswer = "ok", { tokenDelayMs = 0, apiStatus = 404 } = {}) {
   const home = makeHome(name, msLeft);
   const debugFile = path.join(home, "probe.debug.log");
   recorder.requests = [];
   recorder.tokenAnswer = tokenAnswer;
+  recorder.tokenDelayMs = tokenDelayMs;
+  recorder.apiStatus = apiStatus;
   const proxyUrl = `http://127.0.0.1:${recorder.port}`;
   return new Promise((resolve) => {
     // Nothing of this process's environment, so that no real credential or config directory leaks in.
@@ -168,6 +182,7 @@ function run(recorder, name, command, msLeft, tokenAnswer = "ok") {
         stderr,
         debug,
         tokenRequests: recorder.requests.filter((request) => request.isTokenRequest),
+        apiRequests: recorder.requests.filter((request) => !request.isTokenRequest),
       });
     };
     child.on("exit", (code) => finish(code));
@@ -208,6 +223,7 @@ async function main() {
     );
 
     // (b) A refresh is requested only when the file says the window's length or less is left.
+    // Tier 1 runs only outside the window: it sends the grant and does not wait for the answer.
     check(healthy.tokenRequests.length === 0, "(b) tier 1: no token request with 45.0 min left");
     const justOutside = await run(recorder, "b-outside", tier1, outside);
     check(
@@ -215,33 +231,52 @@ async function main() {
       `(b) tier 1: no token request with ${minutes(outside)} left`,
       "the CLI's refresh window is wider than CLI_REFRESH_WINDOW_MS",
     );
-    const justInside = await run(recorder, "b-inside", tier1, inside);
+    const rejectedAccess = await run(recorder, "b-rejected-access", tier1, 45 * 60_000, "ok", { apiStatus: 401 });
+    check(
+      rejectedAccess.exitCode === 0 && rejectedAccess.apiRequests.length > 0 && rejectedAccess.tokenRequests.length === 0,
+      "(b) tier 1: no token request with 45.0 min left when the API answers 401",
+      `exit=${rejectedAccess.exitCode} API requests answered 401=${rejectedAccess.apiRequests.length}`
+        + ` token requests=${rejectedAccess.tokenRequests.length}`,
+    );
+    const justInside = await run(recorder, "b-inside", tier2, inside);
     const grant = justInside.tokenRequests[0]?.body ?? {};
     check(
       justInside.tokenRequests.length > 0 && grant.grant_type === "refresh_token" && grant.refresh_token === ORIGINAL.refreshToken,
-      `(b) tier 1: an ordinary refresh_token grant with ${minutes(inside)} left`,
+      `(b) tier 2: an ordinary refresh_token grant with ${minutes(inside)} left`,
       `token requests=${justInside.tokenRequests.length} grant_type=${grant.grant_type}`,
     );
     check(!("expires_in" in grant), "(b) the grant asks for no lifetime of its own", `expires_in=${grant.expires_in}`);
     const tier2Outside = await run(recorder, "b-tier2-outside", tier2, 10 * 60_000);
     check(tier2Outside.tokenRequests.length === 0, "(b) tier 2: no token request with 10.0 min left");
 
-    // (c) The copy's claimed life makes each tier refresh, and the result lands in the file it read.
-    for (const [label, command] of [["tier 1", tier1], ["tier 2", tier2]]) {
-      const claimed = await run(recorder, `c-${label.replace(" ", "")}`, command, PROBE_REMAINING_MS);
-      const after = readCredentials(claimed.home);
-      const lifetimeMs = after.claudeAiOauth.expiresAt - Date.now();
-      check(
-        isRotated(claimed.home) && Math.abs(lifetimeMs - TOKEN_LIFETIME_S * 1000) < 2 * 60_000,
-        `(c) ${label}: with ${minutes(PROBE_REMAINING_MS)} claimed, the new tokens and expiry are written to the copy`,
-        `token requests=${claimed.tokenRequests.length} rotated=${isRotated(claimed.home)} lifetime=${minutes(lifetimeMs)}`,
-      );
-      check(after.mcpOAuth?.["probe-server"]?.marker === "kept", `(c) ${label}: the file's other keys are kept`);
-    }
+    // (c) The copy's claimed life makes tier 2 refresh, and the result lands in the file it read.
+    const claimed = await run(recorder, "c-tier2", tier2, PROBE_REMAINING_MS);
+    const after = readCredentials(claimed.home);
+    const lifetimeMs = after.claudeAiOauth.expiresAt - Date.now();
+    check(
+      isRotated(claimed.home) && Math.abs(lifetimeMs - TOKEN_LIFETIME_S * 1000) < 2 * 60_000,
+      `(c) tier 2: with ${minutes(PROBE_REMAINING_MS)} claimed, the new tokens and expiry are written to the copy`,
+      `token requests=${claimed.tokenRequests.length} rotated=${isRotated(claimed.home)} lifetime=${minutes(lifetimeMs)}`,
+    );
+    check(after.mcpOAuth?.["probe-server"]?.marker === "kept", "(c) tier 2: the file's other keys are kept");
+
+    // (e) A real token host does not answer at once. The tier that sends the grant must wait for
+    // the answer: a grant that was sent and not written is spent, and its successor is lost.
+    const slow = await run(recorder, "e-tier2-slow", tier2, PROBE_REMAINING_MS, "ok", { tokenDelayMs: SLOW_ANSWER_MS });
+    check(
+      slow.tokenRequests.length === 1 && isRotated(slow.home),
+      `(e) tier 2: waits for a token host that answers after ${SLOW_ANSWER_MS} ms, and sends the grant once`,
+      `token requests=${slow.tokenRequests.length} rotated=${isRotated(slow.home)}`,
+    );
+    const slowTier1 = await run(recorder, "e-tier1-slow", tier1, PROBE_REMAINING_MS, "ok", { tokenDelayMs: SLOW_ANSWER_MS });
+    console.log(
+      `info  tier 1 ${slowTier1.tokenRequests.length > 0 ? "sends" : "does not send"} the grant on a copy in the window, and`
+        + ` ${isRotated(slowTier1.home) ? "waits" : "does not wait"} for that answer (the refresher gives it no such copy)`,
+    );
 
     // (d) invalid_grant blanks the file the CLI ran against; a failure that can pass does not.
     for (const [answer, status] of [["rate_limited", 429], ["server_error", 500]]) {
-      const transient = await run(recorder, `d-${answer}`, tier1, PROBE_REMAINING_MS, answer);
+      const transient = await run(recorder, `d-${answer}`, tier2, PROBE_REMAINING_MS, answer);
       const kept = readCredentials(transient.home).claudeAiOauth;
       check(
         transient.tokenRequests.length > 0 && kept.accessToken === ORIGINAL.accessToken && kept.refreshToken === ORIGINAL.refreshToken,
@@ -249,7 +284,7 @@ async function main() {
         `token requests=${transient.tokenRequests.length} accessToken=${kept.accessToken ? "kept" : "empty"}`,
       );
     }
-    const rejected = await run(recorder, "d-rejected", tier1, PROBE_REMAINING_MS, "invalid_grant");
+    const rejected = await run(recorder, "d-rejected", tier2, PROBE_REMAINING_MS, "invalid_grant");
     const blanked = readCredentials(rejected.home).claudeAiOauth;
     check(
       rejected.tokenRequests.length > 0 && blanked.accessToken === "" && blanked.refreshToken === "",

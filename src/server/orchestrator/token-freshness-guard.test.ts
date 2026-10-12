@@ -20,9 +20,12 @@ import {
   sessionTokenIsAheadOfSource,
   syncAgentTokenIn,
   syncAgentTokenBack,
+  syncProviderAccountTokenBack,
   syncSubAgentSpawnHomeTokenBack,
 } from "./token-sync-manager.js";
 import { perSessionCredentialsDir } from "./session-credentials.js";
+import { writeSessionAccountMarker } from "./session-credentials-scaffold.js";
+import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 const FIXTURE_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -311,5 +314,82 @@ describe("planning#495 — a blanked Claude credential holds nothing to protect"
       expect(fs.readFileSync(path.join(root, rel), "utf-8")).toBe(LIVE);
     }
     expect(fs.existsSync(path.join(root, ".shipit-stranded-tokens"))).toBe(false);
+  });
+});
+
+describe("a missing account source is not refilled from a replica", () => {
+  let root: string;
+  const sid = "session-old-credential";
+  const accountId = "acct-1";
+  const rel = (AGENT_TOKEN_FILES.claude ?? [])[0];
+  const replica = fs.readFileSync(fixturePath("claude"), "utf-8");
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-absent-source-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeReplica(dir: string): void {
+    const file = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, replica);
+  }
+
+  // What a sign-in's start and a sign-out both leave: the account's root, with no credential in it.
+  function emptiedAccountSource(): string {
+    const accountRoot = providerAccountCredentialRoot(root, "claude", accountId);
+    fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
+    return path.join(accountRoot, rel);
+  }
+
+  it("does not publish a session's copy to an account whose source a sign-in removed", () => {
+    const source = emptiedAccountSource();
+    writeReplica(perSessionCredentialsDir(root, sid));
+    writeSessionAccountMarker(root, sid, "claude", accountId);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(sessionTokenIsAheadOfSource(root, sid, "claude", accountId)).toBe(false);
+    syncProviderAccountTokenBack(root, sid, "claude", accountId, { sessionOwnRoute: true });
+
+    expect(fs.existsSync(source)).toBe(false);
+    expect(warn.mock.calls.map((call) => String(call[0])).some((line) => line.includes("reason=source-absent"))).toBe(true);
+  });
+
+  it("does not publish a sub-agent's spawn home to such an account, and lets the home go", () => {
+    const source = emptiedAccountSource();
+    const spawnHome = path.join(root, "spawn-home");
+    writeReplica(spawnHome);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(syncSubAgentSpawnHomeTokenBack(root, sid, spawnHome, "claude", accountId)).toBe(true);
+
+    expect(fs.existsSync(source)).toBe(false);
+  });
+
+  it("keeps the flat root's rule: a session's token still fills a missing source there", () => {
+    writeReplica(perSessionCredentialsDir(root, sid));
+
+    expect(sessionTokenIsAheadOfSource(root, sid, "claude")).toBe(true);
+    syncAgentTokenBack(root, sid, "claude");
+
+    expect(fs.readFileSync(path.join(root, rel), "utf-8")).toBe(replica);
+  });
+
+  it("still publishes to an account that holds an older credential", () => {
+    const source = emptiedAccountSource();
+    const older = JSON.parse(replica) as { claudeAiOauth: { expiresAt: number } };
+    older.claudeAiOauth.expiresAt -= 60_000;
+    fs.writeFileSync(source, JSON.stringify(older));
+    writeReplica(perSessionCredentialsDir(root, sid));
+    writeSessionAccountMarker(root, sid, "claude", accountId);
+
+    expect(sessionTokenIsAheadOfSource(root, sid, "claude", accountId)).toBe(true);
+    syncProviderAccountTokenBack(root, sid, "claude", accountId, { sessionOwnRoute: true });
+
+    expect(fs.readFileSync(source, "utf-8")).toBe(replica);
   });
 });

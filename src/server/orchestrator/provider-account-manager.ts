@@ -420,7 +420,8 @@ export class ProviderAccountManager {
     const exclude = new Set(opts.exclude ?? []);
     const mode = this.credentialStore.getSelectionMode(...routingSettingsKeyFor(serviceId));
     const eligible = this.accountsInSelectionOrder(serviceId).filter(
-      (account) => account.status === "ready" || account.status === "authenticating",
+      (account) => account.status === "ready"
+        || (account.status === "authenticating" && this.holdsCredential(serviceId, account.id)),
     );
     const connected = orderForSelectionMode(
       eligible.filter((account) => !exclude.has(account.id)),
@@ -478,6 +479,16 @@ export class ProviderAccountManager {
     const reserved = this.reservedRouteFor(serviceId);
     if (reserved && !exclude.has(reserved.id)) return { ok: true, route: reserved };
     return { ok: false, reason: "auth_required" };
+  }
+
+  // A sign-in can remove the account's credential before it writes the new one (Claude's does).
+  // Until then the account has nothing to run a turn on.
+  private holdsCredential(serviceId: string, accountId: string): boolean {
+    const provider = harnessFor(serviceId);
+    const loginId = loginIntegrationForService(serviceId);
+    const mgr = loginId ? this.authManagers?.get(loginId) : undefined;
+    if (!provider || !mgr) return true;
+    return mgr.isConfigured({ credentialDir: this.resolveCredentialRoot(provider, accountId) });
   }
 
   hasAnyAuthForProvider(provider: AgentId): boolean {
