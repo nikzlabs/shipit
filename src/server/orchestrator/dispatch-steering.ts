@@ -22,7 +22,6 @@ export interface SteerDecisionInputs {
   steeringCapable: boolean;
   liveSteering: boolean;
   streamingActive: boolean;
-  systemTurnInProgress: boolean;
   /** `turnTakesMessages(runner)`: the agent has the turn's prompt, and the turn is no compaction. */
   takesMessages: boolean;
 }
@@ -32,7 +31,6 @@ export function shouldSteerMessage(i: SteerDecisionInputs): boolean {
     i.steeringCapable &&
     i.liveSteering &&
     i.streamingActive &&
-    !i.systemTurnInProgress &&
     i.takesMessages
   );
 }
@@ -95,7 +93,7 @@ export async function prepareSteer(dir: string, source: SteerSource): Promise<Pr
 // sends the text alone: a dispatch that carries attachments would lose them.
 export function isSteerableDispatch(opts: AgentDispatchOptions): boolean {
   const attachments = (opts.images?.length ?? 0) + (opts.files?.length ?? 0) + (opts.uploads?.length ?? 0);
-  return !opts.systemTurn && !opts.onTurnComplete && attachments === 0;
+  return !opts.onTurnComplete && attachments === 0;
 }
 
 /** Returns false when the caller must enqueue the message. */
@@ -113,7 +111,6 @@ export function trySteerDispatch(
       steeringCapable,
       liveSteering,
       streamingActive: runner.isStreamingActive,
-      systemTurnInProgress: runner.systemTurnInProgress,
       takesMessages: turnTakesMessages(runner),
     })
   ) {
@@ -209,7 +206,6 @@ export async function deliverWaitingMessages(
       steeringCapable: steer.steeringCapable,
       liveSteering: steer.liveSteering,
       streamingActive: runner.isStreamingActive,
-      systemTurnInProgress: runner.systemTurnInProgress,
       takesMessages: turnTakesMessages(runner),
     });
 

@@ -185,7 +185,6 @@ export async function dispatchAgentMessage(
     permissionMode: input.permissionMode,
     execution: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: input.automatic === true ? true : undefined,
     heldId: undefined,
     onTurnComplete: undefined,

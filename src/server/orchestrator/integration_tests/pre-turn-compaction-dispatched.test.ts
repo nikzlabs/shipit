@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -261,7 +261,8 @@ describe("Integration: a dispatched message on a merged session with a real orig
     client.close();
   });
 
-  it("with live steering: retires the resident process, compacts, and resets the branch", async () => {
+  // docs/329-user-steers-every-turn — ShipIt's compaction is an ordinary turn: it enters the resident.
+  it("with live steering: compacts on the resident process, then resets the branch", async () => {
     credentialStore.setLiveSteering(true);
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
@@ -269,7 +270,6 @@ describe("Integration: a dispatched message on a merged session with a real orig
     client.send({ type: "send_message", text: "warm up" });
     const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     expect(resident.lastUseStreaming).toBe(true);
-    resident.doneOnKill = true;
     resident.initSession("agent-a");
     resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
     await client.receiveType("session_status");
@@ -277,13 +277,17 @@ describe("Integration: a dispatched message on a merged session with a real orig
     // The merge lands between turns, with the resident process still alive.
     markMerged();
     await dispatch("first from the page");
-    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never), resident);
-    expect(compaction.lastCompact).toBe(true);
-    expect(resident.killed).toBe(true);
-    finishCompaction(compaction);
+    const wrote = (text: string): boolean => resident.stdinData.some((d) => d.includes(text));
+    await vi.waitFor(() => expect(wrote("/compact")).toBe(true));
+    expect(wrote("first from the page")).toBe(false);
+    resident.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-a" });
 
-    const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
-    expect(userTurn.lastPrompt).toContain("automatically reset to the latest origin/main");
+    await vi.waitFor(() => expect(wrote("first from the page")).toBe(true));
+    expect(resident.stdinData.find((d) => d.includes("first from the page")))
+      .toContain("automatically reset to the latest origin/main");
+    expect(resident.killed).toBe(false);
+    expect(spawns).toHaveLength(1);
     expect(head()).toBe(baseTip);
     expect(sessionManager.get(SESSION_ID)?.mergedAt).toBeUndefined();
 

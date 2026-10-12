@@ -28,7 +28,6 @@ export interface AgentDispatchInit {
   uploads: UploadRef[] | undefined;
   permissionMode: PermissionMode | undefined;
   postTurn: "commit-push" | "none" | undefined;
-  systemTurn: boolean | undefined;
   automatic: boolean | undefined;
   ciAutoFix?: boolean;
   heldId: number | undefined;
@@ -63,7 +62,6 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   uploads: true,
   permissionMode: true,
   postTurn: true,
-  systemTurn: true,
   automatic: true,
   ciAutoFix: true,
   heldId: true,
@@ -103,7 +101,6 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     uploads: next.uploads,
     permissionMode: next.permissionMode,
     postTurn: next.postTurn,
-    systemTurn: next.systemTurn,
     automatic: next.automatic,
     ciAutoFix: next.ciAutoFix,
     heldId: next.heldId,

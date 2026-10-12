@@ -1953,7 +1953,7 @@ describe("post-turn flow for a self-woken turn", () => {
         drainNext: vi.fn(async () => {}),
         emit: () => {},
         useStreaming: false,
-        systemTurn: true,
+        automatic: true,
         onTurnComplete: () => { order.push("settled"); },
         ...(over.deliveryId !== undefined ? { deliveryId: over.deliveryId } : {}),
       });

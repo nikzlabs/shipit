@@ -62,8 +62,7 @@ describe("recordSecretBlock", () => {
     recordSecretBlock(h.ctx, [finding()]);
 
     expect(h.dispatch).toHaveBeenCalledTimes(1);
-    const prompt = h.dispatch.mock.calls[0]?.[0] as { text: string; systemTurn?: boolean };
-    expect(prompt.systemTurn).toBeUndefined();
+    const prompt = h.dispatch.mock.calls[0]?.[0] as { text: string };
     expect(h.dispatch.mock.calls[0]?.[1]).toEqual({ whenBusy: "queue" });
     expect(prompt.text).toContain("src/config.ts:11");
     expect(prompt.text).toContain("ghp_…[redacted, 40 chars]");

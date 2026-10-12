@@ -279,11 +279,11 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       console.error(
         `[auto-push] ${sessionId}: push failed [${failure}]: ${getErrorMessage(err)}`,
       );
-      // The generic system-turn flag is checked only after failure: it can delay
-      // a warning during rewrite publication, but cannot prevent a valid push.
+      // The session hold is checked only after failure: it can delay a warning during
+      // rewrite publication, but cannot prevent a valid push.
       if (isRewriteWindowPushFailure(err)) {
         const rewriting =
-          deps.getRunner(sessionId)?.systemTurnInProgress === true
+          Boolean(deps.getRunner(sessionId)?.sessionHold)
           || await rebaseInProgress(git, sessionId);
         if (rewriting && await deferForRewrite(git, sessionId)) return;
       }

@@ -1,5 +1,5 @@
-// A restart drops the rebase driver's promise, its queue and its systemTurnInProgress
-// hold together; what survives is a checkout still mid-rebase. Nothing resumed it and
+// A restart drops the rebase driver's promise, its queue and its session hold
+// together; what survives is a checkout still mid-rebase. Nothing resumed it and
 // nothing said so, so the session looked ordinary while every commit and push for it
 // was refused (planning#297). This sweep only reports: recovering the rebase is the
 // agent's job, and it is the actor that can ask the user first. Resuming the rebase

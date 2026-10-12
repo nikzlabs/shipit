@@ -99,7 +99,6 @@ describe("reportStoppedBackgroundJobs (docs/235 §9)", () => {
     expect(decision).toEqual({ woken: true, admitted: "started" });
     expect(ctx.runner.dispatched).toHaveLength(1);
     const dispatched = ctx.runner.dispatched[0];
-    expect(dispatched.systemTurn).toBeUndefined();
     expect(dispatched.automatic).toBe(true);
     expect(dispatched.text).toBe(buildStoppedBackgroundJobsPrompt(JOBS));
     for (const job of JOBS) expect(dispatched.text).toContain(job);

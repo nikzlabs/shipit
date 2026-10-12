@@ -6,10 +6,13 @@ import {
   testDispatch,
   makeDispatchTurnDeps,
   flushTurn,
+  waitForTurn,
   type FakeAgent,
 } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "./turn-settlement.js";
 import type { QueuedMessage } from "./session-runner.js";
+import { takeSessionHold } from "./session-hold.js";
+import { MISSED_COMPACTION_NOTICE } from "./compact-before-turn.js";
 
 const MERGE_PREFIX = "[System] Your previous pull request (#482) was merged into main.";
 
@@ -73,7 +76,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     expect(userRows.map((m) => m.text)).toEqual(["Retry the failed import"]);
   });
 
-  // docs/329-user-steers-every-turn — the compaction turn replaces the resident process.
+  // docs/329-user-steers-every-turn — a turn of the CLI's own could come between the two.
   it("does not compact ahead of a turn while the resident process has background work", async () => {
     const { agents, deps, prompts, decisions } = setup();
     deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
@@ -100,9 +103,9 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     const cases: [Parameters<typeof testDispatch>[0], boolean][] = [
       [{ text: "a page message", agentInterface: { source: "agent_interface_sdk", surface: "present" } }, false],
       [{ text: "a card button" }, false],
-      // docs/328's turn for a message the user sent: neither system nor automatic.
+      // docs/328's turn for a message the user sent: not automatic.
       [{ text: "a wake", unattended: true }, true],
-      [{ text: "a CI fix", systemTurn: true, automatic: true }, true],
+      [{ text: "a CI fix", automatic: true, ciAutoFix: true }, true],
       [{ text: "a preview fix", automatic: true }, true],
       // A parent's first prompt to a new child: no merged pull request, so the answer is not used.
       [{
@@ -142,28 +145,56 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     expect(decisions.at(-1)).toEqual({ sessionId: "s1", intent: false });
   });
 
-  it("holds the system-turn flag while the decision runs, and releases it on `no`", async () => {
+  // docs/329-user-steers-every-turn — the claim on `running` keeps others out; no flag does.
+  it("keeps the runner claimed while the decision runs, so a send meanwhile queues", async () => {
     let resolveDecision: ((v: boolean) => void) | undefined;
-    const { deps } = setup();
+    const { agents, deps } = setup();
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
     deps.shouldCompactBeforeTurn = () => new Promise<boolean>((r) => { resolveDecision = r; });
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
     runner.dispatch(testDispatch({ text: "keep going" }));
     await flushTurn();
-    expect(runner.systemTurnInProgress).toBe(true);
+    expect(runner.running).toBe(true);
+
+    expect(runner.dispatch(testDispatch({ text: "and this" })).admitted).toBe("queued");
     resolveDecision?.(false);
     await flushTurn();
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(agents).toHaveLength(1);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["and this"]);
   });
 
-  it("runs the compaction as ShipIt's own turn, so a send meanwhile queues behind it", async () => {
-    const { deps } = setup();
+  it("takes no message into the compaction turn: a send meanwhile queues behind it", async () => {
+    const { agents, deps, prompts } = setup();
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "keep going", systemTurn: undefined }));
+    runner.dispatch(testDispatch({ text: "keep going" }));
     await flushTurn();
-    expect(runner.running).toBe(true);
-    expect(runner.systemTurnInProgress).toBe(true);
+    expect(prompts[0]?.startsWith("/compact ")).toBe(true);
+
+    expect(runner.dispatch(testDispatch({ text: "and this" })).admitted).toBe("queued");
+    expect(agents[0]!.sendUserMessage).not.toHaveBeenCalled();
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["keep going", "and this"]);
+  });
+
+  it("writes the missed-compaction notice also when a flow takes the session during the commit", async () => {
+    const { agents, deps, appended } = setup();
+    deps.autoCommit = vi.fn(async () => {
+      takeSessionHold(runner);
+      return { commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+    }) as never;
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "keep going" }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    await flushTurn();
+
+    expect(appended.some((m) => m.text === MISSED_COMPACTION_NOTICE)).toBe(true);
+    // The flow releases the queue; the turn's drain does not start the message under its hold.
+    expect(agents).toHaveLength(1);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["keep going"]);
   });
 
   it("keeps the runner reserved while the drained wake sets up after the compaction", async () => {
@@ -172,62 +203,83 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     deps.preTurnReset = () => new Promise((r) => { releaseReset = () => r({ agentPrefix: MERGE_PREFIX }); });
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "wake up", systemTurn: true, deliveryId: "watch-3:1" }));
+    runner.dispatch(testDispatch({ text: "wake up", automatic: true, deliveryId: "watch-3:1" }));
     await flushTurn();
     agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
     await flushTurn();
     expect(releaseReset).toBeDefined();
     expect(runner.running).toBe(true);
-    expect(runner.systemTurnInProgress).toBe(true);
     expect(runner.activeDeliveryId).toBe("watch-3:1");
     releaseReset?.();
     await flushTurn();
     expect(agents).toHaveLength(2);
   });
 
-  it("does not let the one-shot compaction's late `done` clear the wake's system-turn flag", async () => {
+  it("checks for the compaction card once, also when the CLI starts a turn of its own after it", async () => {
+    const { agents, deps, appended } = setup({ decide: false });
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "/compact", silent: true, automatic: true }));
+    await flushTurn();
+    const agent = agents[0]!;
+    agent.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    await flushTurn();
+
+    // A background job ends: the CLI starts a turn on the same process, which drains again.
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    await flushTurn();
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    await flushTurn();
+    await flushTurn();
+
+    expect(appended.filter((m) => m.text === MISSED_COMPACTION_NOTICE)).toHaveLength(0);
+  });
+
+  it("checks the record of cards when the CLI starts a turn before the compaction's own drain", async () => {
+    const { agents, deps, appended } = setup({ decide: false });
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    const cards: { id: string }[] = [];
+    Object.assign(deps.listenerDeps.chatHistoryManager, {
+      replaceInProgress: (_sid: string, rows: { compaction?: { id: string } }[]) => {
+        for (const row of rows) {
+          if (row.compaction && !cards.some((c) => c.id === row.compaction!.id)) cards.push(row.compaction);
+        }
+      },
+      latestCompactionCard: () => cards.at(-1),
+    });
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "/compact", silent: true, automatic: true }));
+    await flushTurn();
+    const agent = agents[0]!;
+    agent.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    await flushTurn();
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    await waitForTurn(() => !runner.running && !runner.postTurnWorkInFlight, "both turns ended");
+
+    expect(cards).toHaveLength(1);
+    expect(appended.filter((m) => m.text === MISSED_COMPACTION_NOTICE)).toHaveLength(0);
+  });
+
+  it("does not let the one-shot compaction's late `done` end the wake that it drained", async () => {
     const { agents, deps } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "wake up", systemTurn: true, deliveryId: "watch-4:1" }));
+    runner.dispatch(testDispatch({ text: "wake up", automatic: true, deliveryId: "watch-4:1" }));
     await flushTurn();
     agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
     agents[0]?.emit("done", 0);
     await new Promise((r) => setTimeout(r, 50));
     expect(agents).toHaveLength(2);
-    expect(runner.systemTurnInProgress).toBe(true);
+    expect(runner.running).toBe(true);
     agents[1]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
     agents[1]?.emit("done", 0);
     await new Promise((r) => setTimeout(r, 50));
-    expect(runner.systemTurnInProgress).toBe(false);
-  });
-
-  it("lowers the flag for a non-system continuation even when the compaction's `done` is late", async () => {
-    const { agents, deps } = setup();
-    runner = makeRunner();
-    runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "keep going" }));
-    await flushTurn();
-    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
-    agents[0]?.emit("done", 0);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(agents).toHaveLength(2);
-    expect(runner.systemTurnInProgress).toBe(false);
-  });
-
-  it("a non-system entry drained behind ANY system turn lowers the flag itself", async () => {
-    const { agents, deps } = setup({ decide: false });
-    runner = makeRunner();
-    runner.setSystemTurnDeps(deps);
-    runner.enqueue({ text: "B, a user's message", execution: "dispatched" } as QueuedMessage);
-    runner.dispatch(testDispatch({ text: "a CI fix", systemTurn: true }));
-    await flushTurn();
-    expect(runner.systemTurnInProgress).toBe(true);
-    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
-    agents[0]?.emit("done", 0);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(agents).toHaveLength(2);
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.running).toBe(false);
   });
 
   it("does not let the compaction's result count for an ID-less dispatch either", async () => {
@@ -252,7 +304,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     const outcomes: { status: string }[] = [];
     runner.dispatch(testDispatch({
       text: "wake up",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-2:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
@@ -299,7 +351,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     const outcomes: unknown[] = [];
     runner.dispatch(testDispatch({
       text: "wake up",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-1:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
@@ -320,7 +372,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     const { deps, decisions } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
     await flushTurn();
     expect(decisions).toEqual([]);
   });

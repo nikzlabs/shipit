@@ -82,11 +82,11 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
     // Compaction would consume the replay seed intended for the next user turn.
     if (deps.getSession(sessionId)?.conversationReplay) return false;
 
-    // A fresh compaction process would retire the resident and lose its background work.
+    // A turn of the CLI's own for that work could come between the compaction and the message.
     if (runner.getAgent() !== null && runner.backgroundWorkDescriptions.length > 0) {
       console.log(
         `[compact-before-turn] skipping for ${sessionId}: the resident process holds `
-        + `${runner.backgroundWorkDescriptions.length} background task(s) that retiring it would lose`,
+        + `${runner.backgroundWorkDescriptions.length} background task(s)`,
       );
       return false;
     }
@@ -115,12 +115,26 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
   }
 }
 
+export interface CompactionCardLog {
+  append(sessionId: string, message: PersistedMessage): unknown;
+  latestCompactionCard?(sessionId: string): { id: string } | undefined;
+}
+
+/** The newest compaction card on record, before a compaction turn starts. */
+export function compactionCardBefore(chatHistory: CompactionCardLog, sessionId: string): string | null {
+  return chatHistory.latestCompactionCard?.(sessionId)?.id ?? null;
+}
+
 export function noteMissedCompaction(
   runner: Pick<SessionRunnerInterface, "recordedCards" | "emitMessage">,
-  chatHistory: { append(sessionId: string, message: PersistedMessage): unknown },
+  chatHistory: CompactionCardLog,
   sessionId: string,
+  cardBefore?: string | null,
 ): void {
   if (runner.recordedCards.some((c) => c.message.compaction !== undefined)) return;
+  // A turn the CLI starts on the same process resets the runner's cards; the record keeps it.
+  if (cardBefore !== undefined && chatHistory.latestCompactionCard
+    && compactionCardBefore(chatHistory, sessionId) !== cardBefore) return;
   emitNoticePostTurn(
     (m) => runner.emitMessage(m),
     chatHistory,

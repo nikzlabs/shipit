@@ -6,6 +6,8 @@ description: A shim command records the request; a post-turn step restarts the a
 
 # 321 — Agent-requested container restart: design
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** `systemTurnInProgress` is deleted, and with it the exception for a turn that owned it. A restart takes the session hold (`runner.sessionHold`), and a restart request waits while any hold is set.
+
 Implements [`requirements.md`](./requirements.md).
 
 ## Shape

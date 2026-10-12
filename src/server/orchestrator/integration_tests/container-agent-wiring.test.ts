@@ -1176,7 +1176,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.enqueue({
         text: "Child PR #1939 merged: Retire the docs/246 one-time clone migration",
         execution: "dispatched",
-        systemTurn: true,
+        automatic: true,
         postTurn: "none",
         activity: "Waking on merge…",
         deliveryId: "delivery-queued",
@@ -1194,7 +1194,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       const opts = runner.dispatched[0];
       expect(opts.text).toMatch(/Child PR #1939 merged/);
       expect(opts.execution).toBe("dispatched");
-      expect(opts.systemTurn).toBe(true);
+      expect(opts.automatic).toBe(true);
       expect(opts.postTurn).toBe("none");
       expect(opts.activity).toBe("Waking on merge…");
       expect(opts.deliveryId).toBe("delivery-queued");
@@ -1218,7 +1218,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         uploads: undefined,
         permissionMode: undefined,
         postTurn: undefined,
-        systemTurn: true,
         automatic: undefined,
         heldId: undefined,
         onTurnComplete: undefined,

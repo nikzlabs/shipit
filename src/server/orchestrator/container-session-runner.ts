@@ -7,6 +7,7 @@ import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } fr
 import type { PresentStore } from "./present-store.js";
 import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, AnswerHoldStore, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
+import type { SessionHold } from "./session-hold.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
 import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
@@ -100,8 +101,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _agent: ProxyAgentProcess | null = null;
   private _agentId: AgentId;
   private _isRunning = false;
-  private _systemTurnInProgress = false;
-  private _systemHoldSeq = 0;
+  sessionHold: SessionHold | null = null;
   private _mergeHold = false;
   private _wasInterrupted = false;
   turnEpoch = 0;
@@ -264,13 +264,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (v && !this._isRunning) beginTurnSetup(this);
     this._isRunning = v;
   }
-  get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
-  set systemTurnInProgress(v: boolean) {
-    // Every acquisition is a new hold, including one taken while the flag is already set.
-    if (v) this._systemHoldSeq += 1;
-    this._systemTurnInProgress = v;
-  }
-  get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }

@@ -13,6 +13,7 @@ import { executeAgentTurn } from "./turn-executor.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
+import { takeSessionHold } from "./session-hold.js";
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
@@ -97,10 +98,10 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
     fs.rmSync(repoDir, { recursive: true, force: true });
   });
 
-  function setup(opts: { postTurn?: "none"; systemTurn?: boolean; settleInStep?: boolean } = {}) {
+  function setup(opts: { postTurn?: "none"; settleInStep?: boolean } = {}) {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const events: string[] = [];
-    const seen: { turn: RequestedRestartTurn; commits: number; ownsHold: boolean; held: boolean; current: boolean }[] = [];
+    const seen: { turn: RequestedRestartTurn; commits: number; held: boolean; current: boolean }[] = [];
     const compactionTurns: RequestedRestartTurn[] = [];
     runner.on("idle", () => events.push("idle"));
     const onTurnComplete = vi.fn();
@@ -125,8 +126,7 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
         seen.push({
           turn,
           commits: commitCount(),
-          ownsHold: turn.ownsSystemHold(),
-          held: runner.systemTurnInProgress,
+          held: runner.sessionHold !== null,
           current: turn.turnIsCurrent(),
         });
       },
@@ -152,7 +152,6 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
         useStreaming,
         emitErrorOnNoResult: true,
         ...(opts.postTurn ? { postTurn: opts.postTurn } : {}),
-        ...(opts.systemTurn ? { systemTurn: true } : {}),
         onTurnComplete,
       });
 
@@ -217,16 +216,20 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
     runner.dispose({ force: true });
   });
 
-  it("tells the step that a system turn still owns its hold, so the hold is not read as another flow's", async () => {
-    const { runner, agent, seen, start } = setup({ systemTurn: true });
+  // docs/329-user-steers-every-turn — a flow owns the session hold; a turn never writes it.
+  it("leaves a session hold that the turn did not take, through the turn and after it", async () => {
+    const { runner, agent, seen, start, onTurnComplete } = setup();
+    const hold = takeSessionHold(runner);
     await start(true);
     await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+    expect(runner.sessionHold).toBe(hold);
 
     agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => seen.length === 1, "requested-restart step");
+    await waitFor(() => onTurnComplete.mock.calls.length === 1, "turn settled");
 
     expect(seen[0]!.held).toBe(true);
-    expect(seen[0]!.ownsHold).toBe(true);
+    expect(runner.sessionHold).toBe(hold);
     runner.dispose({ force: true });
   });
 

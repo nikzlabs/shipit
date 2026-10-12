@@ -261,7 +261,7 @@ describe("post-turn commit when the agent process dies", () => {
 
     runner.dispatch(testDispatch({ text: "make an edit" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn 1 started");
-    runner.dispatch(testDispatch({ text: "reset the tree", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "reset the tree", automatic: true }), { whenBusy: "queue" });
     expect(runner.queueLength).toBe(1);
 
     // Visible output prevents the empty-result retry.

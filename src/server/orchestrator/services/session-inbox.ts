@@ -188,7 +188,6 @@ export class SessionInbox {
           // The running turn keeps its mode: a steer applies the mode of what it carries.
           permissionMode: live.appliedPermissionMode,
           postTurn: undefined,
-          systemTurn: undefined,
           automatic: owed.automatic ? true : undefined,
           heldId: undefined,
           onTurnComplete: undefined,

@@ -547,7 +547,6 @@ async function claimAndStartChild(
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: undefined,
     heldId: undefined,
     onTurnComplete: undefined,

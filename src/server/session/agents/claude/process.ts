@@ -527,7 +527,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     } else {
       delete spawnEnv.SHIPIT_SANDBOX;
     }
-    // System turns use a fresh process, so self-merge wakes get the updated guard.
+    // Read at spawn only: a resident that started before a merge runs without it (planning#694).
     if (guardDestructiveGit) {
       spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1";
     } else {

@@ -6,6 +6,8 @@ description: Why the rebase driver's release keyed on runner.running stranded th
 
 # A rebase flow releases its own system hold
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** The flag and its hold ticket are deleted. The rebase flow takes `runner.sessionHold` (`session-hold.ts`) and releases its own hold in a `finally` of its own; the conflict-resolution turn enters under the hold by passing it with the admission (`underHold`).
+
 Implements [requirements.md](./requirements.md). Applies the hold ticket from
 [docs/304-stranded-system-turn-hold](../304-stranded-system-turn-hold/plan.md) to
 the one owner that predates it: the rebase driver.

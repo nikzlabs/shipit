@@ -228,7 +228,7 @@ describe("same-turn quota failover (docs/150-multiple-provider-subscriptions req
     selectionOverTwoAccounts(prepareAgentEnv);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch(testDispatch({ text: "Your PR merged", systemTurn: true, automatic: true }));
+    runner.dispatch(testDispatch({ text: "Your PR merged", automatic: true }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
     agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "second account's attempt");

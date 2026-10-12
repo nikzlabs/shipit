@@ -805,7 +805,7 @@ export async function registerRoutes(
         }
         // Every rebase flow holds the runner, so a replayed start with no hold is one whose
         // terminator was lost; left alone it keeps the banner up and Sync disabled.
-        if (replayedRebaseStart && !runner.running && !runner.systemTurnInProgress) {
+        if (replayedRebaseStart && !runner.running && !runner.sessionHold) {
           send({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
         // An empty queue snapshot clears messages drained while disconnected.

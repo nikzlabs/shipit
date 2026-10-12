@@ -33,9 +33,10 @@ export { runDispatchedTurn };
 import {
   automaticTurnHeldForAnswer,
   readAnswerHold,
-  systemTurnBlockedByResidentWork,
   turnBlockedByPendingCommit,
 } from "./turn-admission.js";
+import type { SessionHold } from "./session-hold.js";
+import { retireResident } from "./resident-spawn-guard.js";
 import { deliverWaitingMessages, trySteerDispatch, userMessageWaits } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 import {
@@ -145,7 +146,6 @@ export interface QueuedMessage {
   uploads?: UploadRef[];
   permissionMode?: PermissionMode;
   postTurn?: "commit-push" | "none";
-  systemTurn?: boolean;
   automatic?: boolean;
   ciAutoFix?: boolean;
   heldId?: number;
@@ -172,8 +172,6 @@ export interface AgentDispatchOptions {
   permissionMode?: PermissionMode;
   /** None leaves commit, push, PR flow and drain to the owning driver, such as rebase. */
   postTurn?: "commit-push" | "none";
-  /** Blocks live steering into this turn. */
-  systemTurn?: boolean;
   /**
    * docs/322 — not started by this session's user: ShipIt's automation or another
    * session. Held while the agent waits for the user's answer; any other turn clears that.
@@ -202,8 +200,8 @@ export interface AgentDispatchOptions {
   bestEffortSteer?: boolean;
   /**
    * docs/295-compact-context-on-merge req 15 — ShipIt started this turn by itself, so the
-   * composer's tick boxes were in front of nobody. `systemTurn` and `automatic` cannot say
-   * it: a wake that is neither exists (docs/328's turn for a message the user sent).
+   * composer's tick boxes were in front of nobody. `automatic` cannot say it: a wake that
+   * is not automatic exists (docs/328's turn for a message the user sent).
    */
   unattended?: boolean;
   /**
@@ -245,6 +243,13 @@ export class AgentTurnAdmissionError extends Error {
  */
 export interface DispatchAdmission {
   whenBusy: "queue" | "refuse" | "steer-or-refuse";
+  /**
+   * The step of the flow that holds the session: admitted only while this is the hold that
+   * is set. Such a step must refuse, since nothing drains the queue under its own hold. It
+   * starts on a process of its own: the gate retires an idle resident as it admits the step,
+   * which could not tell its result from that of a turn the CLI starts by itself.
+   */
+  underHold?: SessionHold;
 }
 
 /**
@@ -289,10 +294,9 @@ export function dispatchOnRunner(
       return settlement;
     }
     const position = runner.enqueue(entry);
-    // A queued system dispatch looks delivered to its caller; say that no turn started.
+    // A queued dispatch looks delivered to its caller; say that no turn started.
     console.log(
-      `[dispatch] queued the ${opts.systemTurn ? "system " : ""}dispatch for ${runner.sessionId} `
-      + `at position ${position} — ${reason}`,
+      `[dispatch] queued the dispatch for ${runner.sessionId} at position ${position} — ${reason}`,
     );
     runner.emitMessage({ type: "message_queued", text: opts.text, position });
     return settlement;
@@ -328,26 +332,29 @@ export function dispatchOnRunner(
   }
   if (!deps) return enqueueOrRefuse("this session's runner has no system-turn dependencies wired");
 
-  // A system driver can own the tree between turns; only its own resolution step may enter.
-  if (runner.systemTurnInProgress && !(opts.systemTurn && opts.postTurn === "none")) {
-    return enqueueOrRefuse("a system turn is in progress on this session");
+  // A flow can own the tree between turns; only its own step may enter, and only while the
+  // flow still holds the session.
+  const step = admission?.underHold;
+  if (step ? step !== runner.sessionHold : runner.sessionHold !== null) {
+    return enqueueOrRefuse(
+      step
+        ? "the flow that started this step no longer holds the session"
+        : "ShipIt is working on this session's branch or container",
+    );
   }
 
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
 
   // `running` is already false while the finished turn's edits are still outside git.
-  const uncommitted = turnBlockedByPendingCommit(runner, opts);
+  const uncommitted = step ? null : turnBlockedByPendingCommit(runner);
   if (uncommitted) return enqueueOrRefuse(uncommitted);
 
   const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
 
-  // System turns replace the resident process, which would destroy its background work.
-  const residentWorkBlock = systemTurnBlockedByResidentWork(runner, opts.systemTurn);
-  if (residentWorkBlock) return enqueueOrRefuse(residentWorkBlock);
-
+  // Only once admitted: a refused step must not end the process of a turn it did not start.
+  if (step) retireResident(runner);
   // Claim synchronously so another message or delivery retry cannot enter during async setup.
-  if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
   if (opts.deliveryId !== undefined) runner.activeDeliveryId = opts.deliveryId;
   const chained = settleWhenRunnerLetsGo(runner, withSettlement(opts, settlement));
@@ -358,7 +365,6 @@ export function dispatchOnRunner(
       `[dispatch] dispatched turn for ${runner.sessionId} failed during setup:`,
       err,
     );
-    if (opts.systemTurn) runner.systemTurnInProgress = false;
     runner.running = false;
     // Told it errored, the caller owns any retry; a saved copy would run it a second time.
     forgetHeldTurn(runner.answerHoldStore, opts);
@@ -392,7 +398,6 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.uploads !== undefined) queued.uploads = opts.uploads;
   if (opts.permissionMode !== undefined) queued.permissionMode = opts.permissionMode;
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
-  if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   if (opts.automatic !== undefined) queued.automatic = opts.automatic;
   if (opts.ciAutoFix !== undefined) queued.ciAutoFix = opts.ciAutoFix;
   if (opts.heldId !== undefined) queued.heldId = opts.heldId;
@@ -645,15 +650,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly sessionDir: string;
 
   running: boolean;
-  /** A system driver owns the turn or the interval between its turns; suppress live steering. */
-  systemTurnInProgress: boolean;
-  /**
-   * Identifies the CURRENT hold on systemTurnInProgress: every write of `true` mints a
-   * new value. A turn captures it when it takes the hold and releases only on a match,
-   * so it cannot release a hold that changed hands while it ran (docs/304).
-   */
-  readonly systemHoldSeq: number;
-  /** Separate from systemTurnInProgress so a turn's cleanup cannot release an in-flight merge. */
+  /** Written only by `takeSessionHold` and the hold's own `release` (session-hold.ts). */
+  sessionHold: SessionHold | null;
+  /** Separate from the session hold, which a rebase or a restart owns. */
   mergeHold: boolean;
   /** docs/322 — the agent waits for the user's answer, so automatic turns are held. */
   readonly answerHold: boolean;
@@ -800,8 +799,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private agent: AgentProcess | null = null;
   private _agentId: AgentId;
   private _isRunning = false;
-  private _systemTurnInProgress = false;
-  private _systemHoldSeq = 0;
+  sessionHold: SessionHold | null = null;
   private _mergeHold = false;
   private _wasInterrupted = false;
   turnEpoch = 0;
@@ -860,13 +858,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (v && !this._isRunning) beginTurnSetup(this);
     this._isRunning = v;
   }
-  get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
-  set systemTurnInProgress(v: boolean) {
-    // Every acquisition is a new hold, including one taken while the flag is already set.
-    if (v) this._systemHoldSeq += 1;
-    this._systemTurnInProgress = v;
-  }
-  get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }

@@ -20,7 +20,12 @@ import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions, takeRunnableQueuedTurn } from "./queue-drain.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
-import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction, startedUnattended } from "./compact-before-turn.js";
+import {
+  POST_MERGE_COMPACT_PROMPT,
+  compactionCardBefore,
+  noteMissedCompaction,
+  startedUnattended,
+} from "./compact-before-turn.js";
 import {
   createPromptRepark,
   createPromptTakeLedger,
@@ -45,22 +50,6 @@ function supersedeRetiredTurn(outgoing: AgentProcess): void {
   outgoing.emit("superseded");
 }
 
-// Queue incoming messages during the decision; compaction keeps the hold if selected.
-async function decideWithSystemHold(
-  runner: SessionRunnerInterface,
-  decide: () => Promise<boolean>,
-): Promise<boolean> {
-  const held = !runner.systemTurnInProgress;
-  if (held) runner.systemTurnInProgress = true;
-  let compact = false;
-  try {
-    compact = await decide();
-  } finally {
-    if (held && !compact) runner.systemTurnInProgress = false;
-  }
-  return compact;
-}
-
 // Reserve the runner during setup, before the executor owns failure cleanup.
 export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
@@ -70,7 +59,6 @@ export async function runDispatchedTurn(
   createAgent: (agentId: AgentId) => AgentProcess,
 ): Promise<void> {
   runner.running = true;
-  if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.activeDeliveryId = opts.deliveryId;
   // planning#609 — composition's one-shot takes are owned here until the prompt reaches
   // the executor, so a throw anywhere before that hands every one of them back.
@@ -79,7 +67,6 @@ export async function runDispatchedTurn(
     await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent, takes);
   } catch (err) {
     runner.running = false;
-    if (opts.systemTurn) runner.systemTurnInProgress = false;
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
@@ -111,25 +98,25 @@ async function runDispatchedTurnInner(
    */
   const harnessCommand = isCompactRequest && !opts.agentInterface && !opts.messageOrigin;
 
-  const steer = opts.systemTurn ? undefined : deps.steerInputs?.();
+  const steer = deps.steerInputs?.();
   const useStreaming = steer ? steer.liveSteering && steer.steeringCapable : false;
   const sessionDir = runner.sessionDir;
 
-  // Keep this message first after compaction; avoid resolving its attachments twice.
-  // The compaction turn replaces the resident process, so it waits for that one's background work.
+  // Keep this message first after compaction; avoid resolving its attachments twice. No
+  // compaction while the resident has background work: a turn of the CLI's own could then come
+  // between it and the message, and its result would start the message too early. The claim on
+  // `running` keeps other turns out from the decision to the compaction.
   if (
     sessionDir && opts.postTurn !== "none" && !isCompactRequest
     && residentBackgroundWork(runner).length === 0
-    && await decideWithSystemHold(runner, () =>
-      deps.shouldCompactBeforeTurn?.(
-        runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
-      ) ?? Promise.resolve(false))
+    && await (deps.shouldCompactBeforeTurn?.(
+      runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
+    ) ?? Promise.resolve(false))
   ) {
     runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
     // Its dispatch was already reported as started; say that it is waiting after all.
     console.log(
-      `[dispatch] re-queued the ${opts.systemTurn ? "system " : ""}dispatch for `
-      + `${runner.sessionId} at position 1 — a compaction turn runs first`,
+      `[dispatch] re-queued the dispatch for ${runner.sessionId} at position 1 — a compaction turn runs first`,
     );
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
     await runDispatchedTurn(runner, deps, agentId, prepareDispatch({
@@ -143,7 +130,6 @@ async function runDispatchedTurnInner(
       uploads: undefined,
       permissionMode: opts.permissionMode,
       postTurn: undefined,
-      systemTurn: true,
       // The prelude of the entry above, so it releases the answer hold only if that would.
       automatic: opts.automatic,
       heldId: undefined,
@@ -247,7 +233,7 @@ async function runDispatchedTurnInner(
   }
 
   // Bug outcomes are intentionally consumed at most once, including failed delivery.
-  const bugOutcomeNotice = opts.systemTurn || isCompactRequest
+  const bugOutcomeNotice = opts.postTurn === "none" || isCompactRequest
     ? ""
     : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
@@ -294,7 +280,7 @@ async function runDispatchedTurnInner(
   // driver's script, so the note stays off it like the notice above.
   // Read from the setting and not from a resident that is alive now: a spawn guard can
   // still retire that one, and the note costs nothing on a process that stays up.
-  const startedByShipIt = opts.systemTurn === true || opts.automatic === true || opts.unattended === true;
+  const startedByShipIt = opts.automatic === true || opts.unattended === true;
   const oneShotTurnNote =
     startedByShipIt && !useStreaming && opts.postTurn !== "none" && !isCompactRequest
     && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false)
@@ -344,15 +330,18 @@ async function runDispatchedTurnInner(
         }))
       : undefined;
 
-  const drainNext = async (info?: { ownsSystemHold: boolean }): Promise<void> => {
-    // A rebase may take the hold during the local commit, or between this turn's result
-    // and its exit — so a system turn owns the hold only while it is still its own (docs/304).
-    const ownsHold = opts.systemTurn === true && info?.ownsSystemHold === true;
-    if (runner.systemTurnInProgress && !ownsHold) return;
-    if (opts.silent && ownsHold) {
-      runner.systemTurnInProgress = false;
-      noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
+  // Once: an adopted turn of the CLI's own drains again, after its reset cleared the cards.
+  let compactionChecked = false;
+  const cardBefore = opts.silent
+    ? compactionCardBefore(deps.listenerDeps.chatHistoryManager, runner.sessionId)
+    : null;
+  const drainNext = async (): Promise<void> => {
+    if (opts.silent && !compactionChecked) {
+      compactionChecked = true;
+      noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId, cardBefore);
     }
+    // A rebase or a restart can take the session during the local commit; it releases the queue.
+    if (runner.sessionHold) return;
     if (runner.queueLength === 0) return;
     const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
@@ -385,32 +374,19 @@ async function runDispatchedTurnInner(
         runner.setAgent(null);
       }
     }
-    if (!opts.systemTurn) {
-      releaseResidentOnSpawnChange(
-        runner,
-        desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
-      );
-      // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
-      // dep is unwired, where the setting cannot be read at all.
-      if (deps.statusCardEnabled) {
-        releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
-      }
-      releaseResidentOnServiceMcpChange(runner, runner.serviceMcp?.()?.servers ?? null);
+    releaseResidentOnSpawnChange(
+      runner,
+      desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
+    );
+    // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
+    // dep is unwired, where the setting cannot be read at all.
+    if (deps.statusCardEnabled) {
+      releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
     }
+    releaseResidentOnServiceMcpChange(runner, runner.serviceMcp?.()?.servers ?? null);
     // Reuse follows the resident process, even if live steering was since disabled.
-    const resident =
-      !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
+    const resident = attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
     const reuse = resident !== null;
-    // System turns must retire the resident before env prep rewrites its credential tree.
-    if (opts.systemTurn && !reuse) {
-      const outgoing = runner.getAgent();
-      if (outgoing) {
-        supersedeRetiredTurn(outgoing);
-        try { outgoing.kill(); } catch { /* already gone */ }
-        runner.setAgent(null);
-        runner.isStreamingActive = false;
-      }
-    }
     const agent = resident ?? createAgent(agentId);
     const turnStreams = useStreaming || reuse;
     if (reuse) {
@@ -432,7 +408,6 @@ async function runDispatchedTurnInner(
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
       ...(isCompactRequest ? { compact: true } : {}),
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
-      ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.automatic !== undefined ? { automatic: opts.automatic } : {}),
       ...(opts.heldId !== undefined ? { heldId: opts.heldId } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),

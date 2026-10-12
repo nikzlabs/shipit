@@ -21,6 +21,7 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import type * as SessionAgentEnv from "../session-agent-env.js";
+import { takeSessionHold } from "../session-hold.js";
 
 // A turn's setup awaits this; the test holds it open to stand inside the setup.
 const setup = vi.hoisted(() => ({ gate: null as Promise<void> | null, entered: 0 }));
@@ -242,14 +243,14 @@ describe("Integration: a message waits only for an agent that can read it", () =
     await client.receive();
     const { runner, resident } = await finishedFirstTurn(client);
 
-    runner.systemTurnInProgress = true;
+    const hold = takeSessionHold(runner);
     client.send({ type: "send_message", text: "/compact" });
     await client.receiveType("message_queued");
 
     expect(resident.compactCalled).toBe(false);
     expect(runner.messageQueue.map((m) => m.text)).toEqual(["/compact"]);
 
-    runner.systemTurnInProgress = false;
+    hold.release();
     client.close();
   });
 
@@ -313,12 +314,66 @@ describe("Integration: a message waits only for an agent that can read it", () =
     client.close();
   });
 
+  // docs/329-user-steers-every-turn — the hold keeps other turns out; it does not stop a steer.
+  it("steers a typed message into a turn that runs while ShipIt holds the session", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const { runner, resident } = await finishedFirstTurn(client);
+
+    const hold = takeSessionHold(runner);
+    const step = runner.dispatch(
+      testDispatch({ text: "resolve the conflicts", postTurn: "none" }),
+      { whenBusy: "refuse", underHold: hold },
+    );
+    expect(step.admitted).toBe("started");
+    // The step runs on a process of its own.
+    const stepAgent = await waitForClaude(last, resident);
+    await waitUntil(() => runner.running && runner.isStreamingActive, "the step runs");
+
+    // With an attachment: the queue's own steer takes text alone, so only this path delivers it.
+    fs.writeFileSync(path.join(runner.sessionDir, "note.txt"), "the note's own words\n");
+    client.send({ type: "send_message", text: "keep both edits", files: [{ path: "note.txt" }] });
+    await waitUntil(() => wrote(stepAgent, "keep both edits"), "the message reached the agent");
+    expect(stepAgent.stdinData.find((d) => d.includes("keep both edits"))).toContain("the note's own words");
+    expect(runner.queueLength).toBe(0);
+    expect(runner.sessionHold).toBe(hold);
+
+    hold.release();
+    client.close();
+  });
+
+  // The turn that asked ends on its question; the answer is the turn after it, not a steer.
+  it("queues the answer to a question of a turn that runs under the hold", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const { runner, resident } = await finishedFirstTurn(client);
+
+    const hold = takeSessionHold(runner);
+    runner.dispatch(
+      testDispatch({ text: "resolve the conflicts", postTurn: "none" }),
+      { whenBusy: "refuse", underHold: hold },
+    );
+    const stepAgent = await waitForClaude(last, resident);
+    await waitUntil(() => runner.running && runner.isStreamingActive, "the step runs");
+    runner.awaitingUserAnswer = true;
+
+    client.send({ type: "answer_question", toolUseId: "card", answers: { "0": "Keep ours" } });
+    await client.receiveType("message_queued");
+
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["Keep ours"]);
+    expect(wrote(stepAgent, "Keep ours")).toBe(false);
+    expect(stepAgent.killed).toBe(false);
+
+    hold.release();
+    client.close();
+  });
+
   it("queues an answer while ShipIt holds the session, where it refused it before", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
     const { runner, resident } = await finishedFirstTurn(client);
 
-    runner.systemTurnInProgress = true;
+    const hold = takeSessionHold(runner);
     client.send({ type: "answer_question", toolUseId: "card", answers: { "0": "Redis" } });
     await client.receiveType("message_queued");
 
@@ -326,7 +381,7 @@ describe("Integration: a message waits only for an agent that can read it", () =
     expect(resident.killed).toBe(false);
     expect(wrote(resident, "Redis")).toBe(false);
 
-    runner.systemTurnInProgress = false;
+    hold.release();
     client.close();
   });
 });

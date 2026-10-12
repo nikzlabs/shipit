@@ -10,6 +10,7 @@ import type { ServiceManager } from "../service-manager.js";
 import type { PostInterruptCommitDeps } from "./post-interrupt-commit.js";
 import type { WsServerMessage, WsContainerRestarting } from "../../shared/types.js";
 import { beginTurnSetup } from "../turn-stop-request.js";
+import { takeSessionHold } from "../session-hold.js";
 
 type StubRunner = SessionRunnerInterface & {
   killAgentOnWorker?: (opts?: { timeoutMs?: number }) => Promise<void>;
@@ -664,21 +665,21 @@ describe("restartAgent carryQueue — queued messages survive an agent-requested
     expect(replacement).not.toBe(old);
     expect(replacement!.messageQueue.map((m) => m.text)).toEqual(["first", "second"]);
     expect(counts.dropped).toBe(0);
-    expect(replacement!.systemTurnInProgress).toBe(true);
+    expect(replacement!.sessionHold).not.toBeNull();
     // Leased too: the idle enforcer must not reclaim the runner holding the carried queue.
     expect(replacement!.postTurnWorkInFlight).toBe(true);
     expect(result.held?.runner).toBe(replacement);
 
     result.held!.release();
     result.held!.release();
-    expect(replacement!.systemTurnInProgress).toBe(false);
+    expect(replacement!.sessionHold).toBeNull();
     expect(replacement!.postTurnWorkInFlight).toBe(false);
   });
 
   it("carries a message sent while no runner was registered, which queued on the held old runner", async () => {
     const registry = new SessionRunnerRegistry();
     const old = registry.getOrCreate("rescue-1", "/tmp/ws", "claude");
-    old.systemTurnInProgress = true;
+    takeSessionHold(old);
     const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
     const destroy = cm.destroyAgentContainer.bind(cm);
     (cm as unknown as { destroyAgentContainer: (id: string) => Promise<void> }).destroyAgentContainer =
@@ -698,6 +699,33 @@ describe("restartAgent carryQueue — queued messages survive an agent-requested
     expect(registry.get("rescue-1")!.messageQueue.map((m) => m.text)).toEqual(["sent in the gap"]);
   });
 
+  it("carries every accepted message, also past the queue's cap, and still hands over the hold", async () => {
+    const registry = new SessionRunnerRegistry();
+    const old = registry.getOrCreate("rescue-1", "/tmp/ws", "claude");
+    for (let i = 0; i < 50; i++) old.enqueue({ text: `queued ${i}`, execution: "interactive" });
+    takeSessionHold(old);
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+    const destroy = cm.destroyAgentContainer.bind(cm);
+    (cm as unknown as { destroyAgentContainer: (id: string) => Promise<void> }).destroyAgentContainer =
+      async (id: string) => {
+        old.enqueue({ text: "sent in the gap", execution: "interactive" });
+        await destroy(id);
+      };
+
+    const result = await restartAgent(
+      { sessionManager, containerManager: cm, runnerRegistry: registry, defaultAgentId: "claude" as never },
+      "rescue-1",
+      { carryQueue: true },
+    );
+
+    const replacement = registry.get("rescue-1")!;
+    expect(replacement.queueLength).toBe(51);
+    expect(replacement.messageQueue.at(-1)?.text).toBe("sent in the gap");
+    expect(result.held?.runner).toBe(replacement);
+    result.held!.release();
+    expect(replacement.sessionHold).toBeNull();
+  });
+
   it("the Restart agent container button, which does not ask, still drops the queue", async () => {
     const registry = new SessionRunnerRegistry();
     const old = registry.getOrCreate("rescue-1", "/tmp/ws", "claude");
@@ -715,7 +743,7 @@ describe("restartAgent carryQueue — queued messages survive an agent-requested
 
     expect(counts.dropped).toBe(1);
     expect(registry.get("rescue-1")!.queueLength).toBe(0);
-    expect(registry.get("rescue-1")!.systemTurnInProgress).toBe(false);
+    expect(registry.get("rescue-1")!.sessionHold).toBeNull();
     expect(result.held).toBeUndefined();
   });
 });

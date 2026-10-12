@@ -78,7 +78,7 @@ function declinedCard(cardId: string): void {
   });
 }
 
-async function dispatch(text: string, opts: { systemTurn?: boolean } = {}): Promise<string> {
+async function dispatch(text: string, opts: { automatic?: boolean } = {}): Promise<string> {
   const ran = () => agents.filter((a) => a.run.mock.calls.length > 0);
   const before = ran().length;
   runner.dispatch(testDispatch({
@@ -117,7 +117,7 @@ describe("a card the user acted on reaches the agent's next dispatched turn", ()
   it("rides an automatic turn ShipIt runs by itself, since req 11 names no kind of turn", async () => {
     declinedCard("rsp-a");
 
-    const prompt = await dispatch("CI is failing. Fix it.", { systemTurn: true });
+    const prompt = await dispatch("CI is failing. Fix it.", { automatic: true });
     expect(prompt).toContain("DECLINED by the user");
     await completeTurn();
 

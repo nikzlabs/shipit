@@ -30,6 +30,14 @@ function retire(runner: SessionRunnerInterface, resident: AgentProcess): void {
   runner.clearBackgroundTasks();
 }
 
+/** For a flow whose next turn needs a process of its own. False when there was none. */
+export function retireResident(runner: SessionRunnerInterface): boolean {
+  const resident = resolveResidentToRetire(runner);
+  if (!resident) return false;
+  retire(runner, resident);
+  return true;
+}
+
 // Model, endpoint and credentials are fixed at spawn; changes require a new process.
 export function releaseResidentOnSpawnChange(
   runner: SessionRunnerInterface | null | undefined,

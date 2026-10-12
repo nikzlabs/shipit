@@ -124,7 +124,7 @@ function fakeRunner(over: Partial<{ running: boolean; agentBusy: boolean; queueL
     running: false,
     // Match production: a lease makes the runner busy.
     get agentBusy(): boolean { return busy || runner.leaseDepth > 0; },
-    systemTurnInProgress: false,
+    sessionHold: null as { release(): void } | null,
     queueLength: 0,
     mergeHold: false,
     canRunDispatchedTurn: true,
@@ -952,7 +952,7 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
   it.each([
     ["a running turn", { running: true }],
     ["an agent still busy", { agentBusy: true }],
-    ["a system flow holding the session", { systemTurnInProgress: true }],
+    ["a flow holding the session", { sessionHold: { release: () => {} } }],
     ["a queued message", { queueLength: 1 }],
   ])("does not merge while the session has %s", async (_name, state) => {
     const gh = github();

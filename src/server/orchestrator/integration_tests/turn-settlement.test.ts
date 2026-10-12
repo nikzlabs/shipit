@@ -2,7 +2,6 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner } from "../session-runner.js";
 import { createAutoPushScheduler } from "../services/auto-push-scheduler.js";
 import { adoptInFlightTurn } from "../turn-adoption.js";
-import { releaseQueuedTurn } from "../queue-drain.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import {
@@ -13,6 +12,7 @@ import {
   waitForTurn,
   type FakeAgent,
 } from "./dispatch-test-helpers.js";
+import { takeSessionHold } from "../session-hold.js";
 
 function newRunner(): SessionRunner {
   return new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
@@ -109,7 +109,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     runner.setSystemTurnDeps(deps);
     runner.running = true;
 
-    const handle = runner.dispatch(testDispatch({ text: "queued behind a turn", systemTurn: true }));
+    const handle = runner.dispatch(testDispatch({ text: "queued behind a turn", automatic: true }));
     expect(runner.queueLength).toBe(1);
 
     runner.clearQueue();
@@ -141,7 +141,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     runner.dispatch(testDispatch({
       text: "child PR merged — resume",
       activity: "Resuming after child PR merged…",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => outcomes.push(o),
     }));
     expect(runner.queueLength).toBe(1);
@@ -150,7 +150,6 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     adopted.emit("done", 0);
 
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake-turn spawned");
-    expect(runner.systemTurnInProgress).toBe(true);
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[0]!.emit("done", 0);
@@ -159,17 +158,42 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     await flushTurn();
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]!.status).toBe("completed");
-    expect(runner.systemTurnInProgress).toBe(false);
 
     runner.dispose({ force: true });
   });
 
-  it("planning#562: a system turn queued behind an ADOPTED turn is held while the resident has background work", async () => {
+  it("does not drain the queue under a session hold when an adopted turn ends", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     runner.setSystemTurnDeps(deps);
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const adopted = makeFakeAgent();
+    runner.setAgent(adopted as unknown as AgentProcess);
+    await adoptInFlightTurn(runner, deps, adopted as unknown as AgentProcess, {
+      agentId: "claude" as AgentId,
+      streaming: false,
+    });
+    runner.enqueue({ text: "queued behind the flow", execution: "dispatched" });
+    const hold = takeSessionHold(runner);
+
+    adopted.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    adopted.emit("done", 0);
+    await waitForTurn(() => !runner.running && !runner.postTurnWorkInFlight, "adopted turn ended");
+    await flushTurn();
+
+    expect(agents).toHaveLength(0);
+    expect(runner.queueLength).toBe(1);
+    expect(runner.sessionHold).toBe(hold);
+    runner.dispose({ force: true });
+  });
+
+  // docs/329-user-steers-every-turn — a wake is an ordinary turn: it enters the resident and
+  // leaves its background work alone, where a system turn once waited to replace it (planning#562).
+  it("runs a wake queued behind an adopted turn on the resident, and leaves its background work", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
 
     const adopted = makeFakeAgent();
     runner.setAgent(adopted as unknown as AgentProcess);
@@ -177,85 +201,25 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
       agentId: "claude" as AgentId,
       streaming: false,
     });
-
-    // The adopted turn owns a backgrounded consult the wake turn would retire with the CLI.
     runner.isStreamingActive = true;
     runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
 
     const outcomes: TurnOutcome[] = [];
     runner.dispatch(testDispatch({
       text: "child PR merged — resume",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => outcomes.push(o),
-    }));
+    }), { whenBusy: "queue" });
     expect(runner.queueLength).toBe(1);
 
-    // Settle without exiting: the adopted process stays resident, as it does in production.
     adopted.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => !runner.running, "adopted turn settled");
-    await flushTurn();
+    await waitForTurn(() => adopted.sendUserMessage.mock.calls.length === 1, "the wake entered the resident");
 
+    expect(String(adopted.sendUserMessage.mock.calls[0]?.[0])).toContain("child PR merged");
     expect(agents).toHaveLength(0);
-    expect(runner.queueLength).toBe(1);
     expect(adopted.kill).not.toHaveBeenCalled();
-    expect(runner.getAgent()).toBe(adopted as unknown as AgentProcess);
-    expect(outcomes).toEqual([]);
-
-    // Still whole: the entry runs once the background work is gone. Released by hand here —
-    // the automatic release lives on the registry's runner, which this harness does not build.
-    runner.clearBackgroundTasks();
-    expect(releaseQueuedTurn(runner)).toBe(true);
-    await waitForTurn(() => agents.length === 1, "wake turn spawned");
-    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    agents[0]!.emit("done", 0);
-    await waitForTurn(() => outcomes.length > 0, "wake-turn settlement");
-    expect(outcomes[0]!.status).toBe("completed");
-
-    runner.dispose({ force: true });
-  });
-
-  // `withSettlement` resolves the handle even when the consumer throws, but the exception
-  // still leaves `settleTurn` — and the hold-release is the step after it (planning#562).
-  it("planning#562: a throwing completion callback does not strand the deferred entry", async () => {
-    const runner = newRunner();
-    const agents: FakeAgent[] = [];
-    const { deps } = makeDispatchTurnDeps(agents, []);
-    runner.setSystemTurnDeps(deps);
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    runner.dispatch(testDispatch({
-      text: "fix CI",
-      systemTurn: true,
-      onTurnComplete: () => { throw new Error("the watch's persistence blew up"); },
-    }));
-    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
-
-    runner.isStreamingActive = true;
-    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
-
-    const outcomes: TurnOutcome[] = [];
-    runner.dispatch(testDispatch({
-      text: "child PR merged — resume",
-      systemTurn: true,
-      onTurnComplete: (o) => outcomes.push(o),
-    }));
-    expect(runner.queueLength).toBe(1);
-
-    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => !runner.running, "the drain deferred the wake turn");
-    await flushTurn();
-    await flushTurn();
-    expect(agents).toHaveLength(1);
-    expect(runner.queueLength).toBe(1);
-
-    // Exit clears the background work, then the throwing callback runs on the way out.
-    agents[0]!.emit("done", 0);
-    await waitForTurn(() => agents.length === 2, "wake turn started anyway");
-
-    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    agents[1]!.emit("done", 0);
-    await waitForTurn(() => outcomes.length > 0, "wake-turn settlement");
-    expect(outcomes[0]!.status).toBe("completed");
+    expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
+    expect(runner.queueLength).toBe(0);
 
     runner.dispose({ force: true });
   });
@@ -269,7 +233,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const liveAtSettlement: boolean[] = [];
     runner.dispatch(testDispatch({
       text: "child PR merged — resume",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-a:1",
       onTurnComplete: () => liveAtSettlement.push(runner.hasDelivery("watch-a:1")),
     }));
@@ -302,7 +266,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const outcomes: TurnOutcome[] = [];
     runner.dispatch(testDispatch({
       text: "child PR merged — resume",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-b:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
@@ -332,7 +296,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const outcomes: TurnOutcome[] = [];
     runner.dispatch(testDispatch({
       text: "child PR merged — resume",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-c:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
@@ -360,7 +324,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const outcomes: TurnOutcome[] = [];
     const handle = runner.dispatch(testDispatch({
       text: "CI is red — fix it",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => outcomes.push(o),
     }));
     void (async () => { outcomes.push({ ...(await handle.settled), detail: "via-handle" }); })();
@@ -388,7 +352,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const outcomes: TurnOutcome[] = [];
     const handle = runner.dispatch(testDispatch({
       text: "CI is red — fix it",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => outcomes.push(o),
     }));
 
@@ -554,7 +518,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const { deps } = makeDispatchTurnDeps(agents, []);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch(testDispatch({ text: "CI is red — fix it", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "CI is red — fix it", automatic: true }));
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
@@ -604,7 +568,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const { deps } = makeDispatchTurnDeps(agents, []);
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch(testDispatch({ text: "CI is red — fix it", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "CI is red — fix it", automatic: true }));
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
@@ -627,7 +591,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     const outcomes: TurnOutcome[] = [];
     runner.dispatch(testDispatch({
       text: "CI is red — fix it",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => outcomes.push(o),
     }));
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "fix turn start");

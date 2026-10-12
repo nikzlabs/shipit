@@ -175,9 +175,9 @@ export class AutoMergeManager {
     }
     this.syncLogged.delete(sessionId);
 
-    // agentBusy covers post-turn commits and pushes; systemTurnInProgress covers branch rewrites.
+    // agentBusy covers post-turn commits and pushes; the session hold covers branch rewrites.
     const runner = this.getRunner?.(sessionId);
-    if (runner?.agentBusy || runner?.systemTurnInProgress) {
+    if (runner?.agentBusy || runner?.sessionHold) {
       if (!this.busyLogged.has(sessionId)) {
         this.busyLogged.add(sessionId);
         console.log(

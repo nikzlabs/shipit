@@ -265,6 +265,11 @@ A rebase that does **not** conclude — aborted, refused, timed out — delivers
 nothing: the branch is unchanged, so there is nothing to follow up. Arming
 outside a rebase ShipIt is driving is refused for the same reason.
 
+Your agent process ends with the conflict-resolution turn, so a background job
+started in it stops there. The user can send a message into that turn as into
+any other; if they stop it, ShipIt aborts the rebase and the branch is
+unchanged.
+
 ### Images in a PR (not possible)
 
 You cannot put an image in a PR body or comment — no attach verb exists, and no

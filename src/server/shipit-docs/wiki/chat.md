@@ -141,11 +141,12 @@ can also send:
   from the moment the agent has that turn's prompt. A message sent before
   that, while the turn starts, waits in the queue for those seconds and is then
   normally given to the same turn, after its prompt and in the order they sent
-  it; a `/compact` or `/goal` that waits in the queue keeps a turn of its own. Two turns take none: a compaction
-  turn, whoever started it (`/compact`, or one that ShipIt starts), and the turn
-  that resolves the conflicts of a rebase. There, and while a merge is being
-  held, the message stays in the queue. That is the honest answer to "why did
-  it queue when it should have interrupted?".
+  it; a `/compact` or `/goal` that waits in the queue keeps a turn of its own.
+  The turn that resolves the conflicts of a rebase takes one too. One turn
+  takes none: a compaction turn, whoever started it (`/compact`, or one that
+  ShipIt starts). There, and while a merge is being held, the message stays in
+  the queue. That is the honest answer to "why did it queue when it should have
+  interrupted?".
 - **Otherwise** the message is **queued**. A strip above the composer lists the
   queued messages in order, each with an ✕ to drop it, and **Clear all**. A
   queued message runs as its own turn once the current one has finished and its
@@ -169,9 +170,10 @@ runs on such a process,
 so a job you left in the background can end and start a new turn. That holds
 for a turn the user typed and for a turn ShipIt started — a merge notice, a
 finished consult, a CI fix. Otherwise the process exits a few seconds after
-your message ends, and a job that is still running then stops with it; the turn
-that resolves the conflicts of a rebase always runs on such a process. ShipIt
-then normally starts one turn that names the work.
+your message ends, and a job that is still running then stops with it. The
+process of the turn that resolves the conflicts of a rebase always ends with
+that turn, before ShipIt continues the rebase, and the turn's prompt says so.
+Otherwise ShipIt then normally starts one turn that names the work.
 If that turn leaves work running too, or if another turn took the agent process
 first, ShipIt starts no turn for it: the transcript normally gets a notice, and
 that notice is the answer when the user asks why a session stopped with a build

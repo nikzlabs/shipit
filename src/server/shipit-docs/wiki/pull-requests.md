@@ -213,7 +213,11 @@ Two related things a user will ask about:
   makes sense on the finished result — re-running codegen or tests over the
   merged tree, updating the pull request body — must be armed with
   `shipit session continue-after-rebase --note "…"`, which ShipIt gives back to
-  you as a new turn once the rebase concludes.
+  you as a new turn once the rebase concludes. Your agent process ends with
+  the conflict-resolution turn, so a background job started in it stops there.
+- **The user can steer the conflict-resolution turn** like any turn: a message
+  they send goes into it. If they press **Stop** in it, ShipIt aborts the
+  rebase and the branch stays as it was, as when the turn fails.
 - If a push is refused because the branch has fallen behind, ShipIt says so
   above the composer and offers **Update branch**, which is the same rebase.
 

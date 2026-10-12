@@ -35,6 +35,7 @@ import {
   AutoConflictResolveManager,
   MAX_AUTO_RESOLVE_ATTEMPTS,
 } from "../auto-conflict-resolve-manager.js";
+import { takeSessionHold, type SessionHold } from "../session-hold.js";
 
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
@@ -234,7 +235,7 @@ function makeStubUsageManager(): UsageManager {
 // Without this the runner has no system-turn deps, and a dispatch never starts a turn.
 function wireSystemTurnDeps(
   deps: Parameters<typeof runRebaseFlow>[0],
-  extra: Pick<SystemTurnDeps, "answerHold"> = {},
+  extra: Pick<SystemTurnDeps, "answerHold" | "steerInputs"> = {},
 ): void {
   deps.runner.setSystemTurnDeps({
     ...extra,
@@ -614,7 +615,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(awaiting).toBe(true);
     expect(await git.isRebaseInProgress()).toBe(false);
     expect(fs.readFileSync(path.join(workDir, "shared.txt"), "utf-8")).toBe("feature edit\n");
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
   });
 
   it("conflicts — preserves tool calls and splits assistant messages at tool-result boundary", async () => {
@@ -940,7 +941,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     let holdStillHeld = false;
     vi.mocked(restoreLfsAfterTreeRewrite).mockImplementation(() => {
       handbacksBefore = vi.mocked(handWorkspaceBackToWorker).mock.calls.length;
-      holdStillHeld = runner.systemTurnInProgress;
+      holdStillHeld = runner.sessionHold !== null;
       return Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false });
     });
 
@@ -1789,7 +1790,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     }
     writeStdin(): void { /* no-op */ }
     interrupt(): void { /* no-op */ }
-    kill(): void { /* no-op */ }
+    kill(): void { setImmediate(() => this.emit("done", 143)); }
   }
 
   it("displacement mid-resolution — aborts the rebase, persists a notice, and never strands the workspace", async () => {
@@ -1816,7 +1817,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     const notice = captured.find((m) => m.text.includes("aborted"));
     expect(notice).toBeDefined();
     expect(notice?.text).toContain("interrupted");
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
   });
 
   it("agent error mid-resolution — aborts the rebase instead of leaving it in progress", async () => {
@@ -1842,7 +1843,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     ).rejects.toThrow(/Agent error during rebase conflict resolution/);
 
     expect(await git.isRebaseInProgress()).toBe(false);
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
     expect(captured.some((m) => m.text.includes("aborted"))).toBe(true);
   });
 
@@ -1884,13 +1885,13 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     expect(outcome.status).toBe("completed");
     expect(agentInvocations).toBe(2);
     expect(runner.queueLength).toBe(0);
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
   });
 
   it("the hold is exclusive — a second flow entering while one holds the session is refused with 409", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
-    runner.systemTurnInProgress = true;
+    const other = takeSessionHold(runner);
 
     await expect(
       runFlow({
@@ -1903,8 +1904,8 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
         usageManager: makeStubUsageManager(),
         sseBroadcast: () => {},
       }, "main"),
-    ).rejects.toThrow(/system turn is in progress/);
-    expect(runner.systemTurnInProgress).toBe(true);
+    ).rejects.toThrow(/ShipIt is working on this session's branch/);
+    expect(runner.sessionHold).toBe(other);
   });
 
   it("a failed rebase abort is reported as a failure, not narrated as a clean abort", async () => {
@@ -1938,7 +1939,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     await git.rebaseAbort().catch(() => {});
   });
 
-  it("dispatchOnRunner enqueues a non-system dispatch while the flow holds the session between turns", async () => {
+  it("dispatchOnRunner enqueues every dispatch but the flow's own step while the flow holds the session", async () => {
     const { workDir } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     runner.setSystemTurnDeps({
@@ -1957,29 +1958,37 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
         ({ prompt, sessionId, cwd: workDir }) as AgentRunParams,
     });
 
-    runner.systemTurnInProgress = true;
+    const hold = takeSessionHold(runner);
 
     const handle = runner.dispatch(testDispatch({ text: "user msg mid-flow" }));
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(1);
 
-    const ciHandle = runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    const ciHandle = runner.dispatch(testDispatch({ text: "fix CI", automatic: true }));
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(2);
 
-    const sysHandle = runner.dispatch(testDispatch({ text: "resolve conflicts", systemTurn: true, postTurn: "none" }));
-    expect(runner.running).toBe(true);
-    await sysHandle.settled;
+    // `postTurn: "none"` alone is no proof of the holder.
+    const impostor = runner.dispatch(testDispatch({ text: "resolve conflicts", postTurn: "none" }), { whenBusy: "refuse" });
+    expect(impostor.admitted).toBe("refused");
 
-    runner.systemTurnInProgress = false;
+    const step = runner.dispatch(
+      testDispatch({ text: "resolve conflicts", postTurn: "none" }),
+      { whenBusy: "refuse", underHold: hold },
+    );
+    expect(runner.running).toBe(true);
+    await step.settled;
+    expect(runner.sessionHold).toBe(hold);
+
+    hold.release();
     expect(releaseQueuedTurn(runner)).toBe(true);
     await handle.settled;
     await ciHandle.settled;
     expect(runner.queueLength).toBe(0);
   });
 
-  // The resolution turn holds systemTurnInProgress for the whole flow, so a queued
-  // entry of its own could only drain after the hold it is itself waiting to release.
+  // The flow holds the session for the whole flow, so a queued step of its own could only
+  // drain after the hold it is itself waiting to release.
   // Every gate in dispatchOnRunner that does not start a turn NOW must therefore
   // refuse it rather than enqueue it (planning#297).
   describe("a resolution turn that cannot start now fails fast instead of stranding the driver", () => {
@@ -1989,7 +1998,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
       opts: { runner: SessionRunner; git: GitManager; captured: { role: string; text: string }[] },
     ): Promise<void> {
       await expect(run()).rejects.toMatchObject({ statusCode: 409 });
-      expect(opts.runner.systemTurnInProgress).toBe(false);
+      expect(opts.runner.sessionHold).toBeNull();
       // A stranded prompt would drain later and ask the agent to resolve conflicts that are gone.
       expect(opts.runner.queueLength).toBe(0);
       expect(await opts.git.isRebaseInProgress()).toBe(false);
@@ -2041,7 +2050,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
       expect(runner.mergeHold).toBe(true);
     });
 
-    it("refuses while the resident agent has background work a system turn would destroy", async () => {
+    it("refuses while the resident agent has background work that replacing it would end", async () => {
       const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
       createConflictingDivergence(bareDir, workDir);
       const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
@@ -2505,7 +2514,7 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
       sseBroadcast: () => {},
     }, "main")).rejects.toBeDefined();
 
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
     expect(runner.running).toBe(false);
   });
 });
@@ -2908,7 +2917,9 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
     const runner = new SessionRunner({ sessionId: "s8", sessionDir: workDir, defaultAgentId: "claude" });
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-    let openedLate = false;
+    let reachedConflict = false;
+    let aborts = 0;
+    let stepRan = false;
     const attemptDeps = {
       ...baseDeps(new GitManager(workDir), runner, () => "unused"),
       git: {
@@ -2921,8 +2932,11 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
         getHeadHash: () => Promise.resolve("head-sha"),
         getRefHash: () => Promise.resolve(null),
         isAncestor: () => Promise.resolve(false),
-        rebase: () => Promise.resolve({ status: "conflicts", conflicts: [{ path: "shared.txt", content: "" }] }),
-        rebaseAbort: () => Promise.resolve(),
+        rebase: () => {
+          reachedConflict = true;
+          return Promise.resolve({ status: "conflicts", conflicts: [{ path: "shared.txt", content: "" }] });
+        },
+        rebaseAbort: () => { aborts += 1; return Promise.resolve(); },
       } as unknown as GitManager,
       agentFactory: () => Object.assign(new EventEmitter(), {
         agentId: "claude" as const,
@@ -2931,7 +2945,7 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
           supportsPermissionModes: false, supportedPermissionModes: [], toolNames: [],
           models: [], supportsReview: true,
         },
-        run: () => { openedLate = true; },
+        run: () => { stepRan = true; },
         kill: () => {},
       }) as unknown as AgentProcess,
       timeoutMs: 20,
@@ -2940,8 +2954,13 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
     const result = await runAutoResolveAttempt(attemptDeps, "main");
 
     expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
-    await vi.waitFor(() => expect(openedLate).toBe(true));
+    expect(runner.sessionHold).toBeNull();
+    // The deadline's abort, then the late flow's own, once its step was refused.
+    await vi.waitFor(() => expect(reachedConflict && aborts >= 2).toBe(true));
+    await sleep(30);
     expect(followupWindowOpen("s8")).toBe(false);
+    // docs/329-user-steers-every-turn — a flow whose hold was released starts no step.
+    expect(stepRan).toBe(false);
   });
 
   it("the automatic path delivers only after its own LFS restore and queue drain", async () => {
@@ -3387,10 +3406,9 @@ describe("rebase-driver: planning#556 leases that a neighbour can invalidate", (
   });
 });
 
-// planning#554 — the flow's `finally` used `!runner.running` as an ownership check for
-// systemTurnInProgress. It is not one: a turn can run without owning the hold, and the hold
-// can change hands with no turn running at all.
-describe("rebase-driver: the flow releases its own hold, not whatever the flag holds", () => {
+// planning#554 — `!runner.running` is no ownership check for the hold: a turn can run without
+// owning it, and the hold can change hands with no turn running at all.
+describe("rebase-driver: the flow releases its own hold, not one that changed hands", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let origGitEditor: string | undefined;
@@ -3450,14 +3468,14 @@ describe("rebase-driver: the flow releases its own hold, not whatever the flag h
     duringTheFlow(git, () => {
       queued = runner.dispatch(testDispatch({ text: "and now do the other thing" }));
       // What adoptCliStartedTurn (ws-handlers/agent-listeners.ts) does for a self-wake: it starts
-      // a turn ShipIt never dispatched, moves the turn epoch, and takes no system hold.
+      // a turn ShipIt never dispatched, moves the turn epoch, and takes no session hold.
       resetRunnerTurnState(runner);
       runner.running = true;
     });
 
     expect((await runFlow(deps, "main")).status).toBe("rebased");
     expect(runner.queueLength).toBe(1);
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
 
     // The stall the incident produced: with the hold stranded, nothing this session does again
     // can start a turn — not even the adopted turn's own teardown drain.
@@ -3467,20 +3485,30 @@ describe("rebase-driver: the flow releases its own hold, not whatever the flag h
     expect(runner.queueLength).toBe(0);
   });
 
+  it("releases its hold even when its cleanup throws", async () => {
+    const { runner, deps } = setupDivergedSession();
+    vi.mocked(handWorkspaceBackToWorker).mockImplementationOnce(() => { throw new Error("chown failed"); });
+
+    await expect(runFlow(deps, "main")).rejects.toThrow("chown failed");
+
+    expect(runner.sessionHold).toBeNull();
+    expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+
   it("leaves a hold taken over mid-flow alone, and drains nothing under it", async () => {
     const { git, runner, deps } = setupDivergedSession();
 
+    let other: SessionHold | null = null;
     duringTheFlow(git, () => {
       runner.dispatch(testDispatch({ text: "and now do the other thing" }));
-      // Another owner takes the session between turns. Every write of `true` mints a new ticket,
-      // so this is a different hold even though the flag never went false (docs/304).
-      runner.systemTurnInProgress = true;
+      // Another owner takes the session between turns (docs/304).
+      other = takeSessionHold(runner);
     });
 
     expect((await runFlow(deps, "main")).status).toBe("rebased");
 
     // Its owner may be mid-rebase itself; handing it a queued turn is what docs/304 stopped.
-    expect(runner.systemTurnInProgress).toBe(true);
+    expect(runner.sessionHold).toBe(other);
     expect(runner.queueLength).toBe(1);
   });
 });
@@ -3793,10 +3821,10 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
     await new Promise((r) => setImmediate(r));
 
     expect(settled).toBe(false);
-    expect(runner.systemTurnInProgress).toBe(true);
+    expect(runner.sessionHold).not.toBeNull();
     finishPrepare();
     await flow;
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
   });
 
   it("stops waiting for a worker that never answers", async () => {
@@ -3818,7 +3846,7 @@ describe("rebase-driver: ShipIt's plugin-skill copies across a skills root that 
       await called;
       await vi.advanceTimersByTimeAsync(PLUGIN_SKILL_RESTORE_WAIT_MS);
       await expect(flow).resolves.toMatchObject({ status: "rebased" });
-      expect(runner.systemTurnInProgress).toBe(false);
+      expect(runner.sessionHold).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -3902,12 +3930,12 @@ describe("rebase-driver: the hold a reconnect's banner reconcile relies on", () 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // route-registry reads "neither running nor systemTurnInProgress" as "no flow is left".
+  // route-registry reads "neither running nor a session hold" as "no flow is left".
   it("the runner is running or held at every message of a conflict flow, and in its turn", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createConflictingDivergence(bareDir, workDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
-    const held = () => runner.running || runner.systemTurnInProgress;
+    const held = () => runner.running || runner.sessionHold !== null;
     const samples: { at: string; held: boolean }[] = [];
     runner.on("message", (msg: WsServerMessage) => samples.push({ at: msg.type, held: held() }));
 
@@ -4051,5 +4079,285 @@ describe("rebase-driver: repeated automatic attempts that fail before any agent 
       lastError: expect.stringContaining("untracked working tree files would be overwritten") as unknown,
     });
     expect(lastBannerMessage(runner.getTurnEventBuffer())).toBe("auto_resolve_result");
+  });
+});
+
+// docs/329-user-steers-every-turn — the conflict-resolution turn is an ordinary turn (req 1):
+// the user steers it (req 2), and the flow ends its process before git goes on.
+describe("rebase-driver: the conflict-resolution turn is an ordinary turn", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-ordinary-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A streaming CLI: it stays up after its result, and exits only when it is stopped. */
+  class StreamingRebaseAgent extends EventEmitter {
+    readonly agentId = "claude" as const;
+    readonly capabilities = new FakeRebaseAgent(() => "").capabilities;
+    cwd = "";
+    prompt = "";
+    steers: string[] = [];
+    exits = true;
+    /** A proxied start answers apart from the process's events; this one never answers. */
+    submissionSettled?: () => Promise<void>;
+    constructor(private readonly log: string[]) { super(); }
+    run(params: AgentRunParams): void {
+      this.cwd = params.cwd;
+      this.prompt = params.prompt;
+    }
+    sendUserMessage(text: string): void {
+      this.steers.push(text);
+      setImmediate(() => this.emit("event", { type: "agent_user_replay", text } as AgentEvent));
+    }
+    finish(opts: { resolve: boolean; error?: string }): void {
+      if (opts.resolve) fs.writeFileSync(path.join(this.cwd, "shared.txt"), "merged result\n");
+      this.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Resolved." }] } as AgentEvent);
+      this.emit("event", {
+        type: "agent_result",
+        status: opts.error ? "error" : "success",
+        sessionId: "agent-sid",
+        ...(opts.error ? { error: opts.error } : {}),
+      } as AgentEvent);
+    }
+    writeStdin(): void { /* no-op */ }
+    interrupt(): void { /* no-op */ }
+    kill(): void {
+      this.log.push("kill");
+      if (!this.exits) return;
+      setImmediate(() => {
+        this.log.push("exit");
+        this.emit("done", 143);
+      });
+    }
+  }
+
+  function setup(opts: { unansweredStart?: boolean } = {}): {
+    git: GitManager;
+    runner: SessionRunner;
+    log: string[];
+    agents: StreamingRebaseAgent[];
+    deps: Parameters<typeof runRebaseFlow>[0];
+  } {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const log: string[] = [];
+    const agents: StreamingRebaseAgent[] = [];
+    const stage = git.stageAll.bind(git);
+    vi.spyOn(git, "stageAll").mockImplementation(async () => {
+      log.push("stage");
+      await stage();
+    });
+    const deps: Parameters<typeof runRebaseFlow>[0] = {
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => {
+        const agent = new StreamingRebaseAgent(log);
+        if (opts.unansweredStart) agent.submissionSettled = () => new Promise<void>(() => {});
+        agents.push(agent);
+        return agent as unknown as AgentProcess;
+      },
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+    wireSystemTurnDeps(deps, { steerInputs: () => ({ liveSteering: true, steeringCapable: true }) });
+    return { git, runner, log, agents, deps };
+  }
+
+  async function stepStarted(agents: StreamingRebaseAgent[], runner: SessionRunner): Promise<StreamingRebaseAgent> {
+    await vi.waitFor(() => expect(agents[0]?.cwd ?? "").not.toBe(""));
+    await vi.waitFor(() => expect(runner.isStreamingActive && runner.getAgent() === (agents[0] as unknown as AgentProcess)).toBe(true));
+    return agents[0]!;
+  }
+
+  it("takes the user's message, and runs git only after its process has exited", async () => {
+    const { runner, log, agents, deps } = setup();
+    const flow = runRebaseFlow(deps, "main");
+    const agent = await stepStarted(agents, runner);
+
+    const steer = runner.dispatch(testDispatch({ text: "keep both edits", execution: "interactive" }));
+    expect(steer.admitted).toBe("steered");
+    expect(agent.steers).toEqual(["keep both edits"]);
+
+    agent.finish({ resolve: true });
+    await expect(flow).resolves.toMatchObject({ status: "conflicts_resolved" });
+
+    expect(log).toEqual(["kill", "exit", "stage"]);
+    expect(runner.getAgent()).toBeNull();
+    expect(runner.isStreamingActive).toBe(false);
+    expect(runner.queueLength).toBe(0);
+    expect(runner.sessionHold).toBeNull();
+  });
+
+  it("aborts the rebase when the user stopped the turn, though it ended with a result", async () => {
+    const { git, runner, log, agents, deps } = setup();
+    const flow = runRebaseFlow(deps, "main");
+    const agent = await stepStarted(agents, runner);
+
+    runner.wasInterrupted = true;
+    agent.finish({ resolve: true });
+
+    await expect(flow).rejects.toThrow(/stopped before it finished/);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(fs.readFileSync(path.join(runner.sessionDir, "shared.txt"), "utf-8")).toBe("feature edit\n");
+    expect(log).not.toContain("stage");
+  });
+
+  // A stopped process still reports the jobs it ends, and the CLI starts a turn for them.
+  it("aborts a stopped step also when the CLI starts a turn of its own before the step settles", async () => {
+    const { git, runner, log, agents, deps } = setup();
+    const flow = runRebaseFlow(deps, "main");
+    const agent = await stepStarted(agents, runner);
+
+    runner.wasInterrupted = true;
+    agent.finish({ resolve: true });
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" } as AgentEvent);
+
+    await expect(flow).rejects.toThrow(/stopped before it finished/);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(log).not.toContain("stage");
+    expect(runner.running).toBe(false);
+    expect(runner.getAgent()).toBeNull();
+  });
+
+  it("ends a turn the CLI starts on the step's process, and a message it took runs after the rebase", async () => {
+    const { runner, agents, deps } = setup();
+    const flow = runRebaseFlow(deps, "main");
+    const agent = await stepStarted(agents, runner);
+
+    agent.finish({ resolve: true });
+    runner.enqueue({ text: "and then rename the helper", execution: "interactive" });
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" } as AgentEvent);
+
+    await expect(flow).resolves.toMatchObject({ status: "conflicts_resolved" });
+    // The flow released the queue: the message runs as a turn of its own, on a new process.
+    await vi.waitFor(() => expect(agents[1]?.prompt ?? "").toContain("and then rename the helper"));
+    expect(runner.sessionHold).toBeNull();
+  });
+
+  it("settles at the result of its own process, also before the worker answers the start", async () => {
+    const { runner, log, agents, deps } = setup({ unansweredStart: true });
+    const flow = runRebaseFlow(deps, "main");
+    const agent = await stepStarted(agents, runner);
+
+    agent.finish({ resolve: true });
+
+    await expect(flow).resolves.toMatchObject({ status: "conflicts_resolved" });
+    expect(log).toEqual(["kill", "exit", "stage"]);
+  });
+
+  it("leaves a turn that starts after the attempt's deadline alone when the old step's process exits", async () => {
+    const { runner, log, agents, deps } = setup();
+    const attempt = runAutoResolveAttempt(
+      { ...deps, githubAuthManager: makeStubAuth(true), timeoutMs: 3_000, stepExitTimeoutMs: 60_000 },
+      "main",
+    );
+    const agent = await stepStarted(agents, runner);
+    agent.exits = false;
+    agent.finish({ resolve: true });
+    await vi.waitFor(() => expect(log).toContain("kill"));
+
+    await expect(attempt).resolves.toMatchObject({ outcome: "error", lastError: "timeout" });
+    expect(runner.sessionHold).toBeNull();
+    runner.dispatch(testDispatch({ text: "the next task" }));
+    await vi.waitFor(() => expect(agents[1]?.prompt ?? "").toContain("the next task"));
+
+    agent.emit("done", 143);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(runner.running).toBe(true);
+    expect(runner.getAgent()).toBe(agents[1] as unknown as AgentProcess);
+    expect(runner.isStreamingActive).toBe(true);
+    expect(log).not.toContain("stage");
+  }, 15_000);
+
+  it("aborts the rebase when the agent's result is an error", async () => {
+    const { git, runner, log, agents, deps } = setup();
+    const flow = runRebaseFlow(deps, "main");
+    const agent = await stepStarted(agents, runner);
+
+    agent.finish({ resolve: false, error: "the model refused" });
+
+    await expect(flow).rejects.toThrow(/reported an error/);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(log).not.toContain("stage");
+  });
+
+  it("aborts the rebase when the process does not exit in time", async () => {
+    const { git, runner, log, agents, deps } = setup();
+    const flow = runRebaseFlow({ ...deps, stepExitTimeoutMs: 50 }, "main");
+    const agent = await stepStarted(agents, runner);
+    agent.exits = false;
+
+    agent.finish({ resolve: true });
+
+    await expect(flow).rejects.toThrow(/did not exit/);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(log).toEqual(["kill"]);
+  });
+
+  it("leaves the process alone when a turn of the CLI's own refuses the step", async () => {
+    const { git, runner, agents, deps } = setup();
+    const resident = Object.assign(new EventEmitter(), { agentId: "claude" as const, kill: vi.fn() });
+    runner.setAgent(resident as unknown as AgentProcess);
+    runner.isStreamingActive = true;
+    const rebase = git.rebase.bind(git);
+    vi.spyOn(git, "rebase").mockImplementation(async (ref: string) => {
+      const result = await rebase(ref);
+      // A background job of the resident ends: the CLI starts a turn of its own meanwhile.
+      runner.running = true;
+      return result;
+    });
+
+    await expect(runRebaseFlow(deps, "main")).rejects.toMatchObject({ statusCode: 409 });
+
+    expect(resident.kill).not.toHaveBeenCalled();
+    expect(runner.getAgent()).toBe(resident as unknown as AgentProcess);
+    expect(agents).toHaveLength(0);
+    expect(await git.isRebaseInProgress()).toBe(false);
+  });
+
+  it("does not enter an idle resident process: it ends that one and starts its own", async () => {
+    const { runner, agents, deps } = setup();
+    const resident = Object.assign(new EventEmitter(), {
+      agentId: "claude" as const,
+      kill: vi.fn(),
+      sendUserMessage: vi.fn(),
+    });
+    const superseded = vi.fn();
+    resident.on("superseded", superseded);
+    runner.setAgent(resident as unknown as AgentProcess);
+    runner.isStreamingActive = true;
+
+    const flow = runRebaseFlow(deps, "main");
+    const agent = await stepStarted(agents, runner);
+    expect(resident.kill).toHaveBeenCalled();
+    expect(superseded).toHaveBeenCalled();
+    expect(resident.sendUserMessage).not.toHaveBeenCalled();
+
+    agent.finish({ resolve: true });
+    await expect(flow).resolves.toMatchObject({ status: "conflicts_resolved" });
   });
 });

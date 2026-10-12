@@ -95,8 +95,6 @@ export interface RequestedRestartTurn {
   sessionId: string;
   runner: SessionRunnerInterface;
   turnIsCurrent: () => boolean;
-  /** This turn took the runner's system hold and still owns it. */
-  ownsSystemHold: () => boolean;
   /**
    * Settles the turn with its real outcome. Without it the restart's dispose settles a
    * finished dispatched turn as interrupted, and the executor then settles it again.
@@ -124,8 +122,7 @@ export async function runRequestedRestart(
   if (!note && !userRestartPending(deps, sessionId)) return;
   // A late terminal callback from an older turn sees a disposed runner that looks idle.
   if (deps.runnerRegistry.get(sessionId) !== runner || !turn.turnIsCurrent()) return;
-  const heldByOther = runner.systemTurnInProgress && !turn.ownsSystemHold();
-  if (runner.running || runner.mergeHold || heldByOther) {
+  if (runner.running || runner.mergeHold || runner.sessionHold) {
     console.log(
       `[agent-restart] ${sessionId} is busy; the requested restart waits for the next turn's end`,
     );
@@ -144,7 +141,7 @@ export async function runRequestedRestart(
   // Before the hold: if this write throws, nothing is held and the next turn's end retries.
   deps.sessionManager.clearPendingRestart(sessionId);
   // In the same synchronous step as the checks: from here new messages queue, and the
-  // restart carries them to the new runner. Taking the hold also ends this turn's own.
+  // restart carries them to the new runner.
   const oldHold = takeQueueHold(runner, { lease: false });
   console.log(
     `[agent-restart] restarting the agent container of ${sessionId}, as the ${note ? "agent" : "user"} asked`,

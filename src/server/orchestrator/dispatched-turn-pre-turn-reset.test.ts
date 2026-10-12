@@ -182,7 +182,7 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
 
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
     await flushTurn();
 
     expect(calls).toHaveLength(0);
@@ -274,7 +274,7 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
 
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
     await flushTurn();
 
     expect(consumed).toEqual([]);
@@ -372,7 +372,7 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
     expect(promptSeen).toContain("carry on");
   });
 
-  it("does NOT consume it for a system turn — that is ShipIt talking to itself", async () => {
+  it("does NOT consume it for a driver-owned turn — that is ShipIt talking to itself", async () => {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     const consumed: string[] = [];
@@ -385,7 +385,7 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
 
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
     await flushTurn();
 
     expect(consumed).toEqual([]);

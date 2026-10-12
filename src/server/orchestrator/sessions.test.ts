@@ -210,7 +210,6 @@ describe("SessionManager", () => {
     mgr.holdTurn("sess-1", {
       text: "[ci-fix] CI failed",
       execution: "dispatched",
-      systemTurn: true,
       automatic: true,
       onTurnComplete: (o) => settled.push(o.status),
     });
@@ -220,7 +219,7 @@ describe("SessionManager", () => {
 
     const held = mgr.heldTurns("sess-1");
     expect(held.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
-    expect(held[0]).toMatchObject({ systemTurn: true, automatic: true });
+    expect(held[0]).toMatchObject({ execution: "dispatched", automatic: true });
     held[0]!.onTurnComplete?.({ status: "completed" } as never);
     expect(settled).toEqual(["completed"]);
     expect(mgr.hasHeldDelivery("sess-1", "watch-1:1")).toBe(true);

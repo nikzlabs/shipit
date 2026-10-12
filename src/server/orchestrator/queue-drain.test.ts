@@ -32,7 +32,7 @@ describe("queue drain routing (planning#257)", () => {
       text: "child PR merged",
       execution: "dispatched",
       activity: "Resuming after child PR merged…",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete,
       deliveryId: "watch-1:1",
     };
@@ -44,7 +44,7 @@ describe("queue drain routing (planning#257)", () => {
     expect(ran[0]).toMatchObject({
       text: "child PR merged",
       activity: "Resuming after child PR merged…",
-      systemTurn: true,
+      automatic: true,
     });
     ran[0]!.onTurnComplete?.(TURN_COMPLETED);
     expect(onTurnComplete).toHaveBeenCalledWith(TURN_COMPLETED);
@@ -84,7 +84,7 @@ describe("queue drain routing (planning#257)", () => {
     const runInteractive = vi.fn(async () => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await startQueuedMessage(runner, { text: "x", execution: "dispatched", systemTurn: true }, runInteractive);
+    await startQueuedMessage(runner, { text: "x", execution: "dispatched", automatic: true }, runInteractive);
 
     expect(runInteractive).toHaveBeenCalled();
     expect(ran).toEqual([]);
@@ -107,7 +107,6 @@ describe("queue drain routing (planning#257)", () => {
       silent: false,
       compactContext: false,
       postTurn: "none",
-      systemTurn: true,
       automatic: true,
       ciAutoFix: true,
       heldId: 7,
@@ -145,49 +144,12 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
     return { runner, state };
   }
 
-  const systemEntry = (): QueuedMessage => ({
-    text: "Child PR #42 merged",
-    execution: "dispatched",
-    systemTurn: true,
-  });
-
-  it("leaves a queued system turn in the queue while the resident agent has background work", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const queue = [systemEntry()];
+  // docs/329-user-steers-every-turn — an entry enters the resident, so its work is no reason to wait.
+  it("takes an entry from another source while the resident agent has background work", () => {
+    const queue: QueuedMessage[] = [{ text: "Child PR #42 merged", execution: "dispatched", automatic: true }];
     const { runner } = fakeQueueRunner({ queue, work: ["Codex consult"] });
-
-    expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
-    expect(queue).toHaveLength(1);
-    expect(warn.mock.calls[0]?.[0]).toContain("Codex consult");
-    warn.mockRestore();
-  });
-
-  it("hands over the same entry once the background work has finished", () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const queue = [systemEntry()];
-    const { runner, state } = fakeQueueRunner({ queue, work: ["Codex consult"] });
-    expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
-
-    state.work = [];
 
     expect(takeRunnableQueuedTurn(runner)?.text).toBe("Child PR #42 merged");
-    expect(queue).toHaveLength(0);
-    vi.restoreAllMocks();
-  });
-
-  it("never holds a queued user turn: only a system turn replaces the resident process", () => {
-    const queue: QueuedMessage[] = [{ text: "typed by the user", execution: "dispatched" }];
-    const { runner } = fakeQueueRunner({ queue, work: ["Codex consult"] });
-
-    expect(takeRunnableQueuedTurn(runner)?.text).toBe("typed by the user");
-    expect(queue).toHaveLength(0);
-  });
-
-  it("takes a system turn when no resident process is left for it to destroy", () => {
-    const queue = [systemEntry()];
-    const { runner } = fakeQueueRunner({ queue, resident: false, work: ["Codex consult"] });
-
-    expect(takeRunnableQueuedTurn(runner)?.systemTurn).toBe(true);
     expect(queue).toHaveLength(0);
   });
 
@@ -230,7 +192,6 @@ describe("a question holds automatic entries (docs/322)", () => {
   const automaticEntry = (text = "[ci-fix] CI failed"): QueuedMessage => ({
     text,
     execution: "dispatched",
-    systemTurn: true,
     automatic: true,
   });
 
@@ -303,7 +264,6 @@ describe("withdrawWaitingTurns", () => {
   const fix = (extra: Partial<QueuedMessage> = {}): QueuedMessage => ({
     text: "[ci-fix] CI failed",
     execution: "dispatched",
-    systemTurn: true,
     automatic: true,
     ciAutoFix: true,
     ...extra,
@@ -390,7 +350,7 @@ describe("withdrawWaitingTurns", () => {
 describe("releaseQueuedTurn (planning#338)", () => {
   function fakeReleaseRunner(opts: {
     running?: boolean;
-    systemTurnInProgress?: boolean;
+    sessionHold?: boolean;
     mergeHold?: boolean;
     queueLength?: number;
     head?: QueuedMessage;
@@ -407,7 +367,7 @@ describe("releaseQueuedTurn (planning#338)", () => {
     const runner = {
       sessionId: "s1",
       running: opts.running ?? false,
-      systemTurnInProgress: opts.systemTurnInProgress ?? false,
+      sessionHold: opts.sessionHold ? { release: () => {} } : null,
       mergeHold: opts.mergeHold ?? false,
       turnCommitPending: opts.turnCommitPending ?? false,
       get queueLength() { return queue.length; },
@@ -426,10 +386,10 @@ describe("releaseQueuedTurn (planning#338)", () => {
     return { runner, dispatched, queue, dequeueCount: () => dequeues };
   }
 
-  it("refuses to release while a system flow holds the session between its own turns", () => {
+  it("refuses to release while a flow holds the session between its own turns", () => {
     const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
       running: false,
-      systemTurnInProgress: true,
+      sessionHold: true,
       queueLength: 1,
     });
     expect(releaseQueuedTurn(runner)).toBe(false);
@@ -452,7 +412,7 @@ describe("releaseQueuedTurn (planning#338)", () => {
   it("releases the head of the queue once the flow has released its hold", () => {
     const { runner, dispatched } = fakeReleaseRunner({
       running: false,
-      systemTurnInProgress: false,
+      sessionHold: false,
       queueLength: 1,
     });
     expect(releaseQueuedTurn(runner)).toBe(true);
@@ -460,37 +420,23 @@ describe("releaseQueuedTurn (planning#338)", () => {
     expect(dispatched[0]?.text).toBe("queued user msg");
   });
 
-  it("leaves a system-turn head queued rather than moving it to the tail behind the gate", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { runner, dispatched, queue, dequeueCount } = fakeReleaseRunner({
-      queueLength: 1,
-      head: { text: "child PR merged", execution: "dispatched", systemTurn: true },
-      work: ["Codex consult"],
-    });
-
-    expect(releaseQueuedTurn(runner)).toBe(false);
-    expect(dispatched).toEqual([]);
-    expect(dequeueCount()).toBe(0);
-    expect(queue).toHaveLength(1);
-    warn.mockRestore();
-  });
-
   // docs/240-unlosable-turn-dispatch Fix G — dispatch would re-queue it at the tail.
-  it("leaves the head queued while the finished turn's commit is pending, except a driver's own step", () => {
+  // A flow's step is never queued, so no queued entry is exempt: `postTurn: "none"` proves nothing.
+  it("leaves the head queued while the finished turn's commit is pending, whatever the entry says", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const held = fakeReleaseRunner({ queueLength: 2, turnCommitPending: true });
     expect(releaseQueuedTurn(held.runner)).toBe(false);
     expect(held.dispatched).toEqual([]);
     expect(held.dequeueCount()).toBe(0);
 
-    const driver = fakeReleaseRunner({
+    const step = fakeReleaseRunner({
       queueLength: 1,
       turnCommitPending: true,
-      head: { text: "resolve the conflicts", execution: "dispatched", systemTurn: true, postTurn: "none" },
+      head: { text: "resolve the conflicts", execution: "dispatched", postTurn: "none" },
       work: [],
     });
-    expect(releaseQueuedTurn(driver.runner)).toBe(true);
-    expect(driver.dispatched.map((d) => d.text)).toEqual(["resolve the conflicts"]);
+    expect(releaseQueuedTurn(step.runner)).toBe(false);
+    expect(step.dispatched).toEqual([]);
     warn.mockRestore();
   });
 });

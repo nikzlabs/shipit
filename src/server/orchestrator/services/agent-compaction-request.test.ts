@@ -8,6 +8,7 @@ import { beginTurnSetup, noteUserStop } from "../turn-stop-request.js";
 import { MISSED_COMPACTION_NOTICE } from "../compact-before-turn.js";
 import {
   makeDispatchTurnDeps,
+  makeFakeAgent,
   flushTurn,
   waitForTurn,
   type FakeAgent,
@@ -22,6 +23,7 @@ import {
 } from "./agent-compaction-request.js";
 import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
 import { stopCompactionContinuation } from "./agent-compaction-stop.js";
+import { takeSessionHold } from "../session-hold.js";
 
 const SESSION = "compact-session";
 
@@ -72,7 +74,6 @@ function setup(request: PendingCompaction | undefined, opts: { agentId?: string;
     sessionId: SESSION,
     runner,
     turnIsCurrent: () => true,
-    ownsSystemHold: () => false,
     settle: vi.fn(),
   };
   return { deps, state, runner, turn, agents, prompts, compactFlags, appended, userNotices };
@@ -151,7 +152,7 @@ describe("runRequestedCompaction — when it waits", () => {
   it.each([
     ["a turn runs", (r: SessionRunnerInterface) => { r.running = true; }],
     ["a merge holds the session", (r: SessionRunnerInterface) => { r.mergeHold = true; }],
-    ["another flow holds the session", (r: SessionRunnerInterface) => { r.systemTurnInProgress = true; }],
+    ["another flow holds the session", (r: SessionRunnerInterface) => { takeSessionHold(r); }],
     ["the agent waits for the user's answer", (r: SessionRunnerInterface) => { r.awaitingUserAnswer = true; }],
   ])("leaves the request pending while %s", async (_label, makeBusy) => {
     const { deps, state, runner: r, turn, prompts } = setup({ instructions: "keep A" });
@@ -161,9 +162,10 @@ describe("runRequestedCompaction — when it waits", () => {
     expect(prompts).toHaveLength(0);
     expect(state.request).toEqual({ instructions: "keep A" });
     expect(state.notices).toHaveLength(0);
+    expect(turn.settle).not.toHaveBeenCalled();
     r.running = false;
     r.mergeHold = false;
-    r.systemTurnInProgress = false;
+    r.sessionHold?.release();
     r.awaitingUserAnswer = false;
   });
 
@@ -187,7 +189,7 @@ describe("runRequestedCompaction — the compaction turn", () => {
     expect(turn.settle).toHaveBeenCalledTimes(1);
     expect(prompts[0]?.startsWith("/compact keep A")).toBe(true);
     expect(compactFlags[0]).toBe(true);
-    expect(r.systemTurnInProgress).toBe(true);
+    expect(r.running).toBe(true);
     expect(state.request).toBeUndefined();
     expect(appended.filter((m) => m.role === "user")).toHaveLength(0);
   });
@@ -200,12 +202,28 @@ describe("runRequestedCompaction — the compaction turn", () => {
     expect(state.notices).toHaveLength(0);
   });
 
-  it("a system turn's settle releases its own hold, so the compaction is admitted", async () => {
-    const { deps, runner: r, turn, prompts } = setup({ instructions: "keep A" });
-    r.systemTurnInProgress = true;
-    turn.settle.mockImplementation(() => { r.systemTurnInProgress = false; });
-    await runRequestedCompaction(deps, { ...turn, ownsSystemHold: () => true });
-    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+  // docs/329-user-steers-every-turn — the compaction is ShipIt's, but its turn is an ordinary one.
+  it("runs the compaction on the resident process, which a typed turn would use", async () => {
+    const { deps, runner: r, turn, agents } = setup({ instructions: "keep A" });
+    const resident = makeFakeAgent();
+    r.setAgent(resident as never);
+    r.isStreamingActive = true;
+    await runRequestedCompaction(deps, turn);
+    await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "the compaction entered the resident");
+    expect(String(resident.sendUserMessage.mock.calls[0]?.[0]).startsWith("/compact keep A")).toBe(true);
+    expect(resident.kill).not.toHaveBeenCalled();
+    expect(agents).toHaveLength(0);
+  });
+
+  it("does not start while the resident process has background work", async () => {
+    const { deps, state, runner: r, turn, prompts } = setup({ instructions: "keep A" });
+    r.setAgent(makeFakeAgent() as never);
+    r.isStreamingActive = true;
+    r.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
+    await runRequestedCompaction(deps, turn);
+    await flushTurn();
+    expect(prompts).toHaveLength(0);
+    expect(state.request).toEqual({ instructions: "keep A" });
   });
 
   it("does not run a request recorded before the setting was turned off (req 11)", async () => {
@@ -279,8 +297,6 @@ describe("runRequestedCompaction — after the compaction", () => {
     await waitForTurn(() => prompts.length === 2, "next spawn");
     expect(prompts[1]).toContain("USER NEXT");
     expect(r.getQueueSnapshot().map((q) => q.text)).toEqual([buildContinuationPrompt("start B")]);
-    // An ordinary turn: it runs on the process a typed turn would run on.
-    expect(r.messageQueue[0]?.systemTurn).toBeUndefined();
   });
 
   it("with a note, the continuation runs ahead of an automatic entry queued during the compaction", async () => {

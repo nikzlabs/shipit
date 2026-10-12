@@ -21,6 +21,7 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import type * as Validation from "../validation.js";
+import { takeSessionHold } from "../session-hold.js";
 
 // The steer branch reads attachments before it writes to the agent; the test holds that read open.
 const attachments = vi.hoisted(() => ({ gate: null as Promise<void> | null, reads: 0 }));
@@ -101,6 +102,38 @@ describe("Integration: a steer whose turn ended while its attachments were read"
     }
   }
 
+  // docs/329-user-steers-every-turn — the hold is re-read after the awaits of a typed send.
+  it("queues a message whose attachment read outlasted the start of a session hold", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Refactor the parser" });
+    const resident = await waitForClaude(() => lastClaude);
+    resident.initSession("agent-a");
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): SessionRunnerInterface } })
+      .runnerRegistry.get(client.sessionId);
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    await waitUntil(() => !runner.running && !runner.postTurnWorkInFlight, "the first turn ended");
+    fs.writeFileSync(path.join(runner.sessionDir, "note.txt"), "a note\n");
+
+    let openAttachments = (): void => {};
+    attachments.gate = new Promise<void>((resolve) => { openAttachments = resolve; });
+    const readsBefore = attachments.reads;
+    client.send({ type: "send_message", text: "read this note", files: [{ path: "note.txt" }] });
+    await waitUntil(() => attachments.reads === readsBefore + 1, "the send is reading its attachment");
+
+    const hold = takeSessionHold(runner);
+    attachments.gate = null;
+    openAttachments();
+    await waitUntil(() => runner.queueLength === 1, "the message queued under the hold");
+
+    expect(runner.running).toBe(false);
+    expect(resident.stdinData.some((d) => d.includes("read this note"))).toBe(false);
+    expect(lastClaude).toBe(resident);
+    hold.release();
+    client.close();
+  });
+
   it("dispatches the message behind the finished turn's commit instead of writing it to the idle agent", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
@@ -144,8 +177,8 @@ describe("Integration: a steer whose turn ended while its attachments were read"
     client.close();
   });
 
-  // `running` is true again by then, so only the turn's identity says the steer lost its turn.
-  it("does not steer into the turn that replaced its own during the attachment read", async () => {
+  // docs/329-user-steers-every-turn — a turn that ShipIt started takes the steer as a typed one does.
+  it("steers into a turn that ShipIt started in place of its own during the attachment read", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -156,7 +189,7 @@ describe("Integration: a steer whose turn ended while its attachments were read"
       .runnerRegistry.get(client.sessionId);
     await waitUntil(() => runner.running && runner.isStreamingActive, "the turn runs and streams");
     fs.writeFileSync(path.join(runner.sessionDir, "note.txt"), "a note\n");
-    runner.dispatch(testDispatch({ text: "Child PR #42 merged", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "Child PR #42 merged", automatic: true }), { whenBusy: "queue" });
     expect(runner.queueLength).toBe(1);
 
     let openAttachments = (): void => {};
@@ -166,21 +199,20 @@ describe("Integration: a steer whose turn ended while its attachments were read"
     await waitUntil(() => attachments.reads === readsBefore + 1, "the steer is reading its attachment");
 
     resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
-    const systemTurn = await waitForClaude(() => lastClaude, resident);
-    await waitUntil(() => runner.running && runner.systemTurnInProgress, "the queued system turn runs");
+    await waitUntil(
+      () => runner.running && resident.stdinData.some((d) => d.includes("Child PR #42 merged")),
+      "the queued turn runs on the same agent",
+    );
+    expect(lastClaude).toBe(resident);
 
     attachments.gate = null;
     openAttachments();
-    await waitUntil(() => runner.queueLength === 1, "the message queued behind the system turn");
-    for (const agent of [resident, systemTurn]) {
-      expect(agent.stdinData.some((d) => d.includes("and read this note"))).toBe(false);
-    }
-
-    systemTurn.finish("system-session");
-    const typedTurn = await waitForClaude(() => lastClaude, systemTurn);
-    expect(typedTurn.lastPrompt).toContain("and read this note");
-    typedTurn.finish("typed-session");
-    await waitUntil(() => !runner.running && !runner.postTurnWorkInFlight, "all turns finished");
+    await waitUntil(
+      () => resident.stdinData.some((d) => d.includes("and read this note")),
+      "the message reached the turn that ShipIt started",
+    );
+    expect(resident.stdinData.find((d) => d.includes("and read this note"))).toContain("a note");
+    expect(runner.queueLength).toBe(0);
 
     client.close();
   });

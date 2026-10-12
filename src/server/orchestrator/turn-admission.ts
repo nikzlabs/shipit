@@ -48,16 +48,13 @@ export function automaticTurnHeldForAnswer(
 
 /**
  * Why a turn cannot start while the turn before it is not in git yet, or null — post-turn
- * invariant 1, for a turn that arrives from outside the queue. A driver-owned step is exempt:
- * it runs inside the driver's own hold and commits nothing.
+ * invariant 1, for a turn that arrives from outside the queue. A flow's own step is exempt
+ * at the gate: it runs inside the flow's hold and commits nothing.
  */
 export function turnBlockedByPendingCommit(
   runner: Pick<SessionRunnerInterface, "turnCommitPending">,
-  turn: { systemTurn?: boolean | undefined; postTurn?: "commit-push" | "none" | undefined },
 ): string | null {
-  if (!runner.turnCommitPending) return null;
-  if (turn.systemTurn === true && turn.postTurn === "none") return null;
-  return "the previous turn's work is not committed yet";
+  return runner.turnCommitPending ? "the previous turn's work is not committed yet" : null;
 }
 
 const TURN_COMMIT_POLL_MS = 20;
@@ -77,32 +74,9 @@ export async function turnCommitSettled(
   }
 }
 
-/** Everything an admission gate may read; a drain site holds no more than this. */
-export type AdmissionRunner = Pick<
-  SessionRunnerInterface,
-  "getAgent" | "backgroundWorkDescriptions"
->;
-
-/**
- * Background work a system turn would destroy by replacing the resident process. Callers
- * that pre-flight this gate must read it here, or their check drifts from the gate's.
- */
-export function residentBackgroundWork(runner: AdmissionRunner): string[] {
+/** Background work that replacing the resident process would end. */
+export function residentBackgroundWork(
+  runner: Pick<SessionRunnerInterface, "getAgent" | "backgroundWorkDescriptions">,
+): string[] {
   return runner.getAgent() !== null ? runner.backgroundWorkDescriptions : [];
-}
-
-/**
- * Why a system turn cannot start on this runner now, or null. `dispatchOnRunner` reads it to
- * decide whether to enqueue, and a drain that runs its entry without re-entering dispatch
- * reads the same function, so the two answers cannot drift (planning#562).
- */
-export function systemTurnBlockedByResidentWork(
-  runner: AdmissionRunner,
-  systemTurn: boolean | undefined,
-): string | null {
-  if (systemTurn !== true) return null;
-  const work = residentBackgroundWork(runner);
-  if (work.length === 0) return null;
-  return "the resident agent has background work in flight "
-    + `(${work.join(", ")}), which a system turn would destroy`;
 }

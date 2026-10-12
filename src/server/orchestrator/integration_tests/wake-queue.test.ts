@@ -23,12 +23,13 @@ import { testDispatch } from "./dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "../turn-settlement.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { turnClaimGateKeyCount } from "../ws-handlers/turn-claim-gate.js";
+import { takeSessionHold } from "../session-hold.js";
 
 type AnyMsg = any;
 
 const WAKE_TEXT = "Child PR #42 merged: child (child-id).";
 
-describe("Integration: a dispatched system turn behind a real turn (planning#256/planning#257)", () => {
+describe("Integration: a dispatched wake behind a real turn (planning#256/planning#257)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -44,7 +45,7 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     lastClaude = null as never;
     commitGate = null;
     commitsStarted = 0;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-system-turn-queue-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-wake-queue-"));
     credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
@@ -104,7 +105,7 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     return (app as any).runnerRegistry.get(sessionId) as SessionRunnerInterface;
   }
 
-  it("planning#256: live steering on + a real streaming user turn — a systemTurn dispatch is QUEUED, not steered, and its onTurnComplete survives to fire", async () => {
+  it("planning#256: live steering on + a real streaming user turn — a wake that asks for its own turn is QUEUED, not steered, and its onTurnComplete survives to fire", async () => {
     credentialStore.setLiveSteering(true);
 
     const client = await TestClient.connect(port);
@@ -122,9 +123,9 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     runner.dispatch(testDispatch({
       text: WAKE_TEXT,
       activity: "Resuming after child PR merged…",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (outcome) => completions.push(outcome),
-    }));
+    }), { whenBusy: "queue" });
 
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: WAKE_TEXT });
@@ -143,7 +144,7 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.close();
   });
 
-  it("planning#257: a wake-turn queued behind a real INTERACTIVE turn runs as a system turn and fires onTurnComplete (no restart)", async () => {
+  it("planning#257: a wake-turn queued behind a real INTERACTIVE turn runs as its own turn and fires onTurnComplete (no restart)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -158,9 +159,9 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     runner.dispatch(testDispatch({
       text: WAKE_TEXT,
       activity: "Resuming after child PR merged…",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (outcome) => completions.push(outcome),
-    }));
+    }), { whenBusy: "queue" });
     await drainUntil(client, (m) => m.type === "message_queued");
     expect(runner.queueLength).toBe(1);
 
@@ -168,13 +169,9 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
     expect(wakeTurn.lastPrompt).toContain("merged");
 
-    expect(runner.systemTurnInProgress).toBe(true);
-    expect(wakeTurn.lastUseStreaming).toBe(false);
-
     wakeTurn.finish("wake-turn-session");
     await waitUntil(() => completions.length > 0, "onTurnComplete fired");
     expect(completions).toEqual([TURN_COMPLETED]);
-    await waitUntil(() => !runner.systemTurnInProgress, "system-turn flag cleared");
 
     client.close();
   });
@@ -365,7 +362,7 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
 
     client.send({ type: "send_message", text: "typed during the commit" });
     await sendHandlerIsWaiting();
-    const wake = runner.dispatch(testDispatch({ text: WAKE_TEXT, systemTurn: true, automatic: true }));
+    const wake = runner.dispatch(testDispatch({ text: WAKE_TEXT, automatic: true }), { whenBusy: "queue" });
     expect(wake.admitted).toBe("queued");
     expect(lastClaude).toBe(first);
 
@@ -382,11 +379,10 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.close();
   });
 
-  // The gate that keeps a system turn OUT of the queue's head must be re-read when the
-  // queue drains: the drain runs the entry directly, and the dispatched executor retires
-  // the resident CLI, taking its background work with it (planning#562).
+  // docs/329-user-steers-every-turn — a wake is an ordinary turn: it enters the resident, and
+  // the background work that the resident runs goes on (planning#562 once deferred it instead).
   for (const start of ["interactive", "dispatched"] as const) {
-    it(`planning#562: a queued system turn does not drain onto a resident agent with background work (after a ${start} turn)`, async () => {
+    it(`a queued wake enters a resident agent with background work, and leaves the work running (after a ${start} turn)`, async () => {
       credentialStore.setLiveSteering(true);
 
       const client = await TestClient.connect(port);
@@ -405,39 +401,30 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
         "resident streaming turn",
       );
 
-      // The turn backgrounded a cross-agent review; retiring the CLI would destroy it.
       runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
-      expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
 
       const completions: { errored: boolean }[] = [];
       runner.dispatch(testDispatch({
         text: WAKE_TEXT,
         activity: "Resuming after child PR merged…",
-        systemTurn: true,
+        automatic: true,
         onTurnComplete: (outcome) => completions.push(outcome),
-      }));
+      }), { whenBusy: "queue" });
       await drainUntil(client, (m) => m.type === "message_queued");
       expect(runner.queueLength).toBe(1);
 
       // Settle the turn without exiting the process: the CLI stays resident, as it does
       // in production while its backgrounded work runs.
       userTurn.emit("event", { type: "result", subtype: "success", session_id: "user-turn-session" });
-      await waitUntil(() => !runner.running, "user turn settled");
-      await new Promise((r) => setTimeout(r, 100));
+      await waitUntil(() => userTurn.stdinData.some((d) => d.includes("merged")), "the wake entered the resident");
 
-      expect(runner.queueLength).toBe(1);
+      expect(runner.queueLength).toBe(0);
       expect(userTurn.killed).toBe(false);
       expect(runner.getAgent()).toBe(userTurn as never);
       expect(lastClaude).toBe(userTurn);
-      expect(completions).toEqual([]);
+      expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
 
-      // The background work finishing is what releases it.
-      runner.clearBackgroundTasks();
-      const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
-      expect(wakeTurn.lastPrompt).toContain("merged");
-      expect(runner.queueLength).toBe(0);
-
-      wakeTurn.finish("wake-turn-session");
+      userTurn.emit("event", { type: "result", subtype: "success", session_id: "user-turn-session" });
       await waitUntil(() => completions.length > 0, "onTurnComplete fired");
       expect(completions).toEqual([TURN_COMPLETED]);
 
@@ -445,57 +432,38 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     });
   }
 
-  // Deferring is only safe if something releases the entry. When the predecessor is itself a
-  // system turn, its CLI exits (clearing the background work) BEFORE its hold is released, so
-  // the background-work release fires against a held session and must not consume the entry.
-  it("planning#562: a system turn deferred behind a SYSTEM turn runs when the hold clears, and is queued only once", async () => {
+  // docs/329-user-steers-every-turn — a rebase or a restart can take the session during the commit.
+  it("does not start a queued message under a hold taken while the turn's work was committed", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
+
+    client.send({ type: "send_message", text: "First" });
+    const first = await waitForClaude(() => lastClaude);
+    first.initSession("first-session");
+    client.send({ type: "send_message", text: "Second" });
+    await drainUntil(client, (m) => m.type === "message_queued");
     const runner = runnerFor(client.sessionId);
 
-    runner.dispatch(testDispatch({ text: "CI is red — fix it", systemTurn: true }));
-    const systemA = await waitForClaude(() => lastClaude);
-    systemA.initSession("system-a-session");
-    await waitUntil(() => runner.running && runner.systemTurnInProgress, "system turn A running");
+    let landCommit = (): void => {};
+    commitGate = new Promise<void>((resolve) => { landCommit = resolve; });
+    first.emit("event", { type: "result", subtype: "success", session_id: "first-session" });
+    await waitUntil(() => commitsStarted === 1, "the turn's commit started");
 
-    // A backgrounded a consult of its own.
-    runner.isStreamingActive = true;
-    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+    const hold = takeSessionHold(runner);
+    commitGate = null;
+    landCommit();
+    await waitUntil(() => !runner.turnCommitPending, "the commit landed");
+    await new Promise((r) => setTimeout(r, 150));
 
-    const queuedTwice: string[] = [];
-    const completions: { errored: boolean }[] = [];
-    runner.dispatch(testDispatch({
-      text: WAKE_TEXT,
-      activity: "Resuming after child PR merged…",
-      systemTurn: true,
-      onTurnComplete: (outcome) => completions.push(outcome),
-    }));
-    void (async () => {
-      for (;;) {
-        const msg: AnyMsg = await client.receive(4000).catch(() => null);
-        if (!msg) return;
-        if (msg.type === "message_queued" && msg.text === WAKE_TEXT) queuedTwice.push(msg.text as string);
-      }
-    })();
-    await waitUntil(() => runner.queueLength === 1, "wake turn queued");
+    expect(lastClaude).toBe(first);
+    expect(runner.running).toBe(false);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["Second"]);
 
-    // A settles but its process has not exited yet — the drain defers the wake turn.
-    systemA.emit("event", { type: "result", subtype: "success", session_id: "system-a-session" });
-    await waitUntil(() => !runner.running, "system turn A settled");
-    await new Promise((r) => setTimeout(r, 200));
-    expect(runner.queueLength).toBe(1);
-    expect(runner.getAgent()).toBe(systemA as never);
-
-    // The CLI exits: background work is cleared while A still holds the session.
-    systemA.emit("done", 0);
-
-    const wakeTurn = await waitForClaude(() => lastClaude, systemA);
-    expect(wakeTurn.lastPrompt).toContain("merged");
-    wakeTurn.finish("wake-turn-session");
-    await waitUntil(() => completions.length > 0, "wake turn settled");
-    expect(completions).toEqual([TURN_COMPLETED]);
-    expect(queuedTwice).toHaveLength(1);
-
+    hold.release();
+    expect(releaseQueuedTurn(runner)).toBe(true);
+    const second = await waitForClaude(() => lastClaude, first);
+    expect(second.lastPrompt).toContain("Second");
+    second.finish("second-session");
     client.close();
   });
 
@@ -522,8 +490,6 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     first.finish("first-session");
     const second = await waitForClaude(() => lastClaude, first);
     expect(second.lastPrompt).toContain("Second");
-    const runner = runnerFor(client.sessionId);
-    expect(runner.systemTurnInProgress).toBe(false);
 
     second.finish("second-session");
     await Promise.race([collect, new Promise((r) => setTimeout(r, 300))]);

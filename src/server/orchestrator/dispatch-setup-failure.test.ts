@@ -25,14 +25,13 @@ describe("dispatch setup failure (planning#265)", () => {
     deps.agentFactory = () => { throw new Error("container unreachable"); };
     runner.setSystemTurnDeps(deps);
 
-    const handle = runner.dispatch(testDispatch({ text: "wake up", systemTurn: true }));
+    const handle = runner.dispatch(testDispatch({ text: "wake up", automatic: true }));
     const outcome = await handle.settled;
 
     expect(outcome.status).toBe("errored");
     expect(outcome.errored).toBe(true);
     expect(outcome.detail).toContain("container unreachable");
     expect(runner.running).toBe(false);
-    expect(runner.systemTurnInProgress).toBe(false);
   });
 
   it("settles `errored` when setup throws before any agent is created", async () => {

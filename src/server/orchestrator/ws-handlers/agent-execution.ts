@@ -11,6 +11,7 @@ import { parseCompactCommand } from "../../shared/compact-command.js";
 import { parseGoalCommand } from "../../shared/goal-command.js";
 import {
   shouldCompactBeforeTurn,
+  compactionCardBefore,
   noteMissedCompaction,
   startedUnattended,
   POST_MERGE_COMPACT_PROMPT,
@@ -82,15 +83,10 @@ export async function drainNextQueuedMessage(
 ): Promise<void> {
   if (!runner) return;
 
-  // A system flow can acquire the session during the awaited commit.
-  if (runner.systemTurnInProgress && !compactionTurn) return;
+  // A rebase or a restart can take the session during the awaited commit; it releases the queue.
+  if (runner.sessionHold) return;
 
   const messageQueue = runner.messageQueue;
-  if (compactionTurn) {
-    // Clear here: resident reuse can remove finishTurn's listener before done.
-    runner.systemTurnInProgress = false;
-    if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
-  }
   // A stop discards the queue. docs/322 — a question's own interrupt does not: what the
   // user queued is their reply, and the take below holds the automatic entries.
   const questionInterrupt = runner.awaitingUserAnswer && !stoppedByUser(runner);
@@ -141,7 +137,7 @@ function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
   return capable && parseCompactCommand(text).match;
 }
 
-// Hold systemTurnInProgress during the decision to prevent steering past compaction.
+// Runs under the caller's claim on `running`, which keeps other turns out until the compaction.
 export async function decideCompactBeforeTurn(
   ctx: FullCtx,
   runner: SessionRunnerInterface,
@@ -151,18 +147,7 @@ export async function decideCompactBeforeTurn(
   // A typed send is never this; a queued entry can be (an automatic turn whose steer was not taken).
   unattended = false,
 ): Promise<boolean> {
-  const held = !runner.systemTurnInProgress;
-  if (held) runner.systemTurnInProgress = true;
-  let compact = false;
-  try {
-    compact = await decide();
-  } finally {
-    if (held && !compact) runner.systemTurnInProgress = false;
-  }
-  return compact;
-
-  function decide(): Promise<boolean> {
-    return shouldCompactBeforeTurn({
+  return shouldCompactBeforeTurn({
     deps: {
       getSession: (id) => ctx.sessionManager.get(id),
       getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
@@ -177,14 +162,13 @@ export async function decideCompactBeforeTurn(
         awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
       },
     },
-      runner,
-      agentId: ctx.getActiveAgentId(),
-      sessionId,
-      sessionDir,
-      ...(intent !== undefined ? { intent } : {}),
-      ...(unattended ? { unattended } : {}),
-    });
-  }
+    runner,
+    agentId: ctx.getActiveAgentId(),
+    sessionId,
+    sessionDir,
+    ...(intent !== undefined ? { intent } : {}),
+    ...(unattended ? { unattended } : {}),
+  });
 }
 
 export async function runCompactionAhead(
@@ -196,7 +180,6 @@ export async function runCompactionAhead(
   runner.messageQueue.unshift({ ...queued, compactContext: false });
   runner.emitMessage({ type: "message_queued", text: queued.text, position: 1 });
   runner.running = true;
-  runner.systemTurnInProgress = true;
   await runAgentWithMessage(ctx, {
     userText: POST_MERGE_COMPACT_PROMPT,
     images: undefined,
@@ -206,7 +189,6 @@ export async function runCompactionAhead(
     isNewSession: false,
     compact: true,
     silent: true,
-    systemTurn: true,
   });
 }
 
@@ -293,7 +275,6 @@ interface RunAgentWithMessageOpts {
   /** false skips reset; true/undefined follows the global setting. */
   resetMergedBranch?: boolean;
   silent?: boolean;
-  systemTurn?: boolean;
   dictated?: boolean;
   /** Presence enables echo; omit for queued messages already restored by dequeued. */
   userEcho?: { clientRequestId?: string };
@@ -486,16 +467,11 @@ async function composeAndRunAgentTurn(
   // below is settled by the turn, so an outcome that never reaches the agent
   // rides the next turn instead of being lost.
   //
-  // Not gated on `systemTurn`: req 8 says "the next turn" and names no kind, so
-  // an automatic turn carries it too. The two exclusions left are turns with
-  // nowhere to put it — compaction, whose prompt is an instruction to summarise
-  // and whose result replaces the context, and a verbatim command, which the
-  // harness reads only when the prompt is exactly the command.
-  //
-  // No test distinguishes this line from the one it replaced, and cannot: the
-  // only caller that reaches here with `systemTurn` is `runCompactionAhead`,
-  // which sets `compact` as well. It changes with the other call site so a
-  // future system turn on this path is not silently excluded.
+  // req 8 says "the next turn" and names no kind, so an automatic turn carries it
+  // too. The two exclusions are turns with nowhere to put it — compaction, whose
+  // prompt is an instruction to summarise and whose result replaces the context,
+  // and a verbatim command, which the harness reads only when the prompt is
+  // exactly the command.
   const cardOutcomes =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareCardOutcomeNotices(
@@ -786,8 +762,18 @@ async function composeAndRunAgentTurn(
     runner.clearTurnEventBuffer();
   };
 
-  const drainNext = (): Promise<void> =>
-    drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, opts.silent === true);
+  // Once: an adopted turn of the CLI's own drains again, after its reset cleared the cards.
+  let compactionChecked = false;
+  const cardBefore = opts.silent && capturedSessionId
+    ? compactionCardBefore(ctx.chatHistoryManager, capturedSessionId)
+    : null;
+  const drainNext = (): Promise<void> => {
+    if (opts.silent && !compactionChecked && runner && capturedSessionId) {
+      compactionChecked = true;
+      noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId, cardBefore);
+    }
+    return drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, opts.silent === true);
+  };
 
   // Record the branch move even if the turn fails before the user-row hook.
   try {
@@ -801,7 +787,6 @@ async function composeAndRunAgentTurn(
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-      ...(opts.systemTurn ? { systemTurn: true } : {}),
       ...(opts.compact ? { compact: true } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),
