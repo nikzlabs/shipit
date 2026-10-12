@@ -282,17 +282,19 @@ started since:
   session) — a restart or a poller repeat must not queue a wake behind it;
 - a turn that ran — the user's message, or anything else — took the session on,
   so the watch ends `delivered` and wakes nothing;
-- a turn that no credential could run either (`lastTurnOutcome` is
-  `quota-refused`) leaves the session stopped by quota, and req 4 says such a
-  session resumes by itself: the wake still runs at the reset. This covers a
-  refused inbox turn, which would otherwise cancel the wake for good, and a
-  refused user message. An independent review argued that a user message should
-  cancel the wake even when it was refused. This section first answered that the
-  refused message is in the transcript the woken agent reads; that is wrong —
-  nothing re-delivers a turn that no credential ran, so the agent never gets it.
-  `QuotaContinuationManager` therefore lets any later turn supersede its wake (the
-  next section); the merge watch's rule is unchanged and listed under *Known
-  gaps*.
+- a turn that no credential could run either supersedes the wake too, as the
+  user asked of a user message: the user's new intent replaces the wake's
+  "continue the earlier request". Nothing is parked. The agent still learns that
+  the PR merged, from the pre-turn reset (`pre-turn-reset-hook.ts`, verified at
+  `applyPreTurnReset` and `turn-executor.ts` `reparkUnsubmittedPrompt`): a reset
+  that moved the branch parks its `[System]` merge note again when the turn never
+  reached the agent (planning#609), and a skipped reset writes its note on every
+  turn. A reset with nothing to move writes no note; that case is under *Known
+  gaps*. Parking the merge prompt was tried and dropped: `quota-refused` is also
+  the outcome of a CLI turn that worked and then ran out, so the prompt's "reset
+  to base, and stop if that fails" would reach an agent whose branch had moved
+  on. A refused user message asks the user to send it again; a refused inbox
+  turn or continuation has an owner that starts it again.
 
 **Bounded.** `MAX_QUOTA_REFUSALS` (5) refusals end the watch with the ordinary
 give-up note, so quota that never returns cannot wake the session for ever.
@@ -343,8 +345,8 @@ manager's wake is start-or-refuse, so it is not queued behind a turn that took t
 session meanwhile — the merge watch's, the user's, or any other — with the one
 exception of pre-turn compaction, under *Known gaps*. When the merge
 watch and the manager both wait on one session, whichever runs first stamps the
-session and the other normally sees a turn that ran; the exception is under
-*Known gaps*.
+session and the other stands down, also when that turn was refused. The
+exception is under *Known gaps*.
 
 **Bounded.** `MAX_QUOTA_REFUSALS` (5) refusals in a row — the owner's and the
 continuations' — clear the entry with a notice that the work continues with the
@@ -388,19 +390,20 @@ Named rather than hidden.
   check the session before an asynchronous preparation, so when both are due in
   the same moment the merge watch's wake (which queues) can run after the
   continuation (which refuses to queue): two turns, one per stall.
-- **The two owners read a refused later turn differently.** The manager lets any
-  later turn supersede its wake, as the user asked of a user message; the merge
-  watch keeps its wake when that turn was refused for quota (above). Aligning
-  the merge watch means deciding what carries its merge prompt to the agent when
-  a refused message supersedes it.
 - **Pre-turn compaction can still queue an admitted continuation.** Admission
   reports `started` and the entry is cleared; compaction ahead of the turn then
   puts the continuation back in the queue, so a message the user sends during
   that compaction runs first and the continuation runs after it. This holds for
   every automatic turn, not only this one.
-- **A refused automatic turn with no owner of its own supersedes the wait.** A
-  CI-fix or conflict turn that every credential refuses moves `lastUsedAt` and
-  retries nothing, so the parked note waits for the next message.
+- **A refused automatic turn with no owner of its own supersedes the wait** of
+  both owners. A CI-fix or conflict turn that every credential refuses moves
+  `lastUsedAt` and retries nothing, so the parked note waits for the next
+  message; the merge watch's wake is simply gone.
+- **A superseded merge wake can leave the agent unaware of the merge** when the
+  pre-turn reset had nothing to move: the branch was already at the base (a
+  fast-forward merge), so no merge note exists to put back. The user's next
+  message then starts on the fresh base without being told why. The usual path
+  — a squash merge, reset by the refused wake's own composition — keeps the note.
 - **The notice that announces the wait is appended as its own row** after the
   refused turn (`emitNoticePostTurn`), as the merge watch's is; it is not part of
   that turn's message group.
@@ -506,7 +509,8 @@ implementation and re-running.
   prompt row as the dispatched turn does: no retry before the earliest stated
   reset, one wake after it, one prompt row in all; a refusal after four failed
   attempts does not give up; `MAX_QUOTA_REFUSALS` ends the watch; a turn that ran
-  since supersedes the wake, one refused for quota does not, one still running —
+  since supersedes the wake, one refused for quota does too and parks nothing,
+  one still running —
   or still in setup — is waited for; the wake's own next attempt does not
   supersede it; a retry after another kind of failure does not show the prompt
   again, and one after a chat rewind or a code rollback does; the retry pass does

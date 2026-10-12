@@ -22,3 +22,4 @@
 - [x] The manager's registry persists in `sessions.quota_resume`, and the sweep resumes at boot
 - [x] A refused wake waits for the earliest stated reset, not for the router's re-probe
 - [x] A wiring test proves the built app passes the manager to all three callers
+- [x] A refused later turn supersedes the self merge wake too

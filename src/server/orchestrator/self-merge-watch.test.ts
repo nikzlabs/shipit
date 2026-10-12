@@ -685,7 +685,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     expect(watch()?.state).toBe("delivered");
   });
 
-  it("a later turn that no credential could run either leaves the session to resume at the reset", async () => {
+  it("a later message that no credential could run either supersedes the wake too", async () => {
     await deliverWake();
     refuse([RESET_A]);
 
@@ -694,7 +694,10 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "quota-refused");
     await retryAt("2026-10-11T17:05:00.000Z");
 
-    expect(ctx.runner.dispatched).toHaveLength(2);
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(watch()?.state).toBe("delivered");
+    // That turn can have worked and then run out, so the old "reset to base" prompt is not parked.
+    expect(ctx.sessionManager.consumePendingAgentNotice(SESSION_ID)).toBeUndefined();
   });
 
   it("waits while a turn that started since is still running, and that turn decides", async () => {
@@ -725,21 +728,6 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     await ctx.manager.reconcilePending();
 
     expect(ctx.runner.dispatched).toHaveLength(1);
-  });
-
-  it("a running turn that no credential could run either is followed by the wake", async () => {
-    await deliverWake();
-    refuse([RESET_A]);
-
-    vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
-    ctx.sessionManager.track(SESSION_ID);
-    ctx.runner.running = true;
-    await retryAt("2026-10-11T17:05:00.000Z");
-    expect(ctx.runner.dispatched).toHaveLength(1);
-
-    ctx.runner.running = false;
-    await retryAt("2026-10-11T17:06:00.000Z");
-    expect(ctx.runner.dispatched).toHaveLength(2);
   });
 
   it("the wake's own next attempt is not a turn that makes it unnecessary", async () => {

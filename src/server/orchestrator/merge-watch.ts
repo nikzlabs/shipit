@@ -415,10 +415,10 @@ export class MergeWatchManager {
       return true;
     }
     const session = this.deps.sessionManager.get(sessionId);
-    // A turn since the refusal took the session on, and the wake is not needed. A turn that no
-    // credential could run leaves the session stopped by quota, which resumes by itself (req 4).
-    if (session && session.lastUsedAt !== wait.lastUsedAt && session.lastTurnOutcome !== "quota-refused") {
-      console.log(`[merge-watch] a turn has run on ${sessionId} since its wake was refused; the wake is not needed`);
+    // Any turn since the refusal supersedes the wake, also one that no credential could run
+    // (docs/306-quota-continuation).
+    if (session && session.lastUsedAt !== wait.lastUsedAt) {
+      console.log(`[merge-watch] a turn has started on ${sessionId} since its wake was refused; the wake is not needed`);
       this.afterDelivered(sessionId, this.markDelivered(sessionId, "self", watch.observedAt ?? wait.until));
       return true;
     }
