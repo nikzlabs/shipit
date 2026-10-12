@@ -23,6 +23,31 @@ import { DatabaseManager } from "../../shared/database.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
 import type { CredentialStore } from "../credential-store.js";
 
+// The turn asks, so the answer that follows is the answer to it. Its process outlives the
+// interrupt, which is the case the handler's cleanup is for.
+async function askQuestion(claude: FakeClaudeProcess, toolUseId: string): Promise<void> {
+  claude.streamingInterrupt = true;
+  claude.emit("event", {
+    type: "assistant",
+    message: {
+      content: [{
+        type: "tool_use",
+        id: toolUseId,
+        name: "AskUserQuestion",
+        input: {
+          questions: [{
+            question: "Pick a backend",
+            header: "Backend",
+            options: [{ label: "Redis", description: "" }],
+            multiSelect: false,
+          }],
+        },
+      }],
+    },
+  });
+  await new Promise((r) => setTimeout(r, 30));
+}
+
 describe("Integration: AskUserQuestion / answer_question flow", () => {
   let app: FastifyInstance;
   let port: number;
@@ -83,6 +108,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.send({ type: "send_message", text: "Ask me something" });
     const firstClaude = await waitForClaude(() => lastClaude);
+    await askQuestion(firstClaude, "tool-1");
 
     client.send({ type: "answer_question", toolUseId: "tool-1", answers: { "0": "Redis" } });
     await waitForClaude(() => lastClaude, firstClaude);
@@ -213,6 +239,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.send({ type: "send_message", text: "test" });
     const firstClaude = await waitForClaude(() => lastClaude);
+    await askQuestion(firstClaude, "tool-4");
 
     client.send({
       type: "answer_question",
@@ -237,6 +264,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.send({ type: "send_message", text: "test" });
     const firstClaude = await waitForClaude(() => lastClaude);
+    await askQuestion(firstClaude, "tool-4b");
 
     client.send({
       type: "answer_question",

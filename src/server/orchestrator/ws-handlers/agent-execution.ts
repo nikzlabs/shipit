@@ -621,6 +621,10 @@ async function composeAndRunAgentTurn(
     },
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     statusCardEnabled: () => ctx.credentialStore.getSessionStatusCard(),
+    steerInputs: () => ({
+      liveSteering: ctx.credentialStore.getLiveSteering(),
+      steeringCapable: agentInfo?.capabilities.supportsSteering ?? false,
+    }),
     sessionStatusContext: (sessionId) =>
       sessionStatusTurnContext(
         { sessionManager: ctx.sessionManager, credentialStore: ctx.credentialStore },
@@ -798,6 +802,7 @@ async function composeAndRunAgentTurn(
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.systemTurn ? { systemTurn: true } : {}),
+      ...(opts.compact ? { compact: true } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),
       emitUserEcho: userEcho !== undefined,
