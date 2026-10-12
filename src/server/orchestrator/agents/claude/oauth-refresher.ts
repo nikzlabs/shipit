@@ -397,8 +397,12 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       } else if (copy.outstanding) {
         const kept = state.pendingRotation;
         const keptFor = kept ? this.readSourceFor(kept, this.sourceFileFor(accountId)).state : null;
-        // A copy kept after its install holds its seed, and this run's rotation of that seed supersedes it.
-        const supersedesKept = kept?.installed === true && kept.seedIdentity === copy.seedIdentity && this.holdsRotation(copy);
+        // A copy kept after its install that still holds that credential (its seed) is superseded by this
+        // run's rotation of it. A kept copy that holds a later rotation, or cannot be read, is not.
+        const supersedesKept = kept?.installed === true
+          && this.readIdentityAt(kept.credentialsFile) === kept.seedIdentity
+          && kept.seedIdentity === copy.seedIdentity
+          && this.holdsRotation(copy);
         // Otherwise only where a tick would give the kept rotation up: the source is gone or holds another credential.
         if (kept && !supersedesKept && keptFor !== "replaced" && keptFor !== "gone") {
           console.error(`[claude-oauth-refresh] account=${accountId} a rotation is kept already; this copy is left at ${copy.home}`);
@@ -456,12 +460,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
   // A copy that cannot be read proves no rotation.
   private holdsRotation(copy: ProbeHome): boolean {
-    try {
-      const identity = claudeCredentialIdentity(JSON.parse(fs.readFileSync(copy.credentialsFile, "utf8")));
-      return identity !== null && identity !== copy.seedIdentity;
-    } catch {
-      return false;
-    }
+    const identity = this.readIdentityAt(copy.credentialsFile);
+    return identity !== null && identity !== copy.seedIdentity;
   }
 
   // Only for the credential the source still holds, and only if no kept rotation holds its successor.
@@ -680,6 +680,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         if (installedAt === NO_EXPIRY) return;
         // Before the success path, whose listeners can throw.
         early.installedAt = installedAt;
+        // A throw below must not leave the result of an earlier install standing for this one.
+        early.result = null;
         early.result = this.handleSuccess(accountId, before, installedAt, "rotated_tier2", detail);
       });
       probeResult = this.adoptProbeRotation(accountId, probe);

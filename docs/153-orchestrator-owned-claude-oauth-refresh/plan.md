@@ -871,8 +871,12 @@ If fact 1 is false, it changes only how early the sessions get the new token.
   installed kept copy again first (`retryKeptRotation`, which the tick's pending path
   also uses; a throw from its success path is logged, so that the run's own copy is still
   judged): once the source holds its credential, it is deleted. If it must stay, a naming
-  run's readable rotation of that credential takes its place, and a naming copy that
-  cannot be read does not, because it proves no rotation. A later rotation that
+  run's readable rotation of that credential takes its place, but only while the kept
+  copy can be read and still holds that credential: a kept later rotation (a successor
+  that could not be installed) stays, and so does a kept copy that cannot be read. A
+  naming copy that cannot be read takes no place either, because it proves no rotation.
+  When a later install's success path throws, the result of an earlier install is not
+  returned for it: the exit runs the success path again. A later rotation that
   cannot be installed is kept as before, and is checked before any success, so that a
   later expiry in the source cannot hide it. The next tick is armed again at the exit: a
   scheduled tick that fired during the run joined the one in flight.

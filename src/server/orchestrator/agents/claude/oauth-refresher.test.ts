@@ -1854,6 +1854,52 @@ describe("ClaudeOAuthRefresher", () => {
         expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
       });
 
+      it("keeps a kept later rotation over a naming run's rotation of the credential it succeeds", async () => {
+        const rig = marginRig();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        // The CLI rotates again, and that successor cannot be installed: it is kept.
+        writeCredentials(probe.home, { expiresAt: rotatedTo + 1 });
+        const successor = readCopyOf(probe.home);
+        failRename();
+        probe.exit();
+        await probe.tick;
+        expect(fs.existsSync(probe.home)).toBe(true);
+
+        // A naming run of the installed credential rotates it too, and nothing can be installed.
+        await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          writeCredentials(home, { expiresAt: rotatedTo + 2 });
+          failRename();
+          failRename();
+        });
+        vi.mocked(fs.renameSync).mockRestore();
+        errors.mockRestore();
+
+        const [tick] = await rig.refresher.refreshNow("acct-1");
+        expect(tick!.outcome).toBe("rotated_kept");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+      });
+
+      it("reports the later install when a listener throws on it while the CLI runs", async () => {
+        const rig = marginRig();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        rig.refresher.once("refreshed", () => { throw new Error("listener failed"); });
+        writeCredentials(probe.home, { expiresAt: rotatedTo + 1 });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        probe.exit();
+        const [result] = await probe.tick;
+        errors.mockRestore();
+
+        expect(result!.outcome).toBe("rotated_tier2");
+        expect(result!.afterExpiresAt).toBe(rotatedTo + 1);
+      });
+
       it("judges a naming run's rejection after the installed copy could not be read at the exit", async () => {
         const rig = marginRig();
         const readFile = fs.readFileSync.bind(fs) as (file: fs.PathOrFileDescriptor, options?: unknown) => string | Buffer;
