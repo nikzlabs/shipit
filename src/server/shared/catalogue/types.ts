@@ -53,7 +53,7 @@ export interface ContextWindow {
 export interface ModelDef {
   harnesses?: HarnessId[];
   id: string;
-  /** The id this service's API expects, where the row's id is a harness alias. Defaults to id. */
+  /** The vendor id, sent to the API and to Claude Code, where the row's id is a harness alias. Defaults to id. */
   apiId?: string;
   label: string;
   /** A string, not `CanonicalModelKey`: a published list can name a model this build does not (docs/318). */

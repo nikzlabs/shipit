@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "manifest": "docker/agent-cli/package.json",
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.293",
+    "reason": "User explicitly approved Claude Code 2.1.293 on 2026-10-12 for Haiku 5.5 support. It is the first release whose model catalog describes claude-haiku-5-5; 2.1.284 reports that model's cost with an unknown basis (about 37x list in a measured turn), which ShipIt records as metered spend on API-key turns.",
+    "expires": "2026-10-14"
+  }
+]

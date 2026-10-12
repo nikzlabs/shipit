@@ -1,3 +1,4 @@
+import { catalogueApiIds } from "./catalogue/index.js";
 import { modelContextWindows } from "./model-windows.js";
 import type { AgentId, ServiceRouting } from "./types.js";
 import type { ApiStyle } from "./catalogue/types.js";
@@ -55,14 +56,20 @@ export const SHIPIT_PROVIDER_ID = "shipit";
 const VARIANT_SUFFIX = /\[[^\]]*\]$/;
 const LONG_CONTEXT_TOKENS = 1_000_000;
 
+// A row named for a Claude Code alias gets its vendor id: from 2.1.293 `haiku` names Haiku 5.5.
+export function claudeCliModelId(modelId: string): string {
+  return catalogueApiIds()[modelId] ?? modelId;
+}
+
 // Claude Code needs [1m] for unrecognized 1M models; its context env var only caps.
 // Add the suffix at spawn time because other harnesses would send it as an ID.
 export function claudeModelArg(modelId: string): string {
   if (VARIANT_SUFFIX.test(modelId)) return modelId;
+  const cliId = claudeCliModelId(modelId);
   // Exact lookup avoids granting a larger window to an unknown model.
   // Revisit if catalogue windows gain service or harness overrides.
-  if ((modelContextWindows()[modelId] ?? 0) < LONG_CONTEXT_TOKENS) return modelId;
-  return `${modelId}[1m]`;
+  if ((modelContextWindows()[modelId] ?? 0) < LONG_CONTEXT_TOKENS) return cliId;
+  return `${cliId}[1m]`;
 }
 
 // The selected ID distinguishes an added suffix from a catalogue ID containing it.

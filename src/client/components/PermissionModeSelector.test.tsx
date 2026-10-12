@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { PermissionModeSelector, type NetworkSectionProps } from "./PermissionModeSelector.js";
+import { PermissionModeSelector, isGuardedModelOk, type NetworkSectionProps } from "./PermissionModeSelector.js";
 import type { AgentOption } from "../agent-types.js";
+import { saveModelId } from "../utils/local-storage.js";
 
 afterEach(cleanup);
 
@@ -77,6 +78,33 @@ describe("PermissionModeSelector", () => {
     expect(guarded).toHaveAttribute("aria-disabled", "true");
     await user.click(guarded);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("blocks guarded for every Haiku before 5.5, whether reported or saved, and allows Haiku 5.5", () => {
+    const check = (model: string | undefined, saved: string | undefined) => {
+      saveModelId(saved);
+      return isGuardedModelOk({
+        agents: claudeAll,
+        activeAgentId: "claude",
+        modelInfo: model ? { model, contextWindowTokens: 200000 } : null,
+      });
+    };
+    expect(check("claude-haiku-4-5-20251001", undefined)).toBe(false);
+    expect(check(undefined, "claude-haiku-4-5")).toBe(false);
+    expect(check(undefined, "haiku")).toBe(false);
+    expect(check("claude-haiku-5-5[1m]", undefined)).toBe(true);
+    expect(check(undefined, "claude-haiku-5-5")).toBe(true);
+    expect(check(undefined, "claude-sonnet-5-5")).toBe(true);
+    saveModelId(undefined);
+  });
+
+  it("does not apply Claude Code's Haiku limit to another harness", () => {
+    const grok: AgentOption[] = [
+      { id: "grok", name: "Grok", installed: true, hasRunnableModels: true, models: ["grok-4.6"], supportsReview: false, supportedPermissionModes: ["auto", "guarded"] },
+    ];
+    saveModelId("haiku");
+    expect(isGuardedModelOk({ agents: grok, activeAgentId: "grok", modelInfo: null })).toBe(true);
+    saveModelId(undefined);
   });
 
   it("only offers plan + auto when the agent doesn't support guarded", async () => {

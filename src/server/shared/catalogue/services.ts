@@ -167,7 +167,7 @@ export const SERVICES = [
           { id: "claude-opus-5-5", label: "Opus 5.5", ...MODEL_IDENTITIES.opus55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           { id: "claude-sonnet-5-5", label: "Sonnet 5.5", ...MODEL_IDENTITIES.sonnet55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-          // The row id is Claude Code's alias; the Messages API takes the vendor id.
+          // The row id is Claude Code's alias, which names Haiku 5.5 from 2.1.293, so every call sends the vendor id.
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-haiku-5-5", label: "Haiku 5.5", ...MODEL_IDENTITIES.haiku55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.haiku55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
@@ -184,7 +184,7 @@ export const SERVICES = [
           { id: "claude-opus-5-5", label: "Opus 5.5", ...MODEL_IDENTITIES.opus55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           { id: "claude-sonnet-5-5", label: "Sonnet 5.5", ...MODEL_IDENTITIES.sonnet55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-          // The row id is Claude Code's alias; the Messages API takes the vendor id.
+          // The row id is Claude Code's alias, which names Haiku 5.5 from 2.1.293, so every call sends the vendor id.
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-haiku-5-5", label: "Haiku 5.5", ...MODEL_IDENTITIES.haiku55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.haiku55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },

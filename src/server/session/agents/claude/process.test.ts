@@ -375,10 +375,20 @@ describe("ClaudeProcess", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
 
+      new ClaudeProcess().run({ prompt: "hi", model: "claude-haiku-4-5" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args[args.indexOf("--model") + 1]).toBe("claude-haiku-4-5");
+    });
+
+    it("sends the Haiku 4.5 row's vendor id, never Claude Code's `haiku` alias", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
       new ClaudeProcess().run({ prompt: "hi", model: "haiku" });
 
       const args = mockChildSpawn.mock.calls[0][1] as string[];
-      expect(args[args.indexOf("--model") + 1]).toBe("haiku");
+      expect(args[args.indexOf("--model") + 1]).toBe("claude-haiku-4-5");
     });
 
     it("writes no system-prompt file when there is no system prompt", () => {

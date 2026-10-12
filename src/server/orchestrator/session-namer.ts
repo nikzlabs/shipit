@@ -8,6 +8,7 @@ import type { AgentId, ServiceRouting } from "../shared/types.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
 import {
   applyServiceRouting,
+  claudeCliModelId,
   codexProviderArgs,
   scrubHarnessEnvCredentials,
 } from "../shared/spawn-routing.js";
@@ -144,7 +145,7 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
     case "claude": {
       // JSON output includes usage and cost.
       const args = ["-p", prompt, "--output-format", "json"];
-      if (model) args.push("--model", model);
+      if (model) args.push("--model", claudeCliModelId(model));
       const raw = target.inCredentialCopy
         ? await target.inCredentialCopy((home) => callCli("claude", args, { ...target, credentialRoot: home }))
         : await callCli("claude", args, target);
