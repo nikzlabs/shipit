@@ -104,6 +104,11 @@ const LOG_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+/gm;
 const CREDENTIAL_HEADER_PATTERN =
   /^([ \t>|-]*)(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|anthropic-api-key)(\s*[:=]\s*).*$/gim;
 
+// The CLI knows the account's address. After the token shapes, which can take a part of one:
+// "[redacted]@example.com" must not keep its host. Bounded: an open local part is quadratic on a long line.
+const EMAIL_PATTERN =
+  /(?:\[redacted\]|[\w.+-]){1,64}@(?:\[redacted\]|[\w-]){1,63}(?:\.(?:\[redacted\]|[\w-]){1,63})+/g;
+
 // Short, unprefixed secrets in unknown fields can escape this filter.
 function redactSecrets(text: string): string {
   return text
@@ -111,7 +116,8 @@ function redactSecrets(text: string): string {
     .replace(/("[A-Za-z_]*(?:token|secret|key|password|passwd|auth)[A-Za-z_]*"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
     .replace(/\b(bearer|basic)(\s+)\S+/gi, "$1$2[redacted]")
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]")
-    .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]");
+    .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]")
+    .replace(EMAIL_PATTERN, "[email]");
 }
 
 // Which credential a file holds. A hash, so that no token stays in memory; null without a token.

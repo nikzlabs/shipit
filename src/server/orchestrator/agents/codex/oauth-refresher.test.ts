@@ -390,6 +390,15 @@ describe("classifyCodexRefreshOutput", () => {
   });
 });
 
+describe("classifyCodexRefreshOutput: an email address", () => {
+  it("is replaced before the text is read, so that it cannot complete a status or a phrase", () => {
+    const line = "ERROR codex_login::auth::manager: Failed to refresh token";
+    expect(classifyCodexRefreshOutput(`${line} status=429@example.com`)).toEqual({ kind: "none" });
+    expect(classifyCodexRefreshOutput(`${line} status=500 error_message: Some("refresh token was revoked@example.com")`))
+      .toEqual({ kind: "none" });
+  });
+});
+
 describe("CodexOAuthRefresher", () => {
   let rigs: TestRig[] = [];
   afterEach(() => {
@@ -553,12 +562,26 @@ describe("CodexOAuthRefresher", () => {
       rig.spawnHandle.effects = [{ writesTokenlessFile: NOW + 10 * DAY }];
       const forced = marginRig({ freshness: NOW + 9 * DAY });
       forced.spawnHandle.effects = [{ writesTokenlessFile: NOW + 10 * DAY }];
+      const turnStart = marginRig();
+      turnStart.spawnHandle.effects = [{ writesTokenlessFile: NOW + 30 * MINUTE }];
 
       const [result] = await rig.refresher.refreshNow("codex-default");
 
       expect(result!.outcome).toBe("unknown_failure");
       expect(rig.repushCalls).toEqual([]);
       expect(await forced.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
+      // Not forced: the answer for such a file is as it was. Only OpenCode's turn start reads it.
+      expect(await turnStart.refresher.ensureFresh("codex-default")).toBe(true);
+
+      // Also with an older rejection in memory: no token is not "another credential than the rejected one".
+      const afterRejection = marginRig({ freshness: NOW + 9 * DAY });
+      afterRejection.spawnHandle.effects = [{ stderr: INVALIDATED }, { writesTokenlessFile: NOW + 10 * DAY }];
+      await afterRejection.refresher.ensureFresh("codex-default", { force: true });
+      writeAuth(accountRootOf(afterRejection.rootDir, "codex-default"), { freshness: NOW + 9 * DAY, mark: "signed-in-again" });
+      expect(await afterRejection.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
+      expect(afterRejection.spawnHandle.invocations).toHaveLength(2);
+      // Nor a rotation: nothing is pushed to the sessions.
+      expect(afterRejection.repushCalls).toEqual([]);
     });
 
     it("kills a CLI that does not answer, and goes on when the CLI ignores the kill", async () => {
@@ -677,6 +700,27 @@ describe("CodexOAuthRefresher", () => {
       expect(rig.spawnHandle.invocations).toHaveLength(1);
       expect(rig.sseCalls.some((c) => c.event === "codex_account_authenticated")).toBe(false);
       expect(rig.refresher._inspectForTest("codex-default").emittedUnauthenticated).toBe(true);
+    });
+
+    it("does not read a rejected credential that comes back during a refresh as a rotation", async () => {
+      const rig = marginRig({ freshness: NOW + 9 * DAY });
+      const sourceFile = accountAuthFile(rig.rootDir, "codex-default");
+      const rejected = fs.readFileSync(sourceFile, "utf8");
+      rig.spawnHandle.effects = [
+        { stderr: INVALIDATED },
+        { onRefresh: () => fs.writeFileSync(sourceFile, rejected, "utf8") },
+      ];
+      await rig.refresher.ensureFresh("codex-default", { force: true });
+      // A new sign-in with an earlier expiry: the old file would also read as "later".
+      writeAuth(accountRootOf(rig.rootDir, "codex-default"), { freshness: NOW + 8 * DAY, mark: "signed-in-again" });
+
+      expect(await rig.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
+      expect(rig.repushCalls).toEqual([]);
+
+      // The rejection is still known: the next tick reports it without the CLI.
+      const [next] = await rig.refresher.refreshNow("codex-default");
+      expect(next!.outcome).toBe("revoked");
+      expect(rig.spawnHandle.invocations).toHaveLength(2);
     });
 
     it("refreshes again after a new sign-in, and reports the account authenticated", async () => {
@@ -960,23 +1004,103 @@ describe("CodexOAuthRefresher", () => {
       expect(await rig.refresher.ensureFresh("codex-default", { force: true })).toBe(true);
     });
 
-    it("does not heal when the refresh gets no answer, and keeps the expiry schedule of a token with time left", async () => {
+    it.each<{ answer: string; effect: SpawnEffect; outcome: string; reason: string }>([
+      { answer: "a 429", effect: { stderr: RATE_LIMITED }, outcome: "rate_limited", reason: "status=429 Too Many Requests" },
+      { answer: "a 500", effect: { stderr: SERVER_ERROR }, outcome: "unknown_failure", reason: "status=500 Internal Server Error" },
+      { answer: "no CLI", effect: { failsToStart: true }, outcome: "unknown_failure", reason: "[error] spawn codex ENOENT" },
+    ])("heals when the refresh gets $answer: no verdict, and the expiry schedule is kept", async ({ effect, outcome, reason }) => {
       const rig = marginRig({ freshness: NOW + 9 * DAY });
-      rig.spawnHandle.effects = [{ stderr: RATE_LIMITED }];
+      rig.spawnHandle.effects = [effect];
       const logs = captureLogs();
-      try {
-        expect(await rig.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
-      } finally {
-        logs.restore();
-      }
+      const timeouts = vi.spyOn(globalThis, "setTimeout");
+      const healed = await rig.refresher.ensureFresh("codex-default", { force: true }).finally(() => logs.restore());
+      const delays = timeouts.mock.calls.map((call) => call[1]);
+      timeouts.mockRestore();
 
+      expect(healed).toBe(true);
+      const forcedLines = logs.lines.filter((line) => line.includes("on a forced refresh"));
+      expect(forcedLines).toHaveLength(1);
+      expect(forcedLines[0]).toContain(
+        `[codex-oauth-refresh] account=codex-default ${outcome} on a forced refresh — no verdict on the token, expiry schedule kept reason="`,
+      );
+      expect(forcedLines[0]).toContain(reason);
       expect(rig.refresher._inspectForTest("codex-default").failureCount).toBe(0);
-      expect(logs.lines.some((line) => line.includes("rate_limited on a forced refresh — expiry schedule kept"))).toBe(true);
-      // No backoff is in force: a turn start inside the margin gets its refresh.
-      rig.clock.now = NOW + 9 * DAY - 10 * MINUTE;
-      rig.spawnHandle.effects[1] = { rotateTo: NOW + 20 * DAY };
-      expect(await rig.refresher.ensureFresh("codex-default")).toBe(true);
-      expect(rig.spawnHandle.invocations).toHaveLength(2);
+      // The caller pushes the source credential to the session; the account is not reported.
+      expect(rig.repushCalls).toEqual([]);
+      expect(rig.sseCalls).toEqual([]);
+      // The account's timer is the last one set: the start of the margin, and no backoff.
+      expect(delays.at(-1)).toBe(9 * DAY - 45 * MINUTE);
+    });
+
+    it("heals when the refresh does not answer in time", async () => {
+      vi.useFakeTimers();
+      try {
+        const rig = marginRig({ freshness: NOW + 9 * DAY });
+        rig.spawnHandle.effects = [{ hang: true }];
+
+        const healed = rig.refresher.ensureFresh("codex-default", { force: true });
+        await vi.advanceTimersByTimeAsync(31_000);
+
+        expect(await healed).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("heals a token inside the margin too, with the backoff of a failed refresh", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ stderr: RATE_LIMITED }, { stderr: RATE_LIMITED }];
+      const logs = captureLogs();
+      const healed = await rig.refresher.ensureFresh("codex-default", { force: true }).finally(() => logs.restore());
+
+      expect(healed).toBe(true);
+      expect(rig.refresher._inspectForTest("codex-default").failureCount).toBe(1);
+      expect(logs.lines.find((line) => line.includes("rate_limited"))).toContain(
+        'rate_limited failure_count=1 — backoff scheduled, forced refresh: no verdict on the token reason="',
+      );
+
+      // The schedule's own failure has the sentence as it was.
+      const scheduled = captureLogs();
+      await rig.refresher.refreshNow("codex-default").finally(() => scheduled.restore());
+      expect(scheduled.lines.find((line) => line.includes("rate_limited")))
+        .toContain('rate_limited failure_count=2 — backoff scheduled reason="');
+    });
+
+    it("heals a call that joins a tick which had nothing to do, and starts no CLI", async () => {
+      const rig = marginRig({ freshness: NOW + 9 * DAY });
+
+      const tick = rig.refresher.refreshNow("codex-default");
+      const healed = await rig.refresher.ensureFresh("codex-default", { force: true });
+
+      expect((await tick)[0]!.outcome).toBe("noop");
+      expect(healed).toBe(true);
+      expect(rig.spawnHandle.invocations).toHaveLength(0);
+    });
+
+    it("does not heal a call that joins such a tick when the source holds a known-rejected credential again", async () => {
+      const rig = marginRig({ freshness: NOW + 9 * DAY });
+      const sourceFile = accountAuthFile(rig.rootDir, "codex-default");
+      rig.spawnHandle.effects = [{ stderr: INVALIDATED }];
+      await rig.refresher.ensureFresh("codex-default", { force: true });
+      const rejected = fs.readFileSync(sourceFile, "utf8");
+      writeAuth(accountRootOf(rig.rootDir, "codex-default"), { freshness: NOW + 9 * DAY, mark: "signed-in-again" });
+
+      // The tick judges the new credential; the rejected file is back before the forced call joins it.
+      const tick = rig.refresher.refreshNow("codex-default");
+      fs.writeFileSync(sourceFile, rejected, "utf8");
+      const healed = await rig.refresher.ensureFresh("codex-default", { force: true });
+
+      expect((await tick)[0]!.outcome).toBe("noop");
+      expect(healed).toBe(false);
+      expect(rig.spawnHandle.invocations).toHaveLength(1);
+    });
+
+    it("does not heal an expired token when the refresh gets no answer", async () => {
+      const rig = marginRig({ freshness: NOW - MINUTE });
+      rig.spawnHandle.effects = [{ stderr: SERVER_ERROR }];
+
+      expect(await rig.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
+      expect(rig.spawnHandle.invocations).toHaveLength(1);
     });
   });
 

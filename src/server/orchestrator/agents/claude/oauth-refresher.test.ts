@@ -2197,6 +2197,26 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.spawnHandle.invocations.length).toBe(0);
     });
 
+    it("keeps an email address out of the reason", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now - 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{}, { stderr: "Error: request failed for person@example.com\n" }];
+
+      const logs = captureLogs();
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(result!.reason).toBe("Error: request failed for [email]");
+      expect(logs.lines.find((entry) => entry.includes("unknown_failure failure_count=1")))
+        .toContain("reason=\"Error: request failed for [email]\"");
+      expect(logs.lines.join("\n")).not.toContain("example.com");
+    });
+
     it("keeps tier 1's stdout, which names the account, out of the reason", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
@@ -2314,6 +2334,36 @@ describe("summarizeRefreshFailure", () => {
     expect(summarizeRefreshFailure(`[ERROR] Error: ${missingFile}`)).toBe("no CLI output");
     expect(summarizeRefreshFailure(`Unhandled in the [error] handler: ${missingFile}`)).toBe("no CLI output");
     expect(summarizeRefreshFailure(`[stdin]:1 Error: ${missingFile}`)).toBe("no CLI output");
+  });
+
+  it("replaces an email address, also one that a token shape took a part of", () => {
+    const longPart = `averyveryverylong${"x".repeat(12)}`;
+    expect(summarizeRefreshFailure("Error: no access for person@example.com")).toBe("Error: no access for [email]");
+    expect(summarizeRefreshFailure(`Error: no access for ${longPart}@example.com`)).toBe("Error: no access for [email]");
+    expect(summarizeRefreshFailure(`Error: no access for first.${longPart}@example.com`)).toBe("Error: no access for [email]");
+    expect(summarizeRefreshFailure(`Error: no access for person@${longPart}.example.com`)).toBe("Error: no access for [email]");
+  });
+
+  it("redacts a token in front of a host whole, as before the address rule", () => {
+    // 70 characters: an address rule that ran first would take the last 64 and leave 6 in the reason.
+    // Assembled, so that this file holds no URL with a credential in it.
+    const urlStart = ["https://user", "T".repeat(70)].join(":");
+    const summary = summarizeRefreshFailure(`Error: proxy ${urlStart}@proxy.example.com refused`);
+    expect(summary).not.toContain("TTTT");
+    expect(summary).not.toContain("example.com");
+  });
+
+  it("does not take quadratic time on a long line", () => {
+    // 128 000 characters each. With an open-ended local part, the first line alone takes many seconds.
+    const lines = [
+      "a.".repeat(64_000),
+      "[redacted]".repeat(12_800),
+      `x@${"a.".repeat(64_000)}`,
+      "a@".repeat(64_000),
+    ];
+    const started = performance.now();
+    for (const line of lines) summarizeRefreshFailure(`Error: ${line}`);
+    expect(performance.now() - started).toBeLessThan(2_000);
   });
 
   it("gives each of the three lines a share, so a long line cannot hide the last one", () => {
