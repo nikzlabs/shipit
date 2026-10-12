@@ -560,7 +560,14 @@ copy that could not be made, for example because the temporary directory is miss
 A note is known by its form only: a lower-case tag and a space at the start of a line.
 The CLI's level tags are upper case (`[DEBUG]`, `[ERROR]`; measured on 2.1.284, where
 no line of the debug log starts with a lower-case tag). The Codex refresher uses the
-same summary (docs/154). Tier 1's stdout names the
+same summary (docs/154). A forced probe of a token with more than 45 minutes left
+that finds no rotation and no rejection ends `noop`. It writes a line only when
+tier 2 did not complete (the CLI did not start, or it did not end before its
+timeout): `forced probe did not complete — no verdict on the token reason="…"`.
+Tier 1 sends no request for such a token, so only tier 2 can test it. `spawnCli`
+reports how the run ended, and the text is not searched for it. The line does not
+say that the token was not used: a CLI that hangs after its answer also times out.
+Tier 1's stdout names the
 account's email and organization and is kept out of it. Debug timestamps are stripped
 before classification: one ending `.429Z` used to read as an HTTP 429 and select the
 rate-limit backoff.
@@ -713,11 +720,16 @@ CLIs share that root anyway.
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
   same class of gap as the `syncAgentTokenBackToRoot` item above.
-- **A forced probe that could not run reads as a live token.** With more than
+- **A forced probe that did not complete still heals.** With more than
   45 minutes left, a forced tick that finds no rotation and no rejection ends
-  `noop`, also when the CLI did not start or timed out, and the heal succeeds.
-  That path writes no log line, so `reason="[error] spawn claude ENOENT"`
-  appears only on the ticks inside the margin.
+  `noop`, and the heal succeeds. `recoverAuth` in `turn-executor.ts` then
+  pushes the account's source credential to the session and runs an ordinary
+  turn again, once; an adopted turn ends with no second run. That is also the
+  result when tier 2 did not start or did not end before its timeout, so the
+  refresher has no verdict on the token. The log says so (see "Outcomes and
+  logs"); the result is not changed. A tier 2 that ran and failed for another
+  reason (an error from the API, a signal from outside) still reads as a live
+  token and writes no line.
 
 ## Wiring
 

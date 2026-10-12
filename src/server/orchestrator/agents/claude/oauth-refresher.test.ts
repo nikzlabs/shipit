@@ -130,6 +130,7 @@ interface SpawnEffect {
   hang?: boolean;
   // What Node reports for a binary that is not on the PATH: an error, and no exit.
   failsToStart?: boolean;
+  spawnThrows?: boolean;
   debugLog?: string;
   stderr?: string;
   stdout?: string;
@@ -169,6 +170,7 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
     handle.invocations.push({ args: argArr, home: accountRoot, credentials });
     const idx = handle.invocations.length - 1;
     const effect = handle.effects[idx] ?? { exitCode: 0 };
+    if (effect.spawnThrows) throw new Error("spawn EAGAIN");
 
     const child = new EventEmitter() as ChildProcess;
     const stdout = new EventEmitter();
@@ -864,6 +866,140 @@ describe("ClaudeOAuthRefresher", () => {
 
       await rig.refresher.ensureFresh("claude-default", { force: true });
       expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
+    });
+
+    describe("forced: a probe that did not complete", () => {
+      const now = 1_700_000_000_000;
+      const NO_VERDICT = "forced probe did not complete — no verdict on the token";
+      const FOUND_LIVE = "forced validity probe found a live token that needed no rotation";
+      const EXPIRY_SCHEDULE_MS = (8 * 60 - 45) * 60 * 1000;
+
+      function forcedRig(): TestRig {
+        const rig = buildRig({
+          accounts: [makeAccount("claude-default")],
+          initialExpiries: { "claude-default": now + 8 * 60 * 60 * 1000 },
+          initialNow: now,
+        });
+        rigs.push(rig);
+        return rig;
+      }
+
+      // The heal's answer, the tick's result (a second call joins the forced tick) and the log.
+      async function forcedHeal(rig: TestRig, drive?: () => Promise<void>): Promise<{
+        healed: boolean;
+        result: Awaited<ReturnType<TestRig["refresher"]["refreshNow"]>>[number];
+        noVerdict: string[];
+      }> {
+        const logs = captureLogs();
+        try {
+          const heal = rig.refresher.ensureFresh("claude-default", { force: true });
+          const tick = rig.refresher.refreshNow("claude-default");
+          await drive?.();
+          const healed = await heal;
+          const [result] = await tick;
+          return { healed, result, noVerdict: logs.lines.filter((line) => line.includes(NO_VERDICT)) };
+        } finally {
+          logs.restore();
+        }
+      }
+
+      it("says so when the CLI cannot start, and changes neither the heal nor the schedule", async () => {
+        const rig = forcedRig();
+        rig.spawnHandle.effects = [{ failsToStart: true }, { failsToStart: true }];
+        const timeouts = vi.spyOn(globalThis, "setTimeout");
+
+        const { healed, result, noVerdict } = await forcedHeal(rig);
+        const delays = timeouts.mock.calls.map((call) => call[1]);
+        timeouts.mockRestore();
+
+        const reason = "[error] spawn claude ENOENT | [error] spawn claude ENOENT";
+        expect(noVerdict).toEqual([`[claude-oauth-refresh] account=claude-default ${NO_VERDICT} reason="${reason}"`]);
+        expect(result!.reason).toBe(reason);
+        expect(result!.outcome).toBe("noop");
+        expect(healed).toBe(true);
+        expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
+        // The account's timer is the last one set: the expiry schedule, and no backoff.
+        expect(delays.at(-1)).toBe(EXPIRY_SCHEDULE_MS);
+        expect(rig.sseCalls).toEqual([]);
+      });
+
+      it("says so when the spawn of tier 2 throws", async () => {
+        const rig = forcedRig();
+        rig.spawnHandle.effects = [{}, { spawnThrows: true }];
+
+        const { healed, result, noVerdict } = await forcedHeal(rig);
+
+        expect(noVerdict.length).toBe(1);
+        expect(result!.reason).toBe("[spawn-failed] spawn EAGAIN");
+        expect(healed).toBe(true);
+      });
+
+      it.each([
+        { ending: "is killed after its timeout", exits: true },
+        { ending: "does not end after the kill", exits: false },
+      ])("says so when tier 2 $ending", async ({ exits }) => {
+        vi.useFakeTimers();
+        try {
+          const rig = forcedRig();
+          rig.spawnHandle.effects = [{}, { hang: true }];
+
+          const { healed, result, noVerdict } = await forcedHeal(rig, async () => {
+            await vi.advanceTimersByTimeAsync(60_000);
+            if (exits) rig.spawnHandle.children[1]!.emit("exit", null, "SIGKILL");
+            else await vi.advanceTimersByTimeAsync(5_000);
+          });
+
+          expect(noVerdict.length).toBe(1);
+          expect(result!.reason).toBe("[timeout] claude CLI did not exit in time");
+          expect(healed).toBe(true);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("writes no line when tier 2 completed, also after a tier 1 that timed out", async () => {
+        const healthy = forcedRig();
+        // Output that reads as the refresher's notes: the run's end decides, not its text.
+        healthy.spawnHandle.effects = [{}, { stderr: "[timeout] claude CLI did not exit in time\n[error] spawn claude ENOENT\n" }];
+        const ran = await forcedHeal(healthy);
+
+        expect(ran.noVerdict).toEqual([]);
+        expect(ran.result!.reason).toBe(FOUND_LIVE);
+
+        vi.useFakeTimers();
+        try {
+          const rig = forcedRig();
+          rig.spawnHandle.effects = [{ hang: true }, {}];
+
+          const { healed, result, noVerdict } = await forcedHeal(rig, async () => {
+            await vi.advanceTimersByTimeAsync(35_000);
+            await vi.advanceTimersByTimeAsync(1);
+          });
+
+          expect(rig.spawnHandle.invocations.length).toBe(2);
+          expect(noVerdict).toEqual([]);
+          expect(result!.reason).toBe(FOUND_LIVE);
+          expect(healed).toBe(true);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("redacts the reason", async () => {
+        const rig = forcedRig();
+        // On the line that the reason keeps: a line with no failure signal is dropped, token or not.
+        rig.spawnHandle.effects = [
+          { stderr: `Error: request failed with Bearer ${FAKE_OAUTH_TOKEN}\n` },
+          { failsToStart: true },
+        ];
+
+        const { result, noVerdict } = await forcedHeal(rig);
+
+        expect(noVerdict.length).toBe(1);
+        expect(noVerdict[0]).toContain("Error: request failed with Bearer [redacted]");
+        expect(noVerdict[0]).not.toContain(FAKE_OAUTH_TOKEN);
+        expect(result!.reason).not.toContain(FAKE_OAUTH_TOKEN);
+      });
     });
 
     it("unforced: still short-circuits on a healthy token (proactive sweep unchanged)", async () => {
