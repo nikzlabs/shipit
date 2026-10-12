@@ -6,7 +6,8 @@ description: A turn that ShipIt starts runs as a turn that the user started, and
 
 # The user steers every turn
 
-What the feature must do, in the user's terms. No design exists yet.
+What the feature must do, in the user's terms. Design lives in
+[`plan.md`](plan.md).
 
 The report that started it, from the user on 2026-10-12: "if a session, for
 example, restarts its own container and continues after that, I cannot steer it
@@ -35,6 +36,16 @@ None.
   `docs/287-consult-result-delivery` stay?* That answer was "No" to "Should
   system turns simply be made streaming?". Requirement 1 reverses it. The
   receipt is in that document.
+- 2026-10-12 — *What happens to the flag that marks a turn that ShipIt
+  started?* The agent had said that only one of its three meanings is necessary:
+  a lock that stops a new turn while ShipIt changes the branch itself, "a lock on
+  the branch. It is not a property of a turn." The user: "let's have a separate
+  flag for that, and delete the old one." Constraint for the design: the lock is
+  a flag of its own, and the old flag does not stay under any name.
+- 2026-10-12 — *In what order is the work done?* The user: "Then design and
+  build. Don't forget to review the requirements and the design before
+  building." The independent review of this document and of `plan.md` comes
+  before any code.
 
 ## How the requirements are read
 
