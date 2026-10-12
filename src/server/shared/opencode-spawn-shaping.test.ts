@@ -1,7 +1,15 @@
-import { describe, it, expect } from "vitest";
-import { opencodeProviderConfig, opencodeModelArg } from "./opencode-spawn-shaping.js";
-import { catalogueEntriesForHarness, resolveStyle } from "./catalogue/index.js";
-import type { ServiceRouting } from "./types/agent-types.js";
+import { afterEach, describe, it, expect } from "vitest";
+import { opencodeProviderConfig, opencodeModelArg, opencodeAccountConfig } from "./opencode-spawn-shaping.js";
+import {
+  adoptModelList,
+  applyModelList,
+  catalogueEntriesForHarness,
+  exportModelList,
+  resolveStyle,
+  serializeModelList,
+  type CatalogueEntry,
+} from "./catalogue/index.js";
+import type { ServiceRouting, StringServiceRouting } from "./types/agent-types.js";
 
 const ROUTING: ServiceRouting = {
   serviceId: "opencode",
@@ -111,7 +119,7 @@ describe("opencodeProviderConfig", () => {
 // Measured against opencode 1.18.30: a model entry without `id` posts its key as
 // the Messages API `model`, so the Haiku 4.5 row sent `haiku`.
 describe("the model id OpenCode sends", () => {
-  const ANTHROPIC_KEY: ServiceRouting = {
+  const ANTHROPIC_KEY: StringServiceRouting = {
     serviceId: "anthropic",
     serviceName: "Anthropic",
     billingMode: "key",
@@ -121,6 +129,23 @@ describe("the model id OpenCode sends", () => {
     credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
   };
 
+  const label = (e: CatalogueEntry) => `${e.selection.serviceId}/${e.selection.billingMode}/${e.selection.modelId}`;
+
+  function sentModelId(entry: CatalogueEntry): string | undefined {
+    const { serviceId, billingMode, modelId } = entry.selection;
+    if (serviceId === "openai" && billingMode === "sub") {
+      const config = opencodeAccountConfig(modelId) as { provider: { openai: { models: Record<string, { id?: string }> } } };
+      return config.provider.openai.models[modelId]?.id;
+    }
+    const style = resolveStyle("opencode", entry.model, "string");
+    if (!style) return undefined;
+    return block({ ...ANTHROPIC_KEY, serviceId, billingMode, style }, modelId).models?.[modelId]?.id;
+  }
+
+  const aliased = () => catalogueEntriesForHarness("opencode").filter((e) => e.model.apiId !== undefined);
+
+  afterEach(() => applyModelList(undefined));
+
   it("sends the vendor id for the Haiku 4.5 row and keeps the row id as the selectable key", () => {
     const models = block(ANTHROPIC_KEY, "haiku").models ?? {};
     expect(Object.keys(models)).toEqual(["haiku"]);
@@ -128,28 +153,25 @@ describe("the model id OpenCode sends", () => {
     expect(opencodeModelArg("haiku")).toBe("shipit/haiku");
   });
 
-  const aliased = catalogueEntriesForHarness("opencode").filter((e) => e.model.apiId !== undefined);
-
-  it("covers the Anthropic API-key Haiku 4.5 row", () => {
-    expect(aliased.map((e) => `${e.selection.serviceId}/${e.selection.billingMode}/${e.selection.modelId}`)).toContain(
-      "anthropic/key/haiku",
-    );
+  it("sends its declared API id for every embedded row that has one", () => {
+    const entries = aliased();
+    expect(entries.map(label)).toContain("anthropic/key/haiku");
+    for (const entry of entries) expect(sentModelId(entry), label(entry)).toBe(entry.model.apiId);
   });
 
-  it.each(aliased.map((e) => [`${e.selection.serviceId}/${e.selection.billingMode}/${e.selection.modelId}`, e] as const))(
-    "%s sends its declared API id",
-    (_name, entry) => {
-      const style = resolveStyle("opencode", entry.model, "string");
-      if (!style) throw new Error("opencodeAccountConfig ignores apiId, so an aliased row must route by string credential");
-      const routing: ServiceRouting = {
-        ...ANTHROPIC_KEY,
-        serviceId: entry.selection.serviceId,
-        billingMode: entry.selection.billingMode,
-        style,
-      };
-      expect(block(routing, entry.model.id).models?.[entry.model.id]?.id).toBe(entry.model.apiId);
-    },
-  );
+  it("sends a published row's API id on the ChatGPT account path as well as the string-credential one", () => {
+    const doc = exportModelList();
+    for (const modes of Object.values(doc.services)) {
+      for (const mode of Object.values(modes)) {
+        for (const row of mode?.models ?? []) row.apiId ??= `${row.id}-vendor`;
+      }
+    }
+    adoptModelList(JSON.parse(serializeModelList(doc)));
+    const entries = aliased();
+    expect(entries.map((e) => `${e.selection.serviceId}/${e.selection.billingMode}`)).toContain("openai/sub");
+    expect(entries.length).toBe(catalogueEntriesForHarness("opencode").length);
+    for (const entry of entries) expect(sentModelId(entry), label(entry)).toBe(entry.model.apiId);
+  });
 
   it("sends the row id for a row without an API id, and for a model the catalogue cannot resolve", () => {
     expect(block(ANTHROPIC_KEY, "claude-haiku-5-5").models?.["claude-haiku-5-5"]?.id).toBe("claude-haiku-5-5");

@@ -268,8 +268,9 @@ first-party API, and the Haiku 4.5 row's id is that alias, so passing the row id
 would run Haiku 5.5 under a Haiku 4.5 label and price. `claudeModelArg` (turns)
 and session naming now pass a row's `apiId` (`claude-haiku-4-5`) when it has
 one, and `unshapeClaudeModelId` maps the echoed vendor id back to the row id. OpenCode
-posted the row id (`haiku`) too, since before this release; its provider model entry now
-sets `id` to the `apiId` and stays keyed by the row id, which is what it reports back. The row id
+posted the row id (`haiku`) too, since before this release; its model entries (provider and
+ChatGPT account) now set `id` to the `apiId` and stay keyed by the row id, which is what it
+reports back. The row id
 stays `haiku`: renaming it would strand every place a selection is stored
 (browser preference, roles, schedules, cached published lists), and none of
 them goes through retirement.

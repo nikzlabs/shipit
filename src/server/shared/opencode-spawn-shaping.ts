@@ -76,6 +76,11 @@ export function isOpenCodeAccountRouting(routing: ServiceRouting | undefined): r
   return routing?.credentialTarget.kind === "openai-chatgpt";
 }
 
+const ACCOUNT_MODE = { serviceId: "openai", billingMode: "sub" } as const satisfies Pick<
+  OpenAIAccountRouting,
+  "serviceId" | "billingMode"
+>;
+
 // Native auth rewrites Responses to the ChatGPT backend and rereads file auth.
 export function opencodeAccountConfig(modelId: string): Record<string, unknown> {
   return {
@@ -90,7 +95,7 @@ export function opencodeAccountConfig(modelId: string): Record<string, unknown> 
         whitelist: [modelId],
         models: {
           [modelId]: {
-            id: modelId,
+            id: apiModelIdFor({ ...ACCOUNT_MODE, modelId }) ?? modelId,
             name: modelId,
             modalities: IMAGE_MODALITIES,
             limit: { context: 400_000, input: 272_000, output: 128_000 },
