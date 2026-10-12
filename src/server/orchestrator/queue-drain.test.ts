@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import {
   queuedMessageToDispatchOptions,
   releaseQueuedTurn,
@@ -9,15 +10,17 @@ import {
 import { toQueuedMessage } from "./session-runner.js";
 import type { AgentDispatchOptions, AnswerHoldStore, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
+import { TURN_COMPLETED } from "./turn-settlement.js";
 
 function fakeRunner(opts: { canRunDispatchedTurn?: boolean } = {}) {
   const ran: AgentDispatchOptions[] = [];
-  const runner = {
+  const events = new EventEmitter();
+  const runner = Object.assign(events, {
     sessionId: "s1",
     canRunDispatchedTurn: opts.canRunDispatchedTurn ?? true,
     runDispatchedTurn: async (o: AgentDispatchOptions) => { ran.push(o); },
-  } as unknown as SessionRunnerInterface;
-  return { runner, ran };
+  }) as unknown as SessionRunnerInterface;
+  return { runner, ran, events };
 }
 
 describe("queue drain routing (planning#257)", () => {
@@ -42,8 +45,27 @@ describe("queue drain routing (planning#257)", () => {
       text: "child PR merged",
       activity: "Resuming after child PR merged…",
       systemTurn: true,
-      onTurnComplete,
     });
+    ran[0]!.onTurnComplete?.(TURN_COMPLETED);
+    expect(onTurnComplete).toHaveBeenCalledWith(TURN_COMPLETED);
+  });
+
+  // docs/329-user-steers-every-turn — a turn that a drain starts has no `dispatch` to watch the runner for it.
+  it("tells the sender of a drained turn when the runner is disposed under it, once", async () => {
+    const { runner, ran, events } = fakeRunner();
+    const onTurnComplete = vi.fn();
+    await startQueuedMessage(
+      runner,
+      { text: "continue after the restart", execution: "dispatched", onTurnComplete },
+      vi.fn(async () => {}),
+    );
+
+    events.emit("disposed");
+    ran[0]!.onTurnComplete?.(TURN_COMPLETED);
+
+    expect(onTurnComplete).toHaveBeenCalledTimes(1);
+    expect(onTurnComplete.mock.calls[0]![0]).toMatchObject({ status: "dropped" });
+    expect(events.listenerCount("disposed")).toBe(0);
   });
 
   it("routes an interactive entry to the transport's own re-entry", async () => {
@@ -173,6 +195,22 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
     const { runner } = fakeQueueRunner({ queue });
 
     expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
+  });
+
+  // docs/329-user-steers-every-turn req 2
+  it("takes a message of the user's from behind entries of other sources, and keeps their order", () => {
+    const queue: QueuedMessage[] = [
+      { text: "PR #7 merged", execution: "dispatched", automatic: true },
+      { text: "CI failed", execution: "dispatched", automatic: true },
+      { text: "typed first", execution: "interactive" },
+      { text: "typed second", execution: "interactive" },
+    ];
+    const { runner } = fakeQueueRunner({ queue, resident: false });
+
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("typed first");
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("typed second");
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("PR #7 merged");
+    expect(queue.map((m) => m.text)).toEqual(["CI failed"]);
   });
 });
 

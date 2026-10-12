@@ -262,7 +262,7 @@ describe("delivering a self merge wake (docs/239)", () => {
 
     expect(ctx.sessionManager.getSelfMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
     expect(ctx.runner.dispatched).toHaveLength(1);
-    expect(ctx.runner.dispatched[0]!.systemTurn).toBe(true);
+    expect(ctx.runner.dispatched[0]!.systemTurn).toBeUndefined();
     expect(ctx.runner.dispatched[0]!.text).toContain("#43");
     expect(ctx.runner.dispatched[0]!.text).toContain("shipit branch reset-to-base");
     expect(ctx.runner.dispatched[0]!.text.length).toBeLessThan(500);

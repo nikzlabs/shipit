@@ -1,4 +1,5 @@
-import type { QueuedMessage } from "./session-runner.js";
+import type { QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
+import { isCompactCommand } from "../shared/compact-command.js";
 import type { LastTurnOutcome } from "../shared/types.js";
 
 /** How a turn ended, as `sessions.last_turn_outcome` keeps it (docs/324-scheduled-sessions req 31). */
@@ -200,4 +201,50 @@ export function settleDroppedQueueEntries(queue: QueuedMessage[], reason: string
       console.error("[turn-settlement] dropped-entry callback threw:", err);
     }
   }
+}
+
+/**
+ * A runner can let go of a started turn with no terminal agent event: it is disposed, or
+ * the worker reports no agent. The turn's sender is told here, for a turn that `dispatch`
+ * started and for one that a drain started. A turn that produced its result is
+ * interrupted, never dropped as if it had not run.
+ */
+export function settleWhenRunnerLetsGo<
+  T extends { text: string; deliveryId?: string; onTurnComplete?: (outcome: TurnOutcome) => void },
+>(
+  runner: Pick<SessionRunnerInterface, "sessionId" | "activeDeliveryId" | "on" | "off">,
+  opts: T,
+): T {
+  const onTurnComplete = opts.onTurnComplete;
+  if (!onTurnComplete) return opts;
+  let settled = false;
+  // Latched: a queue drain can replace the runner's state before the settlement.
+  let sawTurnResult = false;
+  const ownIsCompact = isCompactCommand(opts.text);
+  const onTurnResult = ({ compact }: { compact: boolean }): void => {
+    if (compact && !ownIsCompact) return;
+    if (runner.activeDeliveryId === opts.deliveryId) sawTurnResult = true;
+  };
+  const settle = (outcome: TurnOutcome): void => {
+    if (settled) return;
+    settled = true;
+    runner.off("turn_result", onTurnResult);
+    runner.off("disposed", onRunnerDisposed);
+    runner.off("turn_abandoned", onTurnAbandoned);
+    onTurnComplete(outcome);
+  };
+  const letGo = (reason: string): void => {
+    if (settled) return;
+    console.warn(
+      `[dispatch] settling the dispatched turn for ${runner.sessionId} as `
+      + `${sawTurnResult ? "interrupted" : "dropped"} — ${reason}`,
+    );
+    settle(sawTurnResult ? turnInterrupted(`${reason} — after the turn produced its result`) : turnDropped(reason));
+  };
+  const onRunnerDisposed = (): void => letGo("runner disposed mid-turn");
+  const onTurnAbandoned = (): void => letGo("turn abandoned — worker reported no agent running");
+  runner.on("turn_result", onTurnResult);
+  runner.on("disposed", onRunnerDisposed);
+  runner.on("turn_abandoned", onTurnAbandoned);
+  return { ...opts, onTurnComplete: settle };
 }

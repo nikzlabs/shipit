@@ -37,7 +37,7 @@ import type { MergeWatchManager } from "./merge-watch.js";
 import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js";
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
-import { fetchCIFailureLogs, buildCIFixPrompt, autoFixDispatch } from "./services/github.js";
+import { fetchCIFailureLogs, buildCIFixPrompt, dispatchAutoFix } from "./services/github.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
@@ -940,7 +940,7 @@ export function createPrStatusPoller(
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — dispatching a fix turn for ${checkLabel}`);
 
       // Settlement also resolves on disposal; onTurnComplete alone can wait forever.
-      const outcome = await runner.dispatch(autoFixDispatch(prompt)).settled;
+      const outcome = await dispatchAutoFix(runner, prompt).settled;
       const detail = outcome.detail ? ` (${outcome.detail})` : "";
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
       return autoFixResultForOutcome(outcome);

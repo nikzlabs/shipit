@@ -64,7 +64,7 @@ import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows } from "./chat-card-persistence.js";
 import { denyAbandonedPermissionCards } from "./permission-cards.js";
-import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -314,7 +314,8 @@ export async function executeAgentTurn(
     Three rounds of review each found the ordering the previous guess traded
     against, which is what says this is undecidable rather than unhandled.
   */
-  let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = "unsubmitted";
+  // An adopted turn composed no prompt: the turn in flight is the one the next result ends.
+  let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = input.adopt ? "running" : "unsubmitted";
   let cliTurnPending = false;
   let resultsObserved = 0;
 
@@ -438,7 +439,7 @@ export async function executeAgentTurn(
 
   // docs/324-scheduled-sessions req 31 — how this turn ended, persisted. The first terminal
   // reading wins; a retry that takes the turn over is a new executor and records its own.
-  // Unlike the settlement, this also runs for a resident streaming turn, which never settles.
+  // Unlike the settlement, this also runs for a result that does not answer this turn's prompt.
   let turnEndRecorded = false;
   const recordTurnEnd = (outcome: LastTurnOutcome, detail?: string): void => {
     if (turnEndRecorded) return;
@@ -473,6 +474,19 @@ export async function executeAgentTurn(
         && (input.attemptLedger ?? []).some((entry) => entry.failureKind === "quota"))
     );
 
+  // Any result on a reused process sets `receivedResult`, also one that ended a turn the CLI
+  // started; only the result of this prompt completes this turn (docs/329-user-steers-every-turn).
+  const ownResultSeen = (): boolean =>
+    receivedResult && (input.reuseExistingAgent !== true || ownTurn === "ended");
+
+  const promptUnread = (): boolean => ownTurn === "unsubmitted" || ownTurn === "queued";
+
+  // `interrupted` tells a sender that the agent had the prompt; an unread one is delivered again.
+  const endedWithoutOwnResult = (): TurnOutcome =>
+    promptUnread()
+      ? turnDropped("the agent process did not start on this prompt")
+      : turnInterrupted("the agent process ended another turn before this prompt's result");
+
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
     // Hold identity, not the turn epoch (docs/304): the release below must only run when
@@ -484,13 +498,17 @@ export async function executeAgentTurn(
       settleTurn(
         agentErrored
           ? turnErrored()
-          : receivedResult
+          : ownResultSeen()
             ? TURN_COMPLETED
             : wasSuperseded
-              ? turnInterrupted("a newer turn took the agent slot before this one finished")
+              ? input.reuseExistingAgent === true && promptUnread()
+                ? turnDropped("a newer turn took the agent process before it read this prompt")
+                : turnInterrupted("a newer turn took the agent slot before this one finished")
               : (runner?.wasInterrupted ?? false)
                 ? turnInterrupted("the turn was interrupted before it produced a result")
-                : turnNoResult("agent process exited without producing a turn result"),
+                : receivedResult
+                  ? endedWithoutOwnResult()
+                  : turnNoResult("agent process exited without producing a turn result"),
       );
     } finally {
       // An entry the drain passed over — a system turn behind this one's background work —
@@ -1189,6 +1207,10 @@ export async function executeAgentTurn(
     void postTurnStep("stopped-background-jobs", () => reportStoppedJobs(false));
   });
 
+  // The next turn removes these listeners, so a turn that has not settled can only settle
+  // here. Its post-turn work goes on: only `superseded` gives that up.
+  agent.on("reused", () => { finishTurn(); });
+
   let turnStartHeadHash: string | null = input.turnStartHeadHash;
 
   let tokenSyncFired = false;
@@ -1542,7 +1564,10 @@ export async function executeAgentTurn(
   ): Promise<void> => {
     receivedResult = true;
     sawOwnResult = true;
-    runner?.emit("turn_result", { compact: input.compact === true });
+    // On a reused process a result can end a turn the CLI started; that is no proof this prompt ran.
+    if (answersThisPrompt || input.reuseExistingAgent !== true) {
+      runner?.emit("turn_result", { compact: input.compact === true });
+    }
     // Claude can report quota exhaustion as successful final text, without event.error.
     const exhausted = event.error
       ? detectHardExhaustion(event.error)
@@ -1565,8 +1590,8 @@ export async function executeAgentTurn(
       recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error);
     }
     // Anything riding this prompt is delivered here, and must not be delivered
-    // in `settleTurn`: a resident streaming turn settles no turn at all, and its
-    // listeners are discarded by the next reuse. Every condition holds the
+    // in `settleTurn`: a turn can settle without its prompt having been read, and
+    // a resident's listeners are discarded by the next reuse. Every condition holds the
     // notice back rather than proves delivery, which is the safe direction
     // (docs/299-agent-settings-access plan.md → And a notice on the next turn).
     //
@@ -1609,6 +1634,9 @@ export async function executeAgentTurn(
           await postTurnStep("finished-sse", broadcastFinishedIfIdle);
           await postTurnStep("commit", runCommitAndPr);
           await postTurnStep("idle", signalIdleIfIdle);
+          // A streaming process need not exit when its turn ends, so the turn settles at
+          // the result of its own prompt (docs/329-user-steers-every-turn).
+          if (answersThisPrompt) await postTurnStep("settle", finishTurn);
           // Last of all: the continuation is a new turn, so this one must be fully settled.
           await postTurnStep("continuation", runContinuation);
             } finally {
@@ -1867,7 +1895,10 @@ export async function executeAgentTurn(
         agent.setPermissionMode(input.permissionMode);
         runner.appliedPermissionMode = input.permissionMode;
       }
-      agent.sendUserMessage(prompt);
+      // A turn that enters a resident process has no spawn to name its delivery, so the
+      // prompt carries the id: an orchestrator restart can then still bind its settlement.
+      if (input.deliveryId !== undefined) agent.sendUserMessage(prompt, { deliveryId: input.deliveryId });
+      else agent.sendUserMessage(prompt);
       noteSubmitted();
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);

@@ -76,6 +76,8 @@ export class AgentController {
 
   // Delivery identity belongs to the turn, not the resident process that can outlive it.
   private turnDeliveryId: string | undefined;
+  // The id of a prompt that went in behind a turn the CLI started; the next turn takes it.
+  private pendingDeliveryId: string | undefined;
 
   // docs/303 req 15 — likewise turn-scoped: a restarted orchestrator reads it back from
   // /agent/status, so the adopted turn settles as the nudge it is and is not nudged twice.
@@ -328,7 +330,7 @@ export class AgentController {
       return { live: this.liveServiceMcp };
     });
 
-    app.post<{ Body: { text: string } }>(
+    app.post<{ Body: { text: string; deliveryId?: string } }>(
       "/agent/message",
       async (request, reply) => {
         if (!(await this.startSettledWithin(this.deps.messageStartWaitMs ?? MESSAGE_START_WAIT_MS))) {
@@ -349,7 +351,15 @@ export class AgentController {
           `[steer-worker] /agent/message → agent.sendUserMessage (bytes=${text.length}, text=${snippet})`,
         );
         // Preserve the replay anchor when steering an active turn.
-        if (!this.turnActive) this.beginTurn();
+        const startsTurn = !this.turnActive;
+        if (startsTurn) this.beginTurn();
+        // A turn's own prompt names its delivery, as /agent/start does; a steer names none.
+        // Behind a turn the CLI started, the id waits for the turn that runs the prompt.
+        const deliveryId = request.body?.deliveryId;
+        if (typeof deliveryId === "string" && deliveryId) {
+          if (startsTurn) this.turnDeliveryId = deliveryId;
+          else this.pendingDeliveryId = deliveryId;
+        }
         this.agent.sendUserMessage(text);
         return { success: true };
       },
@@ -430,6 +440,10 @@ export class AgentController {
   private beginTurn(): void {
     this.turnActive = true;
     this.turnStartSseSeq = this.deps.latestSseSeq();
+    if (this.pendingDeliveryId !== undefined) {
+      this.turnDeliveryId = this.pendingDeliveryId;
+      this.pendingDeliveryId = undefined;
+    }
   }
 
   private beginOwnTurn(): void {
@@ -459,6 +473,7 @@ export class AgentController {
   private vacateSlot(): void {
     this.agent = null;
     this.residentSpawn = null;
+    this.pendingDeliveryId = undefined;
     this.endTurn();
     this.backgroundTaskCount = 0;
   }

@@ -120,7 +120,7 @@ describe("deliverConsultResultByWake (docs/287)", () => {
     expect(decision).toEqual({ woken: true, admitted: "started" });
     expect(runner.dispatched).toHaveLength(1);
     const dispatched = runner.dispatched[0];
-    expect(dispatched.systemTurn).toBe(true);
+    expect(dispatched.systemTurn).toBeUndefined();
     expect(dispatched.text).toContain(SPAWN_ID);
     expect(dispatched.text).toContain("shipit agent result");
     expect(dispatched.text).toContain("reviewer");

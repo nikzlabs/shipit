@@ -1115,8 +1115,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/stdin", { data });
   }
 
-  async sendAgentMessage(text: string): Promise<void> {
-    await workerPostMessage(this.workerUrl, text);
+  async sendAgentMessage(text: string, turn?: { deliveryId?: string }): Promise<void> {
+    await workerPostMessage(this.workerUrl, text, turn);
   }
 
   // null means ShipIt auto; the adapter maps it to CLI default.

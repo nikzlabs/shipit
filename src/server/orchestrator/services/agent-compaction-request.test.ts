@@ -269,7 +269,7 @@ describe("runRequestedCompaction — after the compaction", () => {
     expect(state.notices).toHaveLength(0);
   });
 
-  it("with a note, the continuation runs ahead of a message queued during the compaction", async () => {
+  it("with a note, a message of the user's queued during the compaction runs ahead of the continuation (docs/329 req 2)", async () => {
     const { deps, runner: r, turn, agents, prompts } = setup({ note: "start B" });
     await runRequestedCompaction(deps, turn);
     await waitForTurn(() => prompts.length === 1, "compaction spawn");
@@ -277,8 +277,22 @@ describe("runRequestedCompaction — after the compaction", () => {
     compacted(agents[0]);
 
     await waitForTurn(() => prompts.length === 2, "next spawn");
+    expect(prompts[1]).toContain("USER NEXT");
+    expect(r.getQueueSnapshot().map((q) => q.text)).toEqual([buildContinuationPrompt("start B")]);
+    // An ordinary turn: it runs on the process a typed turn would run on.
+    expect(r.messageQueue[0]?.systemTurn).toBeUndefined();
+  });
+
+  it("with a note, the continuation runs ahead of an automatic entry queued during the compaction", async () => {
+    const { deps, runner: r, turn, agents, prompts } = setup({ note: "start B" });
+    await runRequestedCompaction(deps, turn);
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+    r.enqueue({ text: "CI FAILED", execution: "dispatched", automatic: true } as QueuedMessage);
+    compacted(agents[0]);
+
+    await waitForTurn(() => prompts.length === 2, "next spawn");
     expect(prompts[1]).toContain("start B");
-    expect(r.getQueueSnapshot().map((q) => q.text)).toEqual(["USER NEXT"]);
+    expect(r.getQueueSnapshot().map((q) => q.text)).toEqual(["CI FAILED"]);
   });
 
   it("a Stop on the requesting turn compacts but does not continue (req 10)", async () => {

@@ -140,14 +140,14 @@ const FOLLOWUP: RebaseFollowup = {
 const settled = (outcome: TurnOutcome): Promise<TurnOutcome> => Promise.resolve(outcome);
 
 describe("rebase-followup: delivery", () => {
-  it("dispatches a system turn that keeps ordinary post-turn handling, queued behind user work", () => {
+  it("dispatches an ordinary turn of its own, queued behind user work", () => {
     const { deps, calls } = fakeDeps(settled({ status: "completed", errored: false }));
 
     deliverRebaseFollowup(deps, FOLLOWUP);
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.opts.text).toContain("re-run codegen");
-    expect(calls[0]!.opts.systemTurn).toBe(true);
+    expect(calls[0]!.opts.systemTurn).toBeUndefined();
     // "none" belongs to the resolution turn; this turn's own edits must be committed and pushed.
     expect(calls[0]!.opts.postTurn).toBeUndefined();
     expect(calls[0]!.admission).toEqual({ whenBusy: "queue" });

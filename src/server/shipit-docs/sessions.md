@@ -795,12 +795,15 @@ Notes:
   The two watches are independent: one merge wakes this session with its own
   turn and puts the "Child PR merged" notice in the parent's inbox, and arming,
   re-arming or cancelling one never changes the other.
-- **Every link after the first is a turn that ShipIt started, and its agent
-  process exits a few seconds after your message ends.** Do not end a link's
-  message to wait for a `run_in_background` job, even if that worked on a turn
-  the user typed: a job that is still running then stops with the process, and
-  no completion notice comes for it. Run the build or the test run in the
-  foreground and wait for it in the same message
+- **Every link after the first is a turn that ShipIt started.** It runs on the
+  same kind of agent process as a turn the user typed, and the user can send a
+  message into it. When that process is the kind that exits a few seconds after
+  your message ends, and your harness would otherwise start a turn for a
+  finished job, the turn begins with a `[System]` line that says so. Then
+  do not end the link's message to wait for a `run_in_background` job: a job
+  that is still running stops with the process, and no completion notice comes
+  for it. Run the build or the test run in the foreground and wait for it in
+  the same message
   ([environment.md](environment.md) → *Session container lifecycle*).
 
 ## What spawning a session does

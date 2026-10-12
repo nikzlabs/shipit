@@ -27,6 +27,11 @@ together. Read in this order they explain the whole failure.
 
 ### 1. `systemTurn` forces one-shot
 
+> As of this design. `docs/329-user-steers-every-turn` took the flag off the wakes, the
+> CI fix and the follow-up turns: they run on the process a typed turn would run on, and
+> the resident CLI then delivers a consult's result itself (`resident-cli-delivers`
+> below). The rebase driver's turn and ShipIt's compaction still set the flag.
+
 Every ShipIt-started turn goes through `runDispatchedTurn` with
 `systemTurn: true` — a merged child's PR (`merge-watch.ts` → `wakeSessionWithTurn`),
 a child's upward report (`services/session-report.ts`), the rebase driver, CI

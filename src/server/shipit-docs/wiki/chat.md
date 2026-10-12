@@ -135,13 +135,17 @@ can also send:
   running. It appears in the transcript as an ordinary message from them, and
   you see it mid-turn. The switch is *Inject messages mid-turn* in **Settings →
   Advanced** (`shipit settings get advanced.liveSteering`). Injection also needs
-  a live streaming process and a turn that can take one: a ShipIt-driven system
-  turn, or a merge being held, sends the message to the queue instead. That is
-  the honest answer to "why did it queue when it should have interrupted?".
+  a live streaming process and a turn that can take one. A turn that ShipIt
+  started for work — a merge notice, a finished consult, a CI fix, the turn
+  after a restart — takes one like a turn they typed. Two turns do not: the one
+  that resolves the conflicts of a rebase, and a compaction that ShipIt starts.
+  There, and while a merge is being held, the message goes to the queue. That
+  is the honest answer to "why did it queue when it should have interrupted?".
 - **Otherwise** the message is **queued**. A strip above the composer lists the
   queued messages in order, each with an ✕ to drop it, and **Clear all**. A
   queued message runs as its own turn once the current one has finished and its
-  work is committed. Without live steering there is no Send button mid-turn at
+  work is committed, and a message of theirs runs before a queued entry from
+  another source, such as a merge notice or a CI fix. Without live steering there is no Send button mid-turn at
   all: on a desktop Enter still queues, but **on a phone there is no way to
   queue while a turn runs** — they wait, or they stop the turn.
 
@@ -154,14 +158,15 @@ new turn; the next message resumes the conversation. A brokered
 stop that does not take is what **Force-kill the agent** on the Terminal tab's
 health strip is for ([sessions.md](sessions.md)).
 
-**Background work does not outlive a turn that ShipIt started.** A turn the user
-typed normally runs on an agent process that stays up, so a job you left in the
-background can end and start a new turn. A turn that ShipIt starts — a merge
-notice, a finished consult, a CI fix — runs on a process that
-exits a few seconds after your message ends, and a job that is still running
-then stops with it. The short turn that tells you about your inbox
-([sessions.md](sessions.md)) is the exception: it is an ordinary turn, and its
-process stays up. ShipIt then normally starts one turn that names the work.
+**Background work outlives a turn only on an agent process that stays up.** With
+live steering on and a harness whose process stays up between turns, a turn
+runs on such a process,
+so a job you left in the background can end and start a new turn. That holds
+for a turn the user typed and for a turn ShipIt started — a merge notice, a
+finished consult, a CI fix. Otherwise the process exits a few seconds after
+your message ends, and a job that is still running then stops with it; the turn
+that resolves the conflicts of a rebase always runs on such a process. ShipIt
+then normally starts one turn that names the work.
 If that turn leaves work running too, or if another turn took the agent process
 first, ShipIt starts no turn for it: the transcript normally gets a notice, and
 that notice is the answer when the user asks why a session stopped with a build
