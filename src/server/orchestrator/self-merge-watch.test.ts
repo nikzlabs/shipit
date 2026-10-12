@@ -607,6 +607,12 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     expect(ctx.runner.dispatched).toHaveLength(1);
   }
 
+  // As production orders it: the turn records its end, then settles.
+  function refuse(resetsAt: (string | null)[]): void {
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "quota-refused");
+    ctx.runner.completeTurns(turnQuotaRefused(resetsAt));
+  }
+
   async function retryAt(iso: string): Promise<void> {
     vi.setSystemTime(Date.parse(iso));
     await ctx.manager.retryStalledDeliveries();
@@ -614,7 +620,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
 
   it("waits for the earliest stated reset, then wakes once, and the merge prompt is in the transcript once", async () => {
     await deliverWake();
-    ctx.runner.completeTurns(turnQuotaRefused([RESET_A, RESET_B]));
+    refuse([RESET_A, RESET_B]);
 
     expect(watch()?.state).toBe("merge-observed");
     expect(notes().at(-1)?.text).toContain("2026-10-11 17:01 UTC");
@@ -641,7 +647,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     }
     expect(ctx.runner.dispatched).toHaveLength(MAX_DELIVERY_ATTEMPTS);
 
-    ctx.runner.completeTurns(turnQuotaRefused([null]));
+    refuse([null]);
     expect(watch()?.state).toBe("merge-observed");
 
     await retryAt(new Date(now + 31 * 60_000).toISOString());
@@ -654,7 +660,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     await deliverWake();
     let now = Date.parse(REFUSED_AT);
     for (let refusal = 1; refusal <= MAX_QUOTA_REFUSALS; refusal++) {
-      ctx.runner.completeTurns(turnQuotaRefused([null]));
+      refuse([null]);
       now += 31 * 60_000;
       await retryAt(new Date(now).toISOString());
     }
@@ -668,7 +674,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
 
   it("a turn that ran since the refusal makes the wake unnecessary", async () => {
     await deliverWake();
-    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    refuse([RESET_A]);
 
     vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
     ctx.sessionManager.track(SESSION_ID);
@@ -681,7 +687,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
 
   it("a later turn that no credential could run either leaves the session to resume at the reset", async () => {
     await deliverWake();
-    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    refuse([RESET_A]);
 
     vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
     ctx.sessionManager.track(SESSION_ID);
@@ -693,7 +699,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
 
   it("waits while a turn that started since is still running, and that turn decides", async () => {
     await deliverWake();
-    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    refuse([RESET_A]);
 
     vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
     ctx.sessionManager.track(SESSION_ID);
@@ -701,6 +707,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     vi.setSystemTime(Date.parse("2026-10-11T17:05:00.000Z"));
     await ctx.manager.reconcilePending();
     expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(watch()?.state).toBe("merge-observed");
 
     ctx.runner.running = false;
     ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "ok");
@@ -709,9 +716,35 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     expect(watch()?.state).toBe("delivered");
   });
 
+  it("waits for a turn still in setup, which has not stamped the session yet", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    ctx.runner.running = true;
+    vi.setSystemTime(Date.parse("2026-10-11T17:05:00.000Z"));
+    await ctx.manager.reconcilePending();
+
+    expect(ctx.runner.dispatched).toHaveLength(1);
+  });
+
+  it("a running turn that no credential could run either is followed by the wake", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.runner.running = true;
+    await retryAt("2026-10-11T17:05:00.000Z");
+    expect(ctx.runner.dispatched).toHaveLength(1);
+
+    ctx.runner.running = false;
+    await retryAt("2026-10-11T17:06:00.000Z");
+    expect(ctx.runner.dispatched).toHaveLength(2);
+  });
+
   it("the wake's own next attempt is not a turn that makes it unnecessary", async () => {
     await deliverWake();
-    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    refuse([RESET_A]);
     await retryAt("2026-10-11T17:01:00.000Z");
     expect(ctx.runner.dispatched).toHaveLength(2);
 
@@ -736,7 +769,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
 
   it("a rewind that took the prompt out of the transcript shows it again", async () => {
     await deliverWake();
-    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    refuse([RESET_A]);
     ctx.chatHistoryManager.saveMessages(SESSION_ID, []);
 
     await retryAt("2026-10-11T17:01:00.000Z");
@@ -746,9 +779,30 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     expect(promptRows()).toHaveLength(1);
   });
 
+  it("a code rollback that marked the prompt rolled back shows it again", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+    ctx.chatHistoryManager.markRolledBackFromIndex(SESSION_ID, 0, "abc1234");
+
+    await retryAt("2026-10-11T17:01:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    expect(ctx.runner.dispatched[1]!.promptShown).toBeUndefined();
+  });
+
+  it("does not ask the worker about its turns while the wait holds", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+    const probe = vi.spyOn(ctx.runner, "hasTurnInFlight");
+
+    await retryAt("2026-10-11T16:00:00.000Z");
+
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it("a restart during the wait does not wake the session before the reset", async () => {
     await deliverWake();
-    ctx.runner.completeTurns(turnQuotaRefused([RESET_A]));
+    refuse([RESET_A]);
 
     const restarted = new MergeWatchManager({
       sessionManager: ctx.sessionManager,
@@ -768,7 +822,7 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
     restarted.stopRetryLoop();
   });
 
-  it("a restart does not send a wake past the attempt budget", async () => {
+  it("a restart does not send a wake past the attempt budget, and its retry loop ends the watch", async () => {
     await deliverWake();
     const spent = watch()!;
     ctx.sessionManager.setSelfMergeWatch(SESSION_ID, {
@@ -777,12 +831,23 @@ describe("a wake that every credential refuses for quota (docs/306-quota-continu
       deliveryId: `${spent.watchId}:${MAX_DELIVERY_ATTEMPTS}`,
     });
     ctx.runner.activeDeliveryId = undefined;
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date", "setInterval", "clearInterval"] });
+    const restarted = new MergeWatchManager({
+      sessionManager: ctx.sessionManager,
+      runnerRegistry: ctx.armDeps.runnerRegistry,
+      chatHistoryManager: ctx.chatHistoryManager,
+      sessionInbox: ctx.sessionInbox,
+      defaultAgentId: "claude",
+    });
+    restarted.setPrStatusLookup((id) => ctx.sessionManager.getPrStatus(id) ?? undefined);
 
-    await ctx.manager.reconcilePending();
-
+    await restarted.reconcilePending();
     expect(ctx.runner.dispatched).toHaveLength(1);
-    await retryAt("2026-10-11T15:20:00.000Z");
+
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
     expect(watch()?.state).toBe("delivery-failed");
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    restarted.stopRetryLoop();
   });
 
   it("a delivery rebound after a restart keeps the attempts that quota refusals did not spend", async () => {

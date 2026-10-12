@@ -544,6 +544,13 @@ export class ChatHistoryManager {
     return row ? JSON.parse(row.compaction) as CompactionCard : undefined;
   }
 
+  /** A user row with exactly this text that no rollback has marked. */
+  hasUserMessage(sessionId: string, text: string): boolean {
+    return this.db.prepare(
+      "SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' AND content = ? AND rolled_back = 0 LIMIT 1",
+    ).get(sessionId, text) !== undefined;
+  }
+
   loadLatestAssistantText(sessionId: string): string | undefined {
     const row = this.db.prepare(
       "SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content != '' ORDER BY id DESC LIMIT 1",

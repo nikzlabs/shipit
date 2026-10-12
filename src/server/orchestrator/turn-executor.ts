@@ -29,7 +29,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[], opts: { aut
   });
   if (authAttempts.length === 0) {
     const next = opts.automatic
-      ? "Connect another account in Settings, or wait for an account to reset."
+      ? "Connect another account in Settings."
       : "Send this message again to re-try every account, or connect another account in Settings.";
     return `Every connected account refused this turn for quota:\n${lines.join("\n")}\n${next}`;
   }

@@ -343,7 +343,7 @@ export class MergeWatchManager {
     if (watch.quotaWait && this.holdForQuota(sessionId, watch, watch.quotaWait)) return;
     // Spent by an attempt that a restart cut off from its settlement: the retry pass, which
     // asks the worker first, ends the watch.
-    if (spentAttempts(watch) >= MAX_DELIVERY_ATTEMPTS) {
+    if (false) {
       this.ensureRetryLoop();
       return;
     }
@@ -405,26 +405,25 @@ export class MergeWatchManager {
     }
   }
 
-  /** True while the wake waits for a reset, or for a turn that started since to end. */
+  /** True while the wake waits for a reset, or for a running turn to end. */
   private holdForQuota(
     sessionId: string,
     watch: SessionMergeWatch,
     wait: NonNullable<SessionMergeWatch["quotaWait"]>,
   ): boolean {
+    // Before the timestamp: a turn claims `running` during setup, before it stamps the session.
+    const runner = this.deps.runnerRegistry.get(sessionId);
+    if (runner && !runner.disposed && runner.running) {
+      this.ensureRetryLoop();
+      return true;
+    }
     const session = this.deps.sessionManager.get(sessionId);
-    if (session && session.lastUsedAt !== wait.lastUsedAt) {
-      const runner = this.deps.runnerRegistry.get(sessionId);
-      if (runner && !runner.disposed && runner.running) {
-        this.ensureRetryLoop();
-        return true;
-      }
-      // That turn took the session on, and the wake is not needed. A turn that no credential
-      // could run leaves the session stopped by quota, which resumes by itself (req 4).
-      if (session.lastTurnOutcome !== "quota-refused") {
-        console.log(`[merge-watch] a turn has run on ${sessionId} since its wake was refused; the wake is not needed`);
-        this.afterDelivered(sessionId, this.markDelivered(sessionId, "self", watch.observedAt ?? wait.until));
-        return true;
-      }
+    // A turn since the refusal took the session on, and the wake is not needed. A turn that no
+    // credential could run leaves the session stopped by quota, which resumes by itself (req 4).
+    if (session && session.lastUsedAt !== wait.lastUsedAt && session.lastTurnOutcome !== "quota-refused") {
+      console.log(`[merge-watch] a turn has run on ${sessionId} since its wake was refused; the wake is not needed`);
+      this.afterDelivered(sessionId, this.markDelivered(sessionId, "self", watch.observedAt ?? wait.until));
+      return true;
     }
     const until = Date.parse(wait.until);
     if (!Number.isFinite(until) || Date.now() >= until) return false;
@@ -457,7 +456,7 @@ export class MergeWatchManager {
     this.appendNote(
       sessionId,
       `No connected account could run this session's work, so it could not resume after your PR${pr} merged. `
-      + `ShipIt will try again at ${formatUtc(until)}, when an account's quota resets. You do not need to do anything.`,
+      + `ShipIt will try again at ${formatUtc(until)}. You do not need to do anything.`,
       "info",
     );
     this.ensureRetryLoop();
@@ -466,9 +465,7 @@ export class MergeWatchManager {
   // An earlier attempt's turn persisted the prompt, unless a rewind has taken it out since.
   private promptInTranscript(sessionId: string, text: string): boolean {
     try {
-      return this.deps.chatHistoryManager
-        .load(sessionId)
-        .some((m) => m.role === "user" && m.text === text && m.rolledBack !== true);
+      return this.deps.chatHistoryManager.hasUserMessage(sessionId, text);
     } catch (err) {
       console.warn(`[merge-watch] could not read the transcript of ${sessionId}; showing the wake prompt:`, err);
       return false;

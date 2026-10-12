@@ -213,7 +213,8 @@ the plain `errored`, so none of them is ever waited on.
 For an automatic turn the all-refused error row no longer says "Send this
 message again" — there is no message of the user's to send (req 3).
 `allRefusedMessage` takes `automatic` and ends with "Connect another account in
-Settings, or wait for an account to reset."
+Settings." It promises no retry: only the merge watch schedules one, and its own
+notice says when.
 
 **The merge watch is the one owner of the wait.** On that outcome the self watch
 records a refusal, not a failure (`merge-watch.ts`, `recordQuotaRefusal`):
@@ -234,7 +235,8 @@ watch to the retry pass, which asks the worker and then gives up.
 
 **The merge prompt is in the transcript once.** A retry dispatches with
 `promptShown` when a user row with the same prompt is already in the transcript
-(`promptInTranscript`) — for a quota refusal and for any other failure, because
+(`promptInTranscript`, one indexed query: `ChatHistoryManager.hasUserMessage`) —
+for a quota refusal and for any other failure, because
 the transcript, not the outcome, is what says whether the row exists. A chat
 rewind deletes the row and a code rollback marks it `rolledBack`; either way the
 next attempt shows the prompt again. A `promptShown` turn adds no user row and
@@ -253,8 +255,9 @@ CLI-started turn — so one stall cannot produce two wakes.
 attempt clears the wait before it dispatches, so it never counts. When a turn has
 started since:
 
-- while it runs, the wake waits for it to end (`runner.running`) — a restart or
-  a poller repeat must not queue a wake behind it;
+- while a turn runs, the wake waits for it to end (`runner.running`, read before
+  the timestamp, because a turn claims `running` in setup before it stamps the
+  session) — a restart or a poller repeat must not queue a wake behind it;
 - a turn that ran — the user's message, or anything else — took the session on,
   so the watch ends `delivered` and wakes nothing;
 - a turn that no credential could run either (`lastTurnOutcome` is
@@ -296,6 +299,11 @@ Named rather than hidden; the first is the one most worth closing next.
   this fix, and out of its scope. The settled outcome now carries `quotaRefused`
   with the stated resets, which is what a fix for this and for the one-attempt
   wake callers (*A self wake that every credential refuses*) would read.
+- **A stale `running` holds the merge watch's quota wait.** A turn whose end the
+  orchestrator never sees leaves `runner.running` true, and the wait (like the
+  retry pass before it) keeps waiting. The recovery for a stale flag is the
+  runner's, and it stops when the last viewer detaches. Inherited from the retry
+  pass, not changed here.
 - **"Pushed before anything else starts" (req 6) is commit-strict, push-armed.**
   The continuation waits for `runCommitAndPr`, which *arms* the debounced push
   rather than awaiting the remote. A slow push can therefore still be in flight
@@ -370,11 +378,13 @@ implementation and re-running.
   prompt row as the dispatched turn does: no retry before the earliest stated
   reset, one wake after it, one prompt row in all; a refusal after four failed
   attempts does not give up; `MAX_QUOTA_REFUSALS` ends the watch; a turn that ran
-  since supersedes the wake, one refused for quota does not, one still running
-  is waited for; the wake's own next attempt does not supersede it; a retry after
-  another kind of failure does not show the prompt again, and one after a rewind
-  does; `reconcilePending` after a restart honours the wait and the attempt
-  budget; a rebound delivery keeps the attempts that refusals did not spend.
+  since supersedes the wake, one refused for quota does not, one still running —
+  or still in setup — is waited for; the wake's own next attempt does not
+  supersede it; a retry after another kind of failure does not show the prompt
+  again, and one after a chat rewind or a code rollback does; the retry pass does
+  not probe the worker during the wait; `reconcilePending` after a restart
+  honours the wait and the attempt budget, and its retry loop then ends the
+  watch; a rebound delivery keeps the attempts that refusals did not spend.
 - `integration_tests/quota-exhaustion-retry.test.ts` — the all-refused turn
   settles with the stated resets; a turn with no credential at all does not; an
   automatic turn's error row does not ask to send the message again; a
