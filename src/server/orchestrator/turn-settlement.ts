@@ -27,6 +27,12 @@ export interface TurnOutcome {
   /** Legacy flag; new consumers should use status. Interrupted turns keep this false. */
   readonly errored: boolean;
   readonly detail?: string;
+  /**
+   * docs/306-quota-continuation — no credential was left to run the turn, and at least one
+   * refused it for quota. One reset per quota refusal, as the provider stated it; `null`
+   * where it stated none.
+   */
+  readonly quotaRefused?: { readonly resetsAt: readonly (string | null)[] };
 }
 
 /**
@@ -54,6 +60,10 @@ export const TURN_STEERED: TurnOutcome = { status: "steered", errored: false };
 
 export function turnErrored(detail?: string): TurnOutcome {
   return { status: "errored", errored: true, ...(detail ? { detail } : {}) };
+}
+
+export function turnQuotaRefused(resetsAt: readonly (string | null)[]): TurnOutcome {
+  return { status: "errored", errored: true, quotaRefused: { resetsAt } };
 }
 
 export function turnNoResult(detail?: string): TurnOutcome {

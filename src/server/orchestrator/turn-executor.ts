@@ -19,7 +19,8 @@ export interface RefusedAttempt {
   failureKind: "quota" | "auth";
 }
 
-export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
+// An automatic turn has no message of the user's to send again (docs/306-quota-continuation req 3).
+export function allRefusedMessage(ledger: readonly RefusedAttempt[], opts: { automatic?: boolean } = {}): string {
   const quotaAttempts = ledger.filter((entry) => entry.failureKind === "quota");
   const authAttempts = ledger.filter((entry) => entry.failureKind === "auth");
   const lines = quotaAttempts.map((entry) => {
@@ -27,7 +28,10 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
     return `- ${entry.label}${reset}: ${entry.providerMessage}`;
   });
   if (authAttempts.length === 0) {
-    return `Every connected account refused this turn for quota:\n${lines.join("\n")}\nSend this message again to re-try every account, or connect another account in Settings.`;
+    const next = opts.automatic
+      ? "Connect another account in Settings."
+      : "Send this message again to re-try every account, or connect another account in Settings.";
+    return `Every connected account refused this turn for quota:\n${lines.join("\n")}\n${next}`;
   }
   const quotaSection = lines.length > 0
     ? `Quota refusals:\n${lines.join("\n")}\n`
@@ -35,7 +39,10 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   const authSection = authAttempts.length > 0
     ? `Authentication failed for: ${authAttempts.map((entry) => entry.label).join(", ")}.\n`
     : "";
-  return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
+  const next = opts.automatic
+    ? "Sign in again or connect another account in Settings."
+    : "Sign in again or connect another account in Settings, then resend your message.";
+  return `${quotaSection}${authSection}No eligible subscription account could continue this turn. ${next}`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
 import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup, stoppedByUser, turnInSetup } from "./turn-stop-request.js";
@@ -64,7 +71,7 @@ import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows } from "./chat-card-persistence.js";
 import { denyAbandonedPermissionCards } from "./permission-cards.js";
-import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, turnQuotaRefused, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -473,6 +480,13 @@ export async function executeAgentTurn(
       || (err instanceof ProviderRouteUnavailableError
         && (input.attemptLedger ?? []).some((entry) => entry.failureKind === "quota"))
     );
+  // The owner of an automatic turn can then wait for a stated reset (docs/306-quota-continuation).
+  const erroredOutcome = (): TurnOutcome => {
+    const refusals = lastAgentError instanceof ProviderRouteUnavailableError
+      ? (input.attemptLedger ?? []).filter((entry) => entry.failureKind === "quota")
+      : [];
+    return refusals.length > 0 ? turnQuotaRefused(refusals.map((entry) => entry.resetAt)) : turnErrored();
+  };
 
   // Any result on a reused process sets `receivedResult`, also one that ended a turn the CLI
   // started; only the result of this prompt completes this turn (docs/329-user-steers-every-turn).
@@ -497,7 +511,7 @@ export async function executeAgentTurn(
       // Superseding resets wasInterrupted; the latched superseded flag must take precedence.
       settleTurn(
         agentErrored
-          ? turnErrored()
+          ? erroredOutcome()
           : ownResultSeen()
             ? TURN_COMPLETED
             : wasSuperseded
@@ -1929,7 +1943,7 @@ export async function executeAgentTurn(
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     if (error instanceof ProviderRouteUnavailableError && input.attemptLedger?.length) {
-      error.message = allRefusedMessage(input.attemptLedger);
+      error.message = allRefusedMessage(input.attemptLedger, { automatic: input.automatic === true });
     }
     agent.emit("error", error);
   }

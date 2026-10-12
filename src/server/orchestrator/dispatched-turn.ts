@@ -441,14 +441,14 @@ async function runDispatchedTurnInner(
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(noticeDeliveries.length > 0 ? { noticeDeliveries } : {}),
       ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
-      emitUserEcho: attempt === 0 && !opts.silent,
+      emitUserEcho: attempt === 0 && !opts.silent && !opts.promptShown,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
       ...(attempt === 0 && reset?.afterUserMessagePersisted
         ? { afterUserMessagePersisted: reset.afterUserMessagePersisted }
         : {}),
       persistUserMessage:
-        attempt === 0 && !opts.silent
+        attempt === 0 && !opts.silent && !opts.promptShown
           ? (sid) =>
               deps.listenerDeps.chatHistoryManager.append(sid, {
                 role: "user",
@@ -459,7 +459,7 @@ async function runDispatchedTurnInner(
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
               })
-          : () => { /* already persisted or silent */ },
+          : () => { /* already persisted, shown before, or silent */ },
       isNewSession: false,
       fallbackTitle: text.slice(0, 80) || "Agent",
       turnStartHeadHash: null,

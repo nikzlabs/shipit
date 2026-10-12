@@ -157,6 +157,7 @@ export interface QueuedMessage {
   silent?: boolean;
   bestEffortSteer?: boolean;
   unattended?: boolean;
+  promptShown?: boolean;
 }
 
 export interface AgentDispatchOptions {
@@ -205,6 +206,11 @@ export interface AgentDispatchOptions {
    * it: a wake that is neither exists (docs/328's turn for a message the user sent).
    */
   unattended?: boolean;
+  /**
+   * docs/306-quota-continuation — an earlier attempt of the same wake put this prompt in the
+   * transcript, so this one adds no row and no echo.
+   */
+  promptShown?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -386,6 +392,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.silent !== undefined) queued.silent = opts.silent;
   if (opts.bestEffortSteer !== undefined) queued.bestEffortSteer = opts.bestEffortSteer;
   if (opts.unattended !== undefined) queued.unattended = opts.unattended;
+  if (opts.promptShown !== undefined) queued.promptShown = opts.promptShown;
   return queued;
 }
 

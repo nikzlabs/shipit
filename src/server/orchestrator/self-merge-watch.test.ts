@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
-import { MergeWatchManager, MAX_DELIVERY_ATTEMPTS } from "./merge-watch.js";
+import { MergeWatchManager, MAX_DELIVERY_ATTEMPTS, MAX_QUOTA_REFUSALS } from "./merge-watch.js";
 import { armSelfMergeWatch, cancelSelfMergeWatch } from "./services/self-merge-watch.js";
 import { ServiceError } from "./services/types.js";
 import {
@@ -10,6 +10,7 @@ import {
   TURN_COMPLETED,
   turnInterrupted,
   turnNoResult,
+  turnQuotaRefused,
   type TurnHandle,
   type TurnOutcome,
 } from "./turn-settlement.js";
@@ -574,5 +575,294 @@ describe("the arm card says when its watch is gone (docs/239)", () => {
     expect(ctx.runner.dispatched).toHaveLength(1);
     expect(errors.mock.calls.some((call) => String(call[0]).includes("[merge-watch] could not mark the arm card"))).toBe(true);
     vi.restoreAllMocks();
+  });
+});
+
+describe("a wake that every credential refuses for quota (docs/306-quota-continuation)", () => {
+  let ctx: ReturnType<typeof makeCtx>;
+  // The production incident: refused at 15:03, accounts reset at 17:00 and 17:20.
+  const REFUSED_AT = "2026-10-11T15:03:00.000Z";
+  const RESET_A = "2026-10-11T17:00:00.000Z";
+  const RESET_B = "2026-10-11T17:20:00.000Z";
+  beforeEach(() => {
+    vi.useFakeTimers({ now: Date.parse(REFUSED_AT), toFake: ["Date"] });
+    ctx = makeCtx();
+    // As the dispatched turn does: the prompt becomes a transcript row unless it was shown before.
+    const dispatch = ctx.runner.dispatch.bind(ctx.runner);
+    ctx.runner.dispatch = (opts: AgentDispatchOptions) => {
+      if (!opts.promptShown) ctx.chatHistoryManager.append(SESSION_ID, { role: "user", text: opts.text });
+      return dispatch(opts);
+    };
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const notes = () => ctx.chatHistoryManager.load(SESSION_ID).filter((m) => m.notice);
+  const promptRows = () => ctx.chatHistoryManager.load(SESSION_ID).filter((m) => m.role === "user" && m.text.includes("#43"));
+  const watch = () => ctx.sessionManager.getSelfMergeWatch(SESSION_ID);
+
+  async function deliverWake(): Promise<void> {
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    markMerged(ctx, 43);
+    await ctx.manager.handleSelfMerge(SESSION_ID);
+    expect(ctx.runner.dispatched).toHaveLength(1);
+  }
+
+  // As production orders it: the turn records its end, then settles.
+  function refuse(resetsAt: (string | null)[]): void {
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "quota-refused");
+    ctx.runner.completeTurns(turnQuotaRefused(resetsAt));
+  }
+
+  async function retryAt(iso: string): Promise<void> {
+    vi.setSystemTime(Date.parse(iso));
+    await ctx.manager.retryStalledDeliveries();
+  }
+
+  it("waits for the earliest stated reset, then wakes once, and the merge prompt is in the transcript once", async () => {
+    await deliverWake();
+    refuse([RESET_A, RESET_B]);
+
+    expect(watch()?.state).toBe("merge-observed");
+    expect(notes().at(-1)?.text).toContain("2026-10-11 17:01 UTC");
+    // The incident spent all five attempts by 15:20.
+    for (const iso of ["2026-10-11T15:05:00.000Z", "2026-10-11T15:20:00.000Z", "2026-10-11T16:30:00.000Z", "2026-10-11T17:00:30.000Z"]) {
+      await retryAt(iso);
+    }
+    expect(ctx.runner.dispatched).toHaveLength(1);
+
+    await retryAt("2026-10-11T17:01:00.000Z");
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    ctx.runner.completeTurns();
+    expect(watch()?.state).toBe("delivered");
+    expect(promptRows()).toHaveLength(1);
+  });
+
+  it("spends no delivery attempt: a refusal after four failed attempts does not give up", async () => {
+    await deliverWake();
+    let now = Date.parse(REFUSED_AT);
+    for (let attempt = 1; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) {
+      ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
+      now += 11 * 60_000;
+      await retryAt(new Date(now).toISOString());
+    }
+    expect(ctx.runner.dispatched).toHaveLength(MAX_DELIVERY_ATTEMPTS);
+
+    refuse([null]);
+    expect(watch()?.state).toBe("merge-observed");
+
+    await retryAt(new Date(now + 31 * 60_000).toISOString());
+    expect(ctx.runner.dispatched).toHaveLength(MAX_DELIVERY_ATTEMPTS + 1);
+    ctx.runner.completeTurns();
+    expect(watch()?.state).toBe("delivered");
+  });
+
+  it("gives up after MAX_QUOTA_REFUSALS refusals, so quota that never returns cannot wake it for ever", async () => {
+    await deliverWake();
+    let now = Date.parse(REFUSED_AT);
+    for (let refusal = 1; refusal <= MAX_QUOTA_REFUSALS; refusal++) {
+      refuse([null]);
+      now += 31 * 60_000;
+      await retryAt(new Date(now).toISOString());
+    }
+
+    expect(watch()?.state).toBe("delivery-failed");
+    expect(ctx.runner.dispatched).toHaveLength(MAX_QUOTA_REFUSALS);
+    expect(notes().at(-1)?.text).toContain("could not be resumed automatically");
+    await retryAt(new Date(now + 24 * 60 * 60_000).toISOString());
+    expect(ctx.runner.dispatched).toHaveLength(MAX_QUOTA_REFUSALS);
+  });
+
+  it("a turn that ran since the refusal makes the wake unnecessary", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "ok");
+    await retryAt("2026-10-11T17:05:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(watch()?.state).toBe("delivered");
+  });
+
+  it("a later turn that no credential could run either leaves the session to resume at the reset", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "quota-refused");
+    await retryAt("2026-10-11T17:05:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(2);
+  });
+
+  it("waits while a turn that started since is still running, and that turn decides", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.runner.running = true;
+    vi.setSystemTime(Date.parse("2026-10-11T17:05:00.000Z"));
+    await ctx.manager.reconcilePending();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(watch()?.state).toBe("merge-observed");
+
+    ctx.runner.running = false;
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "ok");
+    await ctx.manager.reconcilePending();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    expect(watch()?.state).toBe("delivered");
+  });
+
+  it("waits for a turn still in setup, which has not stamped the session yet", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    ctx.runner.running = true;
+    vi.setSystemTime(Date.parse("2026-10-11T17:05:00.000Z"));
+    await ctx.manager.reconcilePending();
+
+    expect(ctx.runner.dispatched).toHaveLength(1);
+  });
+
+  it("a running turn that no credential could run either is followed by the wake", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    vi.setSystemTime(Date.parse("2026-10-11T16:00:00.000Z"));
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.runner.running = true;
+    await retryAt("2026-10-11T17:05:00.000Z");
+    expect(ctx.runner.dispatched).toHaveLength(1);
+
+    ctx.runner.running = false;
+    await retryAt("2026-10-11T17:06:00.000Z");
+    expect(ctx.runner.dispatched).toHaveLength(2);
+  });
+
+  it("the wake's own next attempt is not a turn that makes it unnecessary", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+    await retryAt("2026-10-11T17:01:00.000Z");
+    expect(ctx.runner.dispatched).toHaveLength(2);
+
+    // That attempt starts a turn, which stamps the session, and then fails for another reason.
+    ctx.sessionManager.track(SESSION_ID);
+    ctx.sessionManager.setLastTurnOutcome(SESSION_ID, "errored");
+    ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
+    await retryAt("2026-10-11T17:13:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(3);
+  });
+
+  it("a retry after a failure of another kind does not show the prompt again either", async () => {
+    await deliverWake();
+    ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
+    await retryAt("2026-10-11T15:05:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    expect(ctx.runner.dispatched[1]!.promptShown).toBe(true);
+    expect(promptRows()).toHaveLength(1);
+  });
+
+  it("a rewind that took the prompt out of the transcript shows it again", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+    ctx.chatHistoryManager.saveMessages(SESSION_ID, []);
+
+    await retryAt("2026-10-11T17:01:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    expect(ctx.runner.dispatched[1]!.promptShown).toBeUndefined();
+    expect(promptRows()).toHaveLength(1);
+  });
+
+  it("a code rollback that marked the prompt rolled back shows it again", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+    ctx.chatHistoryManager.markRolledBackFromIndex(SESSION_ID, 0, "abc1234");
+
+    await retryAt("2026-10-11T17:01:00.000Z");
+
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    expect(ctx.runner.dispatched[1]!.promptShown).toBeUndefined();
+  });
+
+  it("does not ask the worker about its turns while the wait holds", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+    const probe = vi.spyOn(ctx.runner, "hasTurnInFlight");
+
+    await retryAt("2026-10-11T16:00:00.000Z");
+
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("a restart during the wait does not wake the session before the reset", async () => {
+    await deliverWake();
+    refuse([RESET_A]);
+
+    const restarted = new MergeWatchManager({
+      sessionManager: ctx.sessionManager,
+      runnerRegistry: ctx.armDeps.runnerRegistry,
+      chatHistoryManager: ctx.chatHistoryManager,
+      sessionInbox: ctx.sessionInbox,
+      defaultAgentId: "claude",
+    });
+    restarted.setPrStatusLookup((id) => ctx.sessionManager.getPrStatus(id) ?? undefined);
+    vi.setSystemTime(Date.parse("2026-10-11T15:10:29.000Z"));
+    await restarted.reconcilePending();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+
+    vi.setSystemTime(Date.parse("2026-10-11T17:01:00.000Z"));
+    await restarted.reconcilePending();
+    expect(ctx.runner.dispatched).toHaveLength(2);
+    restarted.stopRetryLoop();
+  });
+
+  it("a restart does not send a wake past the attempt budget, and its retry loop ends the watch", async () => {
+    await deliverWake();
+    const spent = watch()!;
+    ctx.sessionManager.setSelfMergeWatch(SESSION_ID, {
+      ...spent,
+      deliveryAttempts: MAX_DELIVERY_ATTEMPTS,
+      deliveryId: `${spent.watchId}:${MAX_DELIVERY_ATTEMPTS}`,
+    });
+    ctx.runner.activeDeliveryId = undefined;
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date", "setInterval", "clearInterval"] });
+    const restarted = new MergeWatchManager({
+      sessionManager: ctx.sessionManager,
+      runnerRegistry: ctx.armDeps.runnerRegistry,
+      chatHistoryManager: ctx.chatHistoryManager,
+      sessionInbox: ctx.sessionInbox,
+      defaultAgentId: "claude",
+    });
+    restarted.setPrStatusLookup((id) => ctx.sessionManager.getPrStatus(id) ?? undefined);
+
+    await restarted.reconcilePending();
+    expect(ctx.runner.dispatched).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    expect(watch()?.state).toBe("delivery-failed");
+    expect(ctx.runner.dispatched).toHaveLength(1);
+    restarted.stopRetryLoop();
+  });
+
+  it("a delivery rebound after a restart keeps the attempts that quota refusals did not spend", async () => {
+    await deliverWake();
+    const current = watch()!;
+    const deliveryId = `${current.watchId}:${MAX_DELIVERY_ATTEMPTS}`;
+    ctx.sessionManager.setSelfMergeWatch(SESSION_ID, {
+      ...current,
+      deliveryAttempts: MAX_DELIVERY_ATTEMPTS,
+      quotaRefusals: 1,
+      deliveryId,
+    });
+
+    ctx.manager.rebindDelivery(deliveryId)!(turnNoResult("agent process exited without producing a turn result"));
+
+    expect(watch()?.state).toBe("merge-observed");
   });
 });

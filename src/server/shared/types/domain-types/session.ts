@@ -290,6 +290,10 @@ export interface SessionMergeWatch {
   unreportedPrs?: SessionMergeWatchPr[];
   lastDeliveryError?: string;
   failedAt?: string;
+  /** Self watch, docs/306-quota-continuation: wakes that no credential could run, after a quota refusal. They spend no attempt. */
+  quotaRefusals?: number;
+  /** Self watch: after such a refusal, no wake before `until`, and none once a later turn has taken the session on. */
+  quotaWait?: { until: string; lastUsedAt: string };
 }
 
 export interface SessionMergeWatchPr {
