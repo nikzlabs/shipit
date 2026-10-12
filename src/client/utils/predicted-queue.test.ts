@@ -45,6 +45,13 @@ const send = (text = "next slice", dispatch: () => boolean = () => true) =>
     dispatch,
   });
 
+/** The server names its queue entry by the send's request id. */
+const predictedId = (): string => {
+  const id = useSessionStore.getState().queuedMessages[0]?.requestId;
+  if (id === undefined) throw new Error("no predicted row");
+  return id;
+};
+
 beforeEach(() => {
   usePrStore.setState({
     resetEligibleBySession: {}, compactionSpentBySession: {}, mergeContinueOptOutBySession: {},
@@ -140,11 +147,12 @@ describe("a send that a compaction will run ahead of", () => {
   it("is adopted by the server's own message_queued rather than duplicated", () => {
     offeringCompaction();
     send();
+    const id = predictedId();
     const c = ctx();
-    handleMessageQueued(c, { type: "message_queued", text: "next slice", position: 1 });
+    handleMessageQueued(c, { type: "message_queued", sessionId: "s1", id, text: "next slice", position: 1 });
 
     expect(useSessionStore.getState().queuedMessages).toEqual([
-      { text: "next slice", position: 1 },
+      { id, text: "next slice", position: 1 },
     ]);
     expect(useSessionStore.getState().messages).toEqual([]);
   });
@@ -158,9 +166,10 @@ describe("a send that a compaction will run ahead of", () => {
       activity: "Thinking...",
       dispatch: () => true,
     });
+    const id = predictedId();
     const c = ctx();
-    handleMessageQueued(c, { type: "message_queued", text: "look at this", position: 1 });
-    handleQueueUpdated(c, { type: "queue_updated", queue: [], dequeued: "look at this" });
+    handleMessageQueued(c, { type: "message_queued", sessionId: "s1", id, text: "look at this", position: 1 });
+    handleQueueUpdated(c, { type: "queue_updated", sessionId: "s1", queue: [], dequeued: { id, text: "look at this" } });
 
     // Without the bubble the prediction carried, the restore would invent a
     // bare `{role, text}` and the attachment would be gone from the transcript.
@@ -216,11 +225,12 @@ describe("a send that a compaction will run ahead of", () => {
   it("restores the message once when the server steers it into a running turn", () => {
     offeringCompaction();
     send();
-    handleMessageSteered(ctx(), { type: "message_steered", sessionId: "s1", text: "next slice" });
+    const id = predictedId();
+    handleMessageSteered(ctx(), { type: "message_steered", sessionId: "s1", clientRequestId: id, text: "next slice" });
 
     expect(useSessionStore.getState().queuedMessages).toEqual([]);
-    // Restoring it first is what lets the steer handler's own dedupe recognise
-    // it; without that the transcript would carry the message twice.
+    // Restoring it first is what lets the steer handler find it by its id;
+    // without that the transcript would carry the message twice.
     expect(useSessionStore.getState().messages).toMatchObject([
       { role: "user", text: "next slice" },
     ]);
@@ -242,12 +252,14 @@ describe("a send that a compaction will run ahead of", () => {
       activity: "Thinking...",
       dispatch: () => true,
     });
+    const id = predictedId();
     const c = ctx();
     handleQueueUpdated(c, {
       type: "queue_updated",
-      queue: [{ text: "look at this", position: 1 }],
+      sessionId: "s1",
+      queue: [{ id, text: "look at this", position: 1 }],
     });
-    handleQueueUpdated(c, { type: "queue_updated", queue: [], dequeued: "look at this" });
+    handleQueueUpdated(c, { type: "queue_updated", sessionId: "s1", queue: [], dequeued: { id, text: "look at this" } });
 
     expect(useSessionStore.getState().messages).toMatchObject([
       { role: "user", text: "look at this", uploadPaths: ["/uploads/shot.png"] },
@@ -259,7 +271,7 @@ describe("a send that a compaction will run ahead of", () => {
     send();
     // The server's answer to something else — a cancel, another tab's dequeue —
     // is not evidence that this send was refused.
-    handleQueueUpdated(ctx(), { type: "queue_updated", queue: [] });
+    handleQueueUpdated(ctx(), { type: "queue_updated", sessionId: "s1", queue: [] });
 
     expect(useSessionStore.getState().queuedMessages).toMatchObject([{ text: "next slice" }]);
   });

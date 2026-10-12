@@ -8,7 +8,7 @@ import type {
   WsServerMessage,
 } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
-import { REFUSAL_REPROBE_MS } from "../shared/types/domain-types/credential-route.js";
+import { MAX_QUOTA_REFUSALS, formatUtc, quotaWaitUntil } from "./quota-wait.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import type { SessionInbox } from "./services/session-inbox.js";
 import { hasHeldDelivery } from "./held-turns.js";
@@ -31,11 +31,8 @@ function retryBackoffMs(attempts: number): number {
 }
 
 // docs/306-quota-continuation — a self wake that every credential refused for quota waits for a
-// reset and spends no attempt. This many such refusals end the watch, so quota that never
-// returns cannot wake the session for ever.
-export const MAX_QUOTA_REFUSALS = 5;
-// A provider's reset time is to the minute; a wake on that second can be refused again.
-const QUOTA_RESET_MARGIN_MS = 60_000;
+// reset and spends no attempt.
+export { MAX_QUOTA_REFUSALS };
 
 export interface MergeWatchDeps extends WakeSessionDeps {
   chatHistoryManager: ChatHistoryManager;
@@ -418,10 +415,10 @@ export class MergeWatchManager {
       return true;
     }
     const session = this.deps.sessionManager.get(sessionId);
-    // A turn since the refusal took the session on, and the wake is not needed. A turn that no
-    // credential could run leaves the session stopped by quota, which resumes by itself (req 4).
-    if (session && session.lastUsedAt !== wait.lastUsedAt && session.lastTurnOutcome !== "quota-refused") {
-      console.log(`[merge-watch] a turn has run on ${sessionId} since its wake was refused; the wake is not needed`);
+    // Any turn since the refusal supersedes the wake, also one that no credential could run
+    // (docs/306-quota-continuation).
+    if (session && session.lastUsedAt !== wait.lastUsedAt) {
+      console.log(`[merge-watch] a turn has started on ${sessionId} since its wake was refused; the wake is not needed`);
       this.afterDelivered(sessionId, this.markDelivered(sessionId, "self", watch.observedAt ?? wait.until));
       return true;
     }
@@ -814,21 +811,6 @@ function infoFromWatch(sessionId: string, watch: SessionMergeWatch): PrTerminalS
 
 function spentAttempts(watch: SessionMergeWatch): number {
   return (watch.deliveryAttempts ?? 0) - (watch.quotaRefusals ?? 0);
-}
-
-// The earliest reset a refusal stated. One that stated none is tried again when the router would
-// probe that credential again (docs/260). Never sooner than the ordinary backoff.
-function quotaWaitUntil(resetsAt: readonly (string | null)[], refusals: number, now: number): number {
-  const times = resetsAt.map((at) => {
-    const stated = at === null ? Number.NaN : Date.parse(at);
-    return Number.isFinite(stated) ? stated + QUOTA_RESET_MARGIN_MS : now + REFUSAL_REPROBE_MS;
-  });
-  const earliest = times.length > 0 ? Math.min(...times) : now + REFUSAL_REPROBE_MS;
-  return Math.max(earliest, now + retryBackoffMs(refusals));
-}
-
-function formatUtc(date: Date): string {
-  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 function isTerminalWatchState(state: SessionMergeWatch["state"]): boolean {

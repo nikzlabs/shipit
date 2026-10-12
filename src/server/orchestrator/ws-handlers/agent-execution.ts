@@ -26,6 +26,7 @@ import { containerPredatesShipIt, prepareInboxNotice } from "../services/session
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
+import { nextSendOrder, queueEntryId } from "../queue-identity.js";
 import { stoppedByUser } from "../turn-stop-request.js";
 import {
   agentEnvTurnArgs,
@@ -93,7 +94,7 @@ export async function drainNextQueuedMessage(
   if (runner.wasInterrupted && !questionInterrupt && !compactionTurn) {
     if (messageQueue.length > 0) {
       runner.clearQueue();
-      emit({ type: "queue_updated", queue: [] });
+      emit({ type: "queue_updated", sessionId: runner.sessionId, queue: [] });
     }
     return;
   }
@@ -104,8 +105,9 @@ export async function drainNextQueuedMessage(
   if (!next) return;
   emit({
     type: "queue_updated",
-    queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
-    dequeued: next.text,
+    sessionId: runner.sessionId,
+    queue: runner.getQueueSnapshot(),
+    dequeued: { id: queueEntryId(next), text: next.text },
   });
   runner.running = true;
 
@@ -177,8 +179,15 @@ export async function runCompactionAhead(
   queued: QueuedMessage,
   permissionMode: PermissionMode | undefined,
 ): Promise<void> {
-  runner.messageQueue.unshift({ ...queued, compactContext: false });
-  runner.emitMessage({ type: "message_queued", text: queued.text, position: 1 });
+  const entry = { ...queued, compactContext: false, sendOrder: queued.sendOrder ?? nextSendOrder() };
+  runner.messageQueue.unshift(entry);
+  runner.emitMessage({
+    type: "message_queued",
+    sessionId: runner.sessionId,
+    id: queueEntryId(entry),
+    text: queued.text,
+    position: 1,
+  });
   runner.running = true;
   await runAgentWithMessage(ctx, {
     userText: POST_MERGE_COMPACT_PROMPT,
@@ -252,6 +261,9 @@ async function runQueuedInteractiveMessage(
       ...(next.dictated ? { dictated: true } : {}),
       ...(next.resetMergedBranch !== undefined ? { resetMergedBranch: next.resetMergedBranch } : {}),
       ...(isCompactCommandFor(ctx, next.text) ? { compact: true } : {}),
+      // A viewer that did not send it has the text alone from `dequeued`; the echo carries
+      // the attachments to the bubble with this id (planning#691).
+      userEcho: { clientRequestId: queueEntryId(next) },
     });
   } catch (err) {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
@@ -276,7 +288,7 @@ interface RunAgentWithMessageOpts {
   resetMergedBranch?: boolean;
   silent?: boolean;
   dictated?: boolean;
-  /** Presence enables echo; omit for queued messages already restored by dequeued. */
+  /** Presence enables echo. */
   userEcho?: { clientRequestId?: string };
 }
 

@@ -62,6 +62,10 @@ const TIER1_TIMEOUT_MS = 30_000;
 const TIER2_TIMEOUT_MS = 60_000;
 const KILL_SETTLE_MS = 5_000;
 
+// A session's CLI reads its file again about 0.5 s after a 401, so the install must not wait
+// for the probe to exit (docs/153).
+export const PROBE_COPY_POLL_MS = 50;
+
 // Session naming's CLI times out after 15 s. Past this a tick stops waiting for a run, but does not probe.
 const PRIVATE_RUN_WAIT_MS = 30_000;
 
@@ -109,11 +113,16 @@ const CREDENTIAL_HEADER_PATTERN =
 const EMAIL_PATTERN =
   /(?:\[redacted\]|[\w.+-]){1,64}@(?:\[redacted\]|[\w-]){1,63}(?:\.(?:\[redacted\]|[\w-]){1,63})+/g;
 
+// The word is found in a lookahead, which does not backtrack: a quote before a long run of letters
+// costs one pass, not one per word in the run. Keys of any length still match.
+const SECRET_JSON_VALUE_PATTERN =
+  /("(?=[A-Za-z_]*?(?:token|secret|key|password|passwd|auth))[A-Za-z_]*"\s*:\s*")[^"]*"/gi;
+
 // Short, unprefixed secrets in unknown fields can escape this filter.
 function redactSecrets(text: string): string {
   return text
     .replace(CREDENTIAL_HEADER_PATTERN, "$1$2$3[redacted]")
-    .replace(/("[A-Za-z_]*(?:token|secret|key|password|passwd|auth)[A-Za-z_]*"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
+    .replace(SECRET_JSON_VALUE_PATTERN, '$1[redacted]"')
     .replace(/\b(bearer|basic)(\s+)\S+/gi, "$1$2[redacted]")
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]")
     .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]")
@@ -160,7 +169,10 @@ interface HarvestResult {
 interface ProbeHome {
   home: string;
   credentialsFile: string;
+  // The credential whose grant the copy's CLI spends: the seed, and after an install the installed one.
   seedIdentity: string;
+  // The copy's credential was installed into the source. Kept, such a copy can hold no successor.
+  installed: boolean;
   // The copy holds a rotation that is not in the source: the only record of a live grant.
   outstanding: boolean;
 }
@@ -193,6 +205,7 @@ type ProbeResult = "installed" | "rejected" | "unchanged" | "superseded" | "inst
 export type RefreshOutcome =
   | "rotated_tier1"
   | "rotated_tier2"
+  | "rotated_kept"
   | "rotated_private_run"
   | "harvested_session"
   | "noop"
@@ -372,6 +385,15 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
   private async settlePrivateRun(accountId: string, copy: ProbeHome, othersOpen: boolean): Promise<void> {
     const state = this.ensureAccountState(accountId);
     try {
+      // A copy kept after its install can hold no successor, which the checks below take a kept copy to hold.
+      if (state.pendingRotation?.installed) {
+        try {
+          this.retryKeptRotation(accountId, this.readSourceExpiresAt(accountId));
+        } catch (err) {
+          // This run's copy is still to be judged: it can hold the only successor.
+          console.error(`[claude-oauth-refresh] account=${accountId} judging the kept rotation failed:`, err);
+        }
+      }
       const before = this.readSourceExpiresAt(accountId);
       const result = this.adoptProbeRotation(accountId, copy);
       const after = this.readSourceExpiresAt(accountId);
@@ -380,8 +402,14 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       } else if (copy.outstanding) {
         const kept = state.pendingRotation;
         const keptFor = kept ? this.readSourceFor(kept, this.sourceFileFor(accountId)).state : null;
-        // Only where a tick would give the kept rotation up: the source is gone or holds another credential.
-        if (kept && keptFor !== "replaced" && keptFor !== "gone") {
+        // A copy kept after its install that still holds that credential (its seed) is superseded by this
+        // run's rotation of it. A kept copy that holds a later rotation, or cannot be read, is not.
+        const supersedesKept = kept?.installed === true
+          && this.readIdentityAt(kept.credentialsFile) === kept.seedIdentity
+          && kept.seedIdentity === copy.seedIdentity
+          && this.holdsRotation(copy);
+        // Otherwise only where a tick would give the kept rotation up: the source is gone or holds another credential.
+        if (kept && !supersedesKept && keptFor !== "replaced" && keptFor !== "gone") {
           console.error(`[claude-oauth-refresh] account=${accountId} a rotation is kept already; this copy is left at ${copy.home}`);
         } else {
           if (kept) this.removeProbeHome(kept);
@@ -412,6 +440,33 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     } finally {
       if (!copy.outstanding) this.removeProbeHome(copy);
     }
+  }
+
+  // Judges the kept rotation again; it stays kept while it is outstanding.
+  private retryKeptRotation(accountId: string, before: number | null): {
+    kept: boolean;
+    rejected: boolean;
+    success: RefreshResult | null;
+  } {
+    const state = this.ensureAccountState(accountId);
+    const pending = state.pendingRotation;
+    if (!pending) return { kept: false, rejected: false, success: null };
+    const retried = this.adoptProbeRotation(accountId, pending);
+    if (pending.outstanding) return { kept: true, rejected: false, success: null };
+    state.pendingRotation = null;
+    this.removeProbeHome(pending);
+    // A kept copy that reads as blanked is a rejected grant, as after a probe.
+    const rejected = retried === "rejected";
+    if (rejected) state.rejectedIdentity = pending.seedIdentity;
+    const installedAt = this.readSourceExpiresAt(accountId);
+    if (retried !== "installed" || installedAt === NO_EXPIRY) return { kept: false, rejected, success: null };
+    return { kept: false, rejected, success: this.handleSuccess(accountId, before, installedAt, "rotated_kept") };
+  }
+
+  // A copy that cannot be read proves no rotation.
+  private holdsRotation(copy: ProbeHome): boolean {
+    const identity = this.readIdentityAt(copy.credentialsFile);
+    return identity !== null && identity !== copy.seedIdentity;
   }
 
   // Only for the credential the source still holds, and only if no kept rotation holds its successor.
@@ -521,22 +576,11 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
     // Before the missing-source check: an unreadable source must not end the account while a
     // rotation waits for it.
-    const pending = state.pendingRotation;
-    let keptCopyRejected = false;
-    if (pending) {
-      const retried = this.adoptProbeRotation(accountId, pending);
-      // The source's grant is spent: another probe would only be rejected.
-      if (pending.outstanding) return this.handleFailure(accountId, before, before, INSTALL_FAILED);
-      state.pendingRotation = null;
-      this.removeProbeHome(pending);
-      // A kept copy that reads as blanked is a rejected grant, as after a probe.
-      keptCopyRejected = retried === "rejected";
-      if (keptCopyRejected) state.rejectedIdentity = pending.seedIdentity;
-      const installedAt = this.readSourceExpiresAt(accountId);
-      if (retried === "installed" && installedAt !== NO_EXPIRY) {
-        return this.handleSuccess(accountId, before, installedAt, "rotated_tier1");
-      }
-    }
+    const retry = this.retryKeptRotation(accountId, before);
+    // The source's grant is spent: another probe would only be rejected.
+    if (retry.kept) return this.handleFailure(accountId, before, before, INSTALL_FAILED);
+    if (retry.success) return retry.success;
+    const keptCopyRejected = retry.rejected;
 
     if (before === NO_EXPIRY) {
       const unusable = this.describeUnusableSource(sourceFile);
@@ -631,12 +675,36 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
     let tier2: CliRun | null = null;
     if (probeResult === "unchanged") {
+      const detail = ` tier1=${describeTierRun(tier1)}`;
+      // Installed while the CLI still runs: from the refresh on, the sessions' token can be dead (docs/153).
+      const early: { installedAt: number | null; result: RefreshResult | null } = { installedAt: null, result: null };
       // A billable API call.
-      tier2 = await this.spawnCli(probe, "tier2", TIER2_TIMEOUT_MS);
+      tier2 = await this.spawnCli(probe, "tier2", TIER2_TIMEOUT_MS, () => {
+        if (this.adoptProbeRotation(accountId, probe) !== "installed") return;
+        const installedAt = this.readSourceExpiresAt(accountId);
+        if (installedAt === NO_EXPIRY) return;
+        // Before the success path, whose listeners can throw.
+        early.installedAt = installedAt;
+        // A throw below must not leave the result of an earlier install standing for this one.
+        early.result = null;
+        early.result = this.handleSuccess(accountId, before, installedAt, "rotated_tier2", detail);
+      });
       probeResult = this.adoptProbeRotation(accountId, probe);
       after = this.readSourceExpiresAt(accountId);
-      if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
-        return this.handleSuccess(accountId, before, after, "rotated_tier2", ` tier1=${describeTierRun(tier1)}`);
+      // Before any success: a rotation that is not installed is the only record of a live grant.
+      if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED);
+      if (after !== NO_EXPIRY && probeResult === "installed") {
+        return this.handleSuccess(accountId, before, after, "rotated_tier2", detail);
+      }
+      // The source still holds what was installed while the CLI ran.
+      if (early.installedAt !== null && probeResult === "unchanged" && after !== NO_EXPIRY) {
+        if (!early.result) return this.handleSuccess(accountId, before, after, "rotated_tier2", detail);
+        // A scheduled tick that fired during the run joined this one, and is spent.
+        this.scheduleAccount(accountId);
+        return early.result;
+      }
+      if (after !== NO_EXPIRY && after > (early.installedAt ?? before)) {
+        return this.handleSuccess(accountId, before, after, "rotated_tier2", detail);
       }
     }
 
@@ -707,7 +775,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     accountId: string,
     before: number | null,
     after: number,
-    outcome: "rotated_tier1" | "rotated_tier2" | "rotated_private_run" | "harvested_session",
+    outcome: "rotated_tier1" | "rotated_tier2" | "rotated_kept" | "rotated_private_run" | "harvested_session",
     detail = "",
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
@@ -861,7 +929,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       const credentialsFile = path.join(home, CLAUDE_CREDENTIALS_RELATIVE);
       fs.mkdirSync(path.dirname(credentialsFile), { recursive: true });
       fs.writeFileSync(credentialsFile, seeded, { mode: 0o600 });
-      return { home, credentialsFile, seedIdentity, outstanding: false };
+      return { home, credentialsFile, seedIdentity, installed: false, outstanding: false };
     } catch (err) {
       fs.rmSync(home, { recursive: true, force: true });
       throw err;
@@ -899,12 +967,12 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     try {
       rotated = JSON.parse(fs.readFileSync(probe.credentialsFile, "utf8")) as Record<string, unknown>;
     } catch { /* the CLI writes this file only to rotate or to blank it, so it can hold a rotation */ }
-    if (rotated !== null) {
-      const identity = claudeCredentialIdentity(rotated);
-      if (identity === null || identity === probe.seedIdentity) {
-        probe.outstanding = false;
-        return isBlankedClaudeCredential(rotated) ? "rejected" : "unchanged";
-      }
+    const rotatedIdentity = rotated === null ? null : claudeCredentialIdentity(rotated);
+    // An installed copy is judged against the source again: another writer can have changed it.
+    const installedCopy = probe.installed && rotatedIdentity !== null && rotatedIdentity === probe.seedIdentity;
+    if (rotated !== null && !installedCopy && (rotatedIdentity === null || rotatedIdentity === probe.seedIdentity)) {
+      probe.outstanding = false;
+      return isBlankedClaudeCredential(rotated) ? "rejected" : "unchanged";
     }
     probe.outstanding = true;
 
@@ -918,7 +986,11 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       probe.outstanding = false;
       return "superseded";
     }
-    if (rotated === null || source.state === "unknown") return "install_failed";
+    if (installedCopy && source.state === "same") {
+      probe.outstanding = false;
+      return "unchanged";
+    }
+    if (rotated === null || rotatedIdentity === null || source.state === "unknown") return "install_failed";
     if (source.state === "blanked") {
       // Another CLI in the account root lost the grant to this probe and blanked the file.
       console.log(`[claude-oauth-refresh] account=${accountId} the source was blanked while the probe ran — installing over it`);
@@ -936,6 +1008,9 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       return "install_failed";
     }
     probe.outstanding = false;
+    probe.installed = true;
+    // The CLI can still write the copy: what it writes next is judged against what is installed.
+    probe.seedIdentity = rotatedIdentity;
     return "installed";
   }
 
@@ -956,7 +1031,13 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     return rejected !== null && this.readSourceIdentity(accountId) === rejected;
   }
 
-  private spawnCli(probe: ProbeHome, label: "tier1" | "tier2", timeoutMs: number): Promise<CliRun> {
+  // `onCopyChange` runs, while the CLI runs, each time the copy's bytes change.
+  private spawnCli(
+    probe: ProbeHome,
+    label: "tier1" | "tier2",
+    timeoutMs: number,
+    onCopyChange?: () => void,
+  ): Promise<CliRun> {
     return new Promise<CliRun>((resolve) => {
       const startedAt = performance.now();
       const finish = (output: string, timedOut: boolean, exit: string | null): void => {
@@ -967,6 +1048,15 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       const keepStdout = label === "tier2";
       const debugFile = path.join(probe.home, `${label}.debug.log`);
       const fullArgs = withDebugCapture(REFRESH_PROBE_COMMANDS[label], debugFile);
+      const readCopy = (): string | null => {
+        try {
+          return fs.readFileSync(probe.credentialsFile, "utf8");
+        } catch {
+          return null;
+        }
+      };
+      // Before the spawn: the CLI can refresh before this process runs again.
+      let copySeen = readCopy();
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: probe.home };
       // With this set, the CLI ignores HOME and the copy is not private.
       delete env.CLAUDE_CONFIG_DIR;
@@ -988,11 +1078,26 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       child.stdout?.on("data", (d: Buffer) => { if (keepStdout) stdout += d.toString("utf8"); });
       child.stderr?.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
 
+      const copyPoll = onCopyChange
+        ? setInterval(() => {
+          const current = readCopy();
+          if (current === copySeen) return;
+          copySeen = current;
+          try {
+            onCopyChange();
+          } catch (err) {
+            console.error("[claude-oauth-refresh] judging the probe's copy while the CLI runs failed:", err);
+          }
+        }, PROBE_COPY_POLL_MS)
+        : null;
+      if (copyPoll && typeof copyPoll.unref === "function") copyPoll.unref();
+
       let timedOut = false;
       let killGrace: ReturnType<typeof setTimeout> | null = null;
       const settle = (note: string, exit: string | null): void => {
         if (settled) return;
         settled = true;
+        if (copyPoll) clearInterval(copyPoll);
         clearTimeout(timer);
         if (killGrace) clearTimeout(killGrace);
         let debugContent = "";

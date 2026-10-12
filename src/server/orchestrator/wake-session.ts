@@ -53,6 +53,8 @@ export interface WakeTurnOptions {
   startOrRefuse?: { automatic: boolean };
   /** An earlier attempt of this wake put `text` in the transcript already. */
   promptShown?: boolean;
+  /** Read again just before dispatch, after a preparation that can take tens of seconds. */
+  stillWanted?: () => boolean;
 }
 
 // Dispatch also waits for readiness; this wait exposes early boot failures.
@@ -151,6 +153,12 @@ export async function wakeSessionWithTurn(
   if (runner.disposed) {
     throw new Error(`session ${session.id} container could not be resumed; wake-turn not delivered`);
   }
+  if (opts.stillWanted && !opts.stillWanted()) {
+    const settlement = createTurnSettlement();
+    settlement.noteAdmission("refused");
+    settlement.settle(turnRefused("the wake is no longer wanted"));
+    return settlement;
+  }
 
   const prepared = wakeDispatch(session.id, opts);
   if (opts.releaseHold && !opts.startOrRefuse) return queueAheadAndRelease(runner, opts.releaseHold, prepared);
@@ -172,7 +180,7 @@ function queueAheadAndRelease(
   releaseQueuedTurn(runner);
   // A late answer hold also takes the entry out of the queue, into the saved hold.
   if (!runner.messageQueue.includes(entry) && !runner.answerHold) settlement.noteAdmission("started");
-  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
   return settlement;
 }
 

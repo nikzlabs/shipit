@@ -14,6 +14,7 @@ import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
 import { imageHash, imageUrl } from "./transcript-projection.js";
 import { TURN_STEERED } from "./turn-settlement.js";
+import { queueEntryId } from "./queue-identity.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { parseGoalCommand } from "../shared/goal-command.js";
 
@@ -135,18 +136,20 @@ export function trySteerDispatch(
   agent.sendUserMessage(agentText);
 
   // Acknowledgement and retry matching need the exact text sent to the CLI.
-  recordSteeredMessage(runner, opts.text, {
+  const clientRequestId = recordSteeredMessage(runner, opts.text, {
     assembledPrompt: agentText,
     ...(opts.bestEffortSteer ? { bestEffort: true } : {}),
     ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
     ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
     ...(opts.automatic ? { automatic: true } : {}),
+    ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
   });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
   runner.emitMessage({
     type: "message_steered",
     text: opts.text,
     sessionId: runner.sessionId,
+    clientRequestId,
     ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
     ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
   });
@@ -271,20 +274,22 @@ function recordDelivered(
   prepared: PreparedSteer,
 ): void {
   resetSubAgentSpawnBudget(runner);
-  recordSteeredMessage(runner, entry.text, {
+  const clientRequestId = recordSteeredMessage(runner, entry.text, {
     images: prepared.images,
     files: prepared.files,
     uploadPaths: prepared.uploadPaths,
     assembledPrompt: prepared.prompt,
+    clientRequestId: queueEntryId(entry),
+    ...(entry.sendOrder !== undefined ? { sendOrder: entry.sendOrder } : {}),
   });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
-  // `dequeued` gives the sender's browser its composed bubble back, as a drained entry does;
-  // the steer below then finds that bubble, also when an earlier message had the same text.
-  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot(), dequeued: entry.text });
+  // No `dequeued`: the steer is the bubble, with its attachments, on every viewer (planning#691).
+  runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
   runner.emitMessage({
     type: "message_steered",
     text: entry.text,
     sessionId: runner.sessionId,
+    clientRequestId,
     images: prepared.images?.map((img) => ({
       mediaType: img.mediaType,
       src: imageUrl(runner.sessionId, imageHash(img.data)),

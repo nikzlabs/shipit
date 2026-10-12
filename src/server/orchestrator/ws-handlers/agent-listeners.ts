@@ -5,6 +5,7 @@ import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
 import { noteTurnReady, noteTurnSubmitted, setSteerRefused } from "../turn-stop-request.js";
+import { queueEntryId, requeueInSendOrder } from "../queue-identity.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import { retireRewindUndo } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
@@ -137,6 +138,7 @@ export function wireAgentListeners(
   if (!opts.capturedSessionId) {
     throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
+  const ownerSessionId = opts.capturedSessionId;
   const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
   let turnModel: string | undefined = sessionAtTurnStart?.model ?? deps.getSelectedModel();
   const turnAttributionAtStart = turnAttributionFor(selectionOf(sessionAtTurnStart));
@@ -280,8 +282,14 @@ export function wireAgentListeners(
             if (requeued.execution === "interactive" && requeued.automatic !== true) {
               setSteerRefused(runner, true);
             }
-            const position = runner.enqueue(requeued);
-            emitToViewers({ type: "message_queued", text: dropped.text, position });
+            const position = requeueInSendOrder(runner, requeued);
+            emitToViewers({
+              type: "message_queued",
+              sessionId: runner.sessionId,
+              id: queueEntryId(requeued),
+              text: dropped.text,
+              position,
+            });
             deps.broadcastLog(
               "server",
               `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
@@ -508,10 +516,8 @@ export function wireAgentListeners(
       event.type === "agent_assistant" && event.isStreamCompletion;
     if (!isInternalStreamCompletion) {
       // Keep full bodies for persistence; only results persist synchronously in this tick.
-      const wireEvent = opts.capturedSessionId
-        ? projectAgentEventForWire(opts.capturedSessionId, event, (id) => toolTracker.getToolName(id))
-        : event;
-      emitToViewers({ type: "agent_event", event: wireEvent });
+      const wireEvent = projectAgentEventForWire(ownerSessionId, event, (id) => toolTracker.getToolName(id));
+      emitToViewers({ type: "agent_event", sessionId: ownerSessionId, event: wireEvent });
     }
 
     if (event.type === "agent_init") {

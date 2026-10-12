@@ -1,11 +1,11 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 
-import { ClaudeOAuthRefresher, summarizeRefreshFailure } from "./oauth-refresher.js";
+import { ClaudeOAuthRefresher, PROBE_COPY_POLL_MS, summarizeRefreshFailure } from "./oauth-refresher.js";
 import type { ClaudeOAuthRefresherDeps, RefreshResult } from "./oauth-refresher.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import { writeSessionAccountMarker } from "../../session-credentials-scaffold.js";
@@ -122,6 +122,8 @@ function captureLogs(): { lines: string[]; restore: () => void } {
 }
 
 interface SpawnEffect {
+  // Runs inside spawn(), before it returns: the CLI acts before the caller runs again.
+  onSpawn?: (home: string) => void;
   rotateTo?: number;
   // What the CLI does to the credential file it runs against on invalid_grant.
   blank?: boolean;
@@ -179,6 +181,7 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
     (child as unknown as { stderr: EventEmitter }).stderr = stderr;
     (child as unknown as { kill: (sig?: string) => boolean }).kill = () => true;
     handle.children.push(child);
+    effect.onSpawn?.(accountRoot);
 
     const fire = (): void => {
       if (effect.stdout) stdout.emit("data", Buffer.from(effect.stdout, "utf8"));
@@ -216,6 +219,18 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
   }) as FakeSpawnHandle["spawn"];
 
   return handle;
+}
+
+function watchSettled<T>(pending: Promise<T>): { done: Promise<T>; isSettled: () => boolean } {
+  let settled = false;
+  const done = (async () => {
+    try {
+      return await pending;
+    } finally {
+      settled = true;
+    }
+  })();
+  return { done, isSettled: () => settled };
 }
 
 interface TestRig {
@@ -1524,7 +1539,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       const [retried] = await rig.refresher.refreshNow("acct-1");
 
-      expect(retried!.outcome).toBe("rotated_tier1");
+      expect(retried!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
       expect(rig.spawnHandle.invocations.length).toBe(1);
       expect(fs.existsSync(rig.spawnHandle.invocations[0]!.home)).toBe(false);
@@ -1554,6 +1569,466 @@ describe("ClaudeOAuthRefresher", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("installs and pushes a rotation as soon as the CLI writes it, before the CLI exits", async () => {
+      vi.useFakeTimers();
+      try {
+        const rig = marginRig();
+        const rotatedTo = now + 8 * 60 * 60 * 1000;
+        rig.spawnHandle.effects = [{ hang: true }];
+        const logs = captureLogs();
+
+        const { done: tick, isSettled } = watchSettled(rig.refresher.refreshNow("acct-1"));
+        await vi.advanceTimersByTimeAsync(0);
+        writeCredentials(rig.spawnHandle.invocations[0]!.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        // The CLI still runs its API call.
+        expect(isSettled()).toBe(false);
+        expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+        expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "acct-1" }]);
+
+        rig.spawnHandle.children[0]!.emit("exit", 0, null);
+        const [result] = await tick;
+        logs.restore();
+
+        expect(result!.outcome).toBe("rotated_tier2");
+        expect(result!.afterExpiresAt).toBe(rotatedTo);
+        expect(rig.repushCalls).toHaveLength(1);
+        expect(logs.lines.filter((line) => line.includes("rotated_tier2"))).toHaveLength(1);
+        expect(logs.lines.some((line) => line.includes("while the probe ran"))).toBe(false);
+        expect(fs.existsSync(rig.spawnHandle.invocations[0]!.home)).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("installs a second rotation that the CLI writes after the first was installed", async () => {
+      vi.useFakeTimers();
+      try {
+        const rig = marginRig();
+        const rotatedTo = now + 8 * 60 * 60 * 1000;
+        rig.spawnHandle.effects = [{ hang: true }];
+
+        const tick = rig.refresher.refreshNow("acct-1");
+        await vi.advanceTimersByTimeAsync(0);
+        const home = rig.spawnHandle.invocations[0]!.home;
+        writeCredentials(home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        // The CLI spent the installed credential's grant, so the source must get its successor.
+        writeCredentials(home, { expiresAt: rotatedTo + 1 });
+        const successor = (JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8")) as {
+          claudeAiOauth: SeenCredentials;
+        }).claudeAiOauth;
+        rig.spawnHandle.children[0]!.emit("exit", 0, null);
+        const [result] = await tick;
+
+        expect(result!.outcome).toBe("rotated_tier2");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+        expect(rig.repushCalls).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // A probe whose CLI never exits by itself; the test writes its copy and ends it.
+    async function startHangingProbe(rig: TestRig, effect: SpawnEffect = {}): Promise<{
+      tick: Promise<RefreshResult[]>;
+      home: string;
+      exit: () => void;
+    }> {
+      rig.spawnHandle.effects = [{ ...effect, hang: true }];
+      const tick = rig.refresher.refreshNow("acct-1");
+      await vi.advanceTimersByTimeAsync(0);
+      return {
+        tick,
+        home: rig.spawnHandle.invocations[0]!.home,
+        exit: () => rig.spawnHandle.children[0]!.emit("exit", 0, null),
+      };
+    }
+
+    function readCopyOf(home: string): SeenCredentials {
+      const raw = fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8");
+      return (JSON.parse(raw) as { claudeAiOauth: SeenCredentials }).claudeAiOauth;
+    }
+
+    describe("a rotation installed while the CLI runs", () => {
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it("installs it again over a source that another CLI blanks before the probe exits", async () => {
+        const rig = marginRig();
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        const installed = readCopyOf(probe.home);
+
+        writeBlankedCredentials(accountRootOf(rig.rootDir, "acct-1"));
+        probe.exit();
+        const [result] = await probe.tick;
+
+        expect(result!.outcome).toBe("rotated_tier2");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(installed);
+        expect(rig.sseCalls.map((c) => c.event)).not.toContain("agent_auth_failed");
+      });
+
+      it("leaves a sign-in that replaces the source before the probe exits, and ticks again for it", async () => {
+        const rig = marginRig();
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        // A shorter life than the rotation's, so that no expiry shows the replacement.
+        writeCredentials(accountRootOf(rig.rootDir, "acct-1"), { expiresAt: now + 2 * 60 * 60 * 1000 });
+        const signedIn = readSourceCredentials(rig.rootDir, "acct-1");
+        probe.exit();
+        const [result] = await probe.tick;
+
+        expect(result!.outcome).toBe("noop");
+        expect(result!.reason).toContain("changed while the probe ran");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(signedIn);
+        expect(rig.refresher._inspectForTest("acct-1").hasTimer).toBe(true);
+      });
+
+      it("keeps it when the source cannot be read at the exit, and lets it go once the source holds it", async () => {
+        const rig = marginRig();
+        const sourceFile = accountTokenFile(rig.rootDir, "acct-1");
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        const installedSource = fs.readFileSync(sourceFile, "utf8");
+
+        fs.writeFileSync(sourceFile, "{", "utf8");
+        probe.exit();
+        const [result] = await probe.tick;
+        expect(result!.outcome).toBe("not_rotated");
+        expect(fs.existsSync(probe.home)).toBe(true);
+
+        fs.writeFileSync(sourceFile, installedSource, "utf8");
+        const [next] = await rig.refresher.refreshNow("acct-1");
+        expect(next!.outcome).toBe("noop");
+        expect(rig.spawnHandle.invocations).toHaveLength(1);
+        expect(fs.existsSync(probe.home)).toBe(false);
+      });
+
+      it("keeps it when installing it again over a blank fails, and installs it on the next tick", async () => {
+        const rig = marginRig();
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        const installed = readCopyOf(probe.home);
+
+        writeBlankedCredentials(accountRootOf(rig.rootDir, "acct-1"));
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        });
+        probe.exit();
+        const [failed] = await probe.tick;
+        rename.mockRestore();
+        errors.mockRestore();
+        expect(failed!.outcome).toBe("not_rotated");
+        expect(fs.existsSync(probe.home)).toBe(true);
+
+        const [next] = await rig.refresher.refreshNow("acct-1");
+        expect(next!.outcome).toBe("rotated_kept");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(installed);
+        expect(rig.spawnHandle.invocations).toHaveLength(1);
+      });
+
+      // The install, then a source that cannot be read at the exit, then the source back.
+      async function keepInstalledCopy(rig: TestRig, atExit?: (probe: { home: string }) => void): Promise<string> {
+        const sourceFile = accountTokenFile(rig.rootDir, "acct-1");
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        const installedSource = fs.readFileSync(sourceFile, "utf8");
+        if (atExit) atExit(probe);
+        else fs.writeFileSync(sourceFile, "{", "utf8");
+        probe.exit();
+        await probe.tick;
+        fs.writeFileSync(sourceFile, installedSource, "utf8");
+        expect(fs.existsSync(probe.home)).toBe(true);
+        return probe.home;
+      }
+
+      it("lets a naming run's rotation that cannot be installed take the place of a kept installed copy", async () => {
+        const rig = marginRig();
+        const keptHome = await keepInstalledCopy(rig);
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        });
+        let successor: SeenCredentials | null = null;
+
+        await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          writeCredentials(home, { expiresAt: rotatedTo + 1 });
+          successor = readCopyOf(home);
+        });
+        rename.mockRestore();
+        errors.mockRestore();
+
+        expect(fs.existsSync(keptHome)).toBe(false);
+        const [tick] = await rig.refresher.refreshNow("acct-1");
+        expect(tick!.outcome).toBe("rotated_kept");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+      });
+
+      it("judges a naming run's rejection of the installed credential while a kept copy of it waits", async () => {
+        const rig = marginRig();
+        await keepInstalledCopy(rig);
+
+        const run = rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+        await vi.advanceTimersByTimeAsync(0);
+        await run;
+
+        expect(rig.sseCalls.map((c) => c.event)).toContain("claude_account_unauthenticated");
+        const [tick] = await rig.refresher.refreshNow("acct-1");
+        expect(tick!.outcome).toBe("revoked");
+        expect(rig.spawnHandle.invocations).toHaveLength(1);
+      });
+
+      const failRename = (): void => {
+        vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        });
+      };
+
+      it("lets a naming run's rotation take the place of a kept installed copy that cannot be installed again", async () => {
+        const rig = marginRig();
+        await keepInstalledCopy(rig);
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        let successor: SeenCredentials | null = null;
+
+        await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          writeCredentials(home, { expiresAt: rotatedTo + 1 });
+          successor = readCopyOf(home);
+          writeBlankedCredentials(accountRootOf(rig.rootDir, "acct-1"));
+          // Both installs fail: the kept copy's over the blank, and this run's.
+          failRename();
+          failRename();
+        });
+        vi.mocked(fs.renameSync).mockRestore();
+        errors.mockRestore();
+
+        const [tick] = await rig.refresher.refreshNow("acct-1");
+        expect(tick!.outcome).toBe("rotated_kept");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+      });
+
+      it("keeps a kept installed copy over a naming run's copy that cannot be read", async () => {
+        const rig = marginRig();
+        await keepInstalledCopy(rig);
+        const installed = readSourceCredentials(rig.rootDir, "acct-1");
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), "{", "utf8");
+          writeBlankedCredentials(accountRootOf(rig.rootDir, "acct-1"));
+          failRename();
+        });
+        vi.mocked(fs.renameSync).mockRestore();
+        errors.mockRestore();
+
+        const [tick] = await rig.refresher.refreshNow("acct-1");
+        expect(tick!.outcome).toBe("rotated_kept");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(installed);
+      });
+
+      it("judges a naming run's copy also when a listener throws while the kept copy is installed again", async () => {
+        const rig = marginRig();
+        await keepInstalledCopy(rig);
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        rig.refresher.once("refreshed", () => { throw new Error("listener failed"); });
+        let successor: SeenCredentials | null = null;
+
+        await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          writeCredentials(home, { expiresAt: rotatedTo + 1 });
+          successor = readCopyOf(home);
+          writeBlankedCredentials(accountRootOf(rig.rootDir, "acct-1"));
+        });
+        errors.mockRestore();
+
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+      });
+
+      it("keeps a kept later rotation over a naming run's rotation of the credential it succeeds", async () => {
+        const rig = marginRig();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        // The CLI rotates again, and that successor cannot be installed: it is kept.
+        writeCredentials(probe.home, { expiresAt: rotatedTo + 1 });
+        const successor = readCopyOf(probe.home);
+        failRename();
+        probe.exit();
+        await probe.tick;
+        expect(fs.existsSync(probe.home)).toBe(true);
+
+        // A naming run of the installed credential rotates it too, and nothing can be installed.
+        await rig.refresher.runInPrivateCopy("acct-1", async (home) => {
+          writeCredentials(home, { expiresAt: rotatedTo + 2 });
+          failRename();
+          failRename();
+        });
+        vi.mocked(fs.renameSync).mockRestore();
+        errors.mockRestore();
+
+        const [tick] = await rig.refresher.refreshNow("acct-1");
+        expect(tick!.outcome).toBe("rotated_kept");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+      });
+
+      it("reports the later install when a listener throws on it while the CLI runs", async () => {
+        const rig = marginRig();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        rig.refresher.once("refreshed", () => { throw new Error("listener failed"); });
+        writeCredentials(probe.home, { expiresAt: rotatedTo + 1 });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        probe.exit();
+        const [result] = await probe.tick;
+        errors.mockRestore();
+
+        expect(result!.outcome).toBe("rotated_tier2");
+        expect(result!.afterExpiresAt).toBe(rotatedTo + 1);
+      });
+
+      it("judges a naming run's rejection after the installed copy could not be read at the exit", async () => {
+        const rig = marginRig();
+        const readFile = fs.readFileSync.bind(fs) as (file: fs.PathOrFileDescriptor, options?: unknown) => string | Buffer;
+        let copyRead: { mockRestore: () => void } | null = null;
+        await keepInstalledCopy(rig, (probe) => {
+          const copyFile = path.join(probe.home, ".claude", ".credentials.json");
+          let failedOnce = false;
+          copyRead = vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+            if (file === copyFile && !failedOnce) {
+              failedOnce = true;
+              throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+            }
+            return readFile(file, options);
+          }) as typeof fs.readFileSync);
+        });
+        copyRead!.mockRestore();
+
+        const run = rig.refresher.runInPrivateCopy("acct-1", async (home) => writeBlankedCredentials(home));
+        await vi.advanceTimersByTimeAsync(0);
+        await run;
+
+        expect(rig.sseCalls.map((c) => c.event)).toContain("claude_account_unauthenticated");
+      });
+
+      it("reports it at the exit when a listener threw while the CLI ran", async () => {
+        const rig = marginRig();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        rig.refresher.once("refreshed", () => { throw new Error("listener failed"); });
+        const probe = await startHangingProbe(rig);
+        // No later than the source's expiry, so that only the record of the install shows it.
+        writeCredentials(probe.home, { expiresAt: now + 30 * 60 * 1000 });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        probe.exit();
+        const [result] = await probe.tick;
+        const logged = errors.mock.calls.some((call) => String(call[0]).includes("while the CLI runs failed"));
+        errors.mockRestore();
+
+        expect(result!.outcome).toBe("rotated_tier2");
+        expect(rig.refresher._inspectForTest("acct-1").failureCount).toBe(0);
+        expect(logged).toBe(true);
+      });
+
+      it("judges a rejection of the installed credential, also after a listener threw", async () => {
+        const rig = marginRig();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        rig.refresher.once("refreshed", () => { throw new Error("listener failed"); });
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        // The CLI refreshed again with the installed credential's grant, and was rejected.
+        writeBlankedCredentials(probe.home);
+        probe.exit();
+        await vi.advanceTimersByTimeAsync(0);
+        const [result] = await probe.tick;
+        errors.mockRestore();
+
+        expect(result!.outcome).toBe("revoked");
+        expect(rig.sseCalls.map((c) => c.event)).toContain("claude_account_unauthenticated");
+      });
+
+      it("keeps a later rotation that it cannot install, also after a listener threw", async () => {
+        const rig = marginRig();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        rig.refresher.once("refreshed", () => { throw new Error("listener failed"); });
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        writeCredentials(probe.home, { expiresAt: rotatedTo + 1 });
+        const successor = readCopyOf(probe.home);
+        const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        });
+        probe.exit();
+        const [failed] = await probe.tick;
+        rename.mockRestore();
+        errors.mockRestore();
+
+        expect(failed!.outcome).toBe("not_rotated");
+        const [next] = await rig.refresher.refreshNow("acct-1");
+        expect(next!.outcome).toBe("rotated_kept");
+        expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
+        expect(rig.spawnHandle.invocations).toHaveLength(1);
+      });
+
+      it("arms the next tick at the exit, also when a scheduled tick fired during the run", async () => {
+        const rig = marginRig();
+        const probe = await startHangingProbe(rig);
+        // Inside the safety margin, so that the success path schedules a tick in a second.
+        writeCredentials(probe.home, { expiresAt: now + 30 * 60 * 1000 });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        probe.exit();
+        await probe.tick;
+
+        expect(rig.refresher._inspectForTest("acct-1").hasTimer).toBe(true);
+      });
+
+      it("installs a rotation that the CLI writes before the spawn returns", async () => {
+        const rig = marginRig();
+        const probe = await startHangingProbe(rig, {
+          onSpawn: (home) => writeCredentials(home, { expiresAt: rotatedTo }),
+        });
+        await vi.advanceTimersByTimeAsync(PROBE_COPY_POLL_MS);
+
+        expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
+        expect(rig.repushCalls).toHaveLength(1);
+        probe.exit();
+        await probe.tick;
+      });
+
+      it("stops reading the copy when the CLI exits", async () => {
+        const rig = marginRig();
+        const probe = await startHangingProbe(rig);
+        writeCredentials(probe.home, { expiresAt: rotatedTo });
+        probe.exit();
+        await probe.tick;
+        const copyFile = path.join(probe.home, ".claude", ".credentials.json");
+        const reads = vi.spyOn(fs, "readFileSync");
+
+        await vi.advanceTimersByTimeAsync(10 * PROBE_COPY_POLL_MS);
+        const copyReads = reads.mock.calls.filter((call) => call[0] === copyFile);
+        reads.mockRestore();
+
+        expect(copyReads).toHaveLength(0);
+      });
     });
 
     it("goes on after the kill grace when the CLI never exits", async () => {
@@ -1593,7 +2068,7 @@ describe("ClaudeOAuthRefresher", () => {
       fs.writeFileSync(sourceFile, sourceBefore, "utf8");
       const [installed] = await rig.refresher.refreshNow("acct-1");
 
-      expect(installed!.outcome).toBe("rotated_tier1");
+      expect(installed!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
       expect(rig.spawnHandle.invocations.length).toBe(1);
     });
@@ -1613,7 +2088,7 @@ describe("ClaudeOAuthRefresher", () => {
       writeCredentials(rig.spawnHandle.invocations[0]!.home, { expiresAt: rotatedTo });
       const [installed] = await rig.refresher.refreshNow("acct-1");
 
-      expect(installed!.outcome).toBe("rotated_tier1");
+      expect(installed!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
       expect(rig.spawnHandle.invocations.length).toBe(1);
     });
@@ -1802,7 +2277,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       expect(events(rig)).not.toContain("claude_account_unauthenticated");
       const [installed] = await rig.refresher.refreshNow("acct-1");
-      expect(installed!.outcome).toBe("rotated_tier1");
+      expect(installed!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
     });
 
@@ -1940,7 +2415,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(inMargin);
       expect(fs.existsSync(home)).toBe(true);
       const [tick] = await rig.refresher.refreshNow("acct-1");
-      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(tick!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(rotatedTo);
       expect(rig.spawnHandle.invocations.length).toBe(0);
       expect(fs.existsSync(home)).toBe(false);
@@ -2040,7 +2515,7 @@ describe("ClaudeOAuthRefresher", () => {
 
       expect(fs.existsSync(olderHome)).toBe(false);
       const [tick] = await rig.refresher.refreshNow("acct-1");
-      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(tick!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(newer);
     });
 
@@ -2065,7 +2540,7 @@ describe("ClaudeOAuthRefresher", () => {
       errors.mockRestore();
 
       const [tick] = await rig.refresher.refreshNow("acct-1");
-      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(tick!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
       fs.rmSync(unreadableHome, { recursive: true, force: true });
     });
@@ -2102,7 +2577,7 @@ describe("ClaudeOAuthRefresher", () => {
       fs.writeFileSync(sourceFile, signedIn, "utf8");
 
       const [tick] = await rig.refresher.refreshNow("acct-1");
-      expect(tick!.outcome).toBe("rotated_tier1");
+      expect(tick!.outcome).toBe("rotated_kept");
       expect(readSourceCredentials(rig.rootDir, "acct-1")).toEqual(successor);
       fs.rmSync(earlierHome, { recursive: true, force: true });
     });
@@ -2625,6 +3100,28 @@ describe("summarizeRefreshFailure", () => {
     const started = performance.now();
     for (const line of lines) summarizeRefreshFailure(`Error: ${line}`);
     expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("redacts by the key in linear time, for a key of any length with one of the words and no other key", () => {
+    // 128 000 characters each. A key rule that backtracks to each word in the run takes 2 to 4 s per line.
+    const lines = [
+      `"${"token".repeat(25_600)}`,
+      `"${"a_secret".repeat(16_000)}`,
+      `{"${"key".repeat(42_666)}": "x`,
+    ];
+    const started = performance.now();
+    for (const line of lines) summarizeRefreshFailure(`Error: ${line}`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+
+    // A bound on the key length, or no word test at all, would also be linear.
+    for (const pad of [0, 40, 200, 5_000]) {
+      const letters = "a".repeat(pad);
+      for (const key of [`refresh_token${letters}`, `${letters}Secret`, `${letters}api_KEY${letters}`, `${letters}passwd`]) {
+        expect(summarizeRefreshFailure(`Error: {"${key}": "abc123"}`)).not.toContain("abc123");
+      }
+    }
+    const refusal = 'Error: {"error":"invalid_grant","error_description":"Refresh token revoked"}';
+    expect(summarizeRefreshFailure(refusal)).toBe(refusal);
   });
 
   it("gives each of the three lines a share, so a long line cannot hide the last one", () => {

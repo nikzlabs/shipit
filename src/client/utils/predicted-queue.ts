@@ -25,12 +25,13 @@
  * reaching the same stash from one message earlier.
  */
 
+import type { WsQueueRow } from "../../server/shared/types.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import { useSessionStore, type QueuedMessageEntry } from "../stores/session-store.js";
 
 const isPredicted = (entry: QueuedMessageEntry) => entry.requestId !== undefined;
 
-/** Keyed by `text` too, because that is all `message_queued` echoes back. */
+/** The server names the queue entry by this `requestId` too, so the row is found by it. */
 export function addPredictedQueueEntry(
   requestId: string,
   text: string,
@@ -55,14 +56,24 @@ export function dropPredictedQueueEntry(requestId: string): void {
  * dequeue, and returns `null` when nothing predicted this message — which is
  * the signal to queue it the ordinary way.
  */
-export function adoptPredictedQueueEntry(text: string, position: number): ChatMessage | null {
+export function adoptPredictedQueueEntry(row: WsQueueRow): ChatMessage | null {
   const session = useSessionStore.getState();
-  const predicted = session.queuedMessages.find((q) => isPredicted(q) && q.text === text);
+  const predicted = session.queuedMessages.find((q) => isPredicted(q) && q.requestId === row.id);
   if (!predicted) return null;
-  session.setQueuedMessages((prev) =>
-    prev.map((q) => (q.requestId === predicted.requestId ? { text, position } : q)),
-  );
+  session.setQueuedMessages((prev) => placeQueueRow(prev.filter((q) => q.requestId !== row.id), row));
   return predicted.bubble ?? null;
+}
+
+/**
+ * Puts a server row at its one-based position among the server rows, before the predicted
+ * ones. A message the agent did not take goes back to its place in send order, which need
+ * not be the end (planning#691).
+ */
+export function placeQueueRow(rows: QueuedMessageEntry[], row: WsQueueRow): QueuedMessageEntry[] {
+  const server = rows.filter((q) => !isPredicted(q) && q.id !== row.id);
+  const index = Math.min(Math.max(row.position - 1, 0), server.length);
+  server.splice(index, 0, { id: row.id, text: row.text, position: row.position });
+  return [...server, ...rows.filter(isPredicted)].map((q, i) => ({ ...q, position: i + 1 }));
 }
 
 /**
@@ -71,19 +82,20 @@ export function adoptPredictedQueueEntry(text: string, position: number): ChatMe
  *
  * Two answers mean this. A **steer** feeds the message straight into the
  * running process, and a **refused** send ends with an error the user needs to
- * see their own message above. Callers pass `text` when the answer names one
- * message and nothing when it names none: an ordinary server error carries no
- * request id, so every unacknowledged row it could be about is restored.
+ * see their own message above. Callers pass the message's id when the answer
+ * names one message and nothing when it names none: an ordinary server error
+ * carries no request id, so every unacknowledged row it could be about is
+ * restored.
  *
  * Restoring is the right direction even when the guess is wrong, because it
- * self-heals: a `message_queued` arriving afterwards finds the bubble by text,
+ * self-heals: a `message_queued` arriving afterwards finds the bubble by its id,
  * stashes it and takes it out of the transcript again, which is the path a send
  * with no prediction takes every time.
  */
-export function restorePredictedQueueEntries(text?: string): void {
+export function restorePredictedQueueEntries(id?: string): void {
   const session = useSessionStore.getState();
   const restored = session.queuedMessages.filter(
-    (q) => isPredicted(q) && (text === undefined || q.text === text),
+    (q) => isPredicted(q) && (id === undefined || q.requestId === id),
   );
   if (restored.length === 0) return;
   const ids = new Set(restored.map((q) => q.requestId));
@@ -107,15 +119,15 @@ export function restorePredictedQueueEntries(text?: string): void {
  * server's own rows.
  */
 export function applyQueueSnapshot(
-  snapshot: { text: string; position: number }[],
-  stash: (text: string, bubble: ChatMessage) => void,
+  snapshot: WsQueueRow[],
+  stash: (id: string, bubble: ChatMessage) => void,
 ): QueuedMessageEntry[] {
-  const named = new Set(snapshot.map((q) => q.text));
+  const named = new Set(snapshot.map((q) => q.id));
   const predicted = useSessionStore.getState().queuedMessages.filter(isPredicted);
   for (const row of predicted) {
-    if (named.has(row.text) && row.bubble) stash(row.text, row.bubble);
+    if (row.requestId !== undefined && named.has(row.requestId) && row.bubble) stash(row.requestId, row.bubble);
   }
-  const survivors = predicted.filter((row) => !named.has(row.text));
+  const survivors = predicted.filter((row) => row.requestId === undefined || !named.has(row.requestId));
   return [
     ...snapshot,
     ...survivors.map((row, i) => ({ ...row, position: snapshot.length + i + 1 })),

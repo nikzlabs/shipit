@@ -141,7 +141,10 @@ on tick (single-flight via in-process mutex; `force` = a session reported a 401)
 
   spawn `claude --debug api --debug-file <f> --print "ok" --model claude-haiku-4-5-20251001 ...`
         with HOME=<copy>, timeout 60s
-  the copy holds a new token → install it into the source, repush, return SUCCESS_TIER2
+    while it runs, every 50 ms: the copy changed and holds a new token
+                              → install it into the source and repush at once
+  the copy holds a new token → install it (if not installed yet, or again over a blanked
+                               source), repush, return SUCCESS_TIER2
 
   the new token cannot be written to the source, or the source cannot be read
                                                    → keep the copy, short backoff
@@ -428,6 +431,16 @@ Three changes, no new subsystem:
    `git@github.com:org/repo.git` also reads as an address. The Codex refresher
    replaces an address before this summary as well, for its classifier
    (docs/154).
+   A JSON value is redacted when its key (letters and `_`) holds `token`,
+   `secret`, `key`, `password`, `passwd` or `auth`, for a key of any length.
+   The rule finds the word in a lookahead, which does not backtrack. The earlier
+   form went back to each word in a run of letters: a quote before 128 000
+   characters of `tokentoken…` took 2.4 s on the orchestrator's main thread, now
+   0.3 ms. Two simpler fixes are also linear but redact less: a bound on the key
+   length misses long keys, and a rule that takes any key and then tests it
+   misses a key whose first quote also closes the value before it
+   (`"a": "b"token": "c"`). On 2 000 000 random
+   texts of keys and values, the new rule gives the same text as the old one.
    What the refresher itself saw is a note in the same text, on a line of its
    own that starts with a lower-case tag: `[error]` and `[spawn-failed]` (the
    CLI did not start), `[timeout]`, `[probe-home-failed]`, `[private-run-open]`
@@ -550,7 +563,8 @@ if the CLI's own 401 handling does.
   account back to "ready". A new sign-in or a session's rotation changes the source's
   token, and the memory no longer applies.
 
-Every verdict is about the token the copy was made from. If the source holds another
+Every verdict is about the token the copy was made from, or, once a rotation was
+installed while the CLI ran, about the installed one. If the source holds another
 token when the probes end (after the wait, on a rejection), and its expiry did not advance (which is the ordinary
 success test), the tick concludes nothing and a new tick runs at once — otherwise a
 rejected old grant would report a completed sign-in as revoked.
@@ -611,8 +625,9 @@ sentence, and the first line for a rejected grant now continues with what ran:
 Each later tick on the same grant logs the sentence with `trigger=… verdict=known_rejected`
 and nothing more, so `grep 'revoked (' | grep -v known_rejected` gives the first line.
 `rotated_tier2` ends with `tier1=…`: `not_run` on a near-expiry tick, and how tier 1
-ended on a forced probe. `rotated_tier1` is now, in practice, a kept rotation that a
-later tick installed.
+ended on a forced probe. `rotated_tier1` is a rotation by tier 1, which a forced probe of a
+healthy token does not make in practice. A kept rotation that a later tick installs logs
+`rotated_kept` (until 2026-10-12, `rotated_tier1`).
 A naming run and a kept copy have no tier output, so their lines stop at `expires_in`.
 
 With `tier1=not_run` and a tier 2 that ran for less than 30 s, the refresher sent the
@@ -633,8 +648,14 @@ it, **Tier 2 waits for a token host that answers after 1.5 s** and sends the gra
 Tier 1 does with a slow answer; it is not a check, because the refresher gives Tier 1
 no copy that it refreshes. Until 2026-10-12 the recorder answered every request at
 once, which no real host does, so the check that Tier 1 writes a rotation could not
-fail. It does not check every row of the table (the rejected flag order is history, not
-a dependency). 13 checks, about 9 s, exit 1 on a failure. CI runs it as the job
+fail. Since the early install (2026-10-12) it also checks that Tier 2 writes the rotation
+to the copy before its model call, and the session-side behavior that the early install
+relies on: after a 401 for the model call the CLI repeats it with a token that reached
+its file instead of refreshing, and after a rejected refresh it takes one that arrived
+meanwhile instead of blanking the file. Info lines report whether a token pushed 300 ms
+and 1 s after the 401 is still taken. It does not check every row of the tables (the
+rejected flag order is history, not a dependency). 16 checks, about 13 s, exit 1 on a
+failure. CI runs it as the job
 `claude-refresh-probe` (`.github/workflows/ci.yml`) on a pull request that changes
 `docker/agent-cli/package.json`, its lockfile or `install-agent-clis.sh`, the probe, this
 refresher (whose command lines the probe uses) or the workflow, and on every push to
@@ -794,6 +815,103 @@ finds the source missing while the row reads `authenticating` reports nothing
 (`missing_credentials … sign_in=in_progress`): the `agent_auth_failed` event would close
 the sign-in that the user is in, and with rule 1 no harvest hides that state any more.
 
+### Install the rotation while the probe runs (2026-10-12 fix)
+
+Production, build `a28f165b`, 2026-10-12 (UTC). Session `83d3273c…` was mid-turn. The
+refresher's probe got a new token at 05:43:21.7 (the logged `new_expires_at` is exactly
+8 h later). At 05:43:23.5 the session's CLI reported an auth failure and ShipIt killed
+its agent for the docs/179 heal. The refresher logged `rotated_tier2` at 05:43:26.88
+and propagated the token to 19 pinned sessions at 05:43:27.16, and the heal then ran the
+turn again — after its kill had stopped whatever the agent was doing. The session's old
+token was valid until 06:28, so the 401 was not an expiry. On 2026-10-11 a session CLI's
+own rotation at 07:20:22 was followed by another session's auth kill less than a second
+later (that path is in Known limits).
+
+Two facts explain it:
+
+1. *Inferred, not provable from ShipIt's source:* a refresh ends the previous access
+   token at once, so a session that still holds it gets a 401 on its next request.
+2. *Verified in `runProbes`:* the refresher installed a rotation only after the probe's
+   CLI **exited**. The CLI refreshes before its API call, so the Haiku request, the exit
+   and the install were all inside that window: 5.2 s to the install and 5.5 s to the
+   last session.
+
+What a session's CLI does after a 401 for a token with hours left (measured offline on
+CLI 2.1.284, and again on 2.1.293, with the probe script's recorder, which answers 401
+for the old token):
+
+| What reaches the session's credentials file | What the CLI does |
+|---|---|
+| a new token before the CLI reads the file again, about 0.55 s after the 401 (0.1 s and 0.3 s after it worked; 1 s did not) | repeats the request with the new token: no refresh, no error |
+| nothing in that time | refreshes with its own refresh token, which is the spent grant |
+| a new token while that refresh is in flight, then `invalid_grant` | reads the file again and uses the new token; the file is not blanked |
+| nothing, then `invalid_grant` | blanks its file and reports `Failed to authenticate: OAuth session expired and could not be refreshed`, which ShipIt reads as `auth_required` |
+
+So a 401 costs nothing if the new token reaches the session's file within about 0.5 s,
+plus the time of the session's own refresh request. The fix makes the window that short.
+If fact 1 is false, it changes only how early the sessions get the new token.
+
+- **The copy is watched while the CLI runs.** For Tier 2, `spawnCli` reads the copy
+  before the spawn, then every 50 ms (`PROBE_COPY_POLL_MS`), and when its bytes change
+  `runProbes` calls `adoptProbeRotation`. (Tier 1 runs only on a copy that the CLI does
+  not refresh, so it is not watched.) An install runs the ordinary success path at once: the log
+  line, the repush and `refreshed`. The tick keeps its single flight until the CLI
+  exits. Each call keeps every guard of `adoptProbeRotation`: a source that is gone or
+  holds another credential gives the rotation up, a blanked one is installed over, and a
+  failed install keeps the copy for `pendingRotation`. A read that catches a write
+  part-way is an `install_failed` that logs nothing, and the next change, or the exit,
+  judges the file again. A throw from the success path is logged; the install is
+  recorded before it, so the exit still reports the rotation.
+- **After an install, the copy is judged against the installed credential**
+  (`seedIdentity` moves to it). The CLI can still write the copy: if its API call gets
+  a 401 with the new token, it refreshes again and so spends the installed credential's
+  grant, and the source must get that successor. Without the move, the judgement at the
+  exit would read "the source holds another credential" and give the successor up.
+- **At the exit, an installed copy is judged against the source again**
+  (`ProbeHome.installed`). Another writer can have changed the source since the install.
+  If the source holds the copy's credential, the copy is deleted. Over a blank, the
+  rotation is installed again. A source with another credential (a sign-in), or no file,
+  wins and gets a tick of its own. A source that cannot be read, or a reinstall that
+  fails, keeps the copy for `pendingRotation`, as for a rotation that was never
+  installed: with no pinned session, the copy can be the only record of the credential.
+  Such a kept copy holds the installed credential and no successor of it, while every
+  other reader of `pendingRotation` takes a kept copy to hold a successor of its seed
+  (a naming run's later rotation that cannot be installed is then left on disk; a naming
+  run's rejection of that credential is held back). So a naming run's settle judges an
+  installed kept copy again first (`retryKeptRotation`, which the tick's pending path
+  also uses; a throw from its success path is logged, so that the run's own copy is still
+  judged): once the source holds its credential, it is deleted. If it must stay, a naming
+  run's readable rotation of that credential takes its place, but only while the kept
+  copy can be read and still holds that credential: a kept later rotation (a successor
+  that could not be installed) stays, and so does a kept copy that cannot be read. A
+  naming copy that cannot be read takes no place either, because it proves no rotation.
+  When a later install's success path throws, the result of an earlier install is not
+  returned for it: the exit runs the success path again. A later rotation that
+  cannot be installed is kept as before, and is checked before any success, so that a
+  later expiry in the source cannot hide it. The next tick is armed again at the exit: a
+  scheduled tick that fired during the run joined the one in flight.
+- **The repush serves the sessions with a live CLI first** (`createOAuthAccountRepush`).
+  Each push includes a recursive chown of the session's credential tree, and an idle
+  session reads the token at its next turn's sync-in anyway. The live check that decides
+  the leaked-subtree repair is still made at each push.
+
+A poll and not `fs.watch`: the copy is in the orchestrator's own temp directory, where
+either works. A 50 ms poll adds at most 50 ms while the event loop is free (a busy loop,
+such as a repush in progress, delays it further), costs one small read per poll during
+the few seconds a probe runs, and depends on no event that can be lost.
+
+**Options weighed and not taken:**
+
+- *Let the CLI retry instead of killing a turn whose 401 lands during a rotation.* When
+  ShipIt sees `auth_required`, the CLI has already retried, refreshed with the spent
+  grant, blanked its own copy and given the request up: there is nothing left to retry.
+  Keeping the process would mean a new message to the resident CLI after the repush, a
+  new recovery path through the turn executor's post-turn invariants, for the case that
+  the CLI's own retry now covers. If auth kills still follow a rotation after this fix,
+  this is the next step; compare the kill's time with the `rotated_tier2` line, which is
+  now written at the install.
+- *Push the token before the refresh.* No new token exists before the refresh.
+
 ### Known limits (not addressed here)
 
 - **The marker records what provisioning intended, not whose bytes are on
@@ -815,18 +933,23 @@ the sign-in that the user is in, and with rule 1 no harvest hides that state any
   these fixes in 2026-10. What it had of these gaps, and what it does now, is in
   docs/154-codex-oauth-refresh-readiness, "On-demand refresh, real rejections,
   harvest". It imports `summarizeRefreshFailure` from this refresher.
-- **The private copy depends on three CLI behaviors** that the CLI does not
+- **The private copy depends on CLI behaviors** that the CLI does not
   document: it refreshes when the file says 5 minutes or less are left, it writes
-  the result to the file it read, and it blanks that file on `invalid_grant` only.
+  the result to the file it read before its model call, and it blanks that file on
+  `invalid_grant` only. The early install also counts on a session's CLI reading
+  its file again after a 401 before it refreshes; without that, the fix only
+  makes the 401 window shorter.
   A CLI bump can change any of them. `scripts/probe-claude-refresh.mjs` checks them
   against the pinned binary, and CI runs it on every change to the pin. A red run
   blocks a merge only if the branch protection names the job as a required check.
 - **A rotation is in the copy before it is in the source.** If the orchestrator
   dies between the CLI's write and the install, the grant is spent and the new
   token is left in the temp directory, where nothing looks for it; the account
-  needs a sign-in. The window is the CLI's remaining run time: well under a
-  second for Tier 1, a few seconds for Tier 2, and up to 15 s for a naming run,
-  which refreshes before its model call. It lasts as long as a
+  needs a sign-in. For Tier 2 the window is one poll of the copy (50 ms while
+  the event loop is free) since 2026-10-12; for a naming run it is the run's
+  remaining time, up to 15 s, because a naming run's copy is judged only when
+  the run ends. A naming run refreshes inside the CLI's 5-minute window, which a
+  working refresher has left 40 minutes earlier, or after a 401. It lasts as long as a
   `pendingRotation` waits, which is held in memory only: that covers a failed
   install, not a dead process.
 - **The sign-in PTY still runs in the account root**, because it is meant to
@@ -856,6 +979,13 @@ the sign-in that the user is in, and with rule 1 no harvest hides that state any
   host answers; the rest of the 5 s is for a loaded session container and for an
   answer that reaches the session later than the rejection reaches the loser. A real
   revocation is reported 5 s later than before.
+- **A rotation made by a session's own CLI reaches the other sessions slowly.**
+  The write-back watch publishes it into the source (a 3 s poll and a 750 ms
+  debounce), and nothing pushes it on from there until a tick's harvest or a
+  turn's sync-in; a sibling's 401 in that time is healed by a kill. A session's
+  CLI rotates inside the 5-minute window, which a working refresher has left 40
+  minutes earlier, or after a 401 when its file holds no newer token and its own
+  grant is still live.
 - **The install's token check and its rename are two steps.** A writer that
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
@@ -1179,6 +1309,22 @@ history that was moved into the orphan.
   `auth-manager.test.ts`; "account-scoped auth flows" in
   `provider-account-manager.test.ts`; "harvest before spend" and "failure logging" in
   `oauth-refresher.test.ts`
+
+### Key files (install while the probe runs, 2026-10-12)
+
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `PROBE_COPY_POLL_MS`, the
+  copy poll in `spawnCli` (Tier 2), the early install and the exit judgement in
+  `runProbes`, `seedIdentity` and `installed` in `adoptProbeRotation`,
+  `retryKeptRotation`, `holdsRotation`, `rotated_kept`
+- `src/server/orchestrator/oauth-account-repush.ts` — `createOAuthAccountRepush`, the
+  repush to pinned sessions (moved out of `bootstrap-managers.ts`), live CLIs first
+- Tests: "installs and pushes a rotation as soon as the CLI writes it, before the CLI
+  exits", "installs a second rotation that the CLI writes after the first was
+  installed" and the group "a rotation installed while the CLI runs" in
+  `oauth-refresher.test.ts`; `oauth-account-repush.test.ts`
+- `scripts/probe-claude-refresh.mjs` — the (c) check that Tier 2's rotation is in the copy
+  before its model call, the (f) checks on a session CLI's 401 handling and the info lines
+  on a late push
 
 ### Key files (session naming in a private copy, 2026-10)
 

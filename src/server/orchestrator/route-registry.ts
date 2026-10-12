@@ -250,6 +250,7 @@ export async function registerRoutes(
 
   await registerApiRoutes(app, {
     sessionManager,
+    quotaContinuation: quotaContinuationManager,
     kickDiskEscalation,
     cancelAutoPush: (sessionId: string) => autoPushScheduler.cancel(sessionId),
     scheduleAutoPush: (git: GitManager, sessionId?: string) => autoPushScheduler.schedule(git, sessionId),
@@ -809,7 +810,7 @@ export async function registerRoutes(
           send({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
         // An empty queue snapshot clears messages drained while disconnected.
-        send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        send({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }

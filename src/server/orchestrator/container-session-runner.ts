@@ -1,7 +1,7 @@
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
-import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
+import type { WsServerMessage, WsQueueRow, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
 import type { PresentStore } from "./present-store.js";
@@ -458,7 +458,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     forgetHeldEntries(this.answerHoldStore, this.turn.messageQueue);
     this.turn.clearQueue();
   }
-  getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
+  getQueueSnapshot(): WsQueueRow[] { return this.turn.getQueueSnapshot(); }
 
   activeDeliveryId: string | undefined;
   hasDelivery(deliveryId: string): boolean {

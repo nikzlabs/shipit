@@ -656,6 +656,26 @@ describe("CodexOAuthRefresher", () => {
       expect(silent!.reason).toBe("no CLI output");
     });
 
+    it("reads blank lines in linear time, and still removes a timestamp after spaces and a tab", async () => {
+      const rig = marginRig();
+      // A timestamp rule that crosses lines reads the run once per line, twice on this path: about 5 s here.
+      // The run must not end in a timestamp: that rule would take it all in one match.
+      rig.spawnHandle.effects = [{ stderr: ` \t${SERVER_ERROR}${"\n".repeat(64_000)}ERROR tail\n` }];
+      const logs = captureLogs();
+      const started = performance.now();
+      let result: CodexRefreshResult | undefined;
+      try {
+        [result] = await rig.refresher.refreshNow("codex-default");
+      } finally {
+        logs.restore();
+      }
+
+      expect(performance.now() - started).toBeLessThan(1_000);
+      expect(result!.outcome).toBe("unknown_failure");
+      expect(result!.reason).toContain("status=500 Internal Server Error");
+      expect(result!.reason).not.toContain("2026-10-11T");
+    });
+
     it("classifies a 429 from the token host as rate_limited and schedules backoff", async () => {
       const rig = marginRig();
       rig.spawnHandle.effects = [{ stderr: RATE_LIMITED }];

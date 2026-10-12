@@ -54,7 +54,7 @@ function holdQueuedAutomaticTurns(runner: SessionRunnerInterface, reason: string
   if (saved.length === 0) return;
   queue.splice(0, queue.length, ...queue.filter((m) => !saved.includes(m)));
   console.log(`[queue] holding ${saved.length} automatic turn(s) for ${runner.sessionId} — ${reason}`);
-  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
 }
 
 function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedMessage | undefined {
@@ -100,7 +100,7 @@ export function withdrawWaitingTurns(
   if (runner && queued.length > 0) {
     const queue = runner.messageQueue;
     queue.splice(0, queue.length, ...queue.filter((m) => !queued.includes(m)));
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.emitMessage({ type: "queue_updated", sessionId, queue: runner.getQueueSnapshot() });
   }
   let held: QueuedMessage[] = [];
   try {
@@ -128,7 +128,7 @@ export function releaseQueuedTurn(runner: SessionRunnerInterface): boolean {
   // dispatch would otherwise re-queue it behind everything else.
   const next = takeRunnableQueuedTurn(runner);
   if (!next) return false;
-  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
   // dispatch re-queues safely if another turn has claimed the runner.
   runner.dispatch(queuedMessageToDispatchOptions(next));
   return true;

@@ -2,7 +2,7 @@ import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js
 import type { BillingMode } from "../shared/catalogue/types.js";
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
-import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
+import type { WsServerMessage, WsQueueRow, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { SessionServiceMcp } from "./service-mcp.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -51,6 +51,7 @@ import {
   type PreparedDispatch,
 } from "./prepared-dispatch.js";
 import { takeRunnableQueuedTurn } from "./queue-drain.js";
+import { nextSendOrder, queueEntryId, queueSnapshot } from "./queue-identity.js";
 import {
   forgetHeldEntries,
   forgetHeldTurn,
@@ -126,6 +127,10 @@ export interface SteeredMessage {
   delivered?: boolean;
   /** Without an ack, this steer is removed and NOT re-queued (`bestEffortSteer`). */
   bestEffort?: boolean;
+  /** planning#691 — the bubble's id, which a re-queued steer keeps. */
+  clientRequestId?: string;
+  /** planning#691 — see `requeueInSendOrder`. */
+  sendOrder?: number;
 }
 
 // Add side-channel cards through emitChatCard so they persist at their transcript position.
@@ -158,6 +163,10 @@ export interface QueuedMessage {
   bestEffortSteer?: boolean;
   unattended?: boolean;
   promptShown?: boolean;
+  /** planning#691 — the bubble's id; see `queueEntryId`. */
+  clientRequestId?: string;
+  /** planning#691 — see `requeueInSendOrder`. Not saved with a held turn: it is per process. */
+  sendOrder?: number;
 }
 
 export interface AgentDispatchOptions {
@@ -209,6 +218,11 @@ export interface AgentDispatchOptions {
    * transcript, so this one adds no row and no echo.
    */
   promptShown?: boolean;
+  /**
+   * planning#691 — the id of the sender's bubble for this message, so that every viewer
+   * matches the queue row, the steer and the echo to that one bubble.
+   */
+  clientRequestId?: string;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -298,7 +312,13 @@ export function dispatchOnRunner(
     console.log(
       `[dispatch] queued the dispatch for ${runner.sessionId} at position ${position} — ${reason}`,
     );
-    runner.emitMessage({ type: "message_queued", text: opts.text, position });
+    runner.emitMessage({
+      type: "message_queued",
+      sessionId: runner.sessionId,
+      id: queueEntryId(entry),
+      text: opts.text,
+      position,
+    });
     return settlement;
   };
 
@@ -379,7 +399,7 @@ export function dispatchOnRunner(
       // The shared take, so a held entry at the head cannot strand the user's behind it.
       const next = takeRunnableQueuedTurn(runner);
       if (next) {
-        runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
         dispatchOnRunner(runner, deps, queuedMessageToDispatchOptions(next));
       }
     }
@@ -410,6 +430,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.bestEffortSteer !== undefined) queued.bestEffortSteer = opts.bestEffortSteer;
   if (opts.unattended !== undefined) queued.unattended = opts.unattended;
   if (opts.promptShown !== undefined) queued.promptShown = opts.promptShown;
+  if (opts.clientRequestId !== undefined) queued.clientRequestId = opts.clientRequestId;
   return queued;
 }
 
@@ -720,7 +741,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   enqueue(msg: QueuedMessage): number;
   dequeue(): QueuedMessage | undefined;
   clearQueue(): void;
-  getQueueSnapshot(): { text: string; position: number }[];
+  getQueueSnapshot(): WsQueueRow[];
 
   activeDeliveryId: string | undefined;
   hasDelivery(deliveryId: string): boolean;
@@ -994,6 +1015,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (this._messageQueue.length >= SessionRunner.MAX_QUEUE_SIZE) {
       throw new Error(`Message queue is full (max ${SessionRunner.MAX_QUEUE_SIZE})`);
     }
+    msg.sendOrder ??= nextSendOrder();
     this._messageQueue.push(msg);
     return this._messageQueue.length;
   }
@@ -1007,8 +1029,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     settleDroppedQueueEntries(this._messageQueue, "queue cleared");
     this._messageQueue.length = 0;
   }
-  getQueueSnapshot(): { text: string; position: number }[] {
-    return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
+  getQueueSnapshot(): WsQueueRow[] {
+    return queueSnapshot(this._messageQueue);
   }
 
   getTerminal(): TerminalProcess | null { return this._terminal; }

@@ -25,11 +25,14 @@ export interface SubAgentSpawnChip {
  * `requestId` and `bubble` are set on a **predicted** entry only — one this
  * browser added at send time because a compaction is about to run ahead of the
  * message (`utils/predicted-queue.ts`). A server-authoritative entry carries
- * neither, which is what tells the two apart.
+ * neither, which is what tells the two apart. It carries `id` instead: the
+ * `clientRequestId` of the message's bubble, which for a predicted entry is its
+ * `requestId`.
  */
 export interface QueuedMessageEntry {
   text: string;
   position: number;
+  id?: string;
   requestId?: string;
   bubble?: ChatMessage;
 }

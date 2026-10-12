@@ -683,6 +683,31 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/306-quota-continuation: quota resume", () => {
+    it("round-trips, is listed only while set, and survives a new manager over the same database", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.track("sess-2", "Other");
+      const resume = {
+        agentId: "claude" as const,
+        cause: "wake" as const,
+        lastUsedAt: "2026-10-11T16:00:00.000Z",
+        wakeAttempts: 0,
+        notBefore: "2026-10-11T17:01:00.000Z",
+        quotaRefusals: 1,
+      };
+
+      mgr.setQuotaResume("sess-1", resume);
+
+      const restarted = new SessionManager(dbManager);
+      expect(restarted.getQuotaResume("sess-1")).toEqual(resume);
+      expect(restarted.listQuotaResumes()).toEqual([{ sessionId: "sess-1", resume }]);
+      restarted.setQuotaResume("sess-1", null);
+      expect(restarted.getQuotaResume("sess-1")).toBeUndefined();
+      expect(restarted.listQuotaResumes()).toEqual([]);
+    });
+  });
+
   describe("docs/221: pending agent notice (out-of-band branch move)", () => {
     it("round-trips through persistence and is consumed exactly once", () => {
       const mgr = new SessionManager(dbManager);

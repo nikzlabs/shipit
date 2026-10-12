@@ -269,6 +269,7 @@ async function decideAndRunSend(
           resetMergedBranch: msg.resetMergedBranch,
           compactContext: msg.compactContext,
           silent: undefined,
+          clientRequestId: msg.requestId,
         }));
         checklistAccepted();
       };
@@ -342,20 +343,20 @@ async function decideAndRunSend(
           checklistAccepted();
 
           if (capturedSessionId) {
-            recordSteeredMessage(runnerForQueue, msg.text, {
+            const clientRequestId = recordSteeredMessage(runnerForQueue, msg.text, {
               images: historyImages,
               files: historyFiles,
               uploadPaths: steerUploadPaths,
               assembledPrompt: steerPrompt,
+              ...(msg.requestId ? { clientRequestId: msg.requestId } : {}),
             });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
-          }
-          // Persist before emitting image URLs that resolve against the stored row.
-          if (capturedSessionId) {
+            // Persist before emitting image URLs that resolve against the stored row.
             runnerForQueue.emitMessage({
               type: "message_steered",
               text: msg.text,
               sessionId: capturedSessionId,
+              clientRequestId,
               images: historyImages?.map((img) => ({
                 mediaType: img.mediaType,
                 src: imageUrl(capturedSessionId, imageHash(img.data)),
@@ -422,7 +423,7 @@ async function decideAndRunSend(
       const previousRunner = ctx.getRunnerRegistry().get(previousSessionId);
       if (previousRunner && previousRunner.messageQueue.length > 0) {
         previousRunner.clearQueue();
-        ctx.send({ type: "queue_updated", queue: [] });
+        ctx.send({ type: "queue_updated", sessionId: previousSessionId, queue: [] });
       }
     }
     // Another viewer can change network mode and rebuild the container before this send.
@@ -553,6 +554,7 @@ async function decideAndRunSend(
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
+      clientRequestId: msg.requestId,
     }));
     checklistAccepted();
     return;
@@ -585,6 +587,7 @@ async function decideAndRunSend(
         onTurnComplete: undefined,
         deliveryId: undefined,
         dictated: msg.dictated,
+        clientRequestId: msg.requestId,
       })), msg.permissionMode);
       return;
     }
@@ -660,6 +663,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: msg.dictated,
+    clientRequestId: msg.requestId,
   });
 
   // docs/329-user-steers-every-turn — an answer is a message from the user. A hold keeps it,

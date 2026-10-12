@@ -30,6 +30,7 @@ export function testDispatch(
     bestEffortSteer: opts.bestEffortSteer,
     unattended: opts.unattended,
     promptShown: opts.promptShown,
+    clientRequestId: opts.clientRequestId,
   });
 }
 

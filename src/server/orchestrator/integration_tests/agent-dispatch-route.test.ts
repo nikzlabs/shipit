@@ -226,6 +226,45 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     client.close();
   });
 
+  // planning#691 — the queue row and the echo name the sender's optimistic bubble.
+  it("carries the sender's request id to the queue row and to the echo", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "First" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    firstClaude.emit("event", { type: "agent_init", sessionId: "s-id", model: "m", tools: [] });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${client.sessionId}/agent/dispatch`,
+      payload: { text: "Second via HTTP", requestId: "http-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await drainUntil(client, (m) => m.type === "message_queued")).toMatchObject({
+      sessionId: client.sessionId, id: "http-1",
+    });
+
+    firstClaude.emit("event", { type: "agent_result", status: "success", sessionId: "s-id", durationMs: 10 });
+    firstClaude.emit("done", 0);
+    expect(await drainUntil(client, (m) => m.type === "system_user_message" && m.text === "Second via HTTP", 40))
+      .toMatchObject({ clientRequestId: "http-1" });
+    client.close();
+  });
+
+  it("400 — a request id that is not a short string is refused", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${client.sessionId}/agent/dispatch`,
+      payload: { text: "go", requestId: 42 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: expect.stringMatching(/requestId/) });
+    client.close();
+  });
+
   it("warm session — dispatch graduates it (docs/156)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();

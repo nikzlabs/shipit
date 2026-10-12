@@ -3,7 +3,7 @@ import { SessionRunner, SessionRunnerRegistry, type SessionRunnerInterface } fro
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { WakeSessionDeps, WakeTurnOptions } from "../wake-session.js";
-import { turnDropped, TURN_COMPLETED, type TurnHandle } from "../turn-settlement.js";
+import { turnDropped, turnQuotaRefused, TURN_COMPLETED, type TurnHandle } from "../turn-settlement.js";
 import { ServiceError } from "./types.js";
 import { takeQueueHold, type QueueHold, type RestartAgentOpts, type RecoveryDeps } from "./recovery.js";
 import type * as RecoveryModuleNs from "./recovery.js";
@@ -233,6 +233,23 @@ describe("runRequestedRestart — the restart", () => {
     await settle();
 
     expect(state.notices).toEqual([`[System] ${buildRestartFollowupPrompt("check node -v")}`]);
+  });
+
+  // docs/306-quota-continuation — `shouldRepark` reads a quota refusal as a turn that ran.
+  it("parks the follow-up prompt and hands a wake that every credential refused for quota to the quota continuation", async () => {
+    const { deps, state, turn } = setup();
+    const recordRefusedWake = vi.fn();
+    restartAgent.mockResolvedValue({ ok: true, noContainer: false, newContainerState: "running", error: null });
+    wakeSessionWithTurn.mockImplementation(async (_d: unknown, _s: unknown, opts: WakeTurnOptions) => {
+      opts.onSettled?.(turnQuotaRefused([null]));
+      return {} as TurnHandle;
+    });
+
+    await runRequestedRestart({ ...deps, quotaContinuation: { recordRefusedWake } }, turn);
+    await settle();
+
+    expect(state.notices).toEqual([`[System] ${buildRestartFollowupPrompt("check node -v")}`]);
+    expect(recordRefusedWake).toHaveBeenCalledWith({ sessionId: SESSION, resetsAt: [null] });
   });
 
   it("parks nothing when the wake turn ran", async () => {

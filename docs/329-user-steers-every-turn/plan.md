@@ -241,8 +241,8 @@ the queue behind one that still waits.
 - **The user's own order.** A newer message of the user's does not pass one
   that still waits: both steer paths put it in the queue, and the delivery
   gives them in order. A message from another source is not held back by this.
-  A refusal changes the order: the refused message goes to the end of the
-  queue, as before this part.
+  A refused message goes back in front of every entry sent after it
+  (`queue-identity.ts` → `requeueInSendOrder`, planning#691).
 - **A refusal stops the sending.** The agent's refusal puts the message back
   in the queue by the path that exists (`agent_steer_rejected`). Two things
   can refuse: the worker's answer to the write, and the harness later, after
@@ -256,10 +256,10 @@ the queue behind one that still waits.
 - **After the write** the entry's handle settles as `steered`, also when the
   transcript cannot be saved. A write that throws leaves the entry at its
   place in the queue.
-- **What the viewers get.** A queue update with `dequeued`, as for an entry
-  that the queue's drain starts, and then the `message_steered` event. The
-  sender's browser gets its composed bubble back; a second viewer gets the
-  text, and the attachments after a reload.
+- **What the viewers get.** A queue update without `dequeued`, and then the
+  `message_steered` event, which carries the queue entry's id and the
+  attachments. Every viewer draws the same bubble from it, and finds it by that
+  id, never by its text (planning#691).
 
 ### A turn in setup is not a stuck turn
 
@@ -327,6 +327,36 @@ are gone.
   the session.
 - A typed `/compact` during a flow or a setup waits its turn.
 
+### A queued message's identity (planning#691)
+
+The queue's events had no session and named a message by its text. Three
+defects followed: a viewer that switched sessions got another session's queue
+and bubble, a second viewer got a delivered message without its attachments,
+and a refused steer went to the end of the queue.
+
+- **One id for a message.** It is the sender's request id (typed, answered or
+  sent over HTTP), or an id that ShipIt makes the first time a viewer is told
+  of the entry (`queueEntryId`). The queue rows, `message_queued`,
+  `dequeued`, `message_steered`, the turn's echo and the saved row carry it.
+  The client finds a bubble by this id, never by its text, so two messages with
+  the same text stay two bubbles.
+- **The session.** `queue_updated`, `message_queued` and `agent_interrupted`
+  (which clears the queue strip) carry the session id, and the client drops one
+  of another session before it changes a store. While the history of a
+  reconnecting viewer loads, these events and `message_steered` wait for it, as
+  the echo does: a bubble drawn before the load is wiped by it.
+- **The same bubble on every viewer.** A steer's event is the bubble, with its
+  attachments. A drained message gets its bubble from `dequeued` at once: the
+  sender's composed bubble, or the text on another viewer. The turn's echo then
+  adds the attachments to a bubble of that id that has none.
+- **The user's order.** An entry takes a send order when it is first queued,
+  and a steer when it is written; a delivered entry keeps its own. A refused
+  steer goes back in front of every entry sent after it. A held turn is saved
+  without its send order (the counter is per process), so it comes back without
+  one and a refused steer does not pass it.
+- A cancel of a queued message updates the strip of every viewer, not only
+  the one that cancelled.
+
 ### Known limits of Part 2
 
 - Live steering can be off, and a harness may not take a message during a
@@ -342,11 +372,6 @@ are gone.
   new.
 - An automatic message can steer past a message of the user's during the
   moment that message is prepared.
-- A second viewer sees a delivered message without its attachments until a
-  reload, as for an entry that the queue's drain starts. The queue update
-  that carries `dequeued` has no session id, so a viewer that switched
-  sessions at that moment can get the bubble in the wrong transcript until a
-  reload. Both are true of every drained entry today (planning#691).
 
 ## Part 3 — the session hold, and the last two turns (req 1, req 2)
 
@@ -790,12 +815,24 @@ confirmed all four and found no leak of the delivery lock.
 - **Not applied, filed as planning#691.** The queue update with `dequeued` has
   no session id, a second viewer gets no attachments from it, and a refused
   message goes to the end of the queue. All three are true of the code before
-  this feature.
+  this feature. Fixed later under planning#691: see "A queued message's
+  identity" below.
 - The reviewer's verdict on requirement 2 was "not fully met", for the mark
   above. That fix had no further review: the three runs of the turn were used.
 - Final state: 822 test files pass (16,550 tests). Mutation checks: 33 on the
   first version, 24 on the first fixes, 10 on the later ones; each one was
   caught, except two that change nothing a test can see.
+
+2026-10-12, on the fix for planning#691. Two runs of the reviewer.
+
+- The first found the three defects fixed and no change to when a message
+  enters a turn. **Applied:** the steer and the queue events wait while a
+  reconnecting viewer's history loads; before, the load wiped a steer's bubble.
+- The second confirmed that, and the session scope of `agent_interrupted`.
+  **Not applied:** holding an `error` back while the history loads. A load
+  that fails never releases what is held, so the error that explains it would
+  not show. The case it covers (a refused message for which the browser
+  predicted a compaction, during a reconnect) is older than this fix.
 
 2026-10-12, on the second version of Part 3 (before any of its code). Two runs
 of the reviewer, with different briefs. That version let the conflict turn
@@ -837,33 +874,6 @@ a rule that a Stop discards the queue behind a dispatched turn.
   hold does, and stays: removing it changes the executor's drain for no
   requirement.
 
-## Key files (Part 3)
-
-- `src/server/orchestrator/session-hold.ts` — `SessionHold`, `takeSessionHold`.
-- `session-runner.ts` → `dispatchOnRunner` (the gate and `underHold`),
-  `DispatchAdmission`; both runners carry `sessionHold`.
-- `services/rebase-driver.ts` → `runRebaseFlow`, `runRebaseResolutionTurn`,
-  `refuseStepOverResidentWork`, `endStepProcess`, `dispatchRebaseResolutionTurn`,
-  `runAutoResolveAttempt` (`onSessionHoldTaken`).
-- `resident-spawn-guard.ts` → `retireResident`, called by the gate.
-- `turn-executor.ts` → `handleResult` (`settlesThisTurn`), `completedOutcome`;
-  `turn-settlement.ts` → `TurnOutcome.stoppedByUser`, `resultErrored`.
-- `dispatched-turn.ts` → `runDispatchedTurnInner` (no system branches),
-  `drainNext` (the missed-compaction notice, once).
-- `turn-executor.ts` → `finishTurn` (no hold), `tryDrain`.
-- `ws-handlers/agent-execution.ts` → `drainNextQueuedMessage`,
-  `decideCompactBeforeTurn`, `runCompactionAhead`; `ws-handlers/send-message.ts`
-  (the typed path and `handleAnswerQuestion` read the hold).
-- `queue-drain.ts`, `turn-admission.ts`, `services/recovery.ts` →
-  `takeQueueHold`, `services/agent-restart-request.ts`,
-  `services/agent-compaction-request.ts`.
-- Tests: `session-hold.test.ts`, `turn-exit-session-hold.test.ts`,
-  `services/rebase-driver.test.ts` ("the conflict-resolution turn is an
-  ordinary turn"), `integration_tests/wake-queue.test.ts`, cases in
-  `integration_tests/message-waits-for-agent.test.ts`,
-  `integration_tests/steer-after-turn-end.test.ts`,
-  `dispatched-turn-compaction.test.ts`.
-
 2026-10-12, on the Part 3 code. One run of the reviewer against both
 requirements and the constraint. It confirmed that the old flag is gone, that
 the hold is owned by flows only, that steering under the hold works, and that
@@ -897,10 +907,39 @@ the missed-compaction notice.
 Final state: 823 test files pass (16,631 tests); 45 mutation checks, each
 caught.
 
+## Key files (Part 3)
+
+- `src/server/orchestrator/session-hold.ts` — `SessionHold`, `takeSessionHold`.
+- `session-runner.ts` → `dispatchOnRunner` (the gate and `underHold`),
+  `DispatchAdmission`; both runners carry `sessionHold`.
+- `services/rebase-driver.ts` → `runRebaseFlow`, `runRebaseResolutionTurn`,
+  `refuseStepOverResidentWork`, `endStepProcess`, `dispatchRebaseResolutionTurn`,
+  `runAutoResolveAttempt` (`onSessionHoldTaken`).
+- `resident-spawn-guard.ts` → `retireResident`, called by the gate.
+- `turn-executor.ts` → `handleResult` (`settlesThisTurn`), `completedOutcome`;
+  `turn-settlement.ts` → `TurnOutcome.stoppedByUser`, `resultErrored`.
+- `dispatched-turn.ts` → `runDispatchedTurnInner` (no system branches),
+  `drainNext` (the missed-compaction notice, once).
+- `turn-executor.ts` → `finishTurn` (no hold), `tryDrain`.
+- `ws-handlers/agent-execution.ts` → `drainNextQueuedMessage`,
+  `decideCompactBeforeTurn`, `runCompactionAhead`; `ws-handlers/send-message.ts`
+  (the typed path and `handleAnswerQuestion` read the hold).
+- `queue-drain.ts`, `turn-admission.ts`, `services/recovery.ts` →
+  `takeQueueHold`, `services/agent-restart-request.ts`,
+  `services/agent-compaction-request.ts`.
+- Tests: `session-hold.test.ts`, `turn-exit-session-hold.test.ts`,
+  `services/rebase-driver.test.ts` ("the conflict-resolution turn is an
+  ordinary turn"), `integration_tests/wake-queue.test.ts`, cases in
+  `integration_tests/message-waits-for-agent.test.ts`,
+  `integration_tests/steer-after-turn-end.test.ts`,
+  `dispatched-turn-compaction.test.ts`.
+
+
 ## Key files (Part 2)
 
 - `src/server/orchestrator/turn-stop-request.ts` — the turn phase: `ready`, `compaction`, `turnTakesMessages`, `turnAwaitsAgent`
 - `src/server/orchestrator/dispatch-steering.ts` — `shouldSteerMessage`, `prepareSteer`, `deliverWaitingMessages`
+- `src/server/orchestrator/queue-identity.ts` — a queued message's id and send order, `requeueInSendOrder` (planning#691)
 - `src/server/orchestrator/turn-executor.ts` — where a turn becomes ready, and the check for a claim lost during setup
 - `src/server/orchestrator/ws-handlers/send-message.ts` — the typed steer, `/compact`, and `handleAnswerQuestion`
 - `src/server/orchestrator/container-session-runner.ts` → `verifyRunningState`

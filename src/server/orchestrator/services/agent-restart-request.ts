@@ -12,6 +12,7 @@ import { getErrorMessage } from "../validation.js";
 import { restartAgent, takeQueueHold, type QueueHold } from "./recovery.js";
 import { shouldRepark } from "./rebase-followup.js";
 import { ServiceError } from "./types.js";
+import type { QuotaResumeRecorder } from "./quota-continuation.js";
 
 const FOLLOWUP_PROMPT = loadPrompt(import.meta.url, "../prompts/post-restart-followup.md");
 const FOLLOWUP_ACTIVITY = "Continuing after the restart…";
@@ -106,6 +107,10 @@ export function buildRestartFollowupPrompt(note: string): string {
   return fillPromptTokens(FOLLOWUP_PROMPT, { NOTE: note });
 }
 
+export interface RequestedRestartDeps extends WakeSessionDeps {
+  quotaContinuation?: QuotaResumeRecorder | undefined;
+}
+
 /**
  * Runs at the end of every turn's commit-and-PR step. Does nothing unless the agent or the
  * user asked for a restart; leaves the request pending while another turn or flow has the
@@ -114,7 +119,7 @@ export function buildRestartFollowupPrompt(note: string): string {
  * anything is held.
  */
 export async function runRequestedRestart(
-  deps: WakeSessionDeps,
+  deps: RequestedRestartDeps,
   turn: RequestedRestartTurn,
 ): Promise<void> {
   const { sessionId, runner } = turn;
@@ -181,7 +186,7 @@ export async function runRequestedRestart(
 }
 
 async function wakeAfterRestart(
-  deps: WakeSessionDeps,
+  deps: RequestedRestartDeps,
   sessionId: string,
   note: string,
   held: QueueHold | undefined,
@@ -195,6 +200,12 @@ async function wakeAfterRestart(
       activity: FOLLOWUP_ACTIVITY,
       ...(held ? { releaseHold: held } : {}),
       onSettled: (outcome) => {
+        // docs/306-quota-continuation — the note waits for the turn that quota allows.
+        if (outcome.quotaRefused) {
+          parkNotice(deps, sessionId, `[System] ${text}`);
+          deps.quotaContinuation?.recordRefusedWake({ sessionId, resetsAt: outcome.quotaRefused.resetsAt });
+          return;
+        }
         if (!shouldRepark(outcome)) return;
         console.warn(
           `[agent-restart] the follow-up turn for ${sessionId} ended as "${outcome.status}"; `

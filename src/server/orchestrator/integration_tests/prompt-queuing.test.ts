@@ -175,6 +175,49 @@ describe("Integration: prompt queuing", () => {
     client.close();
   });
 
+  // planning#691 — what a viewer that did not send the message gets. One viewer cannot see it:
+  // the sender's own bubble already has the attachment.
+  it("gives a second viewer the drained message's id, session and attachment", async () => {
+    const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==";
+    const sender = await TestClient.connect(port);
+    await sender.receive();
+    const sessionId = sender.sessionId;
+
+    sender.send({ type: "send_message", text: "First" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    firstClaude.emit("event", { type: "agent_init", sessionId: "session-viewers", model: "m", tools: [] });
+
+    const viewer = await TestClient.connect(port, sessionId);
+    sender.send({
+      type: "send_message",
+      text: "Second",
+      requestId: "r-second",
+      images: [{ data: TINY_PNG_BASE64, mediaType: "image/png" }],
+    });
+    expect(await drainUntil(viewer, (m) => m.type === "message_queued")).toEqual({
+      type: "message_queued", sessionId, id: "r-second", text: "Second", position: 1,
+    });
+
+    firstClaude.emit("event", { type: "agent_result", status: "success", sessionId: "session-viewers", durationMs: 10 });
+    firstClaude.emit("done", 0);
+    await waitForClaude(() => lastClaude, firstClaude);
+
+    expect(await drainUntil(viewer, (m) => m.type === "queue_updated" && m.dequeued, 40, 3000)).toEqual({
+      type: "queue_updated", sessionId, queue: [], dequeued: { id: "r-second", text: "Second" },
+    });
+    const echo = await drainUntil(viewer, (m) => m.type === "system_user_message", 40, 3000);
+    expect(echo).toMatchObject({ sessionId, clientRequestId: "r-second", text: "Second" });
+    expect(echo.images).toEqual([{ mediaType: "image/png", src: expect.stringContaining(sessionId) }]);
+    // A reload finds the same bubble by the same id.
+    expect(chatHistoryManager.load(sessionId).find((m) => m.text === "Second")).toMatchObject({
+      clientRequestId: "r-second",
+      images: [{ mediaType: "image/png" }],
+    });
+
+    sender.close();
+    viewer.close();
+  });
+
   it("sends an empty queue_updated on re-attach after the queue drained while detached", async () => {
     const client1 = await TestClient.connect(port);
     await client1.receive();

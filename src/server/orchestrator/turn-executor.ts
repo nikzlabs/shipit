@@ -103,7 +103,6 @@ export interface TurnInput {
   messageOrigin?: SessionMessageOrigin;
   activity?: string;
   permissionMode?: PermissionMode;
-  // Queue drains already restore the bubble through queue_updated.dequeued.
   emitUserEcho: boolean;
   userEcho?: {
     clientRequestId?: string;
@@ -579,7 +578,7 @@ export async function executeAgentTurn(
     if (!(runner && stoppedByUser(runner))) reopenStoppedOrFinishedRun();
     // req 4 — what the hold kept runs after this turn, from the queue it waits in now.
     if (runner && restoreHeldTurns(runner) > 0) {
-      runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+      runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
     }
   }
   retireRewindUndo(deps.listenerDeps.chatHistoryManager, sessionId);
