@@ -33,6 +33,7 @@ export const MODEL_IDENTITIES = {
   sonnet5: identity("claude-sonnet-5", "claude"),
   sonnet55: identity("claude-sonnet-5.5", "claude"),
   haiku45: identity("claude-haiku-4.5", "claude"),
+  haiku55: identity("claude-haiku-5.5", "claude"),
   fable5: identity("claude-fable-5", "claude"),
   fable51: identity("claude-fable-5.1", "claude"),
 
@@ -79,6 +80,7 @@ export const MODEL_IDENTITIES = {
 export const MODEL_ID_ALIASES: Record<string, string> = {
   haiku: "claude-haiku-4.5",
   "claude-haiku-4-5": "claude-haiku-4.5",
+  "claude-haiku-5-5": "claude-haiku-5.5",
   "claude-fable-5-1": "claude-fable-5.1",
   "claude-opus-5-5": "claude-opus-5.5",
   "claude-sonnet-5-5": "claude-sonnet-5.5",

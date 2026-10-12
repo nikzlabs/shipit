@@ -38,6 +38,10 @@ table — a phase is checked off when its PR has merged.
       so the CLI reports Sonnet 5.5 cost at list rates
 - [x] Correct Sonnet 5's rates to Anthropic's standard $2/$10
 
+- [x] Add Haiku 5.5 under both Anthropic billing modes with published metadata
+- [ ] Before Claude Code moves to 2.1.293 or later, make the Haiku 4.5 row name
+      `claude-haiku-4-5` instead of the CLI's `haiku` alias, which then names Haiku 5.5
+
 ## Phase 2 — Credentials and Settings
 
 - [x] `CredentialRoute` — credential storage keyed by `(service, billing mode)`
