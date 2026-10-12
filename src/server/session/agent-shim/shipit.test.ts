@@ -1639,15 +1639,21 @@ describe("shipit session notify-on-merge <child> (docs/196-session-notify-on-mer
     expect(again.stdout).toContain("notify-on-merge: already armed\n");
   });
 
-  it("req 3: says that an arm made during a wake applies to the next pull request", async () => {
+  it("docs/328-session-message-inbox req 6: says where the notice arrives", async () => {
+    const armed = await armWith({ armed: true, state: "armed", alreadyArmed: false });
+    expect(armed.stdout).toContain("on merge/close:");
+    expect(armed.stdout).toContain("shipit session inbox");
+  });
+
+  it("req 3: says that an arm made while an older notice is in delivery applies to the next pull request", async () => {
     const out = await armWith({ armed: true, state: "merge-observed", alreadyArmed: false, skipsPr: 12 });
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain(
-      "notify-on-merge: armed for the next PR; the wake for PR #12 is still in delivery\n",
+      "notify-on-merge: armed for the next PR; the notice about PR #12 is still in delivery\n",
     );
 
     const again = await armWith({ armed: true, state: "merge-observed", alreadyArmed: true, skipsPr: 12 });
-    expect(again.stdout).toContain("notify-on-merge: already armed for the next PR; the wake for PR #12");
+    expect(again.stdout).toContain("notify-on-merge: already armed for the next PR; the notice about PR #12");
   });
 
   it("req 4: names the pull request that the watch does not report again", async () => {

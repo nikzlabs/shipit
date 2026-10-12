@@ -89,6 +89,15 @@ export class SessionInbox {
     return this.tellSafely(recipient.id);
   }
 
+  /**
+   * Stores, and tells nobody: for a sender with its own write to make with the message
+   * (`alongside`, in the same transaction) and something to do before the agent is told.
+   * The sender calls `tell` next; the sweep tells for one that does not.
+   */
+  add(sessionId: string, message: NewInboxMessage, alongside?: () => void): void {
+    this.deps.store.add(sessionId, message, alongside);
+  }
+
   read(sessionId: string, opts: { all?: boolean } = {}): InboxMessageView[] {
     if (opts.all) return this.deps.store.all(sessionId).map(viewOf);
     const unread = this.deps.store.takeUnread(sessionId);

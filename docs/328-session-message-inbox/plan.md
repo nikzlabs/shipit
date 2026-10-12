@@ -81,7 +81,7 @@ refuses it, and a later trigger tries again. A steer that the CLI does not take 
 dropped too (`bestEffortSteer`): its row leaves the transcript, as a user's lost steer
 does, but it is not put back in the queue, which would make the notice a queued turn.
 
-**Triggers.** One function, `tellRecipient`, applies the table. It runs when a
+**Triggers.** One function, `tell`, applies the table. It runs when a
 message is stored, when the recipient's runner goes idle, and from a sweep once a
 minute over the sessions that are owed a notice. The sweep is the one recovery path:
 it covers a session that could not be started, a refused turn with no idle event
@@ -117,7 +117,7 @@ today, so its turn starts.
 |---|---|---|
 | `deliverSessionReport` (child to parent) | Card, then a wake turn | Card, then store and tell |
 | `deliverSessionMessage` (parent to child, proposal card) | Dispatch of the full text | Store and tell |
-| `MergeWatchManager`, the parent's watch (req 6) | Wake turn with a tracked delivery | Store and tell — not built yet, see the checklist |
+| `MergeWatchManager`, the parent's watch (req 6) | Wake turn with a tracked delivery | Store with the end of the watch, then tell |
 
 The card that a report puts in the parent's transcript, and the "Child PR merged"
 card, stay as they are: the user reads them, the agent reads the inbox. A parent's
@@ -130,11 +130,20 @@ of its own conversation (`buildConversationReplay`, `services/replay.ts`).
 `deliverSessionMessage` loses its own copy of the "boot the session, then dispatch"
 steps and uses the wake path, which gains the admission option.
 
-**The parent's merge watch** stores the notice and ends the watch in one database
-transaction, so there is no state between "observed" and "delivered" to retry, and
-its attempt counter, retry loop and failure card serve only a session's watch on its
-own pull request. That watch is not a message from another session; it keeps the
-wake turn.
+**The parent's merge watch** (req 6) stores the notice and ends the watch in one
+database transaction: `SessionInbox.add` takes the sender's own write and runs it
+in the transaction that stores the message. So there is no state between "observed"
+and "told" to retry. The watch then surfaces its card and calls `tell`, which is
+why it does not use `post`: the user sees the card before a session start that can
+take a minute. Its attempt counter, retry supervisor and failure state now serve
+only a session's watch on its own pull request. That watch is not a message from
+another session; it keeps the wake turn.
+
+A parent's watch that an older ShipIt left with a wake turn in delivery is not
+stored a second time while that turn can still end: the watch asks the runner and
+the held turns for the turn's delivery id, as before. When the turn is gone or
+fails, the notice goes to the inbox. The design of the watch is in
+`docs/196-session-notify-on-merge/plan.md`.
 
 Other wake turns are unchanged, because they are not messages between sessions: a
 finished consult, a restart note, a quota continuation, and a report of stopped
@@ -186,8 +195,8 @@ receipt.
 
 - `src/server/shared/database.ts` — the two tables.
 - `src/server/orchestrator/session-inbox-store.ts` — rows and the two numbers.
-- `src/server/orchestrator/services/session-inbox.ts` — `postInboxMessage`,
-  `tellRecipient`, `readInbox`, the sweep.
+- `src/server/orchestrator/services/session-inbox.ts` — `post`, `add`, `tell`,
+  `read`, the idle trigger and the sweep.
 - `src/server/orchestrator/services/session-inbox-notice.ts` and the three
   `session-inbox-*.md` files beside it — the notice and its receipt.
 - `src/server/orchestrator/dispatched-turn.ts`,

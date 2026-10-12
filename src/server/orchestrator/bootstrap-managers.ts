@@ -821,6 +821,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     sessionManager,
     runnerRegistry,
     chatHistoryManager,
+    sessionInbox,
     defaultAgentId,
     credentialsDir,
     credentialStore,

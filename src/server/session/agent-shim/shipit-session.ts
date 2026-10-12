@@ -1001,11 +1001,17 @@ export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps):
   const skipsPr = typeof res.body.skipsPr === "number" ? `PR #${res.body.skipsPr}` : undefined;
   let state = already ? "already armed" : "armed";
   if (res.body.state === "merge-observed") {
-    state = `${state} for the next PR; the wake for ${skipsPr ?? "the previous PR"} is still in delivery`;
+    // Only a watch that an older ShipIt left with a wake turn in delivery answers this.
+    state = `${state} for the next PR; the notice about ${skipsPr ?? "the previous PR"} is still in delivery`;
   } else if (skipsPr) {
     state = `${state} for the next PR; ${skipsPr} was already reported to this session`;
   }
-  success(deps.io, `session-id:      ${id}\nnotify-on-merge: ${state}`);
+  success(
+    deps.io,
+    `session-id:      ${id}\nnotify-on-merge: ${state}\n`
+    + "on merge/close:  the notice goes to this session's inbox, and ShipIt tells you that it waits.\n"
+    + "                 Read it with `shipit session inbox`; arm again to follow the child's next PR.",
+  );
 }
 
 async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {

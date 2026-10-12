@@ -6,7 +6,7 @@ import { MergeWatchManager, MAX_DELIVERY_ATTEMPTS } from "./merge-watch.js";
 import { SessionRunner } from "./session-runner.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, SystemTurnDeps } from "./session-runner.js";
 import type { AgentId } from "../shared/types.js";
-import type { PrTerminalStateInfo } from "./pr-status-poller.js";
+import { storeOnlyInbox } from "./session-inbox-test-helpers.js";
 import { testDispatch, makeDispatchTurnDeps, waitForTurn, flushTurn, type FakeAgent } from "./integration_tests/dispatch-test-helpers.js";
 
 function makeRunner(): SessionRunner {
@@ -86,6 +86,8 @@ describe("dispatch setup failure (planning#265)", () => {
   });
 });
 
+// A parent's watch stores its notice in the inbox and has no delivery to fail
+// (docs/328-session-message-inbox req 6), so the wake turn under test is a session's own.
 describe("a merge-watch delivery whose dispatch dies at setup reaches delivery-failed (planning#265)", () => {
   it("is retried to `delivery-failed` with no orchestrator restart", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -93,24 +95,22 @@ describe("a merge-watch delivery whose dispatch dies at setup reaches delivery-f
     const sessionManager = new SessionManager(db);
     const chatHistoryManager = new ChatHistoryManager(db);
 
-    sessionManager.track("parent", "Parent", "/tmp/parent");
-    sessionManager.track("child", "Child", "/tmp/child");
-    sessionManager.setParentSession("child", "parent");
+    sessionManager.track("s1", "Chained work", "/tmp/s1");
 
-    const parentRunner = new SessionRunner({
-      sessionId: "parent",
-      sessionDir: "/tmp/parent",
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
     });
     const setupDeps = {
       ...makeDispatchTurnDeps([], []).deps,
       agentFactory: () => { throw new Error("worker unreachable"); },
     } as SystemTurnDeps;
-    parentRunner.setSystemTurnDeps(setupDeps);
+    runner.setSystemTurnDeps(setupDeps);
 
     const registry = {
-      get: (id: string) => (id === "parent" ? (parentRunner as unknown as SessionRunnerInterface) : undefined),
-      getOrCreate: () => parentRunner as unknown as SessionRunnerInterface,
+      get: (id: string) => (id === "s1" ? (runner as unknown as SessionRunnerInterface) : undefined),
+      getOrCreate: () => runner as unknown as SessionRunnerInterface,
       dispose: () => { /* unused */ },
     } as unknown as SessionRunnerRegistry;
 
@@ -118,28 +118,32 @@ describe("a merge-watch delivery whose dispatch dies at setup reaches delivery-f
       sessionManager,
       runnerRegistry: registry,
       chatHistoryManager,
+      sessionInbox: storeOnlyInbox(db).sessionInbox,
       defaultAgentId: "claude",
     });
 
-    sessionManager.setMergeWatch("child", {
-      parentSessionId: "parent",
-      state: "armed",
-      registeredAt: new Date().toISOString(),
+    const now = new Date().toISOString();
+    sessionManager.setSelfMergeWatch("s1", {
+      kind: "self",
+      parentSessionId: "s1",
+      watchId: "watch-1",
+      prNumber: 7,
+      state: "merge-observed",
+      registeredAt: now,
+      observedAt: now,
+      mergedPr: {
+        prNumber: 7,
+        prUrl: "https://github.com/o/r/pull/7",
+        prTitle: "Foundation",
+        branch: "shipit/s1",
+      },
     });
 
-    const merged: PrTerminalStateInfo = {
-      sessionId: "child",
-      outcome: "merged",
-      prNumber: 7,
-      prUrl: "https://github.com/o/r/pull/7",
-      prTitle: "Foundation",
-      branch: "shipit/child",
-    };
-    await manager.handleChildPrTerminal(merged);
+    await manager.handleSelfMerge("s1");
     await flushTurn();
 
-    expect(sessionManager.getMergeWatch("child")?.deliveryAttempts).toBe(1);
-    expect(sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+    expect(sessionManager.getSelfMergeWatch("s1")?.deliveryAttempts).toBe(1);
+    expect(sessionManager.getSelfMergeWatch("s1")?.state).toBe("merge-observed");
 
     for (let i = 0; i < MAX_DELIVERY_ATTEMPTS + 1; i++) {
       vi.setSystemTime(Date.now() + 30 * 60_000);
@@ -147,15 +151,11 @@ describe("a merge-watch delivery whose dispatch dies at setup reaches delivery-f
       await flushTurn();
     }
 
-    expect(sessionManager.getMergeWatch("child")?.state).toBe("delivery-failed");
-    const failureCard = chatHistoryManager
-      .load("parent")
-      .map((m) => m.childMerged)
-      .find((c) => c?.deliveryFailure);
-    expect(failureCard?.deliveryFailure?.error).toContain("worker unreachable");
+    expect(sessionManager.getSelfMergeWatch("s1")?.state).toBe("delivery-failed");
+    expect(sessionManager.getSelfMergeWatch("s1")?.lastDeliveryError).toContain("worker unreachable");
 
     manager.stopRetryLoop();
-    parentRunner.dispose({ force: true });
+    runner.dispose({ force: true });
     db.close();
     vi.useRealTimers();
   });

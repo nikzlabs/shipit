@@ -127,6 +127,19 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     expect(ran()).toHaveLength(1);
   });
 
+  it("stores for a sender that tells later, and starts nothing until it does", async () => {
+    const alongside = vi.fn();
+    inbox.add("parent", { body: "Child PR #7 merged." }, alongside);
+    await flushTurn();
+
+    expect(alongside).toHaveBeenCalledTimes(1);
+    expect(store.owed("parent")).toMatchObject({ unread: 1 });
+    expect(ran()).toHaveLength(0);
+
+    expect(await inbox.tell("parent")).toBe("started");
+    expect(await nextRun(1)).toContain(buildInboxNotice(1));
+  });
+
   it("gives a busy session one turn for all the messages that arrived, not one for each (req 1, req 5)", async () => {
     const runner = registry.getOrCreate("parent", "/tmp/parent", "claude");
     runner.dispatch(testDispatch({ text: "the user's own work" }));

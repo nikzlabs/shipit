@@ -227,8 +227,9 @@ the runner never goes idle and **ShipIt cannot reclaim the container** — it ho
 a slot for hours while the session sits in the sidebar looking stuck, long after
 the PR merged. A human merge can take days; no `sleep` budget covers it.
 
-Arm an async watch and **end your turn** instead. ShipIt starts a *new* turn here
-when the PR merges:
+Arm an async watch and **end your turn** instead. ShipIt tells this session when
+the PR merges: with a *new* turn for its own PR, and with a notice in its inbox
+for a child's PR.
 
 ```sh
 shipit session notify-on-merge --self
@@ -236,7 +237,8 @@ shipit session notify-on-merge <child-id>
 ```
 
 Both return immediately (exit 0, "armed"). See [sessions.md](sessions.md) for
-what the wake-turn carries and how to chain several PRs from one session.
+what the wake-turn and the notice carry, and how to chain several PRs from one
+session.
 
 ### Work to do after a rebase concludes
 

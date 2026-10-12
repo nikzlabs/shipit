@@ -484,8 +484,8 @@ combined with \`--shipit-source\`.
 
 Coordination runs through the parent. Parent → child is \`list\`/\`view\`/
 \`wait\`/\`message\`/\`notify-on-merge\`. Child → parent is
-\`shipit session report\`: it posts a card into the parent's chat AND wakes the
-parent agent with a queued turn, so a finding is pushed instead of sitting in a
+\`shipit session report\`: it posts a card into the parent's chat AND puts the
+report in the parent's inbox, so a finding is pushed instead of sitting in a
 PR nobody has opened yet. Use it when what you found reaches beyond your own
 session — shared machinery you're scoped not to touch, a blocker, or something
 the parent must coordinate:
@@ -499,8 +499,12 @@ the parent must coordinate:
 The report reaches only the session that spawned you. Child sessions cannot
 message siblings; the parent decides whether and how to coordinate other
 children. Severity is \`fyi\` (default), \`warn\`, or \`blocker\`. You cannot
-target an arbitrary session id. A report costs the parent a turn, so batch
-findings into one report rather than sending a stream of them.
+target an arbitrary session id. The parent's agent has to read and judge each
+report, so batch findings into one report rather than sending a stream of them.
+
+Messages from other sessions — a child's report, your parent's message, a
+notice that a child's PR merged or closed — are not turns. They wait in THIS
+session's inbox; \`shipit session inbox\` returns every unread one together.
 
 \`shipit session whoami\` resolves THIS session: its id, branch, parent, and any
 children it spawned. (\`view <id>\` is descendant-scoped, so

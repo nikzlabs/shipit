@@ -516,8 +516,8 @@ no durability guarantee and belong in `docker-compose.yml`.
   your message ends, and a `run_in_background` job that is still running stops
   with it.** A turn that a user's message starts normally runs on a resident
   process: you can end the message, and the end of the job starts a new turn
-  for you. A turn that ShipIt starts does not. That is a `notify-on-merge` wake,
-  a child session's report, a finished consult, a CI fix, a rebase follow-up,
+  for you. A turn that ShipIt starts does not. That is the wake after
+  `notify-on-merge --self`, a finished consult, a CI fix, a rebase follow-up,
   and the turn after `shipit session restart`. There the process exits about
   five seconds after your message ends. A job that is still running then is
   stopped before it finishes, and **no completion notice comes for it**. Do not
