@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { usePrStore } from "../../stores/pr-store.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import { dispatchMessage } from "./index.js";
 import type { HandlerContext } from "./types.js";
 import type { WsServerMessage } from "../../../server/shared/types.js";
@@ -120,6 +121,32 @@ describe("dispatchMessage — transcript session scoping", () => {
 
     dispatchMessage(ctx, { type: "secret_block_status", sessionId: "active", block });
     expect(useSessionStore.getState().secretBlock).toEqual(block);
+  });
+
+  // The streamed event of the session the viewer just left: no row, no plan mode, no label.
+  it("drops a streamed agent event of a DIFFERENT session, and applies the active one's", () => {
+    const enterPlan = (sessionId: string): WsServerMessage => ({
+      type: "agent_event",
+      sessionId,
+      event: {
+        type: "agent_assistant",
+        content: [{ type: "tool_use", id: `plan-${sessionId}`, name: "EnterPlanMode", input: {} }],
+      },
+    });
+    useSettingsStore.setState({ permissionMode: "auto", permissionModeBySession: {} });
+    // The handler ignores every event before the history load; without this, the drop below is not tested.
+    useSessionStore.setState({ historyLoaded: true });
+
+    dispatchMessage(ctx, enterPlan("other"));
+    expect(useSessionStore.getState().messages).toEqual([]);
+    expect(useSessionStore.getState().activity).toBeUndefined();
+    expect(useSettingsStore.getState().getPermissionMode("active")).toBe("auto");
+
+    dispatchMessage(ctx, enterPlan("active"));
+    expect(useSessionStore.getState().messages).toMatchObject([
+      { role: "assistant", toolUse: [{ id: "plan-active" }] },
+    ]);
+    expect(useSettingsStore.getState().getPermissionMode("active")).toBe("plan");
   });
 
   it("still delivers messages that legitimately describe OTHER sessions", () => {

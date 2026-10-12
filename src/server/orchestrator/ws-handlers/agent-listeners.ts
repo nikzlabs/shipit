@@ -138,6 +138,7 @@ export function wireAgentListeners(
   if (!opts.capturedSessionId) {
     throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
+  const ownerSessionId = opts.capturedSessionId;
   const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
   let turnModel: string | undefined = sessionAtTurnStart?.model ?? deps.getSelectedModel();
   const turnAttributionAtStart = turnAttributionFor(selectionOf(sessionAtTurnStart));
@@ -515,10 +516,8 @@ export function wireAgentListeners(
       event.type === "agent_assistant" && event.isStreamCompletion;
     if (!isInternalStreamCompletion) {
       // Keep full bodies for persistence; only results persist synchronously in this tick.
-      const wireEvent = opts.capturedSessionId
-        ? projectAgentEventForWire(opts.capturedSessionId, event, (id) => toolTracker.getToolName(id))
-        : event;
-      emitToViewers({ type: "agent_event", event: wireEvent });
+      const wireEvent = projectAgentEventForWire(ownerSessionId, event, (id) => toolTracker.getToolName(id));
+      emitToViewers({ type: "agent_event", sessionId: ownerSessionId, event: wireEvent });
     }
 
     if (event.type === "agent_init") {

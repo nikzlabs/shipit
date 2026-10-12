@@ -23,6 +23,7 @@ describe("useMessageHandler", () => {
   it("queues agent events until HTTP history has loaded", async () => {
     const event: WsServerMessage = {
       type: "agent_event",
+      sessionId: "session-1",
       event: {
         type: "agent_assistant",
         content: [{ type: "text", text: "streamed while reconnecting" }],
@@ -251,6 +252,7 @@ describe("useMessageHandler", () => {
   it("syncs the session permission mode when the agent enters plan mode itself", async () => {
     const event: WsServerMessage = {
       type: "agent_event",
+      sessionId: "session-1",
       event: {
         type: "agent_assistant",
         content: [{ type: "tool_use", id: "plan-1", name: "EnterPlanMode", input: {} }],
