@@ -757,7 +757,7 @@ export interface RegisterMergeWatchResult {
   childId: string;
   state: SessionMergeWatch["state"];
   alreadyArmed: boolean;
-  /** The parent already knows about this PR, or its wake is in delivery: the watch does not fire for it. */
+  /** The parent was already told about this PR, or its notice is on its way: the watch does not fire for it. */
   skipsPr?: number;
 }
 
@@ -791,8 +791,9 @@ export function registerMergeWatch(
     };
   }
   if (own?.state === "merge-observed") {
-    // docs/196-session-notify-on-merge req 3 — the wake in delivery keeps its watch, and so its
-    // retries. The manager arms the watch that follows when this one ends.
+    // docs/196-session-notify-on-merge req 3 — only a watch that an older ShipIt left with a
+    // wake turn in delivery is here. It keeps its record, and the manager arms the watch that
+    // follows when this one ends.
     const deliveringPr = own.mergedPr?.prNumber;
     const alreadyQueued = own.rearmedAt !== undefined;
     if (!alreadyQueued) {
@@ -800,8 +801,8 @@ export function registerMergeWatch(
     }
     const result = alreadyQueued ? "an arm for the next PR was already queued" : "armed for the next PR";
     console.log(
-      `[merge-watch] parent ${parentSessionId} armed its watch on ${childSessionId} during the wake `
-      + `for PR #${deliveringPr ?? "?"}: ${result}`,
+      `[merge-watch] parent ${parentSessionId} armed its watch on ${childSessionId} before the notice `
+      + `about PR #${deliveringPr ?? "?"} was stored: ${result}`,
     );
     return {
       childId: childSessionId,

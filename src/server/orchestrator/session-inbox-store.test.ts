@@ -40,6 +40,33 @@ describe("SessionInboxStore (docs/328-session-message-inbox)", () => {
     expect(store.takeUnread("parent").map((m) => m.body)).toEqual(["second"]);
   });
 
+  it("stores the message and the sender's own write together", () => {
+    const sessionManager = new SessionManager(dbManager);
+    const sent = () => sessionManager.getMergeWatch("bystander")?.state;
+
+    store.add("parent", { body: "a pull request merged" }, () => {
+      sessionManager.setMergeWatch("bystander", { parentSessionId: "parent", state: "delivered", registeredAt: "t0" });
+    });
+
+    expect(store.all("parent").map((m) => m.body)).toEqual(["a pull request merged"]);
+    expect(sent()).toBe("delivered");
+  });
+
+  it("stores nothing when the sender's own write fails, and keeps none of that write", () => {
+    const sessionManager = new SessionManager(dbManager);
+
+    expect(() =>
+      store.add("parent", { body: "a pull request merged" }, () => {
+        sessionManager.setMergeWatch("bystander", { parentSessionId: "parent", state: "delivered", registeredAt: "t0" });
+        throw new Error("the watch could not be ended");
+      }),
+    ).toThrow("the watch could not be ended");
+
+    expect(store.all("parent")).toEqual([]);
+    expect(store.owed("parent")).toBeUndefined();
+    expect(sessionManager.getMergeWatch("bystander")).toBeUndefined();
+  });
+
   it("gives one session's messages to that session only", () => {
     store.add("parent", { origin: CHILD, body: "for the parent" });
 

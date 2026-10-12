@@ -365,13 +365,16 @@ Four things users ask about children:
   session is idle — and `shipit session inbox` returns every unread message in
   one call. So a parent that was busy while five reports arrived reads the
   five together, and does not run five turns one after the other.
-- **A parent cannot end a child.** It can wait on one, message one, and be woken
+- **A parent cannot end a child.** It can wait on one, message one, and be told
   when one merges; archiving is the user's, above. A child steered by the user in
   its own chat is doing exactly that, and the parent has no way to see it.
 - **Being told about a merge** does not need watching. `shipit session
-  notify-on-merge` wakes the session when the pull request lands. A parent's
-  watch on a child and that child's own `--self` watch are independent: one
-  merge wakes both. A watch gives one wake; a parent that follows a child across
+  notify-on-merge --self` wakes the session with a turn when its own pull
+  request lands. A parent's watch on a child puts a notice in the parent's
+  inbox when the child's pull request merges or closes, and the user sees a
+  "Child PR merged" card; the notice is read with the other messages, and is
+  not a turn of its own. The two watches are independent: one merge serves
+  both. A watch reports one pull request; a parent that follows a child across
   several pull requests arms again after each one, and is not told twice about
   the same pull request. A session's own watch posts a card with Cancel, and
   that card changes when its watch is gone — merged, replaced by a newer watch,

@@ -61,23 +61,35 @@ export class SessionInboxStore {
     return this.dbm.db;
   }
 
-  add(sessionId: string, message: NewInboxMessage): InboxMessage {
+  /**
+   * `alongside` is the sender's own write for this message. It runs in the transaction that
+   * stores the message, so a sender never records "sent" for a message that is not stored.
+   */
+  add(sessionId: string, message: NewInboxMessage, alongside?: () => void): InboxMessage {
     const createdAt = new Date().toISOString();
-    const id = Number(
-      this.db
-        .prepare(
-          `INSERT INTO session_inbox (session_id, from_session_id, from_title, relation, body, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          sessionId,
-          message.origin?.sessionId ?? null,
-          message.origin?.sessionTitle ?? null,
-          message.origin?.relation ?? null,
-          message.body,
-          createdAt,
-        ).lastInsertRowid,
-    );
+    const insert = (): number =>
+      Number(
+        this.db
+          .prepare(
+            `INSERT INTO session_inbox (session_id, from_session_id, from_title, relation, body, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            sessionId,
+            message.origin?.sessionId ?? null,
+            message.origin?.sessionTitle ?? null,
+            message.origin?.relation ?? null,
+            message.body,
+            createdAt,
+          ).lastInsertRowid,
+      );
+    const id = alongside
+      ? this.db.transaction((): number => {
+          const stored = insert();
+          alongside();
+          return stored;
+        })()
+      : insert();
     return { id, sessionId, ...(message.origin ? { origin: message.origin } : {}), body: message.body, createdAt };
   }
 

@@ -292,7 +292,7 @@ describe("registerMergeWatch — arming again (docs/196-session-notify-on-merge)
 
       const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[merge-watch]"));
       expect(lines).toHaveLength(3);
-      expect(lines[0]).toContain("during the wake for PR #12: armed for the next PR");
+      expect(lines[0]).toContain("before the notice about PR #12 was stored: armed for the next PR");
       expect(lines[1]).toContain("already queued");
       expect(lines[2]).toContain("PR #12 was already reported");
     } finally {

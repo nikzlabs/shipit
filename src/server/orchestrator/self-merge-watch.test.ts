@@ -18,6 +18,7 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { PrTerminalStateInfo } from "./pr-status-poller.js";
+import { storeOnlyInbox } from "./session-inbox-test-helpers.js";
 
 const SESSION_ID = "s1";
 
@@ -100,10 +101,12 @@ function makeCtx() {
     getCurrentBranch: async () => "shipit/s1",
   } as unknown as GitManager);
 
+  const { sessionInbox } = storeOnlyInbox(db);
   const manager = new MergeWatchManager({
     sessionManager,
     runnerRegistry,
     chatHistoryManager,
+    sessionInbox,
     defaultAgentId: "claude",
   });
 
@@ -116,7 +119,7 @@ function makeCtx() {
     mergeWatchManager: manager,
   };
 
-  return { db, sessionManager, chatHistoryManager, runner, manager, armDeps, livePr };
+  return { db, sessionManager, chatHistoryManager, runner, manager, armDeps, livePr, sessionInbox };
 }
 
 function markMerged(ctx: ReturnType<typeof makeCtx>, prNumber: number): void {
@@ -343,6 +346,7 @@ describe("delivering a self merge wake (docs/239)", () => {
       sessionManager: ctx.sessionManager,
       runnerRegistry: ctx.armDeps.runnerRegistry,
       chatHistoryManager: ctx.chatHistoryManager,
+      sessionInbox: ctx.sessionInbox,
       defaultAgentId: "claude",
       restoreWorkspace,
     });
