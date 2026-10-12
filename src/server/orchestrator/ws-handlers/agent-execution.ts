@@ -20,6 +20,7 @@ import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { prepareCardOutcomeNotices } from "../services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
+import { containerPredatesShipIt, prepareInboxNotice } from "../services/session-inbox-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
@@ -506,7 +507,14 @@ async function composeAndRunAgentTurn(
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareSessionMessageOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
       : null;
-  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome]
+  // docs/328-session-message-inbox — the same again.
+  const inboxNotice =
+    capturedSessionId && ctx.sessionInboxStore && !opts.compact && !ridesTurnAsCommand
+      ? prepareInboxNotice(ctx.sessionInboxStore, capturedSessionId, {
+          inline: containerPredatesShipIt(ctx.containerManager, capturedSessionId),
+        })
+      : null;
+  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome, inboxNotice]
     .filter((d) => d !== null);
 
   const activeDir = ctx.getActiveDir();
@@ -529,6 +537,7 @@ async function composeAndRunAgentTurn(
     ...cardOutcomes.map((o) => o.notice),
     repoSessionOutcome?.notice,
     sessionMessageOutcome?.notice,
+    inboxNotice?.notice,
     resetAgentPrefix,
     dependencyPrefix,
     statusContext,

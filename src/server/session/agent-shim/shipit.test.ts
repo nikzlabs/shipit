@@ -1048,7 +1048,46 @@ describe("shipit session message", () => {
     expect(out.stderr).toContain("exceeds 50,000");
   });
 
-  it("posts to /agent-ops/session/message/:childId and prints queue position when enqueued", async () => {
+  it.each([
+    ["steered", "was told during its running turn"],
+    ["started", "a turn started to tell its agent"],
+    ["later", "is told when the child is free"],
+  ])("says that the message is in the child's inbox and that its agent %s", async (told, phrase) => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_a", "-m", "Also do X"],
+      {
+        "POST /agent-ops/session/message/ses_a": {
+          status: 200,
+          body: { queuePosition: 0, enqueued: told === "later", told },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("in the child's inbox");
+    expect(out.stdout).toContain(phrase);
+    expect(out.stdout).not.toContain("queued (position");
+  });
+
+  // The message is stored, so the exit is 0: an error exit invites a second copy.
+  it("says so when the child could not be started, and does not ask for a resend", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_a", "-m", "Also do X"],
+      {
+        "POST /agent-ops/session/message/ses_a": {
+          status: 200,
+          body: { queuePosition: 0, enqueued: true, told: "failed", error: "container could not be resumed" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("in the child's inbox");
+    expect(out.stdout).toContain("container could not be resumed");
+    expect(out.stdout).toContain("do not send the message again");
+  });
+
+  it("posts to /agent-ops/session/message/:childId; an orchestrator without the inbox reports a queue position", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["session", "message", "ses_a", "-m", "Also do X"],
@@ -1068,7 +1107,7 @@ describe("shipit session message", () => {
     expect(out.calls[0].body).toEqual({ text: "Also do X" });
   });
 
-  it("prints 'starting turn' when the runner accepts the message directly", async () => {
+  it("prints 'starting turn' for an orchestrator without the inbox that accepted the message directly", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["session", "message", "ses_a", "-m", "Hi"],
@@ -1827,8 +1866,28 @@ describe("shipit session report", () => {
       to: "parent",
       subject: "regen",
     });
-    expect(out.stdout).toContain("delivered: 1/1 recipient(s) woken");
-    expect(out.stdout).toContain("parent Spell catalogs (ses_parent): woken");
+    // An orchestrator without the inbox sends no `told`: the report was a wake turn.
+    expect(out.stdout).toContain("delivered: parent Spell catalogs (ses_parent) — woken");
+  });
+
+  it("says that the report is in the parent's inbox and how its agent is told", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "regen wipes every catalog"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: {
+          reportId: "r-1",
+          severity: "fyi",
+          to: "parent",
+          recipients: [
+            { sessionId: "ses_parent", title: "Spell catalogs", relation: "child", woken: true, told: "later" },
+          ],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("in the parent's inbox");
+    expect(out.stdout).toContain("is told when the parent is free");
   });
 
   it("defaults to severity fyi and the parent target", async () => {
@@ -1906,7 +1965,7 @@ describe("shipit session report", () => {
     expect(badTarget.calls).toHaveLength(0);
   });
 
-  it("exits non-zero when no recipient's agent could be woken", async () => {
+  it("exits non-zero when an orchestrator without the inbox could not wake the parent", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "report", "-b", "x"], {
       "POST /agent-ops/session/report": {
@@ -1920,8 +1979,84 @@ describe("shipit session report", () => {
       },
     });
     expect(out.exitCode).toBe(1);
-    expect(out.stdout).toContain("NOT woken (container could not be resumed)");
+    expect(out.stdout).toContain("NOT delivered (container could not be resumed)");
     expect(out.stdout).toContain("the card was still posted");
+  });
+});
+
+describe("shipit session inbox (docs/328-session-message-inbox)", () => {
+  const TWO = {
+    status: 200,
+    body: {
+      all: false,
+      messages: [
+        { id: 4, createdAt: "2026-10-11T10:00:00.000Z", text: "[Agent message from CHILD session]\nthe regen command is broken" },
+        { id: 5, createdAt: "2026-10-11T10:05:00.000Z", text: "Child PR #7 merged" },
+      ],
+    },
+  };
+
+  it("prints every unread message in one call, oldest first", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox"], { "POST /agent-ops/session/inbox": TWO });
+
+    expect(out.exitCode).toBe(0);
+    expect(out.calls).toEqual([expect.objectContaining({ method: "POST", path: "/agent-ops/session/inbox", body: { all: false } })]);
+    expect(out.stdout).toContain("2 unread message(s)");
+    expect(out.stdout).toContain("the regen command is broken");
+    expect(out.stdout).toContain("Child PR #7 merged");
+    expect(out.stdout.indexOf("the regen command is broken")).toBeLessThan(out.stdout.indexOf("Child PR #7 merged"));
+    expect(out.stdout).toContain("message 4 · sent 2026-10-11T10:00:00.000Z");
+  });
+
+  it("asks for every message with --all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox", "--all"], {
+      "POST /agent-ops/session/inbox": { status: 200, body: { ...TWO.body, all: true } },
+    });
+
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ all: true });
+    expect(out.stdout).toContain("2 message(s) were sent to this session");
+    expect(out.stdout).not.toContain("marked as read");
+  });
+
+  it("says that nothing is unread, and names --all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox"], {
+      "POST /agent-ops/session/inbox": { status: 200, body: { all: false, messages: [] } },
+    });
+
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("No unread messages");
+    expect(out.stdout).toContain("--all");
+  });
+
+  it("refuses a session id: an agent reads its own inbox and no other", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox", "ses_child"]);
+
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("--json prints the broker response verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox", "--json"], { "POST /agent-ops/session/inbox": TWO });
+
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(TWO.body);
+  });
+
+  it("surfaces a broker failure", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox"], {
+      "POST /agent-ops/session/inbox": { status: 503, body: { error: "Session messages are not available on this ShipIt instance." } },
+    });
+
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not available");
   });
 
   it("surfaces a 400 'no parent' rejection from the orchestrator", async () => {

@@ -41,8 +41,9 @@ what makes the unreachable case possible without giving it up.
 3. The user approves delivery from the card. The user does not copy the message,
    does not open the target session, and does not paste anything into a
    composer.
-4. One approval delivers the message to the target session and starts its turn
-   there — the same result as the user typing the message into that session.
+4. One approval delivers the message to the target session. It goes to that
+   session's inbox, and that session's agent is told at once
+   (docs/328-session-message-inbox).
 5. An approval delivers exactly the message on the card, once. It grants the
    proposing session no standing ability to send further messages; a second
    message is a second card and a second approval.
@@ -79,6 +80,13 @@ None.
 
 ## Resolved questions
 
+- 2026-10-11 — Requirement 4 said that an approval "starts its turn there — the
+  same result as the user typing the message into that session". On this date
+  the user proposed that messages between sessions stop being turns of their own
+  (docs/328-session-message-inbox req 1). A message approved on a card is a
+  message from another session, so req 4 now says what that rule gives. The user
+  did not name this card in the proposal; this entry applies the new rule to it,
+  and it is theirs to reverse.
 - 2026-09-22 — *What shape does the fix take?* The requester: "Let's do like we
   have in the case of a proposed session in another repo: a card that the user
   can approve." Recorded on planning#450. This settles reqs 1–4 and rules out

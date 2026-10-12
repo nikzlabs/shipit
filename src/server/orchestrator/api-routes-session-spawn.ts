@@ -39,6 +39,7 @@ import {
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 import { AgentTurnAdmissionError } from "./session-runner.js";
+import type { SessionInbox } from "./services/session-inbox.js";
 
 // Bump when row decoding, selection, wire projection, or payload assembly changes
 // without a data write; transcriptRevision cannot invalidate those cached responses.
@@ -466,18 +467,17 @@ export async function registerSessionSpawnRoutes(
     async (request, reply) => {
       try {
         const result = await sendChildMessage(
-          sessionManager,
-          deps.runnerRegistry,
+          {
+            sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            sessionInbox: requireSessionInbox(deps),
+          },
           request.params.parentId,
           request.params.childId,
           request.body?.text ?? "",
-          deps.defaultAgentId,
-          deps.credentialsDir,
-          deps.credentialStore,
-          deps.providerAccountManager,
-          deps.containerManager,
         );
-        return { queuePosition: result.queuePosition, enqueued: result.enqueued };
+        return result;
       } catch (err) {
         if (err instanceof ResolvedChildMessageError) {
           reply.code(409).send({
@@ -694,11 +694,7 @@ export async function registerSessionSpawnRoutes(
             sessionManager,
             runnerRegistry: deps.runnerRegistry,
             chatHistoryManager: deps.chatHistoryManager,
-            defaultAgentId: deps.defaultAgentId,
-            credentialsDir: deps.credentialsDir,
-            credentialStore: deps.credentialStore,
-            providerAccountManager: deps.providerAccountManager,
-            containerManager: deps.containerManager,
+            sessionInbox: requireSessionInbox(deps),
           },
           request.params.sessionId,
           {
@@ -718,4 +714,31 @@ export async function registerSessionSpawnRoutes(
       }
     },
   );
+
+  // docs/328-session-message-inbox — the calling session's own inbox, never another's.
+  app.post<{ Params: { sessionId: string }; Body: { all?: boolean } }>(
+    "/api/sessions/:sessionId/inbox/read",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        if (!sessionManager.get(request.params.sessionId)) throw new ServiceError(404, "Session not found");
+        const all = request.body?.all === true;
+        return {
+          all,
+          messages: requireSessionInbox(deps).read(request.params.sessionId, { all }),
+        };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read the inbox: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+}
+
+function requireSessionInbox(deps: ApiDeps): SessionInbox {
+  if (!deps.sessionInbox) throw new ServiceError(503, "Session messages are not available on this ShipIt instance.");
+  return deps.sessionInbox;
 }

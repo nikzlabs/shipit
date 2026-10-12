@@ -825,6 +825,17 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("rate limit reached");
   });
 
+  it("POST /agent-ops/session/inbox reads the session's own inbox through /inbox/read", async () => {
+    client.setResponse("POST", "/inbox/read", {
+      ok: true, status: 200, body: { all: true, messages: [{ id: 1, text: "a report" }] },
+    });
+    const res = await app.inject({ method: "POST", url: "/agent-ops/session/inbox", payload: { all: true } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().messages).toEqual([{ id: 1, text: "a report" }]);
+    expect(client.calls[0]).toMatchObject({ method: "POST", path: "/inbox/read", body: { all: true } });
+  });
+
   it("POST /agent-ops/agent/spawn forwards the whole explicit target", async () => {
     client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
     const payload = {

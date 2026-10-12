@@ -72,6 +72,7 @@ export function trySteerDispatch(
   // Acknowledgement and retry matching need the exact text sent to the CLI.
   recordSteeredMessage(runner, opts.text, {
     assembledPrompt: agentText,
+    ...(opts.bestEffortSteer ? { bestEffort: true } : {}),
     ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
     ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
     ...(opts.automatic ? { automatic: true } : {}),

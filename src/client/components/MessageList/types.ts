@@ -172,8 +172,9 @@ export interface ChatMessage {
     fromSessionId: string;
     fromTitle: string;
     fromBranch?: string;
-    relation: "child" | "sibling";
-    severity: "fyi" | "warn" | "blocker";
+    relation: "child" | "sibling" | "parent" | "proposed";
+    /** A report has one; a message from another session has none. */
+    severity?: "fyi" | "warn" | "blocker";
     subject?: string;
     body: string;
     createdAt: string;

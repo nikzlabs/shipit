@@ -36,6 +36,26 @@ describe("SessionReportCard", () => {
     expect(screen.getByTestId("session-report-card")).toHaveAttribute("data-severity", "warn");
   });
 
+  // docs/328-session-message-inbox — the agent reads the inbox; this card is the user's record.
+  it.each([
+    ["parent", /Message · from the parent session/],
+    ["proposed", /Message · from another session, approved by you/],
+  ] as const)("renders a message from a %s session, which has no severity", (relation, label) => {
+    const { severity: _severity, subject: _subject, ...message } = props;
+    render(<SessionReportCard {...message} relation={relation} />);
+
+    expect(screen.getByTestId("session-report-card")).toHaveAttribute("data-severity", "message");
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getByText(/deletes every catalog/)).toBeInTheDocument();
+    expect(screen.queryByText(/Report/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open sending session/ })).toBeInTheDocument();
+  });
+
+  it("says that the agent reads it from the inbox", () => {
+    render(<SessionReportCard {...props} />);
+    expect(screen.getByText(/In this session's inbox/)).toBeInTheDocument();
+  });
+
   it("opens the reporting session", () => {
     const onOpen = vi.fn();
     render(<SessionReportCard {...props} onOpen={onOpen} />);

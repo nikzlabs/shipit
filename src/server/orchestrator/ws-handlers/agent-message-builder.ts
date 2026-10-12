@@ -95,7 +95,7 @@ export function attachToolResultsToGroup(
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
   text: string,
-  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin" | "automatic">,
+  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin" | "automatic" | "bestEffort">,
 ): void {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
   runner.steeredMessages = [
@@ -110,6 +110,7 @@ export function recordSteeredMessage(
       uploadPaths: extra?.uploadPaths,
       assembledPrompt: extra?.assembledPrompt,
       ...(extra?.automatic ? { automatic: true } : {}),
+      ...(extra?.bestEffort ? { bestEffort: true } : {}),
     },
   ];
   console.log(
@@ -141,13 +142,15 @@ export function requeueUndeliveredSteers(
     s.assembledPrompt !== undefined && !s.delivered && persistableGroups <= s.afterGroupIndex;
   const undelivered = steers.filter(isUndelivered);
   if (undelivered.length === 0) return 0;
+  // Its row goes either way: the transcript keeps no message that the agent did not get.
   runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
-  for (const s of undelivered) {
+  const requeued = undelivered.filter((s) => !s.bestEffort);
+  for (const s of requeued) {
     const position = runner.enqueue(steerToQueuedMessage(s));
     emit({ type: "message_queued", text: s.text, position });
     console.log(
       `[steer-requeue] runner=${runner.sessionId} un-acked steer re-queued at pos=${position} text=${JSON.stringify(s.text.slice(0, 60))}`,
     );
   }
-  return undelivered.length;
+  return requeued.length;
 }

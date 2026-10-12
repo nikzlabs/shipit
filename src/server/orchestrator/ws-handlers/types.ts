@@ -18,6 +18,7 @@ import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { ScheduleProposalStore } from "../schedule-proposal-store.js";
 import type { ScheduleNotesRequestStore } from "../schedule-notes-request-store.js";
+import type { SessionInboxStore } from "../session-inbox-store.js";
 import type { SecretStore } from "../secret-store.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
@@ -113,6 +114,8 @@ export interface AppCtx {
   /** So a turn carries the outcome notice of a schedule proposal (docs/324-scheduled-sessions req 9). */
   scheduleProposals?: ScheduleProposalStore;
   scheduleNotesRequests?: ScheduleNotesRequestStore;
+  /** So a turn the user starts carries the inbox notice (docs/328-session-message-inbox). */
+  sessionInboxStore?: SessionInboxStore;
   secretStore?: SecretStore;
   serviceManagers?: Map<string, ServiceManager>;
   agentMergeClaims?: AgentMergeClaimStore;

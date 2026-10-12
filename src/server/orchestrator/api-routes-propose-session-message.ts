@@ -248,26 +248,22 @@ export async function registerProposeSessionMessageRoutes(
         }
 
         const proposer = deps.sessionManager.get(sessionId);
+        if (!deps.sessionInbox) {
+          throw new ServiceError(503, "Session messages are not available on this ShipIt instance.");
+        }
         const result = await deliverSessionMessage(
-          deps.sessionManager,
-          deps.runnerRegistry,
+          {
+            sessionInbox: deps.sessionInbox,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+          },
           resolved.session,
           card.message,
-          {
-            sessionId,
-            sessionTitle: proposer?.title ?? "Another session",
-            relation: "proposed",
-          },
-          deps.defaultAgentId,
-          deps.credentialsDir,
-          deps.credentialStore,
-          deps.providerAccountManager,
-          deps.containerManager,
+          { sessionId, sessionTitle: proposer?.title ?? "Another session", relation: "proposed" },
         );
-        // The dispatch's own admission, not a guess from the runner's state: a
-        // steered message reaches a RUNNING target immediately, and an idle one
-        // under a merge hold is queued.
-        const queued = result.admitted === "queued";
+        // docs/328-session-message-inbox — the message is in the target's inbox either way;
+        // `queued` says that its agent learns of it later and not now.
+        const queued = result.enqueued;
         const deliveredAt = new Date().toISOString();
         delivered = { state: "delivered", deliveredAt, queued };
         patch(delivered);

@@ -653,13 +653,31 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
     deps.io.exit(0);
     return;
   }
-  const queuePosition = Number(res.body.queuePosition ?? 0);
-  const enqueued = res.body.enqueued === true;
-  const lines = [
-    `session-id: ${id}`,
-    `delivered:  ${enqueued ? `queued (position ${queuePosition})` : "starting turn"}`,
-  ];
-  success(deps.io, lines.join("\n"));
+  const legacy = res.body.enqueued === true
+    ? `queued (position ${Number(res.body.queuePosition ?? 0)})`
+    : "starting turn";
+  success(
+    deps.io,
+    [`session-id: ${id}`, `delivered:  ${describeInboxDelivery(res.body, "child", legacy)}`].join("\n"),
+  );
+}
+
+// docs/328-session-message-inbox. An orchestrator that predates the inbox sends no `told`,
+// and its message was a turn: `legacy` says what became of that turn.
+function describeInboxDelivery(result: Record<string, unknown>, recipient: string, legacy: string): string {
+  switch (result.told) {
+    case "steered":
+      return `in the ${recipient}'s inbox — its agent was told during its running turn`;
+    case "started":
+      return `in the ${recipient}'s inbox — a turn started to tell its agent`;
+    case "later":
+      return `in the ${recipient}'s inbox — its agent is told when the ${recipient} is free`;
+    case "failed":
+      return `in the ${recipient}'s inbox, but ShipIt could not start the ${recipient} to tell its agent `
+        + `(${asString(result.error) || "unknown error"}). ShipIt tries again; do not send the message again.`;
+    default:
+      return legacy;
+  }
 }
 
 type WaitTerminal =
@@ -1296,11 +1314,11 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
   }
 
   const recipients = (res.body.recipients as Record<string, unknown>[] | undefined) ?? [];
-  const wokenCount = recipients.filter((r) => r.woken === true).length;
+  const deliveredCount = recipients.filter((r) => r.woken === true).length;
 
   if (parsed.booleans.has("json")) {
     deps.io.stdout(`${JSON.stringify(res.body)}\n`);
-    deps.io.exit(wokenCount > 0 ? 0 : 1);
+    deps.io.exit(deliveredCount > 0 ? 0 : 1);
     return;
   }
 
@@ -1308,14 +1326,58 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
     `report-id: ${asString(res.body.reportId)}`,
     `severity:  ${asString(res.body.severity)}`,
     `to:        ${asString(res.body.to)}`,
-    `delivered: ${wokenCount}/${recipients.length} recipient(s) woken`,
   ];
   for (const r of recipients) {
     const outcome = r.woken === true
-      ? "woken"
-      : `NOT woken (${asString(r.error) || "unknown error"}) — the card was still posted in its chat`;
-    lines.push(`  parent ${asString(r.title)} (${asString(r.sessionId)}): ${outcome}`);
+      ? describeInboxDelivery(r, "parent", "woken")
+      : `NOT delivered (${asString(r.error) || "unknown error"}) — the card was still posted in its chat`;
+    lines.push(`delivered: parent ${asString(r.title)} (${asString(r.sessionId)}) — ${outcome}`);
   }
   deps.io.stdout(`${lines.join("\n")}\n`);
-  deps.io.exit(wokenCount > 0 ? 0 : 1);
+  deps.io.exit(deliveredCount > 0 ? 0 : 1);
+}
+
+export async function handleSessionInbox(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json", "--all": "all" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session inbox: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.positional.length > 0) {
+    fail(
+      deps.io,
+      "shipit session inbox takes no session id — it always reads THIS session's inbox. "
+        + "Another session's inbox is not readable, including a child's.",
+    );
+  }
+  const all = parsed.booleans.has("all");
+
+  const res = await deps.call("POST", "/agent-ops/session/inbox", { all }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read this session's inbox"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+
+  const messages = (res.body.messages as Record<string, unknown>[] | undefined) ?? [];
+  if (messages.length === 0) {
+    success(
+      deps.io,
+      all
+        ? "No message was ever sent to this session."
+        : "No unread messages. `shipit session inbox --all` lists every message that was sent to this session.",
+    );
+    return;
+  }
+  const lines = [
+    all
+      ? `${messages.length} message(s) were sent to this session, oldest first:`
+      : `${messages.length} unread message(s), oldest first. They are now marked as read:`,
+  ];
+  for (const message of messages) {
+    lines.push("", `--- message ${asString(message.id)} · sent ${asString(message.createdAt)}`, asString(message.text));
+  }
+  success(deps.io, lines.join("\n"));
 }

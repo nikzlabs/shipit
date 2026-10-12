@@ -1,7 +1,7 @@
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import { prepareDispatch, withSettlement, type PreparedDispatch } from "./prepared-dispatch.js";
-import { createTurnSettlement, type TurnHandle, type TurnOutcome } from "./turn-settlement.js";
+import { createTurnSettlement, turnRefused, type TurnHandle, type TurnOutcome } from "./turn-settlement.js";
 import { toQueuedMessage } from "./session-runner.js";
 import { readAnswerHold } from "./turn-admission.js";
 import { holdTurn } from "./held-turns.js";
@@ -39,6 +39,11 @@ export interface WakeTurnOptions {
    * ahead of the messages it kept queued (docs/321-agent-requested-restart).
    */
   releaseHold?: QueueHold;
+  /**
+   * docs/328-session-message-inbox — an ordinary turn that starts now or is refused, never
+   * a queued system turn. It has no settlement: its caller reads other evidence.
+   */
+  startOrRefuse?: { automatic: boolean };
 }
 
 // Dispatch also waits for readiness; this wait exposes early boot failures.
@@ -67,7 +72,14 @@ export async function wakeSessionWithTurn(
   } = deps;
 
   // docs/322 — nothing may run before the user replies, so nothing is booted to wait.
-  if (readAnswerHold({ answerHold: sessionManager }, session.id)) {
+  const answerHeld = readAnswerHold({ answerHold: sessionManager }, session.id);
+  if (answerHeld && opts.startOrRefuse?.automatic) {
+    const settlement = createTurnSettlement();
+    settlement.noteAdmission("refused");
+    settlement.settle(turnRefused("the agent waits for the user's answer"));
+    return settlement;
+  }
+  if (answerHeld && !opts.startOrRefuse) {
     const settlement = createTurnSettlement();
     const entry = toQueuedMessage(withSettlement(wakeDispatch(session.id, opts), settlement));
     if (holdTurn(sessionManager, session.id, entry)) {
@@ -131,7 +143,10 @@ export async function wakeSessionWithTurn(
 
   opts.releaseHold?.release();
 
-  return runner.dispatch(wakeDispatch(session.id, opts));
+  return runner.dispatch(
+    wakeDispatch(session.id, opts),
+    opts.startOrRefuse ? { whenBusy: "refuse" } : undefined,
+  );
 }
 
 function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatch {
@@ -142,8 +157,8 @@ function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatc
     agentInterface: undefined,
     messageOrigin: opts.messageOrigin,
     activity: opts.activity,
-    systemTurn: true,
-    automatic: true,
+    systemTurn: opts.startOrRefuse ? undefined : true,
+    automatic: opts.startOrRefuse && !opts.startOrRefuse.automatic ? undefined : true,
     heldId: undefined,
     ...(onSettled
       ? {

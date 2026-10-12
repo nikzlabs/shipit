@@ -582,9 +582,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     return childId;
   }
 
-  it("POST /children/:childId/message enqueues a prompt on the child runner", { timeout: 15_000 }, async () => {
+  // docs/328-session-message-inbox req 1 — a message to a busy child is not a queued turn.
+  it("POST /children/:childId/message puts the message in a busy child's inbox and queues no turn", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const childId = await spawnChild(parentId);
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { queueLength: number } } }).runnerRegistry.get(childId);
+    const queuedBefore = runner.queueLength;
 
     const res = await app.inject({
       method: "POST",
@@ -592,15 +595,25 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       payload: { text: "Also do X" },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { queuePosition: number; enqueued: boolean };
-    expect(body.enqueued).toBe(true);
-    expect(body.queuePosition).toBeGreaterThanOrEqual(1);
-    const runner = (app as unknown as { runnerRegistry: { get(id: string): { messageQueue: { messageOrigin?: unknown }[] } } }).runnerRegistry.get(childId);
-    expect(runner.messageQueue.at(-1)?.messageOrigin).toEqual({
+    expect(res.json()).toMatchObject({ enqueued: true, queuePosition: 0, told: "later" });
+    expect(runner.queueLength).toBe(queuedBefore);
+
+    const inbox = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${childId}/inbox/read`,
+      payload: {},
+    });
+    const messages = inbox.json().messages as { text: string; from?: unknown }[];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.text).toContain("Also do X");
+    expect(messages[0]!.from).toEqual({
       sessionId: parentId,
       sessionTitle: "Parent",
       relation: "parent",
     });
+    // One read returns every unread message and marks it read (req 4).
+    const again = await app.inject({ method: "POST", url: `/api/sessions/${childId}/inbox/read`, payload: {} });
+    expect(again.json().messages).toEqual([]);
   });
 
   it("POST /children/:childId/message starts a turn directly when the child is idle", { timeout: 15_000 }, async () => {
@@ -613,9 +626,13 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       payload: { text: "Also do X" },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { queuePosition: number; enqueued: boolean };
-    expect(body.enqueued).toBe(false);
-    expect(body.queuePosition).toBe(0);
+    expect(res.json()).toMatchObject({ enqueued: false, queuePosition: 0, told: "started" });
+    // The response says "started"; this is the turn, and what its agent was given.
+    await waitFor(
+      () => createdClaudes.some((cp) => cp.runCalled && cp.lastPrompt?.includes("shipit session inbox")),
+      10_000,
+      "the child's inbox turn",
+    );
   });
 
   it("POST /children/:childId/message rejects an empty body with 400", { timeout: 15_000 }, async () => {

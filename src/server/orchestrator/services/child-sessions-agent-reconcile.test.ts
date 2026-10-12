@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { ResolvedChildMessageError, sendChildMessage } from "./child-sessions.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { AgentId, SessionInfo } from "../../shared/types.js";
-import { TURN_COMPLETED, type TurnAdmission } from "../turn-settlement.js";
+import type { SessionInfo } from "../../shared/types.js";
+import type { SessionInbox } from "./session-inbox.js";
 
 function stubSessionManager(child: Partial<SessionInfo>): SessionManager {
   return {
@@ -12,25 +12,16 @@ function stubSessionManager(child: Partial<SessionInfo>): SessionManager {
   } as unknown as SessionManager;
 }
 
-// `dispatch` returns a TurnHandle and the caller reads its admission; a bare
-// vi.fn() would make every delivery look "started".
-function stubRunner(agentId: AgentId, running = false, admitted: TurnAdmission = "started") {
+function stubInbox() {
+  const post = vi.fn<SessionInbox["post"]>(async () => ({ told: "started" }));
   return {
-    agentId,
-    running,
-    disposed: false,
-    sessionId: "child-1",
-    dispatch: vi.fn(() => ({ admitted, settled: Promise.resolve(TURN_COMPLETED) })),
+    post,
+    deps: {
+      sessionInbox: { post },
+      runnerRegistry: { get: () => undefined } as unknown as SessionRunnerRegistry,
+      chatHistoryManager: { append: vi.fn(), replaceInProgress: vi.fn() },
+    },
   };
-}
-
-function stubRegistry(runner: ReturnType<typeof stubRunner>) {
-  return {
-    // Like the registry, return existing runners without applying the agentId argument.
-    getOrCreate: vi.fn(() => runner),
-    get: vi.fn(() => runner),
-    dispose: vi.fn(),
-  } as unknown as SessionRunnerRegistry;
 }
 
 const CHILD: Partial<SessionInfo> = {
@@ -43,122 +34,53 @@ const CHILD: Partial<SessionInfo> = {
   lastUsedAt: "2026-08-14T10:00:00.000Z",
 };
 
-describe("sendChildMessage — agent reconciliation (req 18)", () => {
-  it("rejects a resolved child before it creates or dispatches a runner", async () => {
-    const runner = stubRunner("claude");
-    const registry = stubRegistry(runner);
+// The runner's agent is reconciled on the wake path now: `wake-session.test.ts`.
+describe("sendChildMessage — which child may get a message (docs/233-child-session-report)", () => {
+  it("rejects a resolved child before it stores a message for it", async () => {
+    const inbox = stubInbox();
 
     await expect(sendChildMessage(
-      stubSessionManager({ ...CHILD, mergedAt: "2026-08-14 11:00:00" }),
-      registry,
+      { ...inbox.deps, sessionManager: stubSessionManager({ ...CHILD, mergedAt: "2026-08-14 11:00:00" }) },
       "parent-1",
       "child-1",
       "keep going",
-      "claude",
-      undefined,
-      undefined,
     )).rejects.toBeInstanceOf(ResolvedChildMessageError);
 
-    expect(registry.getOrCreate).not.toHaveBeenCalled();
-    expect(runner.dispatch).not.toHaveBeenCalled();
+    expect(inbox.post).not.toHaveBeenCalled();
   });
 
   it("delivers to a child that started a turn after its PR resolved", async () => {
-    const runner = stubRunner("codex");
-    const registry = stubRegistry(runner);
+    const inbox = stubInbox();
 
     await sendChildMessage(
-      stubSessionManager({
+      { ...inbox.deps, sessionManager: stubSessionManager({
         ...CHILD,
         mergedAt: "2026-08-14 11:00:00",
         lastUsedAt: "2026-08-14T12:00:00.000Z",
-      }),
-      registry,
+      }) },
       "parent-1",
       "child-1",
       "keep going",
-      "claude",
-      undefined,
-      undefined,
     );
 
-    expect(runner.dispatch).toHaveBeenCalledTimes(1);
+    expect(inbox.post).toHaveBeenCalledTimes(1);
   });
 
   // docs/298 — a blocked checkout is unfinished work, and instructing the child
   // to repair it is the repair path. The same predicate undemotes it in the sidebar.
   it("delivers to a merged child whose workspace is blocked", async () => {
-    const runner = stubRunner("codex");
-    const registry = stubRegistry(runner);
+    const inbox = stubInbox();
 
     await sendChildMessage(
-      stubSessionManager({ ...CHILD, mergedAt: "2026-08-14 11:00:00", workspaceBlock: "conflict" }),
-      registry,
+      { ...inbox.deps, sessionManager: stubSessionManager({ ...CHILD, mergedAt: "2026-08-14 11:00:00", workspaceBlock: "conflict" }) },
       "parent-1",
       "child-1",
       "abort the rebase",
-      "claude",
-      undefined,
-      undefined,
     );
 
-    expect(runner.dispatch).toHaveBeenCalledTimes(1);
-  });
-
-  it("runs the child's persisted agent when the registry hands back a stale runner", async () => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
-    const runner = stubRunner("claude");
-    const registry = stubRegistry(runner);
-
-    await sendChildMessage(
-      stubSessionManager(CHILD),
-      registry,
-      "parent-1",
-      "child-1",
-      "keep going",
-      "claude",
-      undefined,
-      undefined,
+    expect(inbox.post).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "child-1" }),
+      { origin: { sessionId: "parent-1", sessionTitle: "Parent session", relation: "parent" }, body: "abort the rebase" },
     );
-
-    expect(runner.agentId).toBe("codex");
-    expect(runner.dispatch).toHaveBeenCalledTimes(1);
-  });
-
-  it("leaves a running turn's agent alone", async () => {
-    const runner = stubRunner("claude", true);
-    const registry = stubRegistry(runner);
-
-    await sendChildMessage(
-      stubSessionManager(CHILD),
-      registry,
-      "parent-1",
-      "child-1",
-      "keep going",
-      "claude",
-      undefined,
-      undefined,
-    );
-
-    expect(runner.agentId).toBe("claude");
-  });
-
-  it("falls back to the orchestrator default for a child that has never run", async () => {
-    const runner = stubRunner("claude");
-    const registry = stubRegistry(runner);
-
-    await sendChildMessage(
-      stubSessionManager({ ...CHILD, agentId: undefined }),
-      registry,
-      "parent-1",
-      "child-1",
-      "first message",
-      "claude",
-      undefined,
-      undefined,
-    );
-
-    expect(runner.agentId).toBe("claude");
-    expect(runner.dispatch).toHaveBeenCalledTimes(1);
   });
 });

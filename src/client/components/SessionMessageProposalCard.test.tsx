@@ -99,9 +99,9 @@ describe("SessionMessageProposalCard", () => {
     );
   });
 
-  it("says a delivery landed in the target's queue", () => {
+  it("says that a delivery waits in the target's inbox", () => {
     render(<SessionMessageProposalCard card={card({ state: "delivered", queued: true })} />);
-    expect(screen.getByTestId("session-message-proposal-status")).toHaveTextContent(/Queued behind/);
+    expect(screen.getByTestId("session-message-proposal-status")).toHaveTextContent(/In Orchestrator's inbox/);
   });
 
   it("shows why a delivery failed and retries on click", () => {

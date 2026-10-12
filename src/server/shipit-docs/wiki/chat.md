@@ -157,9 +157,11 @@ health strip is for ([sessions.md](sessions.md)).
 **Background work does not outlive a turn that ShipIt started.** A turn the user
 typed normally runs on an agent process that stays up, so a job you left in the
 background can end and start a new turn. A turn that ShipIt starts — a merge
-notice, a child report, a finished consult, a CI fix — runs on a process that
+notice, a finished consult, a CI fix — runs on a process that
 exits a few seconds after your message ends, and a job that is still running
-then stops with it. ShipIt then normally starts one turn that names the work.
+then stops with it. The short turn that tells you about your inbox
+([sessions.md](sessions.md)) is the exception: it is an ordinary turn, and its
+process stays up. ShipIt then normally starts one turn that names the work.
 If that turn leaves work running too, or if another turn took the agent process
 first, ShipIt starts no turn for it: the transcript normally gets a notice, and
 that notice is the answer when the user asks why a session stopped with a build
@@ -188,9 +190,10 @@ on the user" in the sidebar's sense and cannot be muted — see
 
 While a question card or a plan card waits, ShipIt starts **no automatic turn**
 in the session: no CI auto-fix, no automatic conflict resolution, no merge
-notice, child report, message from a parent session, finished consult or preview
-auto-fix. They wait, and run after the user's reply turn ends — unless that turn
-ends on a new question. The hold and the held turns are saved, so a stopped or
+notice, finished consult or preview auto-fix. They wait, and run after the
+user's reply turn ends — unless that turn ends on a new question. A child's
+report or a parent's message still goes to the inbox; no turn starts to tell you
+about it, and the notice comes in front of the user's reply instead. The hold and the held turns are saved, so a stopped or
 restarted container, or a ShipIt restart, loses neither. A turn your own CLI
 starts by itself — a background job of yours finishing — is stopped at once; you
 read what the job returned together with the user's reply. What the user starts

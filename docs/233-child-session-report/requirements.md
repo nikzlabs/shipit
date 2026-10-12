@@ -42,10 +42,12 @@ both a sender and a recipient, so one finding could cause a message storm.
    received no message or wake turn.
 
 8. Every valid `fyi`, `warn`, and `blocker` child report must persist a card in
-   the parent's transcript and start or queue a parent wake turn.
+   the parent's transcript and go to the parent's inbox
+   (docs/328-session-message-inbox).
 
-9. A child report must not preempt a running parent turn. The report queues
-   behind the current turn through the shared wake path.
+9. A child report does not start a turn of its own in the parent. ShipIt can
+   tell the parent's agent during its running turn that a report waits; the
+   agent reads it at a point that it chooses.
 
 10. The per-reporter rolling rate limit remains the volume bound for reports to
     the parent. The system does not add content fingerprints or semantic
@@ -104,6 +106,16 @@ _None._
 - 2026-08-27 — Child sessions must not message one another. Cohort broadcasts
   are an anti-pattern that causes message storms. All child reports go only to
   the direct parent, which coordinates other children when needed.
+- 2026-10-11 — Should messages between sessions stop being turns of their own?
+  The user proposed it: a busy parent ran its children's reports one turn at a
+  time, although an early report could be out of date. Chosen: yes. A report
+  goes to the parent's inbox, and the agent reads all unread reports together
+  (docs/328-session-message-inbox req 1 to req 5). This replaces the wake turn
+  in req 8.
+- 2026-10-11 — Can ShipIt tell the parent's agent about a report during its
+  running turn? Chosen: yes (docs/328-session-message-inbox req 7). This
+  replaces the earlier req 9, which said that a report must not preempt a
+  running parent turn and queues behind it.
 - 2026-09-23 — Should a child still see its siblings as read-only topology in
   `shipit session whoami`? Chosen: no. The user compares prompts and models in
   parallel child sessions, and sibling visibility pollutes those results. The

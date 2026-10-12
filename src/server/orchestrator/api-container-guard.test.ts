@@ -568,6 +568,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/ssh/sign",
   "GET /api/sessions/:sessionId/cohort",
   "POST /api/sessions/:sessionId/report",
+  // docs/328-session-message-inbox — the agent reads the messages sent to its own session.
+  "POST /api/sessions/:sessionId/inbox/read",
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
   "POST /api/sessions/:sessionId/propose-actions",

@@ -357,6 +357,14 @@ Four things users ask about children:
 - They report **upward only**. A child can raise a blocker to its parent; it
   cannot talk to its siblings, and cannot see them either — so children run as
   parallel trials of different prompts or models do not learn of each other.
+- **A message between sessions is not a turn.** A child's report, and a
+  parent's message to a child, go to the receiving session's **inbox**. The
+  user sees a card for each one in the receiving session's transcript. You
+  are told that messages wait — in front of your next prompt, during your turn
+  where the harness allows it, or in a short turn that ShipIt starts when the
+  session is idle — and `shipit session inbox` returns every unread message in
+  one call. So a parent that was busy while five reports arrived reads the
+  five together, and does not run five turns one after the other.
 - **A parent cannot end a child.** It can wait on one, message one, and be woken
   when one merges; archiving is the user's, above. A child steered by the user in
   its own chat is doing exactly that, and the parent has no way to see it.
@@ -382,12 +390,13 @@ a session that handed an agent a prompt without spawning it.
 
 For that case the agent posts a **"Message for another session"** card naming
 the target session and showing the whole message. The user reads it and sends
-it or declines it; the send is what delivers it, and it starts a turn there just
-as typing it would. Approving one card sends one message — the agent gets no
-continuing access, so a second message means a second card. The receiving
-session's transcript marks the message "From another session, approved by you",
-with the sender's name, and the card stays in the sender's transcript recording
-whether it was delivered or declined. Either way, a `[ShipIt]` line at the start
+it or declines it; the send is what delivers it, to the target session's inbox,
+and that session's agent is told at once — a message the user approved does not
+wait behind a question the agent asked. Approving one card sends one message —
+the agent gets no continuing access, so a second message means a second card.
+The receiving session's transcript shows the message, marked "From another
+session, approved by you" with the sender's name, and the card stays in the
+sender's transcript recording whether it was delivered or declined. Either way, a `[ShipIt]` line at the start
 of the sender's next turn says what the user did, so the agent never asks.
 
 ## Scheduled sessions

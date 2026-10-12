@@ -47,7 +47,9 @@ function describe({ card, state }: SessionMessageOutcome): string {
   const target = `session ${renderOwn(card.targetSessionId)} ${asQuotedData(card.targetTitle)}`;
   switch (state) {
     case "delivered": {
-      const where = card.queued ? "; it is queued there and runs when that session is free." : "; it started a turn there.";
+      const where = card.queued
+        ? "; it is in that session's inbox, and its agent is told when the session is free."
+        : "; it is in that session's inbox, and its agent was told.";
       return `- ${target} — DELIVERED by the user${where} That session sees the message as coming from you.`;
     }
     case "declined":

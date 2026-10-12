@@ -282,6 +282,45 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  // docs/328-session-message-inbox — the notice is never a queue entry.
+  it("a steer-or-refuse dispatch is steered into a turn that can take it", () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    const handle = runner.dispatch(testDispatch({ text: "you have messages" }), { whenBusy: "steer-or-refuse" });
+
+    expect(handle.admitted).toBe("steered");
+    expect(sent).toEqual(["you have messages"]);
+    expect(runner.queueLength).toBe(0);
+    runner.dispose({ force: true });
+  });
+
+  it.each([
+    ["live steering is off", { liveSteering: false }, true],
+    ["the turn is not streaming", { liveSteering: true }, false],
+  ] as const)("a steer-or-refuse dispatch is refused, not queued, when %s", async (_label, deps, streaming) => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps(steerDeps(deps));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = streaming;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const handle = runner.dispatch(testDispatch({ text: "you have messages" }), { whenBusy: "steer-or-refuse" });
+
+    expect(handle.admitted).toBe("refused");
+    expect((await handle.settled).status).toBe("refused");
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(0);
+    vi.restoreAllMocks();
+    runner.dispose({ force: true });
+  });
+
   it("dispatch enqueues (does not steer) when live steering is off, even on a streaming turn (docs/163)", () => {
     const runner = new SessionRunner({
       sessionId: "s1",

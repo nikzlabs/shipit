@@ -13,6 +13,7 @@ import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { CardOutcomeNotice } from "./services/card-outcome-notice.js";
 import type { RepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import type { SessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
+import type { InboxNotice } from "./services/session-inbox-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
 import type { StandDownCause } from "./services/quota-continuation.js";
@@ -124,6 +125,8 @@ export interface SteeredMessage {
   /** In-memory replay-ack key. Without an ack at turn end, this steer is re-queued. */
   assembledPrompt?: string;
   delivered?: boolean;
+  /** Without an ack, this steer is removed and NOT re-queued (`bestEffortSteer`). */
+  bestEffort?: boolean;
 }
 
 // Add side-channel cards through emitChatCard so they persist at their transcript position.
@@ -154,6 +157,7 @@ export interface QueuedMessage {
   resetMergedBranch?: boolean;
   compactContext?: boolean;
   silent?: boolean;
+  bestEffortSteer?: boolean;
 }
 
 export interface AgentDispatchOptions {
@@ -191,7 +195,11 @@ export interface AgentDispatchOptions {
   compactContext?: boolean;
   /** Suppress the user bubble and row for a ShipIt-initiated compaction turn. */
   silent?: boolean;
-  /** docs/303 — ShipIt's own follow-up asking for the status update the last turn skipped. */
+  /**
+   * docs/328-session-message-inbox — a steer of this dispatch that the CLI does not take is
+   * dropped, not put in the queue: its sender tells again by its own rule.
+   */
+  bestEffortSteer?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -216,9 +224,12 @@ export class AgentTurnAdmissionError extends Error {
  *
  * Covers admission only. A refusing caller must also set `postTurn: "none"`, or pre-turn
  * compaction can re-queue it after it was admitted (`dispatched-turn.ts`).
+ *
+ * `"steer-or-refuse"` is never queued either, but a running turn that can take a steer
+ * gets the text (docs/328-session-message-inbox).
  */
 export interface DispatchAdmission {
-  whenBusy: "queue" | "refuse";
+  whenBusy: "queue" | "refuse" | "steer-or-refuse";
 }
 
 /**
@@ -242,7 +253,7 @@ export function dispatchOnRunner(
   // The single exit for every gate below, so a refusing caller cannot be queued by one
   // of them — including a gate added later.
   const enqueueOrRefuse = (reason: string): TurnHandle => {
-    if (admission?.whenBusy === "refuse") {
+    if (admission && admission.whenBusy !== "queue") {
       settlement.noteAdmission("refused");
       console.warn(`[dispatch] refused the dispatch for ${runner.sessionId} — ${reason}`);
       // Settles either way: the throw is the consumer's, not a failure of the dispatch.
@@ -398,6 +409,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
   if (opts.silent !== undefined) queued.silent = opts.silent;
+  if (opts.bestEffortSteer !== undefined) queued.bestEffortSteer = opts.bestEffortSteer;
   return queued;
 }
 
@@ -488,6 +500,8 @@ export interface SystemTurnDeps {
   repoSessionOutcomeNotice?: (sessionId: string) => RepoSessionOutcomeNotice | null;
   /** At-least-once, like `cardOutcomeNotices` (docs/314-session-message-proposal req 14). */
   sessionMessageOutcomeNotice?: (sessionId: string) => SessionMessageOutcomeNotice | null;
+  /** At-least-once, like `cardOutcomeNotices` (docs/328-session-message-inbox). */
+  inboxNotice?: (sessionId: string) => InboxNotice | null;
   /**
    * Consumes the role's first-turn instructions; subsequent calls return an empty string.
    * The returned `repark` hands the take back when the turn never reaches an agent.

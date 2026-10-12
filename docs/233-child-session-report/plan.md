@@ -1,7 +1,7 @@
 ---
 issue: planning#243
 title: Parent-mediated child-session reports
-description: A child pushes findings only to its parent as a persisted card plus a queued wake turn.
+description: A child pushes findings only to its parent, as a persisted card plus a message in the parent's inbox.
 ---
 
 # Session reports (`shipit session report`)
@@ -53,26 +53,27 @@ spawn prompt.
 Each accepted report gives the parent both notification halves:
 
 1. A persisted `SessionReportCard` is appended to the parent's transcript and
-   emitted to attached viewers.
-2. A self-describing system turn is delivered through `wakeSessionWithTurn`.
-   Busy parents queue the turn; reports never preempt running work.
+   emitted to attached viewers. It is what the user reads.
+2. A message goes to the parent's inbox (docs/328-session-message-inbox). It is
+   what the parent's agent reads. The report is not a turn of its own, so a
+   parent that was busy reads all the reports that arrived together.
 
-The wake prompt carries the reporting child's id, title, severity, subject, and
+The message carries the reporting child's id, title, severity, subject, and
 body. It marks the content as peer-provided context, not a user instruction.
 The report rate limit remains five accepted reports per reporter per ten
 minutes.
 
 A top-level or detached session has no parent and cannot report. An archived
-parent also makes the report unavailable. Delivery failures keep the persisted
-card and return `woken: false` so the sender does not mistake the report for a
-successful agent wake.
+parent also makes the report unavailable. The response says how the parent's
+agent learns of the report (`told`); when ShipIt could not start the parent, the
+report is stored all the same, and the inbox tries again.
 
 ## Direct parent-to-child messages
 
 `shipit session message <id>` remains parent-to-direct-child only. It uses
 `assertChildOfParent` and rejects unrelated or sibling ids. The shared
 resolved-session classifier also blocks messages to a resolved child before a
-runner, card, or queue entry is created. A later started turn can reactivate the
+runner, card, or inbox message is created. A later started turn can reactivate the
 child and make it eligible again.
 
 `src/server/shared/session-resolution.ts` remains the sole implementation of
@@ -93,24 +94,24 @@ session.
 
 | File | Role |
 |---|---|
-| `src/server/orchestrator/services/session-report.ts` | Validates parent-only reports, persists the card, and wakes the parent |
+| `src/server/orchestrator/services/session-report.ts` | Validates parent-only reports, persists the card, and stores the report in the parent's inbox |
 | `src/server/session/agent-shim/shipit-session.ts` | Rejects cohort/sibling targets and formats report results |
 | `src/server/session/agent-shim/shipit.ts` | CLI help and coordination guidance |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | Container-accessible cohort-read and parent-report routes |
 | `src/server/orchestrator/services/child-sessions.ts` | Parent-to-direct-child authorization and resolved-child gate |
 | `src/server/shared/session-resolution.ts` | Sole client/server resolved-session classifier for direct child eligibility and grouping |
 | `src/server/orchestrator/turn-executor.ts` | Advances activity when any user or system continuation starts |
-| `src/server/orchestrator/wake-session.ts` | Shared non-preempting wake path |
+| `src/server/orchestrator/services/session-inbox.ts` | Stores the message and tells the recipient's agent (docs/328-session-message-inbox) |
 | `src/server/orchestrator/chat-history.ts` | Persisted report-card field |
 | `src/server/shared/types/domain-types/session.ts` | Report card and legacy relation types |
-| `src/client/components/SessionReportCard.tsx` | Inline report rendering, including legacy sibling cards |
+| `src/client/components/SessionReportCard.tsx` | Inline report rendering, including legacy sibling cards; with no severity it shows a message from a parent or a proposal card (docs/328-session-message-inbox) |
 | `src/server/shipit-docs/sessions.md` | Agent-facing command reference |
 
 ## Verification
 
 - Service and integration tests prove `to: "cohort"` returns `400` and creates
-  no report card, runner, queue entry, or wake turn.
+  no report card, runner, queue entry, or inbox message.
 - Shim tests prove `--cohort`, sibling ids, and arbitrary targets fail before a
   broker call.
-- Existing tests retain parent report persistence, wake behavior, validation,
-  rate limiting, and direct resolved-child message coverage.
+- Existing tests retain parent report persistence, validation, rate limiting,
+  and direct resolved-child message coverage.

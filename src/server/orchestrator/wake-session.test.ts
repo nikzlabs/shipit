@@ -76,6 +76,90 @@ describe("wakeSessionWithTurn", () => {
   });
 });
 
+// Every message between sessions reaches its recipient through this path
+// (docs/328-session-message-inbox), so the reconcile that `sendChildMessage` owned is here.
+describe("wakeSessionWithTurn — the agent the session runs on", () => {
+  function setupWith(runnerAgent: "claude" | "codex", running: boolean) {
+    const runner = {
+      agentId: runnerAgent,
+      running,
+      disposed: false,
+      dispatch: vi.fn(() => ({ admitted: "started", settled: new Promise(() => {}) })),
+    };
+    const deps = {
+      sessionManager: {} as SessionManager,
+      runnerRegistry: { get: () => runner, getOrCreate: () => runner, dispose: vi.fn() },
+      defaultAgentId: "claude",
+    } as unknown as WakeSessionDeps;
+    return { runner, deps };
+  }
+
+  it("runs the session's persisted agent when the registry hands back a stale runner", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const { runner, deps } = setupWith("claude", false);
+
+    await wakeSessionWithTurn(deps, { ...SESSION, agentId: "codex" } as SessionInfo, { text: "continue" });
+
+    expect(runner.agentId).toBe("codex");
+    expect(runner.dispatch).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
+  });
+
+  it("leaves a running turn's agent alone", async () => {
+    const { runner, deps } = setupWith("claude", true);
+
+    await wakeSessionWithTurn(deps, { ...SESSION, agentId: "codex" } as SessionInfo, { text: "continue" });
+
+    expect(runner.agentId).toBe("claude");
+  });
+
+  it("keeps the runner's agent for a session that has never run", async () => {
+    const { runner, deps } = setupWith("claude", false);
+
+    await wakeSessionWithTurn(deps, SESSION, { text: "continue" });
+
+    expect(runner.agentId).toBe("claude");
+    expect(runner.dispatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("wakeSessionWithTurn — start now or refuse (docs/328-session-message-inbox)", () => {
+  let runners: SessionRunnerInterface[] = [];
+  afterEach(() => {
+    for (const r of runners) r.dispose({ force: true });
+    runners = [];
+  });
+
+  it("starts an ordinary turn, not a system turn, on an idle session", async () => {
+    const { registry, wakeDeps } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, {
+      text: "inbox",
+      startOrRefuse: { automatic: true },
+    });
+
+    expect(handle.admitted).toBe("started");
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
+  it("refuses, and queues nothing, when the session is busy", async () => {
+    const { registry, wakeDeps } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    runner.running = true;
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, {
+      text: "inbox",
+      startOrRefuse: { automatic: true },
+    });
+
+    expect(handle.admitted).toBe("refused");
+    expect(runner.queueLength).toBe(0);
+  });
+});
+
 describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", () => {
   let dbManager: DatabaseManager;
   afterEach(() => dbManager.close());
@@ -129,6 +213,30 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
     expect(handle.admitted).toBe("queued");
     expect(getOrCreate).not.toHaveBeenCalled();
     expect(sessionManager.heldTurns("parent").map((m) => m.text)).toEqual(["Continue where you stopped."]);
+  });
+
+  it("refuses a start-or-refuse turn that is automatic, and saves nothing (docs/328)", async () => {
+    const { deps, sessionManager, getOrCreate } = setup(true);
+
+    const handle = await wakeSessionWithTurn(deps, sessionManager.get("parent")!, {
+      text: "inbox",
+      startOrRefuse: { automatic: true },
+    });
+
+    expect(handle.admitted).toBe("refused");
+    expect(getOrCreate).not.toHaveBeenCalled();
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
+  });
+
+  it("goes on to the runner for a start-or-refuse turn that the user approved (docs/322 req 6)", async () => {
+    const { deps, sessionManager, getOrCreate } = setup(true);
+
+    await expect(wakeSessionWithTurn(deps, sessionManager.get("parent")!, {
+      text: "inbox",
+      startOrRefuse: { automatic: false },
+    })).rejects.toThrow("booted a runner");
+    expect(getOrCreate).toHaveBeenCalled();
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
   });
 
   it("goes on to the runner when nothing is held", async () => {

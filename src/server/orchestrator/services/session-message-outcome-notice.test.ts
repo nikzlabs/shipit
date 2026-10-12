@@ -67,14 +67,14 @@ describe("buildSessionMessageOutcomeNotice", () => {
     const text = notice();
 
     expect(text).toMatch(/^\[ShipIt] Since your last turn, the user acted on cards you posted/);
-    expect(text).toContain('session ses_root "Orchestrator" — DELIVERED by the user; it started a turn there.');
+    expect(text).toContain('session ses_root "Orchestrator" — DELIVERED by the user; it is in that session\'s inbox, and its agent was told.');
     expect(text).toContain('session ses_sibling "Parser slice" — DECLINED by the user. Nothing was sent');
     expect(text).toContain("not part of the user's message");
   });
 
   it("says a delivery was queued, without guessing why", () => {
     post("smp-a", { state: "delivered", queued: true });
-    expect(notice()).toContain("DELIVERED by the user; it is queued there and runs when that session is free.");
+    expect(notice()).toContain("DELIVERED by the user; it is in that session's inbox, and its agent is told when the session is free.");
   });
 
   it("carries a failed delivery's reason as quoted data", () => {

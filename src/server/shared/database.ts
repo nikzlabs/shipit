@@ -1161,6 +1161,27 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "self_merge_watch");
   },
+  // docs/328-session-message-inbox — every message sent to a session, and how far its agent
+  // has read and has been told.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_inbox (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        from_session_id TEXT,
+        from_title      TEXT,
+        relation        TEXT,
+        body            TEXT NOT NULL,
+        created_at      TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_inbox_session ON session_inbox(session_id, id);
+      CREATE TABLE IF NOT EXISTS session_inbox_state (
+        session_id       TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        read_through     INTEGER NOT NULL DEFAULT 0,
+        notified_through INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

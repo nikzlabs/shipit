@@ -166,7 +166,7 @@ export function SessionMessageProposalCard({
               data-testid="session-message-proposal-status"
             >
               {card.queued
-                ? `Queued behind the turn ${card.targetTitle} is running`
+                ? `In ${card.targetTitle}'s inbox — its agent is told when it is free`
                 : `Delivered to ${card.targetTitle}`}
             </span>
           </>

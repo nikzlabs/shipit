@@ -740,4 +740,9 @@ export function registerAgentOpsRoutes(
     "/agent-ops/session/report",
     async (request, reply) => relay("POST", "/report", request.body ?? {}, reply),
   );
+
+  app.post<{ Body: { all?: boolean } }>(
+    "/agent-ops/session/inbox",
+    async (request, reply) => relay("POST", "/inbox/read", request.body ?? {}, reply),
+  );
 }
