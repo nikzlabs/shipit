@@ -26,6 +26,7 @@ vi.mock("./session-credentials.js", () => ({
   },
 }));
 
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 import { createOAuthAccountRepush } from "./oauth-account-repush.js";
 
 const session = (id: string, agentId: "claude" | "codex" = "claude", agentPinned = true) => ({ id, agentId, agentPinned });
@@ -40,7 +41,7 @@ describe("createOAuthAccountRepush", () => {
   it("pushes to the sessions with a live CLI first, and repairs only the idle ones", () => {
     const live = new Set(["live-1", "live-2"]);
     const repush = createOAuthAccountRepush({
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       listSessions: () => [session("idle-1"), session("live-1"), session("idle-2"), session("live-2")],
       hasLiveAgent: (id) => live.has(id),
     }, "test");
@@ -55,7 +56,7 @@ describe("createOAuthAccountRepush", () => {
     markers.set("other-account", "acct-2");
     markers.set("this-account", "acct-1");
     const repush = createOAuthAccountRepush({
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       listSessions: () => [
         session("codex", "codex"),
         session("unpinned", "claude", false),
