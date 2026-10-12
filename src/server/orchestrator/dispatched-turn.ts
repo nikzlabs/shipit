@@ -24,6 +24,7 @@ import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction, startedUnattended } fr
 import {
   createPromptRepark,
   createPromptTakeLedger,
+  settleWhenRunnerLetsGo,
   type PromptTakeLedger,
   type TurnOutcome,
 } from "./turn-settlement.js";
@@ -291,10 +292,11 @@ async function runDispatchedTurnInner(
   // turn runs on. Only where a resident process starts a turn when a background job ends:
   // there the agent ends a message to wait for one. A driver-owned turn's prompt is the
   // driver's script, so the note stays off it like the notice above.
+  // Read from the setting and not from a resident that is alive now: a spawn guard can
+  // still retire that one, and the note costs nothing on a process that stays up.
   const startedByShipIt = opts.systemTurn === true || opts.automatic === true || opts.unattended === true;
-  const runsOnOneShotProcess = !useStreaming && !(runner.isStreamingActive && runner.getAgent() !== null);
   const oneShotTurnNote =
-    startedByShipIt && runsOnOneShotProcess && opts.postTurn !== "none" && !isCompactRequest
+    startedByShipIt && !useStreaming && opts.postTurn !== "none" && !isCompactRequest
     && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false)
       ? ONE_SHOT_TURN_NOTE
       : "";
@@ -355,7 +357,8 @@ async function runDispatchedTurnInner(
     const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-    await runDispatchedTurn(runner, deps, agentId, queuedMessageToDispatchOptions(next), createAgent);
+    const queued = settleWhenRunnerLetsGo(runner, queuedMessageToDispatchOptions(next));
+    await runDispatchedTurn(runner, deps, agentId, queued, createAgent);
   };
 
   let noResultRetries = 0;
@@ -410,7 +413,10 @@ async function runDispatchedTurnInner(
     }
     const agent = resident ?? createAgent(agentId);
     const turnStreams = useStreaming || reuse;
-    if (reuse) agent.removeAllListeners();
+    if (reuse) {
+      agent.emit("reused");
+      agent.removeAllListeners();
+    }
 
     takes.handOver();
     await executeAgentTurn(runner, deps, agent, {

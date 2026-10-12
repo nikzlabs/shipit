@@ -385,7 +385,10 @@ async function composeAndRunAgentTurn(
     else ctx.send(m);
   };
   const sessionId = capturedSessionId ?? runner?.sessionId ?? "";
-  if (existingAgent) existingAgent.removeAllListeners();
+  if (existingAgent) {
+    existingAgent.emit("reused");
+    existingAgent.removeAllListeners();
+  }
 
   const historyImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
   const historyFiles = validatedFiles.length > 0

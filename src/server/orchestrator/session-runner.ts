@@ -1,4 +1,3 @@
-import { isCompactCommand } from "../shared/compact-command.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import type { BillingMode } from "../shared/catalogue/types.js";
 import { EventEmitter } from "node:events";
@@ -60,9 +59,8 @@ import {
 import {
   createTurnSettlement,
   settleDroppedQueueEntries,
-  turnDropped,
+  settleWhenRunnerLetsGo,
   turnErrored,
-  turnInterrupted,
   turnRefused,
   TURN_STEERED,
   type TurnEnd,
@@ -334,42 +332,7 @@ export function dispatchOnRunner(
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
   if (opts.deliveryId !== undefined) runner.activeDeliveryId = opts.deliveryId;
-  const chained = withSettlement(opts, settlement);
-  // Latch this turn's result: queue drain can replace runner state before settlement.
-  // A turn that produced a result is interrupted, never dropped as if it had not run.
-  let sawTurnResult = false;
-  const ownIsCompact = isCompactCommand(opts.text);
-  const onTurnResult = ({ compact }: { compact: boolean }): void => {
-    if (compact && !ownIsCompact) return;
-    if (runner.activeDeliveryId === opts.deliveryId) sawTurnResult = true;
-  };
-  const settleAsDropped = (reason: string): void => {
-    if (settlement.isSettled) return;
-    if (sawTurnResult) {
-      console.warn(
-        `[dispatch] settling the dispatched turn for ${runner.sessionId} as interrupted — ${reason}`
-        + " (the turn had already produced its result)",
-      );
-      chained.onTurnComplete?.(
-        turnInterrupted(`${reason} — after the turn produced its result`),
-      );
-      return;
-    }
-    console.warn(`[dispatch] settling the dispatched turn for ${runner.sessionId} as dropped — ${reason}`);
-    chained.onTurnComplete?.(turnDropped(reason));
-  };
-  const onRunnerDisposed = (): void => settleAsDropped("runner disposed mid-turn");
-  const onTurnAbandoned = (): void =>
-    settleAsDropped("turn abandoned — worker reported no agent running");
-  runner.on("turn_result", onTurnResult);
-  runner.on("disposed", onRunnerDisposed);
-  runner.on("turn_abandoned", onTurnAbandoned);
-  void (async () => {
-    await settlement.settled;
-    runner.off("turn_result", onTurnResult);
-    runner.off("disposed", onRunnerDisposed);
-    runner.off("turn_abandoned", onTurnAbandoned);
-  })();
+  const chained = settleWhenRunnerLetsGo(runner, withSettlement(opts, settlement));
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
     // Setup can fail before the executor owns settlement or cleanup.
     const detail = err instanceof Error ? err.message : String(err);

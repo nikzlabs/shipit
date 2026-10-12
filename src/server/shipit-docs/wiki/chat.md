@@ -159,7 +159,8 @@ stop that does not take is what **Force-kill the agent** on the Terminal tab's
 health strip is for ([sessions.md](sessions.md)).
 
 **Background work outlives a turn only on an agent process that stays up.** With
-live steering on and a harness that supports it, a turn runs on such a process,
+live steering on and a harness whose process stays up between turns, a turn
+runs on such a process,
 so a job you left in the background can end and start a new turn. That holds
 for a turn the user typed and for a turn ShipIt started — a merge notice, a
 finished consult, a CI fix. Otherwise the process exits a few seconds after

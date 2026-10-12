@@ -798,7 +798,8 @@ Notes:
 - **Every link after the first is a turn that ShipIt started.** It runs on the
   same kind of agent process as a turn the user typed, and the user can send a
   message into it. When that process is the kind that exits a few seconds after
-  your message ends, the turn begins with a `[System]` line that says so. Then
+  your message ends, and your harness would otherwise start a turn for a
+  finished job, the turn begins with a `[System]` line that says so. Then
   do not end the link's message to wait for a `run_in_background` job: a job
   that is still running stops with the process, and no completion notice comes
   for it. Run the build or the test run in the foreground and wait for it in

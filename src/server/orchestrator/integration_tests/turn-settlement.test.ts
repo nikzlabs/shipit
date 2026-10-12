@@ -439,8 +439,8 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     await flushTurn();
 
     expect(first.map((o) => o.status)).toEqual(["completed"]);
-    // Drained turns lack their own disposal listener; this does not assert settlement.
-    expect(second.some((o) => o.status === "interrupted")).toBe(false);
+    // A turn that a drain started is told of the disposal too, and it had no result.
+    expect(second.map((o) => o.status)).toEqual(["dropped"]);
   });
 
   // docs/329-user-steers-every-turn — on a reused process, a result can end a turn the CLI started.
@@ -495,6 +495,55 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
       await waitForTurn(() => outcomes.length === 1, "the restart step settled the turn");
 
       expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
+      runner.dispose({ force: true });
+    });
+
+    // `interrupted` tells the merge watch that the agent had the prompt, so it must not be said of an unread one.
+    it("settles `dropped` when the runner is disposed after that turn's result", async () => {
+      const { runner, resident, outcomes } = await setup();
+      resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await flushTurn();
+      await flushTurn();
+      expect(outcomes).toEqual([]);
+
+      runner.dispose({ force: true });
+      await flushTurn();
+
+      expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
+    });
+
+    it("settles `dropped` when a newer turn retires the process before it read the prompt", async () => {
+      const { runner, resident, outcomes } = await setup();
+
+      resident.emit("superseded");
+
+      expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
+      runner.dispose({ force: true });
+    });
+
+    it("settles `dropped` when the next turn takes the process and its listeners", async () => {
+      const { runner, resident, outcomes } = await setup();
+      resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitForTurn(() => !runner.running, "the CLI's turn ended");
+      expect(outcomes).toEqual([]);
+
+      runner.dispatch(testDispatch({ text: "the user's next message" }));
+      await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 2, "next turn submitted");
+
+      expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
+      runner.dispose({ force: true });
+    });
+
+    it("settles `interrupted` when the process ends after it read the prompt", async () => {
+      const { runner, resident, outcomes } = await setup();
+      resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitForTurn(() => !runner.running, "the CLI's turn ended");
+      resident.emit("event", { type: "agent_user_replay", text: "Your PR #7 merged." });
+
+      resident.emit("done", 1);
+      await waitForTurn(() => outcomes.length === 1, "the turn settled");
+
+      expect(outcomes.map((o) => o.status)).toEqual(["interrupted"]);
       runner.dispose({ force: true });
     });
   });

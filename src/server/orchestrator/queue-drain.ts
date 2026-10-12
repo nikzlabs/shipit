@@ -10,17 +10,18 @@ import {
   turnBlockedByPendingCommit,
 } from "./turn-admission.js";
 import { forgetHeldEntries, holdTurn } from "./held-turns.js";
-import { settleDroppedQueueEntries } from "./turn-settlement.js";
+import { settleDroppedQueueEntries, settleWhenRunnerLetsGo } from "./turn-settlement.js";
 
 export { queuedMessageToDispatchOptions };
 
 /**
- * Take the queue's head, or leave it in place when a gate `dispatchOnRunner` would have
- * enqueued for still holds (planning#562). Every drain that runs its entry WITHOUT going
- * back through `runner.dispatch` must take it here: gating and taking are one act because
- * a site that has already claimed the runner has no cheap way to put the entry back.
+ * Take the queue's next entry — a message of the user's before the head — or leave it in
+ * place when a gate `dispatchOnRunner` would have enqueued for still holds (planning#562).
+ * Every drain that runs its entry WITHOUT going back through `runner.dispatch` must take it
+ * here: gating and taking are one act because a site that has already claimed the runner
+ * has no cheap way to put the entry back.
  *
- * A deferred entry stays at the head, and `releaseQueuedTurn` is how it gets going again:
+ * A deferred entry stays where it is, and `releaseQueuedTurn` is how it gets going again:
  * every site that releases one of these gates calls it.
  */
 export function takeRunnableQueuedTurn(
@@ -87,7 +88,7 @@ export async function startQueuedMessage(
     );
     return runInteractive(next);
   }
-  await runner.runDispatchedTurn(queuedMessageToDispatchOptions(next));
+  await runner.runDispatchedTurn(settleWhenRunnerLetsGo(runner, queuedMessageToDispatchOptions(next)));
 }
 
 /**

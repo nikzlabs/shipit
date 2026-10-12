@@ -168,7 +168,8 @@ function queueAheadAndRelease(
   runner.messageQueue.unshift(entry);
   hold.release();
   releaseQueuedTurn(runner);
-  if (!runner.messageQueue.includes(entry)) settlement.noteAdmission("started");
+  // A late answer hold also takes the entry out of the queue, into the saved hold.
+  if (!runner.messageQueue.includes(entry) && !runner.answerHold) settlement.noteAdmission("started");
   runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
   return settlement;
 }

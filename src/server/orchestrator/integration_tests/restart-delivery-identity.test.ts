@@ -301,6 +301,27 @@ describe("Integration: durable delivery identity across a restart (planning#266)
       expect((await status()).deliveryId).toBeUndefined();
     });
 
+    it("behind a turn the CLI started, the delivery waits for the turn that runs the prompt", async () => {
+      await startResidentProcess();
+      lastAgent.emit("event", { type: "agent_self_wake", taskId: "t1", status: "completed" });
+      expect((await status()).turnActive).toBe(true);
+
+      expect((await postMessage({ text: "Your PR #7 merged.", deliveryId: DELIVERY_ID })).status).toBe(200);
+      // The turn in flight is the CLI's own: a restart must not settle the wake on its result.
+      expect((await status()).deliveryId).toBeUndefined();
+
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      expect((await status()).deliveryId).toBeUndefined();
+
+      lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Resetting the branch" }] });
+      const own = await status();
+      expect(own.turnActive).toBe(true);
+      expect(own.deliveryId).toBe(DELIVERY_ID);
+
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      expect((await status()).deliveryId).toBeUndefined();
+    });
+
     it("the orchestrator sends the delivery with the prompt when the turn reuses the resident process", async () => {
       const runner = makeRunner({ steering: true });
       runner.dispatch(testDispatch({ text: "the user's earlier message" }));

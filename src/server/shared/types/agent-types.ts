@@ -459,6 +459,8 @@ export interface AgentProcessEvents {
   mcp_status: [McpServerStatus[]];
   /** Settle only: the newer spawn owns teardown, queue drain, and commit. */
   superseded: [];
+  /** Settle only: the next turn takes this process, and its listeners with it. */
+  reused: [];
 }
 
 export interface AgentProcess extends EventEmitter<AgentProcessEvents> {

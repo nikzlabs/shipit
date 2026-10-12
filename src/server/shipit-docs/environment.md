@@ -514,18 +514,20 @@ no durability guarantee and belong in `docker-compose.yml`.
   survives eviction once that does happen.
 - **A `run_in_background` job outlives your message only on a resident agent
   process.** With the `advanced.liveSteering` setting on
-  (`shipit settings get advanced.liveSteering`) and a harness that can take a
-  message mid-turn, a turn runs on a resident process: you can end the message,
-  and the end of the job starts a new turn for you. That holds for a turn the
-  user typed and for a turn ShipIt started — the wake after
+  (`shipit settings get advanced.liveSteering`) and a harness whose process
+  stays up between turns, a turn runs on a resident process: you can end the
+  message, and the end of the job starts a new turn for you. That holds for a
+  turn the user typed and for a turn ShipIt started — the wake after
   `notify-on-merge --self`, a finished consult, a CI fix, a rebase follow-up,
   the turn after `shipit session restart` — and the user can send a message
   into either. Otherwise the process exits about five seconds after your
   message ends. A job that is still running then is stopped before it finishes,
-  and **no completion notice comes for it**. Do not count on those seconds. A
-  turn that ShipIt started on such a process begins with a `[System]` line that
-  says so; a turn the user typed carries no such line. The turn that resolves
-  the conflicts of a rebase always runs on a process that exits. On these
+  and **no completion notice comes for it**. Do not count on those seconds.
+  Where your harness would start a turn for a finished job, a turn that ShipIt
+  started on a process that exits begins with a `[System]` line that says so; a
+  turn the user typed carries no such line. The turn that resolves the
+  conflicts of a rebase always runs on a process that exits, and carries no
+  such line either. On these
   turns, run the work in the foreground and wait for it in the same message;
   split work that is longer than one tool call allows, or declare it as a
   Compose service. If you leave a job running, ShipIt normally starts

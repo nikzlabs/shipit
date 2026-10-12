@@ -338,4 +338,32 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
     expect(runner.messageQueue).toEqual([]);
     runner.dispose({ force: true });
   });
+
+  it("does not report the wake as started when a late answer hold saves it instead", async () => {
+    dbManager = createTestDatabaseManager();
+    const sessionManager = new SessionManager(dbManager);
+    sessionManager.track("s1", "Session", "/tmp/s1");
+    const { deps } = makeDispatchTurnDeps([], []);
+    deps.answerHold = sessionManager;
+    const registry = new SessionRunnerRegistry({ onRunnerCreated: (r) => r.setSystemTurnDeps(deps) });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    const hold = takeQueueHold(runner, { lease: true });
+
+    const handle = await wakeSessionWithTurn(
+      {
+        sessionManager,
+        runnerRegistry: registry,
+        defaultAgentId: "claude",
+        // The agent asks its question after the wake's own check of the hold.
+        restoreWorkspace: async () => sessionManager.setAwaitingAnswer("s1", true),
+      },
+      sessionManager.get("s1")!,
+      { text: "continue", releaseHold: hold },
+    );
+
+    expect(handle.admitted).toBe("queued");
+    expect(runner.running).toBe(false);
+    expect(sessionManager.heldTurns("s1").map((m) => m.text)).toEqual(["continue"]);
+    runner.dispose({ force: true });
+  });
 });

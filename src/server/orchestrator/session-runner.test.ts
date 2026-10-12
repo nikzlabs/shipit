@@ -639,6 +639,7 @@ describe("SessionRunner", () => {
     } as any;
     const fresh = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
     const prepareAgentEnv = vi.fn().mockResolvedValue(undefined);
+    resident.emit = vi.fn();
     runner.setAgent(resident);
     runner.isStreamingActive = true;
     runner.setSystemTurnDeps({

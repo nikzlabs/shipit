@@ -22,7 +22,7 @@
 - [x] The queue takes the user's entry before an automatic one
 - [x] The restart follow-up enters the carried queue before the hold comes off
 - [x] Tests, with a mutation check for each new one
-- [ ] Independent review of the diff against every numbered requirement
+- [x] Independent review of the diff against every numbered requirement
 - [x] `src/server/shipit-docs/environment.md`, `sessions.md`, and the wiki
 
 ## Part 2 — the session hold, and the last two turns
@@ -31,6 +31,7 @@
 - [ ] `runner.sessionHold`; no ordinary turn writes the hold
 - [ ] The conflict-resolution turn accepts a message from the user
 - [ ] ShipIt's compaction turns, and a message typed during one
+- [ ] A message of the user's that waits in the queue reaches the turn that starts
 - [ ] An answer under a hold is queued, not refused
 - [ ] `systemTurn` and `systemTurnInProgress` are deleted
 - [ ] The older design docs that state the old rule

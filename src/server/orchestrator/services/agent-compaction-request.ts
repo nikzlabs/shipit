@@ -108,9 +108,9 @@ export interface CompactionStepDeps {
  *
  * The compaction is the docs/295 silent system turn, and what follows it is fixed BEFORE it
  * starts: the instructions are parked as a notice, which the compaction does not consume and
- * the next turn does, and the continuation goes to the queue's head, which the compaction's
- * own drain takes. Neither waits for the compaction to settle: queued work drains at the
- * result, before settlement.
+ * the next turn does, and the continuation goes to the queue's head. The compaction's own
+ * drain takes it, after any message the user queued meanwhile. Neither waits for the
+ * compaction to settle: queued work drains at the result, before settlement.
  */
 export async function runRequestedCompaction(
   deps: CompactionStepDeps,
@@ -194,8 +194,8 @@ export async function runRequestedCompaction(
     return;
   }
   console.log(`[agent-compaction] compacting the context of ${sessionId}, as the agent asked (${handle.admitted})`);
-  // req 8 — right behind the compaction, so it runs next whether that completes, fails or is
-  // cut short. A started compaction has left the queue; a queued one is at its tail.
+  // req 8 — right behind the compaction, so it runs after it whether that completes, fails
+  // or is cut short. A started compaction has left the queue; a queued one is at its tail.
   if (request.note !== undefined) {
     const entry = markCompactionContinuation(continuationEntry(deps, sessionId, request.note));
     if (handle.admitted === "started") runner.messageQueue.unshift(entry);

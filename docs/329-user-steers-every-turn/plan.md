@@ -74,8 +74,10 @@ Three things followed from the flag and now need a statement of their own.
   `isSteerableDispatch`).
 - **The one-shot note** (docs/235-agent-self-wake-liveness §9) is keyed on the
   process too: it rides a turn that ShipIt started (`automatic` or
-  `unattended`) and that will run on a one-shot process, for a harness that
-  starts turns of its own. Its text no longer says who started the turn.
+  `unattended`) when streaming is off for it, for a harness that starts turns
+  of its own. The setting decides, and not a resident that happens to be alive:
+  a spawn guard can still retire that one, and the note costs nothing on a
+  process that stays up. Its text no longer says who started the turn.
 - **A compaction ahead of the turn.** The dispatched compaction is still a
   one-shot system turn until Part 2, and it retires the resident process. A
   system turn used to wait while the resident had background work
@@ -97,10 +99,22 @@ uses).
 - **What "completed" means on a reused process.** `finishTurn` reads
   `receivedResult`, which any result on the process sets. For a turn that
   entered a resident process it now also needs the prompt's own result. A turn
-  that is torn down before that settles `dropped`, and its sender delivers
-  again: the restart and compaction steps settle the ending turn early
-  (`runRequestedRestart`, `runRequestedCompaction`), and a restart then
-  destroys the process with the prompt unread.
+  that ends before the process read its prompt settles `dropped`, and its
+  sender delivers again; one that ends after the read settles `interrupted`,
+  which a sender takes as delivered. That holds for each way such a turn can
+  end early: the restart and compaction steps settle the ending turn
+  (`runRequestedRestart`, `runRequestedCompaction`), a newer turn retires the
+  process (`superseded`), the runner is disposed, or the process exits. The
+  `turn_result` event that the dispose path reads is emitted for the prompt's
+  own result only, for the same reason.
+- **When the next turn takes the process.** A reuse removes the listeners of
+  the turn before it. The process emits `reused` first, and a turn that has not
+  settled settles then, by the rule above. Its post-turn work goes on; only
+  `superseded` gives that up.
+- **A turn that a drain starts** is told of a disposed runner and of an
+  abandoned turn, as a turn that `dispatch` starts already was
+  (`turn-settlement.ts` → `settleWhenRunnerLetsGo`). The restart follow-up is
+  such a turn when a message of the user's ran first.
 - **An adopted turn** (after an orchestrator restart) composed no prompt, so
   its attribution starts as "running": the turn that was in flight is the one
   the next result ends.
@@ -116,10 +130,12 @@ uses).
 
 `sendUserMessage` takes the turn's delivery id when the message is a turn's own
 prompt. `ProxyAgentProcess` passes it to `/agent/message`, and the worker
-records it for that turn, as `/agent/start` does. A steer passes none and
-leaves the running turn's id alone. A container whose worker is older than this
-change ignores the field; the merge watch then behaves as it does today for a
-turn with no id.
+records it for that turn, as `/agent/start` does. When the prompt goes in
+behind a turn the CLI started, the worker keeps the id aside and gives it to
+the next turn, so that an orchestrator restart cannot settle the delivery on
+the result of the CLI's own turn. A steer passes none and leaves the running
+turn's id alone. A container whose worker is older than this change ignores the
+field; the merge watch then behaves as it does today for a turn with no id.
 
 ### The user's message goes first (req 2)
 
@@ -152,9 +168,12 @@ them.
 - The hold during a compaction ahead of a turn is also an admission hold:
   `verifyRunningState` can clear `running` while the decision waits. It cannot
   become a steer block alone.
-- A message typed while ShipIt compacts ahead of the user's own message waits
-  behind that message's whole turn today. Req 2 asks for more: it must reach
-  the agent when that turn starts.
+- A message of the user's that waits in the queue when a turn starts on a
+  process that can take a steer is not given to that turn; it runs after it.
+  Two cases reach this today: a message typed while ShipIt compacts ahead of
+  the user's own earlier message, and a message typed while a turn is still in
+  setup with no process up yet. Req 2 asks for more: the message must reach the
+  agent when that turn starts.
 - The timeout and the abort of a rebase clear the hold without its owner, and
   an answer to a question card is refused under the hold ("busy with a system
   operation"). Both need the hold's owner to be explicit.
@@ -162,9 +181,12 @@ them.
 ## Known limits of Part 1
 
 - A prompt that goes in behind a turn the CLI started, and that the CLI never
-  reads back, does not settle at a result. It settles at `done`, a
-  displacement or disposal, as every streaming turn did before. The merge watch
-  then sends its wake again.
+  reads back, does not settle at a result. It settles `dropped` when the next
+  turn takes the process, at a displacement or at disposal, and its sender
+  delivers again: a notice can then arrive twice, and is not lost.
+- An orchestrator restart while a prompt waits behind a turn the CLI started
+  adopts that turn with no delivery id. The merge watch sends its wake again
+  when the session is idle.
 - A harness that can steer but ends its process with each turn (Codex) is
   steerable during a work turn and still starts a process per turn. A queued
   turn drained at the exact moment that process ends can lose its first
@@ -189,7 +211,8 @@ this plan and the code.
   into a compaction that ShipIt starts. `docs/295-compact-context-on-merge`
   blocks that so the message cannot run before the message that waits behind
   the compaction, on a branch that message is about to reset.
-- **Defects.** Applied in Part 1: the delivery id on a resident process; the
+- **Defects in the design.** Applied in Part 1: the delivery id on a resident
+  process; the
   settlement of an adopted turn; `completed` on a reused process needs the
   prompt's own result; the wording "no turn replaces the resident". Moved to
   Part 2 with the design they belong to: the resident conflict resolver, the
@@ -200,12 +223,30 @@ this plan and the code.
   `turn_abandoned`), and the new `dropped` settlement covers a prompt that was
   never read.
 
+2026-10-12, on the diff of Part 1. One more run of the reviewer, against each
+numbered requirement.
+
+- Applied: an unread prompt is never reported as `interrupted` (a displaced
+  turn, a disposed runner); the worker keeps the id of a prompt that waits
+  behind a turn of the CLI's apart from that turn; a turn settles when the next
+  one takes its process; a turn that a drain starts is told of a disposed
+  runner; the one-shot note no longer reads a resident that can still be
+  retired; false statements in the agent-facing docs and in four comments.
+- Moved to Part 2: a message of the user's that waits in the queue while a turn
+  sets up is not given to that turn when it starts. The reviewer counts this
+  against req 2, and it is the same gap as the message typed during a
+  compaction.
+- The reviewer's verdict on the first version of the diff: req 1 and req 2 not
+  fully met, for the two reasons above. The fixes for the first were not
+  reviewed again.
+
 ## Key files (Part 1)
 
 - `src/server/orchestrator/wake-session.ts` — the wakes
 - `src/server/orchestrator/session-runner.ts` → `dispatchOnRunner` — `whenBusy: "queue"`
 - `src/server/orchestrator/dispatched-turn.ts` — the one-shot note, the compaction guard
-- `src/server/orchestrator/turn-executor.ts` — settlement at the result
+- `src/server/orchestrator/turn-executor.ts` — settlement at the result, and what a turn on a reused process reports
+- `src/server/orchestrator/turn-settlement.ts` → `settleWhenRunnerLetsGo` — a started turn whose runner lets go of it
 - `src/server/orchestrator/queue-drain.ts` — the queue order
 - `src/server/orchestrator/proxy-agent-process.ts`, `container-session-runner.ts`, `worker-http.ts`, `src/server/session/agent-controller.ts` — the delivery id
 - `src/server/orchestrator/services/agent-restart-request.ts`, `github-ci-fix.ts`, `secret-block.ts`, `rebase-followup.ts`, `agent-compaction-request.ts` — the callers
