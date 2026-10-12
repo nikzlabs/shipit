@@ -81,7 +81,8 @@ const REJECTION_MESSAGES: readonly (readonly [string, string])[] = [
 ];
 
 // Color codes split `status=401`, and a timestamp uses up a third of a reason line's length.
-// The email: the CLI knows the account's, and the reason goes to the log.
+// The email stays here, although the reason's summary replaces one too: the classifier reads this
+// text, and "status=429@example.com" must not start to read as a 429.
 function stripLogDecoration(text: string): string {
   return stripAnsi(text)
     .replace(/^\s*\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+/gm, "")
@@ -212,8 +213,8 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
   }
 
-  // A turn start asks if the token can be used. A forced call (a session's 401) asks if the source
-  // holds another credential than the one the session failed with: time left on it proves nothing.
+  // A refresh that got no answer is no verdict on the token. It heals also a forced call
+  // (a session's 401): the caller then tries the turn once more (docs/154).
   async ensureFresh(accountId: string, opts?: { force?: boolean }): Promise<boolean> {
     const force = opts?.force ?? false;
     if (!this.sourceIsReadable(accountId)) return false;
@@ -224,16 +225,14 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       // A turn start in a backoff would only add a request to the retry that the schedule owns.
       if (now < this.ensureAccountState(accountId).retryNotBefore) return before > now;
     }
-    const seedIdentity = this.readSourceIdentity(accountId);
     const { outcome } = await this.runTickForAccount(accountId, force);
     const after = this.readSourceFreshness(accountId);
     if (after === NO_FRESHNESS || after <= this.deps.now()) return false;
     if (outcome === "revoked" || outcome === "missing_credentials") return false;
     if (!force) return true;
-    // The outcome too: a call that joins a tick after its rotation was written reads the new one as its seed.
-    if (outcome === "rotated" || outcome === "harvested_session") return true;
+    // Read again: a call that joined a tick has that tick's outcome, and the source can hold another file by now.
     const identity = this.readSourceIdentity(accountId);
-    return identity !== null && identity !== seedIdentity;
+    return identity !== null && identity !== this.ensureAccountState(accountId).rejectedIdentity;
   }
 
   private async waitForLateRotation(): Promise<void> {
@@ -340,8 +339,10 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     const log = await this.refreshOnDemand(accountRoot);
     const after = this.readSourceFreshness(accountId);
     // New tokens are a rotation whatever their expiry says, and a later expiry without tokens is none.
+    // Nor is a known-rejected credential that an outside writer put back while the refresh ran.
     const identityAfter = this.readSourceIdentity(accountId);
-    if (after !== NO_FRESHNESS && identityAfter !== null && (after > before || identityAfter !== seedIdentity)) {
+    const hasUsableTokens = identityAfter !== null && identityAfter !== state.rejectedIdentity;
+    if (after !== NO_FRESHNESS && hasUsableTokens && (after > before || identityAfter !== seedIdentity)) {
       return this.handleSuccess(accountId, before, after, "rotated");
     }
 
@@ -370,7 +371,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     }
 
     // A forced refresh that got no answer leaves a token with time left on its expiry schedule.
-    return this.handleFailure(accountId, before, after, log, refusal.kind === "rate_limited", force && !nearExpiry);
+    return this.handleFailure(accountId, before, after, log, refusal.kind === "rate_limited", force, nearExpiry);
   }
 
   private handleSuccess(
@@ -429,21 +430,25 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     after: number | null,
     log: string,
     rateLimited: boolean,
-    keepExpirySchedule: boolean,
+    forced: boolean,
+    nearExpiry: boolean,
   ): CodexRefreshResult {
     const state = this.ensureAccountState(accountId);
     const outcome = rateLimited ? "rate_limited" : "unknown_failure";
     const reason = summarizeRefreshFailure(log);
-    if (keepExpirySchedule) {
+    if (forced && !nearExpiry) {
       console.log(
-        `[codex-oauth-refresh] account=${accountId} ${outcome} on a forced refresh — expiry schedule kept reason="${reason}"`,
+        `[codex-oauth-refresh] account=${accountId} ${outcome} on a forced refresh — no verdict on the token,`
+          + ` expiry schedule kept reason="${reason}"`,
       );
       this.scheduleAccount(accountId);
     } else {
       state.failureCount += 1;
+      const pace = rateLimited ? "backoff scheduled" : "short backoff";
+      const verdict = forced ? ", forced refresh: no verdict on the token" : "";
       console.log(
-        `[codex-oauth-refresh] account=${accountId} ${outcome} failure_count=${state.failureCount} — `
-          + `${rateLimited ? "backoff scheduled" : "short backoff"} reason="${reason}"`,
+        `[codex-oauth-refresh] account=${accountId} ${outcome} failure_count=${state.failureCount} — ${pace}${verdict}`
+          + ` reason="${reason}"`,
       );
       this.scheduleBackoff(accountId, rateLimited ? RATE_LIMIT_BACKOFF_MS : GENERIC_BACKOFF_MS);
     }
@@ -575,11 +580,9 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       });
       // On the close, not on the exit: the line that names a refusal can arrive after the exit.
       child.on("close", () => settle(timedOut ? TIMED_OUT : replied ? "" : NO_REPLY));
-      child.on("error", (err: NodeJS.ErrnoException) => {
+      child.on("error", (err) => {
         // A kill that fails is an error and not an exit: the CLI can still write.
-        if (timedOut) return;
-        // Not the message for a missing binary: the reason's summary drops a line that says ENOENT.
-        settle(err.code === "ENOENT" ? "[error] the codex binary was not found" : `[error] ${err.message}`);
+        if (!timedOut) settle(`[error] ${err.message}`);
       });
 
       arm(REFRESH_TIMEOUT_MS, () => {

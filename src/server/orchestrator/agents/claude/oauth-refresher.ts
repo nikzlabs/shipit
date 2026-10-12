@@ -96,11 +96,18 @@ const FAILURE_SIGNAL_PATTERN =
 
 // The CLI logs each optional file it does not find; none of them explains a refresh.
 const MISSING_FILE_NOISE_PATTERN = /\bENOENT\b/;
+// A refresher's own note ("[error] spawn claude ENOENT") is not that noise. The CLI's level tags are upper case.
+const REFRESHER_NOTE_PATTERN = /^\[[a-z]+(?:-[a-z]+)*\] /;
 const DEBUG_LEVEL_TAG = "[DEBUG]";
 const LOG_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+/gm;
 
 const CREDENTIAL_HEADER_PATTERN =
   /^([ \t>|-]*)(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|anthropic-api-key)(\s*[:=]\s*).*$/gim;
+
+// The CLI knows the account's address. After the token shapes, which can take a part of one:
+// "[redacted]@example.com" must not keep its host. Bounded: an open local part is quadratic on a long line.
+const EMAIL_PATTERN =
+  /(?:\[redacted\]|[\w.+-]){1,64}@(?:\[redacted\]|[\w-]){1,63}(?:\.(?:\[redacted\]|[\w-]){1,63})+/g;
 
 // Short, unprefixed secrets in unknown fields can escape this filter.
 function redactSecrets(text: string): string {
@@ -109,7 +116,8 @@ function redactSecrets(text: string): string {
     .replace(/("[A-Za-z_]*(?:token|secret|key|password|passwd|auth)[A-Za-z_]*"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
     .replace(/\b(bearer|basic)(\s+)\S+/gi, "$1$2[redacted]")
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]")
-    .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]");
+    .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]")
+    .replace(EMAIL_PATTERN, "[email]");
 }
 
 // Which credential a file holds. A hash, so that no token stays in memory; null without a token.
@@ -125,7 +133,7 @@ export function summarizeRefreshFailure(combinedOutput: string): string {
   const lines = redactSecrets(combinedOutput)
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !MISSING_FILE_NOISE_PATTERN.test(line));
+    .filter((line) => line && (REFRESHER_NOTE_PATTERN.test(line) || !MISSING_FILE_NOISE_PATTERN.test(line)));
   const signal = lines.filter((line) => FAILURE_SIGNAL_PATTERN.test(line));
   const loud = signal.filter((line) => !line.includes(DEBUG_LEVEL_TAG));
   const picked = loud.length > 0 ? loud : signal.length > 0 ? signal : lines;
@@ -155,6 +163,12 @@ interface ProbeHome {
   seedIdentity: string;
   // The copy holds a rotation that is not in the source: the only record of a live grant.
   outstanding: boolean;
+}
+
+interface CliRun {
+  output: string;
+  // False for a CLI that did not start, and for one that did not end before its timeout.
+  completed: boolean;
 }
 
 // "rejected": the CLI blanks a credential only when the OAuth server answers invalid_grant.
@@ -570,17 +584,17 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     isNearExpiry: boolean,
   ): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
-    const tier1Log = await this.spawnCli(probe, "tier1", TIER1_TIMEOUT_MS);
+    const tier1 = await this.spawnCli(probe, "tier1", TIER1_TIMEOUT_MS);
     let probeResult = this.adoptProbeRotation(accountId, probe);
     let after = this.readSourceExpiresAt(accountId);
     if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
       return this.handleSuccess(accountId, before, after, "rotated_tier1");
     }
 
-    let tier2Log = "";
+    let tier2: CliRun | null = null;
     if (probeResult === "unchanged") {
       // This fallback makes a billable API call.
-      tier2Log = await this.spawnCli(probe, "tier2", TIER2_TIMEOUT_MS);
+      tier2 = await this.spawnCli(probe, "tier2", TIER2_TIMEOUT_MS);
       probeResult = this.adoptProbeRotation(accountId, probe);
       after = this.readSourceExpiresAt(accountId);
       if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
@@ -589,7 +603,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     }
 
     if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED, false);
-    const combinedOutput = `${tier1Log}\n${tier2Log}`;
+    const combinedOutput = `${tier1.output}\n${tier2?.output ?? ""}`;
     const grantRejected = probeResult === "rejected" || this.outputIndicatesRevoked(combinedOutput);
     // Before the source check: a session's rotation can reach the source during the wait.
     if (grantRejected) await this.waitForLateRotation();
@@ -616,12 +630,21 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     if (force && !isNearExpiry && !grantRejected) {
       state.failureCount = 0;
       this.scheduleAccount(accountId);
+      let reason = "forced validity probe found a live token that needed no rotation";
+      // Tier 1 sends no request for a token that is not near expiry: only tier 2 tests it.
+      if (!tier2?.completed) {
+        reason = summarizeRefreshFailure(combinedOutput);
+        console.log(
+          `[claude-oauth-refresh] account=${accountId} forced probe did not complete — no verdict on the token`
+            + ` reason="${reason}"`,
+        );
+      }
       return {
         outcome: "noop",
         accountId,
         beforeExpiresAt: before,
         afterExpiresAt: after,
-        reason: "forced validity probe found a live token that needed no rotation",
+        reason,
       };
     }
     return this.handleFailure(accountId, before, after, combinedOutput, grantRejected);
@@ -861,8 +884,8 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     return rejected !== null && this.readSourceIdentity(accountId) === rejected;
   }
 
-  private spawnCli(probe: ProbeHome, label: "tier1" | "tier2", timeoutMs: number): Promise<string> {
-    return new Promise<string>((resolve) => {
+  private spawnCli(probe: ProbeHome, label: "tier1" | "tier2", timeoutMs: number): Promise<CliRun> {
+    return new Promise<CliRun>((resolve) => {
       // Tier 1 prints the account's email and organization; keep them out of the log.
       const keepStdout = label === "tier2";
       const debugFile = path.join(probe.home, `${label}.debug.log`);
@@ -879,7 +902,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         child = this.deps.spawn("claude", fullArgs, opts);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        resolve(`[spawn-failed] ${msg}`);
+        resolve({ output: `[spawn-failed] ${msg}`, completed: false });
         return;
       }
       let stdout = "";
@@ -890,7 +913,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
       let timedOut = false;
       let killGrace: ReturnType<typeof setTimeout> | null = null;
-      const settle = (extra: string): void => {
+      const settle = (note: string | null): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -900,7 +923,10 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
           // A timestamp's milliseconds can read as an HTTP status (".429Z").
           debugContent = fs.readFileSync(debugFile, "utf8").replace(LOG_TIMESTAMP_PATTERN, "");
         } catch { /* the CLI wrote no debug log */ }
-        resolve(`${stdout}\n${stderr}\n${debugContent}\n${extra}`.trim());
+        resolve({
+          output: `${stdout}\n${stderr}\n${debugContent}\n${note ?? ""}`.trim(),
+          completed: note === null,
+        });
       };
 
       const timer = setTimeout(() => {
@@ -912,7 +938,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       }, timeoutMs);
       if (typeof timer.unref === "function") timer.unref();
 
-      child.on("exit", () => settle(timedOut ? TIMED_OUT : ""));
+      child.on("exit", () => settle(timedOut ? TIMED_OUT : null));
       child.on("error", (err) => {
         // A kill that fails is an error and not an exit: the CLI can still write.
         if (!timedOut) settle(`[error] ${err.message}`);

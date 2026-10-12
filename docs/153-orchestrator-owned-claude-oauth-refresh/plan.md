@@ -413,6 +413,20 @@ Three changes, no new subsystem:
    logged in full. `missing_credentials` additionally names
    `source=missing|blanked|unreadable`, because "the user signed out" and "we
    just destroyed a live account's credentials" were previously the same line.
+   An email address is replaced with `[email]`: the CLI knows the account's,
+   and the excerpt goes to the log. That rule runs after the token shapes,
+   because they can take a part of an address, and `[redacted]@example.com`
+   must not keep its host; the other order would leave the start of a long
+   token that stands in front of a host. Its local part is limited to 64
+   pieces: an open one takes quadratic time (128 000 characters with no
+   address: 51 ms, against about 37 s). A text of the form `name@1.2.3` or
+   `git@github.com:org/repo.git` also reads as an address. The Codex refresher
+   replaces an address before this summary as well, for its classifier
+   (docs/154).
+   What the refresher itself saw is a note in the same text, on a line of its
+   own that starts with a lower-case tag: `[error]` and `[spawn-failed]` (the
+   CLI did not start), `[timeout]`, `[probe-home-failed]`, `[private-run-open]`
+   and `[install-failed]`.
 
 **A blanked source is diagnosed, not repaired.** It parses as a credential, so
 the write-back's `unorderable` guard (planning#449) refuses to overwrite it, and
@@ -547,7 +561,23 @@ expired, or that its expiry cannot be read. With the short claimed life in place
 stopped refreshing a near-expiry copy — the first thing to check after a CLI bump. In
 `reason="…"`, lines that contain `ENOENT` are dropped (the CLI logs each optional file
 it does not find), lines above debug level are preferred, and each of the three lines is capped
-separately, so that a long line cannot hide the last one. Tier 1's stdout names the
+separately, so that a long line cannot hide the last one. A refresher's own note is
+kept also when it says `ENOENT`: `reason="[error] spawn claude ENOENT"` is a CLI that
+did not start, and it used to read `reason="no CLI output"`. Node reports that error
+for a binary that is not on the `PATH`, for a missing interpreter and for a missing
+working directory (measured on Node 24). `[probe-home-failed] ENOENT` is a private
+copy that could not be made, for example because the temporary directory is missing.
+A note is known by its form only: a lower-case tag and a space at the start of a line.
+The CLI's level tags are upper case (`[DEBUG]`, `[ERROR]`; measured on 2.1.284, where
+no line of the debug log starts with a lower-case tag). The Codex refresher uses the
+same summary (docs/154). A forced probe of a token with more than 45 minutes left
+that finds no rotation and no rejection ends `noop`. It writes a line only when
+tier 2 did not complete (the CLI did not start, or it did not end before its
+timeout): `forced probe did not complete — no verdict on the token reason="…"`.
+Tier 1 sends no request for such a token, so only tier 2 can test it. `spawnCli`
+reports how the run ended, and the text is not searched for it. The line does not
+say that the token was not used: a CLI that hangs after its answer also times out.
+Tier 1's stdout names the
 account's email and organization and is kept out of it. Debug timestamps are stripped
 before classification: one ending `.429Z` used to read as an HTTP 429 and select the
 rate-limit backoff.
@@ -700,6 +730,18 @@ CLIs share that root anyway.
   replaces the source's token between them is overwritten. The CLI used to take
   its own lock in the account root for this; the refresher does not. It is the
   same class of gap as the `syncAgentTokenBackToRoot` item above.
+- **A forced probe that did not complete still heals.** With more than
+  45 minutes left, a forced tick that finds no rotation and no rejection ends
+  `noop`, and the heal succeeds. `recoverAuth` in `turn-executor.ts` then
+  pushes the account's source credential to the session and runs an ordinary
+  turn again, once; an adopted turn ends with no second run. That is also the
+  result when tier 2 did not start or did not end before its timeout, so the
+  refresher has no verdict on the token. The log says so (see "Outcomes and
+  logs"); the result is not changed. A tier 2 that ran and failed for another
+  reason (an error from the API, a signal from outside) still reads as a live
+  token and writes no line. The Codex refresher has the same rule since
+  2026-10-12: no verdict heals (docs/154, "Turn start and forced heal", with
+  the costs under its Known limits).
 
 ## Wiring
 

@@ -320,7 +320,9 @@ are accepted too.
   the memory the next tick would read it as healthy and report the account
   signed in again, and each forced heal would spend the dead grant again. A new
   sign-in or a session's rotation changes the source's tokens, and the memory no
-  longer applies.
+  longer applies. If an outside writer puts the rejected file back while a
+  refresh of the new credential runs, the tick does not read it as a rotation,
+  and the memory stays.
 
 ### Failures that can pass, and what the log says
 
@@ -328,13 +330,19 @@ A 429 is read from the refresh's status only. `rate_limited` and
 `unknown_failure` keep their sentences and now end with `reason="…"`: at most
 three lines of the CLI's stderr, each capped, redacted by
 `summarizeRefreshFailure` (docs/153, "Say what failed"), after an email
-address in them was replaced with `[email]`. `reason` in the result is that same
+address in them was replaced with `[email]`. The summary replaces an address
+too (since 2026-10-12); the refresher keeps its own replacement, because
+`classifyCodexRefreshOutput` reads the same text and its answers must not
+move (`status=429@example.com` is no 429). `reason` in the result is that same
 text; it used to be the first 200 raw characters of the output. `[timeout]`,
 `[no-reply]` (the CLI ended before it answered) and `[rpc-error]` (the CLI
 refused `account/read`; only the error's number is kept, because its text comes
 from the CLI and can name the account) name what the refresher itself saw, as
-do `[spawn-failed]` and `[error]`. A missing binary reads `[error] the codex
-binary was not found`: the shared summary drops every line that says `ENOENT`.
+do `[spawn-failed]` and `[error]`. A CLI that did not start reads `[error]
+spawn codex ENOENT`: the shared summary drops the CLI's lines that say `ENOENT`
+and keeps the refresher's own notes (docs/153, "Outcomes and logs"). Node gives
+that error for a missing binary and also for a missing account root, which is
+the CLI's working directory.
 `rotated_tier1` and `rotated_tier2` are gone: the outcomes are `rotated`,
 `harvested_session`, `noop`, `rate_limited`, `revoked (<code>)`,
 `unknown_failure` and `missing_credentials`.
@@ -346,17 +354,27 @@ binary was not found`: the shared summary drops every line that says `ENOENT`.
   the schedule would send. It never runs one while a backoff is in force: the
   schedule owns that retry, and the answer is then only whether the token is
   still valid. A grant that is known rejected gives `false` without a CLI.
-- A **forced heal** (a session's 401) runs a tick whatever the expiry says, and
-  that tick is one on-demand refresh. It asks for evidence, because time left on
-  a token proves nothing after a 401: the heal succeeds when the tick ended
-  `rotated` or `harvested_session` (also for a call that joined the tick after
-  it wrote its rotation), or when the source holds another credential than
-  before the call (a sign-in, or a rotation published during the wait), and
-  that credential is not expired. The caller then repushes the source to the
-  session and runs the turn again. A rejected grant is not healed, whatever its
-  expiry says. A forced refresh that got no answer (a 429, a timeout) is not
-  healed either, as before this fix. It leaves a token with time left on its
-  expiry schedule, and counts no failure.
+- A **forced heal** (a session's 401) runs a tick whatever the expiry says, or
+  joins the tick in flight. Its own tick is one on-demand refresh; a tick that
+  it joins can be one that had nothing to do. The heal fails for a rejected
+  grant (whatever its expiry says, and also when the source holds a
+  known-rejected credential again at the end), for a source that is missing or
+  cannot be read, for an expired token, and for a file that holds no token.
+  Every other result heals: `recoverAuth` (`turn-executor.ts`) then pushes the
+  source credential to the session and runs an ordinary turn again, once. An
+  adopted turn gets the push and ends with no second run.
+- **No verdict heals too** (decided 2026-10-12; before, it did not). A forced
+  refresh that got no answer (a 429, a 5xx, a timeout, a CLI that did not start)
+  ends `rate_limited` or `unknown_failure`, and the heal succeeds. For a token
+  outside the 45-minute margin the log says `<outcome> on a forced refresh — no
+  verdict on the token, expiry schedule kept reason="…"`, and no failure is
+  counted. Inside the margin the failure is counted and backs off as one of the
+  schedule's does, and its sentence gets `, forced refresh: no verdict on the
+  token` in front of the reason. The reason for the rule: "not healed" told the
+  user that a healthy account must sign in again (or lost the turn, with one
+  account), also when the session only held a stale copy. "Healed" costs at
+  most one more attempt, because `recoverAuth` allows one. The Claude refresher
+  has the same rule (docs/153, Known limits).
 
 ### Validation
 
@@ -395,10 +413,19 @@ installs the CLI with the images' own `install-agent-clis.sh`
 - **A forced heal spends one refresh request** unless a harvest or a known
   rejection ends its tick first, also when the source's token was rotated a
   moment ago. Forced heals of one account share a tick while it runs, and run
-  one after the other otherwise.
-- **A forced heal that gets no answer fails the turn** (or moves it to the next
-  account), also when a repush of the unchanged source would have been enough.
-  The refresher cannot tell that case from a dead source.
+  one after the other otherwise. A forced heal that joins a tick in flight
+  sends no request of its own, and none at all if that tick had nothing to do.
+- **A forced heal that joins a tick gets that tick's log line.** If the tick
+  was not forced and fails, its sentence does not say "forced" or "no verdict",
+  although the heal succeeds by the same rule.
+- **A forced heal with no verdict can be wrong.** The refresher cannot tell a
+  session's stale copy from a dead source when the token host does not answer.
+  If the source is dead, the second run fails as the first did and the user
+  sees the sign-in. That run is the turn's one recovery, so with more than one
+  account this turn does not move to the next account. Under a 429 from the
+  token host, the session's Codex CLI can send its own refresh requests again
+  in the second run (measured offline: 52 to 74 requests in one `codex exec`
+  run on a 429 or a 500).
 - **The harvest orders credentials by the access token's `exp`**, as the
   write-back does (`readCodexTokenFreshness`). A session rotation whose `exp` is
   not later than the source's is not seen as newer. The refresher's own rotation

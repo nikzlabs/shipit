@@ -128,6 +128,9 @@ interface SpawnEffect {
   sideEffect?: () => void;
   // Never exits by itself; the test emits "exit" on the child.
   hang?: boolean;
+  // What Node reports for a binary that is not on the PATH: an error, and no exit.
+  failsToStart?: boolean;
+  spawnThrows?: boolean;
   debugLog?: string;
   stderr?: string;
   stdout?: string;
@@ -167,6 +170,7 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
     handle.invocations.push({ args: argArr, home: accountRoot, credentials });
     const idx = handle.invocations.length - 1;
     const effect = handle.effects[idx] ?? { exitCode: 0 };
+    if (effect.spawnThrows) throw new Error("spawn EAGAIN");
 
     const child = new EventEmitter() as ChildProcess;
     const stdout = new EventEmitter();
@@ -198,6 +202,10 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
       child.emit("exit", effect.exitCode ?? 0, null);
     };
     if (effect.hang) return child;
+    if (effect.failsToStart) {
+      setTimeout(() => child.emit("error", Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })), 0);
+      return child;
+    }
     if (effect.delayMs && effect.delayMs > 0) {
       setTimeout(fire, effect.delayMs);
     } else {
@@ -858,6 +866,140 @@ describe("ClaudeOAuthRefresher", () => {
 
       await rig.refresher.ensureFresh("claude-default", { force: true });
       expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
+    });
+
+    describe("forced: a probe that did not complete", () => {
+      const now = 1_700_000_000_000;
+      const NO_VERDICT = "forced probe did not complete — no verdict on the token";
+      const FOUND_LIVE = "forced validity probe found a live token that needed no rotation";
+      const EXPIRY_SCHEDULE_MS = (8 * 60 - 45) * 60 * 1000;
+
+      function forcedRig(): TestRig {
+        const rig = buildRig({
+          accounts: [makeAccount("claude-default")],
+          initialExpiries: { "claude-default": now + 8 * 60 * 60 * 1000 },
+          initialNow: now,
+        });
+        rigs.push(rig);
+        return rig;
+      }
+
+      // The heal's answer, the tick's result (a second call joins the forced tick) and the log.
+      async function forcedHeal(rig: TestRig, drive?: () => Promise<void>): Promise<{
+        healed: boolean;
+        result: Awaited<ReturnType<TestRig["refresher"]["refreshNow"]>>[number];
+        noVerdict: string[];
+      }> {
+        const logs = captureLogs();
+        try {
+          const heal = rig.refresher.ensureFresh("claude-default", { force: true });
+          const tick = rig.refresher.refreshNow("claude-default");
+          await drive?.();
+          const healed = await heal;
+          const [result] = await tick;
+          return { healed, result, noVerdict: logs.lines.filter((line) => line.includes(NO_VERDICT)) };
+        } finally {
+          logs.restore();
+        }
+      }
+
+      it("says so when the CLI cannot start, and changes neither the heal nor the schedule", async () => {
+        const rig = forcedRig();
+        rig.spawnHandle.effects = [{ failsToStart: true }, { failsToStart: true }];
+        const timeouts = vi.spyOn(globalThis, "setTimeout");
+
+        const { healed, result, noVerdict } = await forcedHeal(rig);
+        const delays = timeouts.mock.calls.map((call) => call[1]);
+        timeouts.mockRestore();
+
+        const reason = "[error] spawn claude ENOENT | [error] spawn claude ENOENT";
+        expect(noVerdict).toEqual([`[claude-oauth-refresh] account=claude-default ${NO_VERDICT} reason="${reason}"`]);
+        expect(result!.reason).toBe(reason);
+        expect(result!.outcome).toBe("noop");
+        expect(healed).toBe(true);
+        expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
+        // The account's timer is the last one set: the expiry schedule, and no backoff.
+        expect(delays.at(-1)).toBe(EXPIRY_SCHEDULE_MS);
+        expect(rig.sseCalls).toEqual([]);
+      });
+
+      it("says so when the spawn of tier 2 throws", async () => {
+        const rig = forcedRig();
+        rig.spawnHandle.effects = [{}, { spawnThrows: true }];
+
+        const { healed, result, noVerdict } = await forcedHeal(rig);
+
+        expect(noVerdict.length).toBe(1);
+        expect(result!.reason).toBe("[spawn-failed] spawn EAGAIN");
+        expect(healed).toBe(true);
+      });
+
+      it.each([
+        { ending: "is killed after its timeout", exits: true },
+        { ending: "does not end after the kill", exits: false },
+      ])("says so when tier 2 $ending", async ({ exits }) => {
+        vi.useFakeTimers();
+        try {
+          const rig = forcedRig();
+          rig.spawnHandle.effects = [{}, { hang: true }];
+
+          const { healed, result, noVerdict } = await forcedHeal(rig, async () => {
+            await vi.advanceTimersByTimeAsync(60_000);
+            if (exits) rig.spawnHandle.children[1]!.emit("exit", null, "SIGKILL");
+            else await vi.advanceTimersByTimeAsync(5_000);
+          });
+
+          expect(noVerdict.length).toBe(1);
+          expect(result!.reason).toBe("[timeout] claude CLI did not exit in time");
+          expect(healed).toBe(true);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("writes no line when tier 2 completed, also after a tier 1 that timed out", async () => {
+        const healthy = forcedRig();
+        // Output that reads as the refresher's notes: the run's end decides, not its text.
+        healthy.spawnHandle.effects = [{}, { stderr: "[timeout] claude CLI did not exit in time\n[error] spawn claude ENOENT\n" }];
+        const ran = await forcedHeal(healthy);
+
+        expect(ran.noVerdict).toEqual([]);
+        expect(ran.result!.reason).toBe(FOUND_LIVE);
+
+        vi.useFakeTimers();
+        try {
+          const rig = forcedRig();
+          rig.spawnHandle.effects = [{ hang: true }, {}];
+
+          const { healed, result, noVerdict } = await forcedHeal(rig, async () => {
+            await vi.advanceTimersByTimeAsync(35_000);
+            await vi.advanceTimersByTimeAsync(1);
+          });
+
+          expect(rig.spawnHandle.invocations.length).toBe(2);
+          expect(noVerdict).toEqual([]);
+          expect(result!.reason).toBe(FOUND_LIVE);
+          expect(healed).toBe(true);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("redacts the reason", async () => {
+        const rig = forcedRig();
+        // On the line that the reason keeps: a line with no failure signal is dropped, token or not.
+        rig.spawnHandle.effects = [
+          { stderr: `Error: request failed with Bearer ${FAKE_OAUTH_TOKEN}\n` },
+          { failsToStart: true },
+        ];
+
+        const { result, noVerdict } = await forcedHeal(rig);
+
+        expect(noVerdict.length).toBe(1);
+        expect(noVerdict[0]).toContain("Error: request failed with Bearer [redacted]");
+        expect(noVerdict[0]).not.toContain(FAKE_OAUTH_TOKEN);
+        expect(result!.reason).not.toContain(FAKE_OAUTH_TOKEN);
+      });
     });
 
     it("unforced: still short-circuits on a healthy token (proactive sweep unchanged)", async () => {
@@ -2012,6 +2154,69 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.refresher._inspectForTest("acct-1").hasTimer).toBe(true);
     });
 
+    it("names a CLI that cannot start", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ failsToStart: true }, { failsToStart: true }];
+
+      const logs = captureLogs();
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(result!.outcome).toBe("not_rotated");
+      expect(result!.reason).toBe("[error] spawn claude ENOENT | [error] spawn claude ENOENT");
+      expect(logs.lines.find((entry) => entry.includes("not_rotated failure_count=1")))
+        .toContain("reason=\"[error] spawn claude ENOENT");
+      expect(rig.sseCalls).toEqual([]);
+    });
+
+    it("names what stopped the private copy", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now + 40 * 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      vi.stubEnv("TMPDIR", path.join(rig.rootDir, "no-such-directory"));
+
+      let result: Awaited<ReturnType<typeof rig.refresher.refreshNow>>[number];
+      try {
+        [result] = await rig.refresher.refreshNow("acct-1");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+
+      expect(result!.outcome).toBe("not_rotated");
+      expect(result!.reason).toBe("[probe-home-failed] ENOENT");
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+    });
+
+    it("keeps an email address out of the reason", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1")],
+        initialExpiries: { "acct-1": now - 60 * 1000 },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{}, { stderr: "Error: request failed for person@example.com\n" }];
+
+      const logs = captureLogs();
+      const [result] = await rig.refresher.refreshNow("acct-1");
+      logs.restore();
+
+      expect(result!.reason).toBe("Error: request failed for [email]");
+      expect(logs.lines.find((entry) => entry.includes("unknown_failure failure_count=1")))
+        .toContain("reason=\"Error: request failed for [email]\"");
+      expect(logs.lines.join("\n")).not.toContain("example.com");
+    });
+
     it("keeps tier 1's stdout, which names the account, out of the reason", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
@@ -2103,6 +2308,62 @@ describe("summarizeRefreshFailure", () => {
       "[DEBUG] Error log sink initialized",
     ].join("\n"));
     expect(summary).toBe("[ERROR] OAuth refresh failed (expected): Request failed with status code 400");
+  });
+
+  it("keeps a refresher's own note that says ENOENT, and still drops the CLI's lines that do", () => {
+    const summary = summarizeRefreshFailure([
+      "[ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat '/x/.claude.json'",
+      "[DEBUG] Failed to stat directory /etc/claude-code/.claude/output-styles: ENOENT: no such file or directory",
+      "[error] spawn claude ENOENT",
+    ].join("\n"));
+    expect(summary).toBe("[error] spawn claude ENOENT");
+    expect(summarizeRefreshFailure("[probe-home-failed] ENOENT")).toBe("[probe-home-failed] ENOENT");
+  });
+
+  it("redacts a kept note as it does every other line", () => {
+    const summary = summarizeRefreshFailure(
+      `[error] spawn claude ENOENT {"accessToken":"abc123"} Bearer ${FAKE_OAUTH_TOKEN}`,
+    );
+    expect(summary).toContain("[error] spawn claude ENOENT");
+    expect(summary).not.toContain("abc123");
+    expect(summary).not.toContain(FAKE_OAUTH_TOKEN);
+  });
+
+  it("reads a note only from a lower-case tag and a space at the start of a line", () => {
+    const missingFile = "ENOENT: no such file or directory, open '/x/settings.json'";
+    expect(summarizeRefreshFailure(`[ERROR] Error: ${missingFile}`)).toBe("no CLI output");
+    expect(summarizeRefreshFailure(`Unhandled in the [error] handler: ${missingFile}`)).toBe("no CLI output");
+    expect(summarizeRefreshFailure(`[stdin]:1 Error: ${missingFile}`)).toBe("no CLI output");
+  });
+
+  it("replaces an email address, also one that a token shape took a part of", () => {
+    const longPart = `averyveryverylong${"x".repeat(12)}`;
+    expect(summarizeRefreshFailure("Error: no access for person@example.com")).toBe("Error: no access for [email]");
+    expect(summarizeRefreshFailure(`Error: no access for ${longPart}@example.com`)).toBe("Error: no access for [email]");
+    expect(summarizeRefreshFailure(`Error: no access for first.${longPart}@example.com`)).toBe("Error: no access for [email]");
+    expect(summarizeRefreshFailure(`Error: no access for person@${longPart}.example.com`)).toBe("Error: no access for [email]");
+  });
+
+  it("redacts a token in front of a host whole, as before the address rule", () => {
+    // 70 characters: an address rule that ran first would take the last 64 and leave 6 in the reason.
+    // Assembled, so that this file holds no URL with a credential in it.
+    const urlStart = ["https://user", "T".repeat(70)].join(":");
+    const summary = summarizeRefreshFailure(`Error: proxy ${urlStart}@proxy.example.com refused`);
+    expect(summary).not.toContain("TTTT");
+    expect(summary).not.toContain("example.com");
+  });
+
+  it("does not take quadratic time on a long line", () => {
+    // 128 000 characters each. With an open-ended local part, the first line alone takes many seconds.
+    const lines = [
+      "a.".repeat(64_000),
+      "[redacted]".repeat(12_800),
+      `x@${"a.".repeat(64_000)}`,
+      "a@".repeat(64_000),
+    ];
+    const started = performance.now();
+    for (const line of lines) summarizeRefreshFailure(`Error: ${line}`);
+    expect(performance.now() - started).toBeLessThan(2_000);
   });
 
   it("gives each of the three lines a share, so a long line cannot hide the last one", () => {
