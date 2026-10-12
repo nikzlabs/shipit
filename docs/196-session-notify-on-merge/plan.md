@@ -81,12 +81,11 @@ the poller has the child in scope at fire time.
 > has the incident. Changes here must keep both working; `merge-watch.test.ts`
 > and `self-merge-watch.test.ts` cover the pair.
 
-A parent's watch:
+A parent's watch. Each arrow is one transaction, which also stores the notice:
 
 ```
-armed ──PR merged──▶ merge-observed ──notice stored──▶ delivered        (terminal)
-  │                  (no await between the two writes)
-  └──PR closed unmerged, notice stored──▶ closed-unmerged               (terminal)
+armed ──PR merged──────────▶ delivered         (terminal)
+  └────PR closed unmerged──▶ closed-unmerged   (terminal)
 ```
 
 A session's watch on its own PR, which sends a wake turn:
@@ -98,17 +97,13 @@ armed ──merge observed──▶ merge-observed ──wake-turn RAN──▶ 
 ```
 
 - **`armed`** — registered, waiting. The child's PR need not exist yet.
-- **`merge-observed`** — the poller saw the merge, and the card is surfaced.
-  - *A parent's watch* is in this state for one synchronous step: the next write
-    stores the notice and ends the watch. It is seen at rest only when that
-    write failed, or on a watch that an older ShipIt left with a wake turn in
-    delivery (both below). The startup reconcile and the retry pass store the
-    notice from here, and the card-surface guard makes that re-entry skip a
-    second card.
-  - *A self watch* stays here while its wake turn is enqueued or still
-    executing, while its container is being (re)booted, and after a delivery
-    attempt that *threw*. The startup reconcile and the retry supervisor both
-    re-fire from here.
+- **`merge-observed`** — the poller saw the merge, and the wake turn has not run
+  to completion. *A self watch* stays here while its wake turn is enqueued or
+  still executing, while its container is being (re)booted, and after a delivery
+  attempt that *threw*; the startup reconcile and the retry supervisor both
+  re-fire from here. *A parent's watch* is never written in this state now. One
+  that an older ShipIt left here, with a wake turn in delivery, is handled as
+  described below.
 - **`delivered`** — *a parent's watch:* the notice about the merge is in the
   parent's inbox. *A self watch:* the wake-turn has **actually run to
   completion** (not merely been enqueued). Terminal, **fire-once**. A parent's
@@ -135,22 +130,28 @@ turn ran. Telling the agent is the inbox's work, and the inbox has its own
 recovery — the idle trigger and the sweep, `services/session-inbox.ts`. A parent
 that cannot be started is tried again there, and the watch has ended by then. So
 a parent's watch has no delivery id, no attempt counter, no backoff and no
-failure card (verified at `merge-watch.ts`: the `parent` branch of
-`attemptDelivery`, and the closed path of `handleParentWatchTerminal`).
+failure card (verified at `merge-watch.ts`: `handleParentWatchTerminal`, which
+dispatches nothing).
 
 **The notice and the end of the watch are one transaction**
 (`SessionInbox.add(sessionId, message, alongside)`; the store is built on the
 session manager's database, verified at `bootstrap-managers.ts`). Both are
 written or neither is. A notice beside a watch that is still open would be
 reported a second time by the next reconcile; an ended watch with no notice
-would tell nobody. The tell comes last, after the card, so the user sees the
-card before a session start that can take a minute.
+would tell nobody. A merge and a close use the same step, and the watch has no
+state between `armed` and its end. The card follows the transaction, and the
+tell comes last, so the user sees the card before a session start that can take
+a minute.
 
-- When the transaction throws on a **merge**, the watch stays `merge-observed`,
-  and the retry pass (30 s) stores the notice. Its card is already there.
-- When it throws on a **close**, the watch stays `armed`, and no card says
-  otherwise. The next arm, or the startup reconcile, reads the close from the
-  child's PR snapshot.
+**A write that fails changes nothing.** The watch stays `armed`, no card is
+surfaced, and the error goes to the caller's log. Nothing in memory tries again:
+the next arm, or the startup reconcile, reads the PR from the child's stored
+state (`unreportedPrFor`). In production the orchestrator has one connection to
+its database (verified at `app-di.ts`; the script that seeds the dogfood instance
+is the one other writer), and the parent is read and the notice is written with
+no await between them. So such a failure means a disk that is full or broken,
+and that stops every other write too. The watch that the wake turn used had the
+same property: its first write was not guarded either.
 
 **A watch that an older ShipIt left in delivery.** Before docs/328 a parent's
 watch stayed `merge-observed` until its wake turn ended, so such a record can
@@ -159,9 +160,18 @@ answer (docs/322). `isDeliveryInFlight` still asks the runner and the held turns
 for that delivery id. While one of them has it, no notice is stored: the turn's
 settlement ends the watch (`rebindDelivery` → `markDelivered`), and the agent is
 told one time. When the turn is gone, or it ends without a result, the startup
-reconcile or the retry pass stores the notice. No attempt is counted against such
-a watch, a busy parent does not hold it back, and it never becomes
-`delivery-failed`.
+reconcile or the retry pass stores the notice (`storeObservedMerge`), in one
+transaction with the end of the watch. No attempt is counted against such a
+watch, a busy parent does not hold it back, and it never becomes
+`delivery-failed`. A store that throws leaves the watch `merge-observed`, and
+the retry pass, which `storeObservedMerge` starts first, tries again.
+
+A record from before `mergedPr` existed (2026-10-10) has no note of the merge it
+observed. It gets `mergedPr` in the transaction that stores its notice, so that
+the PR it reports is the PR it records as reported. When the child's stored
+state shows only a later PR by then, and no turn can still report the merge,
+the watch reports that PR as an armed watch does; it does not stay
+`merge-observed` and hold every later arm.
 
 ### Arming again — a parent that follows a child across several PRs
 
@@ -175,9 +185,10 @@ the PR already reported, because the register-time check found it still in the
 child's PR snapshot.
 
 **The watch remembers what its parent was told (req 4).** `reportedPr` holds the PR
-number and outcome that the parent last heard about. `markDelivered` writes it for
-a merge, the closed path writes it for a close, and `registerMergeWatch` copies it
-from the watch it replaces into the new one. An armed watch does not fire for
+number and outcome that the parent last heard about. The transaction that ends the
+watch writes it, for a merge and for a close (`markDelivered` does that for a watch
+from an older ShipIt), and `registerMergeWatch` copies it from the watch it
+replaces into the new one. An armed watch does not fire for
 exactly that PR and outcome, wherever the event comes from: the register-time
 check (`checkAndFireNow`), the startup reconcile, or the poller. The poller is in
 that list because it can repeat a terminal event — merge-claim recovery promotes a
@@ -202,15 +213,16 @@ the turn that reads the notice, or before that turn — is an ordinary arm of a
 terminal watch: `registerMergeWatch` writes a new watch with the PR just
 reported as its `reportedPr`. Nothing has to be queued.
 
-The queued arm remains for a watch that is `merge-observed` at rest (above).
-`registerMergeWatch` sets `rearmedAt` on it and does not replace it, because it
-still owns the wake turn or the store that is to come. When that watch ends,
-`markDelivered` calls `armFollowingWatch`, which writes a fresh `armed` watch in
-its place, with the PR just reported as its `reportedPr`, and runs the
-register-time check on the next tick (it is called inside the store's
-transaction or a wake turn's settlement, and a restart before that tick is
-covered by the startup reconcile). No watch follows for a parent that was
-archived in the meantime.
+The queued arm remains for a watch that an older ShipIt left in delivery
+(above). `registerMergeWatch` sets `rearmedAt` on it and does not replace it,
+because it still owns its wake turn. When that watch ends, `markDelivered` calls
+`armFollowingWatch`, which writes a fresh `armed` watch in its place, with the PR
+just reported as its `reportedPr`. `afterDelivered` then runs the register-time
+check on the next tick. It runs after the write and not inside it: the write can
+be part of the store's transaction, and a check that was scheduled inside a
+transaction that rolls back would find the old watch and try again at once. A
+restart before that tick is covered by the startup reconcile. No watch follows
+for a parent that was archived in the meantime.
 
 **Every watch armed now has a `watchId`,** as the self-watch always had. The watch
 that follows is written in the same slot while an old wake's settlement can still
@@ -219,10 +231,10 @@ the new watch delivered. A watch armed by older code has no id and neither has i
 settlement, so the two still match.
 
 **A later PR is not lost between two arms (req 2).** One arm reports one PR, so a
-watch that already reported, or that holds PR #A in `merge-observed`, does
-nothing with a terminal event for PR #B — except keep it: the event is appended
-to the watch's `unreportedPrs` (`keepForNextArm`), oldest first, without
-duplicates. (Before, a *closed* event that arrived during a merge delivery
+watch that already reported, or an older one that holds PR #A in
+`merge-observed`, does nothing with a terminal event for PR #B — except keep it:
+the event is appended to the watch's `unreportedPrs` (`keepForNextArm`), oldest
+first, without duplicates. (Before, a *closed* event that arrived during a merge delivery
 overwrote the watch and sent a second wake from one arm.) The next arm inherits
 the list — through `registerMergeWatch`, or through `armFollowingWatch` — and
 reports its first entry. "First" holds against the poller too: a live event that
@@ -265,8 +277,8 @@ code wrote, or an event lost in a crash between the poller's write and its hook 
 and can report that PR once more.
 
 The CLI says which case an arm was: `armed`, `already armed`, or `armed for the
-next PR; PR #N was already reported to this session`. For a watch that is
-`merge-observed` at rest it says `armed for the next PR; the notice about PR #N
+next PR; PR #N was already reported to this session`. For a watch that an older
+ShipIt left in delivery it says `armed for the next PR; the notice about PR #N
 is still in delivery`. A line below says where the notice arrives. The
 `[merge-watch]` log line of each arm says the same.
 
@@ -379,7 +391,7 @@ busy parent still lost it. Both are fixed; the mechanism now honors
 
 The three fixes above make a *dispatched* wake-turn reliably reach `delivered`.
 They say nothing about a delivery that never dispatched at all.
-`deliverSelfWakeTurn` throws whenever the session can't be woken — its container won't
+`attemptSelfWake`'s dispatch throws whenever the session can't be woken — its container won't
 resume, the credential refresh fails, the worker is unreachable — and both this
 doc and `merge-watch.ts` used to claim the watch was then retried "on the next
 poll / reconcile". Only the reconcile half was real, and it has exactly one call
@@ -403,7 +415,7 @@ distinguish **in-flight** from **failed**, and *time alone cannot do it*.
 **What was built.** A self-managing retry supervisor inside `MergeWatchManager`
 (`retryStalledDeliveries`, driven by a 30 s interval that exists only while some
 watch sits at `merge-observed`, and stops itself the moment none does). Delivery
-now runs through `attemptDelivery`, which records the attempt on the persisted
+now runs through `attemptSelfWake`, which records the attempt on the persisted
 watch *before* running it, and eligibility is decided on two independent axes:
 
 1. **A durable delivery id, asked of the runner that owns it** — the precise
@@ -471,8 +483,8 @@ the delivery*, above).
   not ended → report", independent of whether the poller re-observes the
   (now-archived) merged child. A watch that already **observed** its merge
   carries the merge facts itself (`SessionMergeWatch.mergedPr`, written at
-  `armed → merge-observed`), and reconcile and the retry pass read them from
-  there. The child's PR snapshot (`loadPersisted` seeds it) is the source for a
+  `armed → merge-observed`, which is a self watch or an older parent's watch),
+  and reconcile and the retry pass read them from there. The child's PR snapshot (`loadPersisted` seeds it) is the source for a
   watch still `armed`, and the fallback for a watch that observed its merge
   before `mergedPr` existed. The snapshot alone was not durable enough: a
   docs/202 re-arm nulls it, and a child that also watches its own PR resets its
@@ -577,15 +589,13 @@ Parent's agent, at a point that it chooses
   → shipit session inbox   — every unread message, this notice among them
 ```
 
-A merge surfaces its card one write earlier, with the `merge-observed` mark, so
-that a store that fails and is tried again posts one card.
-
 ## Key files
 
 - `src/server/orchestrator/merge-watch.ts` — `MergeWatchManager`: fire / card /
   startup reconcile / register-time check. For a parent's watch: the notice and
-  the end of the watch (`storeParentNotice`, `tellParent`). For a self watch:
-  wake-turn delivery and the planning#260 retry supervisor (`attemptDelivery`,
+  the end of the watch (`handleParentWatchTerminal`, `storeObservedMerge` for a
+  watch from an older ShipIt, `tellParent`). For a self watch: wake-turn
+  delivery and the planning#260 retry supervisor (`attemptSelfWake`,
   `retryStalledDeliveries`, `isDeliveryInFlight`, `failSelfWatch`,
   `MAX_DELIVERY_ATTEMPTS`).
 - `src/server/orchestrator/services/session-inbox.ts`,
@@ -599,8 +609,8 @@ that a store that fails and is tried again posts one card.
   AND closed).
 - `src/server/orchestrator/services/child-sessions.ts` — `registerMergeWatch`
   (arms the watch, reuses `assertChildOfParent`; hands `reportedPr` and
-  `unreportedPrs` to the new watch, or records `rearmedAt` on a watch that is
-  `merge-observed` at rest).
+  `unreportedPrs` to the new watch, or records `rearmedAt` on a watch that an
+  older ShipIt left in delivery).
 - `src/server/orchestrator/merge-watch-prs.ts` — the list of PRs that a watch
   still owes its parent: read, append, put first, write
   (`merge-watch-prs.test.ts`).
@@ -653,11 +663,10 @@ that a store that fails and is tried again posts one card.
   parent is told; no turn is dispatched to a parent that is idle or busy; a
   repeated event, repeated restarts and the retry pass report nothing again; an
   archived parent drops the watch and gets nothing; reconcile and
-  `checkAndFireNow`. "The notice and the end of the watch are one write": when
-  the watch cannot be ended no notice is kept, and when the notice cannot be
-  stored the watch is not ended; a merge is then stored by the retry pass or by
-  the watch's own timer, with one card and for a busy parent too; a close leaves
-  the watch armed with no card, and the next check reports it.
+  `checkAndFireNow`. "The notice and the end of the watch are one write", for a
+  merge and for a close: when the watch cannot be ended no notice and no card
+  are kept, and the next check reports the PR; when the notice cannot be stored
+  the watch stays armed; and a transaction that fails at its end keeps neither.
 - `merge-watch.test.ts`, "a wake turn that cannot be delivered is retried"
   (planning#260), on a self watch: a delivery that throws records the attempt and
   resolves rather than rejecting; it is retried in-process to `delivered` with
@@ -675,9 +684,8 @@ that a store that fails and is tried again posts one card.
   the parent's notice, and a wake that fails leaves the parent told; the pending
   list works per watch; a closed PR tells the parent and clears the self-watch
   with its note; an archived parent drops only its own watch; and a parent's
-  notice that could not be stored is stored by a **fresh** manager with no PR
-  snapshot, by reconcile and by the retry pass (the restart after the child's
-  own wake cleared the snapshot).
+  notice that could not be stored is stored by a **fresh** manager at the next
+  startup, from the child's stored PR state.
 - `merge-watch.test.ts`, "a parent that follows a child across several PRs" —
   the requirements one by one: an arm made before the parent read the notice
   applies to the next PR, and one read then returns both notices; two later PRs
@@ -691,10 +699,14 @@ that a store that fails and is tried again posts one card.
   reported; a first arm does not read `previousMergedPr`; and a watch with no id
   hands over what it reported.
 - `merge-watch.test.ts`, "a parent's watch that an older ShipIt left with a wake
-  turn in delivery" — no notice is stored while that turn can still end, and its
-  end closes the watch; a turn that did not survive the restart, or that ends
-  with no result, has its notice stored, with no second card, no new wake turn,
-  no attempt counted and for a busy parent too; an arm made during that turn is
+  turn in delivery" — no notice is stored while that turn can still end (on a
+  runner, or held for the user's answer with no runner), and its end closes the
+  watch; a turn that did not survive the restart, or that ends with no result,
+  has its notice stored, with no second card, no new wake turn, no attempt
+  counted and for a busy parent too; a record with no merge facts records the PR
+  it reports, and the next arm does not repeat it, and with no turn it reports a
+  later PR that closed; a store that fails at its end is not tried again at
+  once, and the watch's own timer tries it; an arm made during that turn is
   queued, a second one changes nothing, the old settlement cannot end the watch
   that follows, and the queued arm survives a restart with the turn or without
   it; PRs that resolve during that turn are reported to the arms that follow,

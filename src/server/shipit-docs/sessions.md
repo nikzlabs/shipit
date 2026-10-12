@@ -605,7 +605,7 @@ EOF
 # report-id: 6f0b…
 # severity:  blocker
 # to:        parent
-# delivered: 1/1 recipient(s) woken
+# delivered: parent Coordinator (ses_abc) — in the parent's inbox — a turn started to tell its agent
 ```
 
 **Reach.** `--to parent` is the only target and the default. The recipient is

@@ -279,7 +279,7 @@ export interface SessionMergeWatch {
   mergedPr?: { prNumber: number; prUrl: string; prTitle: string; branch: string; mergeSha?: string };
   /** Parent's watch: the parent was already told about this PR. A later arm inherits it and does not fire for it again. */
   reportedPr?: { prNumber: number; outcome: "merged" | "closed" };
-  /** Parent's watch: the parent armed again before this watch stored its notice. A new watch follows when this one ends. */
+  /** Parent's watch: the parent armed again while this watch was `merge-observed`. A new watch follows when this one ends. */
   rearmedAt?: string;
   /**
    * Parent's watch: the PRs that resolved while this watch could not report them (it held

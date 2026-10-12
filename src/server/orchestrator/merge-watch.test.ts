@@ -72,6 +72,10 @@ interface Control {
   failWake: boolean;
   /** An inbox that cannot be written. */
   failStore: boolean;
+  /** A transaction that fails at its end, after the notice and the watch were written in it. */
+  failCommit: boolean;
+  /** How many times a sender tried to store a notice. */
+  stores: number;
 }
 
 function makeFakeRegistry(control: Control): {
@@ -96,13 +100,17 @@ function makeManager() {
   const db = new DatabaseManager(":memory:");
   const sessionManager = new SessionManager(db);
   const chatHistoryManager = new ChatHistoryManager(db);
-  const control: Control = { failWake: false, failStore: false };
+  const control: Control = { failWake: false, failStore: false, failCommit: false, stores: 0 };
   const { registry, runners } = makeFakeRegistry(control);
   const inbox = storeOnlyInbox(db);
   const sessionInbox: typeof inbox.sessionInbox = {
     add: (sessionId, message, alongside) => {
+      control.stores += 1;
       if (control.failStore) throw new Error("database is locked");
-      inbox.sessionInbox.add(sessionId, message, alongside);
+      inbox.sessionInbox.add(sessionId, message, () => {
+        alongside?.();
+        if (control.failCommit) throw new Error("disk I/O error");
+      });
     },
     tell: inbox.sessionInbox.tell,
   };
@@ -286,72 +294,50 @@ describe("a parent's watch on a child (docs/196-session-notify-on-merge, docs/32
   });
 
   describe("the notice and the end of the watch are one write", () => {
-    it("merged: when the watch cannot be ended, no notice is kept, and the retry pass does both", async () => {
-      arm(ctx.sessionManager);
-      const real = ctx.sessionManager.setMergeWatch.bind(ctx.sessionManager);
-      // The first write records the merge; the second one ends the watch, with the notice.
-      const write = vi.spyOn(ctx.sessionManager, "setMergeWatch")
-        .mockImplementationOnce(real)
-        .mockImplementationOnce(() => { throw new Error("database is locked"); });
+    for (const [name, event, ended] of [
+      ["merged", MERGED, "delivered"],
+      ["closed", CLOSED, "closed-unmerged"],
+    ] as const) {
+      it(`${name}: when the watch cannot be ended, no notice and no card are kept`, async () => {
+        arm(ctx.sessionManager);
+        const write = vi.spyOn(ctx.sessionManager, "setMergeWatch")
+          .mockImplementationOnce(() => { throw new Error("database is locked"); });
 
-      await expect(ctx.manager.handleChildPrTerminal(MERGED)).resolves.toBeUndefined();
-      expect(notices(ctx)).toHaveLength(0);
-      expect(ctx.told).toEqual([]);
-      expect(state()).toBe("merge-observed");
-      write.mockRestore();
+        await expect(ctx.manager.handleChildPrTerminal(event)).rejects.toThrow("database is locked");
+        expect(notices(ctx)).toHaveLength(0);
+        expect(cards(ctx)).toHaveLength(0);
+        expect(ctx.told).toEqual([]);
+        expect(state()).toBe("armed");
+        write.mockRestore();
 
-      await ctx.manager.retryStalledDeliveries();
-      expect(state()).toBe("delivered");
-      expect(reported(ctx)).toEqual(["7"]);
-      expect(cards(ctx)).toHaveLength(1);
-    });
+        // Nothing was half-written, so the next check reports the PR as if it were new.
+        ctx.manager.setPrStatusLookup(() => ({ ...MERGED_STATUS, prState: name }));
+        await ctx.manager.checkAndFireNow("child");
+        expect(state()).toBe(ended);
+        expect(notices(ctx)).toHaveLength(1);
+        expect(cards(ctx)).toHaveLength(1);
+      });
 
-    it("merged: a notice that cannot be stored is stored by the watch's own timer, for a parent that is busy too", async () => {
-      vi.useFakeTimers();
-      arm(ctx.sessionManager);
-      ctx.control.failStore = true;
-      await ctx.manager.handleChildPrTerminal(MERGED);
-      expect(state()).toBe("merge-observed");
-      expect(cards(ctx)).toHaveLength(1);
+      it(`${name}: when the notice cannot be stored, the watch stays armed, with no card`, async () => {
+        arm(ctx.sessionManager);
+        ctx.control.failStore = true;
 
-      ctx.control.failStore = false;
-      const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
-      parentRunner.running = true;
-      await vi.advanceTimersByTimeAsync(31_000);
+        await expect(ctx.manager.handleChildPrTerminal(event)).rejects.toThrow("database is locked");
+        expect(state()).toBe("armed");
+        expect(cards(ctx)).toHaveLength(0);
+        expect(ctx.told).toEqual([]);
+      });
 
-      expect(state()).toBe("delivered");
-      expect(reported(ctx)).toEqual(["7"]);
-      expect(cards(ctx)).toHaveLength(1);
-      expect(parentRunner.dispatched).toHaveLength(0);
-    });
+      it(`${name}: a transaction that fails at its end keeps neither`, async () => {
+        arm(ctx.sessionManager);
+        ctx.control.failCommit = true;
 
-    it("closed: when the watch cannot be ended, no notice and no card are kept, and the next check reports it", async () => {
-      arm(ctx.sessionManager);
-      const write = vi.spyOn(ctx.sessionManager, "setMergeWatch")
-        .mockImplementationOnce(() => { throw new Error("database is locked"); });
-
-      await expect(ctx.manager.handleChildPrTerminal(CLOSED)).rejects.toThrow("database is locked");
-      expect(notices(ctx)).toHaveLength(0);
-      expect(cards(ctx)).toHaveLength(0);
-      expect(ctx.told).toEqual([]);
-      expect(state()).toBe("armed");
-      write.mockRestore();
-
-      ctx.manager.setPrStatusLookup(() => ({ ...MERGED_STATUS, prState: "closed" }));
-      await ctx.manager.checkAndFireNow("child");
-      expect(state()).toBe("closed-unmerged");
-      expect(notices(ctx)).toHaveLength(1);
-      expect(cards(ctx)).toHaveLength(1);
-    });
-
-    it("closed: a notice that cannot be stored leaves the watch armed", async () => {
-      arm(ctx.sessionManager);
-      ctx.control.failStore = true;
-
-      await expect(ctx.manager.handleChildPrTerminal(CLOSED)).rejects.toThrow("database is locked");
-      expect(state()).toBe("armed");
-      expect(cards(ctx)).toHaveLength(0);
-    });
+        await expect(ctx.manager.handleChildPrTerminal(event)).rejects.toThrow("disk I/O error");
+        expect(notices(ctx)).toHaveLength(0);
+        expect(state()).toBe("armed");
+        expect(cards(ctx)).toHaveLength(0);
+      });
+    }
   });
 });
 
@@ -680,32 +666,20 @@ describe("a session watched by its parent AND by itself (docs/196 + docs/239)", 
     return fresh;
   }
 
-  it("a parent's notice that could not be stored is stored after a restart, though the child's wake cleared the PR snapshot", async () => {
+  it("a parent's notice that could not be stored is stored at the next startup, from the child's stored PR state", async () => {
     ctx.control.failStore = true;
-    await ctx.manager.handleChildPrTerminal(MERGED);
-    expect(parentState()).toBe("merge-observed");
+    await expect(ctx.manager.handleChildPrTerminal(MERGED)).rejects.toThrow("database is locked");
+    expect(parentState()).toBe("armed");
     ctx.control.failStore = false;
 
-    const fresh = restartWithoutSnapshot();
+    const fresh = ctx.newManager();
+    fresh.setPrStatusLookup((id) => ctx.sessionManager.getPrStatus(id) ?? undefined);
     await fresh.reconcilePending();
     fresh.stopRetryLoop();
 
     expect(parentState()).toBe("delivered");
-    expect(notices(ctx).at(-1)).toContain("Child PR #7 merged");
-    expect(cards(ctx)).toHaveLength(1);
-  });
-
-  it("the retry pass also stores it after such a restart", async () => {
-    ctx.control.failStore = true;
-    await ctx.manager.handleChildPrTerminal(MERGED);
-    ctx.control.failStore = false;
-
-    const fresh = restartWithoutSnapshot();
-    await fresh.retryStalledDeliveries();
-    fresh.stopRetryLoop();
-
-    expect(parentState()).toBe("delivered");
     expect(reported(ctx)).toEqual(["7"]);
+    expect(cards(ctx)).toHaveLength(1);
   });
 
   it("a self wake whose merge callback never ran is delivered after a restart without the PR snapshot", async () => {
@@ -1104,7 +1078,10 @@ describe("a parent's watch that an older ShipIt left with a wake turn in deliver
     ctx = makeManager();
     ctx.manager.setPrStatusLookup(() => undefined);
   });
-  afterEach(() => { ctx.manager.stopRetryLoop(); });
+  afterEach(() => {
+    ctx.manager.stopRetryLoop();
+    vi.useRealTimers();
+  });
 
   const LEGACY_ID = "legacy-watch";
   const DELIVERY = `${LEGACY_ID}:1`;
@@ -1181,6 +1158,85 @@ describe("a parent's watch that an older ShipIt left with a wake turn in deliver
     expect(reported(ctx)).toEqual(["7"]);
     expect(cards(ctx)).toHaveLength(0);
     expect(runner.dispatched).toHaveLength(0);
+  });
+
+  it("a turn that is held for the user's answer, with no runner, is a turn that can still end", async () => {
+    const runner = inDelivery();
+    runner.simulateRestart();
+    ctx.registry.dispose("parent");
+    ctx.sessionManager.holdTurn("parent", {
+      text: "Child PR #7 merged", execution: "dispatched", automatic: true, deliveryId: DELIVERY,
+    });
+
+    await ctx.manager.reconcilePending();
+    await ctx.manager.retryStalledDeliveries();
+
+    expect(notices(ctx)).toHaveLength(0);
+    expect(watch()?.state).toBe("merge-observed");
+
+    // The user answers, the turn runs, and its settlement is bound again from the saved row.
+    ctx.manager.rebindDelivery(DELIVERY)!(TURN_COMPLETED);
+    expect(watch()).toMatchObject({ state: "delivered", reportedPr: { prNumber: 7, outcome: "merged" } });
+    expect(notices(ctx)).toHaveLength(0);
+  });
+
+  it("req 4: a watch that recorded no merge facts records the PR it reports, and the next arm does not repeat it", async () => {
+    const runner = inDelivery({ mergedPr: undefined });
+    runner.simulateRestart();
+    ctx.manager.setPrStatusLookup((id) => (id === "child" ? status(7) : undefined));
+    await ctx.manager.reconcilePending();
+
+    expect(watch()).toMatchObject({ state: "delivered", reportedPr: { prNumber: 7, outcome: "merged" } });
+    expect(reported(ctx)).toEqual(["7"]);
+
+    expect(await armAsParent(ctx)).toMatchObject({ state: "armed", skipsPr: 7 });
+    expect(reported(ctx)).toEqual(["7"]);
+  });
+
+  it("a watch with no merge facts and no turn reports a later PR that closed, and does not hold the next arm", async () => {
+    const runner = inDelivery({ mergedPr: undefined, deliveryId: undefined });
+    runner.simulateRestart();
+    // The child continued: its stored state shows only the PR that it closed after the merge.
+    ctx.manager.setPrStatusLookup((id) => (id === "child" ? status(8, "closed") : undefined));
+    await ctx.manager.reconcilePending();
+
+    expect(watch()).toMatchObject({ state: "closed-unmerged", reportedPr: { prNumber: 8, outcome: "closed" } });
+    expect(notices(ctx)).toHaveLength(1);
+    expect(notices(ctx)[0]).toContain("Child PR #8 closed without merging");
+
+    expect(await armAsParent(ctx)).toMatchObject({ state: "armed", alreadyArmed: false, skipsPr: 8 });
+  });
+
+  it("a watch with no merge facts whose turn can still end keeps a later PR for the next arm", async () => {
+    inDelivery({ mergedPr: undefined });
+    await ctx.manager.handleChildPrTerminal(pr(8, "closed"));
+
+    expect(watch()).toMatchObject({ state: "merge-observed", unreportedPrs: [{ prNumber: 8, outcome: "closed" }] });
+    expect(notices(ctx)).toHaveLength(0);
+    expect(cards(ctx)).toHaveLength(0);
+  });
+
+  it("a store that fails at its end is not tried again at once: the watch's timer tries it, and a queued arm follows", async () => {
+    vi.useFakeTimers();
+    const runner = inDelivery();
+    await armAsParent(ctx);
+    runner.simulateRestart();
+    ctx.control.failCommit = true;
+    ctx.control.stores = 0;
+
+    await ctx.manager.reconcilePending();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // The watch that would follow was written in the transaction that failed, and went with it.
+    expect(ctx.control.stores).toBe(1);
+    expect(notices(ctx)).toHaveLength(0);
+    expect(watch()).toMatchObject({ state: "merge-observed", watchId: LEGACY_ID });
+    expect(watch()?.rearmedAt).toBeTypeOf("string");
+
+    ctx.control.failCommit = false;
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(reported(ctx)).toEqual(["7"]);
+    expect(watch()).toMatchObject({ state: "armed", reportedPr: { prNumber: 7, outcome: "merged" } });
   });
 
   it("req 3: an arm made during that turn applies to the child's next PR, and a second one changes nothing", async () => {

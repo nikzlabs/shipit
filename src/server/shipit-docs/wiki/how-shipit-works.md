@@ -164,7 +164,7 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Re-run a CI workflow run without pushing an empty commit | [pull-requests.md](pull-requests.md), and `/shipit-docs/github.md` |
 | Merge conflicts resolved in the session rather than locally | [pull-requests.md](pull-requests.md) |
 | Branch history, and rolling back to an earlier commit | [sessions.md](sessions.md) — rewind; [pull-requests.md](pull-requests.md) for what it does to the branch on GitHub |
-| Be woken when a pull request merges, instead of watching it | `shipit session notify-on-merge` |
+| Be told when a pull request merges, instead of watching it — a turn for the session's own, a notice in its inbox for a child's | `shipit session notify-on-merge` |
 | Cut a release — version bump, branch, tag, published notes | [pull-requests.md](pull-requests.md), and `/shipit-docs/release.md` for your own steps |
 | Deploy on every push, through the hosting platform's own Git integration | [deploying.md](deploying.md) |
 | Deploy status — environment, state and URL — on the pull request card and in the PR tab | [deploying.md](deploying.md) |

@@ -339,6 +339,9 @@ describe("Integration: durable delivery identity across a restart (planning#266)
 
     expect(spawnCount).toBe(1);
     expect(sessionManager.getMergeWatch(CHILD_ID)?.deliveryAttempts).toBe(1);
+    // The turn is live, so the fresh manager did not store its notice beside it.
+    expect(sessionManager.getMergeWatch(CHILD_ID)?.state).toBe("merge-observed");
+    expect(inbox.store.all(WOKEN_ID)).toHaveLength(0);
   });
 
   it("rebindDelivery only matches a live, non-terminal watch", async () => {

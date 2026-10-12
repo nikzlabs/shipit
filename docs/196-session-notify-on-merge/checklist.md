@@ -26,3 +26,7 @@
 - [x] Arming again (requirements.md reqs 2–4): `reportedPr` handed from watch to
       watch, `rearmedAt` + the watch that follows a delivery, a `watchId` on every
       watch, the `previousMergedPr` fallback, and the CLI text for each case
+- [x] docs/328-session-message-inbox req 6 — a parent's notice goes to its inbox and
+      ends the watch in the same transaction; the wake turn, its retry supervisor and
+      `delivery-failed` serve the `--self` watch only; a watch that an older ShipIt
+      left in delivery is not told a second time

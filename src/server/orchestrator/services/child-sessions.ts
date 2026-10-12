@@ -791,9 +791,9 @@ export function registerMergeWatch(
     };
   }
   if (own?.state === "merge-observed") {
-    // docs/196-session-notify-on-merge req 3 — a watch whose notice is not stored yet keeps its
-    // record: an older ShipIt's wake turn, or a store that failed. The manager arms the watch
-    // that follows when this one ends.
+    // docs/196-session-notify-on-merge req 3 — only a watch that an older ShipIt left with a
+    // wake turn in delivery is here. It keeps its record, and the manager arms the watch that
+    // follows when this one ends.
     const deliveringPr = own.mergedPr?.prNumber;
     const alreadyQueued = own.rearmedAt !== undefined;
     if (!alreadyQueued) {
