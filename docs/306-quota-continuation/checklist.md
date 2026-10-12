@@ -14,7 +14,11 @@
 - [x] docs/140 phase 6.12 marked superseded in part, with the reason
 - [x] The same wake continues a CLI-started turn that a renewed sign-in cut short (docs/140 Phase 6.13)
 - [x] The composer's executor takes the stand-down hooks too, not only the runner's dispatch
-- [ ] Record a stall when a continuation is refused by every credential (see "Known gaps")
+- [x] Record a stall when a continuation is refused by every credential
 - [x] A self merge wake that every credential refuses waits for the stated reset, spends no delivery attempt, and shows its prompt once
 - [x] An automatic turn's all-refused error does not ask the user to send the message again
 - [x] Executor settles an all-refused turn with the stated resets (`quotaRefused`)
+- [x] Consult, restart and stopped-jobs wakes park their prompt and hand a quota refusal to the manager
+- [x] The manager's registry persists in `sessions.quota_resume`, and the sweep resumes at boot
+- [x] A refused wake waits for the earliest stated reset, not for the router's re-probe
+- [x] A wiring test proves the built app passes the manager to all three callers

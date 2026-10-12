@@ -13,6 +13,7 @@ import {
   turnDropped,
   turnErrored,
   turnInterrupted,
+  turnQuotaRefused,
   type TurnAdmission,
   type TurnHandle,
   type TurnOutcome,
@@ -209,6 +210,32 @@ describe("reportStoppedBackgroundJobs (docs/235 §9)", () => {
     expect(decision.woken).toBe(true);
     expect(ctx.sessionManager.get("s1")?.pendingAgentNotice)
       .toBe(`[System] ${buildStoppedBackgroundJobsPrompt(JOBS)}`);
+  });
+
+  // docs/306-quota-continuation — the manager resumes the session at the stated reset.
+  it("hands a wake that every credential refused for quota to the quota continuation", async () => {
+    const recordRefusedWake = vi.fn();
+    const deps = { ...ctx.deps, quotaContinuation: { recordRefusedWake } };
+    settleWakeAs(turnQuotaRefused(["2026-10-11T17:00:00.000Z", null]));
+
+    await reportStoppedBackgroundJobs(deps, { sessionId: "s1", jobs: JOBS, mayWake: true });
+
+    expect(ctx.sessionManager.get("s1")?.pendingAgentNotice)
+      .toBe(`[System] ${buildStoppedBackgroundJobsPrompt(JOBS)}`);
+    expect(recordRefusedWake).toHaveBeenCalledWith({
+      sessionId: "s1",
+      resetsAt: ["2026-10-11T17:00:00.000Z", null],
+    });
+  });
+
+  it("does not hand over a wake that failed for another reason", async () => {
+    const recordRefusedWake = vi.fn();
+    const deps = { ...ctx.deps, quotaContinuation: { recordRefusedWake } };
+    settleWakeAs(turnErrored());
+
+    await reportStoppedBackgroundJobs(deps, { sessionId: "s1", jobs: JOBS, mayWake: true });
+
+    expect(recordRefusedWake).not.toHaveBeenCalled();
   });
 
   it.each([
