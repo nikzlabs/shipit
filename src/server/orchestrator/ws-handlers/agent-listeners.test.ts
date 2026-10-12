@@ -683,6 +683,25 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    // planning#691 — the user's correction must not run before the message it corrects.
+    it("puts a rejected steer back in front of the messages the user sent after it", () => {
+      const { agent, runner } = wireWithSteers();
+      const emitted: { type: string; [key: string]: unknown }[] = [];
+      runner.on("message", (m) => emitted.push(m as { type: string }));
+      runner.enqueue({ text: "a later correction", execution: "interactive" });
+      const [earlier, changed] = runner.steeredMessages;
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+      agent.emit("event", { type: "agent_steer_rejected", text: "[earlier]" });
+
+      expect(runner.messageQueue.map((m) => m.text)).toEqual(["earlier", "change of scope", "a later correction"]);
+      expect(emitted.filter((m) => m.type === "message_queued")).toEqual([
+        { type: "message_queued", sessionId: "session-1", id: changed?.clientRequestId, text: "change of scope", position: 1 },
+        { type: "message_queued", sessionId: "session-1", id: earlier?.clientRequestId, text: "earlier", position: 1 },
+      ]);
+      runner.dispose({ force: true });
+    });
+
     // docs/328-session-message-inbox — the inbox tells again by its own rule.
     it("a rejected best-effort steer loses its row and is not re-queued", () => {
       const { agent, runner } = wireWithSteers();

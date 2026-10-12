@@ -26,12 +26,16 @@ describe("stopCompactionContinuation", () => {
       sessionId: SESSION,
       messageQueue: [ours, theirs],
       emitMessage: (m: unknown) => { emitted.push(m); },
-      getQueueSnapshot: () => [{ text: "user", position: 1 }],
+      getQueueSnapshot: () => [{ id: "user-1", text: "user", position: 1 }],
     };
     stopCompactionContinuation(manager, fakeRunner);
     expect(state.request).toEqual({ instructions: "keep A" });
     expect(fakeRunner.messageQueue).toEqual([theirs]);
-    expect(emitted).toHaveLength(1);
+    expect(emitted).toEqual([{
+      type: "queue_updated",
+      sessionId: SESSION,
+      queue: [{ id: "user-1", text: "user", position: 1 }],
+    }]);
 
     const broken = { dropPendingCompactionNote: () => { throw new Error("db closed"); } };
     expect(() => stopCompactionContinuation(broken, { ...fakeRunner, messageQueue: [] })).not.toThrow();

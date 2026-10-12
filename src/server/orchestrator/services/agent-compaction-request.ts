@@ -200,7 +200,7 @@ export async function runRequestedCompaction(
     const entry = markCompactionContinuation(continuationEntry(deps, sessionId, request.note));
     if (handle.admitted === "started") runner.messageQueue.unshift(entry);
     else runner.messageQueue.push(entry);
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
   }
 }
 

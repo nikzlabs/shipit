@@ -92,7 +92,7 @@ export async function killAgent(
     runner.setAgent(null);
   }
 
-  runner.emitMessage({ type: "agent_interrupted" });
+  runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
 
   // Worker acknowledgement does not guarantee a later agent_done event. A turn that started
   // while the kill was awaited — a drained message, a requested compaction, even one still in
@@ -417,7 +417,7 @@ export async function restartAgent(
     }
     for (const entry of carried) replacement.enqueue(entry);
     if (carried.length > 0) {
-      replacement.emitMessage({ type: "queue_updated", queue: replacement.getQueueSnapshot() });
+      replacement.emitMessage({ type: "queue_updated", sessionId: replacement.sessionId, queue: replacement.getQueueSnapshot() });
     }
   }
 

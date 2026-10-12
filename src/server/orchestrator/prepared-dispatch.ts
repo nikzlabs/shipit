@@ -41,6 +41,7 @@ export interface AgentDispatchInit {
   bestEffortSteer?: boolean;
   unattended?: boolean;
   promptShown?: boolean;
+  clientRequestId?: string;
 }
 
 type AssertNever<T extends never> = T;
@@ -76,6 +77,7 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   bestEffortSteer: true,
   unattended: true,
   promptShown: true,
+  clientRequestId: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -116,6 +118,7 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     bestEffortSteer: next.bestEffortSteer,
     unattended: next.unattended,
     promptShown: next.promptShown,
+    clientRequestId: next.clientRequestId,
   });
 }
 

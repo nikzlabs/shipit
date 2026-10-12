@@ -5,6 +5,7 @@ import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
 import { noteTurnReady, noteTurnSubmitted, setSteerRefused } from "../turn-stop-request.js";
+import { queueEntryId, requeueInSendOrder } from "../queue-identity.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import { retireRewindUndo } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
@@ -280,8 +281,14 @@ export function wireAgentListeners(
             if (requeued.execution === "interactive" && requeued.automatic !== true) {
               setSteerRefused(runner, true);
             }
-            const position = runner.enqueue(requeued);
-            emitToViewers({ type: "message_queued", text: dropped.text, position });
+            const position = requeueInSendOrder(runner, requeued);
+            emitToViewers({
+              type: "message_queued",
+              sessionId: runner.sessionId,
+              id: queueEntryId(requeued),
+              text: dropped.text,
+              position,
+            });
             deps.broadcastLog(
               "server",
               `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,

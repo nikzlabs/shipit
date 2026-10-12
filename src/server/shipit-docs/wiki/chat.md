@@ -145,7 +145,9 @@ can also send:
   turn, whoever started it (`/compact`, or one that ShipIt starts), and the turn
   that resolves the conflicts of a rebase. There, and while a merge is being
   held, the message stays in the queue. That is the honest answer to "why did
-  it queue when it should have interrupted?".
+  it queue when it should have interrupted?". A message the agent did not take
+  goes back to the queue at its place in the order they sent it, so it does not
+  run after a correction they sent later.
 - **Otherwise** the message is **queued**. A strip above the composer lists the
   queued messages in order, each with an ✕ to drop it, and **Clear all**. A
   queued message runs as its own turn once the current one has finished and its

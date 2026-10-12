@@ -103,7 +103,7 @@ const LAST_TURN_OUTCOMES: readonly LastTurnOutcome[] = ["ok", "errored", "quota-
 
 /** A held turn as stored: everything but the process-bound callback and its own row id. */
 function serializeHeldTurn(entry: QueuedMessage): string {
-  const { onTurnComplete: _callback, heldId: _heldId, ...stored } = entry;
+  const { onTurnComplete: _callback, heldId: _heldId, sendOrder: _sendOrder, ...stored } = entry;
   return JSON.stringify(stored);
 }
 

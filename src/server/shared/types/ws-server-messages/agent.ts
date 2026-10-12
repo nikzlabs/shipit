@@ -62,8 +62,21 @@ export interface WsModelSelectionChanged {
   notice?: string;
 }
 
+/**
+ * One queued message. `id` is also the `clientRequestId` of the message's bubble: the
+ * sender's request id, or one ShipIt made (planning#691).
+ */
+export interface WsQueueRow {
+  id: string;
+  text: string;
+  /** One-based. */
+  position: number;
+}
+
 export interface WsMessageQueued {
   type: "message_queued";
+  sessionId: string;
+  id: string;
   /** One-based. */
   position: number;
   text: string;
@@ -71,9 +84,10 @@ export interface WsMessageQueued {
 
 export interface WsQueueUpdated {
   type: "queue_updated";
-  queue: { text: string; position: number }[];
-  /** Absent on cancel or clear. */
-  dequeued?: string;
+  sessionId: string;
+  queue: WsQueueRow[];
+  /** A message that leaves the queue for a turn of its own; absent on cancel, clear or steer. */
+  dequeued?: { id: string; text: string };
 }
 
 /** Persist before emitting so attachment URLs resolve. */
@@ -81,6 +95,8 @@ export interface WsMessageSteered {
   type: "message_steered";
   text: string;
   sessionId: string;
+  /** The bubble's identity, shared with the queue row the message came from (planning#691). */
+  clientRequestId: string;
   images?: { data?: string; mediaType: string; src?: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
@@ -110,4 +126,6 @@ export interface WsAgentListMessage {
 
 export interface WsAgentInterrupted {
   type: "agent_interrupted";
+  /** It clears the queue strip and closes the streaming bubble, so it is session-scoped. */
+  sessionId: string;
 }

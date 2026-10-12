@@ -22,7 +22,7 @@ export function interruptAgentTurn(deps: AgentInterruptDeps, runner: SessionRunn
     runner.wasInterrupted = true;
     noteUserStop(runner);
     deps.broadcastLog("server", "Agent turn stopped by user before it started");
-    runner.emitMessage({ type: "agent_interrupted" });
+    runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
     return true;
   }
   const agent = runner?.getAgent() ?? null;
@@ -49,7 +49,7 @@ export function interruptAgentTurn(deps: AgentInterruptDeps, runner: SessionRunn
     })();
   }
   deps.broadcastLog("server", "Agent process stopped by user");
-  runner.emitMessage({ type: "agent_interrupted" });
+  runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
 
   // Interrupted streaming turns may emit neither done nor agent_result.
   scheduleInterruptCommit({ deps: deps.postInterruptCommitDeps, runner });

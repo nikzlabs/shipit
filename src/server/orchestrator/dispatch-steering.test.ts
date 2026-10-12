@@ -14,6 +14,8 @@ import {
 } from "./turn-stop-request.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
+import { requeueInSendOrder } from "./queue-identity.js";
+import { steerToQueuedMessage } from "./ws-handlers/agent-message-builder.js";
 
 // docs/329-user-steers-every-turn req 2 — what the user sent while no agent could read it
 // goes into the turn that starts.
@@ -69,10 +71,25 @@ describe("deliverWaitingMessages", () => {
     expect(runner.queueLength).toBe(0);
     expect(runner.steeredMessages.map((s) => s.text)).toEqual(["first", "second"]);
     expect(received.filter((m) => m.type === "message_steered").map((m) => m.text)).toEqual(["first", "second"]);
-    // `dequeued` gives the sender's browser its composed bubble back, before the steer event.
-    expect(received.filter((m) => m.type === "queue_updated" || m.type === "message_steered")
-      .map((m) => (m.type === "queue_updated" ? `dequeued:${String(m.dequeued)}` : `steered:${String(m.text)}`)))
-      .toEqual(["dequeued:first", "steered:first", "dequeued:second", "steered:second"]);
+  });
+
+  // planning#691 — the steer event is the bubble on every viewer, so the queue update that
+  // goes before it adds none, and both name the session and the message.
+  it("names the session, and gives the steer the id of the queue row it came from", async () => {
+    runner.enqueue(typed("first", { clientRequestId: "r1" }));
+    runner.enqueue(typed("second"));
+    const secondId = runner.getQueueSnapshot()[1]?.id;
+
+    await deliverWaitingMessages(runner, deps());
+
+    const events = received.filter((m) => m.type === "queue_updated" || m.type === "message_steered");
+    expect(events.map((m) => [m.type, m.sessionId, m.dequeued ?? m.clientRequestId])).toEqual([
+      ["queue_updated", "s1", undefined],
+      ["message_steered", "s1", "r1"],
+      ["queue_updated", "s1", undefined],
+      ["message_steered", "s1", secondId],
+    ]);
+    expect(runner.steeredMessages.map((s) => s.clientRequestId)).toEqual(["r1", secondId]);
   });
 
   it("puts the attachment on the steer event, for a viewer that has no bubble of its own", async () => {
@@ -126,17 +143,17 @@ describe("deliverWaitingMessages", () => {
     expect(runner.messageQueue.map((m) => m.text)).toEqual(["second"]);
 
     // The refused message comes back to the queue by its own path; nothing sends it again.
-    runner.enqueue(typed("first"));
+    requeueInSendOrder(runner, steerToQueuedMessage(runner.steeredMessages[0]!));
     refuse = false;
     await deliverWaitingMessages(runner, deps());
     expect(sent).toEqual(["first"]);
 
-    // The next turn starts with a clean record.
+    // The next turn starts with a clean record, and the user's order (planning#691).
     runner.running = false;
     runner.running = true;
     noteTurnReady(runner);
     await deliverWaitingMessages(runner, deps());
-    expect(sent).toEqual(["first", "second", "first"]);
+    expect(sent).toEqual(["first", "first", "second"]);
   });
 
   it("keeps a message whose write throws, at its place in the queue", async () => {
@@ -192,18 +209,21 @@ describe("deliverWaitingMessages", () => {
   });
 
   it("stops when the harness refuses a message that the worker accepted", async () => {
-    runner.enqueue(typed("first"));
+    const first = typed("first");
+    runner.enqueue(first);
     runner.enqueue(typed("second"));
-    // What the listener of `agent_steer_rejected` does: the message is back in the queue.
+    // What the listener of `agent_steer_rejected` does: the message is back in the queue,
+    // ahead of the one the user sent after it (planning#691). Its steer keeps the entry's
+    // send order.
     afterWrite = () => {
       setSteerRefused(runner, true);
-      runner.enqueue(typed("first"));
+      requeueInSendOrder(runner, { ...first });
     };
 
     await deliverWaitingMessages(runner, deps());
 
     expect(sent).toEqual(["first"]);
-    expect(runner.messageQueue.map((m) => m.text)).toEqual(["second", "first"]);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["first", "second"]);
   });
 
   it("leaves a turn of another source in the queue, and takes the user's message from behind it", async () => {

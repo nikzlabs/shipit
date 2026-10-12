@@ -83,6 +83,25 @@ describe("requeueUndeliveredSteers (docs/140)", () => {
     r.dispose({ force: true });
   });
 
+  // planning#691 — the steers go back ahead of a message the user sent after them.
+  it("re-queues the steers in the order they were sent, before a later waiting message", () => {
+    const r = runner();
+    const emitted: WsServerMessage[] = [];
+    const first = recordSteeredMessage(r, "first", { assembledPrompt: "first", clientRequestId: "r1" });
+    const second = recordSteeredMessage(r, "second", { assembledPrompt: "second" });
+    r.enqueue({ text: "later", execution: "interactive" });
+
+    expect(requeueUndeliveredSteers(r, (m) => emitted.push(m))).toBe(2);
+
+    expect(r.messageQueue.map((m) => m.text)).toEqual(["first", "second", "later"]);
+    expect(first).toBe("r1");
+    expect(emitted).toEqual([
+      { type: "message_queued", sessionId: r.sessionId, id: "r1", text: "first", position: 1 },
+      { type: "message_queued", sessionId: r.sessionId, id: second, text: "second", position: 2 },
+    ]);
+    r.dispose({ force: true });
+  });
+
   it("leaves a delivered steer alone (no re-queue)", () => {
     const r = runner();
     recordSteeredMessage(r, "acked", { assembledPrompt: "acked" });

@@ -6,25 +6,27 @@ import type { Handler } from "./types.js";
 
 export const handleQueueUpdated: Handler<WsQueueUpdated> = (ctx, data) => {
   const session = useSessionStore.getState();
-  const update = data;
   // A snapshot confirms a predicted row or says nothing about it; either way it
   // must not throw away the composed bubble the restore below reads back.
   session.setQueuedMessages(
-    applyQueueSnapshot(update.queue, (text, bubble) => ctx.queuedMessageStash.set(text, bubble)),
+    applyQueueSnapshot(data.queue, (id, bubble) => ctx.queuedMessageStash.set(id, bubble)),
   );
-  if (update.dequeued) {
-
-    const stashed = ctx.queuedMessageStash.get(update.dequeued);
-    ctx.queuedMessageStash.delete(update.dequeued);
+  const dequeued = data.dequeued;
+  if (dequeued) {
+    const stashed = ctx.queuedMessageStash.get(dequeued.id);
+    ctx.queuedMessageStash.delete(dequeued.id);
+    // A viewer that did not send it gets the text now; the turn's echo adds the attachments.
     const restoredMsg: ChatMessage = stashed
-      ? { ...stashed, queued: false, queuePosition: undefined }
-      : { role: "user" as const, text: update.dequeued };
-    session.setMessages((prev) => [...prev, restoredMsg]);
+      ? { ...stashed, queued: false, queuePosition: undefined, clientRequestId: dequeued.id }
+      : { role: "user" as const, text: dequeued.text, clientRequestId: dequeued.id };
+    // A reconnect replays this event over a transcript that can already hold the bubble.
+    session.setMessages((prev) =>
+      prev.some((m) => m.clientRequestId === dequeued.id) ? prev : [...prev, restoredMsg]);
   }
 
-  const remainingTexts = new Set(update.queue.map((q) => q.text));
+  const remainingIds = new Set(data.queue.map((q) => q.id));
   for (const key of ctx.queuedMessageStash.keys()) {
-    if (!remainingTexts.has(key)) {
+    if (!remainingIds.has(key)) {
       ctx.queuedMessageStash.delete(key);
     }
   }
