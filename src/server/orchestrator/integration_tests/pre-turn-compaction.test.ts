@@ -363,7 +363,7 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.close();
   });
 
-  it("with live steering: a send during the decision queues, it is not steered into the idle resident", async () => {
+  it("with live steering: a send during the decision waits, and follows the first message into its turn", async () => {
     credentialStore.setLiveSteering(true);
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
@@ -385,7 +385,11 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     resident.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
     resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
     await stdinHas(resident, "first");
-    expect(resident.stdinData.some((d) => d.includes("second"))).toBe(false);
+    // docs/329-user-steers-every-turn req 2 — not before the message that waited for the
+    // compaction, and not after that message's whole turn.
+    await stdinHas(resident, "second");
+    const written = resident.stdinData.join("\n");
+    expect(written.indexOf("first")).toBeLessThan(written.indexOf("second"));
 
     client.close();
   });

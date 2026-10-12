@@ -25,13 +25,24 @@
 - [x] Independent review of the diff against every numbered requirement
 - [x] `src/server/shipit-docs/environment.md`, `sessions.md`, and the wiki
 
-## Part 2 — the session hold, and the last two turns
+## Part 2 — a message waits only for an agent that can read it
 
-- [ ] The design, corrected for the defects in the review record, and reviewed
-- [ ] `runner.sessionHold`; no ordinary turn writes the hold
-- [ ] The conflict-resolution turn accepts a message from the user
-- [ ] ShipIt's compaction turns, and a message typed during one
-- [ ] A message of the user's that waits in the queue reaches the turn that starts
-- [ ] An answer under a hold is queued, not refused
+- [x] The design, corrected for the defects in the review record
+- [x] A second review of the corrected design
+- [x] The turn phase knows `ready` and `compaction`; both deciders read it
+- [x] `verifyRunningState` leaves a turn in setup alone
+- [x] A waiting message of the user's is delivered to the turn that starts
+- [x] A waiting message with an attachment is delivered too
+- [x] An answer takes the admission of a typed message
+- [x] Tests, with a mutation check for each new one
+- [x] Independent review of the diff against every numbered requirement
+- [x] The agent-facing docs and the wiki
+
+## Part 3 — the session hold, and the last two turns
+
+- [ ] `runner.sessionHold`; no turn writes the hold
+- [ ] The conflict-resolution turn accepts a message and ends as a one-shot turn
+- [ ] A cancelled rebase flow does nothing more to the workspace
+- [ ] ShipIt's compaction turns take the path of every dispatched turn
 - [ ] `systemTurn` and `systemTurnInProgress` are deleted
 - [ ] The older design docs that state the old rule

@@ -14,6 +14,7 @@ import {
 import { requeueUndeliveredSteers } from "../ws-handlers/agent-message-builder.js";
 import { buildInboxNotice, INBOX_TURN_TEXT, prepareInboxNotice } from "./session-inbox-notice.js";
 import { SessionInbox } from "./session-inbox.js";
+import { noteTurnReady } from "../turn-stop-request.js";
 
 const CHILD = { sessionId: "child", sessionTitle: "Child", relation: "child" as const };
 const APPROVED = { sessionId: "other", sessionTitle: "Other", relation: "proposed" as const };
@@ -100,6 +101,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     const setPermissionMode = vi.fn();
     runner.setAgent({ sendUserMessage: (text: string) => sent.push(text), setPermissionMode, kill: () => {} } as never);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
     return { runner, sent, setPermissionMode };
   }

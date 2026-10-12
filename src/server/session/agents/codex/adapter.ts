@@ -154,6 +154,7 @@ export class CodexAdapter
         sendErrorResponse: (id, code, message) => { this.sendErrorResponse(id, code, message); },
         sendNotification: (method, params) => { this.sendNotification(method, params); },
         kill: () => { this.kill(); },
+        turnStarted: () => { this.sendEarlySteers(); },
         goalRequest: (method, params) => this.liveGoalRequest(method, params),
         restoreGoalOutOfProcess: (threadId) => this.runGoalControl(threadId, { action: "resume" }),
       },
@@ -211,6 +212,9 @@ export class CodexAdapter
   run(params: AgentRunParams): void {
     this.spawnHomeOverride = params.homeDir;
     this.eventHandler.beginTurn(params.cwd);
+    this.earlySteers = [];
+    // A compaction run starts no turn, so it has nothing to keep a steer for.
+    this.awaitingTurnId = !params.compact;
 
     try {
       execFileSync("which", ["codex"], { stdio: "ignore" });
@@ -330,6 +334,7 @@ export class CodexAdapter
     let exited = false;
     this.proc.on("close", (code) => {
       exited = true;
+      this.rejectEarlySteers();
       this.drainLines(true);
       this.emit("done", code ?? 1);
       this.proc = null;
@@ -339,6 +344,8 @@ export class CodexAdapter
     });
 
     this.eventHandler.initializeAndRun(params).catch((err: unknown) => {
+      // No turn started, and a later one of this process must not get what was kept for it.
+      this.rejectEarlySteers();
       const error = err instanceof Error ? err : new Error(String(err));
       // The exit already reported this run's end through done.
       if (exited) this.emit("log", "codex", `startup ended by process exit: ${error.message}`);
@@ -369,11 +376,35 @@ export class CodexAdapter
           this.emit("event", { type: "agent_steer_rejected", text: steerText });
         }
       })();
+    } else if (this.proc && this.awaitingTurnId) {
+      this.earlySteers.push(data);
     }
   }
 
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
     this.writeStdin(text);
+  }
+
+  /**
+   * docs/329-user-steers-every-turn — `run()` returns before `turn/start` does, and a steer
+   * needs the turn's id. One that arrives in between is kept and sent when the id is known.
+   */
+  private earlySteers: string[] = [];
+  private awaitingTurnId = false;
+
+  private sendEarlySteers(): void {
+    this.awaitingTurnId = false;
+    const held = this.earlySteers;
+    this.earlySteers = [];
+    for (const steer of held) this.writeStdin(steer);
+  }
+
+  // The process ended before its turn started: the orchestrator puts the steer back in its queue.
+  private rejectEarlySteers(): void {
+    this.awaitingTurnId = false;
+    const held = this.earlySteers;
+    this.earlySteers = [];
+    for (const steer of held) this.emit("event", { type: "agent_steer_rejected", text: steer.trim() });
   }
 
   // Between turns, compaction needs a new run({ compact: true }).

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, statSync, readFileSync, rmSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
@@ -170,8 +170,9 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   private activeFlowAccountId: string | null = null;
   private activeAttemptId: string | null = null;
   private activeAttemptStartedAt = 0;
-  // Existing files must not count as a successful new login.
-  private credentialBaselineMtime = 0;
+  // The credential on disk that is not this flow's result: what start() left, and what another
+  // writer had put there by the time the code was submitted. Null when there is none.
+  private credentialBaseline: string | null = null;
   private terminalEmitted = false;
   private flowGeneration = 0;
 
@@ -360,22 +361,25 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     }
   }
 
-  private credentialMtimeMs(): number {
+  // Which credential the files hold. A hash, so that no token stays in memory; null without an
+  // access token. Not the mtime: other CLIs rewrite this file's other keys (docs/153).
+  private credentialFingerprint(): string | null {
     const configDir = this.claudeConfigDir(this.activeCredentialDir);
-    let newest = 0;
     for (const fileName of CLAUDE_CREDENTIAL_FILES) {
       try {
-        const { mtimeMs } = statSync(path.join(configDir, fileName));
-        if (mtimeMs > newest) newest = mtimeMs;
-      } catch {
-        // Missing file — skip.
-      }
+        const parsed = JSON.parse(readFileSync(path.join(configDir, fileName), "utf-8")) as Record<string, unknown>;
+        const access = extractAccessToken(parsed);
+        if (!access) continue;
+        const refresh = probeNestedString(parsed, ["refreshToken", "refresh_token"], "claudeAiOauth") ?? "";
+        return createHash("sha256").update(`${access}\n${refresh}`).digest("hex");
+      } catch { /* no credential in this file */ }
     }
-    return newest;
+    return null;
   }
 
   private hasFreshCredentials(): boolean {
-    return this.credentialMtimeMs() > this.credentialBaselineMtime;
+    const current = this.credentialFingerprint();
+    return current !== null && current !== this.credentialBaseline;
   }
 
   startOAuthFlow(opts?: AgentAuthStartOptions): void {
@@ -403,7 +407,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     this.emitDiagnosticLog("info", "shipit", "Start requested for Claude sign-in.");
     // Existing credentials can make the CLI skip the interactive login flow.
     this.removeCredentialFiles(this.claudeConfigDir(this.activeCredentialDir));
-    this.credentialBaselineMtime = this.credentialMtimeMs();
+    this.credentialBaseline = this.credentialFingerprint();
     const home = this.homeFor(this.activeCredentialDir);
 
     ensureOnboardingComplete(
@@ -567,6 +571,9 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   sendCode(code: string): void {
     if (this.proc) {
       const trimmed = code.trim();
+      // The login CLI can write only after it has a code, so a credential on disk now is another
+      // writer's. Not on a later code: the CLI may have written since the first one.
+      if (this.submittedCodes.length === 0) this.credentialBaseline = this.credentialFingerprint();
       // Every code submitted in this attempt, not just the latest: a second
       // submission would otherwise strip the first one's protection off output
       // still sitting in the relay buffer.

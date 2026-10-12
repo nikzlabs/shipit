@@ -30,7 +30,7 @@ import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
-import { beginTurnSetup } from "./turn-stop-request.js";
+import { beginTurnSetup, turnAwaitsAgent } from "./turn-stop-request.js";
 import { readAnswerHold } from "./turn-admission.js";
 import { forgetHeldEntries } from "./held-turns.js";
 import { modelListField } from "../shared/catalogue/model-list.js";
@@ -2106,6 +2106,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   async verifyRunningState(): Promise<boolean> {
     const staleResidentOnly = !this._isRunning && this._isStreamingActive;
     if (!this._isRunning && !staleResidentOnly) return false;
+    // A turn in setup has no agent on the worker yet; that is not a stuck turn
+    // (docs/329-user-steers-every-turn).
+    if (turnAwaitsAgent(this)) return true;
     const wasRunning = this._isRunning;
     const turnEpochAtCheck = this.turnEpoch;
     let workerRunning: boolean;
