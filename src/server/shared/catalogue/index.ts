@@ -685,7 +685,6 @@ export function catalogueModelLabels(): Record<string, string> {
   return out;
 }
 
-/** Ignores per-harness overrides; use contextWindowFor when the harness is known. */
 /** Row ids whose vendor id differs, keyed like {@link catalogueContextWindows}. */
 export function catalogueApiIds(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -699,6 +698,7 @@ export function catalogueApiIds(): Record<string, string> {
   return out;
 }
 
+/** Ignores per-harness overrides; use contextWindowFor when the harness is known. */
 export function catalogueContextWindows(): Record<string, number> {
   const out: Record<string, number> = {};
   for (const service of servicesLive()) {
