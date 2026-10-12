@@ -371,6 +371,44 @@ describe("autoResetMergedBranchOnContinue", () => {
     expect(out.moved).toBe(false);
   });
 
+  it("says why when a reset that was due throws before the branch moved", async () => {
+    const git = makeGit({
+      fetch: vi.fn().mockRejectedValue(new Error("fatal: unable to access the remote\nsecond line")),
+    });
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(out.moved).toBe(false);
+    expect(out.skip?.clause).toBe("reset-failed");
+    expect(out.skip?.level).toBe("warn");
+    expect(out.skip?.detail).toContain("fatal: unable to access the remote");
+    expect(out.skip?.detail).not.toContain("second line");
+    // Nothing ended the offer, so the next turn does try again.
+    expect(out.skip?.notice).toContain("re-evaluated every turn");
+    // A failed reset proves nothing about the branch or the push guard: neither text may say so.
+    expect(out.agentPrefix).toContain("NOT reset to origin/main");
+    for (const text of [out.agentPrefix!, out.skip!.notice!]) {
+      expect(text).not.toContain("behind the base");
+      expect(text).not.toContain("auto-push");
+      expect(text).not.toContain("already-merged commits");
+    }
+  });
+
+  it("says why when the first checks throw, before any fetch", async () => {
+    const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("index is corrupt")) });
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(git.fetch).not.toHaveBeenCalled();
+    expect(out.skip?.clause).toBe("reset-failed");
+    expect(out.skip?.detail).toContain("index is corrupt");
+  });
+
+  it("does not say the branch was not reset when the throw comes after it moved", async () => {
+    vi.mocked(restoreLfsAfterTreeRewrite).mockRejectedValueOnce(new Error("lfs blew up"));
+    const git = makeGit();
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(git.resetHardToRemoteBase).toHaveBeenCalledOnce();
+    expect(out.moved).toBe(false);
+    expect(out.skip).toBeUndefined();
+  });
+
   it("still reports moved:true when the remote-heal force-push fails (best-effort)", async () => {
     const git = makeGit({ forcePush: vi.fn().mockRejectedValue(new Error("(stale info)")) });
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
@@ -1010,6 +1048,20 @@ describe("emitResetEligible (the one emit path, and its log line)", () => {
     await emitResetEligible(makeDeps(), { sessionId: "s1", sessionDir: "/ws", origin: "activation", emit });
     expect(emit).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("reset_eligible=true for s1 (activation)"));
+    log.mockRestore();
+  });
+
+  it("keeps the reset on offer and says the compaction is spent (docs/218 req 6)", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const emit = vi.fn();
+    const s = makeSession();
+    s.mergeContinueCompactedAnchor = mergeContinueAnchor(s)!;
+    await emitResetEligible(makeDeps({ getSession: () => s }), {
+      sessionId: "s1", sessionDir: "/ws", origin: "post-turn", emit,
+    });
+    expect(emit).toHaveBeenCalledWith({
+      type: "reset_eligible", sessionId: "s1", eligible: true, compactionSpent: true,
+    });
     log.mockRestore();
   });
 

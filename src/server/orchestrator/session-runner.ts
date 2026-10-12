@@ -158,6 +158,7 @@ export interface QueuedMessage {
   compactContext?: boolean;
   silent?: boolean;
   bestEffortSteer?: boolean;
+  unattended?: boolean;
 }
 
 export interface AgentDispatchOptions {
@@ -200,6 +201,12 @@ export interface AgentDispatchOptions {
    * dropped, not put in the queue: its sender tells again by its own rule.
    */
   bestEffortSteer?: boolean;
+  /**
+   * docs/295-compact-context-on-merge req 15 — ShipIt started this turn by itself, so the
+   * composer's tick boxes were in front of nobody. `systemTurn` and `automatic` cannot say
+   * it: a wake that is neither exists (docs/328's turn for a message the user sent).
+   */
+  unattended?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -410,6 +417,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
   if (opts.silent !== undefined) queued.silent = opts.silent;
   if (opts.bestEffortSteer !== undefined) queued.bestEffortSteer = opts.bestEffortSteer;
+  if (opts.unattended !== undefined) queued.unattended = opts.unattended;
   return queued;
 }
 
@@ -482,6 +490,7 @@ export interface SystemTurnDeps {
     sessionId: string,
     sessionDir: string,
     intent?: boolean,
+    unattended?: boolean,
   ) => Promise<boolean>;
   consumePendingAgentNotice?: (sessionId: string) => string | undefined;
   /** Restore a consumed notice if setup fails before the agent receives it. */

@@ -537,6 +537,13 @@ export class ChatHistoryManager {
     return row ? this.fromRow(row) : undefined;
   }
 
+  latestCompactionCard(sessionId: string): CompactionCard | undefined {
+    const row = this.db.prepare(
+      "SELECT compaction FROM messages WHERE session_id = ? AND compaction IS NOT NULL ORDER BY id DESC LIMIT 1",
+    ).get(sessionId) as { compaction: string } | undefined;
+    return row ? JSON.parse(row.compaction) as CompactionCard : undefined;
+  }
+
   loadLatestAssistantText(sessionId: string): string | undefined {
     const row = this.db.prepare(
       "SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content != '' ORDER BY id DESC LIMIT 1",

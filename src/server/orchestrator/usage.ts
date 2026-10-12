@@ -1,7 +1,7 @@
 import type {
   UsageTurn, SessionUsage, UsageStats, TurnUsage, WeeklyUsage, UsageGroup,
 } from "../shared/types.js";
-import { usageTotalsFrom } from "../shared/types/usage-types.js";
+import { turnContextTokens, usageTotalsFrom } from "../shared/types/usage-types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { BillingMode, ModelPrice } from "../shared/catalogue/types.js";
 import { costFromRates } from "./turn-attribution.js";
@@ -184,6 +184,11 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
       || a.key.localeCompare(b.key));
 }
 
+/** `created_at` is SQLite's `datetime('now')`: UTC, with a space and no zone. */
+function usageRowTime(createdAt: string): number {
+  return Date.parse(createdAt.includes("T") ? createdAt : `${createdAt.replace(" ", "T")}Z`);
+}
+
 export class UsageManager {
   private db;
   private stmtInsert;
@@ -305,6 +310,27 @@ export class UsageManager {
   lastTurnCredentialRouteId(sessionId: string): string | undefined {
     const row = this.stmtLastRoute.get(sessionId) as { credential_route_id: string } | undefined;
     return row?.credential_route_id ?? undefined;
+  }
+
+  /**
+   * docs/295-compact-context-on-merge req 15 — the context size now, as well as it is known:
+   * the last turn that read one. A compaction turn reads none — it reports zero usage (Claude,
+   * Grok) or no usage (OpenCode) — so a compaction newer than that reading answers with its
+   * own `postTokens`, and with 0 where the harness gives none: just compacted is small.
+   */
+  latestContextTokens(
+    sessionId: string,
+    lastCompaction?: { createdAt: string; postTokens?: number },
+  ): number | undefined {
+    const turns = this.getPerTurnUsage(sessionId);
+    let reading: TurnUsage | undefined;
+    for (let i = turns.length - 1; i >= 0 && !reading; i--) {
+      if (turnContextTokens(turns[i]) > 0) reading = turns[i];
+    }
+    if (lastCompaction && (!reading || Date.parse(lastCompaction.createdAt) > usageRowTime(reading.timestamp))) {
+      return lastCompaction.postTokens ?? 0;
+    }
+    return reading ? turnContextTokens(reading) : undefined;
   }
 
   getSessionUsage(sessionId: string): SessionUsage | undefined {

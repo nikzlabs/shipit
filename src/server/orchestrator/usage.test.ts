@@ -176,6 +176,58 @@ describe("UsageManager", () => {
     expect(dialTurns).toHaveLength(1);
     expect(dialTurns[0].contextTokens).toBe(1500);
   });
+
+  it("reads the latest context size from the session's own last turn (docs/295 req 15)", () => {
+    const mgr = new UsageManager(dbManager);
+    expect(mgr.latestContextTokens("sess-1")).toBeUndefined();
+
+    mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+    mgr.record("sess-1", 0.02, 500, 0, 40, { contextTokens: 12_000 });
+    // A consult has its own context window; it must not stand in for the session's.
+    mgr.record("sess-1", 0.04, 1000, 500, 60, { subAgentId: "codex", contextTokens: 700 });
+
+    expect(mgr.latestContextTokens("sess-1")).toBe(12_000);
+  });
+
+  /**
+   * The case req 15 exists for: a session compacted shortly before. The compaction turn
+   * reads no context — zero usage (Claude, Grok) or no usage row at all (OpenCode).
+   */
+  describe("right after a compaction (docs/295 req 15)", () => {
+    const later = () => new Date(Date.now() + 5_000).toISOString();
+    const earlier = () => new Date(Date.now() - 60_000).toISOString();
+
+    it("answers with the compaction's own size, not the zero its turn reported", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 200_000 });
+      mgr.record("sess-1", 0, 500, 0, 0);
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: later(), postTokens: 60_000 })).toBe(60_000);
+    });
+
+    it("answers 0 when the harness gave no size, also with no usage row for the compaction", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: later() })).toBe(0);
+    });
+
+    it("keeps the last reading when a turn has run since the compaction", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 80_000 });
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: earlier(), postTokens: 10_000 })).toBe(80_000);
+    });
+
+    it("does not take a zero-usage turn for a small context when nothing was compacted", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+      // A `/compact` that failed: zero usage, no card.
+      mgr.record("sess-1", 0, 500, 0, 0);
+
+      expect(mgr.latestContextTokens("sess-1")).toBe(90_000);
+    });
+  });
 });
 
 describe("UsageManager — cumulative cost → per-turn delta", () => {

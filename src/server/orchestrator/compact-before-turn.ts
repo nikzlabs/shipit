@@ -1,5 +1,10 @@
 import type { AgentId } from "../shared/types.js";
-import { isResetEligible, type ResetEligibleSignalDeps } from "./services/pre-turn-reset.js";
+import {
+  compactedThisMerge,
+  isResetEligible,
+  mergeContinueAnchor,
+  type ResetEligibleSignalDeps,
+} from "./services/pre-turn-reset.js";
 import {
   recheckMergeBeforeTurn,
   type PreTurnMergeRecheckDeps,
@@ -18,12 +23,27 @@ export const POST_MERGE_COMPACTION_INSTRUCTIONS =
 
 export const POST_MERGE_COMPACT_PROMPT = `/compact ${POST_MERGE_COMPACTION_INSTRUCTIONS}`;
 
+/** docs/295 req 15 — under this, a continuation with nobody at the composer is not compacted. */
+export const UNATTENDED_COMPACTION_FLOOR_TOKENS = 50_000;
+
+/**
+ * docs/295 req 15 — ShipIt started the turn (`unattended`, every wake) or the browser's own
+ * automation did (`automatic`): the composer's tick boxes were in front of nobody.
+ */
+export function startedUnattended(opts: { unattended?: boolean; automatic?: boolean }): boolean {
+  return opts.unattended === true || opts.automatic === true;
+}
+
 export const MISSED_COMPACTION_NOTICE =
   "The context was not compacted; the agent continues with the context as it was.";
 
 export interface CompactBeforeTurnDeps extends ResetEligibleSignalDeps {
   mergeRecheckDeps?: Pick<PreTurnMergeRecheckDeps, "verifyPrState" | "awaitMergeHandling">;
   getAutoResetMergedBranch: () => boolean;
+  /** docs/218 req 6 — record that this merge's compaction offer is spent (`setMergeContinueCompacted`). */
+  markCompacted: (sessionId: string, anchor: string) => void;
+  /** The context size after the last turn (`UsageManager.latestContextTokens`); undefined when unknown. */
+  getContextTokens: (sessionId: string) => number | undefined;
 }
 
 export interface CompactBeforeTurnArgs {
@@ -34,29 +54,46 @@ export interface CompactBeforeTurnArgs {
   sessionDir: string;
   /** Requeued messages use false to prevent a second compaction. */
   intent?: boolean;
+  /** docs/295 req 15 — no user is at the composer for this turn, so none could untick it. */
+  unattended?: boolean;
 }
 
 export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Promise<boolean> {
-  const { deps, runner, agentId, sessionId, sessionDir, intent } = args;
+  const { deps, runner, agentId, sessionId, sessionDir, intent, unattended } = args;
+  // An untick answers this merge's compaction offer too, so it still reaches the record below.
+  const unticked = intent === false;
 
-  if (intent === false) return false;
   if (!deps.getAutoResetMergedBranch()) return false;
   if (!(getAgentCapabilities(agentId)?.supportsCompaction ?? false)) return false;
 
-  // Compaction would consume the replay seed intended for the next user turn.
-  if (deps.getSession(sessionId)?.conversationReplay) return false;
+  // Not recorded against the merge: nothing was offered, so nothing is spent.
+  if (unattended) {
+    const context = deps.getContextTokens(sessionId);
+    if (context !== undefined && context < UNATTENDED_COMPACTION_FLOOR_TOKENS) {
+      console.log(
+        `[compact-before-turn] skipping for ${sessionId}: an unattended turn, and the context `
+        + `is ${context} tokens (floor ${UNATTENDED_COMPACTION_FLOOR_TOKENS})`,
+      );
+      return false;
+    }
+  }
 
-  // A fresh compaction process would retire the resident and lose its background work.
-  if (runner.getAgent() !== null && runner.backgroundWorkDescriptions.length > 0) {
-    console.log(
-      `[compact-before-turn] skipping for ${sessionId}: the resident process holds `
-      + `${runner.backgroundWorkDescriptions.length} background task(s) that retiring it would lose`,
-    );
-    return false;
+  if (!unticked) {
+    // Compaction would consume the replay seed intended for the next user turn.
+    if (deps.getSession(sessionId)?.conversationReplay) return false;
+
+    // A fresh compaction process would retire the resident and lose its background work.
+    if (runner.getAgent() !== null && runner.backgroundWorkDescriptions.length > 0) {
+      console.log(
+        `[compact-before-turn] skipping for ${sessionId}: the resident process holds `
+        + `${runner.backgroundWorkDescriptions.length} background task(s) that retiring it would lose`,
+      );
+      return false;
+    }
   }
 
   try {
-    if (deps.mergeRecheckDeps) {
+    if (!unticked && deps.mergeRecheckDeps) {
       const recheck = await recheckMergeBeforeTurn(
         { ...deps, ...deps.mergeRecheckDeps },
         sessionId,
@@ -65,7 +102,13 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
       // Without the reset's merge prefix, compaction could lose the completed-work boundary.
       if (recheck === "unsettled") return false;
     }
-    return await isResetEligible(deps, sessionId, sessionDir);
+    if (compactedThisMerge(deps.getSession(sessionId))) return false;
+    if (!(await isResetEligible(deps, sessionId, sessionDir))) return false;
+    // docs/218 req 6 — the offer is spent here, by the untick or by the compaction this
+    // answer starts. Before it runs, so a compaction that fails is not tried again either.
+    const anchor = mergeContinueAnchor(deps.getSession(sessionId));
+    if (anchor) deps.markCompacted(sessionId, anchor);
+    return !unticked;
   } catch (err) {
     console.error(`[compact-before-turn] decision failed for ${sessionId}:`, err);
     return false;

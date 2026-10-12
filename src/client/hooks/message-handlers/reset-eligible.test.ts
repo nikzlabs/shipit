@@ -9,7 +9,7 @@ const ctx: HandlerContext = {
 };
 
 beforeEach(() => {
-  usePrStore.setState({ resetEligibleBySession: {} });
+  usePrStore.setState({ resetEligibleBySession: {}, compactionSpentBySession: {} });
 });
 
 describe("handleResetEligible (docs/218)", () => {
@@ -22,6 +22,16 @@ describe("handleResetEligible (docs/218)", () => {
     handleResetEligible(ctx, { type: "reset_eligible", sessionId: "s1", eligible: true });
     handleResetEligible(ctx, { type: "reset_eligible", sessionId: "s1", eligible: false });
     expect(usePrStore.getState().resetEligibleBySession.s1).toBeUndefined();
+  });
+
+  it("records that the compaction is spent, and clears it on the next plain answer", () => {
+    handleResetEligible(ctx, { type: "reset_eligible", sessionId: "s1", eligible: true, compactionSpent: true });
+    expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
+    expect(usePrStore.getState().compactionSpentBySession.s1).toBe(true);
+
+    // A later merge: eligible again, and its own compaction is on offer.
+    handleResetEligible(ctx, { type: "reset_eligible", sessionId: "s1", eligible: true });
+    expect(usePrStore.getState().compactionSpentBySession.s1).toBeUndefined();
   });
 
   it("keeps sessions independent", () => {

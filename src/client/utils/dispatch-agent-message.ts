@@ -20,8 +20,9 @@ export interface DispatchAgentMessageOptions {
    * the transport: a ShipIt button that POSTs must behave like one that opens
    * a WebSocket frame.
    *
-   * Left off for a continuation the user did not make — a CI auto-fix, a click
-   * inside an agent-built page — which follows the global setting (req 13).
+   * Left off for a continuation the user did not make — a CI auto-fix — which
+   * follows the global setting (req 13). A message with `agentInterface`
+   * carries the untick without this flag (req 14).
    */
   userInitiated?: boolean;
   /**
@@ -33,7 +34,9 @@ export interface DispatchAgentMessageOptions {
 
 export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): Promise<void> {
   const { sessionId, text, activity, apiPost, agentInterface, userInitiated, automatic } = opts;
-  const intent = userInitiated ? mergeContinueFrameFields(sessionId) : {};
+  // docs/295 req 14 — decided here, on the provenance, so no caller can omit it.
+  const carriesIntent = userInitiated === true || agentInterface !== undefined;
+  const intent = carriesIntent ? mergeContinueFrameFields(sessionId) : {};
   const session = useSessionStore.getState();
   const requestId = randomId();
 
@@ -63,7 +66,7 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
     // Only a dispatch the server accepted spends the untick.
     // Spend exactly what this request carried: the user may have unticked again
     // while it was in flight, and that choice belongs to their next message.
-    if (userInitiated) consumeMergeContinueIntent(sessionId, intent);
+    if (carriesIntent) consumeMergeContinueIntent(sessionId, intent);
   } catch (err) {
 
     if (!automatic) {

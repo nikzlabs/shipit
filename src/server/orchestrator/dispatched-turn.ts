@@ -20,7 +20,7 @@ import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions, takeRunnableQueuedTurn } from "./queue-drain.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
-import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction } from "./compact-before-turn.js";
+import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction, startedUnattended } from "./compact-before-turn.js";
 import {
   createPromptRepark,
   createPromptTakeLedger,
@@ -117,7 +117,9 @@ async function runDispatchedTurnInner(
   if (
     sessionDir && opts.postTurn !== "none" && !isCompactRequest
     && await decideWithSystemHold(runner, () =>
-      deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext) ?? Promise.resolve(false))
+      deps.shouldCompactBeforeTurn?.(
+        runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
+      ) ?? Promise.resolve(false))
   ) {
     runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
     // Its dispatch was already reported as started; say that it is waiting after all.

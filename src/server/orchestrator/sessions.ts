@@ -83,6 +83,7 @@ interface SessionRow {
   previous_merged_pr: string | null;
   merged_head_sha: string | null;
   merge_continue_declined_anchor: string | null;
+  merge_continue_compacted_anchor: string | null;
   pending_agent_notice: string | null;
   pr_repo_id: string | null;
   pr_number: number | null;
@@ -443,6 +444,9 @@ export class SessionManager {
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     if (row.merge_continue_declined_anchor) {
       info.mergeContinueDeclinedAnchor = row.merge_continue_declined_anchor;
+    }
+    if (row.merge_continue_compacted_anchor) {
+      info.mergeContinueCompactedAnchor = row.merge_continue_compacted_anchor;
     }
     // Partial provenance must not authorize a merge.
     if (row.pr_number && row.pr_repo_id) {
@@ -836,11 +840,18 @@ export class SessionManager {
     ).run(anchor, id);
   }
 
+  /** docs/218 req 6 — this merge's compaction offer is spent; a later message must not compact. */
+  setMergeContinueCompacted(id: string, anchor: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET merge_continue_compacted_anchor = ? WHERE id = ?",
+    ).run(anchor, id);
+  }
+
   clearMerged(id: string, previousMergedPr: PreviousMergedPr | null): boolean {
     const json = previousMergedPr === null ? null : JSON.stringify(previousMergedPr);
     const result = this.db.prepare(
       "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL, "
-      + "merge_continue_declined_anchor = NULL, "
+      + "merge_continue_declined_anchor = NULL, merge_continue_compacted_anchor = NULL, "
       + "pr_number = NULL, pr_repo_id = NULL WHERE id = ? AND merged_at IS NOT NULL",
     ).run(json, id);
     return result.changes > 0;
@@ -850,7 +861,7 @@ export class SessionManager {
   clearPriorPrRecord(id: string): void {
     this.db.prepare(
       "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL, "
-      + "merge_continue_declined_anchor = NULL, "
+      + "merge_continue_declined_anchor = NULL, merge_continue_compacted_anchor = NULL, "
       + "pr_number = NULL, pr_repo_id = NULL WHERE id = ?",
     ).run(id);
   }

@@ -940,6 +940,16 @@ describe("MessageInput", () => {
       expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
     });
 
+    it("is hidden once this merge's compaction is spent, while the reset is still offered (docs/218 req 6)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true }, compactionSpentBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      renderComposer();
+
+      expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
+      expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
+      usePrStore.setState({ compactionSpentBySession: {} });
+    });
+
     it("sends compactContext:false after the user unticks it (req 5)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });

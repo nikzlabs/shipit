@@ -153,6 +153,11 @@ interface PrState {
    * each (re)connect, so a stale value self-heals.
    */
   resetEligibleBySession: Record<string, boolean>;
+  /**
+   * docs/295 — rides `reset_eligible`: this merge's compaction is no longer on
+   * offer, so the composer shows the reset control alone.
+   */
+  compactionSpentBySession: Record<string, boolean>;
 
   /**
    * docs/218 + docs/295 — which of the two merge-continue controls the user has
@@ -184,7 +189,7 @@ interface PrState {
 
   setNotableFiles: (sessionId: string, cardId: string, notableFiles: NotableFileChange[]) => void;
 
-  setResetEligible: (sessionId: string, eligible: boolean) => void;
+  setResetEligible: (sessionId: string, eligible: boolean, compactionSpent?: boolean) => void;
   /** docs/295 — record (or take back) an untick, durable mirror included. */
   setMergeContinueOptOut: (
     sessionId: string,
@@ -229,6 +234,7 @@ const initialState = {
   autoMergeBySession: {} as Record<string, NonNullable<PrCardState["autoMerge"]>>,
   notableFilesBySession: {} as Record<string, NotableFileChange[]>,
   resetEligibleBySession: {} as Record<string, boolean>,
+  compactionSpentBySession: {} as Record<string, boolean>,
   mergeContinueOptOutBySession: {} as Record<string, MergeContinueOptOut>,
   importSearchResults: [] as ImportSearchResult[],
 };
@@ -419,17 +425,24 @@ export const usePrStore = create<PrState>((set, get) => ({
     });
   },
 
-  setResetEligible: (sessionId, eligible) => {
+  setResetEligible: (sessionId, eligible, compactionSpent) => {
     set((state) => {
 
       const next = { ...state.resetEligibleBySession };
+      const spent = { ...state.compactionSpentBySession };
       if (eligible) {
         next[sessionId] = true;
       } else {
         // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
         delete next[sessionId];
       }
-      return { resetEligibleBySession: next };
+      // Meaningful only beside an eligible answer; an optimistic hide leaves it alone.
+      if (compactionSpent !== undefined) {
+        if (compactionSpent) spent[sessionId] = true;
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        else delete spent[sessionId];
+      }
+      return { resetEligibleBySession: next, compactionSpentBySession: spent };
     });
   },
 

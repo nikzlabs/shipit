@@ -130,6 +130,8 @@ export interface SessionInfo {
    * which one is spent.
    */
   mergeContinueDeclinedAnchor?: string;
+  /** docs/218 req 6 — the merge whose compaction offer is spent (started, or unticked); same identity as above. */
+  mergeContinueCompactedAnchor?: string;
   /** Durable, last-write-wins notice consumed atomically by the next interactive turn. */
   pendingAgentNotice?: string;
   /** Pair witnessed by ShipIt opening the PR; never derive from general PR status. */

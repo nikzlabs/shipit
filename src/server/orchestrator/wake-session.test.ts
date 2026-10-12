@@ -198,6 +198,8 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
         text: "Child PR #42 merged",
         automatic: true,
         systemTurn: true,
+        // docs/295-compact-context-on-merge req 15 — every wake says nobody was at the composer.
+        unattended: true,
         deliveryId: "watch-1:1",
       }),
     ]);

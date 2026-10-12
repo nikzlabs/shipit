@@ -44,9 +44,9 @@ export interface DispatchAgentMessageInput {
   /**
    * docs/218 + docs/295 — the composer's per-send tick boxes, carried when the
    * USER clicked the thing that dispatched this (a ShipIt button beside that
-   * composer). Absent for an automatic dispatch — a CI auto-fix, an
-   * agent-interface continuation — which follow the global setting (req 13),
-   * and `false` only ever SKIPS an action.
+   * composer) and by a message from an agent-built page (req 14). Absent for an
+   * automatic dispatch — a CI auto-fix — which follows the global setting
+   * (req 13), and `false` only ever SKIPS an action.
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
@@ -191,8 +191,8 @@ export async function dispatchAgentMessage(
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
-    // docs/218 + docs/295 — a user-clicked dispatch carries the composer's tick
-    // boxes; an automatic one omits them and follows the setting (req 13).
+    // docs/218 + docs/295 — a user-clicked dispatch and an agent-interface message
+    // carry the composer's tick boxes; an automatic one omits them (req 13).
     resetMergedBranch: input.resetMergedBranch,
     compactContext: input.compactContext,
     silent: undefined,

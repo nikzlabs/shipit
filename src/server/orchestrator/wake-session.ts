@@ -159,6 +159,7 @@ function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatc
     activity: opts.activity,
     systemTurn: opts.startOrRefuse ? undefined : true,
     automatic: opts.startOrRefuse && !opts.startOrRefuse.automatic ? undefined : true,
+    unattended: true,
     heldId: undefined,
     ...(onSettled
       ? {

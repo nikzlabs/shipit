@@ -150,11 +150,28 @@ describe("the HTTP dispatch path carries and spends it too", () => {
       bodies.push(body);
       return { ok: true, queued: false } as never;
     });
-    // A CI auto-fix, or a click inside an agent-built page: no checkbox, so the
-    // global setting alone decides — and the user's untick is left for them.
+    // A CI auto-fix: no checkbox, so the global setting alone decides — and the
+    // user's untick is left for them.
     await dispatchAgentMessage({ sessionId: "s1", text: "auto", activity: "Fixing…", apiPost });
     expect(bodies[0]).not.toHaveProperty("compactContext");
     expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ compact: true });
+  });
+
+  it("carries the untick for a message from an agent-built page and spends it (req 14)", async () => {
+    const { dispatchAgentMessage } = await import("./dispatch-agent-message.js");
+    untick("s1");
+    const bodies: unknown[] = [];
+    const apiPost = vi.fn(async (_path: string, body?: unknown) => {
+      bodies.push(body);
+      return { ok: true, queued: false } as never;
+    });
+    // No `userInitiated`: the provenance alone must decide, as `App.tsx` sends it.
+    await dispatchAgentMessage({
+      sessionId: "s1", text: "next slice", activity: "Responding to interface…", apiPost,
+      agentInterface: { source: "agent_interface_sdk", surface: "present" },
+    });
+    expect(bodies[0]).toMatchObject({ compactContext: false, resetMergedBranch: false });
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toEqual({});
   });
 
   it("does not spend an untick made WHILE the request was in flight", async () => {

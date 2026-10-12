@@ -43,7 +43,8 @@ export type ResetSkipClause =
   | "wrong-branch"
   | "rebase-in-progress"
   | "sequencer-in-progress"
-  | "head-moved";
+  | "head-moved"
+  | "reset-failed";
 
 export type ResetPreconditionClause = Extract<
   ResetSkipClause,
@@ -97,6 +98,19 @@ const ALREADY_DECLINED: ResetSkip = {
     "“start from the latest base” was unticked when this pull request merged, and that "
     + "choice stands for this merge rather than being re-offered on every later message",
 };
+
+/**
+ * docs/218 req 6 — this merge's compaction offer is spent: a message started the
+ * compaction, or unticked it. A reset that does not move the branch leaves the
+ * session merged, clean and on `mergedHeadSha`, which is exactly the eligible
+ * state, so without this the next message compacted again. It says nothing about
+ * the reset: that stays offered, with its own control, until it moves the branch
+ * or the user unticks it.
+ */
+export function compactedThisMerge(session: SessionInfo | undefined): boolean {
+  const anchor = mergeContinueAnchor(session);
+  return anchor !== undefined && session?.mergeContinueCompactedAnchor === anchor;
+}
 
 const DIRTY_PATH_LIMIT = 10;
 
@@ -206,6 +220,8 @@ export interface ResetEligibility {
   eligible: boolean;
   merged: boolean;
   blocker: ResetSkip | null;
+  /** docs/295 — the reset may still be on offer, but this merge's compaction is not. */
+  compactionSpent: boolean;
   error?: string;
 }
 
@@ -215,21 +231,29 @@ export async function computeResetEligibility(
   sessionDir: string,
 ): Promise<ResetEligibility> {
   let merged = false;
+  let compactionSpent = false;
   try {
     const session = deps.getSession(sessionId);
-    if (!session?.mergedAt) return { eligible: false, merged: false, blocker: null };
+    if (!session?.mergedAt) return { eligible: false, merged: false, blocker: null, compactionSpent };
     merged = true;
+    compactionSpent = compactedThisMerge(session);
     // Answered for this merge: no control, and no compaction either — the
     // compaction decision reads this same predicate (docs/295).
     if (declinedThisMerge(session)) {
-      return { eligible: false, merged: true, blocker: ALREADY_DECLINED };
+      return { eligible: false, merged: true, blocker: ALREADY_DECLINED, compactionSpent };
     }
     const prStatus = deps.getPrStatus(sessionId);
     const git = deps.createGitManager(sessionDir);
     const blocker = await computeResetBlocker(session, prStatus, git);
-    return { eligible: blocker === null, merged: true, blocker };
+    // Read again: a turn can spend the offer while the git reads above run, and an
+    // answer from before that would put the compaction control back on screen.
+    compactionSpent = compactedThisMerge(deps.getSession(sessionId));
+    return { eligible: blocker === null, merged: true, blocker, compactionSpent };
   } catch (err) {
-    return { eligible: false, merged, blocker: null, error: err instanceof Error ? err.message : String(err) };
+    return {
+      eligible: false, merged, blocker: null, compactionSpent,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -251,14 +275,15 @@ export async function emitResetEligible(
 ): Promise<ResetEligibility> {
   const { sessionId, sessionDir, origin, emit } = args;
   const result = await computeResetEligibility(deps, sessionId, sessionDir);
-  const { eligible, merged, blocker, error } = result;
+  const { eligible, merged, blocker, compactionSpent, error } = result;
   if (merged) {
     const why = error
       ? `: computation failed (${error}) — failing closed`
       : blocker ? `: ${blocker.clause} — ${blocker.detail}` : "";
-    console.log(`[pre-turn-reset] reset_eligible=${eligible} for ${sessionId} (${origin})${why}`);
+    const spent = compactionSpent ? " [compaction spent for this merge]" : "";
+    console.log(`[pre-turn-reset] reset_eligible=${eligible} for ${sessionId} (${origin})${why}${spent}`);
   }
-  emit({ type: "reset_eligible", sessionId, eligible });
+  emit({ type: "reset_eligible", sessionId, eligible, ...(compactionSpent ? { compactionSpent: true } : {}) });
   return result;
 }
 
@@ -288,6 +313,8 @@ export async function announceResetStateOnMerge(
       clearResetSkipEpisode(sessionId);
       return;
     }
+    // A declined offer is not a refusal of the reset; the notice below would say it was.
+    if (blocker.clause === "already-declined") return;
 
     if (!deps.chatHistory) {
       console.error(
@@ -350,6 +377,8 @@ export async function autoResetMergedBranchOnContinue(
   intent?: boolean,
 ): Promise<ResetOutcome> {
   let mutatedWorkspace = false;
+  // Set once nothing but git stands between this turn and the reset; cleared when the branch moved.
+  let due: { session: SessionInfo; prStatus: PrStatusSummary | null } | null = null;
   try {
     const session = deps.getSession(sessionId);
     const prStatus = deps.getPrStatus(sessionId);
@@ -377,6 +406,7 @@ export async function autoResetMergedBranchOnContinue(
       return skipped(sessionId, session, prStatus, ALREADY_DECLINED);
     }
 
+    due = { session, prStatus };
     const git = deps.createGitManager(sessionDir);
 
     const blocker = await computeResetBlocker(session, prStatus, git);
@@ -398,6 +428,7 @@ export async function autoResetMergedBranchOnContinue(
     }
 
     const { from, to } = await git.resetHardToRemoteBase(base);
+    due = null;
 
     // Orchestrator git disables LFS smudge; restore assets before the agent reads them.
     const lfs = await restoreLfsAfterTreeRewrite(sessionDir, `Reset onto ${base}`, (message) =>
@@ -434,6 +465,15 @@ export async function autoResetMergedBranchOnContinue(
     };
   } catch (err) {
     console.error(`[pre-turn-reset] auto-reset failed for ${sessionId} (running turn on the un-moved branch):`, err);
+    // A reset that could not be done must say so: without the notice and the prefix, the
+    // turn runs on already-merged commits and neither the user nor the agent knows.
+    if (due) {
+      const why = (err instanceof Error ? err.message : String(err)).trim().split("\n")[0].slice(0, 300);
+      return skipped(sessionId, due.session, due.prStatus, {
+        clause: "reset-failed",
+        detail: `the reset could not be completed (${why})`,
+      });
+    }
     return NOT_MOVED;
   } finally {
     // Reconcile git/worktree owners after any write, including a failed fetch or reset.
@@ -479,11 +519,14 @@ function buildSkipNotice(skip: ResetSkip, prNumber?: number, base?: string): str
       ? `To move the branch after all, ask the agent to run \`shipit branch reset-to-base\`.`
       : `Clear the reason above and send another message (the reset is re-evaluated every turn), `
         + `or ask the agent to run \`shipit branch reset-to-base\`.`;
+  // A failed reset proves nothing about where the branch is, or what the push guard will do.
+  const consequence = skip.clause === "reset-failed"
+    ? ""
+    : `It still sits on the already-merged commits, so anything committed here belongs to no `
+      + `open pull request — and ShipIt will not auto-push it.\n\n`;
   return (
     `Branch not updated to the latest base. Pull request ${pr} merged${into}, but this branch `
-    + `was not reset to ${target} because ${skip.detail}.\n\n`
-    + `It still sits on the already-merged commits, so anything committed here belongs to no `
-    + `open pull request — and ShipIt will not auto-push it.\n\n${howToGetIt}`
+    + `was not reset to ${target} because ${skip.detail}.\n\n${consequence}${howToGetIt}`
   );
 }
 
@@ -491,6 +534,16 @@ function buildSkipAgentPrefix(skip: ResetSkip, prNumber?: number, base?: string)
   const pr = prNumber ? ` (#${prNumber})` : "";
   const into = base ? ` into ${base}` : "";
   const target = base ? `origin/${base}` : "the latest base";
+  // A failed reset proves nothing about where the branch is, or what the push guard will do.
+  if (skip.clause === "reset-failed") {
+    return (
+      `[System] This session's pull request${pr} was already merged${into}, and the branch was `
+      + `NOT reset to ${target}: ${skip.detail}. The branch was left where it was. Tell the user `
+      + `this before doing work that assumes a fresh base. Do not run a manual `
+      + `\`git reset --hard\` or \`git push --force\`; if the user wants the branch moved, use `
+      + `\`shipit branch reset-to-base\`.`
+    );
+  }
   return (
     `[System] This session's pull request${pr} was already merged${into}, and the branch was `
     + `NOT reset to ${target}: ${skip.detail}. The branch still contains the merged commits, `

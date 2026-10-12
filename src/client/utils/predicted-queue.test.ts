@@ -46,7 +46,9 @@ const send = (text = "next slice", dispatch: () => boolean = () => true) =>
   });
 
 beforeEach(() => {
-  usePrStore.setState({ resetEligibleBySession: {}, mergeContinueOptOutBySession: {} });
+  usePrStore.setState({
+    resetEligibleBySession: {}, compactionSpentBySession: {}, mergeContinueOptOutBySession: {},
+  });
   useSettingsStore.setState({ autoResetMergedBranch: true });
   useUiStore.setState({ agentList: [agent()], activeAgentId: "claude" });
   useSessionStore.setState({ sessionId: "s1", messages: [], queuedMessages: [], isLoading: false });
@@ -57,6 +59,12 @@ describe("compactRunsBeforeTurn", () => {
   it("is true exactly when the composer offers a ticked compaction control", () => {
     offeringCompaction();
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(true);
+  });
+
+  it("is false once this merge's compaction is spent, though the reset is still offered", () => {
+    offeringCompaction();
+    usePrStore.setState({ compactionSpentBySession: { s1: true } });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
   });
 
   it("is false when the session is not reset-eligible", () => {

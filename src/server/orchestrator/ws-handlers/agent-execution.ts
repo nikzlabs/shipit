@@ -12,6 +12,7 @@ import { parseGoalCommand } from "../../shared/goal-command.js";
 import {
   shouldCompactBeforeTurn,
   noteMissedCompaction,
+  startedUnattended,
   POST_MERGE_COMPACT_PROMPT,
 } from "../compact-before-turn.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
@@ -147,6 +148,8 @@ export async function decideCompactBeforeTurn(
   sessionId: string,
   sessionDir: string,
   intent: boolean | undefined,
+  // A typed send is never this; a queued entry can be (an automatic turn whose steer was not taken).
+  unattended = false,
 ): Promise<boolean> {
   const held = !runner.systemTurnInProgress;
   if (held) runner.systemTurnInProgress = true;
@@ -165,6 +168,9 @@ export async function decideCompactBeforeTurn(
       getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
       createGitManager: ctx.createGitManager,
       getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+      markCompacted: (id, anchor) => ctx.sessionManager.setMergeContinueCompacted(id, anchor),
+      getContextTokens: (id) =>
+        ctx.usageManager.latestContextTokens(id, ctx.chatHistoryManager.latestCompactionCard(id)),
       mergeRecheckDeps: {
         verifyPrState: (id) =>
           ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
@@ -176,6 +182,7 @@ export async function decideCompactBeforeTurn(
       sessionId,
       sessionDir,
       ...(intent !== undefined ? { intent } : {}),
+      ...(unattended ? { unattended } : {}),
     });
   }
 }
@@ -213,7 +220,9 @@ async function runQueuedInteractiveMessage(
 ): Promise<void> {
   if (
     capturedSessionId && capturedSessionDir && !isCompactCommandFor(ctx, next.text)
-    && await decideCompactBeforeTurn(ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext)
+    && await decideCompactBeforeTurn(
+      ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext, startedUnattended(next),
+    )
   ) {
     await runCompactionAhead(ctx, runner, next, next.permissionMode);
     return;

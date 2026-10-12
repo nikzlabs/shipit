@@ -22,6 +22,8 @@ import {
 import type { CredentialStore } from "../credential-store.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { UsageManager } from "../usage.js";
+import type { QueuedMessage } from "../session-runner.js";
 
 const SESSION_ID = "merged-session";
 const REPO_URL = "https://github.com/o/r.git";
@@ -36,6 +38,12 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
   let spawns: FakeClaudeProcess[] = [];
   let dbManager: DatabaseManager;
   let repoStore: RepoStore;
+  /**
+   * A setup turn on a merged session spends the compaction offer (docs/218 req 6),
+   * so a test that needs one runs it before the merge lands, as a real session does.
+   */
+  let beforeMerge: () => void;
+  let mergeLands: () => void;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -60,8 +68,12 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     sessionManager = new SessionManager(dbManager);
     const chatHistoryManager = new ChatHistoryManager(dbManager);
     sessionManager.track(SESSION_ID, "Fix login redirect", sessionDir);
-    sessionManager.markMerged(SESSION_ID);
-    sessionManager.setMergedHeadSha(SESSION_ID, mergedHeadSha);
+    mergeLands = () => {
+      sessionManager.markMerged(SESSION_ID);
+      sessionManager.setMergedHeadSha(SESSION_ID, mergedHeadSha);
+    };
+    beforeMerge = () => { sessionManager.clearMerged(SESSION_ID, null); };
+    mergeLands();
     sessionManager.setPrStatus(SESSION_ID, {
       sessionId: SESSION_ID,
       prNumber: 482,
@@ -150,15 +162,13 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
-    // No `resetMergedBranch: false` on this setup turn: an untick is an ANSWER
-    // and ends the offer for this merge (docs/218 req 6), which would stand the
-    // second message's compaction down. The fixture has no origin, so the reset
-    // fails instead — a failure, not a decline, so eligibility holds.
-    client.send({ type: "send_message", text: "first", compactContext: false });
+    beforeMerge();
+    client.send({ type: "send_message", text: "first" });
     const first = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     expect(first.lastPrompt).toContain("first");
     first.initSession("agent-a");
 
+    mergeLands();
     client.send({ type: "send_message", text: "second", compactContext: true });
     await client.receiveType("message_queued");
 
@@ -208,12 +218,93 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.close();
   });
 
+  /**
+   * docs/218 req 6 again, for an offer that was ACCEPTED. The fixture has no
+   * origin, so the reset fails and the session stays merged, clean and on
+   * `mergedHeadSha` — which read as eligible, and the next message compacted again.
+   */
+  it("compacts one time for a merge, also when the branch reset did not happen (docs/218 req 6)", async () => {
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "first" });
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(compaction.lastCompact).toBe(true);
+    compaction.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    compaction.emit("event", { type: "agent_result", status: "success", sessionId: "agent-a" });
+    compaction.emit("done", 0);
+
+    const first = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
+    expect(first.lastPrompt).toContain("first");
+    first.initSession("agent-a");
+    first.finish("agent-a");
+    await client.receiveType("session_status");
+    await new Promise((r) => setTimeout(r, 200));
+
+    client.send({ type: "send_message", text: "second" });
+    const next = await waitForClaude(() => spawns.at(-1) ?? (null as never), first);
+    expect(next.lastCompact).toBeFalsy();
+    expect(next.lastPrompt).toContain("second");
+    expect(spawns.filter((s) => s.lastCompact)).toHaveLength(1);
+
+    client.close();
+  });
+
+  it("does not compact a later message when the first unticked it and its reset failed (docs/218 req 6)", async () => {
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "first", compactContext: false });
+    const first = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(first.lastCompact).toBeFalsy();
+    first.initSession("agent-a");
+    first.finish("agent-a");
+    await client.receiveType("session_status");
+    await new Promise((r) => setTimeout(r, 200));
+
+    client.send({ type: "send_message", text: "second" });
+    const next = await waitForClaude(() => spawns.at(-1) ?? (null as never), first);
+    expect(next.lastPrompt).toContain("second");
+    expect(spawns.some((s) => s.lastCompact)).toBe(false);
+
+    client.close();
+  });
+
+  /**
+   * An automatic turn whose steer the CLI did not take comes back as an "interactive"
+   * queue entry (`steerToQueuedMessage`), so this drain decides for it, not the dispatched one.
+   */
+  it("applies the 50k floor to an automatic entry that this drain runs (req 15)", async () => {
+    beforeMerge();
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "first" });
+    const first = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    first.initSession("agent-a");
+
+    mergeLands();
+    const internals = app as unknown as {
+      usageManager: UsageManager;
+      runnerRegistry: { get(id: string): { enqueue(m: QueuedMessage): number } | undefined };
+    };
+    internals.usageManager.record(SESSION_ID, 0, 1000, 100, 10, { contextTokens: 20_000 });
+    internals.runnerRegistry.get(SESSION_ID)!
+      .enqueue({ text: "fix the preview errors", execution: "interactive", automatic: true });
+
+    first.finish("agent-a");
+    const next = await waitForClaude(() => spawns.at(-1) ?? (null as never), first);
+    expect(next.lastPrompt).toContain("fix the preview errors");
+    expect(spawns.some((s) => s.lastCompact)).toBe(false);
+
+    client.close();
+  });
+
   it("queues a second send that arrives while the first is still being decided", async () => {
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
     client.send({ type: "send_message", text: "first", compactContext: true });
-    // No origin/main exists, so reset leaves this session eligible for compaction.
     client.send({ type: "send_message", text: "second", compactContext: false });
 
     const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
@@ -248,14 +339,15 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
-    // See "compacts a message that had to QUEUE": no untick on a setup turn.
-    client.send({ type: "send_message", text: "warm up", compactContext: false });
+    beforeMerge();
+    client.send({ type: "send_message", text: "warm up" });
     const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     expect(resident.lastUseStreaming).toBe(true);
     resident.initSession("agent-a");
     resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
     await client.receiveType("session_status");
 
+    mergeLands();
     client.send({ type: "send_message", text: "start the next slice", compactContext: true });
     await stdinHas(resident, "/compact ");
     expect(spawns).toHaveLength(1);
@@ -276,13 +368,14 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
-    // See "compacts a message that had to QUEUE": no untick on a setup turn.
-    client.send({ type: "send_message", text: "warm up", compactContext: false });
+    beforeMerge();
+    client.send({ type: "send_message", text: "warm up" });
     const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     resident.initSession("agent-a");
     resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
     await client.receiveType("session_status");
 
+    mergeLands();
     client.send({ type: "send_message", text: "first", compactContext: true });
     client.send({ type: "send_message", text: "second", compactContext: false });
     await client.receiveType("message_queued");

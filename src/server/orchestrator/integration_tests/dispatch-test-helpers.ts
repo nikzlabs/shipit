@@ -29,6 +29,7 @@ export function testDispatch(
     deliveryId: opts.deliveryId,
     dictated: opts.dictated,
     bestEffortSteer: opts.bestEffortSteer,
+    unattended: opts.unattended,
   });
 }
 

@@ -353,6 +353,15 @@ describe("applyPreTurnReset — the branch did not move", () => {
     );
   });
 
+  it("records nothing when a reset that was due failed: the next turn offers it again", async () => {
+    const h = makeHarness({ git: makeGit({ fetch: vi.fn().mockRejectedValue(new Error("no network")) }) });
+    const result = await run(h);
+
+    expect(h.deps.sessionManager.setMergeContinueDeclined).not.toHaveBeenCalled();
+    expect(h.emitted.filter((m) => m.type === "reset_eligible")).toEqual([]);
+    expect(result.agentPrefix).toContain("the reset could not be completed (no network)");
+  });
+
   it("records nothing when the reset was refused rather than declined", async () => {
     const h = makeHarness({ git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) });
     await run(h);

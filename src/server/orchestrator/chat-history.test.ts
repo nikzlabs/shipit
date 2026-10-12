@@ -382,6 +382,18 @@ describe("ChatHistoryManager", () => {
     expect(mgr.load("sess-1")[0].compaction).toEqual(msg.compaction);
   });
 
+  it("returns the session's newest compaction card (docs/295 req 15)", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    expect(mgr.latestCompactionCard("sess-1")).toBeUndefined();
+
+    mgr.append("sess-1", { role: "assistant", text: "", compaction: { id: "c-1", createdAt: "2026-06-06T00:00:00.000Z", postTokens: 9 } });
+    mgr.append("sess-1", { role: "assistant", text: "work" });
+    mgr.append("sess-1", { role: "assistant", text: "", compaction: { id: "c-2", createdAt: "2026-06-07T00:00:00.000Z" } });
+    mgr.append("sess-2", { role: "assistant", text: "", compaction: { id: "other", createdAt: "2026-06-08T00:00:00.000Z" } });
+
+    expect(mgr.latestCompactionCard("sess-1")?.id).toBe("c-2");
+  });
+
   it("persists a voice-note card so it survives a reload (docs/163)", () => {
     const mgr = new ChatHistoryManager(dbManager);
     const msg: PersistedMessage = {

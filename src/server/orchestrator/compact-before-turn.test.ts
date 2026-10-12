@@ -68,6 +68,9 @@ function ask(over: {
   backgroundWork?: string[];
   conversationReplay?: string;
   unsettled?: boolean;
+  marked?: string[];
+  unattended?: boolean;
+  context?: number;
 } = {}): Promise<boolean> {
   const unsettled = over.unsettled === true;
   const sessionRef = {
@@ -95,6 +98,8 @@ function ask(over: {
           })
         : makeGit()),
       getAutoResetMergedBranch: () => over.setting ?? true,
+      markCompacted: (_id: string, anchor: string) => { over.marked?.push(anchor); },
+      getContextTokens: () => over.context,
       mergeRecheckDeps: {
         verifyPrState: () => {
           if (unsettled) sessionRef.value = makeSession();
@@ -110,6 +115,7 @@ function ask(over: {
     sessionId: "s1",
     sessionDir: "/w/s1",
     ...(over.intent !== undefined ? { intent: over.intent } : {}),
+    ...(over.unattended ? { unattended: true } : {}),
   });
 }
 
@@ -123,7 +129,47 @@ describe("shouldCompactBeforeTurn", () => {
   });
 
   it("says no when the user unticked the control for this message (req 5)", async () => {
-    expect(await ask({ intent: false })).toBe(false);
+    const marked: string[] = [];
+    expect(await ask({ intent: false, marked })).toBe(false);
+    // The untick answers this merge's compaction offer, so a later message must not compact.
+    expect(marked).toHaveLength(1);
+  });
+
+  it("records nothing for an untick on a session with no offer", async () => {
+    const marked: string[] = [];
+    const notMerged = makeSession({ mergedAt: undefined });
+    expect(await ask({ session: notMerged, intent: false, marked })).toBe(false);
+    expect(marked).toEqual([]);
+  });
+
+  it("records the merge when it says yes, and says no for that merge from then on (docs/218 req 6)", async () => {
+    const session = makeSession();
+    const marked: string[] = [];
+    expect(await ask({ session, marked })).toBe(true);
+    expect(marked).toHaveLength(1);
+
+    // Same merge, still merged, clean and on the merged head: the reset did not happen.
+    expect(await ask({ session: { ...session, mergeContinueCompactedAnchor: marked[0] }, marked })).toBe(false);
+    expect(marked).toHaveLength(1);
+
+    // An anchor from an earlier merge does not stop this one.
+    expect(await ask({ session: { ...session, mergeContinueCompactedAnchor: "an-earlier-merge" } })).toBe(true);
+  });
+
+  it("says no for an unattended turn under the 50k floor, and spends nothing (req 15)", async () => {
+    const marked: string[] = [];
+    expect(await ask({ unattended: true, context: 49_999, marked })).toBe(false);
+    // Nothing was offered, so a later message of the same merge can still compact.
+    expect(marked).toEqual([]);
+  });
+
+  it("says yes for an unattended turn at the floor, or when the size is not known", async () => {
+    expect(await ask({ unattended: true, context: 50_000 })).toBe(true);
+    expect(await ask({ unattended: true })).toBe(true);
+  });
+
+  it("does not apply the floor when someone is at the composer (req 3)", async () => {
+    expect(await ask({ context: 10 })).toBe(true);
   });
 
   it("says no when the shared setting is off (req 11)", async () => {
