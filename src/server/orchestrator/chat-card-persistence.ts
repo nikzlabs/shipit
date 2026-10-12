@@ -40,6 +40,8 @@ export function buildTurnMessages(
     images: s.images,
     files: s.files,
     uploadPaths: s.uploadPaths,
+    // The bubble's id, so a reload or a replayed steer event finds this row (planning#691).
+    ...(s.clientRequestId !== undefined ? { clientRequestId: s.clientRequestId } : {}),
     ...flag,
   });
 

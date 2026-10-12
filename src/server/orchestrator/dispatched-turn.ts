@@ -35,6 +35,7 @@ import { residentBackgroundWork } from "./turn-admission.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 import { loadPrompt } from "./load-prompt.js";
+import { imageHash, imageUrl } from "./transcript-projection.js";
 
 const MAX_NO_RESULT_RETRIES = 1;
 
@@ -131,7 +132,7 @@ async function runDispatchedTurnInner(
       `[dispatch] re-queued the ${opts.systemTurn ? "system " : ""}dispatch for `
       + `${runner.sessionId} at position 1 — a compaction turn runs first`,
     );
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
     await runDispatchedTurn(runner, deps, agentId, prepareDispatch({
       text: POST_MERGE_COMPACT_PROMPT,
       agentInterface: undefined,
@@ -356,7 +357,7 @@ async function runDispatchedTurnInner(
     if (runner.queueLength === 0) return;
     const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
     const queued = settleWhenRunnerLetsGo(runner, queuedMessageToDispatchOptions(next));
     await runDispatchedTurn(runner, deps, agentId, queued, createAgent);
   };
@@ -442,6 +443,21 @@ async function runDispatchedTurnInner(
       ...(noticeDeliveries.length > 0 ? { noticeDeliveries } : {}),
       ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
       emitUserEcho: attempt === 0 && !opts.silent && !opts.promptShown,
+      // Every viewer draws the same bubble from the echo (planning#691); image URLs resolve
+      // because the echo goes out after the row below is saved.
+      userEcho: {
+        ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
+        ...(historyImages
+          ? {
+              images: historyImages.map((img) => ({
+                mediaType: img.mediaType,
+                src: imageUrl(runner.sessionId, imageHash(img.data)),
+              })),
+            }
+          : {}),
+        ...(historyFiles ? { files: historyFiles } : {}),
+        ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+      },
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
       ...(attempt === 0 && reset?.afterUserMessagePersisted
@@ -458,6 +474,7 @@ async function runDispatchedTurnInner(
                 ...(historyImages ? { images: historyImages } : {}),
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+                ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
               })
           : () => { /* already persisted, shown before, or silent */ },
       isNewSession: false,

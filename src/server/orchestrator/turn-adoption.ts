@@ -43,7 +43,7 @@ export async function adoptInFlightTurn(
     if (runner.systemTurnInProgress) return;
     const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
     await startQueuedMessage(runner, next, (queued) => {
       // Startup adoption has no WS connection for interactive re-entry.
       runner.dispatch(queuedMessageToDispatchOptions(queued));

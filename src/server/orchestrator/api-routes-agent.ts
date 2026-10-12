@@ -50,6 +50,8 @@ export async function registerAgentRoutes(
       compactContext?: boolean;
       /** docs/322 — the browser's own automation sent this, so it waits for the user's answer. */
       automatic?: boolean;
+      /** planning#691 — the id of the sender's optimistic bubble. */
+      requestId?: string;
     };
   }>(
     "/api/sessions/:id/agent/dispatch",
@@ -104,6 +106,7 @@ export async function registerAgentRoutes(
             ...(body.resetMergedBranch !== undefined ? { resetMergedBranch: body.resetMergedBranch } : {}),
             ...(body.compactContext !== undefined ? { compactContext: body.compactContext } : {}),
             ...(body.automatic === true ? { automatic: true } : {}),
+            ...(body.requestId !== undefined ? { clientRequestId: body.requestId } : {}),
           },
         );
         reply.send(result);

@@ -22,10 +22,13 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
   }
   // docs/322 — a held turn the user cancels must not come back from its saved row.
   forgetHeldEntries(runner?.answerHoldStore, removed);
-  ctx.send({
-    type: "queue_updated",
-    queue: queue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
-  });
+  if (runner) {
+    // To every viewer: a second one would otherwise keep showing the cancelled row.
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
+    return;
+  }
+  const sessionId = ctx.getActiveAppSessionId();
+  if (sessionId) ctx.send({ type: "queue_updated", sessionId, queue: [] });
 }
 
 export function handlePrTabActive(ctx: AppCtx, msg: WsPrTabActive): void {

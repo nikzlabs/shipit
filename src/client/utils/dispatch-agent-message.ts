@@ -61,6 +61,8 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
         ...(agentInterface ? { agentInterface } : {}),
         ...intent,
         ...(automatic ? { automatic: true } : {}),
+        // The server's queue row, steer and echo carry it, so every viewer finds this bubble.
+        requestId,
       },
     );
     // Only a dispatch the server accepted spends the untick.

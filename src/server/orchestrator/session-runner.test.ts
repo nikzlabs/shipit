@@ -36,15 +36,17 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1", execution: "interactive" });
+    runner.enqueue({ text: "msg1", execution: "interactive", clientRequestId: "r1" });
     runner.enqueue({ text: "msg2", execution: "interactive" });
     expect(runner.queueLength).toBe(2);
 
     const snapshot = runner.getQueueSnapshot();
     expect(snapshot).toEqual([
-      { text: "msg1", position: 1 },
-      { text: "msg2", position: 2 },
+      { id: "r1", text: "msg1", position: 1 },
+      { id: expect.any(String), text: "msg2", position: 2 },
     ]);
+    // The id an entry gets is the one every later snapshot and event names it by.
+    expect(runner.getQueueSnapshot()[1]?.id).toBe(snapshot[1]?.id);
 
     const dequeued = runner.dequeue();
     expect(dequeued?.text).toBe("msg1");
@@ -65,7 +67,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.emitMessage({ type: "agent_interrupted" });
+    runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
     runner.emitMessage({ type: "error", message: "test" });
 
     expect(received).toHaveLength(2);

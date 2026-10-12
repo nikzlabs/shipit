@@ -499,7 +499,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.close();
   });
 
-  it("an ordinary user message queued behind a running turn still drains on the interactive path (no server echo bubble)", async () => {
+  // planning#691 — the echo names the bubble that `dequeued` drew, so it adds no second one.
+  it("an ordinary user message queued behind a running turn still drains on the interactive path (one bubble)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -507,15 +508,17 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     const first = await waitForClaude(() => lastClaude);
     first.initSession("first-session");
 
-    client.send({ type: "send_message", text: "Second" });
+    client.send({ type: "send_message", text: "Second", requestId: "r-second" });
     await drainUntil(client, (m) => m.type === "message_queued");
 
     const echoes: AnyMsg[] = [];
+    const dequeued: AnyMsg[] = [];
     const collect = (async (): Promise<void> => {
       for (let i = 0; i < 20; i++) {
         const msg: AnyMsg = await client.receive(1500).catch(() => null);
         if (!msg) return;
         if (msg.type === "system_user_message") echoes.push(msg);
+        if (msg.type === "queue_updated" && msg.dequeued) dequeued.push(msg.dequeued);
       }
     })();
 
@@ -527,7 +530,9 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
 
     second.finish("second-session");
     await Promise.race([collect, new Promise((r) => setTimeout(r, 300))]);
-    expect(echoes.filter((m) => (m.text as string)?.includes("Second"))).toEqual([]);
+    expect(dequeued).toEqual([{ id: "r-second", text: "Second" }]);
+    expect(echoes.filter((m) => (m.text as string)?.includes("Second")).map((m) => m.clientRequestId))
+      .toEqual(["r-second"]);
 
     client.close();
   });

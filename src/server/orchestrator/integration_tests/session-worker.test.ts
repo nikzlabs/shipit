@@ -729,9 +729,9 @@ describe("Integration: Session Worker IPC", () => {
     expect(runner.turnSummary).toBe("Did stuff");
 
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1", execution: "interactive" });
+    runner.enqueue({ text: "msg1", execution: "interactive", clientRequestId: "r1" });
     expect(runner.queueLength).toBe(1);
-    expect(runner.getQueueSnapshot()).toEqual([{ text: "msg1", position: 1 }]);
+    expect(runner.getQueueSnapshot()).toEqual([{ id: "r1", text: "msg1", position: 1 }]);
 
     const dequeued = runner.dequeue();
     expect(dequeued?.text).toBe("msg1");

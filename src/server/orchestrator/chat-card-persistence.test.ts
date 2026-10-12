@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, finalizeTurnRows, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { buildTurnMessages, emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, finalizeTurnRows, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 import { DatabaseManager } from "../shared/database.js";
@@ -43,6 +43,23 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
 }
 
 describe("chat-card-persistence", () => {
+  // planning#691 — a reload or a replayed steer event finds the steer's bubble by this id.
+  it("keeps a steer's bubble id on its row, through the database", () => {
+    const rows = buildTurnMessages(
+      [{ text: "working", toolUse: [] }],
+      [{ afterGroupIndex: 1, text: "also this", clientRequestId: "r1" }],
+      [],
+      { inProgress: false },
+    );
+    const history = new ChatHistoryManager(new DatabaseManager(":memory:"));
+    for (const row of rows) history.append("s1", row);
+
+    expect(history.load("s1").map((m) => [m.role, m.text, m.clientRequestId])).toEqual([
+      ["assistant", "working", undefined],
+      ["user", "also this", "r1"],
+    ]);
+  });
+
   it("emitChatCard emits the WS message, records it, AND persists the turn immediately", () => {
     const { runner, emitted, persisted, chatHistoryManager } = fakeRunner([{ text: "did a thing", toolUse: [] }]);
 

@@ -117,6 +117,7 @@ describe("queue drain routing (planning#257)", () => {
       bestEffortSteer: true,
       unattended: true,
       promptShown: true,
+      clientRequestId: "request-1",
     };
 
     const restored = queuedMessageToDispatchOptions(toQueuedMessage(testDispatch(opts)));
@@ -343,6 +344,7 @@ describe("withdrawWaitingTurns", () => {
     expect(onTurnComplete).toHaveBeenCalledWith(expect.objectContaining({ status: "dropped", detail: "auto-fix paused" }));
     expect(emitted).toEqual([{
       type: "queue_updated",
+      sessionId: "s1",
       queue: [{ text: "typed by the user", position: 1 }, { text: "[ci-fix] CI failed", position: 2 }],
     }]);
   });
