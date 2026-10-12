@@ -107,9 +107,7 @@ import { buildVerifiedPnpmBase } from "./pnpm-base-builder.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
-import { repushAgentToken, repushProviderAccountToken,
-  readSessionAccountMarker,
-} from "./session-credentials.js";
+import { createOAuthAccountRepush } from "./oauth-account-repush.js";
 import { MarketplaceStore } from "./marketplace-store.js";
 import type { UpdateMode } from "./services/updates.js";
 import type { VersionInfo } from "../shared/types.js";
@@ -692,6 +690,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       providerAccountManager,
       containerManager,
       restoreWorkspace,
+      quotaContinuation: quotaContinuationRef.ref ?? undefined,
     }, turn);
   };
   const runRequestedCompactionForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
@@ -718,6 +717,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       providerAccountManager,
       containerManager,
       restoreWorkspace,
+      quotaContinuation: quotaContinuationRef.ref ?? undefined,
     }, report);
   };
 
@@ -791,6 +791,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const quotaContinuationManager = new QuotaContinuationManager({
     sessionManager,
     runnerRegistry,
+    chatHistoryManager,
     defaultAgentId,
     credentialsDir,
     credentialStore,
@@ -880,29 +881,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
 
   if (!isTestMode) {
-    const repushOAuthAccountToken = (logPrefix: string) => (agentId: AgentId, accountId: string): void => {
-      let healed = 0;
-      for (const session of sessionManager.list()) {
-        if (!session.agentPinned || session.agentId !== agentId) continue;
-        // Use the credential subtree's account marker; routing may have changed.
-        const marked = readSessionAccountMarker(credentialsDir, session.id)[agentId];
-        if (marked !== undefined && marked !== accountId) continue;
-        try {
-          // Credential repair unlinks files and would interrupt a live CLI.
-          const opts = { repairLeakedSubtrees: !sessionHasLiveAgent(runnerRegistry, session.id) };
-          const wrote =
-            marked !== undefined
-              ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
-              : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
-          if (wrote) healed++;
-        } catch (err) {
-          console.error(`[${logPrefix}] repush failed for session ${session.id}:`, err);
-        }
-      }
-      if (healed > 0) {
-        console.log(`[${logPrefix}] propagated refreshed ${agentId}/${accountId} token to ${healed} pinned session(s)`);
-      }
-    };
+    const repushOAuthAccountToken = (logPrefix: string) => createOAuthAccountRepush({
+      credentialsDir,
+      listSessions: () => sessionManager.list(),
+      hasLiveAgent: (sessionId) => sessionHasLiveAgent(runnerRegistry, sessionId),
+    }, logPrefix);
     const refresher = new ClaudeOAuthRefresher({
       credentialsDir,
       providerAccountManager,
@@ -1218,6 +1201,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   agentMergeExecutor.start();
 
   sessionInbox.start();
+  quotaContinuationManager.start();
 
   void (async () => {
     try {

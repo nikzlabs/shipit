@@ -28,6 +28,7 @@ import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { MergeWatchManager } from "./merge-watch.js";
 import type { SessionInbox } from "./services/session-inbox.js";
+import type { QuotaResumeRecorder } from "./services/quota-continuation.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { LogRingEntry } from "../shared/types.js";
@@ -163,6 +164,8 @@ export interface ApiDeps {
   mergeWatchManager?: MergeWatchManager;
   /** docs/328-session-message-inbox; absent in minimal setups, which then deliver no session message. */
   sessionInbox?: SessionInbox;
+  /** docs/306-quota-continuation — resumes a session whose consult result wake no credential could run. */
+  quotaContinuation?: QuotaResumeRecorder;
   databaseManager?: DatabaseManager;
   /** The private half of a settings proposal; `propose` writes its row. */
   settingsProposals?: SettingsProposalStore;

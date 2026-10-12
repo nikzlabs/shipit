@@ -168,6 +168,7 @@ export async function registerAgentRoutes(
                   credentialStore: deps.credentialStore,
                   providerAccountManager: deps.providerAccountManager,
                   containerManager: deps.containerManager,
+                  quotaContinuation: deps.quotaContinuation,
                 },
                 req,
               ),

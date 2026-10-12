@@ -24,6 +24,7 @@ const RUN_TIMEOUT_MS = 60_000;
 // Longer than a real token host takes, and far longer than tier 1 stays alive after its request.
 const SLOW_ANSWER_MS = 1_500;
 const TOKEN_LIFETIME_S = 8 * 60 * 60;
+const HOURS_LEFT_MS = 8 * 60 * 60 * 1000;
 const HOSTS = ["platform.claude.com", "console.anthropic.com", "api.anthropic.com", "claude.ai"];
 
 // Assembled, so that a secret scanner does not read them as real tokens.
@@ -39,6 +40,24 @@ function check(ok, label, detail = "") {
   checks++;
   if (!ok) failed++;
   console.log(`${ok ? "ok  " : "FAIL"}  ${label}${!ok && detail ? ` — ${detail}` : ""}`);
+}
+
+// A minimal streamed answer to the model call, so that a run can end without an error.
+function answerMessages(res) {
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`);
+  send("message_start", {
+    message: {
+      id: "msg_probe", type: "message", role: "assistant", model: "claude-haiku-4-5-20251001", content: [],
+      stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 },
+    },
+  });
+  send("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+  send("content_block_delta", { index: 0, delta: { type: "text_delta", text: "ok" } });
+  send("content_block_stop", { index: 0 });
+  send("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
+  send("message_stop", {});
+  res.end();
 }
 
 function startRecorder() {
@@ -58,17 +77,39 @@ function startRecorder() {
     cert: fs.readFileSync(path.join(root, "cert.pem")),
   });
   // tokenDelayMs holds a 200 back, as a real token host does. apiStatus answers every other request.
-  const recorder = { requests: [], tokenAnswer: "ok", tokenDelayMs: 0, apiStatus: 404, port: 0, close: () => {} };
+  // With rejectOriginal, the model call gets a 401 for the original token and an answer for the new one.
+  const recorder = {
+    requests: [], tokenAnswer: "ok", tokenDelayMs: 0, apiStatus: 404, port: 0, close: () => {},
+    home: "", rejectOriginal: false, on401: null, onTokenRequest: null,
+  };
 
   const inner = http.createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
       const isTokenRequest = (req.url ?? "").startsWith("/v1/oauth/token");
+      // Not /v1/messages/count_tokens: only the model call is the request that a 401 ends.
+      const isModelCall = (req.url ?? "").split("?")[0] === "/v1/messages" && req.method === "POST";
       let parsed = {};
       try { parsed = JSON.parse(body); } catch { /* not JSON */ }
-      recorder.requests.push({ host: req.headers.host, method: req.method, url: req.url, isTokenRequest, body: parsed });
+      const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+      recorder.requests.push({
+        host: req.headers.host, method: req.method, url: req.url, isTokenRequest, isModelCall, body: parsed,
+        bearer: bearer === ORIGINAL.accessToken ? "original" : bearer === ROTATED.accessToken ? "rotated" : "other",
+        copyRotated: recorder.home ? isRotated(recorder.home) : false,
+      });
       res.setHeader("content-type", "application/json");
+      if (isModelCall && recorder.rejectOriginal) {
+        if (bearer !== ORIGINAL.accessToken) {
+          answerMessages(res);
+          return;
+        }
+        recorder.on401?.();
+        res.writeHead(401);
+        res.end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "Invalid authentication credentials" } }));
+        return;
+      }
+      if (isTokenRequest) recorder.onTokenRequest?.();
       if (!isTokenRequest) {
         res.writeHead(recorder.apiStatus);
         res.end(JSON.stringify({
@@ -143,14 +184,29 @@ function readCredentials(home) {
   return JSON.parse(fs.readFileSync(path.join(home, ".claude", ".credentials.json"), "utf8"));
 }
 
+// As ShipIt's repush writes a session's file: by rename.
+function pushCredentials(home, tokens, msLeft) {
+  const file = path.join(home, ".claude", ".credentials.json");
+  const current = JSON.parse(fs.readFileSync(file, "utf8"));
+  fs.writeFileSync(
+    `${file}.tmp`,
+    JSON.stringify({ ...current, claudeAiOauth: { ...current.claudeAiOauth, ...tokens, expiresAt: Date.now() + msLeft } }),
+    { mode: 0o600 },
+  );
+  fs.renameSync(`${file}.tmp`, file);
+}
+
 // Returns what the refresher sees: the exit, the output, and the token requests the CLI made.
-function run(recorder, name, command, msLeft, tokenAnswer = "ok", { tokenDelayMs = 0, apiStatus = 404 } = {}) {
+// `session(home)` returns the hooks of a run that stands for a session's CLI (see (f)).
+function run(recorder, name, command, msLeft, tokenAnswer = "ok", { tokenDelayMs = 0, apiStatus = 404, session = null } = {}) {
   const home = makeHome(name, msLeft);
   const debugFile = path.join(home, "probe.debug.log");
   recorder.requests = [];
   recorder.tokenAnswer = tokenAnswer;
   recorder.tokenDelayMs = tokenDelayMs;
   recorder.apiStatus = apiStatus;
+  recorder.home = home;
+  Object.assign(recorder, { rejectOriginal: false, on401: null, onTokenRequest: null }, session ? session(home) : {});
   const proxyUrl = `http://127.0.0.1:${recorder.port}`;
   return new Promise((resolve) => {
     // Nothing of this process's environment, so that no real credential or config directory leaks in.
@@ -183,6 +239,7 @@ function run(recorder, name, command, msLeft, tokenAnswer = "ok", { tokenDelayMs
         debug,
         tokenRequests: recorder.requests.filter((request) => request.isTokenRequest),
         apiRequests: recorder.requests.filter((request) => !request.isTokenRequest),
+        modelCalls: recorder.requests.filter((request) => request.isModelCall),
       });
     };
     child.on("exit", (code) => finish(code));
@@ -191,10 +248,14 @@ function run(recorder, name, command, msLeft, tokenAnswer = "ok", { tokenDelayMs
 }
 
 const minutes = (ms) => `${(ms / 60_000).toFixed(1)} min`;
-const isRotated = (home) => {
-  const oauth = readCredentials(home).claudeAiOauth;
-  return oauth.accessToken === ROTATED.accessToken && oauth.refreshToken === ROTATED.refreshToken;
-};
+function isRotated(home) {
+  try {
+    const oauth = readCredentials(home).claudeAiOauth;
+    return oauth.accessToken === ROTATED.accessToken && oauth.refreshToken === ROTATED.refreshToken;
+  } catch {
+    return false;
+  }
+}
 
 async function main() {
   let version = "unknown";
@@ -259,6 +320,12 @@ async function main() {
       `token requests=${claimed.tokenRequests.length} rotated=${isRotated(claimed.home)} lifetime=${minutes(lifetimeMs)}`,
     );
     check(after.mcpOAuth?.["probe-server"]?.marker === "kept", "(c) tier 2: the file's other keys are kept");
+    // The refresher installs the rotation while the CLI runs, before the CLI's model call ends.
+    check(
+      claimed.modelCalls.length > 0 && claimed.modelCalls.every((call) => call.copyRotated && call.bearer === "rotated"),
+      "(c) tier 2: the rotation is in the copy before the CLI makes its model call",
+      `model calls=${claimed.modelCalls.map((call) => `${call.bearer}/copyRotated=${call.copyRotated}`).join(",")}`,
+    );
 
     // (e) A real token host does not answer at once. The tier that sends the grant must wait for
     // the answer: a grant that was sent and not written is spent, and its successor is lost.
@@ -295,6 +362,45 @@ async function main() {
       `info  the debug capture ${/invalid_grant/i.test(rejected.debug) ? "names" : "does not name"} invalid_grant`
         + " (the refresher accepts both)",
     );
+
+    // (f) A session's CLI whose token stops working takes the one that ShipIt pushes to its file. The
+    // early install depends on it: the push must reach the session before the CLI gives up.
+    const retriedWith = (result, bearer) =>
+      result.modelCalls[0]?.bearer === "original" && result.modelCalls.slice(1).some((call) => call.bearer === bearer);
+    const pushedBefore = await run(recorder, "f-pushed", tier2, HOURS_LEFT_MS, "invalid_grant", {
+      session: (home) => ({ rejectOriginal: true, on401: () => pushCredentials(home, ROTATED, HOURS_LEFT_MS) }),
+    });
+    check(
+      pushedBefore.exitCode === 0 && pushedBefore.tokenRequests.length === 0 && retriedWith(pushedBefore, "rotated"),
+      "(f) after a 401, the CLI repeats the model call with a token that reached its file, and requests no refresh",
+      `exit=${pushedBefore.exitCode} token requests=${pushedBefore.tokenRequests.length}`
+        + ` model calls=${pushedBefore.modelCalls.map((call) => call.bearer).join(",")}`,
+    );
+    const pushedDuring = await run(recorder, "f-during-refresh", tier2, HOURS_LEFT_MS, "invalid_grant", {
+      session: (home) => ({ rejectOriginal: true, onTokenRequest: () => pushCredentials(home, ROTATED, HOURS_LEFT_MS) }),
+    });
+    check(
+      pushedDuring.exitCode === 0 && pushedDuring.tokenRequests.length === 1 && isRotated(pushedDuring.home)
+        && retriedWith(pushedDuring, "rotated"),
+      "(f) after its refresh is rejected, the CLI takes a token that reached its file meanwhile, and does not blank it",
+      `exit=${pushedDuring.exitCode} rotated=${isRotated(pushedDuring.home)}`
+        + ` model calls=${pushedDuring.modelCalls.map((call) => call.bearer).join(",")}`,
+    );
+    // How long after a 401 a pushed token is still taken without a refresh (docs/153: about 0.5 s).
+    for (const lagMs of [300, 1_000]) {
+      let push = null;
+      const lagged = await run(recorder, `f-lag-${lagMs}`, tier2, HOURS_LEFT_MS, "invalid_grant", {
+        session: (home) => ({
+          rejectOriginal: true,
+          on401: () => { push ??= setTimeout(() => pushCredentials(home, ROTATED, HOURS_LEFT_MS), lagMs); },
+        }),
+      });
+      clearTimeout(push);
+      console.log(
+        `info  a token pushed ${lagMs} ms after the 401 was ${lagged.tokenRequests.length === 0 ? "taken" : "too late"}`
+          + ` (token requests=${lagged.tokenRequests.length} exit=${lagged.exitCode})`,
+      );
+    }
   } finally {
     recorder.close();
   }
