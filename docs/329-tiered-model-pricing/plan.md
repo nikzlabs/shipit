@@ -67,23 +67,26 @@ as a bad price, the same as a malformed flat rate.
 
 ### 2. Per-request usage reaches the orchestrator (req 4)
 
-The turn-end event gains an optional list of the turn's requests, each with its
-own input, output, cache read and cache write tokens. An adapter fills it only
-where its harness reports per-request usage; see "Per-harness sources" below.
+`AgentResultEvent` (`src/server/shared/types/agent-types.ts`) gains an optional
+`requests` list: one entry per model call, each with its input, cache read and
+cache write tokens, and its output tokens where the harness reports them final.
+The turn-wide `tokens` stay the billing totals. Every harness already reports
+per-request usage; no adapter forwards it today (see "Per-harness sources").
 
-`costFromRates(price, tokens, requests?)` then:
+`costFromRates(price, tokens, requests?, contextTokens?)` then:
 
 - no `longPrompt` → today's formula on the totals (unchanged for every other model);
-- `longPrompt` and `requests` → sums each request at the tier its own prompt size
-  selects (exact, req 4);
-- `longPrompt` and no `requests` → the estimate req 4 allows: the turn's
-  `contextTokens` (the last request's prompt size, already reported by every
-  harness that reports usage) picks one tier for the whole turn. The context
-  grows through a turn, so the last request is normally the largest; this can
-  over-count a turn that crossed the limit part-way. With no `contextTokens`
-  either, the lower tier is used, as today.
+- otherwise each listed request is priced at the tier its own prompt (input +
+  cache read + cache write) selects — exact, req 4;
+- whatever the totals hold beyond the listed requests (output a harness does not
+  report per request, requests it does not list, or the whole turn when there is
+  no list) is priced with the estimate req 4 allows: the tier the turn's
+  `contextTokens` (the last request's prompt size) selects. The context grows
+  through a turn, so the last request is normally its largest. With no
+  `contextTokens` either, the lower tier is used, as today.
 
-The per-request list is used for pricing at turn end and is not stored.
+One rule covers every harness, including a partial list, so no harness needs a
+special case in the pricing. The list is used at turn end and is not stored.
 
 ### 3. A subscription turn stores its at-API-rates cost (req 2, req 5)
 
@@ -108,7 +111,25 @@ The Usage dialog needs no change: it shows sums, which become correct.
 
 ## Per-harness sources
 
-_To be filled from the adapter survey (claude, codex, opencode, grok, antigravity)._
+Surveyed 2026-10-12. Each adapter today sums these into `tokens` and keeps only the
+last request's prompt size as `contextTokens`.
+
+| Harness | Per-request source | What it gives |
+|---|---|---|
+| Claude Code | `assistant` events' `message.usage`, several per call: dedupe by `message.id` | Input, cache read, cache write exact. Output is the start-of-call value (1), not final — probe 2026-10-12, CLI 2.1.284: two calls' prompt fields summed exactly to `result.usage`, output did not. Sub-agent calls are not listed. `result.usage.iterations` is NOT a per-request list: it describes the last call only. |
+| Codex | `thread/tokenUsage/updated` → `tokenUsage.last`, one per response | Full breakdown; `inputTokens` includes both cache portions (`disjointCodexTokens` splits them). ShipIt types `last` as `{ totalTokens }` only today. |
+| OpenCode | each `step_finish` `part.tokens` | Input, output, reasoning, cache read, cache write. |
+| Grok | top-level `assistant` events' `message.usage` | Input, output, cache read, cache write; the fixture's per-call usages sum exactly to `result.usage`. |
+| Antigravity | `step_update.usage` on `agent_response` steps | Input, output (thinking included), cache read; no cache write. |
+
+So Claude turns price the prompt side exactly and the output with the estimate;
+the other four price every listed request exactly.
+
+Consults run the same adapters, so `runAgentToCompletion` (`sub-agent-run.ts`)
+passes the list on to `resolveTurnCost` in `sub-agent.ts`. Background work
+(`non-turn-work.ts`, session naming) parses totals only and passes no list; it is
+normally one short request, so it keeps today's pricing unless its
+`contextTokens` selects the higher tier.
 
 ## Docs to update with the code
 
