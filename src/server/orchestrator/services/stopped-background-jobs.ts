@@ -11,6 +11,7 @@ import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
 import type { TurnAdmission } from "../turn-settlement.js";
 import { getErrorMessage } from "../validation.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
+import type { QuotaResumeRecorder } from "./quota-continuation.js";
 
 const WAKE_PROMPT = loadPrompt(import.meta.url, "../prompts/stopped-background-jobs-wake.md");
 const WAKE_ACTIVITY = "Continuing after background work was stopped…";
@@ -27,6 +28,7 @@ const DELIVERED_STATUSES = new Set(["completed", "steered", "interrupted"]);
 
 export interface StoppedBackgroundJobsDeps extends WakeSessionDeps {
   chatHistoryManager: InProgressPersister;
+  quotaContinuation?: QuotaResumeRecorder | undefined;
 }
 
 export interface StoppedBackgroundJobsReport {
@@ -131,6 +133,10 @@ export async function reportStoppedBackgroundJobs(
             + "parking the note for the next turn",
           );
           parkForNextTurn(deps, sessionId, text);
+          // docs/306-quota-continuation — and that turn comes by itself once quota allows it.
+          if (outcome.quotaRefused) {
+            deps.quotaContinuation?.recordRefusedWake({ sessionId, resetsAt: outcome.quotaRefused.resetsAt });
+          }
         },
       });
       const what = handle.admitted === "started" ? "woke" : `${handle.admitted} a wake for`;

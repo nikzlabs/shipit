@@ -296,6 +296,23 @@ export interface SessionMergeWatch {
   quotaWait?: { until: string; lastUsedAt: string };
 }
 
+/**
+ * docs/306-quota-continuation — a session that ShipIt continues by itself once a credential has
+ * quota again. Persisted, so a restart does not lose the promise its notice made.
+ */
+export interface SessionQuotaResume {
+  agentId: AgentId;
+  /** What the continuation turn is told: a turn that a quota limit or a renewed sign-in cut short, or a wake that never ran. */
+  cause: "quota" | "auth" | "wake";
+  /** Every turn start stamps lastUsedAt; a change means another turn may have taken the session on. */
+  lastUsedAt: string;
+  wakeAttempts: number;
+  /** No wake before this: the earliest reset that the refusing providers stated. */
+  notBefore?: string;
+  /** Continuations in a row that every credential refused for quota. */
+  quotaRefusals?: number;
+}
+
 export interface SessionMergeWatchPr {
   outcome: "merged" | "closed";
   prNumber: number;

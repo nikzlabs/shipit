@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { LastTurnOutcome, PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
+import type { LastTurnOutcome, PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionQuotaResume, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { doneSessionTest, isWorkResolved, scheduledViewTest, workResolvedAt } from "../shared/session-resolution.js";
 import { dataDeletionTimeMs, type DataRetentionConfig } from "../shared/session-retention.js";
@@ -206,6 +206,15 @@ export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
       + `lightAfterMs=${t.lightAfterMs}ms, evictMergedAfterMs=${t.evictMergedAfterMs}ms, `
       + `evictUnmergedAfterMs=${t.evictUnmergedAfterMs}ms`,
     );
+  }
+}
+
+function parseQuotaResume(json: string | null): SessionQuotaResume | undefined {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json) as SessionQuotaResume;
+  } catch {
+    return undefined;
   }
 }
 
@@ -663,6 +672,29 @@ export class SessionManager {
     this.db.prepare(
       "UPDATE sessions SET pending_restart_note = NULL, pending_user_restart = NULL WHERE id = ?",
     ).run(id);
+  }
+
+  // docs/306-quota-continuation — QuotaContinuationManager's registry.
+  setQuotaResume(id: string, resume: SessionQuotaResume | null): void {
+    this.db.prepare("UPDATE sessions SET quota_resume = ? WHERE id = ?")
+      .run(resume ? JSON.stringify(resume) : null, id);
+  }
+
+  getQuotaResume(id: string): SessionQuotaResume | undefined {
+    const row = this.db.prepare(
+      "SELECT quota_resume FROM sessions WHERE id = ?",
+    ).get(id) as { quota_resume: string | null } | undefined;
+    return parseQuotaResume(row?.quota_resume ?? null);
+  }
+
+  listQuotaResumes(): { sessionId: string; resume: SessionQuotaResume }[] {
+    const rows = this.db.prepare(
+      "SELECT id, quota_resume FROM sessions WHERE quota_resume IS NOT NULL",
+    ).all() as { id: string; quota_resume: string }[];
+    return rows.flatMap((row) => {
+      const resume = parseQuotaResume(row.quota_resume);
+      return resume ? [{ sessionId: row.id, resume }] : [];
+    });
   }
 
   // docs/324-agent-requested-compaction — one compaction per request: a later one replaces it.

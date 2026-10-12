@@ -1203,6 +1203,11 @@ const MIGRATIONS: Migration[] = [
       WHERE billing_mode = 'sub' AND rate_input IS NOT NULL;
     `);
   },
+  // docs/306-quota-continuation — a session that ShipIt resumes once quota returns. Persisted, so
+  // a restart during the wait does not leave the session stopped.
+  (db) => {
+    addSessionColumnIfMissing(db, "quota_resume");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

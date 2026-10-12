@@ -692,6 +692,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       providerAccountManager,
       containerManager,
       restoreWorkspace,
+      quotaContinuation: quotaContinuationRef.ref ?? undefined,
     }, turn);
   };
   const runRequestedCompactionForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
@@ -718,6 +719,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       providerAccountManager,
       containerManager,
       restoreWorkspace,
+      quotaContinuation: quotaContinuationRef.ref ?? undefined,
     }, report);
   };
 
@@ -791,6 +793,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const quotaContinuationManager = new QuotaContinuationManager({
     sessionManager,
     runnerRegistry,
+    chatHistoryManager,
     defaultAgentId,
     credentialsDir,
     credentialStore,
@@ -1218,6 +1221,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   agentMergeExecutor.start();
 
   sessionInbox.start();
+  quotaContinuationManager.start();
 
   void (async () => {
     try {

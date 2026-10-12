@@ -102,11 +102,11 @@ attempt loop, bounded by that loop's ledger exactly as docs/260 intends. What
 cannot happen is the continuation *starting* on the credential that just refused.
 
 docs/260's rule that a process with background work is never retired for an
-account move needs no new code here: the continuation dispatches as a system
-turn, and `dispatchOnRunner` defers a system turn while the resident process has
-background work, releasing it when the work clears. Verified at
-`turn-admission.ts:systemTurnBlockedByResidentWork`, `session-runner.ts:248`, and
-the `background_work` handler in `runner-registry-factory.ts`.
+account move holds for the sweep, not for the immediate path. The continuation is
+an automatic wake, not a system turn (`wakeDispatch` leaves `systemTurn` unset),
+so `turn-admission.ts:systemTurnBlockedByResidentWork` does not defer it. The
+sweep waits on `agentBusy`, which counts the resident process's background tasks
+(`session-runner.ts`); `continueNow` does not read it (below).
 
 ## Phase 2 — resume when the bench ends (req 4)
 
@@ -114,14 +114,18 @@ the `background_work` handler in `runner-registry-factory.ts`.
 and a stand-down records the session **either way** — the immediate continuation
 and the delayed one are then the same act, differing only in what triggers it.
 One registry entry (agent, the `lastUsedAt` stamp at stand-down, wake attempts),
-one freshness rule, one wake function. A sweep runs while any session is
-recorded and stops when the map empties.
+one freshness rule, one wake function. The registry is the `sessions.quota_resume`
+column (`SessionQuotaResume`), so an orchestrator restart during a wait keeps the
+promise the notice made: `start()` at boot resumes the sweep for what is
+recorded. A sweep runs while any session is recorded and stops when none is.
 
 The sweep asks the router the same question the stand-down asked, and that is the
 whole clock story: selection skips a credential while
 `now < min(exhaustedUntil, exhaustedAt + ~30min)` (docs/260 section 2), so the
-session resumes exactly when the router stops refusing, and this design adds no
-clock of its own. The 60s tick is polling resolution, not policy.
+session resumes exactly when the router stops refusing. The one clock this design
+adds is the stated reset of a refused wake (`notBefore`, in the section on the
+other automatic wakes below), which the router's 30-minute re-probe would
+otherwise undercut. The 60s tick is polling resolution, not policy.
 
 **The question is asked through `selectRouteForSelection`, not
 `ProviderAccountManager.selectAccountForTurn`** — the same entry point a turn
@@ -142,7 +146,13 @@ checked against the session as it stands:
   since, so this one is superseded and a wake would be an unasked-for
   interruption. `sessionManager.track()` stamps it at every turn start, so this is
   a state comparison rather than an observed transition, and it holds for a
-  successor that has already *finished* as well as one still running;
+  successor that has already *finished* as well as one still running. That
+  includes a later turn that no credential could run either: a user message
+  supersedes the wake (the requested behaviour), and what the wake was for is
+  parked, so it rides the turn that runs instead;
+- the immediate path leaves the entry to the sweep while the runner is
+  `running` (a queued turn drained during teardown, and the sweep decides once it
+  has ended) and while the entry waits for a stated reset;
 - **the sweep** additionally skips a session whose runner is `agentBusy`. That
   covers more than `running`: the stand-down records the session before its own
   commit and push have run, and `agentBusy` folds in the post-turn hold, so a
@@ -150,14 +160,22 @@ checked against the session as it stands:
   uncommitted tree (req 6). The immediate path deliberately does *not* read it —
   it runs inside the very hold it would be testing, and its position at the end
   of the terminal sequence is its ordering guarantee.
-- the entry is deleted *before* the wake, so a session is woken at most once per
-  stall. A continuation that is refused again records a fresh stall.
+- the entry is cleared once a turn has the wake, not before it: the wake's
+  preparation (workspace restore, environment, worker readiness) can take tens of
+  seconds, and a restart inside it now finds the entry still recorded. An
+  in-process `waking` set stops the sweep and the immediate path from preparing
+  the same entry twice. The wake is start-or-refuse (`startOrRefuse`): a turn that
+  took the session meanwhile refuses it instead of queueing it behind, and the
+  entry stays for the sweep to judge again. Just before dispatch the wake asks
+  again whether its entry still stands (`stillWanted`), so a turn that started
+  and ended during the preparation, or a newer refusal that replaced the entry,
+  also stops it. A continuation that is refused again records a fresh stall.
 
 The wake is `wakeSessionWithTurn`, which calls `restoreWorkspace` first, so a
 session whose container was reclaimed while it waited still resumes. A delivery
-failure (a container that would not resume) re-records the session for a later
-sweep, up to three attempts — enough for something transient, bounded so a
-session that can never be resumed is not woken for ever.
+failure (a container that would not resume) keeps the entry for a later sweep,
+up to three attempts — enough for something transient, bounded so a session
+that can never be resumed is not woken for ever.
 
 Both phases wake with the same prompt
 (`prompts/quota-continuation-wake.md`): it has to stand on its own, because phase
@@ -204,7 +222,8 @@ the merge prompt and five quota errors, the watch gave up, and the user typed
 credential left after a quota refusal (`ProviderRouteUnavailableError` with a
 quota entry in the attempt ledger), the turn settles `errored` with
 `quotaRefused`: one stated reset per quota refusal, `null` where the provider
-stated none (`turnQuotaRefused`). Nothing else reads it yet. A ledger that mixes
+stated none (`turnQuotaRefused`). The merge watch reads it here, and the other
+automatic wakes in the next section. A ledger that mixes
 a quota refusal with a failed sign-in counts too: the quota account frees at its
 reset whatever the other one does, so waiting for it beats giving up. A refusal
 on a metered key, an auth-only ledger and a turn with no credential at all keep
@@ -213,8 +232,9 @@ the plain `errored`, so none of them is ever waited on.
 For an automatic turn the all-refused error row no longer says "Send this
 message again" — there is no message of the user's to send (req 3).
 `allRefusedMessage` takes `automatic` and ends with "Connect another account in
-Settings." It promises no retry: only the merge watch schedules one, and its own
-notice says when.
+Settings." It promises no retry: the wake's owner schedules one — the merge
+watch, or `QuotaContinuationManager` for the other wakes — and its own notice
+says when.
 
 **The merge watch is the one owner of the wait.** On that outcome the self watch
 records a refusal, not a failure (`merge-watch.ts`, `recordQuotaRefusal`):
@@ -242,13 +262,15 @@ rewind deletes the row and a code rollback marks it `rolledBack`; either way the
 next attempt shows the prompt again. A `promptShown` turn adds no user row and
 no echo (`dispatched-turn.ts`); the agent still gets the whole prompt.
 
-`QuotaContinuationManager` was the other candidate, and is not used here for
-two reasons. Its registry is in-process (a restart loses it — the incident had
-one between attempts), while the watch is persisted. And it asks the router,
-which re-probes a benched credential 30 minutes after the refusal whatever reset
-the provider stated, so a weekly limit would wake the session every half hour.
-It never sees this turn either — the executor calls `recordStandDown` only for a
-CLI-started turn — so one stall cannot produce two wakes.
+`QuotaContinuationManager` was the other candidate. When this was built its
+registry was in-process (a restart loses it — the incident had one between
+attempts) and its timing was the router's, which re-probes a benched credential
+30 minutes after the refusal whatever reset the provider stated. The next
+section gave it a persisted registry and the stated resets; the merge watch
+keeps its own wait because it already persists the merge it delivers and counts
+that merge's attempts. The manager never sees this turn — the executor calls
+`recordStandDown` only for a CLI-started turn, and the merge watch does not call
+`recordRefusedWake` — so one stall cannot produce two wakes.
 
 **Superseded, not doubled.** `quotaWait.lastUsedAt` is the session's
 `lastUsedAt` at the refusal, and every turn start stamps it; the wake's own next
@@ -264,41 +286,79 @@ started since:
   `quota-refused`) leaves the session stopped by quota, and req 4 says such a
   session resumes by itself: the wake still runs at the reset. This covers a
   refused inbox turn, which would otherwise cancel the wake for good, and a
-  refused user message, whose text is in the transcript the woken agent reads.
-  An independent review argued that a user message should cancel the wake even
-  when it was refused; the reading above is the one req 4 supports, and nothing
-  persisted tells a user's turn from ShipIt's without a schema change.
+  refused user message. An independent review argued that a user message should
+  cancel the wake even when it was refused. This section first answered that the
+  refused message is in the transcript the woken agent reads; that is wrong —
+  nothing re-delivers a turn that no credential ran, so the agent never gets it.
+  `QuotaContinuationManager` therefore lets any later turn supersede its wake (the
+  next section); the merge watch's rule is unchanged and listed under *Known
+  gaps*.
 
 **Bounded.** `MAX_QUOTA_REFUSALS` (5) refusals end the watch with the ordinary
 give-up note, so quota that never returns cannot wake the session for ever.
 
-**The other wake callers** have the same "nobody is there to send it again" end,
-by a different mechanism, and are not changed:
+The other automatic wakes are the next section's.
 
-- `services/session-inbox.ts` has no attempt budget: a turn that ends without a
-  receipt doubles its wait, from a minute to an hour, and the stored message is
-  never lost. A quota wall costs a refused turn per wait.
-- `services/consult-result-delivery.ts`, `services/agent-restart-request.ts` and
-  `services/stopped-background-jobs.ts` make one attempt. A refused wake stamps
-  the consult card failed or parks its note for the next turn, which a human
-  then has to start.
-- `services/quota-continuation.ts` — the continuation itself, the first entry
-  under *Known gaps*.
+## Every other automatic wake that every credential refuses (reqs 3, 4)
+
+Four more callers of `wakeSessionWithTurn` made one attempt and then had nobody
+to start the turn again: the consult result (`services/consult-result-delivery.ts`,
+which stamped the card failed), the restart follow-up
+(`services/agent-restart-request.ts` — `shouldRepark` reads a quota refusal as a
+turn that ran, so its note was not even parked), the stopped-jobs note
+(`services/stopped-background-jobs.ts`, parked for a next turn that a human had
+to start), and the continuation itself (`services/quota-continuation.ts`, which
+read no outcome at all).
+
+**`QuotaContinuationManager` is the one owner of all four stalls.** Each caller,
+on a `quotaRefused` outcome:
+
+- parks what its wake was for as a pending agent notice (`[System] <its prompt>`),
+  so the content rides whichever turn runs next — the continuation, or a message
+  of the user's that supersedes it. A turn that never reaches the agent puts the
+  notice back (planning#609), so a refused continuation does not lose it;
+- calls `recordRefusedWake({ sessionId, resetsAt })`. The continuation's own
+  wake does the same from its settlement, carrying its entry's count.
+
+The manager records the session with `notBefore` = `quotaWaitUntil`
+(`quota-wait.ts`, shared with the merge watch): the earliest stated reset plus a
+minute, the router's re-probe window where none was stated, never sooner than a
+backoff that grows with the refusals. The sweep wakes nothing before
+`notBefore`, then asks the router as before — so the 30-minute re-probe alone can
+no longer wake a session that a weekly limit stopped. A notice says when ShipIt
+continues and asks for nothing (req 3).
+
+The continuation is told what it is for: a refused wake records cause `wake`,
+whose prompt (`prompts/refused-wake-continuation.md`) says the earlier turn never
+reached the agent and points at the `[System]` note above it — the `quota` prompt
+would claim a turn stopped partway and left commits. A refused continuation keeps
+its entry's cause and count. An owner's refused wake starts a new entry: its own
+turn has moved `lastUsedAt`, which supersedes whatever waited before it, and
+that entry's parked note is still pending, so nothing it carried is lost.
+
+**One stall, one wake.** The merge watch keeps its own wake (above); every other
+automatic wake is the manager's, and each records into the session's single
+entry, so two refused wakes of one session produce one continuation. The
+manager's wake is start-or-refuse, so it is not queued behind a turn that took the
+session meanwhile — the merge watch's, the user's, or any other — with the one
+exception of pre-turn compaction, under *Known gaps*. When the merge
+watch and the manager both wait on one session, whichever runs first stamps the
+session and the other normally sees a turn that ran; the exception is under
+*Known gaps*.
+
+**Bounded.** `MAX_QUOTA_REFUSALS` (5) refusals in a row — the owner's and the
+continuations' — clear the entry with a notice that the work continues with the
+user's next message.
+
+The session inbox (`services/session-inbox.ts`) is not changed: it has no
+attempt budget, a turn that ends without a receipt doubles its wait from a
+minute to an hour, and the stored message is never lost. A quota wall costs it a
+refused turn per wait.
 
 ## Known gaps
 
-Named rather than hidden; the first is the one most worth closing next.
+Named rather than hidden.
 
-- **A continuation refused by every credential is not recorded.** The
-  continuation runs as an ordinary turn, so a quota refusal on it takes the
-  docs/260 attempt loop and ends at `allRefusedMessage` — which asks for another
-  message and registers no stall, so nothing resumes it when quota returns. Only
-  the CLI-started stand-down records. Closing it means recording from the
-  all-refused terminal path too, which would also change behaviour for
-  *user*-started turns that exhaust every credential — a bigger decision than
-  this fix, and out of its scope. The settled outcome now carries `quotaRefused`
-  with the stated resets, which is what a fix for this and for the one-attempt
-  wake callers (*A self wake that every credential refuses*) would read.
 - **A stale `running` holds the merge watch's quota wait.** A turn whose end the
   orchestrator never sees leaves `runner.running` true, and the wait (like the
   retry pass before it) keeps waiting. The recovery for a stale flag is the
@@ -310,10 +370,40 @@ Named rather than hidden; the first is the one most worth closing next.
   when the continuation starts. No work is at risk — it is committed, and the
   next push carries both commits — but the literal requirement is met only for
   the commit half.
-- **Restart loses every pending resumption.** The registry is in-process, so an
-  orchestrator restart during a quota wait leaves the promise in the transcript
-  with nothing to fulfil it; those sessions need a message, as they do today.
-  Persisting it means a schema change.
+- **A stand-down's first continuation is still timed by the router.** The
+  CLI-started stand-down knows only the bench it stamped, so its entry has no
+  `notBefore`, and the router's re-probe can start the continuation 30 minutes in.
+  If every credential refuses it, the refusal records the stated resets and the
+  wait from there is the providers'. A weekly limit therefore costs one refused
+  continuation, not one every half hour.
+- **A refused wake's hand-over lives in its settlement callback, in process.**
+  The owners park their note and record the refusal from that callback, so a
+  restart between the wake's dispatch and its settlement loses both: the session
+  then waits for a message, as before this change. The manager's own entry is
+  cleared at dispatch, so the same holds for a continuation that a restart cuts
+  off. The merge watch is the exception: it rebinds its delivery by id. A turn
+  refused during env preparation settles within seconds, so for the incident's
+  shape the window is short.
+- **The merge watch can still queue behind the manager's continuation.** Both
+  check the session before an asynchronous preparation, so when both are due in
+  the same moment the merge watch's wake (which queues) can run after the
+  continuation (which refuses to queue): two turns, one per stall.
+- **The two owners read a refused later turn differently.** The manager lets any
+  later turn supersede its wake, as the user asked of a user message; the merge
+  watch keeps its wake when that turn was refused for quota (above). Aligning
+  the merge watch means deciding what carries its merge prompt to the agent when
+  a refused message supersedes it.
+- **Pre-turn compaction can still queue an admitted continuation.** Admission
+  reports `started` and the entry is cleared; compaction ahead of the turn then
+  puts the continuation back in the queue, so a message the user sends during
+  that compaction runs first and the continuation runs after it. This holds for
+  every automatic turn, not only this one.
+- **A refused automatic turn with no owner of its own supersedes the wait.** A
+  CI-fix or conflict turn that every credential refuses moves `lastUsedAt` and
+  retries nothing, so the parked note waits for the next message.
+- **The notice that announces the wait is appended as its own row** after the
+  refused turn (`emitNoticePostTurn`), as the merge watch's is; it is not part of
+  that turn's message group.
 - **Several sessions stopped on the same service all wake in the same sweep,**
   sequentially. That is the same load the user would create by resending in each
   of them, and the first refusal re-benches the credential for the rest.
@@ -329,9 +419,18 @@ Named rather than hidden; the first is the one most worth closing next.
 ## Key files
 
 - `src/server/orchestrator/services/quota-continuation.ts` — the manager: the
-  stand-down decision, the stall registry, the sweep, the wake.
+  stand-down decision, `recordRefusedWake`, the stall registry, the sweep, the
+  wake.
+- `src/server/orchestrator/sessions.ts` — `setQuotaResume` / `getQuotaResume` /
+  `listQuotaResumes` over the `quota_resume` column (`SessionQuotaResume`).
+- `src/server/orchestrator/quota-wait.ts` — `quotaWaitUntil`,
+  `MAX_QUOTA_REFUSALS`: when a refused wake runs again, for both owners.
 - `src/server/orchestrator/prompts/quota-continuation-wake.md`,
-  `auth-continuation-wake.md` — the continuation prompt for each cause.
+  `auth-continuation-wake.md`, `refused-wake-continuation.md` — the continuation
+  prompt for each cause.
+- `services/consult-result-delivery.ts`, `services/agent-restart-request.ts`,
+  `services/stopped-background-jobs.ts` — park the wake's prompt and hand a
+  quota refusal to the manager (`quotaContinuation` in their deps).
 - `src/server/orchestrator/turn-executor.ts` — `retireOnSpentAccount`,
   `standDownAfterAuthHeal`, the `continuation` terminal step.
 - `src/server/orchestrator/session-runner.ts` — `recordStandDown` /
@@ -339,12 +438,12 @@ Named rather than hidden; the first is the one most worth closing next.
 - `src/server/orchestrator/runner-registry-factory.ts`,
   `ws-handlers/agent-execution.ts` — the two executors that take the hooks.
 - `src/server/orchestrator/merge-watch.ts` — `recordQuotaRefusal`,
-  `holdForQuota`, `quotaWaitUntil`: the self wake's quota wait.
+  `holdForQuota`: the self wake's quota wait.
 - `src/server/orchestrator/turn-settlement.ts` — `quotaRefused` on
   `TurnOutcome`; `promptShown` on `AgentDispatchOptions`
   (`session-runner.ts`), read by `dispatched-turn.ts`.
-- `bootstrap-managers.ts`, `route-registry.ts`, `startup-monitors.ts` — wiring
-  and shutdown.
+- `bootstrap-managers.ts`, `route-registry.ts`, `api-routes-agent.ts`,
+  `startup-monitors.ts` — wiring, start at boot, and shutdown.
 
 ## Coverage
 
@@ -363,7 +462,36 @@ implementation and re-running.
   once; waits while the stopped turn's own post-turn work is in flight; retries an
   undeliverable wake up to three attempts. The string-credential case derives its
   service from the catalogue rather than naming a vendor, so a catalogue change
-  cannot silently turn it into a different test.
+  cannot silently turn it into a different test. *An automatic wake that every
+  credential refused for quota*, on a fake clock: no wake before the earliest
+  stated reset — not at the router's re-probe either — then one, with the
+  refused-wake prompt and a notice that asks for nothing; a stated reset that has
+  already passed still waits the minimum; a new manager over the
+  same store resumes it after a restart through `start()`; a continuation that
+  every credential refuses too is recorded again, and `MAX_QUOTA_REFUSALS` ends
+  the chain with a warning; a stand-down's refused continuation keeps its cause;
+  any turn since supersedes the entry, also one refused for quota; the entry
+  survives a restart during the wake's preparation and is cleared once a turn
+  has the wake; one wake at a time is prepared for a session; a turn that starts
+  and ends during the preparation stops it, and a failed preparation does not
+  overwrite a refusal recorded meanwhile; a wake the session
+  refuses keeps the entry for the sweep; the
+  immediate path leaves a drained turn in setup, and an entry that waits for a
+  stated reset, to the sweep.
+- `services/consult-result-delivery.test.ts`,
+  `services/agent-restart-request.test.ts`,
+  `services/stopped-background-jobs.test.ts` — a wake refused for quota parks its
+  prompt and is handed over with the stated resets; one that failed for another
+  reason is not handed over (and, for the consult, parks nothing).
+- `integration_tests/chat-turn-stand-down-wiring.test.ts` — now records the
+  stand-down once the first turn has ended, because the continuation no longer
+  queues behind a running turn. It proves the composer executor's wiring, not the
+  executor's ordering, which `turn-self-wake-commit.test.ts` pins.
+- `integration_tests/quota-resume-wiring.test.ts` — the built app starts the
+  manager and passes that instance to all three callers: the deps are optional,
+  so the unit tests above stay green without the wiring.
+- `sessions.test.ts` — the `quota_resume` column round-trips through a second
+  manager over the same database.
 - `turn-self-wake-commit.test.ts` — *"continues a CLI-started turn on another
   credential when one is free"* (the stand-down is recorded with the benched
   route, the continuation is invoked with a clean tree after the PR flow, the

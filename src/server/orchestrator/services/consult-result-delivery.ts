@@ -4,6 +4,7 @@ import type { SubAgentConsultCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { TurnAdmission, TurnHandle, TurnOutcome } from "../turn-settlement.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
+import type { QuotaResumeRecorder } from "./quota-continuation.js";
 
 export interface ConsultDeliveryStore {
   updateSubAgentConsultCard(
@@ -16,6 +17,7 @@ export interface ConsultDeliveryStore {
 
 export interface ConsultResultDeliveryDeps extends WakeSessionDeps {
   chatHistoryManager: ConsultDeliveryStore;
+  quotaContinuation?: QuotaResumeRecorder | undefined;
 }
 
 export interface ConsultResultDeliveryRequest {
@@ -92,11 +94,23 @@ async function decideAndDeliver(
   }
 
   let handle: TurnHandle;
+  const text = buildConsultWakePrompt(card);
   try {
     handle = await wakeSessionWithTurn(deps, session, {
-      text: buildConsultWakePrompt(card),
+      text,
       activity: "Reading a finished background consult…",
       onSettled: (outcome: TurnOutcome) => {
+        // docs/306-quota-continuation — the result rides the turn that quota allows.
+        if (outcome.quotaRefused) {
+          stampDelivery(deps, sessionId, card.cardId, {
+            at: new Date().toISOString(),
+            outcome: "failed",
+            detail: "no connected account had quota left; the result rides the session's next turn",
+          });
+          parkForNextTurn(deps, sessionId, text);
+          deps.quotaContinuation?.recordRefusedWake({ sessionId, resetsAt: outcome.quotaRefused.resetsAt });
+          return;
+        }
         stampDelivery(deps, sessionId, card.cardId, {
           at: new Date().toISOString(),
           outcome: outcome.status === "completed" ? "delivered" : "failed",
@@ -161,6 +175,15 @@ function stampDelivery(
     }
   } catch (err) {
     console.warn(`[consult-delivery] could not stamp card ${cardId} of ${sessionId}:`, err);
+  }
+}
+
+// Append, never set: a notice recorded meanwhile must survive this.
+function parkForNextTurn(deps: ConsultResultDeliveryDeps, sessionId: string, text: string): void {
+  try {
+    deps.sessionManager.appendPendingAgentNotice(sessionId, `[System] ${text}`);
+  } catch (err) {
+    console.error(`[consult-delivery] parking the result notice for ${sessionId} failed:`, err);
   }
 }
 

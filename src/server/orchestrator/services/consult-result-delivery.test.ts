@@ -12,6 +12,7 @@ import {
   TURN_COMPLETED,
   createTurnSettlement,
   turnErrored,
+  turnQuotaRefused,
   type TurnAdmission,
   type TurnHandle,
 } from "../turn-settlement.js";
@@ -266,6 +267,35 @@ describe("deliverConsultResultByWake (docs/287)", () => {
       outcome: "failed",
       detail: "agent crashed",
     });
+  });
+
+  // docs/306-quota-continuation — the result rides the turn the manager starts at the reset.
+  it("parks the result and hands a wake that every credential refused for quota to the quota continuation", async () => {
+    const recordRefusedWake = vi.fn();
+    const deps = { ...ctx.deps, quotaContinuation: { recordRefusedWake } };
+    const card = terminalCard();
+    persistCard(ctx, card);
+    await deliverConsultResultByWake(deps, { sessionId: "s1", card, originatingTurnEpoch: 7 });
+
+    const dispatched = ctx.runners.get("s1")!.dispatched[0];
+    dispatched.onTurnComplete!(turnQuotaRefused(["2026-10-11T17:00:00.000Z"]));
+
+    expect(ctx.sessionManager.get("s1")?.pendingAgentNotice).toBe(`[System] ${dispatched.text}`);
+    expect(recordRefusedWake).toHaveBeenCalledWith({ sessionId: "s1", resetsAt: ["2026-10-11T17:00:00.000Z"] });
+    expect(storedCard(ctx)?.wakeDelivery?.outcome).toBe("failed");
+  });
+
+  it("parks nothing and hands nothing over for a wake that failed for another reason", async () => {
+    const recordRefusedWake = vi.fn();
+    const deps = { ...ctx.deps, quotaContinuation: { recordRefusedWake } };
+    const card = terminalCard();
+    persistCard(ctx, card);
+    await deliverConsultResultByWake(deps, { sessionId: "s1", card, originatingTurnEpoch: 7 });
+
+    ctx.runners.get("s1")!.dispatched[0].onTurnComplete!(turnErrored("agent crashed"));
+
+    expect(ctx.sessionManager.get("s1")?.pendingAgentNotice).toBeUndefined();
+    expect(recordRefusedWake).not.toHaveBeenCalled();
   });
 
   it("never throws when the wake fails, and says so on the card", async () => {
