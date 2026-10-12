@@ -5,15 +5,16 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { SessionInfo } from "../shared/types.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import { takeQueueHold } from "./services/recovery.js";
-import { makeDispatchTurnDeps, type FakeAgent } from "./integration_tests/dispatch-test-helpers.js";
+import { makeDispatchTurnDeps, testDispatch, type FakeAgent } from "./integration_tests/dispatch-test-helpers.js";
 import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
 import type { DatabaseManager } from "../shared/database.js";
 
 const SESSION = { id: "s1", workspaceDir: "/tmp/s1" } as SessionInfo;
 
-function setup(container: { status: string } | undefined) {
+function setup(container: { status: string } | undefined, opts: { steering?: boolean } = {}) {
   const agents: FakeAgent[] = [];
   const { deps } = makeDispatchTurnDeps(agents, []);
+  if (opts.steering) deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
   const registry = new SessionRunnerRegistry({ onRunnerCreated: (r) => r.setSystemTurnDeps(deps) });
   const wakeDeps = {
     sessionManager: {} as SessionManager,
@@ -21,7 +22,8 @@ function setup(container: { status: string } | undefined) {
     defaultAgentId: "claude" as const,
     containerManager: { get: () => container } as unknown as SessionContainerManager,
   };
-  return { agents, registry, wakeDeps };
+  const firstPrompt = (): string => vi.mocked(deps.buildRunParams).mock.calls[0]![2];
+  return { agents, registry, wakeDeps, firstPrompt };
 }
 
 function markAwaitingContainer(runner: SessionRunnerInterface): void {
@@ -60,8 +62,23 @@ describe("wakeSessionWithTurn", () => {
     expect(fresh).not.toBe(stale);
   });
 
-  it("releases the caller's hold just before its dispatch, so the wake runs ahead of held messages", async () => {
+  it("releases the caller's hold and starts the wake when nothing waits behind the hold", async () => {
     const { registry, wakeDeps } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    const hold = takeQueueHold(runner, { lease: true });
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue", releaseHold: hold });
+
+    expect(handle.admitted).toBe("started");
+    expect(runner.running).toBe(true);
+    expect(runner.queueLength).toBe(0);
+    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("runs a message of the user's that the hold kept before the wake (docs/329 req 2)", async () => {
+    const { agents, registry, wakeDeps, firstPrompt } = setup({ status: "running" });
     const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
     runners.push(runner);
     const hold = takeQueueHold(runner, { lease: true });
@@ -69,10 +86,58 @@ describe("wakeSessionWithTurn", () => {
 
     const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue", releaseHold: hold });
 
-    expect(handle.admitted).toBe("started");
+    expect(handle.admitted).toBe("queued");
     expect(runner.running).toBe(true);
-    expect(runner.messageQueue.map((m) => m.text)).toEqual(["sent while held"]);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["continue"]);
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+    expect(firstPrompt()).toContain("sent while held");
     expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("runs the wake before an automatic entry that the hold kept", async () => {
+    const { agents, registry, wakeDeps, firstPrompt } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    const hold = takeQueueHold(runner, { lease: true });
+    runner.enqueue({ text: "ci failed", execution: "dispatched", automatic: true });
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue", releaseHold: hold });
+
+    expect(handle.admitted).toBe("started");
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["ci failed"]);
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+    expect(firstPrompt()).toContain("continue");
+  });
+
+  it("gives a wake a turn of its own: it waits behind a running turn and is not steered into it", async () => {
+    const { agents, registry, wakeDeps } = setup({ status: "running" }, { steering: true });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    runner.dispatch(testDispatch({ text: "the user's work" }));
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+    expect(runner.isStreamingActive).toBe(true);
+
+    // No completion callback: only the admission keeps this one out of the running turn.
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue after the quota limit" });
+
+    expect(handle.admitted).toBe("queued");
+    expect(agents[0]!.sendUserMessage).not.toHaveBeenCalled();
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["continue after the quota limit"]);
+  });
+
+  it("starts a wake on a streaming process, and a message typed during it steers it (docs/329 req 1, 2)", async () => {
+    const { agents, registry, wakeDeps } = setup({ status: "running" }, { steering: true });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+
+    await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue after the restart", onSettled: () => {} });
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+
+    expect(agents[0]!.run.mock.calls[0]![0]).toMatchObject({ useStreaming: true });
+    expect(runner.systemTurnInProgress).toBe(false);
+    const steered = runner.dispatch(testDispatch({ text: "use the other branch" }));
+    expect(steered.admitted).toBe("steered");
+    expect(agents[0]!.sendUserMessage).toHaveBeenCalledWith("use the other branch");
   });
 });
 
@@ -197,7 +262,6 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
       expect.objectContaining({
         text: "Child PR #42 merged",
         automatic: true,
-        systemTurn: true,
         // docs/295-compact-context-on-merge req 15 — every wake says nobody was at the composer.
         unattended: true,
         deliveryId: "watch-1:1",

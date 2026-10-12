@@ -93,7 +93,7 @@ function dispatchRemediationTurn(
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: true,
+    systemTurn: undefined,
     automatic: true,
     heldId: undefined,
     onTurnComplete: undefined,
@@ -102,5 +102,5 @@ function dispatchRemediationTurn(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
-  }));
+  }), { whenBusy: "queue" });
 }

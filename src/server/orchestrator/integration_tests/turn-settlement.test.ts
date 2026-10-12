@@ -407,11 +407,11 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     expect(outcomes.map((o) => o.status)).toEqual(["interrupted"]);
   });
 
-  it("a drained successor does not erase the predecessor's evidence that it ran", async () => {
+  it("a streaming turn settles at its own result, and a drained successor does not change that (docs/329)", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
-    // Streaming lets the successor reuse the process before its predecessor settles.
+    // Streaming lets the successor reuse the process, so no process exit settles the predecessor.
     deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
     runner.setSystemTurnDeps(deps);
 
@@ -431,14 +431,72 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitForTurn(() => runner.queueLength === 0, "queued turn started");
-    expect(first).toHaveLength(0);
+    await waitForTurn(() => first.length === 1, "first turn settled");
+    expect(first.map((o) => o.status)).toEqual(["completed"]);
+    expect(agents).toHaveLength(1);
 
     runner.dispose({ force: true });
     await flushTurn();
 
-    expect(first.map((o) => o.status)).toEqual(["interrupted"]);
+    expect(first.map((o) => o.status)).toEqual(["completed"]);
     // Drained turns lack their own disposal listener; this does not assert settlement.
     expect(second.some((o) => o.status === "interrupted")).toBe(false);
+  });
+
+  // docs/329-user-steers-every-turn — on a reused process, a result can end a turn the CLI started.
+  describe("a prompt that enters a resident process behind a turn the CLI started", () => {
+    async function setup(over: { settleInRestartStep?: boolean } = {}) {
+      const runner = newRunner();
+      const agents: FakeAgent[] = [];
+      const { deps } = makeDispatchTurnDeps(agents, []);
+      deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+      if (over.settleInRestartStep) deps.runRequestedRestart = async (turn) => { turn.settle(); };
+      runner.setSystemTurnDeps(deps);
+
+      runner.dispatch(testDispatch({ text: "the user's earlier message" }));
+      await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "resident process started");
+      const resident = agents[0]!;
+      resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitForTurn(() => !runner.running, "first turn ended");
+
+      // A background job ends while the next turn prepares: the CLI starts a turn of its own.
+      deps.prepareAgentEnv = async () => {
+        resident.emit("event", { type: "agent_self_wake", taskId: "t1", status: "completed" });
+        return {};
+      };
+      const outcomes: TurnOutcome[] = [];
+      runner.dispatch(testDispatch({ text: "Your PR #7 merged.", onTurnComplete: (o) => outcomes.push(o) }));
+      await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "wake submitted");
+      expect(agents).toHaveLength(1);
+      return { runner, resident, outcomes };
+    }
+
+    it("does not settle on that turn's result, and settles `completed` on its own", async () => {
+      const { runner, resident, outcomes } = await setup();
+
+      resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await flushTurn();
+      await flushTurn();
+      expect(outcomes).toEqual([]);
+
+      resident.emit("event", { type: "agent_user_replay", text: "Your PR #7 merged." });
+      resident.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Resetting the branch" }] });
+      resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitForTurn(() => outcomes.length === 1, "wake settled");
+
+      expect(outcomes.map((o) => o.status)).toEqual(["completed"]);
+      runner.dispose({ force: true });
+    });
+
+    it("settles `dropped`, so its sender delivers again, when a restart ends the process first", async () => {
+      const { runner, resident, outcomes } = await setup({ settleInRestartStep: true });
+
+      resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      await waitForTurn(() => outcomes.length === 1, "the restart step settled the turn");
+
+      expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
+      runner.dispose({ force: true });
+    });
   });
 
   it("the runner stays busy across the post-turn window, so idle reclaim can't take it", async () => {

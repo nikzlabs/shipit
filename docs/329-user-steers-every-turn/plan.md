@@ -1,7 +1,7 @@
 ---
 issue: planning#689
 title: The user steers every turn
-description: One kind of turn, a hold of its own for ShipIt's branch and container operations, and a queue that puts the user's message first.
+description: Turns that ShipIt starts run on the same process as a typed turn and accept a message from the user; the hold for ShipIt's own operations becomes a flag of its own.
 ---
 
 # The user steers every turn — design
@@ -19,11 +19,12 @@ source on 2026-10-12.
 | The turn runs on a one-shot process. | `dispatched-turn.ts` → `runDispatchedTurnInner`: `useStreaming` is false when `opts.systemTurn` is set, and `runOnce` retires the resident process first. |
 | A message from the user cannot steer it. | `dispatch-steering.ts` → `shouldSteerMessage` refuses while `systemTurnInProgress` is set; `isSteerableDispatch` refuses a system dispatch. |
 | No other turn starts. | `session-runner.ts` → `dispatchOnRunner` queues every dispatch while the flag is set; `queue-drain.ts` → `releaseQueuedTurn` declines. Flows set the same flag with no turn running: `services/rebase-driver.ts` → `takeSystemHold`, `services/recovery.ts` → `takeQueueHold` (a restart), and the decision to compact (`decideWithSystemHold`, `decideCompactBeforeTurn`). |
-| Its sender learns how it ended. | `turn-executor.ts` → `finishTurn` calls `onTurnComplete`, and it is reached from `done`, `superseded` and the error path only. The result path of a resident process does not call it: "a resident streaming turn settles no turn at all". A one-shot process exits after each turn, so `done` is what settles a system turn. |
+| Its sender learns how it ended. | `turn-executor.ts` → `finishTurn` calls `onTurnComplete`. The result path of a resident process does not reach it: "a resident streaming turn settles no turn at all". A one-shot process exits after each turn, and `done` is what settles a system turn. The worker also records a turn's delivery id only at `/agent/start` (`session/agent-controller.ts`), so a turn that enters a resident process has none. |
 
-The fourth row is not a meaning that anybody chose. It is why a turn cannot
-simply be moved to the resident process: the merge watch, the CI fix and the
-rebase driver wait for that settlement.
+Nobody chose the fourth row. It is why a turn cannot simply be moved to the
+resident process: the merge watch, the CI fix and the rebase driver wait for
+that settlement, and the merge watch finds its turn again after an orchestrator
+restart by that delivery id.
 
 The flag was made on 2026-05-29 for one turn, the conflict resolution of an
 automatic rebase (docs/146). `wakeSessionWithTurn` sets it by default, so the
@@ -31,177 +32,180 @@ restart follow-up, the `notify-on-merge --self` wake, the consult result, the
 quota continuation and the stopped-jobs notice took it without a decision of
 their own.
 
-## The design
+## Two parts
 
-### 1. One kind of turn (req 1)
+The work ships in two pull requests. Both reviews of 2026-10-12 asked for the
+split (see the review record below).
 
-`systemTurn` is deleted from `AgentDispatchOptions`, `QueuedMessage`, the
-`prepareDispatch` field table, the executor input and `runAgentWithMessage`.
-Every turn takes the path that a child session's first prompt takes today:
+- **Part 1** makes the turns that do ordinary work ordinary turns. That is the
+  report that started this feature: no steering after a restart.
+- **Part 2** makes the hold a flag of its own, moves the two turns that run
+  inside a ShipIt operation (conflict resolution, compaction), and deletes
+  `systemTurn` and `systemTurnInProgress`. The constraint resolved on
+  2026-10-12 ("a separate flag", "delete the old one") is met at its end.
 
-- `runDispatchedTurnInner` computes `useStreaming` from the Live steering
-  setting and the harness for every turn, and reuses the resident process on
-  the first attempt. The block that retires the resident for a system turn goes.
-  The spawn-identity guards (`releaseResidentOnSpawnChange` and its two
-  siblings) run for every turn, as they do for a typed one.
-- `systemTurnBlockedByResidentWork` goes from the dispatch gate and the drain:
-  no turn replaces the resident process any more. `residentBackgroundWork`
-  stays for two flows that read it as a policy of their own — the automatic
-  rebase does not rewrite the tree under a running job, and the agent's
-  requested compaction waits for the job.
-- The bug-outcome notice rides every turn except a compaction and a driver's
-  step (`postTurn: "none"`), the same rule the other notices already follow.
-- The one-shot note (docs/235-agent-self-wake-liveness §9) is keyed on the
-  process and not on who started the turn: it rides a dispatched turn that will
-  run on a one-shot process.
-- `wakeSessionWithTurn` prepares the agent environment before it dispatches.
-  It now passes `reusingResidentAgent` when a resident process is alive, as the
-  executor does (`session-agent-env.ts` → `repairLeakedSubtrees`).
+## Part 1 — work turns are ordinary turns (req 1, req 2)
 
-What ShipIt still knows about a turn it started: `automatic` (docs/322),
-`unattended` (docs/295), `messageOrigin`, `deliveryId` and `onTurnComplete`.
-None of them changes how the turn runs.
+### The turns
 
-### 2. A turn on a resident process settles at its own result (req 1)
+| Caller | Turn |
+|---|---|
+| `wake-session.ts` → `wakeDispatch` | the follow-up after a requested restart, the `notify-on-merge --self` wake, a finished consult, a quota or sign-in continuation, the stopped-jobs notice |
+| `services/github-ci-fix.ts` → `autoFixDispatch` | the automatic CI fix |
+| `services/secret-block.ts` | the removal of a credential from a commit |
+| `services/rebase-followup.ts` | the note after a rebase |
+| `services/agent-compaction-request.ts` → `continuationEntry` | the note after a compaction that the agent asked for |
 
-Without this, a ShipIt-started turn on the resident process would never tell
-its sender that it ended.
+Each stops setting `systemTurn`. It then takes the path a child session's first
+prompt takes today: `runDispatchedTurnInner` gives it a streaming process when
+Live steering is on and the harness can steer, reuses the resident process, and
+runs the spawn-identity guards. It takes no hold, so `shouldSteerMessage` lets a
+typed message in. `automatic`, `unattended`, `messageOrigin`, `deliveryId` and
+`onTurnComplete` stay; none of them changes how the turn runs.
+
+Three things followed from the flag and now need a statement of their own.
+
+- **A turn of its own.** These dispatches must not become a steer into a turn
+  that is already running. `whenBusy: "queue"` now means "wait, never steer",
+  and each of them passes it. Its one caller today is the rebase follow-up,
+  which never steered, and a queue entry that is dispatched again carries the
+  completion callback that already makes it unsteerable (verified at
+  `prepared-dispatch.ts` → `withSettlement`, `dispatch-steering.ts` →
+  `isSteerableDispatch`).
+- **The one-shot note** (docs/235-agent-self-wake-liveness §9) is keyed on the
+  process too: it rides a turn that ShipIt started (`automatic` or
+  `unattended`) and that will run on a one-shot process, for a harness that
+  starts turns of its own. Its text no longer says who started the turn.
+- **A compaction ahead of the turn.** The dispatched compaction is still a
+  one-shot system turn until Part 2, and it retires the resident process. A
+  system turn used to wait while the resident had background work
+  (`systemTurnBlockedByResidentWork`); a work turn no longer waits. So the
+  decision to compact is skipped while the resident has background work, and
+  the next eligible turn compacts instead.
+
+`wakeSessionWithTurn` prepares the agent environment before it dispatches. It
+now passes `reusingResidentAgent` when a resident process is alive, as the
+executor does (`session-agent-env.ts` → `repairLeakedSubtrees`).
+
+### A turn on a streaming process settles at its own result
 
 In the result path of a streaming turn, after the `idle` step and before the
 continuation, the executor calls `finishTurn()` when the result answers this
-turn's own prompt (`takeResultAttribution`, the same reading that
-`notePromptDelivered` uses). The outcome rule is the one `done` uses today:
-`completed` unless the adapter errored.
+turn's own prompt (`takeResultAttribution`, the reading `notePromptDelivered`
+uses).
 
-- A result that does not answer the prompt (the prompt went in behind a turn
-  that the CLI started) does not settle the turn. The prompt's own result does,
-  when the CLI reads the prompt back. Until then the paths of today still
-  settle it: `done`, `superseded` and a disposed runner.
+- **What "completed" means on a reused process.** `finishTurn` reads
+  `receivedResult`, which any result on the process sets. For a turn that
+  entered a resident process it now also needs the prompt's own result. A turn
+  that is torn down before that settles `dropped`, and its sender delivers
+  again: the restart and compaction steps settle the ending turn early
+  (`runRequestedRestart`, `runRequestedCompaction`), and a restart then
+  destroys the process with the prompt unread.
+- **An adopted turn** (after an orchestrator restart) composed no prompt, so
+  its attribution starts as "running": the turn that was in flight is the one
+  the next result ends.
 - A Stop kills the resident process (`services/agent-interrupt.ts`), so a
   stopped turn still ends as `interrupted` through `done`.
-- This also settles the dispatched turns that are not system turns today and so
-  never settled at their result: a child's first prompt, a headless session's
-  first prompt, an agent-interface message, a manual Fix CI. One caller reads
-  such a handle, the scheduled run's first turn, and it reads a setup failure
-  only (`schedule-runner.ts` → `onFirstTurnSettled`).
+- This also settles the dispatched turns that never settled at their result: a
+  child's first prompt, a headless session's first prompt, an agent-interface
+  message, a manual Fix CI. One caller reads such a handle, the scheduled run's
+  first turn, and it reads a setup failure only (`schedule-runner.ts` →
+  `onFirstTurnSettled`).
 
-### 3. The session hold (resolved 2026-10-12: "a separate flag", "delete the old one")
+### The delivery id travels with the prompt
 
-`runner.sessionHold` replaces `runner.systemTurnInProgress`, with
-`sessionHoldSeq` as its identity. It means one thing: **ShipIt is changing the
-branch or the container itself, so no turn starts.**
+`sendUserMessage` takes the turn's delivery id when the message is a turn's own
+prompt. `ProxyAgentProcess` passes it to `/agent/message`, and the worker
+records it for that turn, as `/agent/start` does. A steer passes none and
+leaves the running turn's id alone. A container whose worker is older than this
+change ignores the field; the merge watch then behaves as it does today for a
+turn with no id.
 
-- Holders, through one helper `takeSessionHold(runner)` that returns a ticket
-  with `release()`: the rebase flow for its whole length, and a restart
-  (`takeQueueHold`, which adds the lease). Nothing else.
-- **No turn takes or releases it.** The writes in `dispatchOnRunner`,
-  `runDispatchedTurn` and `executeAgentTurn` go, and so does `ownsSystemHold`.
-  The rebase driver keeps its hold while its own resolution turn runs, so the
-  hand-over (the turn takes the hold, `finishTurn` releases it, the driver takes
-  it again in `onTurnComplete`) and its gap go.
-- The holder's own step enters under the hold as it does today, by
-  `postTurn: "none"`; the rebase driver is the only caller that sets it.
-- Readers keep their meaning under the new name: the dispatch gate, the drains,
-  `releaseQueuedTurn`, the auto-merge and merge executors, the branch heal, the
-  auto-push deferral, the rebase start, the requested restart and compaction
-  ("another flow holds the session"), and the abort route.
-- **The hold is not an input to the steer rule** (section 4).
-
-Compaction does not use the hold. Its decision already runs with `running`
-claimed on both paths, so the hold did one thing there, block a steer. That is
-now `runner.compacting` (section 4).
-
-### 4. When a message can steer (req 2)
-
-`shouldSteerMessage` becomes: the harness can steer, Live steering is on, the
-process is streaming, **a turn is running, and the agent is not compacting**.
-
-- "A turn is running" replaces the hold. Under a session hold, `running` is
-  true only for the holder's own turn: the rebase refuses to start while a turn
-  runs, a restart waits for the turn's end, and nothing else starts under the
-  hold. So a message typed during conflict resolution steers the agent that
-  resolves the conflicts, and a message typed between two steps of the rebase
-  waits in the queue, because no agent reads then.
-- `runner.compacting` is set from the start of the decision to compact until
-  the compaction turn's drain, and the executor sets it at the start of every
-  turn from `input.compact`, which is what clears a stale value. It covers a
-  compaction that ShipIt starts, one that the agent asked for, and a `/compact`
-  that the user typed while idle. The last one is a change: a message typed
-  during the user's own `/compact` is now queued in front and not steered. That
-  makes the three compactions behave the same (req 1), and it keeps the message
-  behind the compaction it was typed after.
-- A dispatch from ShipIt that needs a turn of its own must not become a steer
-  into someone else's turn. `systemTurn` gave that by accident. Now
-  `whenBusy: "queue"` says it: the dispatch waits and is never steered. The
-  wakes, the automatic CI fix, the credential removal, the requested compaction
-  and the rebase follow-up pass it. The default stays "steer, else queue".
-
-### 5. The user's message goes first (req 2)
+### The user's message goes first (req 2)
 
 - **Queue order.** `takeRunnableQueuedTurn` takes the first entry that is not
-  `automatic` when there is one, and the head otherwise. Today it does that in
-  two special cases of docs/322; it becomes the rule.
-- **An answer is not refused.** `handleAnswerQuestion` answers "busy with a
-  system operation" under the old flag. Under a session hold it queues the
-  answer, as it does under a merge hold.
-- **A message typed during a restart.** The replacement runner carries the
-  queue. When that queue holds a message of the user's, the restart parks the
-  agent's note as a pending notice and releases the queue, so the user's
-  message is the first turn on the new container and carries the note in its
-  prompt. With no such message, the note is its own turn, as today.
+  `automatic` when one exists, and the head otherwise. It does that today in
+  two cases of docs/322; it becomes the rule. It still picks among the entries
+  that can start: the question hold, the saved held turns and the commit gate
+  are read as before.
+- **A message typed during a restart.** The follow-up used to start as soon as
+  the restart's hold came off, ahead of the queue the restart had carried. It
+  now goes to the head of that queue before the hold comes off, and the queue's
+  own order decides: a message of the user's first, then the follow-up.
 
-### What stays one-shot
+## Part 2 — the session hold, and the last two turns
 
-A harness that cannot steer, and any harness while Live steering is off. Those
-turns keep the one-shot note and the stopped-jobs wake. No message steers them,
-whoever started them.
+Not built in Part 1. The design below is the direction; the review found
+defects in the first version of it, listed here so that Part 2 starts from
+them.
 
-## Callers that lose the flag
+- `runner.sessionHold` replaces `runner.systemTurnInProgress`: ShipIt is
+  changing the branch or the container itself, so no turn starts. No ordinary
+  turn takes or releases it. `systemTurn` leaves the dispatch shape, the queue
+  entry and the executor.
+- The conflict-resolution turn must accept a message from the user (req 2). A
+  resident process that outlives that turn is unsafe: the executor's
+  `postTurn: "none"` would apply to turns the CLI starts later, and the driver
+  would rewrite the tree while a live process can still write to it. The
+  direction is a streaming process that ends with the turn, so that it can be
+  steered and nothing survives into the driver's git steps.
+- The hold during a compaction ahead of a turn is also an admission hold:
+  `verifyRunningState` can clear `running` while the decision waits. It cannot
+  become a steer block alone.
+- A message typed while ShipIt compacts ahead of the user's own message waits
+  behind that message's whole turn today. Req 2 asks for more: it must reach
+  the agent when that turn starts.
+- The timeout and the abort of a rebase clear the hold without its owner, and
+  an answer to a question card is refused under the hold ("busy with a system
+  operation"). Both need the hold's owner to be explicit.
 
-| Caller | Change |
-|---|---|
-| `wake-session.ts` (restart follow-up, `--self` merge wake, consult result, quota continuation, stopped-jobs notice) | No flag; `whenBusy: "queue"`. `startOrRefuse` keeps its own admission. |
-| `services/github-ci-fix.ts` → `autoFixDispatch`, `services/secret-block.ts`, `services/rebase-followup.ts` | No flag; `whenBusy: "queue"`. |
-| `services/agent-compaction-request.ts` | No flag. The compaction and its continuation are ordinary entries. |
-| `dispatched-turn.ts`, `ws-handlers/agent-execution.ts` (compaction ahead of a turn) | No flag and no hold; `runner.compacting`. |
-| `services/rebase-driver.ts` | No flag. The flow's hold is a `takeSessionHold` ticket that it keeps across the resolution turn. |
-
-## Known limits
+## Known limits of Part 1
 
 - A prompt that goes in behind a turn the CLI started, and that the CLI never
-  reads back, settles late (at `done`, a displacement or disposal), as every
-  streaming turn does today.
-- A message typed while a turn is still in setup can reach an idle resident
-  process before that turn's own prompt. This is today's behaviour for a typed
-  turn. For the conflict-resolution turn, section 2 is what makes it safe: the
-  driver continues only after the result of its own prompt.
-- A message that waits in the queue behind the user's own earlier message is
-  not steered into that message's turn when it starts. It runs after it.
-- `SystemTurnDeps` keeps its name. It names the dependencies of a dispatched
-  turn and carries no behaviour.
+  reads back, does not settle at a result. It settles at `done`, a
+  displacement or disposal, as every streaming turn did before. The merge watch
+  then sends its wake again.
+- A harness that can steer but ends its process with each turn (Codex) is
+  steerable during a work turn and still starts a process per turn. A queued
+  turn drained at the exact moment that process ends can lose its first
+  attempt; the existing no-result retry starts it again. This is today's
+  behaviour for every dispatched turn on that harness.
+- A work turn can retire the resident process, and its background jobs with
+  it, when the session's model, credential route, tool list or MCP servers
+  changed. A typed message does the same.
+- The rebase-resolution turn and ShipIt's compaction turns still refuse a
+  steer and still run one-shot, until Part 2.
 
-## Order of work
+## Review record
 
-One pull request, built in this order, with the tests of each step green
-before the next:
+2026-10-12, before any code, on the user's instruction. Two independent runs
+of ShipIt's configured reviewer read `requirements.md`, the first version of
+this plan and the code.
 
-1. Settlement at the result, `whenBusy: "queue"`, the queue order.
-2. `sessionHold` and `takeSessionHold`; no turn writes the hold.
-3. The steer rule and `runner.compacting`.
-4. The flag leaves the callers and the types; the rebase driver keeps its hold.
-5. The answer under a hold, and the restart note.
-6. Agent-facing docs, the wiki, and the older design docs that state the old
-   rule (docs/163, docs/235, docs/240, docs/287, docs/295, docs/304, docs/321).
+- **"Would anyone notice if it were removed?"** Applied: no change to a
+  `/compact` that the user types (the first version blocked steering there for
+  symmetry alone); the restart note stays a queue entry and is not turned into
+  a pending notice; two pull requests. Not applied: letting a message steer
+  into a compaction that ShipIt starts. `docs/295-compact-context-on-merge`
+  blocks that so the message cannot run before the message that waits behind
+  the compaction, on a branch that message is about to reset.
+- **Defects.** Applied in Part 1: the delivery id on a resident process; the
+  settlement of an adopted turn; `completed` on a reused process needs the
+  prompt's own result; the wording "no turn replaces the resident". Moved to
+  Part 2 with the design they belong to: the resident conflict resolver, the
+  admission half of the compaction hold, the rebase timeout and abort, answers
+  under a hold, the compaction flag's lifecycle. Not applied: a separate
+  acceptance path for a rejected `/agent/message`. The worker that has no agent
+  already ends such a turn as `dropped` (`verifyRunningState` →
+  `turn_abandoned`), and the new `dropped` settlement covers a prompt that was
+  never read.
 
-## Key files
+## Key files (Part 1)
 
-- `src/server/orchestrator/session-runner.ts` — the dispatch shape and gate, the runner interface
-- `src/server/orchestrator/container-session-runner.ts` — the same runner state for a container
-- `src/server/orchestrator/session-hold.ts` — `takeSessionHold` (new)
-- `src/server/orchestrator/dispatch-steering.ts` — the steer rule
-- `src/server/orchestrator/dispatched-turn.ts` — one path for every dispatched turn
-- `src/server/orchestrator/turn-executor.ts` — settlement at the result
-- `src/server/orchestrator/queue-drain.ts`, `turn-admission.ts` — the queue order and the gates
 - `src/server/orchestrator/wake-session.ts` — the wakes
-- `src/server/orchestrator/ws-handlers/send-message.ts`, `agent-execution.ts` — the typed path, the answer, compaction
-- `src/server/orchestrator/services/rebase-driver.ts`, `recovery.ts`, `agent-restart-request.ts`, `agent-compaction-request.ts` — the flows
+- `src/server/orchestrator/session-runner.ts` → `dispatchOnRunner` — `whenBusy: "queue"`
+- `src/server/orchestrator/dispatched-turn.ts` — the one-shot note, the compaction guard
+- `src/server/orchestrator/turn-executor.ts` — settlement at the result
+- `src/server/orchestrator/queue-drain.ts` — the queue order
+- `src/server/orchestrator/proxy-agent-process.ts`, `container-session-runner.ts`, `worker-http.ts`, `src/server/session/agent-controller.ts` — the delivery id
+- `src/server/orchestrator/services/agent-restart-request.ts`, `github-ci-fix.ts`, `secret-block.ts`, `rebase-followup.ts`, `agent-compaction-request.ts` — the callers

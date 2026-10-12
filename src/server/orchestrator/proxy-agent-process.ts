@@ -26,7 +26,7 @@ export interface ProxyAgentRunner {
     turn?: { deliveryId?: string },
   ): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
-  sendAgentMessage(text: string): Promise<void>;
+  sendAgentMessage(text: string, turn?: { deliveryId?: string }): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
   killAgentOnWorker(opts?: { victimRunToken?: string }): Promise<void>;
   setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
@@ -102,11 +102,13 @@ export class ProxyAgentProcess extends EventEmitter<{
 
   readonly isStreaming = false;
 
-  sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
+  sendUserMessage(text: string, opts?: { images?: unknown[]; deliveryId?: string }): void {
     console.log(
       `[steer-proxy] agentId=${this.agentId} → /agent/message (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
     );
-    const accepted = this.runner.sendAgentMessage(text);
+    const accepted = opts?.deliveryId !== undefined
+      ? this.runner.sendAgentMessage(text, { deliveryId: opts.deliveryId })
+      : this.runner.sendAgentMessage(text);
     this.lastSubmission = accepted;
     void this._logSubmission(accepted, text);
   }

@@ -64,7 +64,7 @@ import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows } from "./chat-card-persistence.js";
 import { denyAbandonedPermissionCards } from "./permission-cards.js";
-import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -314,7 +314,8 @@ export async function executeAgentTurn(
     Three rounds of review each found the ordering the previous guess traded
     against, which is what says this is undecidable rather than unhandled.
   */
-  let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = "unsubmitted";
+  // An adopted turn composed no prompt: the turn in flight is the one the next result ends.
+  let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = input.adopt ? "running" : "unsubmitted";
   let cliTurnPending = false;
   let resultsObserved = 0;
 
@@ -473,6 +474,17 @@ export async function executeAgentTurn(
         && (input.attemptLedger ?? []).some((entry) => entry.failureKind === "quota"))
     );
 
+  // Any result on a reused process sets `receivedResult`, also one that ended a turn the CLI
+  // started; only the result of this prompt completes this turn (docs/329-user-steers-every-turn).
+  const ownResultSeen = (): boolean =>
+    receivedResult && (input.reuseExistingAgent !== true || ownTurn === "ended");
+
+  // A prompt the reused process never began: its sender delivers it again.
+  const endedWithoutOwnResult = (): TurnOutcome =>
+    ownTurn === "running"
+      ? turnInterrupted("the agent process ended another turn before this prompt's result")
+      : turnDropped("the agent process did not start on this prompt");
+
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
     // Hold identity, not the turn epoch (docs/304): the release below must only run when
@@ -484,13 +496,15 @@ export async function executeAgentTurn(
       settleTurn(
         agentErrored
           ? turnErrored()
-          : receivedResult
+          : ownResultSeen()
             ? TURN_COMPLETED
             : wasSuperseded
               ? turnInterrupted("a newer turn took the agent slot before this one finished")
               : (runner?.wasInterrupted ?? false)
                 ? turnInterrupted("the turn was interrupted before it produced a result")
-                : turnNoResult("agent process exited without producing a turn result"),
+                : receivedResult
+                  ? endedWithoutOwnResult()
+                  : turnNoResult("agent process exited without producing a turn result"),
       );
     } finally {
       // An entry the drain passed over — a system turn behind this one's background work —
@@ -1609,6 +1623,9 @@ export async function executeAgentTurn(
           await postTurnStep("finished-sse", broadcastFinishedIfIdle);
           await postTurnStep("commit", runCommitAndPr);
           await postTurnStep("idle", signalIdleIfIdle);
+          // A streaming process need not exit when its turn ends, so the turn settles at
+          // the result of its own prompt (docs/329-user-steers-every-turn).
+          if (answersThisPrompt) await postTurnStep("settle", finishTurn);
           // Last of all: the continuation is a new turn, so this one must be fully settled.
           await postTurnStep("continuation", runContinuation);
             } finally {
@@ -1867,7 +1884,10 @@ export async function executeAgentTurn(
         agent.setPermissionMode(input.permissionMode);
         runner.appliedPermissionMode = input.permissionMode;
       }
-      agent.sendUserMessage(prompt);
+      // The worker records the id at a spawn only; a turn that enters a resident process
+      // carries it with its prompt, so a restart can still bind its settlement.
+      if (input.deliveryId !== undefined) agent.sendUserMessage(prompt, { deliveryId: input.deliveryId });
+      else agent.sendUserMessage(prompt);
       noteSubmitted();
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);

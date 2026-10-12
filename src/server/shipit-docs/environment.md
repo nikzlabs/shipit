@@ -512,22 +512,23 @@ no durability guarantee and belong in `docker-compose.yml`.
   window for everything still outstanding. Treat it as cover for a build or a
   test run, never as a guarantee your job runs to completion. Nothing about it
   survives eviction once that does happen.
-- **On a turn that ShipIt started, the agent process exits a few seconds after
-  your message ends, and a `run_in_background` job that is still running stops
-  with it.** A turn that a user's message starts normally runs on a resident
-  process: you can end the message, and the end of the job starts a new turn
-  for you. A turn that ShipIt starts does not. That is the wake after
+- **A `run_in_background` job outlives your message only on a resident agent
+  process.** With the `advanced.liveSteering` setting on
+  (`shipit settings get advanced.liveSteering`) and a harness that can take a
+  message mid-turn, a turn runs on a resident process: you can end the message,
+  and the end of the job starts a new turn for you. That holds for a turn the
+  user typed and for a turn ShipIt started — the wake after
   `notify-on-merge --self`, a finished consult, a CI fix, a rebase follow-up,
-  and the turn after `shipit session restart`. There the process exits about
-  five seconds after your message ends. A job that is still running then is
-  stopped before it finishes, and **no completion notice comes for it**. Do not
-  count on those seconds. Such a turn begins with a `[System]` line that says
-  so. The same limit applies to a turn that the user typed when the
-  `advanced.liveSteering` setting is off
-  (`shipit settings get advanced.liveSteering`), and that turn carries no such
-  line. On these turns, run the work in the foreground and wait for it in the
-  same message; split work that is longer than one tool call allows, or declare
-  it as a Compose service. If you leave a job running, ShipIt normally starts
+  the turn after `shipit session restart` — and the user can send a message
+  into either. Otherwise the process exits about five seconds after your
+  message ends. A job that is still running then is stopped before it finishes,
+  and **no completion notice comes for it**. Do not count on those seconds. A
+  turn that ShipIt started on such a process begins with a `[System]` line that
+  says so; a turn the user typed carries no such line. The turn that resolves
+  the conflicts of a rebase always runs on a process that exits. On these
+  turns, run the work in the foreground and wait for it in the same message;
+  split work that is longer than one tool call allows, or declare it as a
+  Compose service. If you leave a job running, ShipIt normally starts
   one turn that names the jobs. It starts none if that turn leaves a job running
   too, or if another turn or a credential change took the agent process before
   it exited: then you get the note with a later turn, and the user normally gets
@@ -615,7 +616,8 @@ shipit session restart --note "check that node -v prints 22, then run the tests"
 That records the request; ShipIt restarts the agent container **after your
 turn ends**, so the turn that asked is not cut off. The preview services keep
 running. ShipIt then starts a new turn on the new container with your note, so
-write in it what to check or do next. Say in your reply what you restart and
+write in it what to check or do next. A message the user sent during the
+restart runs first, and your note's turn comes after it. Say in your reply what you restart and
 why. See [sessions.md](sessions.md) → `shipit session restart`.
 
 You cannot ask for **Restart all** (it also stops and restarts the Compose

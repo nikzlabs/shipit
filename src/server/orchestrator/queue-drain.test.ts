@@ -174,6 +174,22 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
 
     expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
   });
+
+  // docs/329-user-steers-every-turn req 2
+  it("takes a message of the user's from behind entries of other sources, and keeps their order", () => {
+    const queue: QueuedMessage[] = [
+      { text: "PR #7 merged", execution: "dispatched", automatic: true },
+      { text: "CI failed", execution: "dispatched", automatic: true },
+      { text: "typed first", execution: "interactive" },
+      { text: "typed second", execution: "interactive" },
+    ];
+    const { runner } = fakeQueueRunner({ queue, resident: false });
+
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("typed first");
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("typed second");
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("PR #7 merged");
+    expect(queue.map((m) => m.text)).toEqual(["CI failed"]);
+  });
 });
 
 describe("a question holds automatic entries (docs/322)", () => {

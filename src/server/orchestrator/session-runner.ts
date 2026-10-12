@@ -234,6 +234,10 @@ export class AgentTurnAdmissionError extends Error {
  *
  * `"steer-or-refuse"` is never queued either, but a running turn that can take a steer
  * gets the text (docs/328-session-message-inbox).
+ *
+ * `"queue"` is for work that needs a turn of its own: it waits behind a running turn and is
+ * never steered into it (docs/329-user-steers-every-turn). With no admission, a dispatch is
+ * steered when the running turn can take it, and queued otherwise.
  */
 export interface DispatchAdmission {
   whenBusy: "queue" | "refuse" | "steer-or-refuse";
@@ -294,8 +298,9 @@ export function dispatchOnRunner(
     // docs/322 — a turn that is ending on a question is not one to steer automatic work into.
     const endingOnQuestion = opts.automatic === true
       && (runner.awaitingUserAnswer || runner.answerHold);
-    // A refusing caller wants its own turn or nothing; steering delivers into someone else's.
-    if (admission?.whenBusy !== "refuse" && !endingOnQuestion) {
+    // A caller that named `refuse` or `queue` wants its own turn; steering delivers into someone else's.
+    const maySteer = admission === undefined || admission.whenBusy === "steer-or-refuse";
+    if (maySteer && !endingOnQuestion) {
       // Test steering before attaching settlement: a completion callback makes a dispatch unsteerable.
       if (deps && trySteerDispatch(runner, opts, deps)) {
         settlement.noteAdmission("steered");

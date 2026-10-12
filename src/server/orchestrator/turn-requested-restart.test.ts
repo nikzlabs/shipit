@@ -100,7 +100,7 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
   function setup(opts: { postTurn?: "none"; systemTurn?: boolean; settleInStep?: boolean } = {}) {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const events: string[] = [];
-    const seen: { turn: RequestedRestartTurn; commits: number; ownsHold: boolean; current: boolean }[] = [];
+    const seen: { turn: RequestedRestartTurn; commits: number; ownsHold: boolean; held: boolean; current: boolean }[] = [];
     const compactionTurns: RequestedRestartTurn[] = [];
     runner.on("idle", () => events.push("idle"));
     const onTurnComplete = vi.fn();
@@ -126,6 +126,7 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
           turn,
           commits: commitCount(),
           ownsHold: turn.ownsSystemHold(),
+          held: runner.systemTurnInProgress,
           current: turn.turnIsCurrent(),
         });
       },
@@ -224,7 +225,7 @@ describe("the requested-restart step in a turn's terminal sequence", () => {
     agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => seen.length === 1, "requested-restart step");
 
-    expect(runner.systemTurnInProgress).toBe(true);
+    expect(seen[0]!.held).toBe(true);
     expect(seen[0]!.ownsHold).toBe(true);
     runner.dispose({ force: true });
   });

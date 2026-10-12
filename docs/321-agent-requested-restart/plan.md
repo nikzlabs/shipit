@@ -21,7 +21,7 @@ agent turn ──► shipit session restart --note N ──► sessions.pending_
 turn ends ──► commit ──► PR/release flows ──► push armed ──► restart step ──► (idle)
 restart step, on the current runner only:
    a turn runs or a flow holds the session ──► leave it pending; the next turn's end retries
-   otherwise ──► hold new messages ──► restartAgent() carries them ──► wake turn with N ──► held messages run
+   otherwise ──► hold new messages ──► restartAgent() carries them ──► the user's held messages run ──► wake turn with N ──► the other held entries run
 ```
 
 ## Pieces
@@ -102,9 +102,12 @@ opt-in `carryQueue`:
   anything that queued on the old runner in the gap while no runner was
   registered: the chat path falls back to the socket's attached runner, which is
   still held.
-- It returns the hold (`held`). The wake releases it just before its dispatch
-  (`wakeSessionWithTurn` option `releaseHold`), so the wake turn is admitted
-  first and the carried messages drain at its end, as they would after any turn.
+- It returns the hold (`held`). The wake puts its turn at the head of the
+  carried queue and then releases the hold (`wakeSessionWithTurn` option
+  `releaseHold`). The queue's own order decides what runs first: a message of
+  the user's, then the wake, then the other carried entries
+  (`docs/329-user-steers-every-turn` req 2). Until 2026-10-12 the wake ran ahead
+  of everything the restart had carried.
 
 The **Restart agent container** button does not pass the option and keeps
 today's behaviour.

@@ -10,6 +10,7 @@ import { storeOnlyInbox } from "../session-inbox-test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, SystemTurnDeps } from "../session-runner.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 import type {
   AgentProcess,
   AgentProcessEvents,
@@ -38,13 +39,14 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   runCalled = false;
   lastParams: AgentRunParams | null = null;
   readonly isStreaming = false;
+  readonly messages: string[] = [];
 
   run(params: AgentRunParams): void {
     this.runCalled = true;
     this.lastParams = params;
   }
   writeStdin(): void {}
-  sendUserMessage(): void {}
+  sendUserMessage(text: string): void { this.messages.push(text); }
   interrupt(): void {}
   kill(): void {}
   writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
@@ -149,7 +151,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  function makeRunner(): ContainerSessionRunner {
+  function makeRunner(opts: { steering?: boolean } = {}): ContainerSessionRunner {
     const runner = new ContainerSessionRunner({
       sessionId: WOKEN_ID,
       sessionDir: "/tmp/woken-session",
@@ -164,6 +166,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
       scheduleAutoPush: () => {},
       buildRunParams: async (_sessionId, _agentId, prompt) => ({ prompt, cwd: "/workspace" }),
       rebindDelivery: (deliveryId) => manager.rebindDelivery(deliveryId),
+      ...(opts.steering ? { steerInputs: () => ({ liveSteering: true, steeringCapable: true }) } : {}),
       listenerDeps: {
         sessionManager,
         chatHistoryManager,
@@ -252,6 +255,95 @@ describe("Integration: durable delivery identity across a restart (planning#266)
     const done = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
     expect(done.turnActive).toBe(false);
     expect(done.deliveryId).toBeUndefined();
+  });
+
+  // docs/329-user-steers-every-turn — a wake no longer spawns a process of its own, so its
+  // identity must travel with the message that starts its turn on the resident one.
+  describe("a wake that enters a resident process", () => {
+    async function startResidentProcess(): Promise<void> {
+      const res = await fetch(`${workerUrl}/agent/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: "claude",
+          runToken: "resident-token",
+          params: { prompt: "the user's earlier message", cwd: "/workspace", useStreaming: true },
+        }),
+      });
+      expect(res.status).toBe(200);
+      await waitFor(() => lastAgent?.runCalled, 2000, "worker started the resident process");
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+    }
+
+    const postMessage = (body: Record<string, string>) =>
+      fetch(`${workerUrl}/agent/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const status = async () =>
+      (await (await fetch(`${workerUrl}/agent/status`)).json()) as WorkerAgentStatus;
+
+    it("the worker records the delivery of a turn's own prompt, and a steer leaves it alone", async () => {
+      await startResidentProcess();
+      expect((await status()).deliveryId).toBeUndefined();
+
+      expect((await postMessage({ text: "Your PR #7 merged.", deliveryId: DELIVERY_ID })).status).toBe(200);
+      const live = await status();
+      expect(live.turnActive).toBe(true);
+      expect(live.deliveryId).toBe(DELIVERY_ID);
+
+      expect((await postMessage({ text: "use the other branch" })).status).toBe(200);
+      expect((await status()).deliveryId).toBe(DELIVERY_ID);
+
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      expect((await status()).deliveryId).toBeUndefined();
+    });
+
+    it("the orchestrator sends the delivery with the prompt when the turn reuses the resident process", async () => {
+      const runner = makeRunner({ steering: true });
+      runner.dispatch(testDispatch({ text: "the user's earlier message" }));
+      await waitFor(() => lastAgent?.runCalled, 2000, "first turn started");
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      await waitFor(() => !runner.running, 2000, "first turn ended");
+      expect(spawnCount).toBe(1);
+
+      const outcomes: string[] = [];
+      runner.dispatch(testDispatch({
+        text: "Your PR #7 merged.",
+        deliveryId: DELIVERY_ID,
+        onTurnComplete: (o) => outcomes.push(o.status),
+      }));
+
+      await waitFor(() => lastAgent.messages.length === 1, 2000, "the wake reached the resident process");
+      expect(spawnCount).toBe(1);
+      expect((await status()).deliveryId).toBe(DELIVERY_ID);
+
+      // No process exit: the turn settles at the result of its own prompt.
+      lastAgent.emit("event", { type: "agent_user_replay", text: lastAgent.messages[0]! });
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      await waitFor(() => outcomes.length === 1, 2000, "the wake settled");
+      expect(outcomes).toEqual(["completed"]);
+    });
+
+    it("a restart during that turn yields ONE turn, and the watch settles at the result with no process exit", async () => {
+      seedDispatchedWatch("self");
+      await startResidentProcess();
+      expect((await postMessage({ text: "Your PR #7 merged.", deliveryId: DELIVERY_ID })).status).toBe(200);
+      lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "MIDTURN_TEXT" }] });
+      chatHistoryManager.append(WOKEN_ID, { role: "user", text: "wake" });
+
+      expect(await restartSweep()).toBe(true);
+      expect(spawnCount).toBe(1);
+      expect(watchOf("self")?.state).toBe("merge-observed");
+
+      await waitFor(() => runners[0].accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+
+      await waitFor(() => watchOf("self")?.state === "delivered", 3000, "watch delivered at the result");
+      expect(watchOf("self")?.deliveryAttempts).toBe(1);
+    });
   });
 
   // A parent's watch on a child ("child") has a wake turn only when an older ShipIt started it:

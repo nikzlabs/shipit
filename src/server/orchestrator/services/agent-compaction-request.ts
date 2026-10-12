@@ -225,7 +225,7 @@ function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: st
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: true,
+    systemTurn: undefined,
     automatic: true,
     heldId: undefined,
     onTurnComplete: (outcome: TurnOutcome) => {

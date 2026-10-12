@@ -93,13 +93,13 @@ describe("reportStoppedBackgroundJobs (docs/235 §9)", () => {
     vi.restoreAllMocks();
   });
 
-  it("wakes the session with a system turn that names every stopped job", async () => {
+  it("wakes the session with a turn that names every stopped job", async () => {
     const decision = await reportStoppedBackgroundJobs(ctx.deps, { sessionId: "s1", jobs: JOBS, mayWake: true });
 
     expect(decision).toEqual({ woken: true, admitted: "started" });
     expect(ctx.runner.dispatched).toHaveLength(1);
     const dispatched = ctx.runner.dispatched[0];
-    expect(dispatched.systemTurn).toBe(true);
+    expect(dispatched.systemTurn).toBeUndefined();
     expect(dispatched.automatic).toBe(true);
     expect(dispatched.text).toBe(buildStoppedBackgroundJobsPrompt(JOBS));
     for (const job of JOBS) expect(dispatched.text).toContain(job);

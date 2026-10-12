@@ -101,6 +101,7 @@ export {
   extractErrorLines,
   buildCIFixPrompt,
   autoFixDispatch,
+  dispatchAutoFix,
   triggerCIFix,
 } from "./github-ci-fix.js";
 

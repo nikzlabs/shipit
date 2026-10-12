@@ -73,6 +73,29 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     expect(userRows.map((m) => m.text)).toEqual(["Retry the failed import"]);
   });
 
+  // docs/329-user-steers-every-turn — the compaction turn replaces the resident process.
+  it("does not compact ahead of a turn while the resident process has background work", async () => {
+    const { agents, deps, prompts, decisions } = setup();
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "first", compactContext: false }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "s" });
+    await flushTurn();
+    runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+    expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
+    decisions.length = 0;
+
+    runner.dispatch(testDispatch({ text: "Your PR #7 merged.", automatic: true }));
+    await flushTurn();
+
+    expect(decisions).toEqual([]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("Your PR #7 merged."));
+    expect(prompts.some((p) => p.startsWith("/compact"))).toBe(false);
+  });
+
   it("tells the decision when nobody was at the composer (req 15)", async () => {
     const cases: [Parameters<typeof testDispatch>[0], boolean][] = [
       [{ text: "a page message", agentInterface: { source: "agent_interface_sdk", surface: "present" } }, false],

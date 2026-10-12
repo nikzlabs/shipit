@@ -30,6 +30,7 @@ import {
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
+import { residentBackgroundWork } from "./turn-admission.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 import { loadPrompt } from "./load-prompt.js";
@@ -114,8 +115,10 @@ async function runDispatchedTurnInner(
   const sessionDir = runner.sessionDir;
 
   // Keep this message first after compaction; avoid resolving its attachments twice.
+  // The compaction turn replaces the resident process, so it waits for that one's background work.
   if (
     sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    && residentBackgroundWork(runner).length === 0
     && await decideWithSystemHold(runner, () =>
       deps.shouldCompactBeforeTurn?.(
         runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
@@ -284,12 +287,14 @@ async function runDispatchedTurnInner(
       ? deps.sessionStatusContext?.(runner.sessionId) ?? ""
       : "";
 
-  // docs/235-agent-self-wake-liveness §9 — a system turn always runs on a one-shot process,
-  // and the agent cannot see that. Only where a resident process starts a turn when a
-  // background job ends: there the agent ends a message to wait for one. A driver-owned
-  // turn's prompt is the driver's script, so the note stays off it like the notice above.
+  // docs/235-agent-self-wake-liveness §9 — the agent cannot see which kind of process its
+  // turn runs on. Only where a resident process starts a turn when a background job ends:
+  // there the agent ends a message to wait for one. A driver-owned turn's prompt is the
+  // driver's script, so the note stays off it like the notice above.
+  const startedByShipIt = opts.systemTurn === true || opts.automatic === true || opts.unattended === true;
+  const runsOnOneShotProcess = !useStreaming && !(runner.isStreamingActive && runner.getAgent() !== null);
   const oneShotTurnNote =
-    opts.systemTurn && opts.postTurn !== "none" && !isCompactRequest
+    startedByShipIt && runsOnOneShotProcess && opts.postTurn !== "none" && !isCompactRequest
     && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false)
       ? ONE_SHOT_TURN_NOTE
       : "";

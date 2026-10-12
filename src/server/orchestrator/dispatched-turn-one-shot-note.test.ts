@@ -9,14 +9,15 @@ import {
   type FakeAgent,
 } from "./integration_tests/dispatch-test-helpers.js";
 
-// docs/235 §9 — a turn that ShipIt starts runs on a process that exits when the message ends.
+// docs/235 §9 — a turn that ShipIt starts can run on a process that exits when the message ends.
 describe("dispatched turn — the one-shot note in the prompt", () => {
   let runner: SessionRunner;
   afterEach(() => { runner?.dispose({ force: true }); vi.restoreAllMocks(); });
 
-  function setup(agentId: AgentId = "claude" as AgentId) {
+  function setup(agentId: AgentId = "claude" as AgentId, opts: { steering?: boolean } = {}) {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
+    if (opts.steering) deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
     const prompts: string[] = [];
     deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
       prompts.push(prompt);
@@ -37,12 +38,29 @@ describe("dispatched turn — the one-shot note in the prompt", () => {
     expect(prompts[0]!.indexOf(ONE_SHOT_TURN_NOTE)).toBeLessThan(prompts[0]!.indexOf("Your PR #7 merged."));
   });
 
-  it("stays off a turn that is not a system turn", async () => {
+  it("stays off a turn that ShipIt did not start", async () => {
     const { prompts } = setup();
     runner.dispatch(testDispatch({ text: "A message from the parent session" }));
     await flushTurn();
 
     expect(prompts[0]).not.toContain(ONE_SHOT_TURN_NOTE);
+  });
+
+  // docs/329-user-steers-every-turn — a wake is no longer a system turn, and the note follows the process.
+  it("rides a wake that will run on a one-shot process", async () => {
+    const { prompts } = setup();
+    runner.dispatch(testDispatch({ text: "Your PR #7 merged.", automatic: true, unattended: true }));
+    await flushTurn();
+
+    expect(prompts[0]).toContain(ONE_SHOT_TURN_NOTE);
+  });
+
+  it("stays off a wake that will run on a streaming process", async () => {
+    const { prompts } = setup("claude" as AgentId, { steering: true });
+    runner.dispatch(testDispatch({ text: "Your PR #7 merged.", automatic: true, unattended: true }));
+    await flushTurn();
+
+    expect(prompts[0]).toBe("Your PR #7 merged.");
   });
 
   it("stays off a driver-owned turn", async () => {

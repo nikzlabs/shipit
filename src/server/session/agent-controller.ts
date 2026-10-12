@@ -328,7 +328,7 @@ export class AgentController {
       return { live: this.liveServiceMcp };
     });
 
-    app.post<{ Body: { text: string } }>(
+    app.post<{ Body: { text: string; deliveryId?: string } }>(
       "/agent/message",
       async (request, reply) => {
         if (!(await this.startSettledWithin(this.deps.messageStartWaitMs ?? MESSAGE_START_WAIT_MS))) {
@@ -350,6 +350,9 @@ export class AgentController {
         );
         // Preserve the replay anchor when steering an active turn.
         if (!this.turnActive) this.beginTurn();
+        // A turn's own prompt names its delivery, as /agent/start does; a steer names none.
+        const deliveryId = request.body?.deliveryId;
+        if (typeof deliveryId === "string" && deliveryId) this.turnDeliveryId = deliveryId;
         this.agent.sendUserMessage(text);
         return { success: true };
       },

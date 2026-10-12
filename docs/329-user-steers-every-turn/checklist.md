@@ -4,36 +4,33 @@
 
 - [x] `requirements.md` from the user's words
 - [x] `plan.md`
-- [ ] Independent review of the requirements and the design, with one pass on
+- [x] Independent review of the requirements and the design, with one pass on
       the brief "would anyone notice if it were removed?"
 
-## Build
+## Part 1 — work turns are ordinary turns
 
-- [ ] A streaming turn settles at the result of its own prompt
-- [ ] `whenBusy: "queue"` is never steered
-- [ ] The queue takes the user's entry before an automatic one
-- [ ] `runner.sessionHold` and `takeSessionHold`; no turn writes the hold
-- [ ] The steer rule reads a running turn and `runner.compacting`, not the hold
-- [ ] `systemTurn` is gone from the dispatch shape, the queue entry, the executor
-      and every caller
-- [ ] The rebase driver keeps its hold across the resolution turn
-- [ ] An answer under a session hold is queued, not refused
-- [ ] A restart with a queued message of the user's parks its note and lets the
-      message run first
-- [ ] `wakeSessionWithTurn` passes `reusingResidentAgent` when a resident is alive
-
-## Tests
-
-- [ ] A message typed during a turn that ShipIt started is steered
-- [ ] A dispatched streaming turn settles `completed` with no process exit
-- [ ] A message typed during conflict resolution is steered; one typed between
-      two steps of the rebase is queued
-- [ ] A message typed during a compaction is queued in front
-- [ ] The queue order, the answer under a hold, the restart note
-- [ ] Mutation checks for each new test
-
-## After the build
-
+- [x] The wakes, the automatic CI fix, the credential removal, the rebase
+      follow-up and the compaction follow-up stop setting `systemTurn`
+- [x] `whenBusy: "queue"` is never steered, and those dispatches pass it
+- [x] A streaming turn settles at the result of its own prompt
+- [x] `completed` on a reused process needs the prompt's own result
+- [x] An adopted turn settles at its next result
+- [x] The delivery id travels with a turn's own prompt to the worker
+- [x] The one-shot note is keyed on the process
+- [x] No compaction ahead of a turn while the resident has background work
+- [x] `wakeSessionWithTurn` passes `reusingResidentAgent` when a resident is alive
+- [x] The queue takes the user's entry before an automatic one
+- [x] The restart follow-up enters the carried queue before the hold comes off
+- [x] Tests, with a mutation check for each new one
 - [ ] Independent review of the diff against every numbered requirement
-- [ ] `src/server/shipit-docs/environment.md`, `sessions.md`, and the wiki
+- [x] `src/server/shipit-docs/environment.md`, `sessions.md`, and the wiki
+
+## Part 2 — the session hold, and the last two turns
+
+- [ ] The design, corrected for the defects in the review record, and reviewed
+- [ ] `runner.sessionHold`; no ordinary turn writes the hold
+- [ ] The conflict-resolution turn accepts a message from the user
+- [ ] ShipIt's compaction turns, and a message typed during one
+- [ ] An answer under a hold is queued, not refused
+- [ ] `systemTurn` and `systemTurnInProgress` are deleted
 - [ ] The older design docs that state the old rule

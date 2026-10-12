@@ -163,8 +163,10 @@ which is the defect docs/239 flagged. It reads that outcome via the
 `onTurnComplete` adapter rather than `await handle.settled`, on purpose: the
 handle resolves a microtask later, and the notify-on-merge state machine (plus
 its regression suite) is written against a synchronous "the turn finished" edge.
-Nothing is lost by that choice — a wake turn is always `systemTurn: true`, hence
-never steerable, and the `dropped` case reaches `onTurnComplete` too.
+Nothing is lost by that choice — a wake is never steered into another turn, and the
+`dropped` case reaches `onTurnComplete` too. When this was written `systemTurn: true`
+kept a wake out of a running turn; since `docs/329-user-steers-every-turn` its
+admission does (`whenBusy: "queue"`), and its turn settles at its own result.
 
 ## Why not just more tests
 

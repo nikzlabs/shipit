@@ -663,8 +663,11 @@ Coverage: `adapter.test.ts` → "a task notice left by the previous process";
 
 Probe A and §7 agree that a one-shot CLI leaves "nothing to wake". That is correct for
 the container, and it left the *agent* with no signal. The agent cannot see which kind
-of process its turn runs on, and every turn that ShipIt starts is one-shot
-(`docs/287-consult-result-delivery/plan.md` §1). So an agent that ended a message to
+of process its turn runs on, and when this was written every turn that ShipIt starts was
+one-shot (`docs/287-consult-result-delivery/plan.md` §1). Since
+`docs/329-user-steers-every-turn` a turn that ShipIt starts for work runs on the process a
+typed turn would run on, so this section applies where that process is one-shot: Live
+steering off, or a harness that cannot hold a process. So an agent that ended a message to
 wait for a `run_in_background` build — a pattern that works on a turn the user typed —
 lost the build about 5 s later, got no notice, and was never started again. In
 production a session stayed idle for 9 h 13 min this way, on the second link of a
@@ -784,7 +787,8 @@ that work is not repeated: this note only informs, so a repeat costs little and 
 leaves the agent waiting.
 
 **The agent is also told before it makes the mistake.** `dispatched-turn.ts` puts
-`prompts/one-shot-turn-note.md` in the prompt prefix of every system turn except
+`prompts/one-shot-turn-note.md` in the prompt prefix of every turn that ShipIt started
+and that will run on a one-shot process (`docs/329-user-steers-every-turn`), except
 compaction and a driver-owned turn (`postTurn: "none"`, whose prompt is the driver's
 script; the pending notice and the status card stay off it too), for a harness with
 `startsOwnTurns` (the only kind whose agent has a reason to end a message and wait). `/shipit-docs/environment.md` and the `notify-on-merge`
@@ -798,15 +802,16 @@ chain section of `/shipit-docs/sessions.md` state the same rule.
   the queue is not empty): a held process would delay the commit for the length of the
   job and let a drained successor run beside a live predecessor. §7's first gate exists
   to keep those two apart.
-- *Running system turns on a resident process.* Ruled out for the reasons in
-  `docs/287-consult-result-delivery/requirements.md` (resolved 2026-09-03). It would also
+- *Running system turns on a resident process.* Ruled out at the time for the reasons in
+  `docs/287-consult-result-delivery/requirements.md` (resolved 2026-09-03), and reversed on
+  2026-10-12 (`docs/329-user-steers-every-turn` req 1). It would also
   leave a user-typed turn uncovered when `advanced.liveSteering` is off, which is one-shot
   too; the report covers both because it keys on the process, not on who started the turn.
 
 **Residuals.**
 
-- The one-shot note rides system turns only; a user-typed one-shot turn (live steering
-  off) gets the wake but not the note.
+- The one-shot note rides turns that ShipIt started only; a user-typed one-shot turn (live
+  steering off) gets the wake but not the note.
 - A displaced process gets no wake. When a dispatched turn displaced it, the note waits
   for the turn after that one, and the user's notice is the only prompt for it.
 - A parked note is the session's pending agent notice, which it shares. A branch sync and

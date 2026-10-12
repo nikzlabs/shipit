@@ -1,7 +1,13 @@
 import type { SessionManager } from "./sessions.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import { prepareDispatch, withSettlement, type PreparedDispatch } from "./prepared-dispatch.js";
-import { createTurnSettlement, turnRefused, type TurnHandle, type TurnOutcome } from "./turn-settlement.js";
+import {
+  createTurnSettlement,
+  turnRefused,
+  type TurnHandle,
+  type TurnOutcome,
+  type TurnSettlement,
+} from "./turn-settlement.js";
 import { toQueuedMessage } from "./session-runner.js";
 import { readAnswerHold } from "./turn-admission.js";
 import { holdTurn } from "./held-turns.js";
@@ -35,13 +41,14 @@ export interface WakeTurnOptions {
   /** Worker-persisted identity lets adoption restore settlement after restart. */
   deliveryId?: string;
   /**
-   * The caller's hold on this runner, released just before the dispatch so the wake runs
-   * ahead of the messages it kept queued (docs/321-agent-requested-restart).
+   * The caller's hold on this runner (docs/321-agent-requested-restart). The wake goes to
+   * the head of what the hold kept queued, then the hold comes off: a message of the
+   * user's runs before it, and anything else after it (docs/329-user-steers-every-turn).
    */
   releaseHold?: QueueHold;
   /**
-   * docs/328-session-message-inbox — an ordinary turn that starts now or is refused, never
-   * a queued system turn. It has no settlement: its caller reads other evidence.
+   * docs/328-session-message-inbox — a turn that starts now or is refused, never a queued
+   * one. Its caller does not wait for its settlement.
    */
   startOrRefuse?: { automatic: boolean };
 }
@@ -119,6 +126,8 @@ export async function wakeSessionWithTurn(
     await prepareSessionAgentEnvironment(runner, {
       sessionId: session.id,
       agentId: effectiveAgentId,
+      // The wake reuses a resident process, which can reread what a repair removes.
+      ...(runner.isStreamingActive && runner.getAgent() !== null ? { reusingResidentAgent: true } : {}),
       deps: {
         credentialsDir,
         credentialStore,
@@ -141,12 +150,27 @@ export async function wakeSessionWithTurn(
     throw new Error(`session ${session.id} container could not be resumed; wake-turn not delivered`);
   }
 
+  const prepared = wakeDispatch(session.id, opts);
+  if (opts.releaseHold && !opts.startOrRefuse) return queueAheadAndRelease(runner, opts.releaseHold, prepared);
   opts.releaseHold?.release();
+  // A wake is work of its own: it waits for a running turn and is never steered into it.
+  return runner.dispatch(prepared, { whenBusy: opts.startOrRefuse ? "refuse" : "queue" });
+}
 
-  return runner.dispatch(
-    wakeDispatch(session.id, opts),
-    opts.startOrRefuse ? { whenBusy: "refuse" } : undefined,
-  );
+function queueAheadAndRelease(
+  runner: SessionRunnerInterface,
+  hold: QueueHold,
+  prepared: PreparedDispatch,
+): TurnSettlement {
+  const settlement = createTurnSettlement();
+  settlement.noteAdmission("queued");
+  const entry = toQueuedMessage(withSettlement(prepared, settlement));
+  runner.messageQueue.unshift(entry);
+  hold.release();
+  releaseQueuedTurn(runner);
+  if (!runner.messageQueue.includes(entry)) settlement.noteAdmission("started");
+  runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  return settlement;
 }
 
 function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatch {
@@ -157,7 +181,7 @@ function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatc
     agentInterface: undefined,
     messageOrigin: opts.messageOrigin,
     activity: opts.activity,
-    systemTurn: opts.startOrRefuse ? undefined : true,
+    systemTurn: undefined,
     automatic: opts.startOrRefuse && !opts.startOrRefuse.automatic ? undefined : true,
     unattended: true,
     heldId: undefined,

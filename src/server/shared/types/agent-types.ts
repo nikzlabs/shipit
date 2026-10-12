@@ -467,7 +467,11 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
 
   run(params: AgentRunParams): void;
   writeStdin(data: string): void;
-  sendUserMessage(text: string, opts?: { images?: ImageAttachment[] }): void;
+  /**
+   * `deliveryId` marks the message as a turn's own prompt and names that turn's delivery
+   * (docs/329-user-steers-every-turn). A steer passes none.
+   */
+  sendUserMessage(text: string, opts?: { images?: ImageAttachment[]; deliveryId?: string }): void;
   /**
    * The last `run`/`sendUserMessage` submission, resolved once the process has
    * accepted it and rejected if it never did. Present only where submission is

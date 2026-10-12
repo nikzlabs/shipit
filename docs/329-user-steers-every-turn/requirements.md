@@ -69,8 +69,15 @@ of them, written down so that a review can see what was not asked for.
   - no agent process exists: the container starts or restarts, or the process
     starts;
   - the agent's harness cannot take a message during a turn;
-  - the user set `advanced.liveSteering` to off, which asks for the queue;
-  - the agent compacts its context;
   - ShipIt changes the branch or the container, and no turn runs.
+- **Two existing choices stay, and neither is a physical limit.** The review of
+  2026-10-12 asked for them to be named as choices.
+  - The user's own setting `advanced.liveSteering`. Off asks for the queue, and
+    a message then waits for the turn's end, whoever started the turn.
+  - A compaction that ShipIt starts ahead of a waiting message. A new message
+    does not enter that compaction, because it would run before the message
+    that waits, on a branch that message is about to reset
+    (`docs/295-compact-context-on-merge`). It must reach the agent as soon as
+    the compaction is over.
 - **ShipIt still knows who started a turn.** The transcript shows it, and the
   sender of a notice still learns whether its turn ran.

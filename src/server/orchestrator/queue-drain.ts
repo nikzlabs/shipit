@@ -39,10 +39,9 @@ export function takeRunnableQueuedTurn(
     if (index === -1) return undefined;
     return takeIfUnblocked(runner, index);
   }
-  // Released, a held turn still waits for a message the user queued after it came back.
-  const userIndex = queue[0]?.heldId === undefined
-    ? -1
-    : queue.findIndex((m) => m.heldId === undefined && m.automatic !== true);
+  // docs/329-user-steers-every-turn req 2 — a message of the user's does not wait behind
+  // an entry from another source.
+  const userIndex = queue.findIndex((m) => m.automatic !== true);
   return takeIfUnblocked(runner, userIndex === -1 ? 0 : userIndex);
 }
 
