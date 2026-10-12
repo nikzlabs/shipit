@@ -317,6 +317,8 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "message_queued",
   "queue_updated",
   "agent_interrupted",
+  // Streamed rows, plan mode and the activity label all belong to the turn's own session.
+  "agent_event",
   "turn_snapshot",
   "voice_note",
 ]);

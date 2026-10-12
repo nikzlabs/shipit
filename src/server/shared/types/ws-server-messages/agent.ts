@@ -8,6 +8,8 @@ import type { SessionMessageOrigin } from "../domain-types.js";
 
 export interface WsAgentEvent {
   type: "agent_event";
+  /** The session whose turn produced it: the client drops one of another session. */
+  sessionId: string;
   event: AgentEvent;
 }
 

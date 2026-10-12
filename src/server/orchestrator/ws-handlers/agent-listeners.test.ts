@@ -1759,6 +1759,29 @@ describe("wireAgentListeners — tool-call time", () => {
   });
 });
 
+// A viewer that switched sessions drops a streamed event of the session it left.
+describe("wireAgentListeners — a streamed event names its session", () => {
+  it("carries the session the turn was wired for", () => {
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-stream",
+      sessionDir: "/tmp/session-stream",
+      defaultAgentId: "codex",
+    });
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
+      capturedSessionId: "session-stream",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "hi" }] } as unknown as AgentEvent);
+
+    const streamed = runner.getTurnEventBuffer().filter((m) => m.type === "agent_event");
+    expect(streamed).toEqual([expect.objectContaining({ type: "agent_event", sessionId: "session-stream" })]);
+    runner.dispose({ force: true });
+  });
+});
+
 describe("wireAgentListeners — permission cards no agent can answer (docs/193)", () => {
   function wireForPermission() {
     const agent = new FakeAgent("claude");
