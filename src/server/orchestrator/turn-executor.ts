@@ -38,7 +38,17 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
-import { consumeSetupStop, noteTurnSubmitted, reopenTurnSetup, stoppedByUser, turnInSetup } from "./turn-stop-request.js";
+import {
+  consumeSetupStop,
+  currentTurnAttempt,
+  noteCompactionTurn,
+  noteTurnReady,
+  noteTurnSubmitted,
+  reopenTurnSetup,
+  stoppedByUser,
+  turnInSetup,
+} from "./turn-stop-request.js";
+import { deliverWaitingMessages } from "./dispatch-steering.js";
 import path from "node:path";
 import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import type { ReplaySpillTarget } from "./services/replay.js";
@@ -326,8 +336,21 @@ export async function executeAgentTurn(
    * ended a turn this prompt was folded into.
    */
   const noteSubmissionAccepted = (resultsIntervened: boolean): void => {
+    noteAgentHasPrompt();
     if (ownTurn !== "unsubmitted") return;
     ownTurn = cliTurnPending || resultsIntervened ? "queued" : "running";
+  };
+
+  // docs/329-user-steers-every-turn — from here a message can follow the prompt into the
+  // turn, and what the user sent while the turn set up goes in first.
+  let turnAttempt: object | undefined;
+  let waitingMessagesOffered = false;
+  const noteAgentHasPrompt = (): void => {
+    if (!runner || !noteTurnReady(runner, turnAttempt) || waitingMessagesOffered) return;
+    waitingMessagesOffered = true;
+    void deliverWaitingMessages(runner, deps).catch((err: unknown) => {
+      console.error(`[turn] delivering the waiting messages of ${sessionId} failed:`, err);
+    });
   };
 
   const noteSubmitted = (): void => {
@@ -377,6 +400,7 @@ export async function executeAgentTurn(
     if (text.trim() !== prompt.trim()) return;
     if (ownTurn === "ended") return;
     ownTurn = "running";
+    noteAgentHasPrompt();
   };
 
   // Only the running turn is this prompt's. A queued one stays queued: the
@@ -501,7 +525,7 @@ export async function executeAgentTurn(
           : ownResultSeen()
             ? TURN_COMPLETED
             : wasSuperseded
-              ? input.reuseExistingAgent === true && promptUnread()
+              ? ownTurn === "unsubmitted" || (input.reuseExistingAgent === true && promptUnread())
                 ? turnDropped("a newer turn took the agent process before it read this prompt")
                 : turnInterrupted("a newer turn took the agent slot before this one finished")
               : (runner?.wasInterrupted ?? false)
@@ -543,6 +567,7 @@ export async function executeAgentTurn(
     runner.activeDeliveryId = input.deliveryId;
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
+    noteCompactionTurn(runner, input.compact === true);
   }
   // Identifies the hold taken on the line above, not this turn: a CLI-started turn adopted
   // over this one moves the turn epoch without touching the hold, and a driver or a
@@ -1822,7 +1847,10 @@ export async function executeAgentTurn(
 
   // Restart adoption attaches listeners to a surviving process; do not send another prompt.
   if (input.adopt) {
-    if (runner) noteTurnSubmitted(runner);
+    if (runner) {
+      noteTurnSubmitted(runner);
+      noteTurnReady(runner);
+    }
     const resident = runner?.residentRoute;
     capturedCredentialRoute = resident
       ? { providerRouteKind: resident.kind, providerRouteId: resident.id }
@@ -1830,7 +1858,10 @@ export async function executeAgentTurn(
     return;
   }
 
-  if (runner) reopenTurnSetup(runner);
+  if (runner) {
+    reopenTurnSetup(runner);
+    turnAttempt = currentTurnAttempt(runner);
+  }
   try {
     // Prepare before reading run parameters: credential repair can change the resume ID.
     const envBegan = Date.now();
@@ -1888,8 +1919,27 @@ export async function executeAgentTurn(
       return true;
     };
 
+    // The setup awaits, and a newer turn can have the runner by now: it took the process, or
+    // it started after this claim was given up (docs/329-user-steers-every-turn). A prompt
+    // submitted then would run beside that turn. `running` alone does not say it: a result
+    // of the CLI's own turn clears it during a setup, and the prompt still goes in.
+    const claimLostDuringSetup = (): boolean => {
+      if (!runner) return false;
+      if (!turnCompleteFired && currentTurnAttempt(runner) === turnAttempt) return false;
+      console.warn(`[turn] the turn for ${sessionId} lost its claim during setup; its prompt is not submitted`);
+      if (!turnCompleteFired) {
+        wasSuperseded = true;
+        finishTurn();
+      }
+      if (!input.reuseExistingAgent && runner.getAgent() === agent) {
+        runner.setAgent(null);
+        runner.isStreamingActive = false;
+      }
+      return true;
+    };
+
     if (input.reuseExistingAgent) {
-      if (stoppedDuringSetup()) return;
+      if (stoppedDuringSetup() || claimLostDuringSetup()) return;
       // undefined also matters: it restores the CLI's default permission mode.
       if (runner && runner.appliedPermissionMode !== input.permissionMode && agent.setPermissionMode) {
         agent.setPermissionMode(input.permissionMode);
@@ -1913,7 +1963,7 @@ export async function executeAgentTurn(
         input.compact ? { compact: true } : undefined,
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
-      if (stoppedDuringSetup()) return;
+      if (stoppedDuringSetup() || claimLostDuringSetup()) return;
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       noteSubmitted();
       if (runner) runner.appliedPermissionMode = input.permissionMode;

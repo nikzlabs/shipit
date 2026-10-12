@@ -10,6 +10,7 @@ import {
 import type { AgentId } from "../shared/types.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "./turn-settlement.js";
+import { noteTurnReady } from "./turn-stop-request.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -189,6 +190,7 @@ describe("SessionRunner", () => {
     const sendUserMessage = vi.fn();
     runner.setAgent({ sendUserMessage, kill: vi.fn() } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     expect(() => runner.dispatch(testDispatch({ text: "blocked" }))).toThrow(
@@ -212,6 +214,7 @@ describe("SessionRunner", () => {
     const fakeAgent = { sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any;
     runner.setAgent(fakeAgent);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     const received: any[] = [];
@@ -239,6 +242,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
     expect(runner.systemTurnInProgress).toBe(false);
 
@@ -271,6 +275,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     runner.dispatch(testDispatch({ text: "awaited follow-up", onTurnComplete: () => {} }));
@@ -289,6 +294,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     const handle = runner.dispatch(testDispatch({ text: "you have messages" }), { whenBusy: "steer-or-refuse" });
@@ -332,6 +338,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     const received: any[] = [];
@@ -421,6 +428,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
     runner.awaitingUserAnswer = true;
 
@@ -474,6 +482,7 @@ describe("SessionRunner", () => {
     let killed = 0;
     runner.setAgent({ sendUserMessage: () => {}, kill: () => { killed++; } } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     runner.systemTurnInProgress = true;

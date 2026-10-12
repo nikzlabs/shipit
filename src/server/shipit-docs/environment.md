@@ -520,7 +520,9 @@ no durability guarantee and belong in `docker-compose.yml`.
   turn the user typed and for a turn ShipIt started — the wake after
   `notify-on-merge --self`, a finished consult, a CI fix, a rebase follow-up,
   the turn after `shipit session restart` — and the user can send a message
-  into either. Otherwise the process exits about five seconds after your
+  into either. A message that the user sent while the turn started reaches you
+  right after the turn's own prompt; it is the user's, so it comes before what
+  the prompt asks. Otherwise the process exits about five seconds after your
   message ends. A job that is still running then is stopped before it finishes,
   and **no completion notice comes for it**. Do not count on those seconds.
   Where your harness would start a turn for a finished job, a turn that ShipIt

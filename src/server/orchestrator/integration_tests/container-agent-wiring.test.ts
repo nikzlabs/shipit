@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,6 +12,7 @@ import { releaseResidentOnServiceMcpChange } from "../resident-spawn-guard.js";
 import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "../service-mcp.js";
 import type { ServiceMcpServer } from "../../shared/types.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
+import { noteTurnReady, TURN_SETUP_MAX_MS } from "../turn-stop-request.js";
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -1143,6 +1144,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       await new Promise((r) => setTimeout(r, 200));
 
       runner.running = true;
+      noteTurnReady(runner);
       expect(lastAgent).toBeNull();
 
       const messages: { type: string; running?: boolean; error?: string }[] = [];
@@ -1182,6 +1184,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       });
 
       runner.running = true;
+      noteTurnReady(runner);
       expect(await runner.verifyRunningState()).toBe(false);
 
       expect(runner.queueLength).toBe(0);
@@ -1227,6 +1230,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       }));
       expect(runner.running).toBe(true);
       expect(runner.hasDelivery("delivery-running")).toBe(true);
+      noteTurnReady(runner);
 
       expect(await runner.verifyRunningState()).toBe(false);
 
@@ -1246,6 +1250,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       const runner = makeDispatchStubbedRunner("test-stuck-empty-queue", workerUrl);
 
       runner.running = true;
+      noteTurnReady(runner);
       const idlePromise = new Promise<void>((resolve) => { runner.once("idle", () => resolve()); });
 
       expect(await runner.verifyRunningState()).toBe(false);
@@ -1253,6 +1258,42 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       expect(runner.dispatched).toHaveLength(0);
 
       runner.dispose();
+    });
+
+    // docs/329-user-steers-every-turn — a typed message asks this on every send while a turn
+    // runs, and from the claim until the worker records the start there is no agent to find.
+    it("leaves a turn that is still in setup alone", async () => {
+      const runner = makeDispatchStubbedRunner("test-setup-not-stuck", workerUrl);
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      runner.running = true;
+      let abandoned = false;
+      runner.on("turn_abandoned", () => { abandoned = true; });
+
+      expect(await runner.verifyRunningState()).toBe(true);
+
+      expect(runner.running).toBe(true);
+      expect(abandoned).toBe(false);
+
+      runner.running = false;
+      runner.dispose({ force: true });
+    });
+
+    it("gives a setup up when it is older than its bound", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const runner = makeDispatchStubbedRunner("test-setup-outlived", workerUrl);
+        runner.running = true;
+        vi.setSystemTime(Date.now() + TURN_SETUP_MAX_MS + 1);
+
+        expect(await runner.verifyRunningState()).toBe(false);
+        expect(runner.running).toBe(false);
+
+        runner.dispose({ force: true });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("returns true and preserves state when worker confirms agent is running", async () => {

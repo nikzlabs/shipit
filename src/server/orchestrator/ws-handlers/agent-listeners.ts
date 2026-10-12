@@ -4,7 +4,7 @@ import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
-import { noteTurnSubmitted } from "../turn-stop-request.js";
+import { noteTurnReady, noteTurnSubmitted } from "../turn-stop-request.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import { retireRewindUndo } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
@@ -167,8 +167,9 @@ export function wireAgentListeners(
       wiredTurnEpoch = runner.turnEpoch;
     }
     runner.running = true;
-    // The CLI is already generating, so a Stop must reach its process.
+    // The CLI is already generating, so a Stop must reach its process, and a message can enter.
     noteTurnSubmitted(runner);
+    noteTurnReady(runner);
     const turnSessionId = opts.capturedSessionId;
     // A turn the CLI starts on its own is new use (docs/316 req 5).
     if (turnSessionId && startsTurn) deps.sessionManager.track(turnSessionId);

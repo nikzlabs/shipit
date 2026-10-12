@@ -1115,6 +1115,53 @@ describe("CodexAdapter", () => {
     expect((steer!.params as any).expectedTurnId).toBe("turn-042");
   });
 
+  // docs/329-user-steers-every-turn — `run()` is accepted before `turn/start` answers, and
+  // ShipIt gives the turn its waiting messages as soon as the run is accepted.
+  it("keeps a steer that arrives before the turn has an id, and sends it when it has one", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    await respondTo("initialize", { serverInfo: { name: "codex-app-server" } });
+    await respondTo("thread/start", { threadId: "thread-abc-123" });
+
+    adapter.sendUserMessage("sent during startup");
+    expect(fakeProc.getRequests().some((r) => r.method === "turn/steer")).toBe(false);
+
+    await respondTo("turn/start", { turnId: "turn-001" });
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().some((r) => r.method === "turn/steer")).toBe(true);
+    });
+    const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
+    expect((steer!.params as any).input).toEqual([{ type: "text", text: "sent during startup" }]);
+    expect((steer!.params as any).expectedTurnId).toBe("turn-001");
+  });
+
+  it("gives a kept steer back when the process ends before its turn starts", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    await respondTo("initialize", { serverInfo: { name: "codex-app-server" } });
+
+    adapter.sendUserMessage("sent during startup");
+    fakeProc.emit("close", 1);
+
+    expect(events.filter((e) => e.type === "agent_steer_rejected")).toEqual([
+      { type: "agent_steer_rejected", text: "sent during startup" },
+    ]);
+  });
+
+  it("keeps no steer for a compaction run, which starts no turn", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "/compact", cwd: "/workspace", sessionId: "thread-abc-123", compact: true });
+
+    adapter.sendUserMessage("sent during the compaction");
+    fakeProc.emit("close", 0);
+
+    expect(events.some((e) => e.type === "agent_steer_rejected")).toBe(false);
+  });
+
   it("drops steer when no turn is active (no expectedTurnId to send)", async () => {
     await createAndInit("Hello");
 

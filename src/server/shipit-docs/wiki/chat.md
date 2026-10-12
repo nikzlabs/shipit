@@ -137,10 +137,14 @@ can also send:
   Advanced** (`shipit settings get advanced.liveSteering`). Injection also needs
   a live streaming process and a turn that can take one. A turn that ShipIt
   started for work — a merge notice, a finished consult, a CI fix, the turn
-  after a restart — takes one like a turn they typed. Two turns do not: the one
-  that resolves the conflicts of a rebase, and a compaction that ShipIt starts.
-  There, and while a merge is being held, the message goes to the queue. That
-  is the honest answer to "why did it queue when it should have interrupted?".
+  after a restart — takes one like a turn they typed. A turn takes a message
+  from the moment the agent has that turn's prompt. A message sent before
+  that, while the turn starts, waits in the queue for those seconds and is then
+  given to the same turn, after its prompt. Two turns take none: a compaction
+  turn, whoever started it (`/compact`, or one that ShipIt starts), and the turn
+  that resolves the conflicts of a rebase. There, and while a merge is being
+  held, the message stays in the queue. That is the honest answer to "why did
+  it queue when it should have interrupted?".
 - **Otherwise** the message is **queued**. A strip above the composer lists the
   queued messages in order, each with an ✕ to drop it, and **Clear all**. A
   queued message runs as its own turn once the current one has finished and its
@@ -186,7 +190,7 @@ Three things stop and wait for an answer, and they look different on purpose.
 | Card | Appears when | The user can |
 |---|---|---|
 | **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. ShipIt sets no deadline, but the agent can stop waiting — Claude Code gives up on an unanswered prompt after 30 minutes, and Stop ends it too. The card then reads **Denied** and the session no longer asks for attention |
-| **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn |
+| **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn. An answer given while a different turn runs goes to that turn as a message, or to the queue |
 | **Plan ready** | You end plan mode with `ExitPlanMode` — the card hangs off that tool call, so plan-shaped prose alone does not produce one | Accept, accept guarded, or suggest changes (above) |
 
 A permission prompt counts as you still working, so the session is not "waiting

@@ -165,3 +165,62 @@ describe("Stop during turn setup", () => {
     expect(interrupt).toHaveBeenCalledTimes(1);
   });
 });
+
+// docs/329-user-steers-every-turn — a setup awaits, and a newer turn can have the runner or
+// the process when it resumes. Its prompt would then run beside that turn.
+describe("a turn that loses its claim during setup", () => {
+  it("does not write its prompt to a process that a newer turn took", async () => {
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    dispatch("first");
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "resident agent running");
+    const resident = agents[0]!;
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => settled.length === 1, "first turn settled");
+
+    const setup = holdSetup();
+    dispatch("second");
+    await waitForTurn(setup.began, "env preparation");
+
+    // What the next turn does when it takes the resident process.
+    resident.emit("reused");
+    setup.release();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(resident.sendUserMessage).not.toHaveBeenCalled();
+    // Told once, and not that the agent had the prompt.
+    expect(settled).toHaveLength(2);
+    expect(["dropped", "no-result"]).toContain(settled[1]!.status);
+  });
+
+  it("does not start its process when a newer turn claimed the runner", async () => {
+    const setup = holdSetup();
+    dispatch("first");
+    await waitForTurn(setup.began, "env preparation");
+    const agent = agents[0]!;
+
+    // The claim was given up, and another turn made one.
+    runner.running = false;
+    runner.running = true;
+    setup.release();
+
+    await waitForTurn(() => settled.length === 1, "turn settled");
+    expect(agent.run).not.toHaveBeenCalled();
+    expect(settled[0]!.status).toBe("dropped");
+    expect(runner.getAgent()).toBeNull();
+    // The newer turn's claim is not this turn's to end.
+    expect(runner.running).toBe(true);
+  });
+
+  it("still submits when only `running` was cleared, as a result of the CLI's own turn does", async () => {
+    const setup = holdSetup();
+    dispatch("first");
+    await waitForTurn(setup.began, "env preparation");
+    const agent = agents[0]!;
+
+    runner.running = false;
+    setup.release();
+
+    await waitForTurn(() => agent.run.mock.calls.length === 1, "the prompt submitted");
+  });
+});
+
