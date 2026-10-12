@@ -30,6 +30,12 @@ description: A finished `shipit agent run` consult must reach the agent that ask
 
 ## Resolved questions
 
+- 2026-10-12 — The answer of 2026-09-03 below to *Should system turns simply be
+  made streaming?* is reversed. The user: "Any turn started in ShipIt should
+  behave exactly the same way as if the user started it."
+  (`docs/329-user-steers-every-turn` req 1). The reasons in that answer describe
+  how the code is built, so they are work for that feature's design. Requirements
+  1 to 6 of this document do not change.
 - 2026-09-03 — *Should the card FACE render the delivery record?* No, not in this
   change. The record exists so the state is auditable — from the DB, from the
   orchestrator log, and from `shipit agent result --json`, which returns the
