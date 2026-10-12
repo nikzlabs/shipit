@@ -87,6 +87,9 @@ None.
   message from another session, so req 4 now says what that rule gives. The user
   did not name this card in the proposal; this entry applies the new rule to it,
   and it is theirs to reverse.
+- 2026-10-12 — *Does a message approved on this card stay in the target's inbox,
+  or does it become a turn again?* The agent asked this after the entry above.
+  The user: "yes it is fine." Requirement 4 stays as it is written.
 - 2026-09-22 — *What shape does the fix take?* The requester: "Let's do like we
   have in the case of a proposed session in another repo: a card that the user
   can approve." Recorded on planning#450. This settles reqs 1–4 and rules out
