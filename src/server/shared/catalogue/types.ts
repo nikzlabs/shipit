@@ -35,13 +35,26 @@ export type QuotaIntegrationId =
   // preview account, so docs/274's honest-absence rule gives it no meters.
   | "google-antigravity-usage";
 
-/** API rates in USD per million tokens, including subscription cost comparisons. */
-export interface ModelPrice {
+/** One rate for each token class, in USD per million tokens. */
+export interface FlatPrice {
   input: number;
   output: number;
   cacheRead: number;
   /** Use input when writes have no separate rate; zero means free writes. */
   cacheWrite: number;
+}
+
+/**
+ * Every rate of a request whose prompt (input + cache read + cache write) is
+ * above `aboveTokens`, output included (docs/329-tiered-model-pricing).
+ */
+export interface LongPromptPrice extends FlatPrice {
+  aboveTokens: number;
+}
+
+/** API rates in USD per million tokens, including subscription cost comparisons. */
+export interface ModelPrice extends FlatPrice {
+  longPrompt?: LongPromptPrice;
 }
 
 /** Tokens; harness telemetry can impose different limits for the same model. */
@@ -176,7 +189,8 @@ export const PRICE_TODO: ModelPrice = { input: -1, output: -1, cacheRead: -1, ca
 export const CONTEXT_TODO: ContextWindow = { default: -1 };
 
 export function isPriceSentinel(price: ModelPrice): boolean {
-  return price.input < 0 || price.output < 0 || price.cacheRead < 0 || price.cacheWrite < 0;
+  const negative = (p: FlatPrice) => p.input < 0 || p.output < 0 || p.cacheRead < 0 || p.cacheWrite < 0;
+  return negative(price) || (price.longPrompt !== undefined && negative(price.longPrompt));
 }
 
 export function isContextSentinel(window: ContextWindow): boolean {

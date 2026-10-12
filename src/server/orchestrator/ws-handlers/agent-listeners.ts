@@ -1,5 +1,5 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, LogSource } from "../../shared/types.js";
-import { costFromRates, resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
+import { atApiRatesFor, resolveTurnCost, selectionOf, turnAttributionFor, type PricedUsage } from "../turn-attribution.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
@@ -733,16 +733,21 @@ export function wireAgentListeners(
         const turnAttribution =
           turnAttributionAtStart
           ?? turnAttributionFor(selectionOf(deps.sessionManager.get(usageSessionId)));
-        const resolvedCost = resolveTurnCost({
-          harnessId: agent.agentId,
-          attribution: turnAttribution,
-          reportedCostUsd: event.cost?.totalUsd,
+        const pricedUsage: PricedUsage = {
           tokens: {
             input: event.tokens?.input,
             output: event.tokens?.output,
             cacheRead: event.tokens?.cacheRead,
             cacheWrite: event.tokens?.cacheWrite,
           },
+          requests: event.requests,
+          contextTokens: event.contextTokens,
+        };
+        const resolvedCost = resolveTurnCost({
+          harnessId: agent.agentId,
+          attribution: turnAttribution,
+          reportedCostUsd: event.cost?.totalUsd,
+          usage: pricedUsage,
         });
         perTurnUsage.costUsd = deps.usageManager.record(
           usageSessionId,
@@ -755,6 +760,7 @@ export function wireAgentListeners(
             cacheCreate: event.tokens?.cacheWrite,
             model: turnModel,
             contextTokens: event.contextTokens,
+            ...(event.requests ? { requests: event.requests } : {}),
             costSource: resolvedCost.costSource,
             // Preserve cumulative continuity across billing-mode changes.
             ...(event.cost?.totalUsd !== undefined
@@ -769,14 +775,9 @@ export function wireAgentListeners(
         if (turnAttribution) {
           perTurnUsage.billingMode = turnAttribution.billingMode;
         }
-        if (turnAttribution?.billingMode === "sub") {
-          perTurnUsage.atApiRatesUsd = costFromRates(turnAttribution.rates, {
-            input: event.tokens?.input,
-            output: event.tokens?.output,
-            cacheRead: event.tokens?.cacheRead,
-            cacheWrite: event.tokens?.cacheWrite,
-          });
-        }
+        // The same function and inputs as the stored row, so reload shows this figure.
+        const atApiRates = atApiRatesFor(turnAttribution, pricedUsage);
+        if (atApiRates !== undefined) perTurnUsage.atApiRatesUsd = atApiRates;
         const sessionUsage = deps.usageManager.getSessionUsage(usageSessionId);
         if (sessionUsage) {
           const tokenTotals = deps.usageManager.getSessionTokenTotals(usageSessionId);

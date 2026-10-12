@@ -799,6 +799,38 @@ describe("CodexAdapter", () => {
     expect((resultEvent as any).error).toBeUndefined();
   });
 
+  it("lists each response's own usage on agent_result (docs/329-tiered-model-pricing)", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("thread/tokenUsage/updated", {
+      turnId: "turn-001",
+      tokenUsage: {
+        total: { inputTokens: 120_000, outputTokens: 300, cachedInputTokens: 100_000 },
+        last: { inputTokens: 120_000, outputTokens: 300, cachedInputTokens: 100_000, totalTokens: 120_300 },
+      },
+    });
+    fakeProc.sendNotification("thread/tokenUsage/updated", {
+      turnId: "turn-001",
+      tokenUsage: {
+        total: { inputTokens: 250_000, outputTokens: 800, cachedInputTokens: 220_000 },
+        last: { inputTokens: 130_000, outputTokens: 500, cachedInputTokens: 120_000, totalTokens: 130_500 },
+      },
+    });
+    fakeProc.sendNotification("turn/completed", { turn: { id: "turn-001", status: "completed" } });
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+    expect(events.find((e) => e.type === "agent_result")).toMatchObject({
+      tokens: { input: 30_000, output: 800, cacheRead: 220_000 },
+      requests: [
+        { input: 20_000, output: 300, cacheRead: 100_000 },
+        { input: 10_000, output: 500, cacheRead: 120_000 },
+      ],
+    });
+  });
+
   it("takes cache-written tokens out of the input class as well as the cached ones", async () => {
     await createAndInit("Hello");
     events.length = 0;

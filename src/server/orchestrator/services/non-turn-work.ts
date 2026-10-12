@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentId, NonTurnFailureCard } from "../../shared/types.js";
+import type { AgentId, AgentRequestUsage, NonTurnFailureCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -82,6 +82,22 @@ export interface NonTurnTelemetry {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreateTokens?: number;
+  /** Each model call; prices a long prompt at its own rate (docs/329-tiered-model-pricing). */
+  requests?: AgentRequestUsage[] | undefined;
+  /** The last call's prompt; prices what `requests` leaves out, such as Claude's output. */
+  contextTokens?: number | undefined;
+}
+
+/** The list for a run that made exactly one model call: its totals are that call. */
+export function oneRequest(
+  usage: Pick<NonTurnTelemetry, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheCreateTokens">,
+): AgentRequestUsage[] {
+  return [{
+    input: usage.inputTokens ?? 0,
+    output: usage.outputTokens ?? 0,
+    ...(usage.cacheReadTokens !== undefined ? { cacheRead: usage.cacheReadTokens } : {}),
+    ...(usage.cacheCreateTokens !== undefined ? { cacheWrite: usage.cacheCreateTokens } : {}),
+  }];
 }
 
 /**
@@ -138,11 +154,15 @@ export function recordNonTurnUsage(
         reportedCostUsd: telemetry.costUsd,
         // One-shot usage is not a cumulative conversation total.
         reportedCostSource: "per-turn",
-        tokens: {
-          input: telemetry.inputTokens,
-          output: telemetry.outputTokens,
-          cacheRead: telemetry.cacheReadTokens,
-          cacheWrite: telemetry.cacheCreateTokens,
+        usage: {
+          tokens: {
+            input: telemetry.inputTokens,
+            output: telemetry.outputTokens,
+            cacheRead: telemetry.cacheReadTokens,
+            cacheWrite: telemetry.cacheCreateTokens,
+          },
+          requests: telemetry.requests,
+          contextTokens: telemetry.contextTokens,
         },
       })
     : { costUsd: 0, costSource: "per-turn" as const };
@@ -162,6 +182,8 @@ export function recordNonTurnUsage(
       ...(attribution ? { attribution } : {}),
       ...(telemetry.cacheReadTokens !== undefined ? { cacheRead: telemetry.cacheReadTokens } : {}),
       ...(telemetry.cacheCreateTokens !== undefined ? { cacheCreate: telemetry.cacheCreateTokens } : {}),
+      ...(telemetry.requests ? { requests: telemetry.requests } : {}),
+      ...(telemetry.contextTokens !== undefined ? { contextTokens: telemetry.contextTokens } : {}),
     },
   );
 }
@@ -398,6 +420,7 @@ export async function runNonTurnDirect(
         ...(usage.outputTokens !== undefined ? { outputTokens: usage.outputTokens } : {}),
         ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
         ...(usage.cacheCreateTokens !== undefined ? { cacheCreateTokens: usage.cacheCreateTokens } : {}),
+        requests: oneRequest(usage),
       },
     });
   };
@@ -515,6 +538,8 @@ async function runNonTurnSpawn(
         ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
         ...(result.cacheReadTokens !== undefined ? { cacheReadTokens: result.cacheReadTokens } : {}),
         ...(result.cacheCreateTokens !== undefined ? { cacheCreateTokens: result.cacheCreateTokens } : {}),
+        ...(result.requests ? { requests: result.requests } : {}),
+        ...(result.contextTokens !== undefined ? { contextTokens: result.contextTokens } : {}),
       },
     });
     if (result.status !== "success" || !result.text.trim()) {

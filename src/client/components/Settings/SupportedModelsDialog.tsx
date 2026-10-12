@@ -48,8 +48,10 @@ import {
   allServices,
   eligibleEntriesForHarness,
   type BillingMode,
+  type FlatPrice,
   type HarnessDef,
   type ModelDef,
+  type ModelPrice,
   type ServiceDef,
 } from "../../../server/shared/catalogue/index.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
@@ -110,6 +112,24 @@ function formatPrice(rate: number): string {
   if (rate === 0) return "$0";
   if (rate < 1) return `$${Number(rate.toFixed(3))}`;
   return `$${Number(rate.toFixed(2))}`;
+}
+
+const RATE_FIELDS = ["input", "output", "cacheRead", "cacheWrite"] as const satisfies readonly (keyof FlatPrice)[];
+
+/** docs/329-tiered-model-pricing req 6 — "5× above 100K" when every rate scales alike, else the higher input / output. */
+export function formatLongPrompt(price: ModelPrice): string | undefined {
+  const tier = price.longPrompt;
+  if (!tier) return undefined;
+  const above = `above ${formatContext(tier.aboveTokens)}`;
+  // A zero rate that stays zero says nothing about the multiple.
+  const ratios = RATE_FIELDS
+    .filter((f) => price[f] !== 0 || tier[f] !== 0)
+    .map((f) => (price[f] === 0 ? Number.NaN : tier[f] / price[f]));
+  const multiple = ratios[0];
+  if (multiple !== undefined && ratios.every((r) => Math.abs(r - multiple) < 1e-9)) {
+    return `${Number(multiple.toFixed(2))}× ${above}`;
+  }
+  return `${formatPrice(tier.input)} / ${formatPrice(tier.output)} ${above}`;
 }
 
 /**
@@ -285,6 +305,11 @@ function ModeTable({
                   {formatPrice(model.price.input)}
                   <span className="text-(--color-text-tertiary)"> / </span>
                   {formatPrice(model.price.output)}
+                  {model.price.longPrompt && (
+                    <div className="text-[10px] text-(--color-text-tertiary)">
+                      {formatLongPrompt(model.price)}
+                    </div>
+                  )}
                 </td>
                 {harnesses.map((harness) => (
                   <SupportCell

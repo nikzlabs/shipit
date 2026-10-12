@@ -251,8 +251,8 @@ a 1M context window and 128K output. Claude Code's own catalog gives efforts
 `low` to `max`. The price is tiered by prompt length: $0.10 input, $0.50
 output, $0.01 cache reads and $0.125 five-minute cache writes per million
 tokens up to 100K prompt tokens, and five times each rate above. The row
-carries the lower tier, the same choice as Gemini Pro's and xAI's long-context
-tiers. It uses Anthropic Messages under both Anthropic billing modes, directly
+first carried the lower tier only; it now carries both, priced per request
+([docs/329-tiered-model-pricing](../329-tiered-model-pricing/plan.md)). It uses Anthropic Messages under both Anthropic billing modes, directly
 after Haiku 4.5, which stays. Gateway availability is not inferred.
 
 Claude Code 2.1.284 runs the new ID through ShipIt's spawn (1M window, a
@@ -267,7 +267,10 @@ exact-version dependency-age exception on 2026-10-12; it expires on 2026-10-14.
 first-party API, and the Haiku 4.5 row's id is that alias, so passing the row id
 would run Haiku 5.5 under a Haiku 4.5 label and price. `claudeModelArg` (turns)
 and session naming now pass a row's `apiId` (`claude-haiku-4-5`) when it has
-one, and `unshapeClaudeModelId` maps the echoed vendor id back to the row id. The row id
+one, and `unshapeClaudeModelId` maps the echoed vendor id back to the row id. OpenCode
+posted the row id (`haiku`) too, since before this release; its model entries (provider and
+ChatGPT account) now set `id` to the `apiId` and stay keyed by the row id, which is what it
+reports back. The row id
 stays `haiku`: renaming it would strand every place a selection is stored
 (browser preference, roles, schedules, cached published lists), and none of
 them goes through retirement.

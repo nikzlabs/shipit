@@ -1,3 +1,5 @@
+import type { AgentRequestUsage } from "./types/agent-types.js";
+
 /** step_finish token classes do not overlap. */
 export interface OpencodeTokens {
   total?: number;
@@ -76,6 +78,8 @@ export class OpencodeTurnAccumulator {
   cacheRead = 0;
   cacheWrite = 0;
   contextTokens: number | undefined;
+  /** One entry per step, which is one model call (docs/329-tiered-model-pricing). */
+  readonly requests: AgentRequestUsage[] = [];
 
   observe(event: OpencodeEvent): void {
     if (!this.sessionId && typeof event.sessionID === "string") {
@@ -95,12 +99,19 @@ export class OpencodeTurnAccumulator {
         if (typeof part?.cost === "number") this.costUsd += part.cost;
         const t = part?.tokens;
         if (t) {
-          this.input += t.input ?? 0;
-          this.output += t.output ?? 0;
-          this.cacheRead += t.cache?.read ?? 0;
-          this.cacheWrite += t.cache?.write ?? 0;
-          const context =
-            (t.input ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
+          // Reasoning is generated, so it bills as output and is no part of the prompt.
+          const request: AgentRequestUsage = {
+            input: t.input ?? 0,
+            output: (t.output ?? 0) + (t.reasoning ?? 0),
+            cacheRead: t.cache?.read ?? 0,
+            cacheWrite: t.cache?.write ?? 0,
+          };
+          this.requests.push(request);
+          this.input += request.input;
+          this.output += request.output ?? 0;
+          this.cacheRead += request.cacheRead ?? 0;
+          this.cacheWrite += request.cacheWrite ?? 0;
+          const context = request.input + (request.cacheRead ?? 0) + (request.cacheWrite ?? 0);
           if (context > 0) this.contextTokens = context;
         }
         break;

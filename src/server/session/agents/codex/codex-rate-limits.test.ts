@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { CodexRateLimits } from "./codex-rate-limits.js";
+import { codexTurnTokens, type CodexReportedTokens } from "../../../shared/codex-token-usage.js";
 
 describe("CodexRateLimits", () => {
   describe("updateRateLimits", () => {
@@ -128,13 +129,14 @@ describe("CodexRateLimits", () => {
       expect(rl.turnTokenUsage("turn-2")).toEqual({
         usage: second,
         baselineTotal: first.total,
+        requests: [],
       });
     });
 
     it("has no baseline for the first turn of a thread", () => {
       const rl = new CodexRateLimits();
       rl.recordTokenUsage(first, "turn-1");
-      expect(rl.turnTokenUsage("turn-1")).toEqual({ usage: first, baselineTotal: undefined });
+      expect(rl.turnTokenUsage("turn-1")).toEqual({ usage: first, baselineTotal: undefined, requests: [] });
     });
 
     it("refuses a snapshot belonging to another turn", () => {
@@ -147,7 +149,7 @@ describe("CodexRateLimits", () => {
     it("keeps the pre-turnId behaviour when the app-server sends no turn id", () => {
       const rl = new CodexRateLimits();
       rl.recordTokenUsage(first);
-      expect(rl.turnTokenUsage("turn-1")).toEqual({ usage: first, baselineTotal: undefined });
+      expect(rl.turnTokenUsage("turn-1")).toEqual({ usage: first, baselineTotal: undefined, requests: [] });
     });
 
     it("refuses a replay whose turn id is empty", () => {
@@ -160,7 +162,63 @@ describe("CodexRateLimits", () => {
       const rl = new CodexRateLimits();
       rl.recordTokenUsage(first, "");
       rl.recordTokenUsage(second, "turn-2");
-      expect(rl.turnTokenUsage("turn-2")).toEqual({ usage: second, baselineTotal: first.total });
+      expect(rl.turnTokenUsage("turn-2")).toEqual({ usage: second, baselineTotal: first.total, requests: [] });
+    });
+  });
+
+  describe("per-response usage (docs/329-tiered-model-pricing)", () => {
+    // inputTokens includes both cache portions, as on the wire.
+    const response = (input: number, cached: number, output: number) => ({
+      inputTokens: input,
+      cachedInputTokens: cached,
+      outputTokens: output,
+      totalTokens: input + output,
+    });
+    const update = (total: CodexReportedTokens, last: ReturnType<typeof response>) => ({ total, last });
+
+    it("lists each response of this turn and leaves out the resume replay, within the totals", () => {
+      const rl = new CodexRateLimits();
+      const replayTotal = { inputTokens: 5_000, cachedInputTokens: 4_000, outputTokens: 100 };
+      rl.recordTokenUsage(update(replayTotal, response(5_000, 4_000, 100)), "turn-1");
+      const afterFirst = { inputTokens: 125_000, cachedInputTokens: 104_000, outputTokens: 400 };
+      rl.recordTokenUsage(update(afterFirst, response(120_000, 100_000, 300)), "turn-2");
+      const afterSecond = { inputTokens: 255_000, cachedInputTokens: 224_000, outputTokens: 900 };
+      rl.recordTokenUsage(update(afterSecond, response(130_000, 120_000, 500)), "turn-2");
+
+      const turn = rl.turnTokenUsage("turn-2")!;
+      expect(turn.requests).toEqual([
+        { input: 20_000, cacheRead: 100_000, output: 300 },
+        { input: 10_000, cacheRead: 120_000, output: 500 },
+      ]);
+      const totals = codexTurnTokens(turn.usage.total, turn.baselineTotal)!;
+      const sum = (field: "input" | "output" | "cacheRead") =>
+        turn.requests.reduce((n, r) => n + (r[field] ?? 0), 0);
+      expect(sum("input")).toBeLessThanOrEqual(totals.input);
+      expect(sum("output")).toBeLessThanOrEqual(totals.output);
+      expect(sum("cacheRead")).toBeLessThanOrEqual(totals.cacheRead ?? 0);
+    });
+
+    it("does not list a resent snapshot, in the same turn or under the next turn's id", () => {
+      const rl = new CodexRateLimits();
+      const total = { inputTokens: 120_000, cachedInputTokens: 100_000, outputTokens: 300 };
+      const snapshot = update(total, response(120_000, 100_000, 300));
+      rl.recordTokenUsage(snapshot, "turn-1");
+      rl.recordTokenUsage(snapshot, "turn-1");
+      expect(rl.turnTokenUsage("turn-1")!.requests).toHaveLength(1);
+
+      rl.recordTokenUsage(snapshot, "turn-2");
+      expect(rl.turnTokenUsage("turn-2")!.requests).toEqual([]);
+      const grown = { inputTokens: 250_000, cachedInputTokens: 220_000, outputTokens: 800 };
+      rl.recordTokenUsage(update(grown, response(130_000, 120_000, 500)), "turn-2");
+      expect(rl.turnTokenUsage("turn-2")!.requests).toEqual([{ input: 10_000, cacheRead: 120_000, output: 500 }]);
+    });
+
+    it("does not list the zeroed `last` of a prefill estimate, whose total did not grow", () => {
+      const rl = new CodexRateLimits();
+      const total = { inputTokens: 120_000, cachedInputTokens: 100_000, outputTokens: 300 };
+      rl.recordTokenUsage(update(total, response(120_000, 100_000, 300)), "turn-1");
+      rl.recordTokenUsage({ total, last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 130_000 } }, "turn-1");
+      expect(rl.turnTokenUsage("turn-1")!.requests).toHaveLength(1);
     });
   });
 });

@@ -1186,6 +1186,23 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "merge_continue_compacted_anchor");
   },
+  // docs/329-tiered-model-pricing — a subscription row's at-API-rates figure is stored, because a
+  // long-prompt price makes it depend on each request and not only on the totals. Existing rows
+  // get the figure they showed before, their flat rates times their totals (req 5).
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "at_api_rates_usd")) return;
+    db.exec(`
+      ALTER TABLE usage_turns ADD COLUMN at_api_rates_usd REAL;
+      UPDATE usage_turns SET at_api_rates_usd = (
+        COALESCE(input_tokens, 0) * rate_input
+        + COALESCE(output_tokens, 0) * rate_output
+        + COALESCE(cache_read_tokens, 0) * rate_cache_read
+        + COALESCE(cache_create_tokens, 0) * rate_cache_write
+      ) / 1000000.0
+      WHERE billing_mode = 'sub' AND rate_input IS NOT NULL;
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -1219,6 +1236,8 @@ export const SCHEDULE_NOTES_ACCESS_MIGRATION = 109;
 export const SCHEDULE_RUN_TIME_ZONE_MIGRATION = 110;
 
 export const SELF_MERGE_WATCH_MIGRATION = 111;
+
+export const AT_API_RATES_MIGRATION = 114;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

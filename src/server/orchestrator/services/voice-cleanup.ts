@@ -128,6 +128,8 @@ async function runCleanupOnHarness(
       ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
       ...(result.cacheReadTokens !== undefined ? { cacheReadTokens: result.cacheReadTokens } : {}),
       ...(result.cacheCreateTokens !== undefined ? { cacheCreateTokens: result.cacheCreateTokens } : {}),
+      ...(result.requests ? { requests: result.requests } : {}),
+      ...(result.contextTokens !== undefined ? { contextTokens: result.contextTokens } : {}),
     },
   });
   if (result.status !== "success") {

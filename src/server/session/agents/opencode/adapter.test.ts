@@ -141,6 +141,41 @@ describe("OpencodeAdapter", () => {
     }
   });
 
+  it("lists each step once, within the totals (docs/329-tiered-model-pricing)", () => {
+    const { adapter, child, events } = makeAdapter();
+    adapter.run(RUN_PARAMS);
+    child.emitStdout(CAPTURED);
+    child.close(0);
+
+    const result = events.at(-1);
+    if (result?.type !== "agent_result") throw new Error("no result");
+    expect(result.requests).toEqual([
+      { input: 41, output: 72, cacheRead: 7296, cacheWrite: 0 },
+      { input: 113, output: 6, cacheRead: 7424, cacheWrite: 0 },
+    ]);
+    const requests = result.requests ?? [];
+    const sum = (field: "input" | "output" | "cacheRead" | "cacheWrite") =>
+      requests.reduce((n, r) => n + (r[field] ?? 0), 0);
+    expect(sum("input")).toBeLessThanOrEqual(result.tokens!.input);
+    expect(sum("output")).toBeLessThanOrEqual(result.tokens!.output);
+    expect(sum("cacheRead")).toBeLessThanOrEqual(result.tokens!.cacheRead ?? 0);
+    expect(sum("cacheWrite")).toBeLessThanOrEqual(result.tokens!.cacheWrite ?? 0);
+  });
+
+  it("bills reasoning tokens as output and leaves them out of the prompt size", () => {
+    const step = `{"type":"step_finish","sessionID":"${SESSION}","part":{"type":"step-finish","reason":"stop","tokens":{"input":100,"output":20,"reasoning":300,"cache":{"write":50,"read":9000}}}}`;
+    const { adapter, child, events } = makeAdapter();
+    adapter.run(RUN_PARAMS);
+    child.emitStdout([step]);
+    child.close(0);
+
+    const result = events.at(-1);
+    if (result?.type !== "agent_result") throw new Error("no result");
+    expect(result.tokens).toEqual({ input: 100, output: 320, cacheRead: 9000, cacheWrite: 50 });
+    expect(result.contextTokens).toBe(100 + 9000 + 50);
+    expect(result.requests).toEqual([{ input: 100, output: 320, cacheRead: 9000, cacheWrite: 50 }]);
+  });
+
   it("unwraps the task result wrapper on the emitted tool result (planning#434 wiring)", () => {
     const taskLine = `{"type":"tool_use","timestamp":1786885657565,"sessionID":"${SESSION}","part":{"type":"tool","tool":"task","callID":"call_00_task1","state":{"status":"completed","input":{"description":"Count files in repo root","prompt":"Count the files.","subagent_type":"general"},"output":"<task id=\\"ses_8f214c2af\\" state=\\"completed\\">\\n<task_result>\\n11\\n</task_result>\\n</task>"},"id":"prt_t","sessionID":"${SESSION}","messageID":"msg_1"}}`;
     const { adapter, child, events } = makeAdapter();

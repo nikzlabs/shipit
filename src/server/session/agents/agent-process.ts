@@ -6,6 +6,7 @@ export type {
   AgentAssistantEvent,
   AgentToolResultEvent,
   AgentResultEvent,
+  AgentRequestUsage,
   AgentContentBlock,
   AgentGoal,
   AgentGoalCommand,
