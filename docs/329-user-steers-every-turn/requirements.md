@@ -98,7 +98,7 @@ Each is a choice with a reason. None follows from the user's words alone.
   waited for the compaction, on a branch that message is about to reset
   (`docs/295-compact-context-on-merge`).
 - **The agent process of a conflict-resolution turn ends with that turn.** A
-  background job that the turn started stops there, and the agent is told. The
-  rebase, not the turn, makes the commit. Reason: while ShipIt runs git on the
-  branch in a rebase, nothing else may write to the workspace, and ending the
-  process is how this design makes sure of that.
+  background job that the turn started stops there; the prompt of the turn
+  says so. The rebase, not the turn, makes the commit. Reason: while ShipIt
+  runs git on the branch in a rebase, nothing else may write to the workspace,
+  and ending the process is how this design makes sure of that.

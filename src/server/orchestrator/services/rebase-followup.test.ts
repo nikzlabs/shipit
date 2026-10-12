@@ -147,7 +147,6 @@ describe("rebase-followup: delivery", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.opts.text).toContain("re-run codegen");
-    expect(calls[0]!.opts.systemTurn).toBeUndefined();
     // "none" belongs to the resolution turn; this turn's own edits must be committed and pushed.
     expect(calls[0]!.opts.postTurn).toBeUndefined();
     expect(calls[0]!.admission).toEqual({ whenBusy: "queue" });

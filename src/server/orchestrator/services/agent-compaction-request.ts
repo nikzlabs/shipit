@@ -11,7 +11,7 @@ import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-r
 import { DISPATCH_SETUP_FAILURE, toQueuedMessage } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import type { TurnHandle, TurnOutcome } from "../turn-settlement.js";
-import { systemTurnBlockedByResidentWork } from "../turn-admission.js";
+import { residentBackgroundWork } from "../turn-admission.js";
 import { stoppedByUser } from "../turn-stop-request.js";
 import { reconcileRunnerAgent } from "../reconcile-runner-agent.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
@@ -106,7 +106,7 @@ export interface CompactionStepDeps {
  * nothing unless the agent asked for a compaction; leaves the request pending while another
  * turn or flow has the session, so the next turn's end retries it.
  *
- * The compaction is the docs/295 silent system turn, and what follows it is fixed BEFORE it
+ * The compaction is the docs/295 silent turn, and what follows it is fixed BEFORE it
  * starts: the instructions are parked as a notice, which the compaction does not consume and
  * the next turn does, and the continuation goes to the queue's head. The compaction's own
  * drain takes it, after any message the user queued meanwhile. Neither waits for the
@@ -123,19 +123,18 @@ export async function runRequestedCompaction(
   // req 10 — covers a request that landed after the Stop; the Stop handlers cover the rest.
   if (stoppedByUser(runner)) deps.sessionManager.dropPendingCompactionNote(sessionId);
 
-  const busy = busyReason(runner, turn);
+  const busy = busyReason(runner);
   if (busy) {
     console.log(`[agent-compaction] ${sessionId}: ${busy}; the compaction waits for the next turn's end`);
     return;
   }
-  // Settle the ending turn while the runner still describes it: the compaction resets that
-  // state, and a system turn's own hold would keep the compaction out.
+  // Settle the ending turn while the runner still describes it: the compaction resets that state.
   try {
     turn.settle();
   } catch (err) {
     console.error(`[agent-compaction] settling the ending turn of ${sessionId} threw:`, getErrorMessage(err));
   }
-  if (runner.running || runner.systemTurnInProgress) {
+  if (runner.running || runner.sessionHold) {
     console.log(`[agent-compaction] ${sessionId}: queued work started; the compaction waits for its end`);
     return;
   }
@@ -176,7 +175,6 @@ export async function runRequestedCompaction(
       uploads: undefined,
       permissionMode: undefined,
       postTurn: undefined,
-      systemTurn: true,
       automatic: true,
       heldId: undefined,
       // A dispatch that fails in setup never reaches the compaction turn's own missed-card notice.
@@ -204,13 +202,15 @@ export async function runRequestedCompaction(
   }
 }
 
-function busyReason(runner: SessionRunnerInterface, turn: RequestedRestartTurn): string | null {
+function busyReason(runner: SessionRunnerInterface): string | null {
   if (runner.running) return "a turn is running";
   if (runner.mergeHold) return "a merge holds the session";
-  if (runner.systemTurnInProgress && !turn.ownsSystemHold()) return "another flow holds the session";
+  if (runner.sessionHold) return "another flow holds the session";
   // docs/322 — the user answers first.
   if (runner.awaitingUserAnswer || runner.answerHold) return "the agent waits for the user's answer";
-  return systemTurnBlockedByResidentWork(runner, true);
+  // A turn of the CLI's own could come between the compaction and its continuation.
+  const work = residentBackgroundWork(runner);
+  return work.length > 0 ? `the resident agent has background work in flight (${work.join(", ")})` : null;
 }
 
 function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: string) {
@@ -225,7 +225,6 @@ function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: st
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: true,
     heldId: undefined,
     onTurnComplete: (outcome: TurnOutcome) => {

@@ -192,8 +192,7 @@ describe("quota continuation", () => {
     await manager.continueNow("s1");
 
     expect(h.dispatch).toHaveBeenCalledTimes(1);
-    const dispatched = h.dispatch.mock.calls[0]![0] as { text: string; systemTurn?: boolean };
-    expect(dispatched.systemTurn).toBeUndefined();
+    const dispatched = h.dispatch.mock.calls[0]![0] as { text: string };
     // A turn of its own, never steered into another and never queued behind one.
     expect(h.dispatch.mock.calls[0]![1]).toEqual({ whenBusy: "refuse" });
     expect(dispatched.text).toContain("A quota limit stopped your previous turn");

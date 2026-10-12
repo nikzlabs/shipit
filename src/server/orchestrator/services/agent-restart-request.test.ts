@@ -7,6 +7,7 @@ import { turnDropped, turnQuotaRefused, TURN_COMPLETED, type TurnHandle } from "
 import { ServiceError } from "./types.js";
 import { takeQueueHold, type QueueHold, type RestartAgentOpts, type RecoveryDeps } from "./recovery.js";
 import type * as RecoveryModuleNs from "./recovery.js";
+import { takeSessionHold } from "../session-hold.js";
 
 type RecoveryModule = typeof RecoveryModuleNs;
 
@@ -59,7 +60,6 @@ function setup(note: string | null = "check node -v") {
     sessionId: SESSION,
     runner,
     turnIsCurrent: () => true,
-    ownsSystemHold: () => false,
     settle: vi.fn(),
   };
   return { deps, state, runner, runnerRegistry, turn };
@@ -140,7 +140,7 @@ describe("runRequestedRestart — when it waits", () => {
   it.each([
     ["a drained turn is running", (r: SessionRunnerInterface) => { r.running = true; }],
     ["a merge holds the session", (r: SessionRunnerInterface) => { r.mergeHold = true; }],
-    ["another flow holds the session", (r: SessionRunnerInterface) => { r.systemTurnInProgress = true; }],
+    ["another flow holds the session", (r: SessionRunnerInterface) => { takeSessionHold(r); }],
   ])("keeps the request for the next turn's end when %s", async (_label, occupy) => {
     const { deps, state, runner, turn } = setup();
     occupy(runner);
@@ -155,7 +155,7 @@ describe("runRequestedRestart — the restart", () => {
     const { deps, state, runner, turn } = setup();
     let heldDuringRestart = false;
     restartAgent.mockImplementation(async (_deps: RecoveryDeps, _id: string, opts: RestartAgentOpts) => {
-      heldDuringRestart = runner.systemTurnInProgress;
+      heldDuringRestart = runner.sessionHold !== null;
       expect(opts).toEqual({ carryQueue: true });
       return { ok: true, noContainer: false, newContainerState: "running", error: null, held: replacementHold() };
     });
@@ -189,20 +189,10 @@ describe("runRequestedRestart — the restart", () => {
 
     await expect(runRequestedRestart(deps, turn)).rejects.toThrow("SQLITE_FULL");
 
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
     expect(restartAgent).not.toHaveBeenCalled();
   });
 
-  it("restarts when the ending turn's own system hold is the only hold", async () => {
-    const { deps, runner, turn } = setup();
-    runner.systemTurnInProgress = true;
-    restartAgent.mockResolvedValue({ ok: true, noContainer: false, newContainerState: "running", error: null });
-    wakeSessionWithTurn.mockResolvedValue({} as TurnHandle);
-
-    await runRequestedRestart(deps, { ...turn, ownsSystemHold: () => true });
-
-    expect(restartAgent).toHaveBeenCalledTimes(1);
-  });
 
   it("does not reset the OOM breaker or the loop detector, which the button does", async () => {
     const { deps, turn } = setup();
@@ -330,7 +320,7 @@ describe("the user's Restart after turn (docs/242-stale-session-container-indica
     expect(restartAgent.mock.calls[0]![2]).toEqual({ carryQueue: true });
     expect(state.userRestart).toBeUndefined();
     expect(wakeSessionWithTurn).not.toHaveBeenCalled();
-    expect(held.runner.systemTurnInProgress).toBe(false);
+    expect(held.runner.sessionHold).toBeNull();
     expect(held.runner.postTurnWorkInFlight).toBe(false);
   });
 
@@ -394,7 +384,7 @@ describe("the user's Restart after turn (docs/242-stale-session-container-indica
     await runRequestedRestart(deps, turn);
 
     expect(state.notices).toEqual([]);
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
   });
 });
 
@@ -429,7 +419,7 @@ describe("runRequestedRestart — failure", () => {
     expect(state.notices).toHaveLength(1);
     expect(state.notices[0]).toContain("worker gone");
     expect(state.notices[0]).toContain("check node -v");
-    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.sessionHold).toBeNull();
     expect(wakeSessionWithTurn).not.toHaveBeenCalled();
   });
 
@@ -443,7 +433,7 @@ describe("runRequestedRestart — failure", () => {
     await runRequestedRestart(deps, turn);
 
     expect(state.notices[0]).toContain("no image");
-    expect(held.runner.systemTurnInProgress).toBe(false);
+    expect(held.runner.sessionHold).toBeNull();
     expect(held.runner.postTurnWorkInFlight).toBe(false);
     expect(wakeSessionWithTurn).not.toHaveBeenCalled();
   });
@@ -458,20 +448,20 @@ describe("runRequestedRestart — failure", () => {
     await settle();
 
     expect(state.notices[0]).toContain("container could not be resumed");
-    expect(held.runner.systemTurnInProgress).toBe(false);
+    expect(held.runner.sessionHold).toBeNull();
     expect(held.runner.postTurnWorkInFlight).toBe(false);
   });
 
   it("leaves a hold alone that changed hands since", async () => {
     const { deps, turn } = setup();
     const held = replacementHold();
-    held.runner.systemTurnInProgress = true; // another flow takes the hold over
+    const other = takeSessionHold(held.runner); // another flow takes the session over
     restartAgent.mockResolvedValue({ ok: true, noContainer: false, newContainerState: "running", error: null, held });
     wakeSessionWithTurn.mockRejectedValue(new Error("boom"));
 
     await runRequestedRestart(deps, turn);
     await settle();
 
-    expect(held.runner.systemTurnInProgress).toBe(true);
+    expect(held.runner.sessionHold).toBe(other);
   });
 });

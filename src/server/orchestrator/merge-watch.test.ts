@@ -397,7 +397,6 @@ describe("a wake turn that cannot be delivered is retried (planning#260)", () =>
 
     expect(watch()?.state).toBe("delivered");
     expect(wakes()).toHaveLength(1);
-    expect(wakes()[0].systemTurn).toBeUndefined();
   });
 
   it("the retry supervisor's own timer drives the recovery (no external caller)", async () => {

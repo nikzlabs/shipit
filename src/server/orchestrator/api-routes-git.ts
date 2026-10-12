@@ -496,7 +496,7 @@ export async function registerGitRoutes(
         void (async () => {
           try {
             const outcome = await flowPromise;
-            // The flow's `finally` has run: the system-turn hold is released and LFS restored.
+            // The flow's `finally` has run: the session hold is released and LFS restored.
             if (outcome.status === "conflicts_resolved" && outcome.followup) {
               deliverRebaseFollowup(
                 { runner, sessionManager: deps.sessionManager },
@@ -538,7 +538,7 @@ export async function registerGitRoutes(
         if (agent) {
           agent.kill();
           // Settle the driver's wait before clearing the agent drops its terminal events.
-          if (runner?.systemTurnInProgress) agent.emit("superseded");
+          if (runner?.sessionHold) agent.emit("superseded");
           if (runner) {
             runner.setAgent(null);
             runner.running = false;

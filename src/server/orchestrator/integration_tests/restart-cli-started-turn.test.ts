@@ -21,6 +21,7 @@ import type {
   PermissionMode,
   WorkerAgentStatus,
 } from "../../shared/types.js";
+import { takeSessionHold } from "../session-hold.js";
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   constructor(readonly agentId: AgentId) {
@@ -445,11 +446,11 @@ describe("Integration: a turn the CLI starts on its own after an orchestrator re
     it("leaves a queue hold that a rebase or a recovery took", async () => {
       await turnOfThePreviousOrchestrator();
       const runner = await connectedIdleRunner();
-      runner.systemTurnInProgress = true;
+      const hold = takeSessionHold(runner);
 
       selfWake();
       await waitFor(() => runner.running, 3000, "the turn is followed");
-      expect(runner.systemTurnInProgress).toBe(true);
+      expect(runner.sessionHold).toBe(hold);
     });
 
     // docs/322-question-holds-automatic-turns req 7, as without a restart.

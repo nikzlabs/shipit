@@ -9,6 +9,7 @@ import type { GitManager } from "../../shared/git.js";
 import { LfsUploadError } from "../../shared/git-lfs-push.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { isOpsSafeLine } from "./host-session-logs.js";
+import { takeSessionHold } from "../session-hold.js";
 
 function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>> = {}): GitManager {
   return {
@@ -37,7 +38,7 @@ function fakeRunner(): FakeRunner {
     emitMessage: vi.fn(),
     beginPostTurnWork: vi.fn(),
     endPostTurnWork: vi.fn(),
-    systemTurnInProgress: false,
+    sessionHold: null,
   } as unknown as FakeRunner;
 }
 
@@ -911,7 +912,7 @@ describe("auto-push scheduler — a rejection explained by our own rebase is not
 
   it("persists no notice and raises no rebase banner for a rejection inside the window", async () => {
     const runner = fakeRunner();
-    runner.systemTurnInProgress = true;
+    takeSessionHold(runner);
     const deps = makeDeps({ getRunner: () => runner });
     createAutoPushScheduler(deps).schedule(divergedGit(), "s1");
 
@@ -923,9 +924,9 @@ describe("auto-push scheduler — a rejection explained by our own rebase is not
     );
   });
 
-  it("does NOT hold back a push that would succeed merely because a system turn is running", async () => {
+  it("does NOT hold back a push that would succeed merely because a session hold is set", async () => {
     const runner = fakeRunner();
-    runner.systemTurnInProgress = true;
+    takeSessionHold(runner);
     const deps = makeDeps({ getRunner: () => runner });
     const git = fakeGit();
     createAutoPushScheduler(deps).schedule(git, "s1");

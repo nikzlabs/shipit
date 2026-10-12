@@ -28,9 +28,9 @@ describe("dispatched turn — the one-shot note in the prompt", () => {
     return { prompts };
   }
 
-  it("rides a system turn, ahead of the message", async () => {
+  it("rides a turn that ShipIt started, ahead of the message", async () => {
     const { prompts } = setup();
-    runner.dispatch(testDispatch({ text: "Your PR #7 merged.", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "Your PR #7 merged.", automatic: true }));
     await flushTurn();
 
     expect(ONE_SHOT_TURN_NOTE).not.toBe("");
@@ -65,7 +65,7 @@ describe("dispatched turn — the one-shot note in the prompt", () => {
 
   it("stays off a driver-owned turn", async () => {
     const { prompts } = setup();
-    runner.dispatch(testDispatch({ text: "resolve the conflicts", systemTurn: true, postTurn: "none" }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", automatic: true, postTurn: "none" }));
     await flushTurn();
 
     expect(prompts[0]).toBe("resolve the conflicts");
@@ -73,7 +73,7 @@ describe("dispatched turn — the one-shot note in the prompt", () => {
 
   it("stays off a harness that starts no turn for a finished background job", async () => {
     const { prompts } = setup("codex" as AgentId);
-    runner.dispatch(testDispatch({ text: "Your PR #7 merged.", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "Your PR #7 merged.", automatic: true }));
     await flushTurn();
 
     expect(prompts[0]).not.toContain(ONE_SHOT_TURN_NOTE);

@@ -10,11 +10,13 @@ import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 import { POST_TURN_HOLD_MAX_MS } from "./post-turn-hold.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
+import { takeSessionHold } from "./session-hold.js";
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
+  sendUserMessage: ReturnType<typeof vi.fn>;
 }
 
 function makeFakeAgent(onRun?: () => void): FakeAgent {
@@ -22,6 +24,7 @@ function makeFakeAgent(onRun?: () => void): FakeAgent {
   agent.run = vi.fn(() => onRun?.());
   agent.kill = vi.fn();
   agent.setPermissionMode = vi.fn();
+  agent.sendUserMessage = vi.fn();
   return agent;
 }
 
@@ -139,7 +142,7 @@ describe("turn admission while the finished turn's commit is pending", () => {
     return { runner, agents, commit, postTurnPrFlow, started, finish };
   }
 
-  const wake = () => testDispatch({ text: "reset the tree", systemTurn: true, automatic: true });
+  const wake = () => testDispatch({ text: "reset the tree", automatic: true });
 
   it("queues a dispatch that arrives during a streaming turn's commit, and starts it after the commit", async () => {
     const { runner, agents, commit, started, finish } = setup(STREAMING);
@@ -151,15 +154,20 @@ describe("turn admission while the finished turn's commit is pending", () => {
     await waitFor(() => commit.started === 1, "commit started");
     expect([runner.running, runner.turnCommitPending]).toEqual([false, true]);
 
+    // The successor enters the resident process; it begins by discarding the working tree.
+    agents[0]!.sendUserMessage.mockImplementation(() => {
+      execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" });
+    });
     const handle = runner.dispatch(wake());
     await flush();
     await flush();
     expect(handle.admitted).toBe("queued");
-    expect(agents).toHaveLength(1);
+    expect(agents[0]!.sendUserMessage).not.toHaveBeenCalled();
     expect(runner.queueLength).toBe(1);
 
     commit.land();
-    await waitFor(() => started(2), "the dispatched turn started");
+    await waitFor(() => agents[0]!.sendUserMessage.mock.calls.length === 1, "the dispatched turn started");
+    expect(agents).toHaveLength(1);
     expect(fs.readFileSync(filePath, "utf8")).toBe("turn-1 work\n");
     expect(commitCount()).toBe(2);
     await finish();
@@ -244,22 +252,24 @@ describe("turn admission while the finished turn's commit is pending", () => {
     agents[0]!.emit("event", RESULT);
     await waitFor(() => commit.started === 1, "commit started");
 
-    runner.dispatch(testDispatch({ text: "first wake", systemTurn: true, automatic: true }));
-    runner.dispatch(testDispatch({ text: "second wake", systemTurn: true, automatic: true }));
+    runner.dispatch(testDispatch({ text: "first wake", automatic: true }));
+    runner.dispatch(testDispatch({ text: "second wake", automatic: true }));
     expect(runner.messageQueue.map((m) => m.text)).toEqual(["first wake", "second wake"]);
 
     commit.land();
-    await waitFor(() => started(2), "a successor started");
+    const entered = (): number => agents[0]!.sendUserMessage.mock.calls.length;
+    await waitFor(() => entered() === 1, "a successor started on the resident");
     await flush();
     await flush();
-    expect(agents).toHaveLength(2);
+    expect(entered()).toBe(1);
+    expect(agents).toHaveLength(1);
     expect(runner.messageQueue.map((m) => m.text)).toEqual(["second wake"]);
     await waitFor(() => postTurnPrFlow.mock.calls.length === 1, "turn 1's PR flow ran");
     expect(commit.started).toBe(1);
 
-    agents[1]!.emit("event", RESULT);
-    agents[1]!.emit("done", 0);
-    await waitFor(() => started(3), "the second entry follows in order");
+    agents[0]!.emit("event", RESULT);
+    await waitFor(() => entered() === 2, "the second entry follows in order");
+    expect(String(agents[0]!.sendUserMessage.mock.calls[1]?.[0])).toContain("second wake");
     await finish();
   });
 
@@ -278,18 +288,20 @@ describe("turn admission while the finished turn's commit is pending", () => {
     await finish();
   });
 
-  // The rebase driver's resolution turn (`postTurn: "none"`) runs inside the driver's own hold
-  // and never commits, so the hold its previous step still has open must not refuse the next.
-  it("admits a driver-owned turn while a commit hold is open", async () => {
+  // The rebase flow's step runs inside the flow's own hold and never commits, so the hold its
+  // previous step still has open must not refuse the next.
+  it("admits a flow's own step while a commit hold is open", async () => {
     const { runner, started, finish } = setup();
     const hold = runner.beginTurnCommit();
+    const session = takeSessionHold(runner);
     const handle = runner.dispatch(
-      testDispatch({ text: "resolve the conflicts", systemTurn: true, postTurn: "none" }),
-      { whenBusy: "refuse" },
+      testDispatch({ text: "resolve the conflicts", postTurn: "none" }),
+      { whenBusy: "refuse", underHold: session },
     );
     expect(handle.admitted).toBe("started");
     await waitFor(() => started(1), "the resolution turn started");
     runner.endTurnCommit(hold);
+    session.release();
     await finish();
   });
 
@@ -373,7 +385,7 @@ describe("turn admission while the finished turn's commit is pending", () => {
       runner.dispatch(testDispatch({ text: "queued by the user" }));
       agents[0]!.emit("event", RESULT);
       await step(() => commit.started === 1);
-      runner.dispatch(testDispatch({ text: "wake", systemTurn: true, automatic: true }));
+      runner.dispatch(testDispatch({ text: "wake", automatic: true }));
       expect(runner.messageQueue.map((m) => m.text)).toEqual(["queued by the user", "wake"]);
 
       await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS + 5000);
@@ -449,7 +461,7 @@ describe("turn admission while the finished turn's commit is pending", () => {
       agents[0]!.emit("done", 0);
       await step(() => commit.started === 1);
       runner.dispatch(testDispatch({ text: "second turn" }));
-      runner.dispatch(testDispatch({ text: "third turn", systemTurn: true, automatic: true }));
+      runner.dispatch(testDispatch({ text: "third turn", automatic: true }));
 
       await vi.advanceTimersByTimeAsync(POST_TURN_HOLD_MAX_MS + 5000);
       await step(() => started(2));

@@ -33,6 +33,12 @@ export interface TurnOutcome {
    * where it stated none.
    */
   readonly quotaRefused?: { readonly resetsAt: readonly (string | null)[] };
+  /**
+   * A `completed` turn whose own result came after the user's Stop, or was an error. Read at
+   * that result: a turn the CLI starts on the same process resets the runner's flags first.
+   */
+  readonly stoppedByUser?: boolean;
+  readonly resultErrored?: boolean;
 }
 
 /**

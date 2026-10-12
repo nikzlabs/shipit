@@ -73,7 +73,6 @@ describe("wakeSessionWithTurn", () => {
     expect(handle.admitted).toBe("started");
     expect(runner.running).toBe(true);
     expect(runner.queueLength).toBe(0);
-    expect(runner.systemTurnInProgress).toBe(false);
     expect(runner.postTurnWorkInFlight).toBe(false);
   });
 
@@ -134,7 +133,6 @@ describe("wakeSessionWithTurn", () => {
     await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
 
     expect(agents[0]!.run.mock.calls[0]![0]).toMatchObject({ useStreaming: true });
-    expect(runner.systemTurnInProgress).toBe(false);
     const steered = runner.dispatch(testDispatch({ text: "use the other branch" }));
     expect(steered.admitted).toBe("steered");
     expect(agents[0]!.sendUserMessage).toHaveBeenCalledWith("use the other branch");
@@ -206,7 +204,6 @@ describe("wakeSessionWithTurn — start now or refuse (docs/328-session-message-
     });
 
     expect(handle.admitted).toBe("started");
-    expect(runner.systemTurnInProgress).toBe(false);
   });
 
   it("refuses, and queues nothing, when the session is busy", async () => {
@@ -333,7 +330,6 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
 
     expect(handle.admitted).toBe("queued");
     expect(sessionManager.heldTurns("s1").map((m) => m.text)).toEqual(["continue"]);
-    expect(runner.systemTurnInProgress).toBe(false);
     expect(runner.running).toBe(true);
     expect(runner.messageQueue).toEqual([]);
     runner.dispose({ force: true });

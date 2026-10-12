@@ -130,7 +130,6 @@ export function deliverRebaseFollowup(deps: RebaseFollowupDeps, followup: Rebase
       // Default post-turn handling on purpose: unlike the resolution turn, this turn writes
       // ordinary edits that must be committed and pushed.
       postTurn: undefined,
-      systemTurn: undefined,
       automatic: true,
       heldId: undefined,
       execution: undefined,

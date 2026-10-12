@@ -290,7 +290,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     store.add("parent", { origin: CHILD, body: "a report" });
     const runner = registry.getOrCreate("parent", "/tmp/parent", "claude");
 
-    runner.dispatch(testDispatch({ text: "resolve the conflict in src/a.ts", systemTurn: true, postTurn: "none" }));
+    runner.dispatch(testDispatch({ text: "resolve the conflict in src/a.ts", postTurn: "none" }));
 
     expect(await nextRun(1)).toBe("resolve the conflict in src/a.ts");
     // The driver's turn carried no notice, so its end is no receipt for one.

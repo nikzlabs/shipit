@@ -527,9 +527,10 @@ no durability guarantee and belong in `docker-compose.yml`.
   and **no completion notice comes for it**. Do not count on those seconds.
   Where your harness would start a turn for a finished job, a turn that ShipIt
   started on a process that exits begins with a `[System]` line that says so; a
-  turn the user typed carries no such line. The turn that resolves the
-  conflicts of a rebase always runs on a process that exits, and carries no
-  such line either. On these
+  turn the user typed carries no such line. The process of the turn that
+  resolves the conflicts of a rebase always ends with that turn, before
+  ShipIt continues the rebase; its prompt says so, and it carries no such line
+  either. On these
   turns, run the work in the foreground and wait for it in the same message;
   split work that is longer than one tool call allows, or declare it as a
   Compose service. If you leave a job running, ShipIt normally starts

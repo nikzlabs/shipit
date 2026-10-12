@@ -14,6 +14,7 @@ import {
 } from "./turn-stop-request.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
+import { takeSessionHold } from "./session-hold.js";
 import { requeueInSendOrder } from "./queue-identity.js";
 import { steerToQueuedMessage } from "./ws-handlers/agent-message-builder.js";
 
@@ -274,7 +275,6 @@ describe("deliverWaitingMessages", () => {
     ["no turn runs", () => { runner.running = false; }],
     ["Live steering is off", () => { liveSteering = false; }],
     ["the process takes no input", () => { runner.isStreamingActive = false; }],
-    ["ShipIt's own operation holds the session", () => { runner.systemTurnInProgress = true; }],
     ["a merge is held", () => { runner.mergeHold = true; }],
   ])("delivers nothing when %s", async (_label, arrange) => {
     runner.enqueue(typed("waits"));
@@ -284,6 +284,15 @@ describe("deliverWaitingMessages", () => {
 
     expect(sent).toEqual([]);
     expect(runner.messageQueue.map((m) => m.text)).toEqual(["waits"]);
+  });
+
+  it("delivers into a turn that runs while ShipIt holds the session", async () => {
+    takeSessionHold(runner);
+    runner.enqueue(typed("waits"));
+
+    await deliverWaitingMessages(runner, deps());
+
+    expect(sent).toEqual(["waits"]);
   });
 
   it("writes nothing when the turn ends while the message is prepared", async () => {

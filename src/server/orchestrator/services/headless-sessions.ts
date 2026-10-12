@@ -498,7 +498,6 @@ function firstDispatch(opts: {
     files: undefined,
     permissionMode: firstDispatchParams(opts.params).permissionMode,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: undefined,
     heldId: undefined,
     onTurnComplete: undefined,

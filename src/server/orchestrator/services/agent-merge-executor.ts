@@ -485,7 +485,7 @@ function idleBlocker(deps: AgentMergeExecutorDeps, sessionId: string): IdleBlock
   }
   unprobedAfterRestart.delete(sessionId);
   if (runner.running) return { why: "a turn is running", turn: { runner, epoch: runner.turnEpoch ?? 0 } };
-  if (runner.systemTurnInProgress) return { why: "ShipIt is working on this session's branch" };
+  if (runner.sessionHold) return { why: "ShipIt is working on this session's branch" };
   if (runner.agentBusy) {
     // Background work normally ends by starting a turn that no hold can keep back (docs/288-agent-merge-arming req 6).
     const work = runner.backgroundWorkDescriptions;
@@ -508,7 +508,7 @@ function isIdle(
   if (!runner) return !unprobedAfterRestart.has(sessionId);
   unprobedAfterRestart.delete(sessionId);
   // Under our hold, ignore our own lease and messages queued behind the merge.
-  return !runner.running && !runner.systemTurnInProgress;
+  return !runner.running && !runner.sessionHold;
 }
 
 interface WaitState {

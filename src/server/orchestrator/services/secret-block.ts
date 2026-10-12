@@ -93,7 +93,6 @@ function dispatchRemediationTurn(
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: true,
     heldId: undefined,
     onTurnComplete: undefined,

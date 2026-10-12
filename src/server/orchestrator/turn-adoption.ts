@@ -40,7 +40,7 @@ export async function adoptInFlightTurn(
 
   const drainNext = async (): Promise<void> => {
     // A rebase flow releases the queue when it settles.
-    if (runner.systemTurnInProgress) return;
+    if (runner.sessionHold) return;
     const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });

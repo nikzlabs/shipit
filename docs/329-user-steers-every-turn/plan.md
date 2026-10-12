@@ -8,10 +8,10 @@ description: Turns that ShipIt starts run on the same process as a typed turn an
 
 Implements [requirements.md](./requirements.md).
 
-## What is there today
+## What was there before this feature
 
-A dispatch can carry `systemTurn: true`, and the runner carries
-`systemTurnInProgress`. Together they mean four things. Each was read at the
+A dispatch could carry `systemTurn: true`, and the runner carried
+`systemTurnInProgress`. Together they meant four things. Each was read at the
 source on 2026-10-12.
 
 | Meaning | Where |
@@ -39,9 +39,9 @@ review record below).
 
 - **Part 1** (merged) makes the turns that do ordinary work ordinary turns.
   That is the report that started this feature: no steering after a restart.
-- **Part 2** makes one rule for when a message enters a turn, and gives a
-  message that had to wait to the turn that starts. It leaves the old flag in
-  place.
+- **Part 2** (merged) makes one rule for when a message enters a turn, and
+  gives a message that had to wait to the turn that starts. It leaves the old
+  flag in place.
 - **Part 3** makes the hold a flag of its own, moves the two turns that run
   inside a ShipIt operation (conflict resolution, compaction), and deletes
   `systemTurn` and `systemTurnInProgress`. The constraint resolved on
@@ -375,11 +375,16 @@ and a refused steer went to the end of the queue.
 
 ## Part 3 — the session hold, and the last two turns (req 1, req 2)
 
-**Not final.** The review of 2026-10-12 on this version found the points
-under "Open design points" at the end of this part. They are answered, and the
-part is reviewed again, before any of its code.
+The first version of this part made the conflict-resolution turn a new kind of
+turn inside the executor, and tried to make a cancelled rebase safe at each git
+step. The reviews of 2026-10-12 found six open points in it, and a second pair
+of reviews found more in the version after it (review record). The built
+version is smaller than both. The conflict-resolution turn is an ordinary turn.
+The rebase flow, which is what needs a quiet workspace, replaces the agent
+process before its step, as the old system turn did, and ends the process of
+the step itself.
 
-### What is left of the old flag
+### What was left of the old flag
 
 - `systemTurn: true` on four dispatches: the conflict-resolution turn
   (`services/rebase-driver.ts` → `dispatchRebaseResolutionTurn`), the
@@ -400,107 +405,181 @@ part is reviewed again, before any of its code.
 itself, so no turn starts. Two flows take it: the rebase and a restart.
 
 ```ts
-interface SessionHold { readonly held: boolean; release(): void }
-function takeSessionHold(runner): SessionHold
+interface SessionHold { release(): void }
+function takeSessionHold(runner): SessionHold        // session-hold.ts
 ```
 
-- The field is plain data, `SessionHold | null`, written only by
-  `takeSessionHold` and by `release()`. `held` is `runner.sessionHold === this`,
-  and `release()` clears the field only while that is true: what the sequence
-  number does today, with no setter for other code to write.
-- **Taking a hold that is held takes it over.** The earlier owner reads
-  `held === false` from then on. A flow that must not take over reads the field
-  first, as the rebase and the restart request do today. That is how a
-  cancellation works (below).
+- The field is plain data, `SessionHold | null`. The hold is a token: its
+  owner keeps it, and `release()` clears the field only while the field is
+  that token, which is what the sequence number did. A flow reads the field
+  before it takes the hold, as the rebase and the restart request read the
+  flag.
 - **No turn takes or releases it.** `TurnInput.systemTurn`, `ownsSystemHold`,
-  the release in `finishTurn`, and the claims in `dispatchOnRunner` and
-  `runDispatchedTurn` go. Tests state the behaviour: a turn that starts and
-  ends under a hold leaves it set, and a hold taken while a turn ends is not
-  released by that turn.
+  the release in `finishTurn`, the write at the executor's start, and the
+  claims in `dispatchOnRunner` and `runDispatchedTurn` go. Tests state the
+  behaviour: a turn that starts and ends under a hold leaves it set.
 - **What it stops.** Each reader of the old flag reads the hold: the dispatch
   gate, `releaseQueuedTurn`, the drains, the drain of an adopted turn, the
   merge executor, auto-merge, the branch-ahead heal, the auto-push scheduler
   (which reads it after a failed push, to hold back a warning), the restart
-  and compaction requests, the replay of a rebase banner. A dispatch enters
-  under the hold only as the holder's own step, `postTurn: "none"`; the rebase
-  driver is its one caller. The same test replaces `systemTurn` in
-  `turnBlockedByPendingCommit`.
+  and compaction requests, the typed-message path, the answer path, the replay
+  of a rebase banner, and the abort route.
+- **The holder's own step.** The flow that holds the session must be able to
+  start a turn under its hold. It passes the hold with the admission:
+  `runner.dispatch(step, { whenBusy: "refuse", underHold: hold })`. The gate
+  admits a dispatch with `underHold` only when that token is the hold that is
+  set, so it also refuses the step of a flow whose hold was released. A
+  dispatch without `underHold` waits while any hold is set. `underHold` is an
+  argument of the admission call, not a field of the dispatch: the queue does
+  not store it (a step is never queued), and the executor does not get it. It
+  also replaces `systemTurn` in the exemption of `turnBlockedByPendingCommit`.
 - **It does not stop a steer.** The rule of Part 2 decides that. So the user
   steers the conflict-resolution turn, and a message that waited under the
-  rebase is delivered to it.
-- A `/compact` typed under a hold with no turn running is queued. Today it
-  compacts the idle process in the middle of the flow.
+  rebase is delivered to that turn when the agent has its prompt.
 
 ### The conflict-resolution turn (req 1, req 2)
 
-The driver holds the session for the whole flow, and the turn runs under that
-hold without a write to it. The dispatch keeps `postTurn: "none"` and
-`whenBusy: "refuse"`, and loses `systemTurn`.
+It is an ordinary dispatched turn with `postTurn: "none"`. That option exists
+beside the old flag and stays as it is: the driver, not the turn, does what
+follows the turn (the commit, the push, the pull-request flow, the queue).
+Nothing in the executor knows that the turn is a step of a rebase. It runs on
+a streaming process when Live steering is on and the harness can steer, takes
+a message by the rule of Part 2, and settles at the result of its own prompt
+(Part 1).
 
-- **It takes messages.** A driver step runs on a process that takes input when
-  Live steering is on and the harness can steer. It still retires the resident
-  first and is still refused while the resident has background work
-  (`turn-admission.ts`, renamed `driverStepBlockedByResidentWork`).
-- **The process ends with the turn, and the turn ends as a one-shot turn
-  does.** The driver runs `git add` and `git rebase --continue` when the turn
-  settles, and nothing else may write then. So in the executor a turn is
-  "resident" only when it streams and is not a driver step; every branch that
-  reads `useStreaming` to choose between the two terminal sequences reads that
-  instead. A driver step therefore takes the one-shot sequence, which exists
-  and is tested: the lease opens at the result and closes at `done`, the turn
-  settles at `done`, its background jobs are tracked and reported as stopped,
-  and a turn that the CLI starts after the result is not adopted. One line is
-  new: at the result of its own prompt the executor stops the process.
-- **If the process does not end** within a bound after that, the turn settles
-  as an error, and the flow aborts the rebase.
-- **A steer that the agent did not read** before the result goes back to the
-  queue at the result, as for every turn, and runs after the rebase. After
-  the result `running` is false, so no later message is written to the
-  process.
+The flow does four things around it, all in `rebase-driver.ts`:
 
-### Cancelling a rebase
+- **The step runs on a process of its own**, as the system turn did. The
+  gate retires an idle resident when it admits a step with `underHold`
+  (`retireResident`, `resident-spawn-guard.ts`), in the same synchronous step
+  as the claim, so a step that is refused ends no process. Before it
+  dispatches, the flow refuses the step while the resident has background
+  work (`refuseStepOverResidentWork`, with the old reason: the replacement
+  would end that work); a running turn is left to the gate, which refuses. The step so never
+  enters a process behind a turn of the CLI's own, whose result it could not
+  tell from its own (Part 1, known limits).
+- **It admits the step under its hold**, as above, with `whenBusy: "refuse"`.
+- **It counts the step as resolved only when the turn ended by itself.** A
+  streaming turn that the user stops ends with a result, and so settles
+  `completed`. The executor records at the turn's own result whether the user
+  had stopped it and whether the result is an error, and the `completed`
+  outcome carries both (`stoppedByUser`, `resultErrored`): a turn of the CLI's
+  own that starts on the same process before the settlement resets the
+  runner's flags. Either makes the step a failed one, and so does a turn that
+  asked a question (the answer hold, docs/322). The flow then aborts the
+  rebase.
+- **It ends the process of the step before it runs git** (`endStepProcess`).
+  When a step that started settles, with any outcome, the flow notes the
+  process in the slot. If that process is still in the slot afterwards, the
+  flow removes its listeners, stops it, and waits for its `done` event. Then it
+  continues the rebase or aborts it. A step that was refused started no
+  process, and the flow stops nothing. A step that failed keeps its own error;
+  a failure to see the exit then only goes to the log, because the flow aborts
+  either way.
+  - With the listeners gone, no event of the stopping process starts a turn
+    or takes a message. A steer that the agent did not read went back to the
+    queue at the result, before the stop.
+  - A turn of the CLI's own can still begin on the process between the step's
+    result and the stop. Under the hold nothing else can run, so a claim on
+    `running` at the exit is that turn's: the flow puts back what it took and
+    did not read (`requeueUndeliveredSteers`), saves its rows, and clears the
+    claim, because its executor's `done` handler no longer runs.
+  - The attempt's deadline can release the hold during the wait, and a turn
+    can then start. So after the wait the flow touches nothing unless it still
+    holds the session, and after the step it stops with an error when it does
+    not: it does not stage or continue a rebase for a session it lost.
+  - The wait is bounded (15 s; the process tree gets SIGKILL 5 s after
+    SIGTERM, `shared/kill-child.ts`). When the bound passes, the step counts
+    as failed and the flow aborts the rebase.
+  - When the process is no longer in the slot, the flow does not wait: a
+    one-shot process has ended (its `done` settled the turn and cleared the
+    slot), or an adapter error or the abort route took it out. In the last two
+    cases the flow has no proof of the exit, as before.
+- The prompt of the turn says that the agent process ends with the turn.
 
-Today the timeout of an automatic attempt clears `running` and the flag, and
-only then aborts the rebase; the flow it raced can wake later, take the flag
-again and continue. The abort route settles the driver's wait and aborts
-beside it.
+An answer on a question card that arrives under a hold while the turn that
+asked still ends is queued, not steered into that turn (`handleAnswerQuestion`).
+The old flag did this by refusing every steer.
 
-- **A cancellation takes the hold over, cleans up, then releases it.** The
-  timeout and the abort route call `takeSessionHold` first. No turn starts
-  while they stop the process, abort the rebase and restore the workspace, and
-  the flow they cancel has lost its hold.
-- **A flow that has lost its hold does nothing more to the workspace.** It
-  checks before each step that changes the tree or the remote, inside the
-  workspace lock where it takes one, and in the handlers that abort the
-  rebase. Its `finally` then closes its own records and its lease, and does
-  not restore files, arm a push or release the queue. The same holds for the
-  cleanup of `runAutoResolveAttempt` after a timeout.
+### The timeout of an automatic attempt
+
+The timeout of `runAutoResolveAttempt` stops the agent, clears `running`, and
+aborts the rebase, as before. In place of the write to the flag it releases the
+hold of the flow that it stops; the flow gives its hold to the attempt through
+a callback (`onSessionHoldTaken`), as it gives the follow-up window. The abort
+route changes one read: it settles the driver's wait when a hold is set. It
+never cleared the flag, and the flow releases its own hold.
+
+Two things are new. A flow whose hold was released cannot start a step: the
+gate refuses it. And the flow releases its hold and the queue in a `finally`
+of their own; before, a throw in the cleanup in front of them left the flag
+set with no owner. Everything else that a flow can do after its timeout or
+after an abort is as before (known limits).
 
 ### ShipIt's compaction turns (req 1)
 
 They lose `systemTurn` and take the path of every dispatched turn: the process
-a typed turn would use, the resident when one is alive. `silent` stays for what
-it already does: no user row, the notice when a compaction left no card, and a
-Stop that leaves the waiting message in the queue.
+that a typed turn would use, the resident when one is alive. `silent` stays for
+what it did: no user row, the notice when a compaction left no card, and a Stop
+that skips the compaction and runs the message that waited for it. The notice
+is now checked at the first drain of every silent turn, before the hold is
+read, and once: a turn of the CLI's own adopted after the compaction drains
+again, after its reset cleared the cards, and before this change it could add
+the notice a second time. The typed path (`agent-execution.ts`) checks it once
+in the same way. When that turn began before the compaction's own drain ran,
+the cards are gone from the runner, so the check also reads the record: a
+compaction card newer than the one before the turn means that the compaction
+ran (`compactionCardBefore`).
 
 - **No hold, and no flag in its place.** The old flag did three things here.
-  A message does not enter the compaction: Part 2's rule, for every
-  compaction. Nothing starts between the decision and the compaction: the
-  claim on `running` does that, now that `verifyRunningState` leaves a turn in
-  setup alone. Nothing starts between the compaction and the turn that waits:
-  the open commit already queues a turn there (`turnBlockedByPendingCommit`),
-  and the drain takes the next entry.
-- **The guards on background work stay**, with their reason corrected. A
-  compaction no longer replaces the resident. But a prompt that enters a
-  process behind a turn of the CLI's own cannot tell that turn's result from
-  its own (Part 1, known limits), and the drain would start the waiting
-  message before the compaction ran.
+  - A message does not enter the compaction: the rule of Part 2, for every
+    compaction.
+  - Nothing starts between the decision and the compaction. All three decision
+    sites run after the claim on `running` (`runDispatchedTurnInner`,
+    `runQueuedInteractiveMessage`, and the typed path in `send-message.ts`),
+    and a claim in setup takes no steer and is not cleared as stuck (Part 2).
+    One case is lost, see the known limits.
+  - Nothing starts between the compaction and the turn that waits for it. The
+    compaction ends as every turn with a queued successor ends: the open
+    commit queues a dispatch (`turnBlockedByPendingCommit`), a typed message
+    waits for it (`turnCommitSettled`), and the drain claims `running` for the
+    next entry with no macrotask between the commit and the claim.
+- **Two of the three guards on background work stay**: ShipIt does not decide
+  to compact ahead of a turn, and does not start a compaction that the agent
+  asked for, while the resident has background work. They decide when ShipIt
+  starts a compaction, which requirement 1 does not cover. The third guard, on
+  a compaction entry that already waits in the queue, goes: a `/compact` of
+  the user's has no such guard.
+- The notice of a bug-report outcome stays off the conflict-resolution turn.
+  It read `systemTurn`; it reads `postTurn: "none"`, as the notices beside it
+  do. A compaction turn carries no notice at all, as before.
 
 ### A restart
 
 `takeQueueHold` takes the session hold in place of the old flag. A restart
 request waits while a hold is set (`heldByOther` loses its exception for a
-turn that owned the flag).
+turn that owned the flag). The queue that a restart carries goes to the
+replacement past the queue's cap: the entries were accepted already, and a
+throw there left the hold set with nobody to release it.
+
+### A fresh process settles at its first result
+
+A streaming turn settles at the result of its own prompt (Part 1), and a
+result counts as the prompt's only once the worker has answered the submission.
+A process spawned for one prompt can produce its result before that answer;
+the turn then never settled, and the rebase flow waited for ever with no
+lease. The first result of a process that the turn spawned now settles the
+turn. It does not acknowledge the notices of the prompt, which still need the
+answer (docs/299 req 8).
+
+### What a turn's end still does
+
+`finishTurn` no longer releases a hold, and the queue release in its `finally`
+goes with it: it served an entry that a queued system turn left behind the
+resident's background work (planning#562), and no queue gate reads that work
+now. The release after a one-shot process exits stays, for a message that
+queued after the result. The release when the resident's background work ends
+(`runner-registry-factory.ts`) stays too; it declines while any gate holds.
 
 ### What goes
 
@@ -508,38 +587,57 @@ turn that owned the flag).
 `TurnInput` and `RunAgentWithMessageOpts`; `systemTurnInProgress` and
 `systemHoldSeq` on both runners; `SystemHoldTicket`, `takeSystemHold`,
 `decideWithSystemHold`, the hold in `decideCompactBeforeTurn`,
-`ownsSystemHold`; `systemTurnBlockedByResidentWork` under that name.
-`SystemTurnDeps` keeps its name: it is the dependency bundle of every
-dispatched turn, and a rename would touch files this feature does not change.
+`ownsSystemHold`; `systemTurnBlockedByResidentWork`; the branches of `runOnce`
+that retire the resident for a system turn. `SystemTurnDeps` keeps its name:
+it is the dependency bundle of every dispatched turn, and a rename would touch
+files this feature does not change.
 
-### Open design points
+### What this part does not change
 
-- **Every end of a driver step must wait for the process.** `finishTurn` is
-  also reached from the error path, `superseded` and `reused`, and a self-wake
-  is adopted on a one-shot process too (`agent-listeners.ts`). The one-shot
-  sequence alone does not make "settled" mean "no writer is left".
-- **The root process's exit is not the end of every writer.** `killProcessTree`
-  sweeps survivors later. "Did not end, so abort" rewrites the tree beside a
-  process that may still write.
-- **A cancellation must take over only the rebase it cancels**, never a
-  restart's hold, and its cleanup must wait behind a git step that is already
-  in the workspace lock.
-- **The hold checks** go into the git helpers too (`prepareWorkspaceForRebase`,
-  `syncLocalBaseRef`, `tryForcePush`, the stale-rebase abort before the flow).
-- **`postTurn: "none"` alone is not proof of the holder.** The gate must admit
-  the step of the flow that holds, not any dispatch with that option.
-- **Other differences between a typed turn and a dispatched one** that req 1
-  can be read to cover: a Stop clears the queue behind a typed turn and keeps
-  it behind a dispatched one; a dispatched turn reuses a resident after Live
-  steering was turned off, a typed one does not.
+- **What a Stop does with the queue.** A Stop discards the queue behind a turn
+  that the typed drain started (docs/021: "interrupt clears the queue"), and
+  keeps it behind a turn that `runner.dispatch` started, where the next entry
+  starts at once. The line is not who started the turn: a message of the
+  user's that a gate released runs on the dispatched path too. The two reviews
+  of this part disagree on the direction of a fix, and the direction is the
+  user's to choose (planning#692).
+- **How a rebase is cancelled.** The timeout and the abort route race the
+  flow; they do not cancel it (planning#693).
 
 ### Known limits of Part 3
 
 - A background job that the agent starts in a conflict-resolution turn stops
-  when the turn ends. `requirements.md` gives the reason.
+  when the turn ends, and no notice reports it; the prompt of the turn says
+  that the process ends. `requirements.md` gives the reason.
+- The flow continues at the exit of the root process of the step. A
+  descendant that ignores SIGTERM can write for up to 5 s more. The 15 s bound
+  is new: when it passes, the flow aborts the rebase beside a process that it
+  could not prove gone. The timeout of an automatic attempt did the same
+  before.
+- A Stop or a question in a conflict-resolution turn aborts the rebase. What
+  the agent wrote in that turn, also on a steer of the user's, goes with the
+  abort: a rebase cannot keep a part of a resolution.
+- A flow that its timeout or the abort route stopped is not cancelled. A git
+  step that was in flight ends later, and the flow then runs its cleanup with
+  no hold. It can no longer start a turn (planning#693).
+- A turn of the CLI's own that ends while ShipIt decides to compact clears the
+  claim of the turn that decides, as it does in every setup (Part 2, known
+  limits). The old flag held the session across the decision and the
+  compaction. Now a message or a queued entry can start a turn in that window,
+  and the two turns then meet on the process.
+- A compaction that is drained at the moment the process of a harness that
+  ends its process with each turn (Codex) exits goes to that process as a
+  message. The process ends with no result, and the existing retry starts the
+  compaction on a new process (Part 1, known limits).
+- These differences between a typed turn and a dispatched one stay: with Live
+  steering turned off while a resident is alive, a dispatched turn still runs
+  on the resident and a typed turn replaces it; a dispatched turn starts one
+  more time when its process ends with no result and no output, and a typed
+  turn shows the error; and a Stop and the queue, above.
 - A compaction turn that an orchestrator restart adopts has lost its phase,
-  so a message can be written to it; the result puts it back in the queue.
-- A hold has no deadline. The leases beside it have one, as today.
+  so a message can be written to it. If the agent did not read it before the
+  result, it goes back to the queue.
+- A hold has no deadline. The leases beside it have one, as before.
 
 ## Known limits of Part 1
 
@@ -558,8 +656,12 @@ dispatched turn, and a rename would touch files this feature does not change.
 - A work turn can retire the resident process, and its background jobs with
   it, when the session's model, credential route, tool list or MCP servers
   changed. A typed message does the same.
-- The rebase-resolution turn and ShipIt's compaction turns still refuse a
-  steer, until Part 3.
+- The rebase-resolution turn and ShipIt's compaction turns refused a steer
+  until Part 3, which removed that.
+- A wake after a merge enters the resident process, which started before the
+  merge and so runs without the merged-branch git guard
+  (`SHIPIT_GUARD_DESTRUCTIVE_GIT`, read at spawn only). A typed turn after a
+  merge did the same before this feature (planning#694).
 
 ## Review record
 
@@ -731,6 +833,107 @@ confirmed all four and found no leak of the delivery lock.
   that fails never releases what is held, so the error that explains it would
   not show. The case it covers (a refused message for which the browser
   predicted a compaction, during a reconnect) is older than this fix.
+
+2026-10-12, on the second version of Part 3 (before any of its code). Two runs
+of the reviewer, with different briefs. That version let the conflict turn
+enter the resident process and stopped the process after every step; it added
+a rule that a Stop discards the queue behind a dispatched turn.
+
+- **The brief "would anyone notice if it were removed?"** It kept the hold,
+  the admission argument, the wait for the exit and the prompt sentence. It
+  cut the `held` property, the take-over rule and a test that read the sources
+  for a second writer; it moved the check for background work from the gate
+  into the flow. All applied.
+- **The defect brief, applied.** A step that was refused must not stop a
+  process: the refusal exists to protect that process. A Stop of a streaming
+  turn settles `completed`, so the flow would have continued the rebase on a
+  half resolution; it now reads the runner after the step. On a reused process
+  a result of the CLI's own turn ends the executor's lease while the flow
+  still waits; the flow now replaces the process before the step, as today.
+  An event of the stopping process could start a turn and take a waiting
+  message; the listeners now go before the stop. An answer under the hold
+  could be steered into the turn that asked. The missed-compaction notice and
+  the bug-outcome notice read the old flag and are named now. The 15 s bound
+  is new and no longer called "as today".
+- **The Stop rule.** The first brief said that requirement 1 asks for one
+  rule and not for this direction, and that the direction decides whether a
+  message of the user's is lost. The second found the rule sound. The rule is
+  out of this part and filed for the user to decide (planning#692).
+- **Not followed.** The defect brief asked for a rebase that can be cancelled:
+  hold checks in each git step, proof that the process tree is gone, and an
+  abort route that waits for the flow. That is true of today's code, the
+  requirements do not ask for it, and an earlier version of this part grew
+  from the same request (planning#693). It asked for a setup claim that an
+  older turn cannot clear; that is the admission identity of Part 2's known
+  limits, and the case it adds is listed under Part 3's. It called each known
+  limit a failure of requirement 1; they are listed for the user to see, and
+  the two that are choices of this design are in `requirements.md`.
+- **`postTurn: "none"`.** The first brief found that it does more than stop
+  the commit: no drain, no pull-request flow, no restart or compaction request
+  at the turn's end. The plan now says so. Its queue part repeats what the
+  hold does, and stays: removing it changes the executor's drain for no
+  requirement.
+
+2026-10-12, on the Part 3 code. One run of the reviewer against both
+requirements and the constraint. It confirmed that the old flag is gone, that
+the hold is owned by flows only, that steering under the hold works, and that
+the container routes the exit of a stopped step to the flow. It found these,
+each reproduced, and each now has a test and a mutation check:
+
+- A stopped step whose process reported a job it ended (a turn of the CLI's
+  own) read the runner's flags after they were reset, and the rebase went on:
+  the outcome now carries the facts of the step's own result.
+- A fresh process's result before the worker's answer never settled the step:
+  the first result of a spawned process now settles its turn.
+- A turn of the CLI's own on the step's process was left marked running when
+  the flow ended the process: the flow now ends that turn.
+- A step that the gate then refused could end another process: the gate now
+  retires the resident only when it admits the step.
+- A restart that carried more than the queue's cap left the hold with no
+  owner and lost entries (older than this feature): the carry is lossless.
+- A silent compaction on the typed path could add the missed-compaction notice
+  twice (older than this feature): checked once.
+- The steer of the typed path under a hold was not redundant for a message
+  with an attachment, as the record above had assumed; the test now sends one.
+- Stale comments.
+
+A second run checked the fixes. It found them correct, and two more cases,
+both now fixed with a test and a mutation check: the deadline of an automatic
+attempt could release the hold while the flow waited for the step's exit, and
+the flow then cleared the state of the turn that started next; and a turn of
+the CLI's own that began before the compaction's first drain still produced
+the missed-compaction notice.
+
+Final state: 823 test files pass (16,631 tests); 45 mutation checks, each
+caught.
+
+## Key files (Part 3)
+
+- `src/server/orchestrator/session-hold.ts` — `SessionHold`, `takeSessionHold`.
+- `session-runner.ts` → `dispatchOnRunner` (the gate and `underHold`),
+  `DispatchAdmission`; both runners carry `sessionHold`.
+- `services/rebase-driver.ts` → `runRebaseFlow`, `runRebaseResolutionTurn`,
+  `refuseStepOverResidentWork`, `endStepProcess`, `dispatchRebaseResolutionTurn`,
+  `runAutoResolveAttempt` (`onSessionHoldTaken`).
+- `resident-spawn-guard.ts` → `retireResident`, called by the gate.
+- `turn-executor.ts` → `handleResult` (`settlesThisTurn`), `completedOutcome`;
+  `turn-settlement.ts` → `TurnOutcome.stoppedByUser`, `resultErrored`.
+- `dispatched-turn.ts` → `runDispatchedTurnInner` (no system branches),
+  `drainNext` (the missed-compaction notice, once).
+- `turn-executor.ts` → `finishTurn` (no hold), `tryDrain`.
+- `ws-handlers/agent-execution.ts` → `drainNextQueuedMessage`,
+  `decideCompactBeforeTurn`, `runCompactionAhead`; `ws-handlers/send-message.ts`
+  (the typed path and `handleAnswerQuestion` read the hold).
+- `queue-drain.ts`, `turn-admission.ts`, `services/recovery.ts` →
+  `takeQueueHold`, `services/agent-restart-request.ts`,
+  `services/agent-compaction-request.ts`.
+- Tests: `session-hold.test.ts`, `turn-exit-session-hold.test.ts`,
+  `services/rebase-driver.test.ts` ("the conflict-resolution turn is an
+  ordinary turn"), `integration_tests/wake-queue.test.ts`, cases in
+  `integration_tests/message-waits-for-agent.test.ts`,
+  `integration_tests/steer-after-turn-end.test.ts`,
+  `dispatched-turn-compaction.test.ts`.
+
 
 ## Key files (Part 2)
 

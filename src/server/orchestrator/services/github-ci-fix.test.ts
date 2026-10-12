@@ -12,7 +12,6 @@ describe("dispatchAutoFix (docs/329-user-steers-every-turn)", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
     const [opts, admission] = dispatch.mock.calls[0] as unknown as [Record<string, unknown>, unknown];
     expect(opts).toMatchObject({ text: "CI failed: lint", automatic: true, ciAutoFix: true });
-    expect(opts.systemTurn).toBeUndefined();
     // It waits for a running turn and is not steered into it.
     expect(admission).toEqual({ whenBusy: "queue" });
   });

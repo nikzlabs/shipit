@@ -128,10 +128,9 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
     return runner.dispatch(testDispatch({
       text: WAKE_TEXT,
       activity: "Resuming after child PR merged…",
-      systemTurn: true,
       automatic: true,
       onTurnComplete: (outcome) => outcomes.push(outcome),
-    }));
+    }), { whenBusy: "queue" });
   }
 
   it("holds an automatic turn until the user answers, then runs it after the answer (req 1, 3, 4)", async () => {
@@ -310,7 +309,7 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
     const runner = runnerFor(client.sessionId);
 
     // A dispatched turn is not an interrupted interactive one, so its drain reaches the take.
-    runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", systemTurn: true, automatic: true }));
+    runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", automatic: true }));
     const fixer = await waitForClaude(() => lastClaude);
     fixer.initSession("fix-turn");
     const outcomes: TurnOutcome[] = [];
@@ -320,7 +319,7 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
     askQuestion(fixer);
     await waitFor(() => fixer.interrupted, "the question interrupted the fix turn");
     fixer.finish("fix-turn");
-    await waitFor(() => !runner.running && !runner.systemTurnInProgress, "fix turn settled");
+    await waitFor(() => !runner.running, "fix turn settled");
     await new Promise((r) => setTimeout(r, 150));
     expect(lastClaude).toBe(fixer);
     expect(runner.queueLength).toBe(0);
@@ -435,7 +434,7 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
 
     // Past admission on purpose: this is what a turn does once it runs.
     runner.running = true;
-    void runner.runDispatchedTurn(testDispatch({ text: "[ci-fix] CI failed", systemTurn: true, automatic: true }));
+    void runner.runDispatchedTurn(testDispatch({ text: "[ci-fix] CI failed", automatic: true }));
     const automaticTurn = await waitForClaude(() => lastClaude, asker);
     expect(sessionManager.isAwaitingAnswer(client.sessionId)).toBe(true);
 

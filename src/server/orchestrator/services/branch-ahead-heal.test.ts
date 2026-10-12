@@ -24,7 +24,7 @@ function setup(opts: {
   const healer = new BranchAheadHealer({
     getRunner: () =>
       opts.runner
-        ? ({ agentBusy: false, systemTurnInProgress: false, ...opts.runner })
+        ? ({ agentBusy: false, sessionHold: null, ...opts.runner })
         : undefined,
     pushArmed: () => opts.pushArmed === true,
     ...(opts.now ? { now: opts.now } : {}),
@@ -55,8 +55,8 @@ describe("BranchAheadHealer", () => {
     expect(schedule).not.toHaveBeenCalled();
   });
 
-  it("holds while a system turn is rewriting the branch", async () => {
-    const { heal, schedule } = setup({ runner: { systemTurnInProgress: true } });
+  it("holds while ShipIt holds the session to rewrite the branch", async () => {
+    const { heal, schedule } = setup({ runner: { sessionHold: { release: () => {} } } });
     expect(await heal()).toEqual({ action: "skip", reason: "busy" });
     expect(schedule).not.toHaveBeenCalled();
   });
@@ -120,7 +120,7 @@ describe("BranchAheadHealer", () => {
     let busy = false;
     const schedule = vi.fn();
     const healer = new BranchAheadHealer({
-      getRunner: () => ({ agentBusy: busy, systemTurnInProgress: false }),
+      getRunner: () => ({ agentBusy: busy, sessionHold: null }),
       pushArmed: () => false,
     });
     const outcome = await healer.heal({
@@ -264,7 +264,7 @@ describe("BranchAheadHealer", () => {
       const busy = { agentBusy: true };
       const schedule = vi.fn();
       const healer = new BranchAheadHealer({
-        getRunner: () => ({ systemTurnInProgress: false, ...busy }),
+        getRunner: () => ({ sessionHold: null, ...busy }),
         pushArmed: () => false,
         now: () => now,
       });

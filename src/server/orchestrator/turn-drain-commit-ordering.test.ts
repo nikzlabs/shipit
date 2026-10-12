@@ -14,6 +14,7 @@ interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
+  sendUserMessage: ReturnType<typeof vi.fn>;
 }
 
 function makeFakeAgent(onRun?: () => void): FakeAgent {
@@ -21,6 +22,7 @@ function makeFakeAgent(onRun?: () => void): FakeAgent {
   agent.run = vi.fn(() => onRun?.());
   agent.kill = vi.fn();
   agent.setPermissionMode = vi.fn();
+  agent.sendUserMessage = vi.fn();
   return agent;
 }
 
@@ -167,17 +169,19 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn 1 started");
     expect(runner.isStreamingActive).toBe(true);
 
-    // A system turn queues instead of steering the streaming turn.
-    runner.dispatch(testDispatch({ text: "reset the tree", systemTurn: true }));
+    // A dispatch that asks for a turn of its own queues instead of steering the streaming turn,
+    // and then enters the same process.
+    agents[0]!.sendUserMessage.mockImplementation(() => onRunByTurn[1]!());
+    runner.dispatch(testDispatch({ text: "reset the tree" }), { whenBusy: "queue" });
     expect(runner.queueLength).toBe(1);
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "turn 2 started");
+    await waitFor(() => agents[0]!.sendUserMessage.mock.calls.length === 1, "turn 2 started");
 
+    expect(agents).toHaveLength(1);
     expect(fs.readFileSync(filePath, "utf8")).toBe("turn-1 work\n");
 
-    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    agents[1]!.emit("done", 0);
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[0]!.emit("done", 0);
     await waitFor(() => !runner.running, "turns finished");
     runner.dispose({ force: true });
@@ -272,15 +276,14 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     runner.dispose({ force: true });
   });
 
-  // planning#562 added a release when a system turn's hold comes off. The adapter-error path
-  // reaches finishTurn BEFORE its drain and commit, so that release must not fire there.
-  it("a system turn that ERRORS still commits before the queued turn that resets the tree runs", async () => {
+  // The adapter-error path reaches finishTurn BEFORE its drain and commit (planning#562).
+  it("a turn that ERRORS still commits before the queued turn that resets the tree runs", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     const filePath = path.join(repoDir, "file.txt");
 
     const onRunByTurn = [
-      () => fs.writeFileSync(filePath, "system-turn work\n"),
+      () => fs.writeFileSync(filePath, "first turn's work\n"),
       () => execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" }),
     ];
 
@@ -303,20 +306,17 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     };
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
-    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
-    expect(fs.readFileSync(filePath, "utf8")).toBe("system-turn work\n");
+    runner.dispatch(testDispatch({ text: "fix CI", automatic: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first turn started");
+    expect(fs.readFileSync(filePath, "utf8")).toBe("first turn's work\n");
 
-    // Background work is what defers the queued system turn at this turn's drain.
-    runner.isStreamingActive = true;
-    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
-    runner.dispatch(testDispatch({ text: "reset the tree", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "reset the tree", automatic: true }));
     expect(runner.queueLength).toBe(1);
 
     agents[0]!.emit("error", new Error("the CLI fell over"));
 
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "queued turn started");
-    expect(fs.readFileSync(filePath, "utf8")).toBe("system-turn work\n");
+    expect(fs.readFileSync(filePath, "utf8")).toBe("first turn's work\n");
     const log = execFileSync("git", ["log", "--oneline"], { cwd: repoDir, encoding: "utf8" });
     expect(log.split("\n").filter(Boolean)).toHaveLength(2);
 
@@ -326,9 +326,8 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     runner.dispose({ force: true });
   });
 
-  // The hold-release and this turn's own drain must not both claim a successor: the drain
-  // is still to come on the error path, and it does not check `running` before starting one.
-  it("starts exactly one successor when a system turn errors with two entries queued", async () => {
+  // The error path's drain is the one trigger: a second one would start two successors.
+  it("starts exactly one successor when a turn errors with two entries queued", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
 
@@ -350,13 +349,11 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     };
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
-    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
+    runner.dispatch(testDispatch({ text: "fix CI", automatic: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first turn started");
 
-    runner.isStreamingActive = true;
-    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
-    runner.dispatch(testDispatch({ text: "first queued", systemTurn: true }));
-    runner.dispatch(testDispatch({ text: "second queued", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "first queued", automatic: true }));
+    runner.dispatch(testDispatch({ text: "second queued", automatic: true }));
     expect(runner.queueLength).toBe(2);
 
     agents[0]!.emit("error", new Error("the CLI fell over"));
@@ -378,14 +375,14 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     runner.dispose({ force: true });
   });
 
-  // The release is behind the local commit, not behind the drain: `drainFired` is set before
-  // the commit it awaits, so an error landing in that window must not free the queue early.
-  it("holds the release while the system turn's commit is still in flight", async () => {
+  // `drainFired` is set before the commit it awaits, so an error landing in that window must
+  // not free the queue early.
+  it("holds the queue while the erroring turn's commit is still in flight", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     const filePath = path.join(repoDir, "file.txt");
     const onRunByTurn = [
-      () => fs.writeFileSync(filePath, "system-turn work\n"),
+      () => fs.writeFileSync(filePath, "first turn's work\n"),
       () => execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" }),
     ];
 
@@ -414,12 +411,10 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     };
     runner.setSystemTurnDeps(deps);
 
-    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
-    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
+    runner.dispatch(testDispatch({ text: "fix CI", automatic: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first turn started");
 
-    runner.isStreamingActive = true;
-    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
-    runner.dispatch(testDispatch({ text: "reset the tree", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "reset the tree", automatic: true }));
     expect(runner.queueLength).toBe(1);
 
     // The result opens the commit; the error then reaches finishTurn while it is still open.
@@ -434,7 +429,7 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
 
     releaseCommit();
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "queued turn started");
-    expect(fs.readFileSync(filePath, "utf8")).toBe("system-turn work\n");
+    expect(fs.readFileSync(filePath, "utf8")).toBe("first turn's work\n");
     expect(execFileSync("git", ["log", "--oneline"], { cwd: repoDir, encoding: "utf8" })
       .split("\n").filter(Boolean)).toHaveLength(2);
 

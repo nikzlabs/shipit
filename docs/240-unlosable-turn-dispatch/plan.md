@@ -6,6 +6,8 @@ description: Brand dispatch options so hand-construction can't compile, and make
 
 # Unlosable turn dispatch
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** `systemTurn` and `systemTurnInProgress`, named below, are deleted. The lock for ShipIt's own branch and container operations is `runner.sessionHold` (`session-hold.ts`), owned by a flow and never by a turn.
+
 ## Problem
 
 Five defects in quick succession are all the same bug: **a dispatched turn loses its

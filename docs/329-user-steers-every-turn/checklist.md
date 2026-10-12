@@ -40,9 +40,18 @@
 
 ## Part 3 — the session hold, and the last two turns
 
-- [ ] `runner.sessionHold`; no turn writes the hold
-- [ ] The conflict-resolution turn accepts a message and ends as a one-shot turn
-- [ ] A cancelled rebase flow does nothing more to the workspace
-- [ ] ShipIt's compaction turns take the path of every dispatched turn
-- [ ] `systemTurn` and `systemTurnInProgress` are deleted
-- [ ] The older design docs that state the old rule
+- [x] The design, corrected for the open points of the reviews
+- [x] Independent review of the corrected design, with one pass on the brief
+      "would anyone notice if it were removed?"
+- [x] `runner.sessionHold`; no turn writes the hold; the gate admits the
+      holder's own step by identity
+- [x] The rebase flow replaces the agent process before its step, counts a
+      stopped or failed turn as a failed step, and ends the step's process
+      before it runs git
+- [x] The timeout of an automatic attempt releases the hold of its own flow
+- [x] ShipIt's compaction turns take the path of every dispatched turn
+- [x] `systemTurn` and `systemTurnInProgress` are deleted
+- [x] Tests, with a mutation check for each new one
+- [x] Independent review of the diff against every numbered requirement
+- [x] The older design docs that state the old rule, the agent-facing docs
+      and the wiki

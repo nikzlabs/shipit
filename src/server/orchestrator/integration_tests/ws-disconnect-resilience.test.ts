@@ -18,6 +18,7 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { takeSessionHold, type SessionHold } from "../session-hold.js";
 
 type AnyMsg = any;
 
@@ -149,7 +150,7 @@ describe("Integration: WebSocket disconnect resilience", () => {
   describe("a replayed rebase start", () => {
     interface RebaseRunner {
       emitMessage: (msg: AnyMsg) => void;
-      systemTurnInProgress: boolean;
+      sessionHold: SessionHold | null;
     }
     const runnerFor = (sessionId: string): RebaseRunner =>
       (app as unknown as { runnerRegistry: { get(id: string): RebaseRunner } }).runnerRegistry.get(sessionId);
@@ -188,14 +189,14 @@ describe("Integration: WebSocket disconnect resilience", () => {
 
     it("is left open while a rebase flow still holds the runner", async () => {
       const { sessionId, runner } = await startWithoutTerminator();
-      runner.systemTurnInProgress = true;
+      const hold = takeSessionHold(runner);
 
       const client2 = await TestClient.connect(port, sessionId);
       const types = (await framesUntilQueueUpdated(client2)).map((m) => m.type as string);
 
       expect(types).toContain("rebase_started");
       expect(types).not.toContain("rebase_aborted");
-      runner.systemTurnInProgress = false;
+      hold.release();
       client2.close();
     });
   });

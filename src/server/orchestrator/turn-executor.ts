@@ -126,8 +126,7 @@ export interface TurnInput {
   // Initial turn only. Adopted turns resample into the executor's mutable value.
   turnStartHeadHash: string | null;
   readTurnStartHeadHash?: () => Promise<string | null>;
-  /** ownsSystemHold is false once another owner has taken the hold this turn started with. */
-  drainNext: (info?: { ownsSystemHold: boolean }) => Promise<void>;
+  drainNext: () => Promise<void>;
   emit: (msg: WsServerMessage) => void;
   useStreaming?: boolean;
   reuseExistingAgent?: boolean;
@@ -137,7 +136,6 @@ export interface TurnInput {
   onNoResultExit?: (code: number | null, stderrDetail?: string) => Promise<boolean>;
   // "none" leaves commit, push, PR and queue drain to the multi-turn driver.
   postTurn?: "commit-push" | "none";
-  systemTurn?: boolean;
   /** docs/322 — a turn the user did not start leaves the answer hold in place. */
   automatic?: boolean;
   /**
@@ -541,37 +539,33 @@ export async function executeAgentTurn(
         ? endedWithoutOwnResult()
         : turnNoResult("agent process exited without producing a turn result");
 
+  let ownResultStopped = false;
+  let ownResultErrored = false;
+  const completedOutcome = (): TurnOutcome =>
+    ownResultStopped || ownResultErrored
+      ? {
+          ...TURN_COMPLETED,
+          ...(ownResultStopped ? { stoppedByUser: true } : {}),
+          ...(ownResultErrored ? { resultErrored: true } : {}),
+        }
+      : TURN_COMPLETED;
+
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
-    // Hold identity, not the turn epoch (docs/304): the release below must only run when
-    // this turn is the owner that actually took the hold off.
-    const releasesSystemHold = runner !== null && ownsSystemHold();
-    if (releasesSystemHold) runner.systemTurnInProgress = false;
-    try {
-      // Superseding resets wasInterrupted; the latched superseded flag must take precedence.
-      settleTurn(
-        agentErrored
-          ? erroredOutcome()
-          : ownResultSeen()
-            ? TURN_COMPLETED
-            : wasSuperseded || takenByNextTurn
-              ? ownTurn === "unsubmitted" || (input.reuseExistingAgent === true && promptUnread())
-                ? turnDropped("a newer turn took the agent process before it read this prompt")
-                : wasSuperseded
-                  ? turnInterrupted("a newer turn took the agent slot before this one finished")
-                  : endedWithoutResult()
-              : endedWithoutResult(),
-      );
-    } finally {
-      // An entry the drain passed over — a system turn behind this one's background work —
-      // has no other trigger once the hold comes off (planning#562). Only once this turn's
-      // drain has SETTLED: while it is still parked on its commit the release would start a
-      // queued turn that can reset the tree (invariant 1), and once it resumes the two would
-      // each start a successor. A `none` post-turn belongs to a driver that drains its own
-      // queue. Synchronous, so no successor can appear between the decision and the claim;
-      // in a `finally`, so a throwing completion callback cannot strand the entry.
-      if (releasesSystemHold && drainSettled && postTurn !== "none") releaseQueuedTurn(runner);
-    }
+    // Superseding resets wasInterrupted; the latched superseded flag must take precedence.
+    settleTurn(
+      agentErrored
+        ? erroredOutcome()
+        : ownResultSeen()
+          ? completedOutcome()
+          : wasSuperseded || takenByNextTurn
+            ? ownTurn === "unsubmitted" || (input.reuseExistingAgent === true && promptUnread())
+              ? turnDropped("a newer turn took the agent process before it read this prompt")
+              : wasSuperseded
+                ? turnInterrupted("a newer turn took the agent slot before this one finished")
+                : endedWithoutResult()
+            : endedWithoutResult(),
+    );
   };
 
   // docs/322-question-holds-automatic-turns req 3 — a turn the user started is their response.
@@ -590,20 +584,11 @@ export async function executeAgentTurn(
   retireRewindUndo(deps.listenerDeps.chatHistoryManager, sessionId);
   if (runner) {
     runner.running = true;
-    // An adopted turn is not this caller's to hold or release: a driver may hold the queue now.
-    if (!input.adopt) runner.systemTurnInProgress = input.systemTurn === true;
     runner.activeDeliveryId = input.deliveryId;
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
     noteCompactionTurn(runner, input.compact === true);
   }
-  // Identifies the hold taken on the line above, not this turn: a CLI-started turn adopted
-  // over this one moves the turn epoch without touching the hold, and a driver or a
-  // successor can take the hold over while this turn runs (docs/304).
-  const heldSystemHoldSeq = runner?.systemHoldSeq;
-  const ownsSystemHold = (): boolean =>
-    input.systemTurn === true && runner?.systemHoldSeq === heldSystemHoldSeq;
-
   // Late predecessor exits must not finalize a successor's accumulator or history rows.
   let thisTurnEpoch = runner?.turnEpoch;
   const turnIsCurrent = (): boolean =>
@@ -1314,7 +1299,7 @@ export async function executeAgentTurn(
       // release started — the hold's expiry, or an earlier turn's late commit — and that one
       // is still in setup, so only its claim on `running`, cleared just above, shows it.
       if (!turnIsCurrent() || runner?.running) return;
-      await input.drainNext({ ownsSystemHold: ownsSystemHold() });
+      await input.drainNext();
     } finally {
       drainSettled = true;
     }
@@ -1428,14 +1413,14 @@ export async function executeAgentTurn(
     const runRequestedRestart = deps.runRequestedRestart;
     if (runner && runRequestedRestart) {
       await postTurnStep("requested-restart", () =>
-        runRequestedRestart({ sessionId, runner, turnIsCurrent, ownsSystemHold, settle: finishTurn }));
+        runRequestedRestart({ sessionId, runner, turnIsCurrent, settle: finishTurn }));
     }
     // docs/324-agent-requested-compaction — before idle too: the compaction turn it starts
     // keeps idle's remediation behind it.
     const runRequestedCompaction = deps.runRequestedCompaction;
     if (runner && runRequestedCompaction) {
       await postTurnStep("requested-compaction", () =>
-        runRequestedCompaction({ sessionId, runner, turnIsCurrent, ownsSystemHold, settle: finishTurn }));
+        runRequestedCompaction({ sessionId, runner, turnIsCurrent, settle: finishTurn }));
     }
   };
 
@@ -1586,11 +1571,16 @@ export async function executeAgentTurn(
     // A displaced process made its report; a local runner still delivers its later results.
     if (!useStreaming && !wasSuperseded) jobsRunningAtResult = new Map(trackedJobs);
     const answersThisPrompt = takeResultAttribution();
+    // A process spawned for this prompt ends the prompt's turn with its first result, also
+    // when that result comes before the worker's answer to the submission. Settling is all
+    // it may do then: the notices of the prompt are acknowledged only by `answersThisPrompt`.
+    const settlesThisTurn = answersThisPrompt
+      || (input.reuseExistingAgent !== true && input.adopt !== true && resultsObserved === 1);
     if (rearmInFlight === null && gatedResults === 0) {
       // Capture before an await lets adoption reset the live summary.
       if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
       snapshotTurnText();
-      await handleResult(event, answersThisPrompt);
+      await handleResult(event, answersThisPrompt, settlesThisTurn);
       return;
     }
     // A handover ends at whatever turn is current then, which may already be a later one.
@@ -1609,7 +1599,7 @@ export async function executeAgentTurn(
       thisTurnEpoch = endedEpoch;
       resultTurnSummary ??= endedSummary;
       resultTurnText ??= endedText;
-      await handleResult(event, answersThisPrompt);
+      await handleResult(event, answersThisPrompt, settlesThisTurn);
     } finally {
       gatedResults -= 1;
       openGate();
@@ -1619,9 +1609,14 @@ export async function executeAgentTurn(
   const handleResult = async (
     event: Extract<AgentEvent, { type: "agent_result" }>,
     answersThisPrompt: boolean,
+    settlesThisTurn: boolean,
   ): Promise<void> => {
     receivedResult = true;
     sawOwnResult = true;
+    if (settlesThisTurn) {
+      ownResultStopped = runner?.wasInterrupted ?? false;
+      ownResultErrored = !resultIsTheAgentsOwn(event);
+    }
     // On a reused process a result can end a turn the CLI started; that is no proof this prompt ran.
     if (answersThisPrompt || input.reuseExistingAgent !== true) {
       runner?.emit("turn_result", { compact: input.compact === true });
@@ -1694,7 +1689,7 @@ export async function executeAgentTurn(
           await postTurnStep("idle", signalIdleIfIdle);
           // A streaming process need not exit when its turn ends, so the turn settles at
           // the result of its own prompt (docs/329-user-steers-every-turn).
-          if (answersThisPrompt) await postTurnStep("settle", finishTurn);
+          if (settlesThisTurn) await postTurnStep("settle", finishTurn);
           // Last of all: the continuation is a new turn, so this one must be fully settled.
           await postTurnStep("continuation", runContinuation);
             } finally {
@@ -1855,16 +1850,12 @@ export async function executeAgentTurn(
       await postTurnStep("idle", signalIdleIfIdle);
       // The result event may have spent tryDrain before the phantom turn accumulated a queue.
       if (unlatched && (runner?.queueLength ?? 0) > 0) {
-        await postTurnStep(
-          "drain-after-unlatch",
-          () => input.drainNext({ ownsSystemHold: ownsSystemHold() }),
-        );
+        await postTurnStep("drain-after-unlatch", () => input.drainNext());
       }
       finishTurn();
-      // A message that arrived after the result queued behind this turn's hold, which
-      // finishTurn only just released; tryDrain was spent and idle declines on a
-      // non-empty queue, so nothing else would ever start it (docs/304). The drain
-      // belongs to the owning driver under postTurn "none", exactly as in tryDrain.
+      // A message that queued after the result has no other trigger: tryDrain was spent and
+      // idle declines on a non-empty queue (docs/304). The drain belongs to the owning driver
+      // under postTurn "none", exactly as in tryDrain.
       if (runner && postTurn !== "none" && runner.queueLength > 0) {
         await postTurnStep("release-queued", () => { releaseQueuedTurn(runner); });
       }

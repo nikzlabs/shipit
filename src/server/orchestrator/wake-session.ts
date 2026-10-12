@@ -62,7 +62,7 @@ const WAKE_WORKER_READY_TIMEOUT_MS = 30_000;
 
 /**
  * Resolves once the turn is dispatched, NOT once it runs. Read `admitted` on the handle:
- * a wake queued behind a running turn or a system hold has started nothing (docs/304).
+ * a wake queued behind a running turn or a session hold has started nothing (docs/304).
  */
 export async function wakeSessionWithTurn(
   deps: WakeSessionDeps,
@@ -192,7 +192,6 @@ function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatc
     agentInterface: undefined,
     messageOrigin: opts.messageOrigin,
     activity: opts.activity,
-    systemTurn: undefined,
     automatic: opts.startOrRefuse && !opts.startOrRefuse.automatic ? undefined : true,
     unattended: true,
     ...(opts.promptShown ? { promptShown: true } : {}),

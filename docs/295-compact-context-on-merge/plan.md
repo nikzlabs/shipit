@@ -6,6 +6,8 @@ description: A merged session compacts its context before the next turn — offe
 
 # 295 — Compact the context when a merged session continues
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** The compaction ahead of a turn is no longer a system turn and holds no flag: it runs on the process a typed turn would use, the claim on `running` keeps other turns out from the decision to the compaction, and the rule of docs/329 part 2 keeps messages out of it.
+
 Implements [requirements.md](./requirements.md). Extends
 [docs/218 — Auto-update a merged session's branch to latest base](../218-auto-reset-merged-branch-on-continue/plan.md)
 and reuses the compaction primitive from

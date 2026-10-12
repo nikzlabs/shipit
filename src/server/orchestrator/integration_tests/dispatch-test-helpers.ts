@@ -18,7 +18,6 @@ export function testDispatch(
     uploads: opts.uploads,
     permissionMode: opts.permissionMode,
     postTurn: opts.postTurn,
-    systemTurn: opts.systemTurn,
     automatic: opts.automatic,
     ciAutoFix: opts.ciAutoFix,
     heldId: opts.heldId,

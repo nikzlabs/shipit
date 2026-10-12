@@ -23,7 +23,8 @@ import type { CredentialStore } from "../credential-store.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { UsageManager } from "../usage.js";
-import type { QueuedMessage } from "../session-runner.js";
+import type { QueuedMessage, SessionRunnerInterface } from "../session-runner.js";
+import { takeSessionHold } from "../session-hold.js";
 
 const SESSION_ID = "merged-session";
 const REPO_URL = "https://github.com/o/r.git";
@@ -334,7 +335,7 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     }
   }
 
-  it("with live steering: a streaming compaction reuses the resident process and releases the system-turn flag", async () => {
+  it("with live steering: a streaming compaction reuses the resident process and the message steers its turn", async () => {
     credentialStore.setLiveSteering(true);
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
@@ -360,6 +361,47 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     await client.receiveType("message_steered");
     await stdinHas(resident, "and also this");
 
+    client.close();
+  });
+
+  // The compaction turn's drain runs again when the CLI starts a turn of its own after it, and
+  // that turn's reset cleared the cards: the compaction is checked for once, at its own end.
+  it("with live steering: says nothing about a compaction that ran when the CLI starts a turn after it", async () => {
+    credentialStore.setLiveSteering(true);
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    beforeMerge();
+    client.send({ type: "send_message", text: "warm up" });
+    const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    resident.initSession("agent-a");
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    await client.receiveType("session_status");
+
+    mergeLands();
+    client.send({ type: "send_message", text: "start the next slice", compactContext: true });
+    await stdinHas(resident, "/compact ");
+    // A rebase takes the session, so the message that waits for the compaction stays queued.
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): SessionRunnerInterface } })
+      .runnerRegistry.get(SESSION_ID);
+    const hold = takeSessionHold(runner);
+    resident.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    // At once, before the compaction's own drain: the reset clears the cards first.
+    resident.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    await new Promise((r) => setTimeout(r, 50));
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    const deadline = Date.now() + 3000;
+    while ((runner.running || runner.postTurnWorkInFlight) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(runner.running || runner.postTurnWorkInFlight).toBe(false);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION_ID}/history` });
+    const history = res.json() as { messages: { notice?: boolean; text?: string }[] };
+    expect(history.messages.filter((m) => m.notice && m.text?.includes("not compacted"))).toHaveLength(0);
+    hold.release();
     client.close();
   });
 

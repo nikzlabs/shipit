@@ -222,11 +222,11 @@ async function decideAndRunSend(
     recordSessionStatusOffersTaken(ctx, msg.sessionStatusOfferIds);
   };
   const heldByMerge = runnerForQueue?.mergeHold === true;
-  if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
+  if (runnerForQueue?.running || runnerForQueue?.sessionHold || heldByMerge) {
     const actuallyRunning = heldByMerge ? false : await runnerForQueue.verifyRunningState();
     // Recovery can start a queued turn; re-read the runner after verification.
     if (
-      actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress
+      actuallyRunning || runnerForQueue.running || runnerForQueue.sessionHold
       || runnerForQueue.mergeHold
     ) {
       // Compacts the agent in the middle of its turn. A hold or a turn in setup also reaches
@@ -261,7 +261,6 @@ async function decideAndRunSend(
           permissionMode: msg.permissionMode,
           activity: undefined,
           postTurn: undefined,
-          systemTurn: undefined,
           automatic: undefined,
           heldId: undefined,
           onTurnComplete: undefined,
@@ -279,7 +278,6 @@ async function decideAndRunSend(
       const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
       const liveSteering = ctx.credentialStore.getLiveSteering();
       const streamingActive = runnerForQueue.isStreamingActive;
-      const systemTurnInProgress = runnerForQueue.systemTurnInProgress;
 
       // A newer message does not pass an earlier one that still waits: the queue keeps the
       // order, and the delivery gives both to the turn (`deliverWaitingMessages`).
@@ -287,7 +285,6 @@ async function decideAndRunSend(
         steeringCapable,
         liveSteering,
         streamingActive,
-        systemTurnInProgress,
         takesMessages: turnTakesMessages(runnerForQueue),
       })) {
         const steeringAgent = runnerForQueue.getAgent();
@@ -320,7 +317,6 @@ async function decideAndRunSend(
             steeringCapable,
             liveSteering,
             streamingActive: runnerForQueue.isStreamingActive,
-            systemTurnInProgress: runnerForQueue.systemTurnInProgress,
             takesMessages: turnTakesMessages(runnerForQueue),
           });
           if (!steerableNow) {
@@ -533,12 +529,12 @@ async function decideAndRunSend(
   // workspace checked. What follows queues or dispatches the message — and the
   // queue itself can still refuse it, so each branch accepts after its own
   // dispatch has been taken.
-  // The last turn's commit can still be open. Wait rather than queue behind it: a released
-  // entry runs on the dispatched executor, which does not reuse a resident agent to compact.
+  // The last turn's commit can still be open. Wait rather than queue behind it: the message
+  // keeps the typed path and its own turn.
   await turnCommitSettled(resolveRunner(ctx));
   const turnRunner = resolveRunner(ctx);
-  // A turn, merge or system hold (docs/321's restart) can start during the awaits above.
-  if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.systemTurnInProgress) {
+  // A turn, a merge or a session hold (a rebase, docs/321's restart) can start during the awaits above.
+  if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.sessionHold) {
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
@@ -553,7 +549,6 @@ async function decideAndRunSend(
       permissionMode: msg.permissionMode,
       activity: undefined,
       postTurn: undefined,
-      systemTurn: undefined,
       automatic: undefined,
       heldId: undefined,
       onTurnComplete: undefined,
@@ -587,7 +582,6 @@ async function decideAndRunSend(
         permissionMode: msg.permissionMode,
         activity: undefined,
         postTurn: undefined,
-        systemTurn: undefined,
         automatic: undefined,
         heldId: undefined,
         onTurnComplete: undefined,
@@ -664,7 +658,6 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     permissionMode: msg.permissionMode ?? runner.appliedPermissionMode,
     activity: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: undefined,
     heldId: undefined,
     onTurnComplete: undefined,
@@ -676,11 +669,15 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // docs/329-user-steers-every-turn — an answer is a message from the user. A hold keeps it,
   // and a turn that did not ask takes it; neither is a stale process for the cleanup below to
   // end. Dispatched, not awaited as a send is: this handler claims the runner with no gate
-  // around it, so a wait here would let a turn start in between.
-  const held = runnerEarly?.mergeHold || runnerEarly?.turnCommitPending || runnerEarly?.systemTurnInProgress;
+  // around it, so a wait here would let a turn start in between. The turn that asked is ending,
+  // so the answer waits for it: under a hold that turn's process is not ended below.
+  const held = runnerEarly?.mergeHold || runnerEarly?.turnCommitPending || runnerEarly?.sessionHold;
   const otherTurnRuns = runnerEarly?.running === true && !runnerEarly.awaitingUserAnswer;
   if (runnerEarly && (held || otherTurnRuns)) {
-    runnerEarly.dispatch(answerDispatch(runnerEarly));
+    runnerEarly.dispatch(
+      answerDispatch(runnerEarly),
+      runnerEarly.running && runnerEarly.awaitingUserAnswer ? { whenBusy: "queue" } : undefined,
+    );
     return;
   }
 

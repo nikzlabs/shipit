@@ -6,6 +6,8 @@ description: `shipit compact` records the request; a post-turn step parks the in
 
 # 324 — Agent-requested context compaction: design
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** The compaction is no longer a system turn: it runs on the process a typed turn would use. It still does not start while the resident process has background work, because a turn of the CLI's own could come between it and its continuation.
+
 Implements [`requirements.md`](./requirements.md). Reuses the compaction turn of
 [docs/295](../295-compact-context-on-merge/plan.md) and the post-turn step of
 [docs/321](../321-agent-requested-restart/plan.md).

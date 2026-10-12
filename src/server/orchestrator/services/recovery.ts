@@ -13,6 +13,7 @@ import {
 } from "./post-interrupt-commit.js";
 import { currentTurnPhase, noteUserStop } from "../turn-stop-request.js";
 import { stopCompactionContinuation } from "./agent-compaction-stop.js";
+import { takeSessionHold } from "../session-hold.js";
 
 const RECOVERY_WORKER_TIMEOUT_MS = 3000;
 const RESTART_READY_TIMEOUT_MS = 8000;
@@ -261,16 +262,14 @@ export interface QueueHold {
 }
 
 /**
- * Takes `systemTurnInProgress` on the runner, and with `lease` a post-turn lease too, so
- * the idle enforcer cannot reclaim the runner and drop its queue (invariant 5). Release
- * clears the hold only while it is still this one.
+ * Takes the session hold on the runner, and with `lease` a post-turn lease too, so the idle
+ * enforcer cannot reclaim the runner and drop its queue (invariant 5).
  */
 export function takeQueueHold(
   runner: SessionRunnerInterface,
   opts: { lease: boolean },
 ): QueueHold {
-  runner.systemTurnInProgress = true;
-  const seq = runner.systemHoldSeq;
+  const hold = takeSessionHold(runner);
   if (opts.lease) runner.beginPostTurnWork();
   let released = false;
   return {
@@ -279,7 +278,7 @@ export function takeQueueHold(
       if (released) return;
       released = true;
       if (opts.lease) runner.endPostTurnWork();
-      if (!runner.disposed && runner.systemHoldSeq === seq) runner.systemTurnInProgress = false;
+      hold.release();
     },
   };
 }
@@ -415,7 +414,9 @@ export async function restartAgent(
     if (runner && runner !== replacement) {
       for (let next = runner.dequeue(); next; next = runner.dequeue()) carried.push(next);
     }
-    for (const entry of carried) replacement.enqueue(entry);
+    // Past the queue's cap if need be: these were accepted already, and a throw here would
+    // leave the hold set with no caller to release it.
+    replacement.messageQueue.push(...carried);
     if (carried.length > 0) {
       replacement.emitMessage({ type: "queue_updated", sessionId: replacement.sessionId, queue: replacement.getQueueSnapshot() });
     }

@@ -234,7 +234,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("planning#256: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
+  it("planning#256: a dispatch that asks for its own turn is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -246,19 +246,18 @@ describe("SessionRunner", () => {
     runner.running = true;
     noteTurnReady(runner);
     runner.isStreamingActive = true;
-    expect(runner.systemTurnInProgress).toBe(false);
 
     const completions: { errored: boolean }[] = [];
     runner.dispatch(testDispatch({
       text: "child PR merged — resume the rebase",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => completions.push(o),
-    }));
+    }), { whenBusy: "queue" });
 
     expect(sent).toEqual([]);
     expect(runner.queueLength).toBe(1);
     const queued = runner.messageQueue[0]!;
-    expect(queued.systemTurn).toBe(true);
+    expect(queued.automatic).toBe(true);
     expect(queued.execution).toBe("dispatched");
     expect(queued.onTurnComplete).toBeTypeOf("function");
     queued.onTurnComplete!(TURN_COMPLETED);
@@ -371,7 +370,7 @@ describe("SessionRunner", () => {
     runner.setSystemTurnDeps(deps);
     const ran = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue();
 
-    const held = runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", systemTurn: true, automatic: true }));
+    const held = runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", automatic: true }));
     expect(held.admitted).toBe("queued");
     // req 8 — saved, not queued in the runner a stopped container would take with it.
     expect(saved.map((m) => m.text)).toEqual(["[ci-fix] CI failed"]);
@@ -379,7 +378,7 @@ describe("SessionRunner", () => {
     expect(runner.running).toBe(false);
 
     const refused = runner.dispatch(
-      testDispatch({ text: "resolve conflicts", systemTurn: true, automatic: true, postTurn: "none" }),
+      testDispatch({ text: "resolve conflicts", automatic: true, postTurn: "none" }),
       { whenBusy: "refuse" },
     );
     expect(refused.admitted).toBe("refused");
@@ -487,8 +486,7 @@ describe("SessionRunner", () => {
     noteTurnReady(runner);
     runner.isStreamingActive = true;
 
-    runner.systemTurnInProgress = true;
-    runner.dispatch(testDispatch({ text: "buffered note" }));
+    runner.dispatch(testDispatch({ text: "buffered note" }), { whenBusy: "queue" });
     expect(runner.queueLength).toBe(1);
 
     runner.dispose({ force: true });
@@ -692,65 +690,6 @@ describe("SessionRunner", () => {
     expect(prepareAgentEnv).toHaveBeenLastCalledWith(
       "s1", "claude", expect.objectContaining({ reusingResidentAgent: false }),
     );
-
-    runner.dispose({ force: true });
-  });
-
-  it("retires the resident process before env prep on a system turn (merge wake)", async () => {
-    const runner = new SessionRunner({
-      sessionId: "s1",
-      sessionDir: "/tmp/s1",
-      defaultAgentId: "claude" as AgentId,
-    });
-    const order: string[] = [];
-    const resident = {
-      on: vi.fn(),
-      run: vi.fn(),
-      emit: vi.fn(),
-      kill: vi.fn(() => { order.push("kill-resident"); }),
-      removeAllListeners: vi.fn(),
-      sendUserMessage: vi.fn(),
-    } as any;
-    const fresh = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
-    let agentAtEnvPrep: unknown = "unset";
-    const prepareAgentEnv = vi.fn().mockImplementation(async () => {
-      order.push("env-prep");
-      agentAtEnvPrep = runner.getAgent();
-    });
-    runner.setAgent(resident);
-    runner.isStreamingActive = true;
-    runner.setSystemTurnDeps({
-      agentFactory: () => fresh,
-      autoCommit: vi.fn().mockResolvedValue({
-        commitHash: null,
-        parentHash: null,
-        conflictedFiles: [],
-        rebaseInProgress: false,
-        secretFindings: [],
-      }),
-      scheduleAutoPush: vi.fn(),
-      listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
-        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
-        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
-        sseBroadcast: vi.fn(),
-        broadcastLog: vi.fn(),
-        getSelectedModel: () => undefined,
-      },
-      prepareAgentEnv,
-      buildRunParams: vi.fn().mockResolvedValue({ prompt: "merged", cwd: "/tmp/s1" }),
-    });
-
-    runner.dispatch(testDispatch({ text: "merged", systemTurn: true }));
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(resident.sendUserMessage).not.toHaveBeenCalled();
-    expect(fresh.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "merged" }));
-    expect(order).toEqual(["kill-resident", "env-prep"]);
-    // The incoming agent occupies the slot before it starts.
-    expect(agentAtEnvPrep).toBe(fresh);
-    expect(agentAtEnvPrep).not.toBe(resident);
 
     runner.dispose({ force: true });
   });

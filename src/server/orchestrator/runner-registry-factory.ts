@@ -269,7 +269,7 @@ export function createRunnerRegistry(
           backgroundTasks: runner.backgroundWorkDescriptions,
         });
         // The release re-enters dispatch, preserving the entry's settlement callback, and
-        // leaves it queued in order if another gate (a system hold) still holds.
+        // leaves it queued in order if another gate (a session hold) still holds.
         if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
         onRunnerSettled?.(runner.sessionId);
       });
@@ -346,7 +346,7 @@ export function createRunnerRegistry(
         agentFactory: (agentId) => {
           if (runner.createAgent) return runner.createAgent(agentId);
           if (agentFactory) return agentFactory(agentId);
-          throw new Error("No agent factory available for system turn");
+          throw new Error("No agent factory available for a dispatched turn");
         },
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
         ...(rebindDelivery ? { rebindDelivery } : {}),

@@ -4,11 +4,7 @@ import type {
   SessionRunnerInterface,
 } from "./session-runner.js";
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
-import {
-  automaticTurnHeldForAnswer,
-  systemTurnBlockedByResidentWork,
-  turnBlockedByPendingCommit,
-} from "./turn-admission.js";
+import { automaticTurnHeldForAnswer, turnBlockedByPendingCommit } from "./turn-admission.js";
 import { forgetHeldEntries, holdTurn } from "./held-turns.js";
 import { settleDroppedQueueEntries, settleWhenRunnerLetsGo } from "./turn-settlement.js";
 
@@ -62,19 +58,16 @@ function holdQueuedAutomaticTurns(runner: SessionRunnerInterface, reason: string
 }
 
 function takeIfUnblocked(runner: SessionRunnerInterface, index: number): QueuedMessage | undefined {
-  const entry = runner.messageQueue[index];
-  const blocked = systemTurnBlockedByResidentWork(runner, entry?.systemTurn)
-    ?? (entry ? turnBlockedByPendingCommit(runner, entry) : null);
+  if (!runner.messageQueue[index]) return undefined;
+  const blocked = turnBlockedByPendingCommit(runner);
   if (blocked) {
-    console.warn(
-      `[queue] holding the queued ${entry?.systemTurn ? "system " : ""}turn for ${runner.sessionId} — ${blocked}`,
-    );
+    console.warn(`[queue] holding the queued turn for ${runner.sessionId} — ${blocked}`);
     return undefined;
   }
   return index === 0 ? runner.dequeue() : runner.messageQueue.splice(index, 1)[0];
 }
 
-// The tagged executor preserves callbacks and system-turn options across queue drains.
+// The tagged executor preserves callbacks and dispatch options across queue drains.
 export async function startQueuedMessage(
   runner: SessionRunnerInterface,
   next: QueuedMessage,
@@ -84,7 +77,7 @@ export async function startQueuedMessage(
   if (!runner.canRunDispatchedTurn) {
     console.warn(
       `[queue] runner=${runner.sessionId} has no system-turn deps; running a dispatched queue entry ` +
-        `on the interactive path (systemTurn/onTurnComplete will not apply)`,
+        `on the interactive path (onTurnComplete will not apply)`,
     );
     return runInteractive(next);
   }
@@ -127,8 +120,8 @@ export function withdrawWaitingTurns(
  * is released — nothing else revisits an entry that a drain already passed over.
  */
 export function releaseQueuedTurn(runner: SessionRunnerInterface): boolean {
-  // A system flow can hold the workspace between turns; merge holds also prevent queue flicker.
-  if (runner.running || runner.systemTurnInProgress || runner.mergeHold || runner.queueLength === 0) return false;
+  // A flow can hold the workspace between turns; merge holds also prevent queue flicker.
+  if (runner.running || runner.sessionHold || runner.mergeHold || runner.queueLength === 0) return false;
   // Without dispatch dependencies, this would only move the entry to the queue's tail.
   if (!runner.canRunDispatchedTurn) return false;
   // Same take as a drain: a gate that still holds must leave the entry where it is, since
