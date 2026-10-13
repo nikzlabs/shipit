@@ -352,7 +352,7 @@ describe("post-turn flow for a self-woken turn", () => {
     h.runner.dispose({ force: true });
   });
 
-  const pressStop = (runner: SessionRunner): boolean =>
+  const pressStop = (runner: SessionRunner): string =>
     interruptAgentTurn(
       {
         sessionManager: { dropPendingCompactionNote: vi.fn() },
@@ -479,7 +479,7 @@ describe("post-turn flow for a self-woken turn", () => {
       });
       await flush();
 
-      expect(pressStop(h.runner)).toBe(true);
+      expect(pressStop(h.runner)).toBe("turn");
       finishHeal(true);
 
       await waitFor(() => !h.runner.running, "stopped turn settled");
@@ -638,7 +638,7 @@ describe("post-turn flow for a self-woken turn", () => {
     h.agent.emit("auth_required");
     await flush();
 
-    expect(pressStop(h.runner)).toBe(true);
+    expect(pressStop(h.runner)).toBe("turn");
     finishHeal(true);
 
     await waitFor(() => !h.runner.running, "stopped turn settled");

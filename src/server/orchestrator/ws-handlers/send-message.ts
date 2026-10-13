@@ -20,12 +20,14 @@ import { releaseQueuedTurn } from "../queue-drain.js";
 import { turnCommitSettled } from "../turn-admission.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { settleNetworkModeWrites } from "../services/network-mode-writes.js";
-import { prepareDispatch } from "../prepared-dispatch.js";
+import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import { toQueuedMessage } from "../session-runner.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 import { acquireTurnClaimGate } from "./turn-claim-gate.js";
 import { takeOfferedActions } from "../services/session-status.js";
+import { nextSendOrder } from "../queue-identity.js";
+import { returnLateEntry, sentBeforeStop } from "../queue-return.js";
 
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
 export { runAgentWithMessage } from "./agent-execution.js";
@@ -177,9 +179,11 @@ export async function handleSendMessage(
    * the session. No target session means no turn can be claimed at all: that
    * send is refused inside.
    */
+  // Before the gate, which can wait: a Stop tells what was sent before it by this order.
+  const sendOrder = nextSendOrder();
   const releaseTurnClaim = await acquireSendGate(targetSessionId);
   try {
-    await decideAndRunSend(ctx, msg, { images, isCompactRequest, compactParsed, releaseTurnClaim });
+    await decideAndRunSend(ctx, msg, { images, isCompactRequest, compactParsed, releaseTurnClaim, sendOrder });
   } finally {
     releaseTurnClaim();
   }
@@ -191,6 +195,8 @@ interface GatedSend {
   compactParsed: { match: boolean; instructions?: string };
   /** Call as soon as the turn is claimed; the `finally` covers every other exit. */
   releaseTurnClaim: () => void;
+  /** planning#691 — when the message reached ShipIt. */
+  sendOrder: number;
 }
 
 /** The release is called twice on the normal path; the gate documents that as harmless. */
@@ -202,7 +208,7 @@ async function acquireSendGate(sessionId: string | undefined): Promise<() => voi
 async function decideAndRunSend(
   ctx: FullCtx,
   msg: WsSendMessage,
-  { images, isCompactRequest, compactParsed, releaseTurnClaim }: GatedSend,
+  { images, isCompactRequest, compactParsed, releaseTurnClaim, sendOrder }: GatedSend,
 ): Promise<void> {
   const runnerForQueue = resolveRunner(ctx);
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
@@ -221,6 +227,29 @@ async function decideAndRunSend(
     }
     recordSessionStatusOffersTaken(ctx, msg.sessionStatusOfferIds);
   };
+  // The message as a dispatch: queued, put behind a compaction, or returned after a Stop.
+  const typedDispatch = (): PreparedDispatch => prepareDispatch({
+    text: msg.text,
+    agentInterface: undefined,
+    execution: "interactive",
+    // Raw inputs; the turn resolves uploads again.
+    images: msg.images,
+    files: msg.files,
+    uploads: msg.uploads,
+    permissionMode: msg.permissionMode,
+    activity: undefined,
+    postTurn: undefined,
+    automatic: undefined,
+    heldId: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+    dictated: msg.dictated,
+    resetMergedBranch: msg.resetMergedBranch,
+    compactContext: msg.compactContext,
+    silent: undefined,
+    clientRequestId: msg.requestId,
+    sendOrder,
+  });
   const heldByMerge = runnerForQueue?.mergeHold === true;
   if (runnerForQueue?.running || runnerForQueue?.sessionHold || heldByMerge) {
     const actuallyRunning = heldByMerge ? false : await runnerForQueue.verifyRunningState();
@@ -251,27 +280,7 @@ async function decideAndRunSend(
       // throws: accept only once it is taken, so a refused message marks
       // nothing taken and submits no card.
       const queueTypedMessage = (): void => {
-        runnerForQueue.dispatch(prepareDispatch({
-          text: msg.text,
-          agentInterface: undefined,
-          execution: "interactive",
-          images: msg.images,
-          files: msg.files,
-          uploads: msg.uploads,
-          permissionMode: msg.permissionMode,
-          activity: undefined,
-          postTurn: undefined,
-          automatic: undefined,
-          heldId: undefined,
-          onTurnComplete: undefined,
-          deliveryId: undefined,
-          dictated: msg.dictated,
-          resetMergedBranch: msg.resetMergedBranch,
-          compactContext: msg.compactContext,
-          silent: undefined,
-          clientRequestId: msg.requestId,
-        }));
-        checklistAccepted();
+        if (runnerForQueue.dispatch(typedDispatch()).admitted !== "refused") checklistAccepted();
       };
       // Adapter capability does not prove the current process was started in streaming mode.
       const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
@@ -313,6 +322,7 @@ async function decideAndRunSend(
           // can take the steer gets it here, because a dispatch steers the text alone.
           const steerTarget = runnerForQueue.getAgent();
           const steerableNow = steerTarget !== null && !runnerForQueue.mergeHold
+            && !sentBeforeStop(runnerForQueue, sendOrder)
             && !userMessageWaits(runnerForQueue) && shouldSteerMessage({
             steeringCapable,
             liveSteering,
@@ -349,6 +359,7 @@ async function decideAndRunSend(
               uploadPaths: steerUploadPaths,
               assembledPrompt: steerPrompt,
               ...(msg.requestId ? { clientRequestId: msg.requestId } : {}),
+              sendOrder,
             });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
             // Persist before emitting image URLs that resolve against the stored row.
@@ -535,28 +546,12 @@ async function decideAndRunSend(
   const turnRunner = resolveRunner(ctx);
   // A turn, a merge or a session hold (a rebase, docs/321's restart) can start during the awaits above.
   if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.sessionHold) {
-    turnRunner.dispatch(prepareDispatch({
-      text: userText,
-      agentInterface: undefined,
-      resetMergedBranch: msg.resetMergedBranch,
-      compactContext: msg.compactContext,
-      silent: undefined,
-      execution: "interactive",
-      // Queue raw inputs; the drain resolves uploads again.
-      images: msg.images,
-      files: msg.files,
-      uploads: msg.uploads,
-      permissionMode: msg.permissionMode,
-      activity: undefined,
-      postTurn: undefined,
-      automatic: undefined,
-      heldId: undefined,
-      onTurnComplete: undefined,
-      deliveryId: undefined,
-      dictated: msg.dictated,
-      clientRequestId: msg.requestId,
-    }));
-    checklistAccepted();
+    if (turnRunner.dispatch(typedDispatch()).admitted !== "refused") checklistAccepted();
+    return;
+  }
+  // A Stop that came during the awaits above: the message gets its rule, not a turn (docs/330).
+  if (turnRunner && sentBeforeStop(turnRunner, sendOrder)) {
+    returnLateEntry(turnRunner, toQueuedMessage(typedDispatch()));
     return;
   }
   checklistAccepted();
@@ -569,26 +564,7 @@ async function decideAndRunSend(
       turnRunner && activeId && activeDir && !isCompactRequest
       && await decideCompactBeforeTurn(ctx, turnRunner, activeId, activeDir, msg.compactContext)
     ) {
-      await runCompactionAhead(ctx, turnRunner, toQueuedMessage(prepareDispatch({
-        text: userText,
-        agentInterface: undefined,
-        resetMergedBranch: msg.resetMergedBranch,
-        compactContext: msg.compactContext,
-        silent: undefined,
-        execution: "interactive",
-        images: msg.images,
-        files: msg.files,
-        uploads: msg.uploads,
-        permissionMode: msg.permissionMode,
-        activity: undefined,
-        postTurn: undefined,
-        automatic: undefined,
-        heldId: undefined,
-        onTurnComplete: undefined,
-        deliveryId: undefined,
-        dictated: msg.dictated,
-        clientRequestId: msg.requestId,
-      })), msg.permissionMode);
+      await runCompactionAhead(ctx, turnRunner, toQueuedMessage(typedDispatch()), msg.permissionMode);
       return;
     }
 

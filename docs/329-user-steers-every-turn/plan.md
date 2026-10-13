@@ -600,7 +600,10 @@ files this feature does not change.
   starts at once. The line is not who started the turn: a message of the
   user's that a gate released runs on the dispatched path too. The two reviews
   of this part disagree on the direction of a fix, and the direction is the
-  user's to choose (planning#692).
+  user's to choose (planning#692). Changed 2026-10-12: the user chose, and
+  `docs/330-stop-returns-queued-messages` is the one rule — a Stop empties the
+  queue behind every turn, and a message of the user's goes back into the
+  input box.
 - **How a rebase is cancelled.** The timeout and the abort route race the
   flow; they do not cancel it (planning#693).
 

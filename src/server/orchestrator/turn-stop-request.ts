@@ -102,12 +102,13 @@ export function steerRefused(runner: object): boolean {
 /**
  * docs/329-user-steers-every-turn — a message enters the running turn only when the agent
  * has that turn's prompt and the turn is not a compaction. Without a record the turn reads
- * as ready, as it reads as submitted.
+ * as ready, as it reads as submitted. A turn that the user stopped takes none: its process
+ * is ending, and what they send now waits for the next turn (docs/330).
  */
 export function turnTakesMessages(runner: { running: boolean }): boolean {
   if (!runner.running) return false;
   const phase = phases.get(runner);
-  return phase === undefined || (phase.ready && !phase.compaction);
+  return phase === undefined || (phase.ready && !phase.compaction && !phase.stoppedByUser);
 }
 
 /**

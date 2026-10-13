@@ -12,6 +12,7 @@ import {
   type PostInterruptCommitDeps,
 } from "./post-interrupt-commit.js";
 import { currentTurnPhase, noteUserStop } from "../turn-stop-request.js";
+import { returnQueueOnStop } from "../queue-return.js";
 import { stopCompactionContinuation } from "./agent-compaction-stop.js";
 import { takeSessionHold } from "../session-hold.js";
 
@@ -62,6 +63,9 @@ export interface RestartContainerResult {
 export async function killAgent(
   deps: RecoveryDeps,
   sessionId: string,
+  // The user's own Kill empties the queue as their Stop does (docs/330). A restart of the
+  // process for another reason, such as a plugin install, leaves it.
+  opts: { stoppedByUser?: boolean } = {},
 ): Promise<KillAgentResult> {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
@@ -74,6 +78,7 @@ export async function killAgent(
   runner.wasInterrupted = true;
   noteUserStop(runner);
   stopCompactionContinuation(deps.sessionManager, runner);
+  if (opts.stoppedByUser) returnQueueOnStop(runner);
   const killedEpoch = runner.turnEpoch;
   const killedPhase = currentTurnPhase(runner);
 

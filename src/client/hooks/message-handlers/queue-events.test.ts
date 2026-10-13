@@ -67,6 +67,45 @@ describe("an event of another session (point 1)", () => {
   });
 });
 
+describe("a Stop (docs/330-stop-returns-queued-messages)", () => {
+  it("hands the returned messages of the open session to its composer", () => {
+    useSessionStore.setState({ queuedMessages: [{ id: "a1", text: "A waits", position: 1 }] });
+
+    dispatchMessage(ctx(), {
+      type: "queue_updated", sessionId: "A", queue: [], returned: [{ id: "a1", text: "A waits" }],
+    });
+
+    expect(useSessionStore.getState().queuedMessages).toEqual([]);
+    expect(useSessionStore.getState().returnedToComposer).toEqual({
+      sessionId: "A",
+      messages: [{ id: "a1", text: "A waits" }],
+    });
+    expect(useSessionStore.getState().messages).toEqual([]);
+  });
+
+  it("does not hand the returned messages of another session to the open one", () => {
+    useSessionStore.setState({ sessionId: "B" });
+
+    dispatchMessage(ctx(), {
+      type: "queue_updated", sessionId: "A", queue: [], returned: [{ id: "a1", text: "A waits" }],
+    });
+
+    expect(useSessionStore.getState().returnedToComposer).toBeUndefined();
+  });
+
+  // The server says what the queue holds; a row that the user sent after the Stop stays.
+  it("leaves the queue rows to the server's own update", () => {
+    useSessionStore.setState({ queuedMessages: [{ text: "sent after the Stop", position: 1, requestId: "r2" }] });
+
+    dispatchMessage(ctx(), { type: "agent_interrupted", sessionId: "A" });
+
+    expect(useSessionStore.getState().queuedMessages).toEqual([
+      { text: "sent after the Stop", position: 1, requestId: "r2" },
+    ]);
+    expect(useSessionStore.getState().isLoading).toBe(false);
+  });
+});
+
 describe("every viewer shows the same bubble, with attachments (point 2)", () => {
   const sender: ChatMessage[] = [{ role: "user", text: "look", clientRequestId: "r1", images: COMPOSED_IMAGE }];
 

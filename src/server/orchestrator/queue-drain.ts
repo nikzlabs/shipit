@@ -7,6 +7,7 @@ import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import { automaticTurnHeldForAnswer, turnBlockedByPendingCommit } from "./turn-admission.js";
 import { forgetHeldEntries, holdTurn } from "./held-turns.js";
 import { settleDroppedQueueEntries, settleWhenRunnerLetsGo } from "./turn-settlement.js";
+import { returnQueueSentBeforeStop } from "./queue-return.js";
 
 export { queuedMessageToDispatchOptions };
 
@@ -23,6 +24,7 @@ export { queuedMessageToDispatchOptions };
 export function takeRunnableQueuedTurn(
   runner: SessionRunnerInterface,
 ): QueuedMessage | undefined {
+  returnQueueSentBeforeStop(runner);
   const queue = runner.messageQueue;
   if (queue.length === 0) return undefined;
   const held = queue.some((m) => m.automatic === true)

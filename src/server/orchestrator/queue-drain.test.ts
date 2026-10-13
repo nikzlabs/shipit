@@ -11,6 +11,8 @@ import { toQueuedMessage } from "./session-runner.js";
 import type { AgentDispatchOptions, AnswerHoldStore, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "./turn-settlement.js";
+import { nextSendOrder } from "./queue-identity.js";
+import { returnQueueOnStop, returnedMessages } from "./queue-return.js";
 
 function fakeRunner(opts: { canRunDispatchedTurn?: boolean } = {}) {
   const ran: AgentDispatchOptions[] = [];
@@ -117,6 +119,9 @@ describe("queue drain routing (planning#257)", () => {
       unattended: true,
       promptShown: true,
       clientRequestId: "request-1",
+      sendOrder: 12,
+      steeredDispatch: true,
+      uploadPaths: ["/uploads/a.png"],
     };
 
     const restored = queuedMessageToDispatchOptions(toQueuedMessage(testDispatch(opts)));
@@ -159,6 +164,28 @@ describe("takeRunnableQueuedTurn (planning#562)", () => {
     const { runner } = fakeQueueRunner({ queue });
 
     expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
+  });
+
+  // docs/330-stop-returns-queued-messages — it came back into the queue after the Stop.
+  it("does not take an entry that was sent before the last Stop", () => {
+    const queue: QueuedMessage[] = [];
+    const emitted: unknown[] = [];
+    const runner = {
+      sessionId: "s1",
+      messageQueue: queue,
+      dequeue: () => queue.shift(),
+      getAgent: () => null,
+      backgroundWorkDescriptions: [],
+      emitMessage: (m: unknown) => { emitted.push(m); },
+      getQueueSnapshot: () => [],
+    } as unknown as SessionRunnerInterface;
+    const old: QueuedMessage = { text: "a steer that was not taken", execution: "interactive", sendOrder: nextSendOrder() };
+    returnQueueOnStop(runner);
+    queue.push(old, { text: "the redirect", execution: "interactive", sendOrder: nextSendOrder() });
+
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("the redirect");
+    expect(queue).toEqual([]);
+    expect(returnedMessages(runner).map((m) => m.text)).toEqual(["a steer that was not taken"]);
   });
 
   // docs/329-user-steers-every-turn req 2

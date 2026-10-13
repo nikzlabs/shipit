@@ -101,7 +101,7 @@ export function recordSteeredMessage(
   extra?: Pick<
     SteeredMessage,
     "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin" | "automatic"
-    | "bestEffort" | "clientRequestId" | "sendOrder"
+    | "bestEffort" | "clientRequestId" | "sendOrder" | "steeredDispatch"
   >,
 ): string {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
@@ -119,6 +119,7 @@ export function recordSteeredMessage(
       assembledPrompt: extra?.assembledPrompt,
       ...(extra?.automatic ? { automatic: true } : {}),
       ...(extra?.bestEffort ? { bestEffort: true } : {}),
+      ...(extra?.steeredDispatch ? { steeredDispatch: true } : {}),
       clientRequestId,
       sendOrder: extra?.sendOrder ?? nextSendOrder(),
     },
@@ -138,9 +139,11 @@ export function steerToQueuedMessage(s: SteeredMessage): QueuedMessage {
     ...(s.automatic ? { automatic: true } : {}),
     ...(s.clientRequestId !== undefined ? { clientRequestId: s.clientRequestId } : {}),
     ...(s.sendOrder !== undefined ? { sendOrder: s.sendOrder } : {}),
+    ...(s.steeredDispatch ? { steeredDispatch: true } : {}),
   };
   if (s.images && s.images.length > 0) queued.images = s.images;
   if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
+  if (s.uploadPaths && s.uploadPaths.length > 0) queued.uploadPaths = s.uploadPaths;
   return queued;
 }
 

@@ -15,6 +15,7 @@ import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.j
 import { imageHash, imageUrl } from "./transcript-projection.js";
 import { TURN_STEERED } from "./turn-settlement.js";
 import { queueEntryId } from "./queue-identity.js";
+import { returnQueueSentBeforeStop } from "./queue-return.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { parseGoalCommand } from "../shared/goal-command.js";
 
@@ -143,6 +144,9 @@ export function trySteerDispatch(
     ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
     ...(opts.automatic ? { automatic: true } : {}),
     ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
+    ...(opts.sendOrder !== undefined ? { sendOrder: opts.sendOrder } : {}),
+    // A message of the user's that a drain dispatched is still theirs.
+    ...(opts.execution === "interactive" && !opts.steeredDispatch ? {} : { steeredDispatch: true }),
   });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
   runner.emitMessage({
@@ -215,6 +219,7 @@ export async function deliverWaitingMessages(
   try {
     for (;;) {
       if (!takesMessagesNow()) return;
+      returnQueueSentBeforeStop(runner);
       const entry = runner.messageQueue.find((m) => isWaitingUserMessage(m) && !unprepared.has(m));
       if (!entry) return;
       const prepared = await prepareSteer(runner.sessionDir, entry);
@@ -281,6 +286,7 @@ function recordDelivered(
     assembledPrompt: prepared.prompt,
     clientRequestId: queueEntryId(entry),
     ...(entry.sendOrder !== undefined ? { sendOrder: entry.sendOrder } : {}),
+    ...(entry.steeredDispatch ? { steeredDispatch: true } : {}),
   });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
   // No `dequeued`: the steer is the bubble, with its attachments, on every viewer (planning#691).

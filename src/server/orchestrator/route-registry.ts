@@ -65,6 +65,7 @@ import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
 import { currentUpdateNotice, versionAnchor } from "./services/update-notice.js";
 import { applyRoleToSession, resolveUserRole } from "./services/session-role.js";
 import { ServiceError } from "./services/types.js";
+import { returnedMessages } from "./queue-return.js";
 
 export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntime): void {
   const {
@@ -801,6 +802,12 @@ export async function registerRoutes(
           if (buffered.type === "terminal_reconnecting") continue;
           // HTTP history carries current tasks; buffered tasks can be stale.
           if (buffered.type === "background_tasks") continue;
+          // The returned messages are state: the snapshot below names those that still wait.
+          if (buffered.type === "queue_updated" && buffered.returned) {
+            const { returned: _taken, ...rest } = buffered;
+            send(rest);
+            continue;
+          }
           // Keep system_user_message for its activity label; clientRequestId deduplicates it.
           send(buffered);
         }
@@ -809,8 +816,15 @@ export async function registerRoutes(
         if (replayedRebaseStart && !runner.running && !runner.sessionHold) {
           send({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
-        // An empty queue snapshot clears messages drained while disconnected.
-        send({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
+        // An empty queue snapshot clears messages drained while disconnected. The messages
+        // that a Stop returned wait on the runner until an input box has them (docs/330).
+        const returned = returnedMessages(runner);
+        send({
+          type: "queue_updated",
+          sessionId: runner.sessionId,
+          queue: runner.getQueueSnapshot(),
+          ...(returned.length > 0 ? { returned } : {}),
+        });
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
@@ -1368,6 +1382,7 @@ export async function registerRoutes(
           case "rewind_preview_request": return rollbackHandlers.handleRewindPreviewRequest(ctx, msg);
           case "rewind_restore_request": return rollbackHandlers.handleRewindRestoreRequest(ctx, msg);
           case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
+          case "queue_returned_taken": { miscHandlers.handleQueueReturnedTaken(ctx, msg); return; }
           case "interrupt_agent": { miscHandlers.handleInterruptAgent(ctx); return; }
           case "pr_tab_active": { miscHandlers.handlePrTabActive(ctx, msg); return; }
           case "init_preview_config": {

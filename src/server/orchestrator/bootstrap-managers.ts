@@ -1160,7 +1160,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
         sseBroadcast,
       },
-    }, runnerRegistry.get(sessionId) ?? null),
+    }, runnerRegistry.get(sessionId) ?? null) === "turn",
     statusCardEnabled: () => credentialStore.getSessionStatusCard(),
     notes: scheduleNotes,
   });

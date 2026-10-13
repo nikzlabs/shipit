@@ -1,6 +1,6 @@
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin, LastTurnOutcome } from "../shared/types.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
-import { wireAgentListeners } from "./ws-handlers/agent-listeners.js";
+import { requeueUndeliveredSteers, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import {
   detectHardExhaustion,
@@ -1766,6 +1766,12 @@ export async function executeAgentTurn(
       }
       // Finalize partial rows before the next turn's replaceInProgress can delete them.
       if (!receivedResult && !sawAuthRequired) {
+        // As at a result: a steer the agent never read is not kept as a row of this turn.
+        if (runner) {
+          await postTurnStep("requeue-unread-steers", () => {
+            requeueUndeliveredSteers(runner, (m) => runner.emitMessage(m));
+          });
+        }
         await postTurnStep("finalize-partial-turn", () => input.onInterruptedTurn?.());
       }
 

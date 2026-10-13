@@ -181,9 +181,10 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
 
     asker.finish("question-turn");
     await waitFor(() => !runner.running, "question turn settled");
+    // The drain waits for the turn's commit, which a loaded host makes slow.
+    await waitFor(() => runner.queueLength === 0, "the wake left the queue for the saved hold");
     await new Promise((r) => setTimeout(r, 150));
     expect(lastClaude).toBe(asker);
-    expect(runner.queueLength).toBe(0);
     expect(sessionManager.heldTurns(client.sessionId)).toHaveLength(1);
     expect(outcomes).toEqual([]);
 
@@ -231,7 +232,7 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
     client.close();
   });
 
-  it("Stop pressed as the question lands still discards the user's queued message", async () => {
+  it("Stop pressed as the question lands still takes the user's message out of the queue", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
     const stop = pump(client);
@@ -280,7 +281,7 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
     client.close();
   });
 
-  it("a stop still discards what was queued behind the turn", async () => {
+  it("a stop still removes what ShipIt queued behind the turn", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
     const stop = pump(client);
@@ -292,11 +293,12 @@ describe("Integration: a question holds automatic turns (docs/322)", () => {
     const outcomes: TurnOutcome[] = [];
     expect(dispatchWake(runner, outcomes).admitted).toBe("queued");
 
-    runner.wasInterrupted = true;
-    worker.finish("work-turn");
+    client.send({ type: "interrupt_agent" });
     await waitFor(() => outcomes.length > 0, "the queued wake settled");
     expect(outcomes[0]?.status).toBe("dropped");
     expect(runner.queueLength).toBe(0);
+    await waitFor(() => !runner.running, "the stopped turn ended");
+    expect(lastClaude).toBe(worker);
 
     stop();
     client.close();

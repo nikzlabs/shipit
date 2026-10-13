@@ -6,7 +6,8 @@ let lastSendOrder = 0;
 
 /**
  * planning#691 — the order in which messages reached ShipIt, across every runner of this
- * process. A queue entry takes it when it is first queued, a steer when it is written.
+ * process. A message takes it when ShipIt accepts it (docs/330); one that has none by then
+ * takes it when it is queued or steered.
  */
 export function nextSendOrder(): number {
   lastSendOrder += 1;

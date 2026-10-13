@@ -6,6 +6,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
 import { noteTurnReady, noteTurnSubmitted, setSteerRefused } from "../turn-stop-request.js";
 import { queueEntryId, requeueInSendOrder } from "../queue-identity.js";
+import { returnQueueSentBeforeStop } from "../queue-return.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import { retireRewindUndo } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
@@ -294,6 +295,8 @@ export function wireAgentListeners(
               "server",
               `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
             );
+            // The rejection can come after the stopped turn's last drain (docs/330).
+            returnQueueSentBeforeStop(runner);
           }
         }
         // A worker with no agent at all would otherwise hold the turn, and the re-queued

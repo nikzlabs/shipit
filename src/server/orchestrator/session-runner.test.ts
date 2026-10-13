@@ -11,6 +11,8 @@ import type { AgentId } from "../shared/types.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "./turn-settlement.js";
 import { noteTurnReady } from "./turn-stop-request.js";
+import { nextSendOrder } from "./queue-identity.js";
+import { returnQueueOnStop, returnedMessages } from "./queue-return.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -1098,5 +1100,54 @@ describe("SessionRunnerRegistry", () => {
     const r = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
     r.dispose();
     expect(registry.get("s1")).toBeUndefined();
+  });
+});
+
+// docs/330-stop-returns-queued-messages — a Stop tells what was sent before it by this order.
+describe("the send order of a dispatch", () => {
+  function startedRunner() {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps({} as never);
+    const run = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue(undefined);
+    return { runner, run };
+  }
+
+  it("is taken when the dispatch is accepted, also for a dispatch that starts at once", () => {
+    const { runner, run } = startedRunner();
+    const before = nextSendOrder();
+
+    runner.dispatch(testDispatch({ text: "a wake" }));
+
+    expect(run.mock.calls[0]?.[0].sendOrder).toBeGreaterThan(before);
+    runner.dispose({ force: true });
+  });
+
+  it("returns a dispatch that was sent before the last Stop instead of starting it", async () => {
+    const { runner, run } = startedRunner();
+    const sentEarlier = nextSendOrder();
+    returnQueueOnStop(runner);
+
+    const handle = runner.dispatch(testDispatch({
+      text: "on its way at the Stop",
+      execution: "interactive",
+      clientRequestId: "m1",
+      sendOrder: sentEarlier,
+    }));
+
+    expect(handle.admitted).toBe("refused");
+    expect((await handle.settled).status).toBe("dropped");
+    expect(run).not.toHaveBeenCalled();
+    expect(runner.queueLength).toBe(0);
+    expect(returnedMessages(runner)).toEqual([{ id: "m1", text: "on its way at the Stop" }]);
+    runner.dispose({ force: true });
+  });
+
+  it("is kept when the dispatch has one already, as an entry that a drain started has", () => {
+    const { runner, run } = startedRunner();
+
+    runner.dispatch(testDispatch({ text: "drained", sendOrder: 3 }));
+
+    expect(run.mock.calls[0]?.[0].sendOrder).toBe(3);
+    runner.dispose({ force: true });
   });
 });

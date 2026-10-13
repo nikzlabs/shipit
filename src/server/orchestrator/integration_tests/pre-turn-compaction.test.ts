@@ -15,6 +15,7 @@ import {
   TestClient,
   StubAuthManager,
   FakeClaudeProcess,
+  waitFor,
   waitForClaude,
   createTestCredentialStore,
   createTestDatabaseManager,
@@ -45,10 +46,31 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
    */
   let beforeMerge: () => void;
   let mergeLands: () => void;
+  /** While set, the git reads of a claimed turn wait: the window in which a turn sets up. */
+  let setupGate: Promise<void> | null = null;
+
+  function gatedGit(git: GitManager): GitManager {
+    return new Proxy(git, {
+      get(target, prop, receiver) {
+        const value: unknown = Reflect.get(target, prop, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const gate = app.runnerRegistry.get(SESSION_ID)?.running ? setupGate : null;
+          const call = () => (value as (...a: unknown[]) => unknown).apply(target, args);
+          if (!gate) return call();
+          return (async () => {
+            await gate;
+            return call();
+          })();
+        };
+      },
+    });
+  }
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     spawns = [];
+    setupGate = null;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-preturn-compact-"));
     credentialStore = createTestCredentialStore(tmpDir);
 
@@ -90,7 +112,7 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     app = await buildApp({
       credentialStore,
       repoStore,
-      createGitManager: (dir: string) => new GitManager(dir),
+      createGitManager: (dir: string) => gatedGit(new GitManager(dir)),
       sessionManager,
       chatHistoryManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -436,7 +458,7 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.close();
   });
 
-  it("still runs the message when the user STOPS the compaction (req 9)", async () => {
+  it("returns the message to the input box when the user STOPS the compaction (docs/330)", async () => {
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
@@ -445,17 +467,43 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     expect(compaction.lastCompact).toBe(true);
 
     client.send({ type: "interrupt_agent" });
-    await client.receiveType("agent_interrupted");
-    const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
-    expect(userTurn.lastPrompt).toContain("start the next slice");
-    expect(userTurn.lastCompact).toBeFalsy();
-    userTurn.initSession("after");
-    userTurn.finish("after");
-    await new Promise((r) => setTimeout(r, 200));
+    const returned = await client.collectUntil((m) => m.type === "agent_interrupted");
+    expect(returned.find((m) => m.type === "queue_updated" && m.returned)).toMatchObject({
+      queue: [],
+      returned: [{ text: "start the next slice" }],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    // Nothing starts by itself: the message is the user's to send again.
+    expect(spawns.at(-1)).toBe(compaction);
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION_ID}/history` });
     const history = res.json() as { messages: { notice?: boolean; text?: string }[] };
     expect(history.messages.filter((m) => m.notice && m.text?.includes("not compacted"))).toHaveLength(1);
+
+    client.close();
+  });
+
+  it("returns the message when the Stop comes while its turn sets up, before the compaction (docs/330)", async () => {
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+    let openGate!: () => void;
+    setupGate = new Promise<void>((resolve) => { openGate = resolve; });
+
+    client.send({ type: "send_message", text: "start the next slice", compactContext: true });
+    await waitFor(() => app.runnerRegistry.get(SESSION_ID)?.running === true, "the turn is claimed");
+    // The message is in no queue yet: the Stop finds nothing to return.
+    client.send({ type: "interrupt_agent" });
+    await client.receiveType("agent_interrupted");
+    setupGate = null;
+    openGate();
+
+    const events = await client.collectUntil((m) => m.type === "queue_updated" && m.returned !== undefined);
+    expect(events.find((m) => m.type === "queue_updated" && m.returned)).toMatchObject({
+      queue: [],
+      returned: [{ text: "start the next slice" }],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(spawns.filter((p) => p.lastPrompt.includes("start the next slice"))).toEqual([]);
 
     client.close();
   });

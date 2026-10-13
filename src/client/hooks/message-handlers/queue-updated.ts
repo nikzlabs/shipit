@@ -2,6 +2,7 @@ import type { WsQueueUpdated } from "../../../server/shared/types.js";
 import type { ChatMessage } from "../../components/MessageList.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { applyQueueSnapshot } from "../../utils/predicted-queue.js";
+import { offerReturnedMessages } from "../../utils/returned-messages.js";
 import type { Handler } from "./types.js";
 
 export const handleQueueUpdated: Handler<WsQueueUpdated> = (ctx, data) => {
@@ -23,6 +24,8 @@ export const handleQueueUpdated: Handler<WsQueueUpdated> = (ctx, data) => {
     session.setMessages((prev) =>
       prev.some((m) => m.clientRequestId === dequeued.id) ? prev : [...prev, restoredMsg]);
   }
+
+  if (data.returned) offerReturnedMessages(data.sessionId, data.returned);
 
   const remainingIds = new Set(data.queue.map((q) => q.id));
   for (const key of ctx.queuedMessageStash.keys()) {

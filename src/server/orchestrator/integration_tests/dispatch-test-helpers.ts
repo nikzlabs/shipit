@@ -31,6 +31,9 @@ export function testDispatch(
     unattended: opts.unattended,
     promptShown: opts.promptShown,
     clientRequestId: opts.clientRequestId,
+    sendOrder: opts.sendOrder,
+    steeredDispatch: opts.steeredDispatch,
+    uploadPaths: opts.uploadPaths,
   });
 }
 
