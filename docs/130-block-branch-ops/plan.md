@@ -282,11 +282,20 @@ at most. The relay limits each attempt to 1 second, so a worker that still
 holds the orchestrator's old address first (planning#626) reaches the next
 address inside the hook's wait.
 
+The hook asks with `node:http` and `agent: false`. Under
+`NODE_USE_ENV_PROXY=1` (or `--use-env-proxy`) with `HTTP_PROXY` set and no
+`NO_PROXY` entry for loopback, Node sends `fetch` and the default `http` agent
+to the proxy, and the first version of this read used `fetch`. `agent: false`
+makes a new agent with no `proxyEnv`, which gets no proxy configuration. The
+worker's relay (`orchestrator-client.ts`) uses the same option. Measured on
+Node 24.15, the version of the session-worker image.
+
 With an answer, a turn on a merged branch is guarded on a resident process as
 on a new one, and a turn after the reset is not. A reset or a recorded merge in
 the middle of a turn takes effect at the next Bash call. With no answer (no
-worker, no orchestrator, a status that is not 2xx, a body with no boolean) the
-hook takes the value its process started with, which is the earlier behaviour.
+worker, no orchestrator, a status that is not 2xx, a body with no boolean or
+longer than 1024 characters) the hook takes the value its process started
+with, which is the earlier behaviour.
 
 **Why the resident process is not retired instead.** The other fix was to add
 the merged state to `sessionSpawnIdentity` (`service-routing.ts`), so that a
@@ -310,10 +319,13 @@ does not hold the requirement:
 
 - The answer is as new as the session row. Merge detection is poll-driven and
   is refreshed at turn admission (`docs/282-merge-race-at-turn-admission`).
-- The hook reaches the worker as the `shipit` commands do, with `fetch` to the
-  worker's loopback address. An environment that sends loopback requests to a
-  proxy (`NODE_USE_ENV_PROXY=1` with no `NO_PROXY` entry for loopback) breaks
-  both, and the hook then takes the spawn value.
+- Two requests near this one still follow the proxy variables when their
+  process has them: local mode's relay (`local-agent-ops.ts`, the default
+  `http` agent) and the `shipit` commands (`agent-shim/shim-common.ts`,
+  `fetch`). If the proxy does not pass such a request on, the hook gets no
+  answer in local mode and takes the spawn value, and the
+  `shipit branch reset-to-base` that the refusal names fails. ShipIt sets no
+  such variable.
 - A session container on an older image keeps the older hook until ShipIt
   replaces the container. A new hook on an older worker gets a 404 and takes
   the spawn value.
@@ -483,7 +495,7 @@ planning#694 additions:
 | `src/server/orchestrator/session-agent-run-params.test.ts` | planning#267: the guard arms iff the session row carries `mergedHeadSha` (off when unmerged, cleared, missing, or sandbox). |
 | `src/server/orchestrator/agent-run-params-prep.test.ts` | planning#267: Claude's hook forwards `guardDestructiveGitActive` → `guardDestructiveGit`, defaulting false. |
 | `src/server/session/agents/claude/process.test.ts` | planning#267: `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` is set in the spawn env iff `guardDestructiveGit` is true. |
-| `src/server/session/agent-shim/block-branch-ops.test.ts` | planning#694: against a worker the test serves, a process with no spawn value is blocked when the answer is "guarded" and a process with the spawn value is free when it is not; one request for each command, none for a command no destructive rule would refuse and none in a sandbox; the spawn value decides on a status that is not 2xx, a body with no boolean, an address where nothing listens and a worker that does not answer in time. The planning#267 matrix above runs with no worker, so it is the fallback's test. |
+| `src/server/session/agent-shim/block-branch-ops.test.ts` | planning#694: against a worker the test serves, a process with no spawn value is blocked when the answer is "guarded" and a process with the spawn value is free when it is not; one request for each command, none for a command no destructive rule would refuse and none in a sandbox; the spawn value decides on a status that is not 2xx, a body with no boolean, an address where nothing listens, an address that is not a URL, a body longer than an answer, a worker that does not answer in time and a body that does not finish; with the proxy variables set and a proxy that refuses, the worker's answer still decides. The planning#267 matrix above runs with no worker, so it is the fallback's test. |
 | `src/server/orchestrator/integration_tests/destructive-git-guard.test.ts` | planning#694: the real hook process, the worker's relay and the orchestrator's route over a real `SessionManager`, through merge detection and `clearMerged`; a first orchestrator address that does not answer; an orchestrator that is gone. It is the test that fails when the layers do not name the same path, or when the relay's attempts do not fit in the hook's wait. |
 | `src/server/orchestrator/api-routes-git.test.ts` | planning#694: the route answers for the session in the path, and gives no answer for an unknown one. |
 | `src/server/session/agent-ops-routes.test.ts` | planning#694: a 502 with no answer when the orchestrator gives none. |
