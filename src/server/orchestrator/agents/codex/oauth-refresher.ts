@@ -16,7 +16,8 @@ import {
   sessionCredentialsRoot,
 } from "../../session-credentials-scaffold.js";
 import { sessionTokenIsAheadOfSource, syncProviderAccountTokenBack } from "../../token-sync-manager.js";
-import { summarizeRefreshFailure } from "../claude/oauth-refresher.js";
+import { describeCliRun, summarizeRefreshFailure } from "../claude/oauth-refresher.js";
+import type { TickTrigger } from "../claude/oauth-refresher.js";
 
 // A session's CLI refreshes by itself only in the last 5 minutes of a token (docs/154).
 const SAFETY_MARGIN_MS = 45 * 60 * 1000;
@@ -141,6 +142,16 @@ interface HarvestResult {
   after: number;
 }
 
+interface RefreshRun {
+  // The CLI's log, and the refresher's own notes.
+  output: string;
+  durationMs: number;
+  // The refresher killed the CLI: no answer in time, or no end after the answer.
+  timedOut: boolean;
+  // The exit code or signal. Null when the CLI did not start, or did not end within the grace.
+  exit: string | null;
+}
+
 interface AccountState {
   accountId: string;
   timer: ReturnType<typeof setTimeout> | null;
@@ -209,9 +220,9 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
 
   async refreshNow(accountId?: string): Promise<CodexRefreshResult[]> {
     if (this.deps.runtimeMode !== "containerized" && !accountId) return [];
-    if (accountId) return [await this.runTickForAccount(accountId)];
+    if (accountId) return [await this.runTickForAccount(accountId, "nudge")];
     const accounts = this.deps.providerAccountManager.list("openai");
-    return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
+    return Promise.all(accounts.map((a) => this.runTickForAccount(a.id, "nudge")));
   }
 
   // A refresh that got no answer is no verdict on the token. It heals also a forced call
@@ -226,7 +237,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       // A turn start in a backoff would only add a request to the retry that the schedule owns.
       if (now < this.ensureAccountState(accountId).retryNotBefore) return before > now;
     }
-    const { outcome } = await this.runTickForAccount(accountId, force);
+    const { outcome } = await this.runTickForAccount(accountId, force ? "forced_heal" : "turn_start", force);
     const after = this.readSourceFreshness(accountId);
     if (after === NO_FRESHNESS || after <= this.deps.now()) return false;
     if (outcome === "revoked" || outcome === "missing_credentials") return false;
@@ -259,7 +270,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     state.retryNotBefore = 0;
     state.timer = setTimeout(() => {
       state.timer = null;
-      void this.runTickForAccount(accountId).catch((err: unknown) => {
+      void this.runTickForAccount(accountId, "scheduled").catch((err: unknown) => {
         console.error(`[codex-oauth-refresh] unexpected error in tick for ${accountId}:`, err);
       });
     }, delay);
@@ -278,24 +289,24 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     state.retryNotBefore = this.deps.now() + schedule[idx];
     state.timer = setTimeout(() => {
       state.timer = null;
-      void this.runTickForAccount(accountId).catch((err: unknown) => {
+      void this.runTickForAccount(accountId, "backoff_retry").catch((err: unknown) => {
         console.error(`[codex-oauth-refresh] unexpected error in backoff tick for ${accountId}:`, err);
       });
     }, schedule[idx]);
     if (typeof state.timer.unref === "function") state.timer.unref();
   }
 
-  private runTickForAccount(accountId: string, force = false): Promise<CodexRefreshResult> {
+  private runTickForAccount(accountId: string, trigger: TickTrigger, force = false): Promise<CodexRefreshResult> {
     const state = this.ensureAccountState(accountId);
     if (state.inFlight) return state.inFlight;
-    const promise = this.executeTick(accountId, force).finally(() => {
+    const promise = this.executeTick(accountId, trigger, force).finally(() => {
       state.inFlight = null;
     });
     state.inFlight = promise;
     return promise;
   }
 
-  private async executeTick(accountId: string, force = false): Promise<CodexRefreshResult> {
+  private async executeTick(accountId: string, trigger: TickTrigger, force: boolean): Promise<CodexRefreshResult> {
     const state = this.ensureAccountState(accountId);
     const accountRoot = this.deps.providerAccountManager.resolveCredentialRoot("codex", accountId);
     const sourceFile = path.join(accountRoot, CODEX_AUTH_RELATIVE);
@@ -313,14 +324,19 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
         afterFreshness: null,
         reason: `source file missing or unparseable at ${sourceFile}`,
       };
-      console.log(`[codex-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete`);
-      this.emitUnauthenticated(accountId, "missing_credentials");
+      // A sign-in removes the source at its start, and reports its own outcome.
+      const signingIn = this.accountStatus(accountId) === "authenticating";
+      console.log(
+        `[codex-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete${signingIn ? " sign_in=in_progress" : ""}`,
+      );
+      if (!signingIn) this.emitUnauthenticated(accountId, "missing_credentials");
       return result;
     }
 
     // Before the healthy-source branch: an unchanged dead grant must not read as a new sign-in.
     if (this.sourceGrantIsKnownRejected(accountId)) {
-      return this.handleRevoked(accountId, before, before, state.rejectedCode);
+      // Short on purpose: this repeats on each later tick, and the first line has the detail.
+      return this.handleRevoked(accountId, before, before, state.rejectedCode, `trigger=${trigger} verdict=known_rejected`);
     }
 
     const nearExpiry = before <= this.deps.now() + this.deps.safetyMarginMs;
@@ -337,7 +353,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     }
 
     const seedIdentity = this.readSourceIdentity(accountId);
-    const log = await this.refreshOnDemand(accountRoot);
+    const run = await this.refreshOnDemand(accountRoot);
     const after = this.readSourceFreshness(accountId);
     // New tokens are a rotation whatever their expiry says, and a later expiry without tokens is none.
     // Nor is a known-rejected credential that an outside writer put back while the refresh ran.
@@ -347,7 +363,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       return this.handleSuccess(accountId, before, after, "rotated");
     }
 
-    const refusal = classifyCodexRefreshOutput(log);
+    const refusal = classifyCodexRefreshOutput(run.output);
     if (refusal.kind === "rejected") {
       // Before the source check: a session's rotation can reach the source during the wait.
       if (!DEFINITE_REVOCATION_CODES.has(refusal.code)) await this.waitForLateRotation();
@@ -368,11 +384,16 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       if (late) return this.handleSuccess(accountId, late.before, late.after, "harvested_session");
       state.rejectedIdentity = seedIdentity;
       state.rejectedCode = refusal.code;
-      return this.handleRevoked(accountId, before, after, refusal.code);
+      const expiresIn = Math.round((before - this.deps.now()) / 60_000);
+      return this.handleRevoked(
+        accountId, before, after, refusal.code,
+        `trigger=${trigger} verdict=token_host_code refresh=${describeCliRun(run)} expires_in=${expiresIn}m`
+          + ` reason="${summarizeRefreshFailure(run.output)}"`,
+      );
     }
 
     // A forced refresh that got no answer leaves a token with time left on its expiry schedule.
-    return this.handleFailure(accountId, before, after, log, refusal.kind === "rate_limited", force, nearExpiry);
+    return this.handleFailure(accountId, before, after, run.output, refusal.kind === "rate_limited", force, nearExpiry);
   }
 
   private handleSuccess(
@@ -408,13 +429,15 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     };
   }
 
+  // The sentence up to "auth_required" is what incidents are searched by; the detail follows it.
   private handleRevoked(
     accountId: string,
     before: number | null,
     after: number | null,
     code: string,
+    detail: string,
   ): CodexRefreshResult {
-    console.log(`[codex-oauth-refresh] account=${accountId} revoked (${code}) — emitting auth_required`);
+    console.log(`[codex-oauth-refresh] account=${accountId} revoked (${code}) — emitting auth_required ${detail}`);
     this.emitUnauthenticated(accountId, "revoked");
     return {
       outcome: "revoked",
@@ -464,11 +487,16 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
 
   private emitUnauthenticated(accountId: string, reason: "revoked" | "missing_credentials"): void {
     const state = this.ensureAccountState(accountId);
-    if (state.emittedUnauthenticated) return;
+    // A sign-in's completion sets the row ready by itself. If the credential is still dead, say so again.
+    if (state.emittedUnauthenticated && this.accountStatus(accountId) !== "ready") return;
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("codex_account_unauthenticated", { accountId });
     this.deps.sseBroadcast("agent_auth_failed", { loginId: "openai-chatgpt", accountId, reason });
+  }
+
+  private accountStatus(accountId: string): string | undefined {
+    return this.deps.providerAccountManager.list("openai").find((account) => account.id === accountId)?.status;
   }
 
   private handleHealthySource(accountId: string): void {
@@ -484,9 +512,10 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
     this.emit("account_reauthenticated", accountId);
   }
 
-  // Resolves with the CLI's log when the CLI has ended: it writes the file before it answers.
-  private refreshOnDemand(accountRoot: string): Promise<string> {
-    return new Promise<string>((resolve) => {
+  // Resolves when the CLI has ended: it writes the file before it answers.
+  private refreshOnDemand(accountRoot: string): Promise<RefreshRun> {
+    return new Promise<RefreshRun>((resolve) => {
+      const startedAt = performance.now();
       // CODEX_HOME is explicit, so that an inherited one cannot point the CLI at another account.
       const env: NodeJS.ProcessEnv = {
         ...process.env,
@@ -501,7 +530,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
         child = this.deps.spawn("codex", [...CODEX_REFRESH_COMMAND], opts);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        resolve(`[spawn-failed] ${msg}`);
+        resolve({ output: `[spawn-failed] ${msg}`, durationMs: performance.now() - startedAt, timedOut: false, exit: null });
         return;
       }
 
@@ -510,14 +539,20 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       let rpcError = "";
       let replied = false;
       let timedOut = false;
+      let killed = false;
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
 
-      const settle = (extra: string): void => {
+      const settle = (note: string, exit: string | null = null): void => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
-        resolve(`${stripLogDecoration(stderr)}\n${rpcError}\n${extra}`.trim());
+        resolve({
+          output: `${stripLogDecoration(stderr)}\n${rpcError}\n${note}`.trim(),
+          durationMs: performance.now() - startedAt,
+          timedOut: killed,
+          exit,
+        });
       };
       const arm = (ms: number, onFire: () => void): void => {
         // An answer that arrives after the call gave up must not start a kill.
@@ -528,6 +563,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       };
       // Settle on the close, not on the signal: a write under way must land before the source is read.
       const kill = (note: string): void => {
+        killed = true;
         arm(EXIT_GRACE_MS, () => settle(note));
         killProcessTree(child, "SIGKILL", { label: "codex-refresh" });
       };
@@ -580,7 +616,9 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
         }
       });
       // On the close, not on the exit: the line that names a refusal can arrive after the exit.
-      child.on("close", () => settle(timedOut ? TIMED_OUT : replied ? "" : NO_REPLY));
+      child.on("close", (code, signal) => {
+        settle(timedOut ? TIMED_OUT : replied ? "" : NO_REPLY, String(code ?? signal ?? "unknown"));
+      });
       child.on("error", (err) => {
         // A kill that fails is an error and not an exit: the CLI can still write.
         if (!timedOut) settle(`[error] ${err.message}`);

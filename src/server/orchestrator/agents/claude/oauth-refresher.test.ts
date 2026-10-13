@@ -331,7 +331,7 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
   });
 
-  it("rotates a near-expiry token with tier 2 alone and repushes to pinned sessions", async () => {
+  it("rotates a near-expiry token with one CLI run and repushes to pinned sessions", async () => {
     const now = 1_700_000_000_000;
     const future = now + 40 * 60 * 1000;
     const rotatedTo = now + 8 * 60 * 60 * 1000;
@@ -347,7 +347,7 @@ describe("ClaudeOAuthRefresher", () => {
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("rotated_tier2");
     expect(result!.afterExpiresAt).toBe(rotatedTo);
-    // Tier 1 would present the grant and not wait for the answer (docs/153): it does not run.
+    // No command runs before it: one that sent the grant and did not wait for the answer would spend it (docs/153).
     expect(rig.spawnHandle.invocations.map((invocation) => invocation.args.includes("--print"))).toEqual([true]);
     expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
     // The CLI rotated a private copy; the refresher installed the result into the source.
@@ -357,7 +357,7 @@ describe("ClaudeOAuthRefresher", () => {
     expect(installed.accessToken).not.toBe(original.accessToken);
   });
 
-  it("probes a near-expiry token with the billable tier 2 command", async () => {
+  it("probes a near-expiry token with the billable model call", async () => {
     const now = 1_700_000_000_000;
     const nearExpiry = now + 10 * 60 * 1000;
     const rotatedTo = now + 8 * 60 * 60 * 1000;
@@ -372,10 +372,10 @@ describe("ClaudeOAuthRefresher", () => {
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("rotated_tier2");
     expect(rig.spawnHandle.invocations.length).toBe(1);
-    const tier2Args = rig.spawnHandle.invocations[0]!.args;
-    expect(tier2Args).toContain("--print");
-    expect(tier2Args).toContain("--model");
-    expect(tier2Args).toContain("--no-session-persistence");
+    const { args } = rig.spawnHandle.invocations[0]!;
+    expect(args).toContain("--print");
+    expect(args).toContain("--model");
+    expect(args).toContain("--no-session-persistence");
     expect(rig.repushCalls.length).toBe(1);
   });
 
@@ -388,10 +388,7 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    rig.spawnHandle.effects = [
-      { stderr: "HTTP 429 rate_limit_error" },
-      { stderr: "HTTP 429 rate_limit_error" },
-    ];
+    rig.spawnHandle.effects = [{ stderr: "HTTP 429 rate_limit_error" }];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("rate_limited");
@@ -411,10 +408,7 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    rig.spawnHandle.effects = [
-      { stderr: "OAuth error: invalid_grant — refresh token expired" },
-      { stderr: "OAuth error: invalid_grant — refresh token expired" },
-    ];
+    rig.spawnHandle.effects = [{ stderr: "OAuth error: invalid_grant — refresh token expired" }];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("revoked");
@@ -497,10 +491,7 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
-    ];
+    rig.spawnHandle.effects = [{ stderr: "invalid_grant" }];
 
     await rig.refresher.refreshNow("claude-default");
     await rig.refresher.refreshNow("claude-default");
@@ -638,10 +629,7 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
-      {},
-    ];
+    rig.spawnHandle.effects = [{ stderr: "invalid_grant" }];
 
     const results = await rig.refresher.refreshNow();
     const byId: Record<string, RefreshResult> = {};
@@ -779,7 +767,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{}, {}];
+      rig.spawnHandle.effects = [{}];
 
       const [scheduled] = await rig.refresher.refreshNow("claude-default");
       expect(scheduled!.outcome).toBe("not_rotated");
@@ -819,10 +807,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [
-        { stderr: "invalid_grant" },
-        { stderr: "invalid_grant" },
-      ];
+      rig.spawnHandle.effects = [{ stderr: "invalid_grant" }];
 
       const ok = await rig.refresher.ensureFresh("claude-default");
       expect(ok).toBe(false);
@@ -841,7 +826,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.spawnHandle.invocations.length).toBe(0);
     });
 
-    it("forced: probes a healthy token with tier 2 instead of short-circuiting", async () => {
+    it("forced: probes a healthy token with one CLI run instead of short-circuiting", async () => {
       const now = 1_700_000_000_000;
       const future = now + 8 * 60 * 60 * 1000;
       const rig = buildRig({
@@ -850,13 +835,12 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{}, {}];
+      rig.spawnHandle.effects = [{}];
 
       const ok = await rig.refresher.ensureFresh("claude-default", { force: true });
       expect(ok).toBe(true);
-      expect(rig.spawnHandle.invocations.length).toBe(2);
-      expect(rig.spawnHandle.invocations[0]!.args).toContain("status");
-      expect(rig.spawnHandle.invocations[1]!.args).toContain("--print");
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+      expect(rig.spawnHandle.invocations[0]!.args).toContain("--print");
       // It tests the token as it is: the copy keeps the real expiry.
       expect(rig.spawnHandle.invocations[0]!.home).not.toBe(accountRootOf(rig.rootDir, "claude-default"));
       expect(rig.spawnHandle.invocations[0]!.credentials!.expiresAt).toBe(future);
@@ -887,7 +871,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{ stderr: "invalid_grant" }, { stderr: "invalid_grant" }];
+      rig.spawnHandle.effects = [{ stderr: "invalid_grant" }];
 
       const ok = await rig.refresher.ensureFresh("claude-default", { force: true });
       expect(ok).toBe(false);
@@ -902,7 +886,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{}, {}];
+      rig.spawnHandle.effects = [{}];
 
       await rig.refresher.ensureFresh("claude-default", { force: true });
       expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
@@ -945,14 +929,14 @@ describe("ClaudeOAuthRefresher", () => {
 
       it("says so when the CLI cannot start, and changes neither the heal nor the schedule", async () => {
         const rig = forcedRig();
-        rig.spawnHandle.effects = [{ failsToStart: true }, { failsToStart: true }];
+        rig.spawnHandle.effects = [{ failsToStart: true }];
         const timeouts = vi.spyOn(globalThis, "setTimeout");
 
         const { healed, result, noVerdict } = await forcedHeal(rig);
         const delays = timeouts.mock.calls.map((call) => call[1]);
         timeouts.mockRestore();
 
-        const reason = "[error] spawn claude ENOENT | [error] spawn claude ENOENT";
+        const reason = "[error] spawn claude ENOENT";
         expect(noVerdict).toEqual([`[claude-oauth-refresh] account=claude-default ${NO_VERDICT} reason="${reason}"`]);
         expect(result!.reason).toBe(reason);
         expect(result!.outcome).toBe("noop");
@@ -963,9 +947,9 @@ describe("ClaudeOAuthRefresher", () => {
         expect(rig.sseCalls).toEqual([]);
       });
 
-      it("says so when the spawn of tier 2 throws", async () => {
+      it("says so when the spawn throws", async () => {
         const rig = forcedRig();
-        rig.spawnHandle.effects = [{}, { spawnThrows: true }];
+        rig.spawnHandle.effects = [{ spawnThrows: true }];
 
         const { healed, result, noVerdict } = await forcedHeal(rig);
 
@@ -977,15 +961,15 @@ describe("ClaudeOAuthRefresher", () => {
       it.each([
         { ending: "is killed after its timeout", exits: true },
         { ending: "does not end after the kill", exits: false },
-      ])("says so when tier 2 $ending", async ({ exits }) => {
+      ])("says so when the CLI $ending", async ({ exits }) => {
         vi.useFakeTimers();
         try {
           const rig = forcedRig();
-          rig.spawnHandle.effects = [{}, { hang: true }];
+          rig.spawnHandle.effects = [{ hang: true }];
 
           const { healed, result, noVerdict } = await forcedHeal(rig, async () => {
             await vi.advanceTimersByTimeAsync(60_000);
-            if (exits) rig.spawnHandle.children[1]!.emit("exit", null, "SIGKILL");
+            if (exits) rig.spawnHandle.children[0]!.emit("exit", null, "SIGKILL");
             else await vi.advanceTimersByTimeAsync(5_000);
           });
 
@@ -997,48 +981,39 @@ describe("ClaudeOAuthRefresher", () => {
         }
       });
 
-      it("writes no line when tier 2 completed, also after a tier 1 that timed out", async () => {
-        const healthy = forcedRig();
+      it("writes no line when the CLI completed, whatever its output says", async () => {
+        const rig = forcedRig();
         // Output that reads as the refresher's notes: the run's end decides, not its text.
-        healthy.spawnHandle.effects = [{}, { stderr: "[timeout] claude CLI did not exit in time\n[error] spawn claude ENOENT\n" }];
-        const ran = await forcedHeal(healthy);
+        rig.spawnHandle.effects = [{ stderr: "[timeout] claude CLI did not exit in time\n[error] spawn claude ENOENT\n" }];
 
-        expect(ran.noVerdict).toEqual([]);
-        expect(ran.result!.reason).toBe(FOUND_LIVE);
+        const { healed, result, noVerdict } = await forcedHeal(rig);
 
-        vi.useFakeTimers();
-        try {
-          const rig = forcedRig();
-          rig.spawnHandle.effects = [{ hang: true }, {}];
-
-          const { healed, result, noVerdict } = await forcedHeal(rig, async () => {
-            await vi.advanceTimersByTimeAsync(35_000);
-            await vi.advanceTimersByTimeAsync(1);
-          });
-
-          expect(rig.spawnHandle.invocations.length).toBe(2);
-          expect(noVerdict).toEqual([]);
-          expect(result!.reason).toBe(FOUND_LIVE);
-          expect(healed).toBe(true);
-        } finally {
-          vi.useRealTimers();
-        }
+        expect(noVerdict).toEqual([]);
+        expect(result!.reason).toBe(FOUND_LIVE);
+        expect(healed).toBe(true);
       });
 
       it("redacts the reason", async () => {
-        const rig = forcedRig();
-        // On the line that the reason keeps: a line with no failure signal is dropped, token or not.
-        rig.spawnHandle.effects = [
-          { stderr: `Error: request failed with Bearer ${FAKE_OAUTH_TOKEN}\n` },
-          { failsToStart: true },
-        ];
+        vi.useFakeTimers();
+        try {
+          const rig = forcedRig();
+          rig.spawnHandle.effects = [{ hang: true }];
 
-        const { result, noVerdict } = await forcedHeal(rig);
+          const { result, noVerdict } = await forcedHeal(rig, async () => {
+            const cli = rig.spawnHandle.children[0]!;
+            // On the line that the reason keeps: a line with no failure signal is dropped, token or not.
+            cli.stderr!.emit("data", Buffer.from(`Error: request failed with Bearer ${FAKE_OAUTH_TOKEN}\n`, "utf8"));
+            await vi.advanceTimersByTimeAsync(60_000);
+            cli.emit("exit", null, "SIGKILL");
+          });
 
-        expect(noVerdict.length).toBe(1);
-        expect(noVerdict[0]).toContain("Error: request failed with Bearer [redacted]");
-        expect(noVerdict[0]).not.toContain(FAKE_OAUTH_TOKEN);
-        expect(result!.reason).not.toContain(FAKE_OAUTH_TOKEN);
+          expect(noVerdict.length).toBe(1);
+          expect(noVerdict[0]).toContain("Error: request failed with Bearer [redacted]");
+          expect(noVerdict[0]).not.toContain(FAKE_OAUTH_TOKEN);
+          expect(result!.reason).not.toContain(FAKE_OAUTH_TOKEN);
+        } finally {
+          vi.useRealTimers();
+        }
       });
     });
 
@@ -1315,7 +1290,7 @@ describe("ClaudeOAuthRefresher", () => {
     it("gives the CLI a copy that holds the source's tokens and claims a short life", async () => {
       const rig = marginRig();
       const source = readSourceCredentials(rig.rootDir, "acct-1");
-      rig.spawnHandle.effects = [{}, {}];
+      rig.spawnHandle.effects = [{}];
 
       await rig.refresher.refreshNow("acct-1");
 
@@ -1327,23 +1302,15 @@ describe("ClaudeOAuthRefresher", () => {
       expect(readSourceCredentials(rig.rootDir, "acct-1").expiresAt).toBe(inMargin);
     });
 
-    it("puts the debug flags before the subcommand", async () => {
-      // A forced probe of a healthy token is the one that still runs tier 1.
-      const rig = buildRig({
-        accounts: [makeAccount("acct-1")],
-        initialExpiries: { "acct-1": now + 8 * 60 * 60 * 1000 },
-        initialNow: now,
-      });
-      rigs.push(rig);
-      rig.spawnHandle.effects = [{}, {}];
+    it("captures the CLI's debug log in the copy's home", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{}];
 
-      await rig.refresher.ensureFresh("acct-1", { force: true });
+      await rig.refresher.refreshNow("acct-1");
 
-      const [tier1Args, tier2Args] = rig.spawnHandle.invocations.map((invocation) => invocation.args);
-      expect(tier1Args!.indexOf("--debug")).toBeGreaterThanOrEqual(0);
-      expect(tier1Args!.indexOf("--debug")).toBeLessThan(tier1Args!.indexOf("auth"));
-      expect(tier1Args!.indexOf("--debug-file")).toBeLessThan(tier1Args!.indexOf("auth"));
-      expect(tier2Args!.indexOf("--debug-file")).toBeLessThan(tier2Args!.indexOf("--print"));
+      const { args, home } = rig.spawnHandle.invocations[0]!;
+      expect(args.slice(0, 3)).toEqual(["--debug", "api", "--debug-file"]);
+      expect(path.dirname(args[3]!)).toBe(home);
     });
 
     it("a rejected grant blanks only the copy: revoked, source intact, one spawn", async () => {
@@ -2423,7 +2390,7 @@ describe("ClaudeOAuthRefresher", () => {
 
     it("a tick waits for an open run before it probes", async () => {
       const rig = marginRig();
-      rig.spawnHandle.effects = [{}, {}];
+      rig.spawnHandle.effects = [{}];
       let finishRun = (): void => {};
       const gate = new Promise<void>((resolve) => { finishRun = resolve; });
       const run = rig.refresher.runInPrivateCopy("acct-1", async (home) => {
@@ -2819,8 +2786,9 @@ describe("ClaudeOAuthRefresher", () => {
       expect(first!.reason).toBe("invalid_grant");
       const [detailed, repeated, ...rest] = revokedLines(logs.lines);
       expect(rest).toEqual([]);
-      expect(detailed).toContain(" trigger=nudge verdict=blanked_copy rejected_by=tier2 ");
-      expect(detailed).toMatch(/ tier1=not_run tier2=\d+\.\ds,exit=1 expires_in=40m reason="/);
+      expect(detailed).toMatch(
+        / trigger=nudge verdict=blanked_copy rejected_by=tier2 tier2=\d+\.\ds,exit=1 expires_in=40m reason="/,
+      );
       expect(detailed).toContain("OAuth refresh failed (expected): Request failed with status code 400");
       expect(repeated).toMatch(/— emitting auth_required trigger=forced_heal verdict=known_rejected$/);
       const logged = logs.lines.join("\n");
@@ -2829,7 +2797,7 @@ describe("ClaudeOAuthRefresher", () => {
       }
     });
 
-    it("names the tier whose run blanked the copy, and that the other one did not run", async () => {
+    it("names a forced heal of a token with time left in the revoked line", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
@@ -2844,8 +2812,10 @@ describe("ClaudeOAuthRefresher", () => {
       logs.restore();
 
       const [line] = revokedLines(logs.lines);
-      expect(line).toContain(" trigger=forced_heal verdict=blanked_copy rejected_by=tier1 ");
-      expect(line).toMatch(/ tier1=\d+\.\ds,exit=0 tier2=not_run expires_in=480m reason="/);
+      expect(line).toMatch(
+        / trigger=forced_heal verdict=blanked_copy rejected_by=tier2 tier2=\d+\.\ds,exit=0 expires_in=480m reason="/,
+      );
+      expect(rig.spawnHandle.invocations.length).toBe(1);
     });
 
     it("names a turn start, and an expired token, in the revoked line", async () => {
@@ -2863,8 +2833,9 @@ describe("ClaudeOAuthRefresher", () => {
       logs.restore();
 
       const [line] = revokedLines(logs.lines);
-      expect(line).toContain(" trigger=turn_start verdict=blanked_copy rejected_by=tier2 ");
-      expect(line).toMatch(/ tier1=not_run tier2=\d+\.\ds,exit=0 expires_in=-3m reason="/);
+      expect(line).toMatch(
+        / trigger=turn_start verdict=blanked_copy rejected_by=tier2 tier2=\d+\.\ds,exit=0 expires_in=-3m reason="/,
+      );
     });
 
     it("names the output as the source of the verdict when no copy was blanked", async () => {
@@ -2885,7 +2856,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(line).toContain(" trigger=forced_heal verdict=output_phrase rejected_by=tier2 ");
     });
 
-    it("names a scheduled tick, and a tier that timed out, in the revoked line", async () => {
+    it("names a scheduled tick, and a CLI that timed out, in the revoked line", async () => {
       vi.useFakeTimers();
       const logs = captureLogs();
       try {
@@ -2906,37 +2877,14 @@ describe("ClaudeOAuthRefresher", () => {
         await vi.advanceTimersByTimeAsync(10);
 
         const [line] = revokedLines(logs.lines);
-        expect(line).toContain(" trigger=scheduled verdict=blanked_copy rejected_by=tier2 ");
-        expect(line).toContain(" tier1=not_run tier2=60.0s,timeout,exit=SIGKILL ");
+        expect(line).toContain(" trigger=scheduled verdict=blanked_copy rejected_by=tier2 tier2=60.0s,timeout,exit=SIGKILL ");
       } finally {
         logs.restore();
         vi.useRealTimers();
       }
     });
 
-    it.each([
-      { left: "5 minutes, inside the CLI's window", leftMs: 5 * 60 * 1000, spawns: ["--print"] },
-      { left: "6 minutes, outside it", leftMs: 6 * 60 * 1000, spawns: ["auth", "--print"] },
-    ])("runs tier 1 on a copy that keeps its real expiry only when that is safe: $left", async (row) => {
-      const now = 1_700_000_000_000;
-      // A margin this short makes a forced probe keep an expiry that is near the CLI's window.
-      const rig = buildRig({
-        accounts: [makeAccount("acct-1")],
-        initialExpiries: { "acct-1": now + row.leftMs },
-        initialNow: now,
-        safetyMarginMs: 60_000,
-      });
-      rigs.push(rig);
-      rig.spawnHandle.effects = [{}, {}];
-
-      await rig.refresher.ensureFresh("acct-1", { force: true });
-
-      expect(rig.spawnHandle.invocations[0]!.credentials!.expiresAt).toBe(now + row.leftMs);
-      expect(rig.spawnHandle.invocations.map((invocation) => (invocation.args.includes("auth") ? "auth" : "--print")))
-        .toEqual(row.spawns);
-    });
-
-    it("says on a tier 2 rotation that tier 1 did not run", async () => {
+    it("logs a rotation under the name that incidents are searched by, and nothing after the expiry", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
@@ -2950,29 +2898,9 @@ describe("ClaudeOAuthRefresher", () => {
       await rig.refresher.refreshNow("acct-1");
       logs.restore();
 
-      expect(logs.lines.find((line) => line.includes("rotated_tier2 new_expires_at="))).toMatch(/Z tier1=not_run$/);
-    });
-
-    it("keeps tier 1's stdout, which names the account, out of the reason", async () => {
-      const now = 1_700_000_000_000;
-      const rig = buildRig({
-        accounts: [makeAccount("acct-1")],
-        initialExpiries: { "acct-1": now + 8 * 60 * 60 * 1000 },
-        initialNow: now,
-      });
-      rigs.push(rig);
-      rig.spawnHandle.effects = [
-        { stdout: '{\n  "loggedIn": true,\n  "email": "person@example.com",\n  "orgName": "Example Org"\n}' },
-        { blank: true },
-      ];
-
-      const logs = captureLogs();
-      const healed = await rig.refresher.ensureFresh("acct-1", { force: true });
-      logs.restore();
-
-      expect(healed).toBe(false);
-      expect(revokedLines(logs.lines)[0]).toContain(" rejected_by=tier2 tier1=");
-      expect(logs.lines.join("\n")).not.toContain("example");
+      expect(logs.lines.filter((line) => line.includes("rotated_"))).toEqual([
+        `[claude-oauth-refresh] account=acct-1 rotated_tier2 new_expires_at=${new Date(now + 8 * 60 * 60 * 1000).toISOString()}`,
+      ]);
     });
 
     it("does not read a debug timestamp's milliseconds as an HTTP 429", async () => {
@@ -2983,10 +2911,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [
-        {},
-        { debugLog: "2026-10-11T07:55:36.429Z [DEBUG] Cleared proxy agent cache\n" },
-      ];
+      rig.spawnHandle.effects = [{ debugLog: "2026-10-11T07:55:36.429Z [DEBUG] Cleared proxy agent cache\n" }];
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
@@ -3078,6 +3003,13 @@ describe("summarizeRefreshFailure", () => {
     expect(summarizeRefreshFailure(`Error: no access for ${longPart}@example.com`)).toBe("Error: no access for [email]");
     expect(summarizeRefreshFailure(`Error: no access for first.${longPart}@example.com`)).toBe("Error: no access for [email]");
     expect(summarizeRefreshFailure(`Error: no access for person@${longPart}.example.com`)).toBe("Error: no access for [email]");
+    expect(summarizeRefreshFailure('Error: no access for "a person"@example.com')).toBe("Error: no access for [email]");
+  });
+
+  it("redacts a whole JWT, also one whose segments are shorter than a long token", () => {
+    const jwt = ["eyJhbGciOiJub25lIn0", "eyJzdWIiOiIxIn0", "c2ln"].join(".");
+    expect(summarizeRefreshFailure(`Error: the host refused ${jwt}, retry`)).toBe("Error: the host refused [redacted], retry");
+    expect(summarizeRefreshFailure(`Error: id_token=${jwt}`)).toBe("Error: id_token=[redacted]");
   });
 
   it("redacts a token in front of a host whole, as before the address rule", () => {
@@ -3096,6 +3028,9 @@ describe("summarizeRefreshFailure", () => {
       "[redacted]".repeat(12_800),
       `x@${"a.".repeat(64_000)}`,
       "a@".repeat(64_000),
+      // A JWT rule that starts at each word boundary reads the rest of the run from each one.
+      "eyJ-".repeat(32_000),
+      '"a'.repeat(64_000),
     ];
     const started = performance.now();
     for (const line of lines) summarizeRefreshFailure(`Error: ${line}`);
