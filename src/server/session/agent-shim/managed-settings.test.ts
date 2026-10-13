@@ -66,6 +66,15 @@ describe("managed-settings.json", () => {
     expect(allow).toContain("Bash");
   });
 
+  // A write through a workspace symlink needs a path rule for its target; `Edit(**)` covers the
+  // working directory only (measured with Claude Code 2.1.293, docs/193-sensitive-file-permission).
+  it("allows the write tools on the persist directory by its real path", () => {
+    const allow = loadSettings().permissions?.allow ?? [];
+    for (const tool of ["Edit", "Write", "NotebookEdit"]) {
+      expect(allow).toContain(`${tool}(//persist/**)`);
+    }
+  });
+
   const MUTATION_TOOLS = ["Edit", "Write"];
 
   describe("denies writes to the agent's own settings + hooks", () => {

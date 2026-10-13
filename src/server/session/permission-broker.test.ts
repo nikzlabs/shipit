@@ -5,6 +5,7 @@ import {
   describePermissionRequest,
   describePermissionDetails,
   PERMISSION_DETAILS_CHARS,
+  SubagentCallTracker,
   toolResultIds,
 } from "./permission-broker.js";
 import type { AgentEvent } from "../shared/types.js";
@@ -46,6 +47,107 @@ describe("toolResultIds", () => {
 
   it("has none for non-array content", () => {
     expect(toolResultIds("plain text")).toEqual([]);
+  });
+});
+
+describe("SubagentCallTracker", () => {
+  const use = (id: string, name = "Write") => [{ type: "tool_use", id, name, input: {} }];
+
+  it("does not name a caller for the main agent's own call", () => {
+    const calls = new SubagentCallTracker();
+    calls.opened(use("main_1"), undefined);
+
+    expect(calls.callerOf("main_1")).toBeUndefined();
+    expect(calls.callerOf("never_seen")).toBeUndefined();
+  });
+
+  it("says background when the Agent call returned before the subagent's call", () => {
+    const calls = new SubagentCallTracker();
+    calls.opened(use("agent_1", "Agent"), null);
+    calls.closed("agent_1");
+    calls.opened(use("sub_1"), "agent_1");
+
+    expect(calls.callerOf("sub_1")).toBe("background");
+  });
+
+  it("says foreground while the main agent still waits inside the Agent call", () => {
+    const calls = new SubagentCallTracker();
+    calls.opened(use("agent_1", "Agent"), null);
+    calls.opened(use("sub_1"), "agent_1");
+
+    expect(calls.callerOf("sub_1")).toBe("foreground");
+  });
+
+  it("forgets a call that has its result, and every call on clear", () => {
+    const calls = new SubagentCallTracker();
+    calls.opened(use("sub_1"), "agent_1");
+    calls.opened(use("sub_2"), "agent_1");
+    calls.closed("sub_1");
+    expect(calls.callerOf("sub_1")).toBeUndefined();
+    expect(calls.callerOf("sub_2")).toBe("background");
+
+    calls.clear();
+    expect(calls.callerOf("sub_2")).toBeUndefined();
+  });
+
+  it("reads tool_use blocks with a string id, and no other block", () => {
+    const calls = new SubagentCallTracker();
+    calls.opened([{ type: "text", id: "text_1" }, { type: "tool_use", id: 7 }, null, ...use("sub_1")], "agent_1");
+    calls.opened("not an array", "agent_1");
+
+    expect(calls.callerOf("sub_1")).toBe("background");
+    expect(calls.callerOf("text_1")).toBeUndefined();
+    expect(calls.callerOf(7 as unknown as string)).toBeUndefined();
+  });
+
+  describe("whenOpened", () => {
+    it("does not wait for a call the stream already showed", async () => {
+      const calls = new SubagentCallTracker();
+      calls.opened(use("main_1"), undefined);
+      calls.opened(use("sub_1"), "agent_1");
+
+      await calls.whenOpened("main_1", 60_000);
+      await calls.whenOpened("sub_1", 60_000);
+    });
+
+    // A call with a large input can reach the permission endpoint before its stream event.
+    it("waits for the stream to show the call, so the caller is known", async () => {
+      const calls = new SubagentCallTracker();
+      const callerOnceSeen = async () => {
+        await calls.whenOpened("sub_1", 60_000);
+        return calls.callerOf("sub_1");
+      };
+      const seen = callerOnceSeen();
+
+      calls.opened(use("sub_1"), "agent_1");
+
+      await expect(seen).resolves.toBe("background");
+    });
+
+    it("stops waiting at the limit, and when the agent process ends", async () => {
+      vi.useFakeTimers();
+      try {
+        const calls = new SubagentCallTracker();
+        let settled = 0;
+        const wait = async (id: string, timeoutMs: number) => {
+          await calls.whenOpened(id, timeoutMs);
+          settled += 1;
+        };
+        void wait("never_1", 250);
+        await vi.advanceTimersByTimeAsync(249);
+        expect(settled).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(settled).toBe(1);
+
+        void wait("never_2", 60_000);
+        calls.clear();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).toBe(2);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
 
@@ -296,6 +398,15 @@ describe("PermissionBroker", () => {
     const opened = broker.openRequest({ toolName: "Write", input: { file_path: ".env" }, toolUseId: "tu" });
     await expect(broker.poll(opened.requestId!, 5)).resolves.toEqual({ settled: false });
     expect(broker.pendingCount).toBe(1);
+  });
+
+  it("says on the request event that a subagent made the call, and nothing for the main agent", () => {
+    const { broker, events } = makeBroker();
+    broker.openRequest({ toolName: "Write", input: { file_path: "a" }, toolUseId: "sub", subagent: "background" });
+    broker.openRequest({ toolName: "Write", input: { file_path: "b" }, toolUseId: "main" });
+
+    expect(events[0]).toMatchObject({ type: "agent_permission_request", subagent: "background" });
+    expect(events[1]).not.toHaveProperty("subagent");
   });
 
   it("is idempotent on toolUseId — a duplicate open re-attaches to one card", () => {

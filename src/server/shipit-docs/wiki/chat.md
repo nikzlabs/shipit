@@ -222,6 +222,12 @@ A permission prompt counts as you still working, so the session is not "waiting
 on the user" in the sidebar's sense and cannot be muted — see
 [sessions.md](sessions.md). A question does put the session in that state.
 
+A permission prompt returns nothing to you while it waits. For a call of a
+**background subagent** of yours, ShipIt puts a `[ShipIt]` line in your running
+turn after two minutes, so that you can stop that subagent or change the work.
+`/shipit-docs/environment.md` ("Writes that wait for the user's approval") says
+which writes raise a prompt and when the line comes.
+
 While a question card or a plan card waits, ShipIt starts **no automatic turn**
 in the session: no CI auto-fix, no automatic conflict resolution, no merge
 notice, finished consult or preview auto-fix. They wait, and run after the

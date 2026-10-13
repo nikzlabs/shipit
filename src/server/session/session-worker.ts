@@ -336,11 +336,13 @@ export class SessionWorker extends EventEmitter {
           return reply.code(400).send({ error: "toolName is required" });
         }
         const agentId = this.agentController.currentAgentId;
+        const subagent = body.toolUseId ? await this.agentController.subagentCaller(body.toolUseId) : undefined;
         const opened = this.permissionBroker.openRequest({
           toolName: body.toolName,
           input: body.input,
           ...(body.toolUseId ? { toolUseId: body.toolUseId } : {}),
           ...(agentId ? { agentId } : {}),
+          ...(subagent ? { subagent } : {}),
         });
         if (opened.immediate) {
           return {

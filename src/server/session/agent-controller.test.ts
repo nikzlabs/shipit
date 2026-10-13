@@ -736,6 +736,7 @@ describe("AgentController — a permission request the agent stopped waiting for
   let agents: FakeAgent[];
   let workspace: string;
   let broker: PermissionBroker;
+  let controller: AgentController;
   let brokerEvents: { type: string; requestId?: string; behavior?: string }[];
 
   async function startTurn(): Promise<FakeAgent> {
@@ -757,7 +758,7 @@ describe("AgentController — a permission request the agent stopped waiting for
     resetNodeRuntimeForTests();
     broker = new PermissionBroker({ broadcast: (e) => brokerEvents.push(e) });
     app = Fastify({ logger: false });
-    new AgentController({
+    controller = new AgentController({
       agentFactory: () => {
         const a = new FakeAgent();
         agents.push(a);
@@ -768,7 +769,8 @@ describe("AgentController — a permission request the agent stopped waiting for
       permissionBroker: broker,
       mcpConfig: new McpConfigController({ broadcast: () => {} }),
       latestSseSeq: () => 0,
-    }).registerRoutes(app);
+    });
+    controller.registerRoutes(app);
     await app.ready();
   });
 
@@ -816,6 +818,56 @@ describe("AgentController — a permission request the agent stopped waiting for
 
     expect(denials().some((e) => e.requestId === newId)).toBe(false);
     expect(broker.pendingCount).toBe(1);
+  });
+
+  // The order the Claude CLI emits: a background Agent call returns before its subagent's first call.
+  it("tells a background subagent's call from a foreground one and from the main agent's", async () => {
+    const agent = await startTurn();
+    const use = (id: string, name: string) => [{ type: "tool_use", id, name, input: {} }];
+    const result = (id: string) => [{ type: "tool_result", tool_use_id: id, content: "ok" }];
+
+    agent.emit("event", { type: "agent_assistant", content: use("agent_bg", "Agent") });
+    agent.emit("event", { type: "agent_tool_result", content: result("agent_bg") });
+    agent.emit("event", { type: "agent_assistant", content: use("agent_fg", "Agent") });
+    agent.emit("event", { type: "agent_assistant", content: use("write_bg", "Write"), parentToolUseId: "agent_bg" });
+    agent.emit("event", { type: "agent_assistant", content: use("write_fg", "Write"), parentToolUseId: "agent_fg" });
+    agent.emit("event", { type: "agent_assistant", content: use("write_main", "Write") });
+
+    await expect(controller.subagentCaller("write_bg")).resolves.toBe("background");
+    await expect(controller.subagentCaller("write_fg")).resolves.toBe("foreground");
+    await expect(controller.subagentCaller("write_main")).resolves.toBeUndefined();
+
+    agent.emit("event", { type: "agent_tool_result", content: result("write_bg"), parentToolUseId: "agent_bg" });
+    agent.emit("done", 0);
+    await expect(controller.subagentCaller("write_fg")).resolves.toBeUndefined();
+  });
+
+  it("names the caller of a request that arrives before the stream shows its call", async () => {
+    const agent = await startTurn();
+    const caller = controller.subagentCaller("write_late");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "write_late", name: "Write", input: {} }],
+      parentToolUseId: "agent_bg",
+    });
+
+    await expect(caller).resolves.toBe("background");
+  });
+
+  it("keeps a replaced process's late events out of its successor's calls", async () => {
+    const killed = await startTurn();
+    const kill = await app.inject({ method: "POST", url: "/agent/kill", payload: {} });
+    expect(kill.statusCode).toBe(200);
+    await startTurn();
+
+    killed.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "write_old", name: "Write", input: {} }],
+      parentToolUseId: "agent_old",
+    });
+
+    await expect(controller.subagentCaller("write_old")).resolves.toBeUndefined();
   });
 
   it("reports the requests still waiting, so a restarted orchestrator can check its saved cards", async () => {
