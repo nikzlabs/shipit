@@ -231,9 +231,9 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.toolNames).not.toContain("file_write");
     expect(adapter.capabilities.toolNames).not.toContain("file_read");
     expect(adapter.capabilities.toolNames).not.toContain("file_edit");
-    expect(adapter.capabilities.models[0]).toBe("gpt-5.6-sol");
+    expect(adapter.capabilities.models[0]).toBe("gpt-6.1-sol");
     expect(adapter.capabilities.models).not.toContain("gpt-5.6");
-    expect(adapter.capabilities.models).toContain("gpt-5.4");
+    expect(adapter.capabilities.models).toContain("gpt-6-luna");
     expect(adapter.capabilities.supportsReview).toBe(true);
     expect(adapter.capabilities.toolNames).toContain("shell");
     expect(adapter.capabilities.toolNames).toContain("spawn_agent");
@@ -428,7 +428,7 @@ describe("CodexAdapter", () => {
       type: "agent_init",
       agentId: "codex",
       sessionId: "thread-abc-123",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
       tools: [...CODEX_TOOL_NAMES],
     });
   });

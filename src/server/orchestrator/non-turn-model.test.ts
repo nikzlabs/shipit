@@ -124,7 +124,7 @@ describe("resolveNonTurnModel", () => {
       credentialStore: storeWith([], {
         serviceId: "openai",
         billingMode: "key",
-        modelId: "gpt-5.4-mini",
+        modelId: "gpt-6-luna",
       }),
       env: {},
     });
@@ -150,7 +150,7 @@ describe("resolveNonTurnModel", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.target.selection.modelId).toBe("gpt-5.6-sol");
+    expect(result.target.selection.modelId).toBe("gpt-6.1-sol");
   });
 
   it("counts a deployment-supplied environment credential", async () => {
@@ -203,7 +203,7 @@ describe("resolveNonTurnModel — why a pin cannot run background work", () => {
       credentialStore: storeWith([], {
         serviceId: "openai",
         billingMode: "key",
-        modelId: "gpt-5.4-mini",
+        modelId: "gpt-6-luna",
       }),
       env: {},
     });
@@ -224,7 +224,7 @@ describe("resolveNonTurnModel — why a pin cannot run background work", () => {
     }));
     const { resolveNonTurnModel } = await import("./non-turn-model.js");
     const account = accountRoute({ serviceId: "openai", billingMode: "sub" });
-    const pin = { serviceId: "openai", billingMode: "sub" as const, modelId: "gpt-5.4-mini" };
+    const pin = { serviceId: "openai", billingMode: "sub" as const, modelId: "gpt-6-luna" };
     // The same pin on the same account runs while the sign-in is ready, so what
     // fails below is the status and not the selection.
     expect(resolveNonTurnModel({ credentialStore: storeWith([account], pin), env: {} }).ok).toBe(true);
@@ -299,7 +299,7 @@ describe("resolveNonTurnModel — a direct call where the credential permits one
       credentialStore: storeWith([route({ serviceId: "openai", billingMode: "key" })], {
         serviceId: "openai",
         billingMode: "key",
-        modelId: "gpt-5.4-mini",
+        modelId: "gpt-6-luna",
       }),
       env: {},
     });
@@ -371,8 +371,8 @@ describe("resolveNonTurnModel — a direct call where the credential permits one
     });
 
     if (!result.ok || result.target.execution !== "direct") throw new Error("expected a direct call");
-    expect(result.target.selection.modelId).toBe("gpt-5.6-sol");
-    expect(result.target.call.apiModelId).toBe("gpt-5.6-sol");
+    expect(result.target.selection.modelId).toBe("gpt-6.1-sol");
+    expect(result.target.call.apiModelId).toBe("gpt-6.1-sol");
   });
 
   it("reads the key from the environment when no route is stored", async () => {

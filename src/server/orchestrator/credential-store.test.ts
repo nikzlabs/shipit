@@ -674,7 +674,7 @@ describe("CredentialStore — non-turn model (docs/252 phase 7)", () => {
 
   it("still reports a pin whose model has been retired", () => {
     const store = new CredentialStore(dir);
-    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" });
+    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-6-luna" });
     const file = path.join(dir, "shipit-credentials.json");
     const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
     data.nonTurnModel = { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6" };
@@ -689,7 +689,7 @@ describe("CredentialStore — non-turn model (docs/252 phase 7)", () => {
 
   it("reads a pin naming nothing at all as unset", () => {
     const store = new CredentialStore(dir);
-    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" });
+    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-6-luna" });
     const file = path.join(dir, "shipit-credentials.json");
     const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
     data.nonTurnModel = { serviceId: "no-such-service", billingMode: "key", modelId: "nope" };
@@ -759,7 +759,7 @@ describe("CredentialStore — the two reviewers (docs/261 phase 1)", () => {
     store.setReviewerPin("first", {
       serviceId: "openai",
       billingMode: "key",
-      modelId: "gpt-5.4-mini",
+      modelId: "gpt-6-luna",
       reasoningEffort: "high",
     });
     const file = path.join(dir, "shipit-credentials.json");
@@ -801,7 +801,7 @@ describe("CredentialStore — the two reviewers (docs/261 phase 1)", () => {
       file,
       JSON.stringify({
         agentSubAgentDefaults: {
-          codex: { model: "gpt-5.4-mini", serviceId: "openai", billingMode: "sub", reasoningEffort: "high" },
+          codex: { model: "gpt-6-luna", serviceId: "openai", billingMode: "sub", reasoningEffort: "high" },
         },
       }),
     );

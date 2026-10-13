@@ -23,7 +23,7 @@ const COMPLETE = {
   agentId: "codex",
   serviceId: "openai",
   billingMode: "sub",
-  modelId: "gpt-5.6-sol",
+  modelId: "gpt-6.1-sol",
   reasoningEffort: "high",
   prompt: "review this",
   depth: 0,
@@ -71,7 +71,7 @@ describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (
     app.inject({ method: "POST", url: "/api/sessions/any-session/agent/spawn", payload });
 
   it("400 — an incomplete explicit call is refused, naming what is missing", async () => {
-    const res = await post({ agentId: "codex", modelId: "gpt-5.6-sol", prompt: "review", depth: 0 });
+    const res = await post({ agentId: "codex", modelId: "gpt-6.1-sol", prompt: "review", depth: 0 });
     expect(res.statusCode).toBe(400);
     const error = res.json().error as string;
     expect(error).toContain("--service");

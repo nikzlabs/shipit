@@ -44,12 +44,6 @@ export const MODEL_IDENTITIES = {
   gpt56sol: identity("gpt-5.6-sol", "gpt"),
   gpt56terra: identity("gpt-5.6-terra", "gpt"),
   gpt56luna: identity("gpt-5.6-luna", "gpt"),
-  gpt55: identity("gpt-5.5", "gpt"),
-  gpt54: identity("gpt-5.4", "gpt"),
-  gpt54mini: identity("gpt-5.4-mini", "gpt"),
-  gpt53codex: identity("gpt-5.3-codex", "gpt"),
-  gpt53codexSpark: identity("gpt-5.3-codex-spark", "gpt"),
-  gpt52: identity("gpt-5.2", "gpt"),
 
   deepseekV4Flash: identity("deepseek-v4-flash", "deepseek"),
   // V4.1 Flash is a DISTINCT canonical model, not a spelling of V4 Flash — the

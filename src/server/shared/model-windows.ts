@@ -11,6 +11,12 @@ const LEGACY_CONTEXT_WINDOWS: Record<string, number> = {
   "opus-1m": 1_000_000,
   "gpt-5": 272_000,
   "gpt-5.6": 272_000,
+  "gpt-5.5": 272_000,
+  "gpt-5.4": 272_000,
+  "gpt-5.4-mini": 272_000,
+  "gpt-5.3-codex": 272_000,
+  "gpt-5.3-codex-spark": 272_000,
+  "gpt-5.2": 272_000,
 };
 
 // Runtime telemetry supersedes these initial estimates. Read per call: the

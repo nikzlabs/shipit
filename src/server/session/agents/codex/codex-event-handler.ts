@@ -721,7 +721,7 @@ export class CodexEventHandler {
     }
 
     // Retirement is service-specific and resolved by the orchestrator; forward model IDs unchanged.
-    const model = params.model ?? "gpt-5.6-sol";
+    const model = params.model ?? "gpt-6.1-sol";
 
     this.ctx.emitEvent({
       type: "agent_init",

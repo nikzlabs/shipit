@@ -639,7 +639,7 @@ describe("a card shows every field its one operation writes", () => {
       const card = await propose({
         key: "roles[].model",
         item: ROLE,
-        valueText: JSON.stringify({ serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol" }),
+        valueText: JSON.stringify({ serviceId: "openai", billingMode: "sub", modelId: "gpt-6.1-sol" }),
         reason: "why",
       });
 
