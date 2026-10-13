@@ -11,9 +11,9 @@ import path from "node:path";
  *   the `brain/` transcripts, the MCP schema cache and `settings.json`. It is
  *   the credential root ShipIt links into the container.
  * - `~/.gemini/config/` is PER SPAWN — the MCP servers and the ShipIt plugin
- *   that carries this turn's system prompt and skills. A cross-harness
- *   `shipit agent run`, and every spawn in local mode, would otherwise share
- *   one `mcp_config.json` with the session's own turns.
+ *   that carries this turn's system prompt and skills. Every spawn in local
+ *   mode would otherwise share one `mcp_config.json` with the session's own
+ *   turns.
  *
  * So a spawn runs on a throwaway HOME whose `antigravity-cli` is a symlink back
  * to the durable one, and whose `config/` is written fresh.
@@ -68,18 +68,12 @@ export function hasAntigravityAccountToken(home: string): boolean {
  * cannot see on every spawn path: an account token present means the account
  * wins and the key is scrubbed anyway.
  *
- * ⚠️ **This is shared state, and the sharing is not this module's to fix.** Two
- * Antigravity spawns against one credential subtree — a key-mode and an
- * account-mode consult from the same session, or local mode — see each other's
- * `settings.json` and each other's credentials, because ShipIt's cross-harness
- * BORROW path provisions one subtree per session and neither serializes the
- * runs nor reference-counts the cleanup (`session-agent-credentials.ts`). The
- * per-spawn HOME isolates `config/`; it deliberately does not isolate the
- * durable directory, since that is where the token and the conversations live.
- * The write below is atomic so a reader never sees a torn file — which is worth
- * having and is NOT a fix for the interleaving. Tracked on planning#543; no
- * `modelProvider` environment override exists to sidestep it (checked against
- * the pinned binary's compiled strings).
+ * ⚠️ **Shared state in local mode.** A session container gives each brokered
+ * run a credential home of its own. Local mode provisions none, so a key-mode
+ * and an account-mode spawn there see each other's `settings.json` and
+ * credentials (planning#572). The atomic write below stops a torn read; it is
+ * NOT a fix for that interleaving. No `modelProvider` environment override
+ * exists (checked against the pinned binary's compiled strings).
  */
 export function syncAntigravityModelProvider(home: string, useKey: boolean): void {
   const cliDir = antigravityCliDir(home);

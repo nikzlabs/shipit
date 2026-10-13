@@ -20,6 +20,7 @@ import {
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
 import { emitChatCard, emitNoticeInTurn, finalizeTurnRows, persistTurnInProgress } from "../chat-card-persistence.js";
 import { denyAbandonedPermissionCards, settlePermissionCard } from "../permission-cards.js";
+import { watchPermissionWait } from "../permission-wait-notice.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
 import {
@@ -426,6 +427,13 @@ export function wireAgentListeners(
           sessionId: turnSessionId,
           awaitingPermission: true,
         });
+        // The main agent is blocked inside any other gated call, and reads no line until it returns.
+        if (event.subagent === "background") {
+          watchPermissionWait(runner, {
+            requestId: event.requestId,
+            summary: event.summary ?? event.toolName,
+          });
+        }
       }
       return;
     }

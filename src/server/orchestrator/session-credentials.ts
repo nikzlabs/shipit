@@ -23,6 +23,7 @@ export {
   releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
+  removeSubAgentSpawnHomesOf,
   subAgentSpawnHomeContainerDir,
   subAgentSpawnHomeDir,
   sweepSubAgentSpawnHomes,

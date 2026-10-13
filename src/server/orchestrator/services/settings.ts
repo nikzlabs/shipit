@@ -36,7 +36,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import { readSessionAccountMarker } from "../session-credentials.js";
-import { revokeSessionProviderCredentials } from "../session-agent-credentials.js";
+import { removeSubAgentSpawnHomesOf, revokeSessionProviderCredentials } from "../session-agent-credentials.js";
 
 export function computeCanRunTurns(agentRegistry: AgentRegistry): boolean {
   return agentRegistry.list().some((a) => a.installed && a.hasRunnableModels);
@@ -757,6 +757,7 @@ function revokeRecordedAccountCopies(
     if (recorded !== undefined && accountIds.has(recorded)) {
       revokeSessionProviderCredentials(credentialsDir, session.id, provider);
     }
+    removeSubAgentSpawnHomesOf(credentialsDir, session.id, provider, accountIds);
   }
 }
 

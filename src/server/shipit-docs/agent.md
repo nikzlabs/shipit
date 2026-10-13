@@ -406,11 +406,12 @@ id or a bad flag, since neither condition can ever clear.
   wait for the quota. Pass that on as it stands rather than picking one. In none
   of these is the run silently downgraded onto something else.
 - **No recursion.** A spawned sub-agent cannot itself spawn a sub-agent.
-- **At most 3 spawns per turn.** Enough for "review with both other models" or a
-  couple of delegations. A 4th returns an error without spawning. The budget
-  refills whenever a new instruction from the user arrives — a new turn, or a
-  message they type while you are still working — so a long session never runs
-  out permanently. A background job finishing does not refill it.
+- **At most 16 runs in progress at once**, unless the operator changed the
+  number. A run counts from its start until it finishes; there is no limit for
+  each turn, so a long turn can make as many runs as its work needs. A call past
+  the limit returns an error without spawning: wait for one of the runs to
+  finish (`shipit agent result <RUN-ID> --wait`), then run the command again.
+  Every run is a process in this container and shares its memory.
 - **Bounded run.** Each spawn has two limits, and **neither is a cost limit**: a
   time limit (~30 min) and an output-size limit (32,000 characters). A run that
   passes the time limit is stopped, ends `timeout`, and returns what it wrote

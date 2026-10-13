@@ -34,19 +34,14 @@ import {
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
 import { projectConsultCardForWire } from "../transcript-projection.js";
 import {
-  provisionSubAgentCredentials,
   provisionSubAgentSpawnHome,
-  provisionProviderAccountCredentials,
-  preserveBorrowedTokensBeforeWipe,
-  releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
+  removeSubAgentSpawnHomesOf,
   subAgentSpawnHomeContainerDir,
   subAgentSpawnHomeDir,
-  syncAgentTokenBack,
-  syncProviderAccountTokenBack,
 } from "../session-credentials.js";
-import { describeSubAgentFailure, type SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { describeSubAgentFailure, positiveIntEnv, type SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import { redactCredentials } from "../../shared/credential-redaction.js";
 import {
   detectHardExhaustion,
@@ -58,7 +53,27 @@ import type { ConsultResultDeliveryRequest } from "./consult-result-delivery.js"
 import type { GitManager } from "../../shared/git.js";
 import { ServiceError } from "./types.js";
 
-export const SUB_AGENT_PER_TURN_CAP = 3;
+// The value of the limit on unfinished child sessions (docs/144-cross-agent-review req 2).
+export const MAX_SUB_AGENT_RUNS_IN_PROGRESS = positiveIntEnv(
+  process.env.SHIPIT_SUB_AGENT_MAX_IN_PROGRESS,
+  16,
+);
+
+// Keyed by runner, so a slot that is never released ends with the runner, not with the process.
+const runsInProgress = new WeakMap<object, number>();
+
+interface RunSlot {
+  release?: () => void;
+}
+
+function takeRunSlot(runner: object): (() => void) | null {
+  const held = runsInProgress.get(runner) ?? 0;
+  if (held >= MAX_SUB_AGENT_RUNS_IN_PROGRESS) return null;
+  runsInProgress.set(runner, held + 1);
+  return () => {
+    runsInProgress.set(runner, (runsInProgress.get(runner) ?? 1) - 1);
+  };
+}
 
 export interface ConsultCardPersister extends InProgressPersister {
   updateSubAgentConsultCard(
@@ -152,6 +167,20 @@ export async function runSubAgent(
   sessionId: string,
   input: RunSubAgentInput,
 ): Promise<RunSubAgentResult> {
+  const slot: RunSlot = {};
+  try {
+    return await runSubAgentInSlot(deps, sessionId, input, slot);
+  } finally {
+    slot.release?.();
+  }
+}
+
+async function runSubAgentInSlot(
+  deps: RunSubAgentDeps,
+  sessionId: string,
+  input: RunSubAgentInput,
+  slot: RunSlot,
+): Promise<RunSubAgentResult> {
   const { target, depth } = input;
   const requested = target.kind === "role" ? `role:${target.role}` : target.harnessId;
   let prompt = input.prompt;
@@ -178,7 +207,7 @@ export async function runSubAgent(
   }
   const implementerHarness = session.agentId;
 
-  // A caller can forge depth; the runner's per-turn cap supplies the hard bound.
+  // A caller can forge depth; the limit on runs in progress supplies the hard bound.
   if (depth !== 0) {
     throw rejectSpawn(sessionId, requested, 403, "recursion_depth",
       "Sub-agents cannot spawn further sub-agents.");
@@ -192,10 +221,13 @@ export async function runSubAgent(
     throw rejectSpawn(sessionId, requested, 409, "session_inactive", "Session is not active.");
   }
 
-  if (runner.subAgentSpawnsThisTurn >= SUB_AGENT_PER_TURN_CAP) {
-    throw rejectSpawn(sessionId, requested, 429, "per_turn_cap",
-      `Sub-agent spawn cap reached for this turn (max ${SUB_AGENT_PER_TURN_CAP}).`);
+  const release = takeRunSlot(runner);
+  if (!release) {
+    throw rejectSpawn(sessionId, requested, 429, "in_progress_cap",
+      `Sub-agent run limit reached: ${MAX_SUB_AGENT_RUNS_IN_PROGRESS} runs are in progress in this session. `
+      + "Wait for one to finish, then run the command again.");
   }
+  slot.release = release;
 
   // Capture once so retries and attribution use the same target.
   const implementer = implementerFor(session, implementerHarness, runner.appliedSpawnIdentity);
@@ -261,8 +293,6 @@ export async function runSubAgent(
     }
   }
 
-  runner.subAgentSpawnsThisTurn += 1;
-
   const selection = resolvedTarget.route
     ? undefined
     : deps.providerAccountManager
@@ -282,13 +312,13 @@ export async function runSubAgent(
   let route = resolvedTarget.route ?? selection?.route ?? null;
   let accountId = route?.kind === "account" ? route.id : undefined;
 
-  // Same-harness runs need private homes: the live primary re-reads its credential files.
+  // Every provisioned run gets a private home. A home shared between runs is pruned and
+  // re-copied under a CLI that is starting in it, and two Codex processes that start in one
+  // home race to create its state databases (planning#572).
   const isContainer = runner instanceof ContainerSessionRunner;
   // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
   const provisioned = (isContainer || subAgentId === "opencode") && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  const sameHarness = subAgentId === session.agentId || subAgentId === "opencode";
 
   const spawnId = randomUUID();
   const cardId = randomUUID();
@@ -299,18 +329,11 @@ export async function runSubAgent(
     // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
     if (subAgentId === "opencode" && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new ServiceError(401, "ChatGPT account renewal failed.");
     if (!provisioned || !credentialsDir) return;
-    if (sameHarness) {
-      console.log(
-        `[sub-agent] provision-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
-        + `account=${accountId ?? "flat"}`,
-      );
-      provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, subAgentId, accountId);
-      return;
-    }
     console.log(
-      `[sub-agent] provision-credentials session=${sessionId} agent=${subAgentId} account=${accountId ?? "flat"}`,
+      `[sub-agent] provision-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+      + `account=${accountId ?? "flat"}`,
     );
-    provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, spawnId, accountId);
+    provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, subAgentId, accountId);
   };
   const startedAtMs = Date.now();
   runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
@@ -320,7 +343,7 @@ export async function runSubAgent(
     + `target=${requested} depth=${depth} promptBytes=${promptBytes} `
     + `route=${route?.kind ?? "default"}:${accountId ?? "-"} `
     + `model=${subSelection.serviceId}/${subSelection.billingMode}/${spawnModel} `
-    + `effort=${reasoningEffort ?? "default"} spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
+    + `effort=${reasoningEffort ?? "default"} inProgress=${runsInProgress.get(runner) ?? 0}`,
   );
 
   // Persist at admission so background runs stay visible and anchored to their call site.
@@ -407,7 +430,7 @@ export async function runSubAgent(
         prompt,
         spawnId,
         depth,
-        ...(sameHarness && provisioned
+        ...(provisioned
           ? { homeDir: runner instanceof ContainerSessionRunner ? subAgentSpawnHomeContainerDir(spawnId) : subAgentSpawnHomeDir(credentialsDir!, sessionId, spawnId) }
           : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
@@ -464,32 +487,7 @@ export async function runSubAgent(
         `[sub-agent] account-fallback session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
         + `benched=${failedRoute.id} next=${fallback.route.id}`,
       );
-      if (provisioned && credentialsDir) {
-        if (sameHarness) {
-          releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
-        } else {
-          if (failedRoute.kind === "account") {
-            try {
-              syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedRoute.id);
-            } catch {
-              // Best-effort token sync.
-            }
-          }
-          // Preserve rotations the normal publisher cannot order before the unconditional wipe.
-          try {
-            preserveBorrowedTokensBeforeWipe(
-              credentialsDir,
-              sessionId,
-              subAgentId,
-              failedRoute.kind === "account" ? failedRoute.id : undefined,
-            );
-          } catch {
-            // Best-effort token preservation.
-          }
-          // Keep the borrow open across failover; release would lose the account to restore.
-          removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
-        }
-      }
+      if (provisioned && credentialsDir) releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
       route = fallback.route;
       accountId = route.kind === "account" ? route.id : undefined;
       attemptedRouteIds.add(route.id);
@@ -605,34 +603,11 @@ export async function runSubAgent(
     throw err;
   } finally {
     if (provisioned && credentialsDir) {
-      if (sameHarness) {
-        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
-        console.log(
-          `[sub-agent] release-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
-          + `account=${accountId ?? "flat"}`,
-        );
-      } else {
-        try {
-          if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, accountId);
-          else syncAgentTokenBack(credentialsDir, sessionId, subAgentId);
-        } catch {
-          // Best-effort token sync.
-        }
-        // Restore from the borrow record; the current marker belongs to the consult.
-        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, subAgentId, spawnId);
-        console.log(
-          `[sub-agent] wipe-credentials session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
-          + `account=${accountId ?? "flat"} restore=${restoreAccountId ?? "none"}`,
-        );
-        if (subAgentId === session.agentId && restoreAccountId) {
-          provisionProviderAccountCredentials(
-            credentialsDir,
-            sessionId,
-            subAgentId,
-            restoreAccountId,
-          );
-        }
-      }
+      releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
+      console.log(
+        `[sub-agent] release-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+        + `account=${accountId ?? "flat"}`,
+      );
     }
 
     // Wipe credentials before committing; commit before a result wake can start another turn.
@@ -773,7 +748,8 @@ export function sweepSubAgentCredentialsOnSignOut(
   if (!deps.credentialsDir) return;
   for (const session of deps.sessionManager.list()) {
     if (session.agentId === agentId) continue;
-    // Leave the borrow record for an in-flight run's finally to release.
     removeSubAgentCredentials(deps.credentialsDir, session.id, agentId);
+    // A run still in flight loses its home; its own release then finds nothing to publish.
+    removeSubAgentSpawnHomesOf(deps.credentialsDir, session.id, agentId);
   }
 }

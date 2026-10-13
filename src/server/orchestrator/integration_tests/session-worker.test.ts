@@ -562,6 +562,55 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
+  it("marks the request of a background subagent's call, and leaves the main agent's unmarked (docs/193 req 3)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm-subagent",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "codex",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "write", cwd: "/workspace" });
+    const requests: { toolName?: string; subagent?: string }[] = [];
+    proxy.on("event", (event: { type: string }) => {
+      if (event.type === "agent_permission_request") requests.push(event as { type: string; subagent?: string });
+    });
+
+    const use = (id: string, name: string) => [{ type: "tool_use" as const, id, name, input: {} }];
+    lastAgent.emit("event", { type: "agent_assistant", content: use("agent-1", "Agent") });
+    lastAgent.emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "agent-1", content: "launched" }] });
+    lastAgent.emit("event", { type: "agent_assistant", content: use("sub-write", "Write"), parentToolUseId: "agent-1" });
+    lastAgent.emit("event", { type: "agent_assistant", content: use("main-write", "Write") });
+
+    for (const toolUseId of ["sub-write", "main-write"]) {
+      const res = await fetch(`${workerUrl}/agent-ops/permission/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolName: "Write", input: { file_path: `link/${toolUseId}.txt` }, toolUseId }),
+      });
+      expect(res.status).toBe(200);
+    }
+
+    await waitFor(() => requests.length === 2, 3000, "both permission requests");
+    expect(requests.map((r) => r.subagent)).toEqual(["background", undefined]);
+
+    // The request can reach the worker before the stream shows its call.
+    const early = fetch(`${workerUrl}/agent-ops/permission/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolName: "Write", input: { file_path: "link/early.txt" }, toolUseId: "sub-early" }),
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    lastAgent.emit("event", { type: "agent_assistant", content: use("sub-early", "Write"), parentToolUseId: "agent-1" });
+    expect((await early).status).toBe(200);
+    await waitFor(() => requests.length === 3, 3000, "the early permission request");
+    expect(requests[2]!.subagent).toBe("background");
+
+    runner.dispose();
+  });
+
   it("a duplicated permission open re-attaches to one card (idempotent on toolUseId, Thread B)", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-perm-idem",

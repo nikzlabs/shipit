@@ -6,7 +6,12 @@ import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { SessionManager } from "../sessions.js";
 import { createTestDatabaseManager } from "../integration_tests/test-helpers.js";
-import { writeSessionAccountMarker, readSessionAccountMarker } from "../session-credentials.js";
+import {
+  provisionSubAgentSpawnHome,
+  readSessionAccountMarker,
+  subAgentSpawnHomeDir,
+  writeSessionAccountMarker,
+} from "../session-credentials.js";
 import { deleteProviderAccount } from "./settings.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
@@ -132,6 +137,32 @@ describe("deleteProviderAccount", () => {
     expect(fs.existsSync(sessionTokenPath("sa"))).toBe(false);
     expect(fs.existsSync(sessionTokenPath("sb"))).toBe(true);
     expect(readSessionAccountMarker(root, "sb").claude).toBe(b.id);
+  });
+
+  // A consult's home sets no session marker: its provenance is what names the account.
+  it("removes the spawn homes provisioned from the account, and leaves another account's", () => {
+    const a = accounts.create("anthropic", "A");
+    const b = accounts.create("anthropic", "B");
+    accounts.setAccountStatus("anthropic", a.id, "ready");
+    accounts.setAccountStatus("anthropic", b.id, "ready");
+    seedAccount(a.id, "tok-a");
+    seedAccount(b.id, "tok-b");
+    sessions.track("other-harness", "other-harness");
+    sessions.setAgentId("other-harness", "codex");
+    provisionSubAgentSpawnHome(root, "other-harness", "run-a", "claude", a.id);
+    provisionSubAgentSpawnHome(root, "other-harness", "run-b", "claude", b.id);
+
+    deleteProviderAccount(accounts, sessions, registry(), "claude", a.id, {
+      credentialsDir: root,
+    });
+
+    expect(fs.existsSync(subAgentSpawnHomeDir(root, "other-harness", "run-a"))).toBe(false);
+    expect(
+      fs.readFileSync(
+        path.join(subAgentSpawnHomeDir(root, "other-harness", "run-b"), ".claude", ".credentials.json"),
+        "utf-8",
+      ),
+    ).toBe("tok-b");
   });
 
   it("refuses while a process on the account is running a turn, naming the session", () => {

@@ -10,7 +10,7 @@ import {
   sweepSubAgentCredentialsOnSignOut,
   waitForSubAgentResult,
   teardownConsultDetail,
-  SUB_AGENT_PER_TURN_CAP,
+  MAX_SUB_AGENT_RUNS_IN_PROGRESS,
   HOST_SHUTDOWN_CONSULT_DETAIL,
 } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
@@ -30,13 +30,18 @@ import { credentialRouteEnvName } from "../../shared/types/domain-types/credenti
 import type { AccountSelection } from "../provider-account-manager.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import {
-  clearSubtreeBorrows,
   perSessionCredentialsDir,
-  provisionSubAgentCredentials,
+  provisionSubAgentSpawnHome,
   readSessionAccountMarker,
+  releaseSubAgentSpawnHome,
   subAgentSpawnHomeDir,
   writeSessionAccountMarker,
 } from "../session-credentials.js";
+
+// Built from parts: a literal token-shaped fixture stops the commit's secret scan.
+const codexAuth = (tail: string, exp: number) => JSON.stringify({
+  tokens: { access_token: `header.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.sig-${tail}` },
+});
 
 interface FakeSession {
   id: string;
@@ -86,7 +91,6 @@ function makeDeps(opts: {
   sessions?: FakeSession[];
   hasRunnableModels?: boolean;
   agentKnown?: boolean;
-  subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
   spawnResults?: SubAgentRunResult[];
   runnerPresent?: boolean;
@@ -120,7 +124,6 @@ function makeDeps(opts: {
   const updateSubAgentConsultCard = vi.fn(() => true);
   const append = vi.fn();
   const runner = {
-    subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
     appliedSpawnIdentity: undefined as string | undefined,
     running: true,
     emitMessage,
@@ -236,6 +239,33 @@ function makeDeps(opts: {
   };
 }
 
+async function holdRuns(
+  deps: ReturnType<typeof makeDeps>["deps"],
+  runner: ReturnType<typeof makeDeps>["runner"],
+  count: number,
+  run: typeof runSubAgent = runSubAgent,
+) {
+  const settle: (() => void)[] = [];
+  runner.spawnSubAgent.mockImplementation(
+    () => new Promise<SubAgentRunResult>((resolve) => {
+      settle.push(() => resolve({ status: "success", text: "ok", truncated: false, durationMs: 1, costUsd: 0 }));
+    }),
+  );
+  const runs = Array.from({ length: count }, () =>
+    run(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }));
+  await vi.waitFor(() => expect(settle).toHaveLength(count));
+  return {
+    finishOne: async () => {
+      settle.shift()!();
+      await runs.shift();
+    },
+    finishAll: async () => {
+      for (const done of settle.splice(0)) done();
+      await Promise.all(runs.splice(0));
+    },
+  };
+}
+
 async function expectServiceError(p: Promise<unknown>, status: number): Promise<ServiceError> {
   try {
     await p;
@@ -335,10 +365,54 @@ describe("runSubAgent — authorization gates", () => {
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
-  it("rejects past the per-turn cap (429) without spawning", async () => {
-    const { deps, runner } = makeDeps({ subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
+  it("refuses a run (429) while the limit is in progress, with no spawn and no card", async () => {
+    const { deps, runner, emitMessage, replaceInProgress, append } = makeDeps({});
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS);
+    const emitted = emitMessage.mock.calls.length;
+    const persisted = replaceInProgress.mock.calls.length + append.mock.calls.length;
+
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+      429,
+    );
+
+    expect(err.message).toContain("Wait for one to finish");
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(MAX_SUB_AGENT_RUNS_IN_PROGRESS);
+    expect(emitMessage.mock.calls).toHaveLength(emitted);
+    expect(replaceInProgress.mock.calls.length + append.mock.calls.length).toBe(persisted);
+    await held.finishAll();
+  });
+
+  it("admits one run, and only one, when a run in progress finishes", async () => {
+    const { deps, runner } = makeDeps({});
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS);
     await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 429);
-    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
+
+    await held.finishOne();
+    const next = runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    await vi.waitFor(() =>
+      expect(runner.spawnSubAgent).toHaveBeenCalledTimes(MAX_SUB_AGENT_RUNS_IN_PROGRESS + 1));
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 429);
+
+    await held.finishAll();
+    expect((await next).status).toBe("success");
+  });
+
+  it("frees the slot of a run that fails", async () => {
+    const { deps, runner } = makeDeps({});
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS - 1);
+    runner.spawnSubAgent.mockRejectedValueOnce(new Error("worker unreachable"));
+    await expect(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+    ).rejects.toThrow("worker unreachable");
+
+    runner.spawnSubAgent.mockResolvedValueOnce(
+      { status: "success", text: "ok", truncated: false, durationMs: 1, costUsd: 0 },
+    );
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.status).toBe("success");
+    await held.finishAll();
   });
 
   it("rejects an empty prompt (400)", async () => {
@@ -364,9 +438,9 @@ describe("runSubAgent — authorization gates", () => {
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
-  it("does not spend a cap slot on a refused call", async () => {
+  it("holds no slot for a refused call", async () => {
     const { deps, runner } = makeDeps({});
-    for (let i = 0; i < SUB_AGENT_PER_TURN_CAP; i++) {
+    for (let i = 0; i < MAX_SUB_AGENT_RUNS_IN_PROGRESS; i++) {
       await expectServiceError(
         runSubAgent(deps, "s1", {
           target: explicit("claude", { modelId: "gpt-5.6-luna" }),
@@ -376,7 +450,6 @@ describe("runSubAgent — authorization gates", () => {
         400,
       );
     }
-    expect(runner.subAgentSpawnsThisTurn).toBe(0);
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
   });
@@ -389,12 +462,15 @@ describe("runSubAgent — authorization gates", () => {
     );
   });
 
-  it("refuses a capped role call for the cap, not for an unresolvable reviewer", async () => {
-    const { deps } = makeDeps({ credentialRoutes: [], subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
-    await expectServiceError(
-      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 }),
-      429,
-    );
+  it("refuses a role call at the limit for the limit, not for an unknown role", async () => {
+    const { deps, runner } = makeDeps({});
+    const unknownRole = () =>
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "nobody", overrides: {} }, prompt: "review", depth: 0 });
+    await expectServiceError(unknownRole(), 400);
+
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS);
+    await expectServiceError(unknownRole(), 429);
+    await held.finishAll();
   });
 });
 
@@ -594,13 +670,12 @@ describe("runSubAgent — happy path", () => {
     expect(record.mock.calls[0][5]).toMatchObject({ requests });
   });
 
-  it("spawns, returns text, increments the per-turn counter, records usage, emits spinner + persisted consult card", async () => {
+  it("spawns, returns text, records usage, emits spinner + persisted consult card", async () => {
     const { deps, runner, emitMessage, record, replaceInProgress } = makeDeps({});
     const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });
 
     expect(res.text).toBe("2 bugs found");
     expect(res.subAgentId).toBe("codex");
-    expect(runner.subAgentSpawnsThisTurn).toBe(1);
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "codex", prompt: "review this", depth: 0 }),
     );
@@ -1061,13 +1136,12 @@ describe("runSubAgent — happy path", () => {
     expect(runner.spawnSubAgent).toHaveBeenCalled();
   });
 
-  it("counts the spawn against the budget up to the cap across calls", async () => {
+  it("puts no limit on runs that follow one another", async () => {
     const { deps, runner } = makeDeps({});
-    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "a", depth: 0 });
-    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "b", depth: 0 });
-    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "c", depth: 0 });
-    expect(runner.subAgentSpawnsThisTurn).toBe(3);
-    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "d", depth: 0 }), 429);
+    for (let i = 0; i <= MAX_SUB_AGENT_RUNS_IN_PROGRESS; i++) {
+      await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    }
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(MAX_SUB_AGENT_RUNS_IN_PROGRESS + 1);
   });
 });
 
@@ -1547,7 +1621,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
       runner.running = false;
     };
     const runner = {
-      subAgentSpawnsThisTurn: 0,
       running: launch !== "post-turn",
       emitMessage: vi.fn(),
       chatMessageGroups: [{ text: TURN_ONE_TEXT, toolUse: [] }],
@@ -1676,7 +1749,6 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
   function scenario(opts: { turnEndsDuringConsult: boolean }) {
     const schedulePostTurnPush = vi.fn();
     const runner = {
-      subAgentSpawnsThisTurn: 0,
       sessionId: "s1",
       sessionDir: tmpDir,
       running: true,
@@ -1762,7 +1834,6 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
 
   function scenario(opts: { spawnResult?: Partial<SubAgentRunResult>; holdDelivery?: boolean } = {}) {
     const runner = {
-      subAgentSpawnsThisTurn: 0,
       sessionId: "s1",
       sessionDir: tmpDir,
       running: true,
@@ -1877,16 +1948,12 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
   });
 
   it("wipes cross-agent creds from sessions where the agent is NOT pinned, leaves pinned ones", () => {
-    fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".codex", "auth.json"), "{}");
-
-    provisionSubAgentCredentials(root, "sessA", "codex", "consult-1");
-    provisionSubAgentCredentials(root, "sessB", "codex", "consult-1");
-
     const dirA = path.join(perSessionCredentialsDir(root, "sessA"), ".codex");
     const dirB = path.join(perSessionCredentialsDir(root, "sessB"), ".codex");
-    expect(fs.existsSync(dirA)).toBe(true);
-    expect(fs.existsSync(dirB)).toBe(true);
+    for (const dir of [dirA, dirB]) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "auth.json"), "{}");
+    }
 
     const sessionManager = {
       list: () => [
@@ -1901,20 +1968,42 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
     expect(fs.existsSync(dirB)).toBe(true);
   });
 
+  it("removes the signed-out agent's spawn homes, and only those", () => {
+    for (const agent of [".codex", ".grok"]) {
+      fs.mkdirSync(path.join(root, agent), { recursive: true });
+      fs.writeFileSync(path.join(root, agent, "auth.json"), codexAuth(`${agent}-SOURCE`, 1_000));
+    }
+    provisionSubAgentSpawnHome(root, "sessA", "codex-run", "codex");
+    provisionSubAgentSpawnHome(root, "sessA", "grok-run", "grok");
+    const grokHomeFile = path.join(subAgentSpawnHomeDir(root, "sessA", "grok-run"), ".grok", "auth.json");
+
+    const sessionManager = { list: () => [{ id: "sessA", agentId: "claude" }] } as never;
+    sweepSubAgentCredentialsOnSignOut("codex", { sessionManager, credentialsDir: root });
+
+    expect(fs.existsSync(subAgentSpawnHomeDir(root, "sessA", "codex-run"))).toBe(false);
+    expect(fs.readFileSync(grokHomeFile, "utf-8")).toBe(codexAuth(".grok-SOURCE", 1_000));
+
+    // The run that owned the home rotates its token late, then releases: nothing is published.
+    const lateHome = path.join(subAgentSpawnHomeDir(root, "sessA", "codex-run"), ".codex");
+    fs.mkdirSync(lateHome, { recursive: true });
+    fs.writeFileSync(path.join(lateHome, "auth.json"), codexAuth("LATE-ROTATION", 2_000));
+    releaseSubAgentSpawnHome(root, "sessA", "codex-run");
+    expect(fs.readFileSync(path.join(root, ".codex", "auth.json"), "utf-8")).toBe(codexAuth(".codex-SOURCE", 1_000));
+  });
+
   it("is a no-op without a credentialsDir (local mode)", () => {
     const sessionManager = { list: () => [{ id: "sessA", agentId: "claude" }] } as never;
     expect(() => sweepSubAgentCredentialsOnSignOut("codex", { sessionManager })).not.toThrow();
   });
 });
 
-describe("runSubAgent — same-harness spawns never touch the session's live credentials", () => {
+describe("runSubAgent — every provisioned spawn runs from its own home", () => {
   let root: string;
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-spawn-home-"));
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    clearSubtreeBorrows();
   });
 
   const claudeCreds = (tail: string) =>
@@ -1991,46 +2080,130 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
     expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
   });
 
-  it("a cross-harness spawn still borrows the session subtree and gets no homeDir", async () => {
-    fs.mkdirSync(path.join(root, "provider-accounts", "codex", "acct-primary", ".codex"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "provider-accounts", "codex", "acct-primary", ".codex", "auth.json"),
-      '{"tokens":{"access_token":"codex-consult"}}',
+  const seedCodexAccount = () => {
+    const dir = path.join(root, "provider-accounts", "codex", "acct-primary", ".codex");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "auth.json"), '{"tokens":{"access_token":"codex-consult"}}');
+  };
+
+  // The worker's rule: a spawn runs in its homeDir, and with none in the session's own subtree.
+  const codexHomeOf = (req: { spawnId: string; homeDir?: string }) =>
+    path.join(
+      req.homeDir ? subAgentSpawnHomeDir(root, "s1", req.spawnId) : perSessionCredentialsDir(root, "s1"),
+      ".codex",
     );
+
+  it("a cross-harness spawn runs from an isolated home and never writes the session subtree", async () => {
+    seedCodexAccount();
     const sessionDir = perSessionCredentialsDir(root, "s1");
     seedClaude(sessionDir, "PRIMARY-LIVE");
 
     const { deps, runner } = makeDeps({ credentialsDir: root, containerRunner: true });
-    const seen: { homeDir?: string; codexOnDisk?: boolean; marker?: string } = {};
-    runner.spawnSubAgent = vi.fn(async (req: { homeDir?: string }) => {
+    const seen: { homeDir?: string; homeToken?: string; sessionCodex?: boolean; marker?: string } = {};
+    runner.spawnSubAgent = vi.fn(async (req: { spawnId: string; homeDir?: string }) => {
       seen.homeDir = req.homeDir;
-      seen.codexOnDisk = fs.existsSync(path.join(sessionDir, ".codex", "auth.json"));
+      seen.homeToken = fs.readFileSync(path.join(codexHomeOf(req), "auth.json"), "utf-8");
+      seen.sessionCodex = fs.existsSync(path.join(sessionDir, ".codex"));
       seen.marker = readSessionAccountMarker(root, "s1").codex;
       return { status: "success", text: "ok", truncated: false, durationMs: 5, costUsd: 0 };
     }) as never;
 
-    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
-    expect(seen.homeDir).toBeUndefined();
-    expect(seen.codexOnDisk).toBe(true);
-    expect(seen.marker).toBe("acct-primary");
-    expect(fs.existsSync(path.join(sessionDir, ".codex", "auth.json"))).toBe(false);
-    expect(readSessionAccountMarker(root, "s1").codex).toBeUndefined();
+    expect(seen.homeDir).toBe(`/credentials/sub-agent-homes/${result.spawnId}`);
+    expect(seen.homeToken).toContain("codex-consult");
+    expect(seen.sessionCodex).toBe(false);
+    expect(seen.marker).toBeUndefined();
+    expect(fs.existsSync(path.join(sessionDir, ".codex"))).toBe(false);
+    expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
   });
 
-  it("closes the credential borrow when the run ends on its wall-clock cap", async () => {
-    fs.mkdirSync(path.join(root, "provider-accounts", "codex", "acct-primary", ".codex"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "provider-accounts", "codex", "acct-primary", ".codex", "auth.json"),
-      '{"tokens":{"access_token":"codex-consult"}}',
+  // The 2026-10-13 incident: docs/144-cross-agent-review §4, "Why not one subtree".
+  it("consults that overlap each keep their own credentials and CLI state", async () => {
+    seedCodexAccount();
+    const sessionDir = perSessionCredentialsDir(root, "s1");
+    seedClaude(sessionDir, "PRIMARY-LIVE");
+
+    const { deps, runner } = makeDeps({ credentialsDir: root, containerRunner: true });
+    const CONSULTS = 3;
+    const started: string[] = [];
+    let release: () => void = () => {};
+    const allStarted = new Promise<void>((resolve) => { release = resolve; });
+    const atEnd: { spawnId: string; homeDir?: string; auth: boolean; state: string | null }[] = [];
+    runner.spawnSubAgent = vi.fn(async (req: { spawnId: string; homeDir?: string }) => {
+      const codexHome = codexHomeOf(req);
+      // What the CLI does first: create its state database in its home.
+      fs.writeFileSync(path.join(codexHome, "state_5.sqlite"), req.spawnId);
+      started.push(req.spawnId);
+      if (started.length === CONSULTS) release();
+      await allStarted;
+      const stateFile = path.join(codexHome, "state_5.sqlite");
+      atEnd.push({
+        spawnId: req.spawnId,
+        homeDir: req.homeDir,
+        auth: fs.existsSync(path.join(codexHome, "auth.json")),
+        state: fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf-8") : null,
+      });
+      return { status: "success", text: "ok", truncated: false, durationMs: 5, costUsd: 0 };
+    }) as never;
+
+    const results = await Promise.all(
+      Array.from({ length: CONSULTS }, () =>
+        runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 })),
     );
+
+    expect(results.map((r) => r.status)).toEqual(["success", "success", "success"]);
+    expect(new Set(atEnd.map((run) => run.homeDir)).size).toBe(CONSULTS);
+    for (const run of atEnd) {
+      expect(run.homeDir).toBe(`/credentials/sub-agent-homes/${run.spawnId}`);
+      expect(run.auth).toBe(true);
+      expect(run.state).toBe(run.spawnId);
+    }
+    expect(fs.existsSync(path.join(sessionDir, ".codex"))).toBe(false);
+    for (const result of results) {
+      expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
+    }
+  });
+
+  it("an account failover publishes each account's rotation to its own root", async () => {
+    const accountFile = (id: string) =>
+      path.join(root, "provider-accounts", "codex", id, ".codex", "auth.json");
+    for (const id of ["acct-primary", "acct-secondary"]) {
+      fs.mkdirSync(path.dirname(accountFile(id)), { recursive: true });
+      fs.writeFileSync(accountFile(id), codexAuth(`${id}-OLD`, 1_000));
+    }
+
+    const { deps, runner } = makeDeps({ credentialsDir: root, containerRunner: true });
+    const held: string[] = [];
+    runner.spawnSubAgent = vi.fn(async (req: { spawnId: string; homeDir?: string }) => {
+      const file = path.join(codexHomeOf(req), "auth.json");
+      held.push(fs.readFileSync(file, "utf-8"));
+      const account = held.length === 1 ? "acct-primary" : "acct-secondary";
+      // The CLI rotates its token during the run.
+      fs.writeFileSync(file, codexAuth(`${account}-ROTATED`, 2_000));
+      return held.length === 1
+        ? { status: "error", text: "", error: "Weekly usage limit reached. It resets at 2099-08-02T12:00:00.000Z.", truncated: false, durationMs: 10, costUsd: 0 }
+        : { status: "success", text: "ok", truncated: false, durationMs: 5, costUsd: 0 };
+    }) as never;
+
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(result.status).toBe("success");
+    expect(held).toEqual([codexAuth("acct-primary-OLD", 1_000), codexAuth("acct-secondary-OLD", 1_000)]);
+    expect(fs.readFileSync(accountFile("acct-primary"), "utf-8")).toBe(codexAuth("acct-primary-ROTATED", 2_000));
+    expect(fs.readFileSync(accountFile("acct-secondary"), "utf-8")).toBe(codexAuth("acct-secondary-ROTATED", 2_000));
+    expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
+  });
+
+  it("releases the home when the run ends on its wall-clock cap", async () => {
+    seedCodexAccount();
     const sessionDir = perSessionCredentialsDir(root, "s1");
     seedClaude(sessionDir, "PRIMARY-LIVE");
 
     const { deps, runner, updateSubAgentConsultCard } = makeDeps({ credentialsDir: root, containerRunner: true });
-    let borrowedDuringRun = false;
-    runner.spawnSubAgent = vi.fn(async () => {
-      borrowedDuringRun = fs.existsSync(path.join(sessionDir, ".codex", "auth.json"));
+    let provisionedDuringRun = false;
+    runner.spawnSubAgent = vi.fn(async (req: { spawnId: string; homeDir?: string }) => {
+      provisionedDuringRun = fs.existsSync(path.join(codexHomeOf(req), "auth.json"));
       runner.running = false;
       return { status: "timeout", text: "half a review", truncated: true, durationMs: 1_800_000, costUsd: 0 };
     }) as never;
@@ -2038,13 +2211,33 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
     const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
     expect(res.status).toBe("timeout");
-    expect(borrowedDuringRun).toBe(true);
-    expect(fs.existsSync(path.join(sessionDir, ".codex", "auth.json"))).toBe(false);
-    expect(readSessionAccountMarker(root, "s1").codex).toBeUndefined();
+    expect(provisionedDuringRun).toBe(true);
+    expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", res.spawnId))).toBe(false);
+    expect(fs.existsSync(path.join(sessionDir, ".codex"))).toBe(false);
     expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
       "s1",
       expect.any(String),
       expect.objectContaining({ status: "timeout", truncated: true }),
     );
+  });
+});
+
+describe("limit on runs in progress — env override", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("enforces the number that SHIPIT_SUB_AGENT_MAX_IN_PROGRESS gives", async () => {
+    vi.resetModules();
+    vi.stubEnv("SHIPIT_SUB_AGENT_MAX_IN_PROGRESS", "2");
+    const mod = await import("./sub-agent.js");
+    const { deps, runner } = makeDeps({});
+
+    const held = await holdRuns(deps, runner, 2, mod.runSubAgent);
+    await expect(
+      mod.runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+    ).rejects.toMatchObject({ statusCode: 429 });
+    await held.finishAll();
   });
 });

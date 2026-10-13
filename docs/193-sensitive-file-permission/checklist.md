@@ -14,3 +14,9 @@
 - [x] Typecheck + lint clean
 - [x] Verify end-to-end in a real container session (manual): `.npmrc` edit surfaces the card; approve lets the write land; "remember" suppresses re-prompts — all verified live (planning#114)
 - [x] Confirm the Codex deny enum against `codex app-server generate-json-schema` — live schema has no `"reject"`; v2 deny is `"decline"` (`"cancel"` also interrupts the turn), v1 is `"denied"`. Fixed the stale `"reject"` mapping in `codex-event-handler.ts`
+- [x] Reproduce the 2026-10-12 incident with the Claude CLI and record which calls raise a request (plan.md, "What the Claude CLI gates")
+- [x] Allow the write tools on `/persist` by its real path, so a workspace symlink into it raises no card (req 1)
+- [x] Say in `/shipit-docs/environment.md` which writes wait for the user's approval
+- [x] Mark a subagent's request on `agent_permission_request` (req 3)
+- [x] Steer a `[ShipIt]` line into the running turn when a background subagent's request has waited 2 minutes (req 2)
+- [x] State the proposal for a bound on a card that nobody can answer (req 5)
